@@ -158,8 +158,20 @@ select:focus {
   cursor: pointer;
 }
 
+.success {
+  height: 42px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--green);
+  color: #052015;
+  font-weight: 900;
+  padding: 0 18px;
+  cursor: pointer;
+}
+
 .primary:disabled,
-.danger:disabled {
+.danger:disabled,
+.success:disabled {
   cursor: not-allowed;
   opacity: .55;
 }
@@ -315,6 +327,35 @@ select:focus {
 
 .signal-summary .metric strong {
   font-size: 26px;
+}
+
+.quick-order {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.quick-order-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.quick-order-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.quick-order-grid {
+  display: grid;
+  grid-template-columns: 140px 140px 120px minmax(150px, 1fr) auto auto auto;
+  gap: 10px;
+  align-items: end;
 }
 
 .zones-grid {
@@ -541,6 +582,7 @@ pre {
   .setup-grid,
   .target-row,
   .order-fields,
+  .quick-order-grid,
   .signal-controls,
   .kv {
     grid-template-columns: 1fr 1fr;
@@ -565,6 +607,7 @@ pre {
   .setup-grid,
   .target-row,
   .order-fields,
+  .quick-order-grid,
   .kv,
   .bar-pair {
     grid-template-columns: 1fr;

@@ -20,6 +20,14 @@ const symbolCache = {
   data: null,
   expiresAt: 0,
 };
+const autoTradeState = {
+  startedAt: null,
+  lastScanAt: null,
+  lastOrders: [],
+  lastErrors: [],
+  firstSeenPrices: new Map(),
+  symbolCooldowns: new Map(),
+};
 const port = Number(process.env.PORT ?? 19082);
 
 const server = createServer(async (request, response) => {
@@ -58,6 +66,11 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/auto-trade/status') {
+      await sendJson(response, getAutoTradeStatus());
+      return;
+    }
+
     await sendStatic(requestUrl.pathname, response);
   } catch (error) {
     const status = error instanceof BinanceRateLimitError ? error.status : 500;
@@ -75,6 +88,7 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, '127.0.0.1', () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
+  startAutoTrader();
 });
 
 async function getSymbols() {
@@ -103,17 +117,32 @@ async function getSymbols() {
 async function placeOrder(payload) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   const side = String(payload.side ?? '').toUpperCase();
+  const orderType = String(payload.orderType ?? payload.type ?? 'MARKET').toUpperCase();
   const notionalUsdt = Number(payload.notionalUsdt);
   const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 1)));
   const dryRun = payload.dryRun !== false;
+  const limitPrice = payload.limitPrice === undefined || payload.limitPrice === null || payload.limitPrice === ''
+    ? null
+    : Number(payload.limitPrice);
+  const takeProfitPrice = payload.takeProfitPrice === undefined || payload.takeProfitPrice === null
+    ? null
+    : Number(payload.takeProfitPrice);
   const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
 
   if (!['BUY', 'SELL'].includes(side)) {
     throw new Error('Invalid order side.');
   }
 
+  if (!['MARKET', 'LIMIT'].includes(orderType)) {
+    throw new Error('Invalid order type.');
+  }
+
   if (!Number.isFinite(notionalUsdt) || notionalUsdt <= 0) {
     throw new Error('Order notional must be greater than 0.');
+  }
+
+  if (orderType === 'LIMIT' && (!Number.isFinite(limitPrice) || limitPrice <= 0)) {
+    throw new Error('Limit price must be greater than 0.');
   }
 
   const [symbols, premiumIndex] = await Promise.all([
@@ -127,18 +156,27 @@ async function placeOrder(payload) {
   }
 
   const markPrice = Number(premiumIndex.markPrice);
-  const quantity = quantityFromNotional(symbolInfo, notionalUsdt, markPrice);
+  const roundedLimitPrice = limitPrice
+    ? priceFromTick(symbolInfo, limitPrice)
+    : null;
+  const executionPrice = roundedLimitPrice ? Number(roundedLimitPrice) : markPrice;
+  const quantity = quantityFromNotional(symbolInfo, notionalUsdt, executionPrice);
+  const roundedTakeProfitPrice = takeProfitPrice
+    ? priceFromTick(symbolInfo, takeProfitPrice)
+    : null;
   const plannedOrder = {
     enabled: process.env.BINANCE_ORDER_ENABLED === 'true',
     dryRun,
     baseUrl: process.env.BINANCE_FUTURES_BASE_URL ?? 'https://fapi.binance.com',
     symbol,
     side,
-    type: 'MARKET',
+    type: orderType,
     notionalUsdt,
     markPrice,
+    limitPrice: roundedLimitPrice,
     quantity,
     leverage,
+    takeProfitPrice: roundedTakeProfitPrice,
   };
 
   if (dryRun || process.env.BINANCE_ORDER_ENABLED !== 'true') {
@@ -161,11 +199,27 @@ async function placeOrder(payload) {
   const orderParams = {
     symbol,
     side,
-    type: 'MARKET',
+    type: orderType,
     quantity,
     recvWindow,
     newClientOrderId: `lp_${Date.now()}`,
   };
+
+  if (orderType === 'LIMIT') {
+    orderParams.price = roundedLimitPrice;
+    orderParams.timeInForce = 'GTC';
+  }
+  const takeProfitParams = roundedTakeProfitPrice ? {
+    symbol,
+    side: side === 'BUY' ? 'SELL' : 'BUY',
+    type: 'TAKE_PROFIT_MARKET',
+    stopPrice: roundedTakeProfitPrice,
+    quantity,
+    reduceOnly: 'true',
+    workingType: 'MARK_PRICE',
+    recvWindow,
+    newClientOrderId: `lp_tp_${Date.now()}`,
+  } : null;
   const leverageResult = await client.setLeverage({
     symbol,
     leverage,
@@ -178,6 +232,13 @@ async function placeOrder(payload) {
     apiKey,
     apiSecret,
   });
+  const takeProfitResult = takeProfitParams
+    ? await client.placeFuturesOrder({
+      params: takeProfitParams,
+      apiKey,
+      apiSecret,
+    })
+    : null;
 
   return {
     status: 'submitted',
@@ -185,6 +246,7 @@ async function placeOrder(payload) {
     order: plannedOrder,
     leverageResult,
     orderResult,
+    takeProfitResult,
   };
 }
 
@@ -217,6 +279,153 @@ async function getMarketSnapshot() {
     });
 }
 
+function startAutoTrader() {
+  if (process.env.AUTO_TRADE_ENABLED !== 'true') {
+    console.log('Auto trader disabled. Set AUTO_TRADE_ENABLED=true to enable.');
+    return;
+  }
+
+  autoTradeState.startedAt = new Date().toISOString();
+  const intervalMs = Math.max(Number(process.env.AUTO_TRADE_INTERVAL_MS ?? 15000), 5000);
+
+  console.log(`Auto trader enabled. Scan interval ${intervalMs}ms.`);
+  runAutoTradeScan();
+  setInterval(runAutoTradeScan, intervalMs);
+}
+
+async function runAutoTradeScan() {
+  try {
+    const snapshot = await getMarketSnapshot();
+    const threshold = Number(process.env.AUTO_TRADE_THRESHOLD ?? 0.7);
+    const maxOrders = Math.max(1, Number(process.env.AUTO_TRADE_MAX_ORDERS_PER_SCAN ?? 1));
+    const candidates = snapshot
+      .map((row) => ({
+        row,
+        setup: buildAutoTradeSignal(row),
+      }))
+      .filter(({ setup }) => setup.direction !== 'wait' && Math.abs(setup.score) >= threshold)
+      .sort((a, b) => Math.abs(b.setup.score) - Math.abs(a.setup.score));
+    let placed = 0;
+
+    autoTradeState.lastScanAt = new Date().toISOString();
+
+    for (const candidate of candidates) {
+      if (placed >= maxOrders) {
+        break;
+      }
+
+      if (isAutoTradeCoolingDown(candidate.row.symbol)) {
+        continue;
+      }
+
+      const result = await placeAutoTrade(candidate.row, candidate.setup);
+
+      autoTradeState.lastOrders.unshift({
+        at: new Date().toISOString(),
+        symbol: candidate.row.symbol,
+        direction: candidate.setup.direction,
+        score: candidate.setup.score,
+        result,
+      });
+      autoTradeState.lastOrders = autoTradeState.lastOrders.slice(0, 20);
+      autoTradeState.symbolCooldowns.set(candidate.row.symbol, Date.now());
+      placed += 1;
+    }
+  } catch (error) {
+    autoTradeState.lastErrors.unshift({
+      at: new Date().toISOString(),
+      message: error instanceof Error ? error.message : String(error),
+    });
+    autoTradeState.lastErrors = autoTradeState.lastErrors.slice(0, 20);
+    console.error('Auto trader scan failed:', error instanceof Error ? error.message : error);
+  }
+}
+
+async function placeAutoTrade(row, setup) {
+  const marginUsdt = Number(process.env.AUTO_TRADE_MARGIN_USDT ?? 2);
+  const leverage = Math.max(1, Math.min(125, Number(process.env.AUTO_TRADE_LEVERAGE ?? 10)));
+  const notionalUsdt = marginUsdt * leverage;
+  const dryRun = process.env.AUTO_TRADE_DRY_RUN !== 'false';
+  const side = setup.direction === 'long' ? 'BUY' : 'SELL';
+
+  return placeOrder({
+    symbol: row.symbol,
+    side,
+    notionalUsdt,
+    leverage,
+    dryRun,
+    source: 'auto-trader',
+  });
+}
+
+function buildAutoTradeSignal(row) {
+  const price = row.markPrice;
+  const change24h = row.change24hPct ?? 0;
+  const fundingPct = (row.fundingRate ?? 0) * 100;
+  const firstSeenPrice = autoTradeState.firstSeenPrices.get(row.symbol) ?? price;
+
+  if (!autoTradeState.firstSeenPrices.has(row.symbol)) {
+    autoTradeState.firstSeenPrices.set(row.symbol, price);
+  }
+
+  const liveMomentum = ((price - firstSeenPrice) / firstSeenPrice) * 100;
+  const score = (
+    clamp(change24h / 12, -1, 1) * 0.45
+    + clamp(liveMomentum / 1.2, -1, 1) * 0.4
+    + clamp(-fundingPct / 0.05, -0.4, 0.4) * 0.15
+  );
+
+  if (score >= 0.7) {
+    return {
+      direction: 'long',
+      score,
+      reason: 'Auto score >= 0.7: 24h trend/live momentum/funding aligned upward.',
+    };
+  }
+
+  if (score <= -0.7) {
+    return {
+      direction: 'short',
+      score,
+      reason: 'Auto score <= -0.7: 24h trend/live momentum/funding aligned downward.',
+    };
+  }
+
+  return {
+    direction: 'wait',
+    score,
+    reason: 'Auto score below threshold.',
+  };
+}
+
+function isAutoTradeCoolingDown(symbol) {
+  const lastOrderAt = autoTradeState.symbolCooldowns.get(symbol);
+
+  if (!lastOrderAt) {
+    return false;
+  }
+
+  return Date.now() - lastOrderAt < Number(process.env.AUTO_TRADE_COOLDOWN_MS ?? 900000);
+}
+
+function getAutoTradeStatus() {
+  return {
+    enabled: process.env.AUTO_TRADE_ENABLED === 'true',
+    dryRun: process.env.AUTO_TRADE_DRY_RUN !== 'false',
+    threshold: Number(process.env.AUTO_TRADE_THRESHOLD ?? 0.7),
+    marginUsdt: Number(process.env.AUTO_TRADE_MARGIN_USDT ?? 2),
+    leverage: Number(process.env.AUTO_TRADE_LEVERAGE ?? 10),
+    notionalUsdt: Number(process.env.AUTO_TRADE_MARGIN_USDT ?? 2) * Number(process.env.AUTO_TRADE_LEVERAGE ?? 10),
+    intervalMs: Number(process.env.AUTO_TRADE_INTERVAL_MS ?? 15000),
+    cooldownMs: Number(process.env.AUTO_TRADE_COOLDOWN_MS ?? 900000),
+    maxOrdersPerScan: Number(process.env.AUTO_TRADE_MAX_ORDERS_PER_SCAN ?? 1),
+    startedAt: autoTradeState.startedAt,
+    lastScanAt: autoTradeState.lastScanAt,
+    lastOrders: autoTradeState.lastOrders,
+    lastErrors: autoTradeState.lastErrors,
+  };
+}
+
 function quantityFromNotional(symbolInfo, notionalUsdt, markPrice) {
   const lotSize = symbolInfo.filters?.find((filter) => filter.filterType === 'LOT_SIZE');
   const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
@@ -234,6 +443,14 @@ function quantityFromNotional(symbolInfo, notionalUsdt, markPrice) {
   return steppedQuantity.toFixed(precision).replace(/\.?0+$/, '');
 }
 
+function priceFromTick(symbolInfo, price) {
+  const priceFilter = symbolInfo.filters?.find((filter) => filter.filterType === 'PRICE_FILTER');
+  const tickSize = Number(priceFilter?.tickSize ?? 0.00000001);
+  const precision = decimalsFromStep(tickSize);
+
+  return (Math.round(price / tickSize) * tickSize).toFixed(precision).replace(/\.?0+$/, '');
+}
+
 function decimalsFromStep(stepSize) {
   const text = String(stepSize);
 
@@ -242,6 +459,10 @@ function decimalsFromStep(stepSize) {
   }
 
   return text.replace(/0+$/, '').split('.')[1]?.length ?? 0;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
 async function readJsonBody(request) {

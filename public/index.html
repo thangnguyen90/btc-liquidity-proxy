@@ -51,6 +51,41 @@
         </label>
       </section>
 
+      <section class="quick-order">
+        <div class="quick-order-head">
+          <h2>Quick Order</h2>
+          <span>Uses current symbol input</span>
+        </div>
+        <div class="quick-order-grid">
+          <label class="field">
+            <span>Order Type</span>
+            <select id="quickOrderTypeInput">
+              <option value="MARKET" selected>Market</option>
+              <option value="LIMIT">Limit</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Margin USDT</span>
+            <input id="quickMarginInput" type="number" min="1" step="0.1" value="2">
+          </label>
+          <label class="field">
+            <span>Leverage</span>
+            <input id="quickLeverageInput" type="number" min="1" max="125" step="1" value="10">
+          </label>
+          <label class="field">
+            <span>Limit Price</span>
+            <input id="quickLimitPriceInput" type="number" min="0" step="any" placeholder="Only for limit" disabled>
+          </label>
+          <label class="toggle order-toggle">
+            <input id="quickDryRunInput" type="checkbox" checked>
+            <span>Dry run</span>
+          </label>
+          <button id="quickLongButton" class="success" type="button">Long</button>
+          <button id="quickShortButton" class="danger" type="button">Short</button>
+        </div>
+        <pre id="quickOrderResult" class="order-result">Quick order result will appear here.</pre>
+      </section>
+
       <section class="summary-grid">
         <article class="metric signal-card">
           <span>Signal</span>

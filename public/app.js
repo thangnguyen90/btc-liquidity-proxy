@@ -5,6 +5,14 @@ const elements = {
   rangeInput: document.querySelector('#rangeInput'),
   refreshButton: document.querySelector('#refreshButton'),
   autoRefreshInput: document.querySelector('#autoRefreshInput'),
+  quickOrderTypeInput: document.querySelector('#quickOrderTypeInput'),
+  quickMarginInput: document.querySelector('#quickMarginInput'),
+  quickLeverageInput: document.querySelector('#quickLeverageInput'),
+  quickLimitPriceInput: document.querySelector('#quickLimitPriceInput'),
+  quickDryRunInput: document.querySelector('#quickDryRunInput'),
+  quickLongButton: document.querySelector('#quickLongButton'),
+  quickShortButton: document.querySelector('#quickShortButton'),
+  quickOrderResult: document.querySelector('#quickOrderResult'),
   status: document.querySelector('#status'),
   signalValue: document.querySelector('#signalValue'),
   signalScore: document.querySelector('#signalScore'),
@@ -77,6 +85,18 @@ elements.autoRefreshInput.addEventListener('change', () => {
 
 elements.placeOrderButton.addEventListener('click', () => {
   placeSetupOrder();
+});
+
+elements.quickOrderTypeInput.addEventListener('change', () => {
+  elements.quickLimitPriceInput.disabled = elements.quickOrderTypeInput.value !== 'LIMIT';
+});
+
+elements.quickLongButton.addEventListener('click', () => {
+  placeQuickOrder('BUY');
+});
+
+elements.quickShortButton.addEventListener('click', () => {
+  placeQuickOrder('SELL');
 });
 
 await loadSymbols();
@@ -269,6 +289,7 @@ async function placeSetupOrder() {
       body: JSON.stringify({
         symbol: latestAnalysis.symbol,
         side,
+        orderType: 'MARKET',
         notionalUsdt,
         leverage,
         dryRun,
@@ -285,6 +306,63 @@ async function placeSetupOrder() {
     elements.orderResult.textContent = messageFor(error);
   } finally {
     elements.placeOrderButton.disabled = latestAnalysis.tradeSetup.direction === 'wait';
+  }
+}
+
+async function placeQuickOrder(side) {
+  const symbol = normalizeSymbol(elements.symbolInput.value);
+  const orderType = elements.quickOrderTypeInput.value;
+  const marginUsdt = Number(elements.quickMarginInput.value);
+  const leverage = Number(elements.quickLeverageInput.value);
+  const dryRun = elements.quickDryRunInput.checked;
+  const notionalUsdt = marginUsdt * leverage;
+  const limitPrice = elements.quickLimitPriceInput.value;
+
+  if (orderType === 'LIMIT' && !limitPrice) {
+    elements.quickOrderResult.textContent = 'Limit price is required for limit orders.';
+    return;
+  }
+
+  if (!dryRun) {
+    const confirmed = window.confirm(`Send LIVE ${side} ${orderType} order for ${symbol}? Margin ${marginUsdt} USDT, leverage ${leverage}x, notional ${notionalUsdt} USDT.`);
+
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  elements.quickLongButton.disabled = true;
+  elements.quickShortButton.disabled = true;
+  elements.quickOrderResult.textContent = 'Submitting quick order...';
+
+  try {
+    const response = await fetch('/api/order', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        symbol,
+        side,
+        orderType,
+        notionalUsdt,
+        leverage,
+        limitPrice: orderType === 'LIMIT' ? Number(limitPrice) : null,
+        dryRun,
+      }),
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? 'Quick order failed');
+    }
+
+    elements.quickOrderResult.textContent = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    elements.quickOrderResult.textContent = messageFor(error);
+  } finally {
+    elements.quickLongButton.disabled = false;
+    elements.quickShortButton.disabled = false;
   }
 }
 

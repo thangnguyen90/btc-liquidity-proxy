@@ -61,6 +61,71 @@ BINANCE_FUTURES_BASE_URL=https://testnet.binancefuture.com
 BINANCE_ORDER_ENABLED=true
 ```
 
+## Auto Trader
+
+The backend can auto-place setup orders when the all-market scanner score reaches the threshold. It is disabled and dry-run by default.
+
+```text
+AUTO_TRADE_ENABLED=false
+AUTO_TRADE_DRY_RUN=true
+AUTO_TRADE_THRESHOLD=0.7
+AUTO_TRADE_MARGIN_USDT=2
+AUTO_TRADE_LEVERAGE=10
+AUTO_TRADE_INTERVAL_MS=15000
+AUTO_TRADE_COOLDOWN_MS=900000
+AUTO_TRADE_MAX_ORDERS_PER_SCAN=1
+```
+
+With the default margin/leverage, order notional is:
+
+```text
+2 USDT margin * 10x = 20 USDT notional
+```
+
+To allow real orders, all of these must be true:
+
+```text
+AUTO_TRADE_ENABLED=true
+AUTO_TRADE_DRY_RUN=false
+BINANCE_ORDER_ENABLED=true
+```
+
+Status endpoint:
+
+```text
+http://127.0.0.1:19082/api/auto-trade/status
+```
+
+## Restart BE/FE
+
+This project serves both backend API and frontend pages from the same Node server. Restarting `npm run web` restarts both BE and FE.
+
+Stop the current server:
+
+```bash
+pkill -f "node src/server.js"
+```
+
+Start it again:
+
+```bash
+cd /Users/thang/Documents/RESOURCE/btc-liquidity-proxy
+npm run web
+```
+
+One-line restart:
+
+```bash
+cd /Users/thang/Documents/RESOURCE/btc-liquidity-proxy && (pkill -f "node src/server.js" || true) && npm run web
+```
+
+After restart, open:
+
+```text
+http://127.0.0.1:19082
+http://127.0.0.1:19082/signals
+```
+
 Useful options:
 
 ```bash

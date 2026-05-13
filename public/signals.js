@@ -384,7 +384,7 @@ function renderRow(row) {
 
   return `
     <tr>
-      <td><a class="symbol-link" href="${href}">${escapeHtml(row.symbol)}</a></td>
+      <td><a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a></td>
       <td><span class="signal-pill ${directionClass}">${setup.direction.toUpperCase()}</span><small>${formatNumber(setup.score, 3)}</small></td>
       <td><span class="confidence-pill confidence-${setup.confidence}">${setup.confidence.toUpperCase()}</span></td>
       <td>${formatPrice(row.markPrice, digits)}</td>
