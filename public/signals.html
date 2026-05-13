@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>All Binance Signals</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell wide-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">WebSocket Scanner</p>
+          <h1>All Coin Signal Board</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Detail Dashboard</a>
+          <div class="status" id="socketStatus">Connecting...</div>
+        </div>
+      </section>
+
+      <section class="controls signal-controls">
+        <label class="field">
+          <span>Search</span>
+          <input id="searchInput" placeholder="BTC, MANTA, ETH..." autocomplete="off">
+        </label>
+        <label class="field short">
+          <span>Signal</span>
+          <select id="signalFilter">
+            <option value="all">All</option>
+            <option value="long">Long</option>
+            <option value="short">Short</option>
+            <option value="wait">Wait</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Sort</span>
+          <select id="sortInput">
+            <option value="strength">Strength</option>
+            <option value="change">24h Change</option>
+            <option value="volume">Volume</option>
+            <option value="symbol">Symbol</option>
+          </select>
+        </label>
+        <div class="socket-note">
+          <strong id="visibleCount">0</strong>
+          <span>symbols live</span>
+        </div>
+      </section>
+
+      <section class="summary-grid signal-summary">
+        <article class="metric">
+          <span>Long Signals</span>
+          <strong id="longCount">0</strong>
+          <small>Realtime scanner</small>
+        </article>
+        <article class="metric">
+          <span>Short Signals</span>
+          <strong id="shortCount">0</strong>
+          <small>Realtime scanner</small>
+        </article>
+        <article class="metric">
+          <span>Wait</span>
+          <strong id="waitCount">0</strong>
+          <small>No clear edge</small>
+        </article>
+        <article class="metric">
+          <span>Last Update</span>
+          <strong id="lastUpdate">-</strong>
+          <small>Binance futures socket</small>
+        </article>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <h2>Live Signals</h2>
+          <span>Click symbol to open detail dashboard</span>
+        </div>
+        <div class="table-wrap">
+          <table class="signal-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Signal</th>
+                <th>Confidence</th>
+                <th>Price</th>
+                <th>24h</th>
+                <th>Live</th>
+                <th>Funding</th>
+                <th>Entry</th>
+                <th>Trigger</th>
+                <th>Stop</th>
+                <th>Targets</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody id="signalsBody">
+              <tr>
+                <td colspan="12" class="empty-cell">Waiting for Binance WebSocket data...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/signals.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Binance Liquidity Proxy</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Binance USD-M Futures</p>
+          <h1>Liquidity Proxy Dashboard</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/signals">All Signals</a>
+          <div class="status" id="status">Ready</div>
+        </div>
+      </section>
+
+      <section class="controls">
+        <label class="field">
+          <span>Symbol</span>
+          <input id="symbolInput" list="symbolsList" value="BTCUSDT" placeholder="BTC, ETH, SOL..." autocomplete="off">
+          <datalist id="symbolsList"></datalist>
+        </label>
+        <label class="field short">
+          <span>Interval</span>
+          <select id="intervalInput">
+            <option value="5m">5m</option>
+            <option value="15m" selected>15m</option>
+            <option value="30m">30m</option>
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Range</span>
+          <select id="rangeInput">
+            <option value="0.02">2%</option>
+            <option value="0.04" selected>4%</option>
+            <option value="0.06">6%</option>
+            <option value="0.08">8%</option>
+          </select>
+        </label>
+        <button id="refreshButton" class="primary" type="button">Analyze</button>
+        <label class="toggle">
+          <input id="autoRefreshInput" type="checkbox">
+          <span>Auto 15s</span>
+        </label>
+      </section>
+
+      <section class="summary-grid">
+        <article class="metric signal-card">
+          <span>Signal</span>
+          <strong id="signalValue">-</strong>
+          <small id="signalScore">Score -</small>
+        </article>
+        <article class="metric">
+          <span>Mark Price</span>
+          <strong id="markPrice">-</strong>
+          <small id="indexPrice">Index -</small>
+        </article>
+        <article class="metric">
+          <span>Momentum</span>
+          <strong id="momentum">-</strong>
+          <small id="atr">ATR -</small>
+        </article>
+        <article class="metric">
+          <span>Funding</span>
+          <strong id="funding">-</strong>
+          <small id="openInterest">OI -</small>
+        </article>
+      </section>
+
+      <section class="panel setup-panel">
+        <div class="panel-head">
+          <h2>Trade Setup</h2>
+          <span>Heuristic only</span>
+        </div>
+        <div class="setup-grid">
+          <div class="setup-main">
+            <span>Direction</span>
+            <strong id="setupDirection">-</strong>
+            <small id="setupConfidence">Confidence -</small>
+          </div>
+          <div><span>Entry Zone</span><strong id="setupEntry">-</strong></div>
+          <div><span>Trigger</span><strong id="setupTrigger">-</strong></div>
+          <div><span>Stop / Invalidation</span><strong id="setupStop">-</strong></div>
+        </div>
+        <div class="target-row" id="setupTargets"></div>
+        <p class="explain" id="setupExplain">Setup sẽ xuất hiện sau khi phân tích symbol.</p>
+        <div class="order-box">
+          <div class="order-fields">
+            <label class="field">
+              <span>Order Size USDT</span>
+              <input id="orderNotionalInput" type="number" min="1" step="1" value="10">
+            </label>
+            <label class="field">
+              <span>Leverage</span>
+              <input id="orderLeverageInput" type="number" min="1" max="125" step="1" value="3">
+            </label>
+            <label class="toggle order-toggle">
+              <input id="orderDryRunInput" type="checkbox" checked>
+              <span>Dry run</span>
+            </label>
+            <button id="placeOrderButton" class="danger" type="button" disabled>Place Setup Order</button>
+          </div>
+          <pre id="orderResult" class="order-result">Order result will appear here.</pre>
+        </div>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Market State</h2>
+            <span id="updatedAt">-</span>
+          </div>
+          <div class="kv">
+            <div><span>Taker Buy</span><strong id="takerBuy">-</strong></div>
+            <div><span>Long / Short</span><strong id="longShort">-</strong></div>
+            <div><span>Liquidity Bias</span><strong id="liquidityBias">-</strong></div>
+            <div><span>Book Imbalance</span><strong id="bookImbalance">-</strong></div>
+          </div>
+          <p class="explain" id="marketExplain">Chọn symbol và bấm Analyze để xem trạng thái.</p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Order Book</h2>
+            <span>Near price</span>
+          </div>
+          <div class="bar-pair">
+            <div>
+              <span>Bid notional</span>
+              <strong id="bidNotional">-</strong>
+            </div>
+            <div>
+              <span>Ask notional</span>
+              <strong id="askNotional">-</strong>
+            </div>
+          </div>
+          <div class="split-bar" aria-hidden="true">
+            <div id="bidBar"></div>
+            <div id="askBar"></div>
+          </div>
+          <p class="explain" id="bookExplain">Order book gần giá sẽ cho biết bên mua hoặc bên bán đang dày hơn.</p>
+        </article>
+      </section>
+
+      <section class="zones-grid">
+        <article class="panel zone-panel">
+          <div class="panel-head">
+            <h2>Strong Above</h2>
+            <span id="aboveTotal">-</span>
+          </div>
+          <pre id="aboveCode">strong above: -</pre>
+          <ul id="aboveList" class="zone-list"></ul>
+          <p class="explain" id="aboveExplain">Các vùng liquidation/liquidity mạnh phía trên sẽ hiển thị ở đây.</p>
+        </article>
+
+        <article class="panel zone-panel">
+          <div class="panel-head">
+            <h2>Strong Below</h2>
+            <span id="belowTotal">-</span>
+          </div>
+          <pre id="belowCode">strong below: -</pre>
+          <ul id="belowList" class="zone-list"></ul>
+          <p class="explain" id="belowExplain">Các vùng liquidation/liquidity mạnh phía dưới sẽ hiển thị ở đây.</p>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Trade Context</h2>
+          <span>Not financial advice</span>
+        </div>
+        <div id="tradeContext" class="trade-context"></div>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

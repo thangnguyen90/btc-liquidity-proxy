@@ -1,0 +1,508 @@
+const elements = {
+  symbolInput: document.querySelector('#symbolInput'),
+  symbolsList: document.querySelector('#symbolsList'),
+  intervalInput: document.querySelector('#intervalInput'),
+  rangeInput: document.querySelector('#rangeInput'),
+  refreshButton: document.querySelector('#refreshButton'),
+  autoRefreshInput: document.querySelector('#autoRefreshInput'),
+  status: document.querySelector('#status'),
+  signalValue: document.querySelector('#signalValue'),
+  signalScore: document.querySelector('#signalScore'),
+  setupDirection: document.querySelector('#setupDirection'),
+  setupConfidence: document.querySelector('#setupConfidence'),
+  setupEntry: document.querySelector('#setupEntry'),
+  setupTrigger: document.querySelector('#setupTrigger'),
+  setupStop: document.querySelector('#setupStop'),
+  setupTargets: document.querySelector('#setupTargets'),
+  setupExplain: document.querySelector('#setupExplain'),
+  orderNotionalInput: document.querySelector('#orderNotionalInput'),
+  orderLeverageInput: document.querySelector('#orderLeverageInput'),
+  orderDryRunInput: document.querySelector('#orderDryRunInput'),
+  placeOrderButton: document.querySelector('#placeOrderButton'),
+  orderResult: document.querySelector('#orderResult'),
+  markPrice: document.querySelector('#markPrice'),
+  indexPrice: document.querySelector('#indexPrice'),
+  momentum: document.querySelector('#momentum'),
+  atr: document.querySelector('#atr'),
+  funding: document.querySelector('#funding'),
+  openInterest: document.querySelector('#openInterest'),
+  updatedAt: document.querySelector('#updatedAt'),
+  takerBuy: document.querySelector('#takerBuy'),
+  longShort: document.querySelector('#longShort'),
+  liquidityBias: document.querySelector('#liquidityBias'),
+  bookImbalance: document.querySelector('#bookImbalance'),
+  marketExplain: document.querySelector('#marketExplain'),
+  bidNotional: document.querySelector('#bidNotional'),
+  askNotional: document.querySelector('#askNotional'),
+  bidBar: document.querySelector('#bidBar'),
+  askBar: document.querySelector('#askBar'),
+  bookExplain: document.querySelector('#bookExplain'),
+  aboveTotal: document.querySelector('#aboveTotal'),
+  belowTotal: document.querySelector('#belowTotal'),
+  aboveCode: document.querySelector('#aboveCode'),
+  belowCode: document.querySelector('#belowCode'),
+  aboveList: document.querySelector('#aboveList'),
+  belowList: document.querySelector('#belowList'),
+  aboveExplain: document.querySelector('#aboveExplain'),
+  belowExplain: document.querySelector('#belowExplain'),
+  tradeContext: document.querySelector('#tradeContext'),
+};
+
+let autoRefreshTimer = null;
+let latestAnalysis = null;
+const initialSymbol = new URLSearchParams(window.location.search).get('symbol');
+
+if (initialSymbol) {
+  elements.symbolInput.value = normalizeSymbol(initialSymbol);
+}
+
+elements.refreshButton.addEventListener('click', () => {
+  loadAnalysis();
+});
+
+elements.symbolInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    loadAnalysis();
+  }
+});
+
+elements.autoRefreshInput.addEventListener('change', () => {
+  if (elements.autoRefreshInput.checked) {
+    autoRefreshTimer = setInterval(loadAnalysis, 15000);
+  } else if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+});
+
+elements.placeOrderButton.addEventListener('click', () => {
+  placeSetupOrder();
+});
+
+await loadSymbols();
+await loadAnalysis();
+
+async function loadSymbols() {
+  try {
+    const response = await fetch('/api/symbols');
+    const symbols = await response.json();
+
+    elements.symbolsList.innerHTML = symbols
+      .map((item) => `<option value="${escapeHtml(item.symbol)}">${escapeHtml(item.baseAsset)}</option>`)
+      .join('');
+  } catch (error) {
+    elements.status.textContent = `Symbol list failed: ${messageFor(error)}`;
+  }
+}
+
+async function loadAnalysis() {
+  const symbol = normalizeSymbol(elements.symbolInput.value);
+  const params = new URLSearchParams({
+    symbol,
+    interval: elements.intervalInput.value,
+    rangePct: elements.rangeInput.value,
+    depthLimit: '500',
+  });
+
+  setLoading(true);
+
+  try {
+    const response = await fetch(`/api/analyze?${params.toString()}`);
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? 'Analyze failed');
+    }
+
+    elements.symbolInput.value = payload.symbol;
+    render(payload);
+    elements.status.textContent = 'Updated';
+  } catch (error) {
+    elements.status.textContent = messageFor(error);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function render(data) {
+  latestAnalysis = data;
+  const coin = data.symbol.replace(/USDT$/, '');
+  const signalClass = classFor(data.signal.score);
+  const priceDigits = priceDigitsFor(data.price.mark);
+
+  elements.signalValue.textContent = labelForSignal(data.signal.label);
+  elements.signalValue.className = signalClass;
+  elements.signalScore.textContent = `Score ${formatNumber(data.signal.score, 4)}`;
+  elements.markPrice.textContent = formatPrice(data.price.mark, priceDigits);
+  elements.indexPrice.textContent = `Index ${formatPrice(data.price.index, priceDigits)}`;
+  elements.momentum.textContent = `${formatNumber(data.market.momentumPct, 3)}%`;
+  elements.momentum.className = classFor(data.market.momentumPct);
+  elements.atr.textContent = `ATR ${formatNumber(data.market.atrPct, 3)}%`;
+  elements.funding.textContent = `${formatNumber(data.market.fundingRatePct, 4)}%`;
+  elements.openInterest.textContent = `OI ${formatCompact(data.market.openInterest)}`;
+  elements.updatedAt.textContent = formatDate(data.generatedAt);
+  elements.takerBuy.textContent = `${formatNumber(data.market.takerBuyRatio * 100, 2)}%`;
+  elements.longShort.textContent = data.market.longShortRatio
+    ? `${formatNumber(data.market.longShortRatio.longShortRatio, 3)} (${formatNumber(data.market.longShortRatio.longAccount * 100, 1)}% long)`
+    : '-';
+  elements.liquidityBias.textContent = formatNumber(data.liquidationProxy.bias, 4);
+  elements.liquidityBias.className = classFor(data.liquidationProxy.bias);
+  elements.bookImbalance.textContent = formatNumber(data.orderBook.imbalance, 4);
+  elements.bookImbalance.className = classFor(data.orderBook.imbalance);
+  elements.bidNotional.textContent = formatCurrency(data.orderBook.bidNotional);
+  elements.askNotional.textContent = formatCurrency(data.orderBook.askNotional);
+
+  renderTradeSetup(data.tradeSetup, coin, priceDigits);
+  renderBookBars(data.orderBook);
+  renderZones({
+    coin,
+    side: 'above',
+    zones: data.liquidationProxy.strongestAbove,
+    total: data.liquidationProxy.liquidityAbove,
+    priceDigits,
+    codeElement: elements.aboveCode,
+    listElement: elements.aboveList,
+    totalElement: elements.aboveTotal,
+    explainElement: elements.aboveExplain,
+  });
+  renderZones({
+    coin,
+    side: 'below',
+    zones: data.liquidationProxy.strongestBelow,
+    total: data.liquidationProxy.liquidityBelow,
+    priceDigits,
+    codeElement: elements.belowCode,
+    listElement: elements.belowList,
+    totalElement: elements.belowTotal,
+    explainElement: elements.belowExplain,
+  });
+
+  elements.marketExplain.textContent = marketExplanation(data, coin);
+  elements.bookExplain.textContent = bookExplanation(data.orderBook);
+  elements.tradeContext.innerHTML = tradeContext(data, coin, priceDigits).map((line) => `<p>${line}</p>`).join('');
+}
+
+function renderTradeSetup(setup, coin, priceDigits) {
+  elements.setupDirection.textContent = setup.direction.toUpperCase();
+  elements.setupDirection.className = setup.direction === 'long'
+    ? 'positive'
+    : setup.direction === 'short'
+      ? 'negative'
+      : 'neutral';
+  elements.setupConfidence.textContent = `Confidence ${setup.confidence}`;
+  elements.setupEntry.textContent = setup.entry
+    ? `${formatPrice(setup.entry.low, priceDigits)} - ${formatPrice(setup.entry.high, priceDigits)}`
+    : 'WAIT';
+  elements.setupTrigger.textContent = setup.triggerPrice
+    ? formatPrice(setup.triggerPrice, priceDigits)
+    : setup.breakoutLevels
+      ? `Long > ${formatPrice(setup.breakoutLevels.longAbove, priceDigits)} / Short < ${formatPrice(setup.breakoutLevels.shortBelow, priceDigits)}`
+      : '-';
+  elements.setupStop.textContent = setup.stopLoss ? formatPrice(setup.stopLoss, priceDigits) : '-';
+  elements.setupTargets.innerHTML = setup.targets.length
+    ? setup.targets.slice(0, 3).map((target, index) => `
+      <div class="target">
+        <span>Target ${index + 1}</span>
+        <strong>${formatPrice(target, priceDigits)}</strong>
+      </div>
+    `).join('')
+    : `
+      <div class="target">
+        <span>Long trigger</span>
+        <strong>${formatPrice(setup.breakoutLevels?.longAbove, priceDigits)}</strong>
+      </div>
+      <div class="target">
+        <span>Short trigger</span>
+        <strong>${formatPrice(setup.breakoutLevels?.shortBelow, priceDigits)}</strong>
+      </div>
+      <div class="target">
+        <span>Mode</span>
+        <strong>WAIT</strong>
+      </div>
+    `;
+  elements.placeOrderButton.disabled = setup.direction === 'wait';
+  elements.placeOrderButton.textContent = setup.direction === 'short'
+    ? 'Place SHORT Order'
+    : setup.direction === 'long'
+      ? 'Place LONG Order'
+      : 'Place Setup Order';
+
+  if (setup.direction === 'wait') {
+    elements.setupExplain.textContent = `${coin}: chưa nên chọn long/short ngay. Chờ phá lên trên ${formatPrice(setup.breakoutLevels?.longAbove, priceDigits)} để xét long, hoặc thủng ${formatPrice(setup.breakoutLevels?.shortBelow, priceDigits)} để xét short. ${setup.reason.join(' ')}`;
+    return;
+  }
+
+  const moveText = setup.expectedMovePct > 0 ? `+${formatNumber(setup.expectedMovePct, 2)}%` : `${formatNumber(setup.expectedMovePct, 2)}%`;
+  const sideText = setup.direction === 'long' ? 'LONG' : 'SHORT';
+
+  elements.setupExplain.textContent = `${coin}: setup nghiêng ${sideText}. Entry tham khảo ${formatPrice(setup.entry.low, priceDigits)} - ${formatPrice(setup.entry.high, priceDigits)}, trigger xác nhận ${formatPrice(setup.triggerPrice, priceDigits)}, target chính ${formatPrice(setup.primaryTarget, priceDigits)} (${moveText}), invalidation/stop quanh ${formatPrice(setup.stopLoss, priceDigits)}. ${setup.reason.join(' ')}`;
+}
+
+async function placeSetupOrder() {
+  if (!latestAnalysis || latestAnalysis.tradeSetup.direction === 'wait') {
+    return;
+  }
+
+  const setup = latestAnalysis.tradeSetup;
+  const side = setup.direction === 'long' ? 'BUY' : 'SELL';
+  const notionalUsdt = Number(elements.orderNotionalInput.value);
+  const leverage = Number(elements.orderLeverageInput.value);
+  const dryRun = elements.orderDryRunInput.checked;
+
+  if (!dryRun) {
+    const confirmed = window.confirm(`Send LIVE ${side} MARKET order for ${latestAnalysis.symbol}? This can execute on Binance.`);
+
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  elements.placeOrderButton.disabled = true;
+  elements.orderResult.textContent = 'Submitting order request...';
+
+  try {
+    const response = await fetch('/api/order', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        symbol: latestAnalysis.symbol,
+        side,
+        notionalUsdt,
+        leverage,
+        dryRun,
+      }),
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? 'Order failed');
+    }
+
+    elements.orderResult.textContent = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    elements.orderResult.textContent = messageFor(error);
+  } finally {
+    elements.placeOrderButton.disabled = latestAnalysis.tradeSetup.direction === 'wait';
+  }
+}
+
+function renderBookBars(orderBook) {
+  const total = orderBook.bidNotional + orderBook.askNotional;
+  const bidPct = total > 0 ? Math.max((orderBook.bidNotional / total) * 100, 5) : 50;
+  const askPct = total > 0 ? Math.max((orderBook.askNotional / total) * 100, 5) : 50;
+
+  elements.bidBar.style.width = `${bidPct}%`;
+  elements.askBar.style.width = `${askPct}%`;
+}
+
+function renderZones({ coin, side, zones, total, codeElement, listElement, totalElement, explainElement, priceDigits }) {
+  const label = side === 'above' ? 'strong above' : 'strong below';
+  const firstThree = zones.slice(0, 3);
+
+  codeElement.textContent = `${label}:\n${firstThree.map((zone) => `${formatPrice(zone.price, priceDigits)} (${signedPct(zone.distancePct)})`).join(', ')}`;
+  listElement.innerHTML = firstThree
+    .map((zone) => `<li><strong>${formatPrice(zone.price, priceDigits)}</strong>: cách khoảng <span class="pill">${signedPct(zone.distancePct)}</span>, score ${formatCompact(zone.score)}</li>`)
+    .join('');
+  totalElement.textContent = formatCompact(total);
+
+  if (side === 'above') {
+    const targets = firstThree.map((zone) => formatPrice(zone.price, priceDigits));
+    explainElement.textContent = `Nếu ${coin} phá lên và giữ trên vùng gần ${targets[0] ?? '-'}, vùng tiếp theo dễ bị hút là ${targets.slice(1).join(' - ') || targets[0] || '-'}.`;
+  } else {
+    const prices = firstThree.map((zone) => zone.price).sort((a, b) => a - b);
+    explainElement.textContent = `Nếu ${coin} mất hỗ trợ và rơi xuống, vùng hút thanh khoản phía dưới nằm quanh ${formatPrice(prices[0], priceDigits)} - ${formatPrice(prices.at(-1), priceDigits)}.`;
+  }
+}
+
+function marketExplanation(data, coin) {
+  const parts = [];
+
+  if (Math.abs(data.liquidationProxy.bias) < 0.05) {
+    parts.push(`Liquidity hai phía của ${coin} đang khá cân bằng, chưa có nam châm thanh khoản rõ.`);
+  } else if (data.liquidationProxy.bias > 0) {
+    parts.push(`Liquidity phía trên dày hơn, ${coin} có thể bị hút lên để quét short nếu momentum xác nhận.`);
+  } else {
+    parts.push(`Liquidity phía dưới dày hơn, ${coin} có rủi ro bị kéo xuống sweep long nếu mất vùng hỗ trợ gần.`);
+  }
+
+  if (data.market.takerBuyRatio > 0.53) {
+    parts.push('Lệnh mua chủ động đang nhỉnh rõ.');
+  } else if (data.market.takerBuyRatio < 0.47) {
+    parts.push('Lệnh bán chủ động đang nhỉnh rõ.');
+  } else {
+    parts.push('Taker buy/sell gần cân bằng.');
+  }
+
+  return parts.join(' ');
+}
+
+function bookExplanation(orderBook) {
+  if (Math.abs(orderBook.imbalance) < 0.1) {
+    return 'Order book gần giá đang khá cân, chưa có bên nào áp đảo rõ.';
+  }
+
+  if (orderBook.imbalance > 0) {
+    return 'Bid gần giá dày hơn ask, bên mua đang có đệm thanh khoản tốt hơn trong vùng đo.';
+  }
+
+  return 'Ask gần giá dày hơn bid, phía bán đang tạo áp lực lớn hơn trong vùng đo.';
+}
+
+function tradeContext(data, coin, priceDigits) {
+  const above = data.liquidationProxy.strongestAbove.slice(0, 3);
+  const below = data.liquidationProxy.strongestBelow.slice(0, 3);
+  const aboveText = above.map((zone) => formatPrice(zone.price, priceDigits)).join(' -> ');
+  const belowText = below.map((zone) => formatPrice(zone.price, priceDigits)).join(' -> ');
+  const lines = [
+    `<strong>Hiện tại:</strong> ${labelForSignal(data.signal.label)} với score ${formatNumber(data.signal.score, 4)}. Dùng như bối cảnh, không phải tín hiệu vào lệnh độc lập.`,
+    `<strong>Kịch bản phá lên:</strong> nếu ${coin} vượt vùng gần ${formatPrice(above[0]?.price, priceDigits)} và taker buy tăng, chú ý các target liquidity ${aboveText}.`,
+    `<strong>Kịch bản rơi xuống:</strong> nếu ${coin} mất vùng giá hiện tại và book imbalance chuyển âm mạnh, chú ý các vùng ${belowText}.`,
+  ];
+
+  if (data.market.longShortRatio?.longShortRatio > 1.8) {
+    lines.push('<strong>Cảnh báo crowding:</strong> long account đang đông, nếu giá yếu có thể dễ xuất hiện long squeeze.');
+  }
+
+  return lines;
+}
+
+function setLoading(isLoading) {
+  elements.refreshButton.disabled = isLoading;
+  elements.refreshButton.textContent = isLoading ? 'Loading...' : 'Analyze';
+
+  if (isLoading) {
+    elements.status.textContent = 'Fetching Binance data...';
+  }
+}
+
+function normalizeSymbol(input) {
+  const symbol = String(input).trim().toUpperCase().replace(/[-/_\s]/g, '');
+
+  if (!symbol) {
+    return 'BTCUSDT';
+  }
+
+  return symbol.endsWith('USDT') ? symbol : `${symbol}USDT`;
+}
+
+function labelForSignal(signal) {
+  const labels = {
+    bullish_squeeze: 'Bullish Squeeze',
+    bearish_sweep: 'Bearish Sweep',
+    uptrend: 'Uptrend',
+    downtrend: 'Downtrend',
+    neutral: 'Neutral',
+  };
+
+  return labels[signal] ?? signal;
+}
+
+function classFor(value) {
+  if (value > 0.05) {
+    return 'positive';
+  }
+
+  if (value < -0.05) {
+    return 'negative';
+  }
+
+  return 'neutral';
+}
+
+function signedPct(value) {
+  const prefix = value > 0 ? '+' : '';
+
+  return `${prefix}${formatNumber(value, 2)}%`;
+}
+
+function formatPrice(value, digits = null) {
+  if (value === undefined || value === null || Number.isNaN(value)) {
+    return '-';
+  }
+
+  const maximumFractionDigits = digits ?? priceDigitsFor(value);
+
+  return Number(value).toLocaleString('en-US', {
+    maximumFractionDigits,
+  });
+}
+
+function priceDigitsFor(value) {
+  const abs = Math.abs(Number(value));
+
+  if (!Number.isFinite(abs) || abs === 0) {
+    return 4;
+  }
+
+  if (abs >= 1000) {
+    return 2;
+  }
+
+  if (abs >= 100) {
+    return 3;
+  }
+
+  if (abs >= 10) {
+    return 4;
+  }
+
+  if (abs >= 1) {
+    return 5;
+  }
+
+  if (abs >= 0.1) {
+    return 6;
+  }
+
+  if (abs >= 0.01) {
+    return 7;
+  }
+
+  return 8;
+}
+
+function formatNumber(value, digits = 2) {
+  if (value === undefined || value === null || Number.isNaN(value)) {
+    return '-';
+  }
+
+  return Number(value).toLocaleString('en-US', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function formatCurrency(value) {
+  return `$${formatCompact(value)}`;
+}
+
+function formatCompact(value) {
+  if (value === undefined || value === null || Number.isNaN(value)) {
+    return '-';
+  }
+
+  return Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatDate(value) {
+  return new Date(value).toLocaleString('vi-VN', {
+    hour12: false,
+  });
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+function messageFor(error) {
+  return error instanceof Error ? error.message : String(error);
+}
