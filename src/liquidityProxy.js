@@ -27,6 +27,9 @@ export function analyzeMarket({
   const base48h = klines[Math.max(0, klines.length - 1 - candles24h * 2)];
   const momentumPct = (lastClose - base24h.close) / base24h.close;
   const momentumPct48h = (lastClose - base48h.close) / base48h.close;
+  const candles4h = Math.round(4 * 60 / intervalToMinutes(interval));
+  const base4h = klines[Math.max(0, klines.length - 1 - candles4h)];
+  const shortMomentumPct = (lastClose - base4h.close) / base4h.close;
   const atrPct = calculateAtrPct(klines);
   const takerBuyRatio = calculateTakerBuyRatio(klines);
   const book = summarizeOrderBook(depth, currentPrice, rangePct);
@@ -58,6 +61,14 @@ export function analyzeMarket({
     momentumPct48h,
     takerBuyRatio,
   });
+
+  const quickScore = round(
+    clamp(momentumPct * 100 / 12, -1, 1) * 0.45
+    + clamp(shortMomentumPct * 100 / 1.2, -1, 1) * 0.40
+    + clamp(-fundingRate * 100 / 0.05, -0.4, 0.4) * 0.15,
+    4,
+  );
+  const quickDirection = quickScore >= 0.34 ? 'long' : quickScore <= -0.34 ? 'short' : 'wait';
 
   return {
     symbol,
@@ -91,6 +102,7 @@ export function analyzeMarket({
     },
     signal,
     tradeSetup,
+    quickScan: { score: quickScore, direction: quickDirection },
   };
 }
 

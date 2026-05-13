@@ -56,6 +56,7 @@ const elements = {
   tradeContext: document.querySelector('#tradeContext'),
   coinglassLink: document.querySelector('#coinglassLink'),
   binanceLink: document.querySelector('#binanceLink'),
+  quickScanBadge: document.querySelector('#quickScanBadge'),
 };
 
 let autoRefreshTimer = null;
@@ -161,6 +162,9 @@ function render(data) {
   elements.signalValue.textContent = labelForSignal(data.signal.label);
   elements.signalValue.className = signalClass;
   elements.signalScore.textContent = `Score ${formatNumber(data.signal.score, 4)}`;
+  const qd = data.quickScan.direction;
+  const qdClass = qd === 'long' ? 'positive' : qd === 'short' ? 'negative' : 'neutral';
+  elements.quickScanBadge.innerHTML = `Scan: <span class="${qdClass}">${qd.toUpperCase()}</span> ${formatNumber(data.quickScan.score, 3)}`;
   elements.markPrice.textContent = formatPrice(data.price.mark, priceDigits);
   elements.indexPrice.textContent = `Index ${formatPrice(data.price.index, priceDigits)}`;
   elements.momentum.textContent = `${formatNumber(data.market.momentumPct, 3)}%`;

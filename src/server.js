@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
+import { startDiscordScanner } from './discordNotifier.js';
 
 loadEnv();
 
@@ -96,6 +97,14 @@ const server = createServer(async (request, response) => {
 server.listen(port, '127.0.0.1', () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
   startAutoTrader();
+  startDiscordScanner({
+    client,
+    webhookUrl: process.env.DISCORD_WEBHOOK_URL || '',
+    threshold: Number(process.env.DISCORD_SIGNAL_THRESHOLD ?? 0.7),
+    intervalMs: Math.max(Number(process.env.DISCORD_INTERVAL_MS ?? 30000), 15000),
+    cooldownMs: Number(process.env.DISCORD_COOLDOWN_MS ?? 3600000),
+    getSnapshot: getMarketSnapshot,
+  });
 });
 
 async function getSymbols() {
