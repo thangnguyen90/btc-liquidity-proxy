@@ -1,5 +1,10 @@
 const DEFAULT_LEVERAGES = [5, 10, 20, 25, 50, 75, 100];
 
+function intervalToMinutes(interval) {
+  const map = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '6h': 360, '12h': 720, '1d': 1440 };
+  return map[interval] ?? 15;
+}
+
 export function analyzeMarket({
   symbol,
   klines,
@@ -10,14 +15,18 @@ export function analyzeMarket({
   rangePct = 0.04,
   binSizePct = 0.001,
   leverages = DEFAULT_LEVERAGES,
+  interval = '15m',
 }) {
   const currentPrice = Number(premiumIndex.markPrice);
   const priceDigits = priceDigitsFor(currentPrice);
   const fundingRate = Number(premiumIndex.lastFundingRate);
   const openInterestValue = Number(openInterest.openInterest);
-  const firstClose = klines[0].close;
   const lastClose = klines.at(-1).close;
-  const momentumPct = (lastClose - firstClose) / firstClose;
+  const candles24h = Math.round(24 * 60 / intervalToMinutes(interval));
+  const base24h = klines[Math.max(0, klines.length - 1 - candles24h)];
+  const base48h = klines[Math.max(0, klines.length - 1 - candles24h * 2)];
+  const momentumPct = (lastClose - base24h.close) / base24h.close;
+  const momentumPct48h = (lastClose - base48h.close) / base48h.close;
   const atrPct = calculateAtrPct(klines);
   const takerBuyRatio = calculateTakerBuyRatio(klines);
   const book = summarizeOrderBook(depth, currentPrice, rangePct);
@@ -46,6 +55,7 @@ export function analyzeMarket({
     zones,
     book,
     momentumPct,
+    momentumPct48h,
     takerBuyRatio,
   });
 
@@ -61,6 +71,8 @@ export function analyzeMarket({
       fundingRate,
       fundingRatePct: round(fundingRate * 100, 4),
       momentumPct: round(momentumPct * 100, 3),
+      momentumPct48h: round(momentumPct48h * 100, 3),
+      trendAligned: (momentumPct > 0) === (momentumPct48h > 0),
       atrPct: round(atrPct * 100, 3),
       takerBuyRatio: round(takerBuyRatio, 4),
       longShortRatio: ratio,
@@ -82,13 +94,14 @@ export function analyzeMarket({
   };
 }
 
-function buildTradeSetup({ currentPrice, atrPct, signal, zones, book, momentumPct, takerBuyRatio }) {
+function buildTradeSetup({ currentPrice, atrPct, signal, zones, book, momentumPct, momentumPct48h, takerBuyRatio }) {
   const atrPrice = Math.max(currentPrice * atrPct, currentPrice * 0.001);
   const priceDigits = priceDigitsFor(currentPrice);
   const nearestAbove = zones.above.nearest[0] ?? null;
   const nearestBelow = zones.below.nearest[0] ?? null;
   const aboveTargets = uniquePrices(zones.above.strongest, currentPrice, 'above', priceDigits).slice(0, 3);
   const belowTargets = uniquePrices(zones.below.strongest, currentPrice, 'below', priceDigits).slice(0, 3);
+  const trendAligned = (momentumPct > 0) === (momentumPct48h > 0);
   const longVotes = [
     signal.score > 0.18,
     momentumPct > 0.002,
@@ -103,6 +116,30 @@ function buildTradeSetup({ currentPrice, atrPct, signal, zones, book, momentumPc
     book.imbalance < -0.08,
     zones.bias < -0.05,
   ].filter(Boolean).length;
+
+  if (!trendAligned && (longVotes >= 3 || shortVotes >= 3)) {
+    return {
+      direction: 'wait',
+      confidence: 'low',
+      entryType: 'trend_conflict',
+      entry: null,
+      triggerPrice: null,
+      invalidation: null,
+      stopLoss: null,
+      targets: [],
+      primaryTarget: null,
+      expectedMovePct: 0,
+      breakoutLevels: {
+        longAbove: round(nearestAbove?.price ?? currentPrice + atrPrice, priceDigits),
+        shortBelow: round(nearestBelow?.price ?? currentPrice - atrPrice, priceDigits),
+      },
+      reason: [
+        `24h (${momentumPct > 0 ? '+' : ''}${round(momentumPct * 100, 2)}%) và 48h (${momentumPct48h > 0 ? '+' : ''}${round(momentumPct48h * 100, 2)}%) mâu thuẫn chiều.`,
+        'Không trade khi hai khung thời gian không đồng thuận — rủi ro cao bị quét.',
+        'Chờ cả 24h và 48h cùng dương (long) hoặc cùng âm (short).',
+      ],
+    };
+  }
 
   if (longVotes >= 3 && longVotes > shortVotes) {
     const entryLow = Math.max(currentPrice - atrPrice * 0.45, nearestBelow?.price ?? currentPrice - atrPrice);

@@ -44,6 +44,13 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/price') {
+      const symbol = normalizeSymbol(requestUrl.searchParams.get('symbol') ?? 'BTCUSDT');
+      const data = await client.getPremiumIndex(symbol);
+      await sendJson(response, { mark: Number(data.markPrice), index: Number(data.indexPrice) });
+      return;
+    }
+
     if (requestUrl.pathname === '/api/analyze') {
       const symbol = normalizeSymbol(requestUrl.searchParams.get('symbol') ?? 'BTCUSDT');
       const interval = requestUrl.searchParams.get('interval') ?? '15m';

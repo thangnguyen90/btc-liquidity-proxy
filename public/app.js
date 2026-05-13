@@ -54,10 +54,14 @@ const elements = {
   aboveExplain: document.querySelector('#aboveExplain'),
   belowExplain: document.querySelector('#belowExplain'),
   tradeContext: document.querySelector('#tradeContext'),
+  coinglassLink: document.querySelector('#coinglassLink'),
+  binanceLink: document.querySelector('#binanceLink'),
 };
 
 let autoRefreshTimer = null;
 let latestAnalysis = null;
+let priceWsSymbol = null;
+let priceWsReconnectTimer = null;
 const initialSymbol = new URLSearchParams(window.location.search).get('symbol');
 
 if (initialSymbol) {
@@ -117,6 +121,9 @@ async function loadSymbols() {
 
 async function loadAnalysis() {
   const symbol = normalizeSymbol(elements.symbolInput.value);
+  const coin = symbol.replace(/USDT$/, '');
+  elements.coinglassLink.href = `https://www.coinglass.com/pro/futures/LiquidationHeatMapNew?coin=${coin}`;
+  elements.binanceLink.href = `https://www.binance.com/vi/futures/${symbol}`;
   const params = new URLSearchParams({
     symbol,
     interval: elements.intervalInput.value,
@@ -137,6 +144,7 @@ async function loadAnalysis() {
     elements.symbolInput.value = payload.symbol;
     render(payload);
     elements.status.textContent = 'Updated';
+    connectPriceSocket(payload.symbol);
   } catch (error) {
     elements.status.textContent = messageFor(error);
   } finally {
@@ -157,7 +165,9 @@ function render(data) {
   elements.indexPrice.textContent = `Index ${formatPrice(data.price.index, priceDigits)}`;
   elements.momentum.textContent = `${formatNumber(data.market.momentumPct, 3)}%`;
   elements.momentum.className = classFor(data.market.momentumPct);
-  elements.atr.textContent = `ATR ${formatNumber(data.market.atrPct, 3)}%`;
+  const alignIcon = data.market.trendAligned ? '↑↑' : '↕';
+  const alignClass = data.market.trendAligned ? 'positive' : 'negative';
+  elements.atr.innerHTML = `ATR ${formatNumber(data.market.atrPct, 3)}% &nbsp;<span class="${alignClass}" title="48h momentum">${alignIcon} 48h: ${formatNumber(data.market.momentumPct48h, 2)}%</span>`;
   elements.funding.textContent = `${formatNumber(data.market.fundingRatePct, 4)}%`;
   elements.openInterest.textContent = `OI ${formatCompact(data.market.openInterest)}`;
   elements.updatedAt.textContent = formatDate(data.generatedAt);
@@ -583,4 +593,46 @@ function escapeHtml(value) {
 
 function messageFor(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function connectPriceSocket(symbol) {
+  if (priceWsReconnectTimer) {
+    clearInterval(priceWsReconnectTimer);
+    priceWsReconnectTimer = null;
+  }
+
+  priceWsSymbol = symbol;
+  const dot = document.querySelector('#priceSocketDot');
+
+  if (dot) {
+    dot.style.display = 'inline-block';
+  }
+
+  priceWsReconnectTimer = setInterval(async () => {
+    if (priceWsSymbol !== symbol) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`);
+      const data = await res.json();
+      const mark = Number(data.mark);
+      const idx = Number(data.index);
+
+      if (!mark) {
+        return;
+      }
+
+      const digits = priceDigitsFor(mark);
+      elements.markPrice.textContent = formatPrice(mark, digits);
+      elements.indexPrice.textContent = `Index ${formatPrice(idx, digits)}`;
+
+      if (dot) {
+        dot.classList.add('blink');
+        setTimeout(() => dot.classList.remove('blink'), 300);
+      }
+    } catch {
+      // ignore fetch errors, will retry next tick
+    }
+  }, 1000);
 }

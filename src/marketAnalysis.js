@@ -42,5 +42,6 @@ export async function fetchAnalysis({
     longShortRatio,
     rangePct,
     binSizePct,
+    interval,
   });
 }

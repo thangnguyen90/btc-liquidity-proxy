@@ -248,24 +248,29 @@ function hasRenderableData() {
 function render() {
   const search = elements.searchInput.value.trim().toUpperCase();
   const signalFilter = elements.signalFilter.value;
-  const rows = [...marketState.values()]
+
+  const allReady = [...marketState.values()]
     .filter((row) => row.markPrice && row.change24hPct !== null)
-    .map((row) => ({
-      ...row,
-      setup: buildSocketSetup(row),
-    }))
+    .map((row) => ({ ...row, setup: buildSocketSetup(row) }));
+
+  const btcRow = allReady.find((row) => row.symbol === 'BTCUSDT') ?? null;
+
+  const rows = allReady
+    .filter((row) => row.symbol !== 'BTCUSDT')
     .filter((row) => !search || row.symbol.includes(search) || row.baseAsset?.includes(search))
     .filter((row) => signalFilter === 'all' || row.setup.direction === signalFilter);
 
   sortRows(rows);
-  renderSummary(rows);
+  renderSummary(allReady);
 
   const visibleRows = rows.slice(0, 160);
 
   elements.visibleCount.textContent = String(visibleRows.length);
-  elements.signalsBody.innerHTML = visibleRows.length
-    ? visibleRows.map(renderRow).join('')
-    : '<tr><td colspan="12" class="empty-cell">No symbols match current filter.</td></tr>';
+
+  const btcHtml = btcRow ? renderRow(btcRow, true) : '';
+  elements.signalsBody.innerHTML = visibleRows.length || btcHtml
+    ? btcHtml + visibleRows.map((row) => renderRow(row, false)).join('')
+    : '<tr><td colspan="13" class="empty-cell">No symbols match current filter.</td></tr>';
 }
 
 function buildSocketSetup(row) {
@@ -372,7 +377,7 @@ function sortRows(rows) {
   });
 }
 
-function renderRow(row) {
+function renderRow(row, isPinned = false) {
   const digits = priceDigitsFor(row.markPrice);
   const setup = row.setup;
   const directionClass = setup.direction === 'long'
@@ -382,11 +387,22 @@ function renderRow(row) {
       : 'neutral';
   const href = `/?symbol=${encodeURIComponent(row.symbol)}`;
 
+  const setupCell = setup.direction === 'wait'
+    ? `<span class="setup-wait">—</span>`
+    : `<span class="signal-pill ${directionClass}">${setup.direction.toUpperCase()}</span>
+       <span class="setup-range">${setup.entry ? `${formatPrice(setup.entry.low, digits)} – ${formatPrice(setup.entry.high, digits)}` : ''}</span>
+       <span class="setup-trigger">${setup.trigger ? `▶ ${formatPrice(setup.trigger, digits)}` : ''}</span>`;
+
+  const symbolCell = isPinned
+    ? `<td><span class="pin-badge">⬡ BTC</span> <a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a></td>`
+    : `<td><a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a></td>`;
+
   return `
-    <tr>
-      <td><a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a></td>
+    <tr class="${isPinned ? 'pinned-row' : ''}">
+      ${symbolCell}
       <td><span class="signal-pill ${directionClass}">${setup.direction.toUpperCase()}</span><small>${formatNumber(setup.score, 3)}</small></td>
       <td><span class="confidence-pill confidence-${setup.confidence}">${setup.confidence.toUpperCase()}</span></td>
+      <td class="setup-cell">${setupCell}</td>
       <td>${formatPrice(row.markPrice, digits)}</td>
       <td class="${classFor(row.change24hPct)}">${signed(row.change24hPct)}%</td>
       <td class="${classFor(row.liveMomentumPct)}">${signed(row.liveMomentumPct)}%</td>

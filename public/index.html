@@ -14,6 +14,16 @@
           <h1>Liquidity Proxy Dashboard</h1>
         </div>
         <div class="top-actions">
+          <div class="ext-links">
+            <a class="ext-link coinglass" id="coinglassLink" href="https://www.coinglass.com/pro/futures/LiquidationHeatMapNew?coin=BTC" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              CoinGlass
+            </a>
+            <a class="ext-link binance" id="binanceLink" href="https://www.binance.com/vi/futures/BTCUSDT" target="_blank" rel="noopener">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              Binance
+            </a>
+          </div>
           <a class="nav-link" href="/signals">All Signals</a>
           <div class="status" id="status">Ready</div>
         </div>
@@ -93,7 +103,7 @@
           <small id="signalScore">Score -</small>
         </article>
         <article class="metric">
-          <span>Mark Price</span>
+          <span>Mark Price <span id="priceSocketDot" class="live-dot" style="display:none">●</span></span>
           <strong id="markPrice">-</strong>
           <small id="indexPrice">Index -</small>
         </article>
