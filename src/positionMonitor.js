@@ -11,7 +11,7 @@
 
 const WS_BASE = 'wss://fstream.binance.com';
 
-export function startPositionMonitor({ client, onRoeThreshold, getRoeThreshold }) {
+export function startPositionMonitor({ client, onRoeUpdate }) {
   // symbol → { amt, entry, leverage, upnl, isolatedMargin, initialMargin }
   const posCache = new Map();
 
@@ -170,10 +170,7 @@ export function startPositionMonitor({ client, onRoeThreshold, getRoeThreshold }
       if (margin <= 0) return;
 
       const roe = (pos.upnl / margin) * 100;
-      const threshold = getRoeThreshold();
-      if (roe <= threshold) {
-        onRoeThreshold(symbol, pos, markPrice, roe);
-      }
+      onRoeUpdate(symbol, pos, markPrice, roe);
     });
 
     markWs.addEventListener('close', () => {

@@ -308,9 +308,17 @@ server.listen(port, '127.0.0.1', () => {
   setTimeout(() => {
     startPositionMonitor({
       client,
-      getRoeThreshold: () => Number(process.env.TP_ENTRY_GUARD_ROE ?? -50),
-      onRoeThreshold: (symbol, pos, markPrice, roe) => {
-        handleTpEntryGuard(symbol, pos, markPrice, roe).catch(() => {});
+      onRoeUpdate: (symbol, pos, markPrice, roe) => {
+        // TP entry guard: move TP to entry when ROE ≤ threshold
+        const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
+        if (roe <= tpGuardRoe) {
+          handleTpEntryGuard(symbol, pos, markPrice, roe).catch(() => {});
+        }
+        // Avg-down: place DCA order when ROE ≤ threshold
+        const avgDownRoe = Number(process.env.AVG_DOWN_ROE ?? -60);
+        if (roe <= avgDownRoe) {
+          handleAvgDown(symbol, pos, roe).catch(() => {});
+        }
       },
     });
   }, 25000);
@@ -624,12 +632,12 @@ async function runAutoTradeScan() {
       const [symbols] = await Promise.all([getSymbols()]);
       const symbolInfo = symbols.find((s) => s.symbol === row.symbol);
       const limitPrice = symbolInfo
-        ? await calculateEntryLevel(row.symbol, setup.direction, row.markPrice, symbolInfo)
+        ? await calculateEntryLevel(row.symbol, setup.direction, row.markPrice, symbolInfo, setup.score)
         : null;
 
       // ── Place order ──────────────────────────────────────────
       console.log(`[AutoTrade] ${row.symbol} ${setup.direction.toUpperCase()} ENTRY — streak OK → ${limitPrice ? `LIMIT IOC @ ${limitPrice}` : 'MARKET'}`);
-      const result = await placeAutoTrade(row, setup, limitPrice);
+      const result = await placeAutoTrade(row, setup, limitPrice, setup.score);
       // Discord #2: order placed (full analysis embed)
       if (webhookUrl) {
         fetchAnalysis({ client, symbol: row.symbol, interval: '15m', limit: 192 })
@@ -658,19 +666,41 @@ async function runAutoTradeScan() {
   }
 }
 
-async function placeAutoTrade(row, setup, limitPrice = null) {
+async function placeAutoTrade(row, setup, limitPrice = null, score = 0) {
   const marginUsdt = Number(process.env.AUTO_TRADE_MARGIN_USDT ?? 2);
   const leverage = Math.max(1, Math.min(125, Number(process.env.AUTO_TRADE_LEVERAGE ?? 10)));
   const notionalUsdt = marginUsdt * leverage;
   const dryRun = runtimeSettings.dryRun;
-  const side = setup.direction === 'long' ? 'BUY' : 'SELL';
-  const tpRoePct = Number(process.env.AUTO_TRADE_TP_ROE ?? 20) / 100;
+  const isLong = setup.direction === 'long';
+  const side = isLong ? 'BUY' : 'SELL';
   const mark = row.markPrice;
 
+  // ── TP: direction-specific, with strong-signal boost ─────────────────────
+  const defaultTpRoe = Number(process.env.AUTO_TRADE_TP_ROE ?? 20);
+  const tpRoeBase = isLong
+    ? Number(process.env.AUTO_TRADE_LONG_TP_ROE ?? defaultTpRoe)
+    : Number(process.env.AUTO_TRADE_SHORT_TP_ROE ?? defaultTpRoe);
+
+  const strongThreshold = Number(process.env.AUTO_TRADE_STRONG_SCORE ?? 0.85);
+  const strongMult = Number(process.env.AUTO_TRADE_STRONG_TP_MULT ?? 1.5);
+  const isStrong = Math.abs(score) >= strongThreshold;
+  const tpRoePct = (isStrong ? tpRoeBase * strongMult : tpRoeBase) / 100;
+
+  if (isStrong) {
+    console.log(`[AutoTrade] ${row.symbol} strong score ${score.toFixed(3)} → TP boosted ${tpRoeBase}% → ${(tpRoePct * 100).toFixed(1)}%`);
+  }
+
   const takeProfitPrice = tpRoePct > 0 && mark > 0
-    ? (side === 'BUY'
-      ? mark * (1 + tpRoePct / leverage)
-      : mark * (1 - tpRoePct / leverage))
+    ? (isLong ? mark * (1 + tpRoePct / leverage) : mark * (1 - tpRoePct / leverage))
+    : undefined;
+
+  // ── SL: direction-specific, optional ─────────────────────────────────────
+  const slRoeEnv = isLong
+    ? process.env.AUTO_TRADE_LONG_SL_ROE
+    : process.env.AUTO_TRADE_SHORT_SL_ROE;
+  const slRoePct = slRoeEnv ? Math.abs(Number(slRoeEnv)) / 100 : null;
+  const stopLossPrice = slRoePct && mark > 0
+    ? (isLong ? mark * (1 - slRoePct / leverage) : mark * (1 + slRoePct / leverage))
     : undefined;
 
   return placeOrder({
@@ -682,6 +712,7 @@ async function placeAutoTrade(row, setup, limitPrice = null) {
     dryRun,
     limitPrice: limitPrice ?? undefined,
     takeProfitPrice,
+    stopLossPrice,
     source: 'auto-trader',
   });
 }
@@ -812,7 +843,7 @@ function computeATR(klines, period = 14) {
   return recent.reduce((a, b) => a + b, 0) / recent.length;
 }
 
-async function calculateEntryLevel(symbol, direction, markPrice, symbolInfo) {
+async function calculateEntryLevel(symbol, direction, markPrice, symbolInfo, score = 0) {
   try {
     const klines = await client.getKlines(symbol, '15m', 110);
     if (klines.length < 100) return null;
@@ -820,22 +851,25 @@ async function calculateEntryLevel(symbol, direction, markPrice, symbolInfo) {
     const ema99 = computeEMA(closes, 99);
     const atr = computeATR(klines, 14);
 
+    const strongThreshold = Number(process.env.AUTO_TRADE_STRONG_SCORE ?? 0.85);
+    const isStrong = Math.abs(score) >= strongThreshold;
+
     let rawLimit;
     if (direction === 'short') {
-      // Enter into a micro-bounce: limit just above current price (0.5×ATR above mark)
-      rawLimit = markPrice + atr * 0.5;
-      // Cap at 1% above mark to avoid ridiculous levels
-      rawLimit = Math.min(rawLimit, markPrice * 1.01);
+      // Normal: 0.5×ATR bounce offset. Strong: 1×ATR — bigger bounce expected after sharp drop.
+      const atrMult = isStrong ? 1.0 : 0.5;
+      rawLimit = markPrice + atr * atrMult;
+      rawLimit = Math.min(rawLimit, markPrice * (isStrong ? 1.02 : 1.01));
     } else {
-      // Enter at EMA99 (MA support). If EMA99 too far (> 2×ATR below), use 1×ATR below instead
-      const floorPrice = markPrice - atr * 2;
+      // Normal: EMA99 or max 2×ATR below. Strong: allow up to 3×ATR below for deeper dip entry.
+      const atrFloor = isStrong ? 3.0 : 2.0;
+      const floorPrice = markPrice - atr * atrFloor;
       rawLimit = Math.max(ema99, floorPrice);
-      // Must be at least slightly below mark to be a real improvement
       rawLimit = Math.min(rawLimit, markPrice * 0.9995);
     }
 
     const limitPrice = Number(priceFromTick(symbolInfo, rawLimit));
-    console.log(`[AutoTrade] ${symbol} entry level: ${direction} → LIMIT ${limitPrice} (EMA99=${ema99.toFixed(4)} ATR=${atr.toFixed(4)})`);
+    console.log(`[AutoTrade] ${symbol} entry: ${direction}${isStrong ? ' [STRONG]' : ''} → LIMIT ${limitPrice} (EMA99=${ema99.toFixed(4)} ATR=${atr.toFixed(4)})`);
     return limitPrice;
   } catch (err) {
     console.warn(`[AutoTrade] ${symbol} calculateEntryLevel failed: ${err.message}`);
@@ -1082,6 +1116,8 @@ async function runStaleOrderCleaner() {
       for (const [sym, prev] of lastKnownPositions) {
         if (activeMap.has(sym)) continue;
 
+        avgDownFired.delete(sym);
+        tpMovedToEntry.delete(sym);
         console.log(`[StaleOrders] ${sym} closed → cancelling open orders`);
         cancelAllOrdersForSymbol(sym, apiKey, apiSecret).catch((err) =>
           console.warn(`[StaleOrders] ${sym}: ${err.message}`),
@@ -1173,6 +1209,38 @@ async function handleTpEntryGuard(symbol, pos, markPrice, roe) {
     console.log(`[TpGuard] ${symbol} ROE=${roe.toFixed(1)}% → TP moved to entry ${newTpPrice}`);
   } catch (err) {
     console.error(`[TpGuard] ${symbol} failed:`, err.message);
+  }
+}
+
+const avgDownFired = new Map(); // symbol → entryPrice when avg-down was placed
+
+async function handleAvgDown(symbol, pos, roe) {
+  if (process.env.AVG_DOWN_ENABLED !== 'true') return;
+
+  const entry = pos.entry;
+  // Dedup: already placed for this entry (within 0.5% = same position, not re-opened)
+  const prevEntry = avgDownFired.get(symbol);
+  if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.005) return;
+
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const marginUsdt = Number(process.env.AVG_DOWN_MARGIN_USDT ?? 2);
+    const leverage = pos.leverage || Number(process.env.AUTO_TRADE_LEVERAGE ?? 10);
+    const notionalUsdt = marginUsdt * leverage;
+    const side = pos.amt > 0 ? 'BUY' : 'SELL';
+
+    avgDownFired.set(symbol, entry); // mark before placing to prevent re-entry on concurrent ticks
+
+    if (runtimeSettings.dryRun) {
+      console.log(`[AvgDown] [DRY] ${symbol} ROE=${roe.toFixed(1)}% → would avg-down $${marginUsdt} ${side}`);
+      return;
+    }
+
+    await placeOrder({ symbol, side, notionalUsdt, leverage, dryRun: false, source: 'avg-down' });
+    console.log(`[AvgDown] ✅ ${symbol} ROE=${roe.toFixed(1)}% → avg-down $${marginUsdt} ${side}`);
+  } catch (err) {
+    avgDownFired.delete(symbol); // allow retry on failure
+    console.error(`[AvgDown] ❌ ${symbol}:`, err.message);
   }
 }
 
