@@ -13,5 +13,20 @@
     "expiresAt": 1778756489553,
     "addedAt": "2026-05-14T09:01:29.553Z",
     "reason": "SL hit pnl=-0.0045"
+  },
+  "NAORISUSDT": {
+    "expiresAt": 1778757820095,
+    "addedAt": "2026-05-14T09:23:40.095Z",
+    "reason": "SL hit pnl=-0.2982"
+  },
+  "ATAUSDT": {
+    "expiresAt": 1778758060115,
+    "addedAt": "2026-05-14T09:27:40.115Z",
+    "reason": "SL hit pnl=-0.4458"
+  },
+  "GUAUSDT": {
+    "expiresAt": 1778758180095,
+    "addedAt": "2026-05-14T09:29:40.095Z",
+    "reason": "SL hit pnl=-0.9330"
   }
 }

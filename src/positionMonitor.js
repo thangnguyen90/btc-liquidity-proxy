@@ -2,34 +2,81 @@
 //
 // Two streams run concurrently:
 //   1. User Data Stream (listenKey) → ACCOUNT_UPDATE: updates position cache
-//      (entry price, size, leverage, margin) whenever Binance emits P&L changes
-//   2. Combined mark price stream (markPrice@1s) → recalculates ROE per tick
-//      for each symbol in the position cache
+//      whenever Binance emits position changes (fills, funding)
+//   2. Combined mark price stream (markPrice@1s) → ROE calculated real-time
+//      from current mark price + cached entry/margin every second
 //
-// On each mark price tick, if ROE crosses the configured threshold,
-// `onRoeThreshold(symbol, posState, markPrice)` is called.
+// Fallback REST sync every 60s ensures positions opened after startup
+// (and missed ACCOUNT_UPDATEs) are always tracked.
+//
+// onRoeUpdate(symbol, pos, markPrice, roe) is called on every mark price tick.
 
 const WS_BASE = 'wss://fstream.binance.com';
 
 export function startPositionMonitor({ client, onRoeUpdate }) {
-  // symbol → { amt, entry, leverage, upnl, isolatedMargin, initialMargin }
+  // symbol → { amt, entry, leverage, isolatedMargin, initialMargin }
   const posCache = new Map();
 
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function calcMargin(pos) {
+    if (pos.isolatedMargin > 0) return pos.isolatedMargin;
+    if (pos.initialMargin > 0) return pos.initialMargin;
+    const lev = pos.leverage > 0 ? pos.leverage : 1;
+    return Math.abs(pos.amt) * pos.entry / lev;
+  }
+
+  function upsert(symbol, fields) {
+    const prev = posCache.get(symbol) ?? {};
+    posCache.set(symbol, { ...prev, ...fields });
+    updateMarkPriceSubscriptions();
+  }
+
+  // ── REST position sync ─────────────────────────────────────────────────────
+  async function syncPositions() {
+    try {
+      const apiKey = process.env.BINANCE_API_KEY;
+      const apiSecret = process.env.BINANCE_API_SECRET;
+      if (!apiKey || !apiSecret) return;
+      const positions = await client.getPositions({ apiKey, apiSecret });
+
+      const activeSymbols = new Set();
+      for (const p of positions) {
+        if (Number(p.positionAmt) === 0) continue;
+        const symbol = p.symbol;
+        activeSymbols.add(symbol);
+        const existing = posCache.get(symbol);
+        // Always update structural fields; skip if already tracked with same entry
+        if (!existing || Math.abs(Number(p.entryPrice) - existing.entry) / (existing.entry || 1) > 0.0001) {
+          upsert(symbol, {
+            amt: Number(p.positionAmt),
+            entry: Number(p.entryPrice),
+            leverage: Number(p.leverage) || 1,
+            isolatedMargin: Number(p.isolatedMargin),
+            initialMargin: Number(p.initialMargin),
+            positionSide: p.positionSide ?? 'BOTH',
+          });
+        }
+      }
+
+      // Remove positions that are now closed
+      for (const sym of posCache.keys()) {
+        if (!activeSymbols.has(sym)) {
+          posCache.delete(sym);
+          updateMarkPriceSubscriptions();
+        }
+      }
+    } catch (err) {
+      console.warn('[PosMonitor] REST sync failed:', err.message);
+    }
+  }
+
   // ── User Data Stream ───────────────────────────────────────────────────────
-  let userDataWs = null;
   let listenKey = null;
   let keepAliveTimer = null;
 
   async function startUserDataStream() {
-    let apiKey;
-    try {
-      // Try env vars first, then session credentials via the exported helper
-      apiKey = process.env.BINANCE_API_KEY;
-      if (!apiKey) throw new Error('no key');
-    } catch {
-      setTimeout(startUserDataStream, 60_000);
-      return;
-    }
+    const apiKey = process.env.BINANCE_API_KEY;
+    if (!apiKey) { setTimeout(startUserDataStream, 60_000); return; }
 
     try {
       const res = await client.createListenKey({ apiKey });
@@ -40,9 +87,9 @@ export function startPositionMonitor({ client, onRoeUpdate }) {
       return;
     }
 
-    userDataWs = new WebSocket(`${WS_BASE}/ws/${listenKey}`);
+    const ws = new WebSocket(`${WS_BASE}/ws/${listenKey}`);
 
-    userDataWs.addEventListener('message', ({ data }) => {
+    ws.addEventListener('message', ({ data }) => {
       let msg;
       try { msg = JSON.parse(data); } catch { return; }
       if (msg.e !== 'ACCOUNT_UPDATE') return;
@@ -52,61 +99,33 @@ export function startPositionMonitor({ client, onRoeUpdate }) {
         if (amt === 0) {
           posCache.delete(p.s);
           updateMarkPriceSubscriptions();
-          return;
+        } else {
+          upsert(p.s, {
+            amt,
+            entry: Number(p.ep),
+            isolatedMargin: Number(p.iw ?? 0),
+            positionSide: p.ps ?? 'BOTH',
+          });
         }
-        const prev = posCache.get(p.s) ?? {};
-        posCache.set(p.s, {
-          ...prev,
-          amt,
-          entry: Number(p.ep),
-          upnl: Number(p.up),
-          isolatedMargin: Number(p.iw ?? 0),
-        });
-        updateMarkPriceSubscriptions();
       }
     });
 
-    userDataWs.addEventListener('close', () => {
-      console.warn('[PosMonitor] User data stream closed — reconnecting in 5s');
+    ws.addEventListener('close', () => {
+      console.warn('[PosMonitor] User data WS closed — reconnecting in 5s');
       clearInterval(keepAliveTimer);
       setTimeout(startUserDataStream, 5_000);
     });
 
-    userDataWs.addEventListener('error', (e) => {
-      console.error('[PosMonitor] User data stream error:', e.message ?? e.type);
+    ws.addEventListener('error', (e) => {
+      console.error('[PosMonitor] User data WS error:', e.message ?? e.type);
     });
 
-    // Keep listen key alive every 30 min
     keepAliveTimer = setInterval(async () => {
       try { await client.keepAliveListenKey({ listenKey, apiKey }); }
       catch (err) { console.error('[PosMonitor] keepAlive failed:', err.message); }
     }, 30 * 60_000);
 
     console.log('[PosMonitor] User data stream connected.');
-  }
-
-  // ── Seed position cache from REST on startup ────────────────────────────────
-  async function seedPositions() {
-    try {
-      const apiKey = process.env.BINANCE_API_KEY;
-      const apiSecret = process.env.BINANCE_API_SECRET;
-      if (!apiKey || !apiSecret) return;
-      const positions = await client.getPositions({ apiKey, apiSecret });
-      for (const p of positions) {
-        if (Number(p.positionAmt) === 0) continue;
-        posCache.set(p.symbol, {
-          amt: Number(p.positionAmt),
-          entry: Number(p.entryPrice),
-          leverage: Number(p.leverage) || 1,
-          upnl: Number(p.unRealizedProfit),
-          isolatedMargin: Number(p.isolatedMargin),
-          initialMargin: Number(p.initialMargin),
-        });
-      }
-      console.log(`[PosMonitor] Seeded ${posCache.size} position(s) from REST.`);
-    } catch (err) {
-      console.warn('[PosMonitor] Seed failed:', err.message);
-    }
   }
 
   // ── Mark price combined stream ─────────────────────────────────────────────
@@ -147,6 +166,7 @@ export function startPositionMonitor({ client, onRoeUpdate }) {
         markWs.send(JSON.stringify({ method: 'SUBSCRIBE', params: [...all].map((s) => `${s}@markPrice@1s`), id: 1 }));
         subscribedSymbols = all;
       }
+      console.log(`[PosMonitor] Mark price stream connected. Tracking ${all.size} symbol(s).`);
     });
 
     markWs.addEventListener('message', ({ data }) => {
@@ -162,14 +182,14 @@ export function startPositionMonitor({ client, onRoeUpdate }) {
       const symbol = d.s;
       const markPrice = Number(d.p);
       const pos = posCache.get(symbol);
-      if (!pos) return;
+      if (!pos || !pos.entry || !pos.amt) return;
 
-      const margin = pos.isolatedMargin > 0 ? pos.isolatedMargin
-        : pos.initialMargin > 0 ? pos.initialMargin
-          : pos.leverage > 0 ? Math.abs(pos.amt) * pos.entry / pos.leverage : 0;
+      // Calculate ROE from current mark price (not stale upnl)
+      const upnl = (markPrice - pos.entry) * pos.amt;
+      const margin = calcMargin(pos);
       if (margin <= 0) return;
 
-      const roe = (pos.upnl / margin) * 100;
+      const roe = (upnl / margin) * 100;
       onRoeUpdate(symbol, pos, markPrice, roe);
     });
 
@@ -186,17 +206,18 @@ export function startPositionMonitor({ client, onRoeUpdate }) {
   }
 
   // ── Init ───────────────────────────────────────────────────────────────────
-  seedPositions().then(() => {
+  syncPositions().then(() => {
     startMarkPriceStream();
     startUserDataStream();
+    // Periodic REST sync: catch positions opened/closed outside ACCOUNT_UPDATE
+    setInterval(syncPositions, 60_000);
   });
 
   return {
     posCache,
-    refreshPosition(symbol, data) {
-      const prev = posCache.get(symbol) ?? {};
-      posCache.set(symbol, { ...prev, ...data });
-      updateMarkPriceSubscriptions();
+    // Call after placing an order to immediately track the position
+    trackPosition(symbol, { amt, entry, leverage, isolatedMargin = 0, initialMargin = 0, positionSide = 'BOTH' }) {
+      upsert(symbol, { amt, entry, leverage, isolatedMargin, initialMargin, positionSide });
     },
   };
 }

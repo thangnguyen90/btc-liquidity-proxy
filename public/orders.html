@@ -88,6 +88,16 @@
       }
       .pnl-positive { color: var(--green); }
       .pnl-negative { color: var(--red); }
+      .daily-stat {
+        display: grid;
+        gap: 4px;
+        padding: 10px 16px;
+        border-radius: 6px;
+        background: var(--panel-2);
+        min-width: 120px;
+      }
+      .daily-stat span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+      .daily-stat strong { font-size: 20px; }
       .action-btn {
         height: 28px;
         padding: 0 12px;
@@ -293,6 +303,17 @@
           <span class="refresh-note">Regular + Algo orders · grouped by symbol</span>
         </div>
         <div id="slTpBody" style="color:var(--muted);font-size:13px">Loading...</div>
+      </section>
+
+      <!-- Daily PnL -->
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Today's P&amp;L</h2>
+          <span class="refresh-note" id="dailyPnlNote">UTC day</span>
+        </div>
+        <div id="dailyPnlRow" style="display:flex;gap:14px;flex-wrap:wrap;padding:4px 0">
+          <p class="explain">Loading...</p>
+        </div>
       </section>
 
       <!-- Balance -->

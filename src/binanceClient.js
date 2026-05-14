@@ -112,6 +112,14 @@ export class BinanceClient {
     return this.signedRequest('DELETE', '/fapi/v1/order', { symbol, orderId, recvWindow }, { apiKey, apiSecret });
   }
 
+  async getIncome({ startTime, endTime, incomeType, limit = 1000, apiKey, apiSecret, recvWindow = 5000 }) {
+    const params = { limit, recvWindow };
+    if (startTime) params.startTime = startTime;
+    if (endTime) params.endTime = endTime;
+    if (incomeType) params.incomeType = incomeType;
+    return this.signedRequest('GET', '/fapi/v1/income', params, { apiKey, apiSecret });
+  }
+
   async createListenKey({ apiKey }) {
     const res = await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
       method: 'POST',

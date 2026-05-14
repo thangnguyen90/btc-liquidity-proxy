@@ -158,6 +158,8 @@ const tslStatus = document.getElementById('tslStatus');
 const tslBody = document.getElementById('tslBody');
 const slTpBody = document.getElementById('slTpBody');
 const balanceRow = document.getElementById('balanceRow');
+const dailyPnlRow = document.getElementById('dailyPnlRow');
+const dailyPnlNote = document.getElementById('dailyPnlNote');
 const positionsBody = document.getElementById('positionsBody');
 const openOrdersBody = document.getElementById('openOrdersBody');
 const tradesBody = document.getElementById('tradesBody');
@@ -194,6 +196,34 @@ async function apiFetch(url, opts = {}) {
 }
 
 // ── Sections ────────────────────────────────────────────────
+async function loadDailyPnl() {
+  try {
+    const d = await apiFetch('/api/daily-pnl');
+    const sign = (v) => (v >= 0 ? '+' : '') + fmt(v, 4);
+    const cls = (v) => pnlClass(v);
+    dailyPnlRow.innerHTML = `
+      <div class="daily-stat">
+        <span>Net P&L</span>
+        <strong class="${cls(d.net)}">${sign(d.net)}</strong>
+      </div>
+      <div class="daily-stat">
+        <span>Realized</span>
+        <strong class="${cls(d.realized)}">${sign(d.realized)}</strong>
+      </div>
+      <div class="daily-stat">
+        <span>Commission</span>
+        <strong class="${cls(d.commission)}">${sign(d.commission)}</strong>
+      </div>
+      <div class="daily-stat">
+        <span>Funding</span>
+        <strong class="${cls(d.funding)}">${sign(d.funding)}</strong>
+      </div>`;
+    dailyPnlNote.textContent = `Since ${new Date(d.since).toLocaleString('vi-VN', { hour12: false })} UTC`;
+  } catch (err) {
+    dailyPnlRow.innerHTML = `<p class="explain" style="color:var(--red)">${err.message}</p>`;
+  }
+}
+
 async function loadBalance() {
   try {
     const rows = await apiFetch('/api/balance');
@@ -541,7 +571,7 @@ async function loadSlTp() {
 async function refresh() {
   status.textContent = 'Refreshing...';
   try {
-    await Promise.all([loadBalance(), loadPositions(), loadOpenOrders(), loadTsl(), loadSlTp()]);
+    await Promise.all([loadDailyPnl(), loadBalance(), loadPositions(), loadOpenOrders(), loadTsl(), loadSlTp()]);
     lastRefresh.textContent = `Last: ${new Date().toLocaleTimeString('vi-VN', { hour12: false })}`;
     status.textContent = 'Live';
   } catch {

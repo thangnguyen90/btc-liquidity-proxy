@@ -43,6 +43,7 @@ const runtimeSettings = {
 };
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
 let tslScanner = null;
+let posMonitor = null;
 const longShortCache = new Map();    // symbol → { longShortRatio, longAccount }
 const hedgeModeCache = new Map();    // apiKey → bool
 const topPositionCache = new Map(); // symbol → { longShortRatio, longPosition, shortPosition }
@@ -103,7 +104,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    const ordersRoutes = ['/api/balance', '/api/positions', '/api/open-orders', '/api/open-algo-orders', '/api/trades', '/api/cancel-order', '/api/cancel-all-orders', '/api/close-position', '/api/order', '/api/settings'];
+    const ordersRoutes = ['/api/balance', '/api/positions', '/api/open-orders', '/api/open-algo-orders', '/api/trades', '/api/cancel-order', '/api/cancel-all-orders', '/api/close-position', '/api/order', '/api/settings', '/api/daily-pnl'];
     if (ordersRoutes.some((r) => requestUrl.pathname === r)) {
       const token = request.headers['x-orders-token'] ?? '';
       if (!ordersTokens.has(token)) {
@@ -149,6 +150,12 @@ const server = createServer(async (request, response) => {
     if (requestUrl.pathname === '/api/order' && request.method === 'POST') {
       const token = request.headers['x-orders-token'] ?? '';
       await sendJson(response, await placeOrder(await readJsonBody(request), token));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/daily-pnl') {
+      const token = request.headers['x-orders-token'] ?? '';
+      await sendJson(response, await getDailyPnl(token));
       return;
     }
 
@@ -306,7 +313,7 @@ server.listen(port, '127.0.0.1', () => {
     setInterval(runStaleOrderCleaner, 30000);
   }, 22000);
   setTimeout(() => {
-    startPositionMonitor({
+    posMonitor = startPositionMonitor({
       client,
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
         // TP entry guard: move TP to entry when ROE ≤ threshold
@@ -638,6 +645,18 @@ async function runAutoTradeScan() {
       // ── Place order ──────────────────────────────────────────
       console.log(`[AutoTrade] ${row.symbol} ${setup.direction.toUpperCase()} ENTRY — streak OK → ${limitPrice ? `LIMIT IOC @ ${limitPrice}` : 'MARKET'}`);
       const result = await placeAutoTrade(row, setup, limitPrice, setup.score);
+      // Track position immediately so positionMonitor picks it up before next REST sync
+      if (posMonitor && result?.status === 'submitted') {
+        const isLong = setup.direction === 'long';
+        const lev = Math.max(1, Math.min(125, Number(process.env.AUTO_TRADE_LEVERAGE ?? 10)));
+        const margin = Number(process.env.AUTO_TRADE_MARGIN_USDT ?? 1);
+        const qty = (margin * lev) / row.markPrice;
+        posMonitor.trackPosition(row.symbol, {
+          amt: isLong ? qty : -qty,
+          entry: row.markPrice,
+          leverage: lev,
+        });
+      }
       // Discord #2: order placed (full analysis embed)
       if (webhookUrl) {
         fetchAnalysis({ client, symbol: row.symbol, interval: '15m', limit: 192 })
@@ -1031,6 +1050,21 @@ async function getAccountBalance(token = null) {
   const { apiKey, apiSecret } = getApiCredentials(token);
   const rows = await client.getBalance({ apiKey, apiSecret });
   return rows.filter((b) => Number(b.balance) > 0 || Number(b.crossUnPnl) !== 0);
+}
+
+async function getDailyPnl(token = null) {
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  const startOfDay = new Date();
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const rows = await client.getIncome({ startTime: startOfDay.getTime(), limit: 1000, apiKey, apiSecret });
+  let realized = 0; let commission = 0; let funding = 0;
+  for (const r of rows) {
+    const v = Number(r.income);
+    if (r.incomeType === 'REALIZED_PNL') realized += v;
+    else if (r.incomeType === 'COMMISSION') commission += v;
+    else if (r.incomeType === 'FUNDING_FEE') funding += v;
+  }
+  return { realized, commission, funding, net: realized + commission + funding, since: startOfDay.toISOString() };
 }
 
 async function getPositions(token = null) {
