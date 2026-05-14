@@ -1,0 +1,693 @@
+// ── Auth ────────────────────────────────────────────────────
+const TOKEN_KEY = 'orders_token';
+const CREDS_KEY = 'orders_creds'; // { apiKey, apiSecret } persisted in localStorage
+
+const authOverlay = document.getElementById('authOverlay');
+const authApiKeyInput = document.getElementById('authApiKeyInput');
+const authApiSecretInput = document.getElementById('authApiSecretInput');
+const authSubmitBtn = document.getElementById('authSubmitBtn');
+const authError = document.getElementById('authError');
+const mainContent = document.getElementById('mainContent');
+
+function getToken() { return localStorage.getItem(TOKEN_KEY) ?? ''; }
+
+async function doAuth(apiKey, apiSecret) {
+  const res = await fetch('/api/auth', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ apiKey, apiSecret }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? 'Login failed.');
+  localStorage.setItem(TOKEN_KEY, data.token);
+  localStorage.setItem(CREDS_KEY, JSON.stringify({ apiKey, apiSecret }));
+  return data.token;
+}
+
+async function tryLogin() {
+  authError.textContent = '';
+  const apiKey = authApiKeyInput.value.trim();
+  const apiSecret = authApiSecretInput.value.trim();
+  if (!apiKey || !apiSecret) {
+    authError.textContent = 'Nhập API Key và API Secret.';
+    return;
+  }
+  authSubmitBtn.disabled = true;
+  authSubmitBtn.textContent = '...';
+  try {
+    await doAuth(apiKey, apiSecret);
+    showApp();
+  } catch (err) {
+    authError.textContent = err.message;
+    authApiKeyInput.focus();
+  } finally {
+    authSubmitBtn.disabled = false;
+    authSubmitBtn.textContent = 'Unlock';
+  }
+}
+
+// Auto re-login using stored credentials (called on 401 or page load)
+async function tryAutoReauth() {
+  const raw = localStorage.getItem(CREDS_KEY);
+  if (!raw) return false;
+  try {
+    const { apiKey, apiSecret } = JSON.parse(raw);
+    await doAuth(apiKey, apiSecret);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function showApp() {
+  authOverlay.style.display = 'none';
+  mainContent.style.display = '';
+  loadSettings();
+  refresh();
+  setInterval(refresh, 15000);
+}
+
+function showAuthOverlay() {
+  authOverlay.style.display = '';
+  mainContent.style.display = 'none';
+  const raw = localStorage.getItem(CREDS_KEY);
+  if (raw) {
+    try {
+      const { apiKey } = JSON.parse(raw);
+      authApiKeyInput.value = apiKey; // pre-fill so user only needs to re-enter secret if changed
+    } catch { /* ignore */ }
+  }
+  authApiKeyInput.focus();
+}
+
+authSubmitBtn.addEventListener('click', tryLogin);
+authApiSecretInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryLogin(); });
+authApiKeyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') authApiSecretInput.focus(); });
+
+// On page load: try existing token → if 401, try auto re-auth with stored creds
+(async () => {
+  const token = getToken();
+  if (token) {
+    const r = await fetch('/api/balance', { headers: { 'x-orders-token': token } }).catch(() => null);
+    if (r && r.status !== 401) { showApp(); return; }
+  }
+  // Token missing or expired — try stored credentials
+  const ok = await tryAutoReauth();
+  if (ok) { showApp(); } else { showAuthOverlay(); }
+})();
+
+// ── Table sort ───────────────────────────────────────────────
+const _sortState = new Map(); // tbodyId → { colIdx, asc }
+
+function initSort(theadEl, tbodyEl) {
+  [...theadEl.querySelectorAll('th')].forEach((th, i) => {
+    if (!th.hasAttribute('data-sort')) return;
+    th.insertAdjacentHTML('beforeend', '<span class="sort-icon"></span>');
+    th.addEventListener('click', () => {
+      const prev = _sortState.get(tbodyEl.id) ?? { colIdx: -1, asc: true };
+      _sortState.set(tbodyEl.id, { colIdx: i, asc: prev.colIdx === i ? !prev.asc : true });
+      applySort(theadEl, tbodyEl);
+    });
+  });
+}
+
+function applySort(theadEl, tbodyEl) {
+  const state = _sortState.get(tbodyEl.id);
+  if (!state || state.colIdx < 0) return;
+  const ths = [...theadEl.querySelectorAll('th')];
+  ths.forEach((th, i) => {
+    const icon = th.querySelector('.sort-icon');
+    if (icon) icon.textContent = i === state.colIdx ? (state.asc ? '▲' : '▼') : '';
+  });
+  const rows = [...tbodyEl.querySelectorAll('tr')];
+  if (!rows[0] || rows[0].cells.length < 2) return;
+  rows.sort((a, b) => {
+    const av = a.cells[state.colIdx]?.dataset.v ?? a.cells[state.colIdx]?.textContent?.trim() ?? '';
+    const bv = b.cells[state.colIdx]?.dataset.v ?? b.cells[state.colIdx]?.textContent?.trim() ?? '';
+    const an = parseFloat(av), bn = parseFloat(bv);
+    if (!isNaN(an) && !isNaN(bn)) return state.asc ? an - bn : bn - an;
+    return state.asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+  });
+  rows.forEach((r) => tbodyEl.appendChild(r));
+}
+
+// ── Helpers ─────────────────────────────────────────────────
+function fmt(v, d = 4) {
+  if (v == null || isNaN(v)) return '-';
+  return Number(v).toLocaleString('en-US', { maximumFractionDigits: d });
+}
+
+function fmtDate(ts) {
+  return new Date(Number(ts)).toLocaleString('vi-VN', { hour12: false });
+}
+
+function pnlClass(v) {
+  const n = Number(v);
+  return n > 0 ? 'pnl-positive' : n < 0 ? 'pnl-negative' : '';
+}
+
+const status = document.getElementById('status');
+const lastRefresh = document.getElementById('lastRefresh');
+const settingsSaved = document.getElementById('settingsSaved');
+const settingOrderEnabled = document.getElementById('settingOrderEnabled');
+const settingAutoTradeEnabled = document.getElementById('settingAutoTradeEnabled');
+const settingDryRun = document.getElementById('settingDryRun');
+const settingBtcReversalGuard = document.getElementById('settingBtcReversalGuard');
+const settingBtcReversalRoe = document.getElementById('settingBtcReversalRoe');
+const tslStatus = document.getElementById('tslStatus');
+const tslBody = document.getElementById('tslBody');
+const slTpBody = document.getElementById('slTpBody');
+const balanceRow = document.getElementById('balanceRow');
+const positionsBody = document.getElementById('positionsBody');
+const openOrdersBody = document.getElementById('openOrdersBody');
+const tradesBody = document.getElementById('tradesBody');
+const tradeSymbolInput = document.getElementById('tradeSymbolInput');
+const loadTradesBtn = document.getElementById('loadTradesBtn');
+const actionResult = document.getElementById('actionResult');
+
+function showAction(text) {
+  actionResult.style.display = 'block';
+  actionResult.textContent = text;
+}
+
+async function apiFetch(url, opts = {}) {
+  const headers = { 'x-orders-token': getToken(), ...(opts.headers ?? {}) };
+  const res = await fetch(url, { ...opts, headers });
+  const data = await res.json();
+  if (res.status === 401) {
+    localStorage.removeItem(TOKEN_KEY);
+    // Try silent re-auth with stored credentials before showing overlay
+    const ok = await tryAutoReauth();
+    if (ok) {
+      // Retry the original request with new token
+      const headers2 = { 'x-orders-token': getToken(), ...(opts.headers ?? {}) };
+      const res2 = await fetch(url, { ...opts, headers: headers2 });
+      const data2 = await res2.json();
+      if (!res2.ok) throw new Error(data2.error ?? `HTTP ${res2.status}`);
+      return data2;
+    }
+    showAuthOverlay();
+    throw new Error('Session expired. Vui lòng đăng nhập lại.');
+  }
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+// ── Sections ────────────────────────────────────────────────
+async function loadBalance() {
+  try {
+    const rows = await apiFetch('/api/balance');
+    if (!rows.length) {
+      balanceRow.innerHTML = '<p class="explain">No balance data.</p>';
+      return;
+    }
+    balanceRow.innerHTML = rows.map((b) => {
+      const pnl = Number(b.crossUnPnl ?? 0);
+      return `
+        <div class="balance-item">
+          <span>${b.asset}</span>
+          <strong>${fmt(b.balance, 4)}</strong>
+          <small>Available: ${fmt(b.availableBalance, 4)}</small>
+          <small class="${pnlClass(pnl)}">UPnL: ${pnl >= 0 ? '+' : ''}${fmt(pnl, 4)}</small>
+        </div>`;
+    }).join('');
+  } catch (err) {
+    balanceRow.innerHTML = `<p class="explain" style="color:var(--red)">${err.message}</p>`;
+  }
+}
+
+// ── Mark price WebSocket ──────────────────────────────────────
+const posStatic = new Map(); // symbol → { amt, entry, margin, lev }
+let markWs = null;
+let markWsReconnectTimer = null;
+
+// Avg-down state: symbol → entryPrice when triggered (cleared when position closes)
+const avgDownTriggered = new Map();
+let avgDownEnabled = false;
+let avgDownTriggerRoe = -60;
+let avgDownMarginUsdt = 2;
+
+function startMarkPriceWs(symbols) {
+  if (markWs) { markWs.close(); markWs = null; }
+  if (markWsReconnectTimer) { clearTimeout(markWsReconnectTimer); markWsReconnectTimer = null; }
+  if (!symbols.length) return;
+
+  const streams = symbols.map((s) => `${s.toLowerCase()}@markPrice@1s`).join('/');
+  markWs = new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
+
+  markWs.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    const d = msg.data ?? msg;
+    if (d.e !== 'markPriceUpdate') return;
+    const mark = Number(d.p);
+    const sym = d.s;
+    const st = posStatic.get(sym);
+    if (!st) return;
+
+    const upnl = (mark - st.entry) * st.amt; // works for long (amt>0) and short (amt<0)
+    const roe = st.margin > 0 ? (upnl / st.margin) * 100 : 0;
+
+    // Avg-down: trigger when ROE ≤ threshold and not yet triggered for this entry price
+    if (avgDownEnabled && roe <= avgDownTriggerRoe) {
+      const prevEntry = avgDownTriggered.get(sym);
+      const isSamePosition = prevEntry !== undefined && Math.abs(prevEntry - st.entry) / st.entry < 0.01;
+      if (!isSamePosition) {
+        avgDownTriggered.set(sym, st.entry);
+        const side = st.amt > 0 ? 'BUY' : 'SELL';
+        const notionalUsdt = avgDownMarginUsdt * st.lev;
+        console.log(`[AvgDown] ${sym} ROE=${roe.toFixed(1)}% → avg down $${avgDownMarginUsdt} ${side}`);
+        apiFetch('/api/order', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ symbol: sym, side, notionalUsdt, leverage: st.lev, dryRun: false }),
+        }).then((r) => {
+          console.log(`[AvgDown] ✅ ${sym}`, r);
+        }).catch((err) => {
+          console.error(`[AvgDown] ❌ ${sym}:`, err.message);
+          avgDownTriggered.delete(sym); // allow retry on next tick
+        });
+      }
+    }
+
+    const rows = positionsBody.querySelectorAll('tr');
+    for (const row of rows) {
+      if (row.cells[0]?.textContent?.trim() !== sym) continue;
+      // col 4: mark price
+      row.cells[4].textContent = fmt(mark, 4);
+      row.cells[4].dataset.v = mark;
+      // col 8: unrealised pnl
+      row.cells[8].className = pnlClass(upnl);
+      row.cells[8].textContent = `${upnl >= 0 ? '+' : ''}${fmt(upnl, 4)}`;
+      row.cells[8].dataset.v = upnl;
+      // col 9: roe
+      row.cells[9].className = pnlClass(roe);
+      row.cells[9].textContent = `${roe >= 0 ? '+' : ''}${fmt(roe, 2)}%`;
+      row.cells[9].dataset.v = roe;
+      break;
+    }
+  };
+
+  const note = document.getElementById('positionsNote');
+  markWs.onopen = () => { if (note) note.textContent = `Live · ${symbols.length} symbol${symbols.length > 1 ? 's' : ''}`; };
+  markWs.onerror = () => markWs?.close();
+  markWs.onclose = () => {
+    markWs = null;
+    if (note) note.textContent = 'Reconnecting...';
+    if (posStatic.size > 0) {
+      markWsReconnectTimer = setTimeout(() => startMarkPriceWs([...posStatic.keys()]), 5000);
+    }
+  };
+}
+
+async function loadPositions() {
+  try {
+    const rows = await apiFetch('/api/positions');
+    if (!rows.length) {
+      positionsBody.innerHTML = '<tr><td colspan="11" class="empty-cell">No open positions.</td></tr>';
+      posStatic.clear();
+      startMarkPriceWs([]);
+      return;
+    }
+
+    // Detect if symbols changed → need to restart WebSocket
+    const newSymbols = new Set(rows.map((p) => p.symbol));
+    const oldSymbols = new Set(posStatic.keys());
+    // Clear avg-down state for closed positions
+    for (const sym of avgDownTriggered.keys()) {
+      if (!newSymbols.has(sym)) avgDownTriggered.delete(sym);
+    }
+    const symbolsChanged = newSymbols.size !== oldSymbols.size || [...newSymbols].some((s) => !oldSymbols.has(s));
+
+    posStatic.clear();
+    rows.forEach((p) => {
+      const amt = Number(p.positionAmt);
+      const entry = Number(p.entryPrice);
+      const lev = Number(p.leverage) || 1;
+      const margin = Number(p.isolatedMargin) || Number(p.initialMargin) || (Math.abs(amt) * entry / lev);
+      posStatic.set(p.symbol, { amt, entry, margin, lev });
+    });
+
+    positionsBody.innerHTML = rows.map((p) => {
+      const amt = Number(p.positionAmt);
+      const side = amt > 0 ? '<span class="positive">LONG</span>' : '<span class="negative">SHORT</span>';
+      const upnl = Number(p.unRealizedProfit);
+      const entry = Number(p.entryPrice);
+      const mark = Number(p.markPrice);
+      const liq = Number(p.liquidationPrice);
+      const lev = Number(p.leverage);
+      const margin = Number(p.isolatedMargin) || Number(p.initialMargin) || null;
+      const roe = entry > 0 ? ((upnl / (Math.abs(amt) * entry / lev)) * 100) : 0;
+      return `
+        <tr>
+          <td><strong>${p.symbol}</strong></td>
+          <td data-v="${amt > 0 ? 1 : 0}">${side}</td>
+          <td data-v="${Math.abs(amt)}">${fmt(Math.abs(amt), 6)}</td>
+          <td data-v="${entry}">${fmt(entry)}</td>
+          <td data-v="${mark}">${fmt(mark)}</td>
+          <td data-v="${liq}">${fmt(liq)}</td>
+          <td data-v="${lev}">${lev}x</td>
+          <td data-v="${margin ?? 0}">${margin != null ? fmt(margin, 4) : '-'}</td>
+          <td data-v="${upnl}" class="${pnlClass(upnl)}">${upnl >= 0 ? '+' : ''}${fmt(upnl, 4)}</td>
+          <td data-v="${roe}" class="${pnlClass(roe)}">${roe >= 0 ? '+' : ''}${fmt(roe, 2)}%</td>
+          <td><button class="action-btn close-btn" data-symbol="${p.symbol}" data-amt="${p.positionAmt}">Close</button></td>
+        </tr>`;
+    }).join('');
+
+    if (symbolsChanged) startMarkPriceWs([...newSymbols]);
+
+    positionsBody.querySelectorAll('.close-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const sym = btn.dataset.symbol;
+        const amt = btn.dataset.amt;
+        if (!confirm(`Close position ${sym} (${amt})?`)) return;
+        btn.disabled = true;
+        try {
+          const result = await apiFetch('/api/close-position', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ symbol: sym, positionAmt: amt }),
+          });
+          showAction(JSON.stringify(result, null, 2));
+          await refresh();
+        } catch (err) {
+          showAction(`Error: ${err.message}`);
+          btn.disabled = false;
+        }
+      });
+    });
+    applySort(document.getElementById('positionsHead'), positionsBody);
+  } catch (err) {
+    positionsBody.innerHTML = `<tr><td colspan="11" class="empty-cell" style="color:var(--red)">${err.message}</td></tr>`;
+  }
+}
+
+async function loadOpenOrders() {
+  try {
+    const rows = await apiFetch('/api/open-orders');
+    if (!rows.length) {
+      openOrdersBody.innerHTML = '<tr><td colspan="9" class="empty-cell">No open orders.</td></tr>';
+      return;
+    }
+    openOrdersBody.innerHTML = rows.map((o) => {
+      const sideClass = o.side === 'BUY' ? 'positive' : 'negative';
+      return `
+        <tr>
+          <td><strong>${o.symbol}</strong></td>
+          <td>${o.type}</td>
+          <td data-v="${o.side === 'BUY' ? 1 : 0}"><span class="${sideClass}">${o.side}</span></td>
+          <td data-v="${o.price}">${fmt(o.price)}</td>
+          <td data-v="${o.origQty}">${fmt(o.origQty, 6)}</td>
+          <td data-v="${o.executedQty}">${fmt(o.executedQty, 6)}</td>
+          <td>${o.reduceOnly ? 'Yes' : 'No'}</td>
+          <td data-v="${o.time}">${fmtDate(o.time)}</td>
+          <td><button class="action-btn cancel-btn" data-symbol="${o.symbol}" data-orderid="${o.orderId}">Cancel</button></td>
+        </tr>`;
+    }).join('');
+
+    openOrdersBody.querySelectorAll('.cancel-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const sym = btn.dataset.symbol;
+        const oid = btn.dataset.orderid;
+        if (!confirm(`Cancel order ${oid} for ${sym}?`)) return;
+        btn.disabled = true;
+        try {
+          const result = await apiFetch('/api/cancel-order', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ symbol: sym, orderId: oid }),
+          });
+          showAction(JSON.stringify(result, null, 2));
+          await loadOpenOrders();
+        } catch (err) {
+          showAction(`Error: ${err.message}`);
+          btn.disabled = false;
+        }
+      });
+    });
+    applySort(document.getElementById('openOrdersHead'), openOrdersBody);
+  } catch (err) {
+    openOrdersBody.innerHTML = `<tr><td colspan="9" class="empty-cell" style="color:var(--red)">${err.message}</td></tr>`;
+  }
+}
+
+async function loadTrades() {
+  const sym = tradeSymbolInput.value.trim().toUpperCase() || 'BTCUSDT';
+  loadTradesBtn.disabled = true;
+  try {
+    const rows = await apiFetch(`/api/trades?symbol=${encodeURIComponent(sym)}&limit=50`);
+    if (!rows.length) {
+      tradesBody.innerHTML = '<tr><td colspan="8" class="empty-cell">No trades found.</td></tr>';
+      return;
+    }
+    tradesBody.innerHTML = [...rows].reverse().map((t) => {
+      const sideClass = t.buyer ? 'positive' : 'negative';
+      const pnl = Number(t.realizedPnl ?? 0);
+      return `
+        <tr>
+          <td data-v="${t.time}">${fmtDate(t.time)}</td>
+          <td>${t.symbol}</td>
+          <td data-v="${t.buyer ? 1 : 0}"><span class="${sideClass}">${t.buyer ? 'BUY' : 'SELL'}</span></td>
+          <td data-v="${t.price}">${fmt(t.price)}</td>
+          <td data-v="${t.qty}">${fmt(t.qty, 6)}</td>
+          <td data-v="${pnl}" class="${pnlClass(pnl)}">${pnl >= 0 ? '+' : ''}${fmt(pnl, 4)}</td>
+          <td>${fmt(t.commission, 6)} ${t.commissionAsset}</td>
+          <td>${t.maker ? 'Maker' : 'Taker'}</td>
+        </tr>`;
+    }).join('');
+    applySort(document.getElementById('tradesHead'), tradesBody);
+  } catch (err) {
+    tradesBody.innerHTML = `<tr><td colspan="8" class="empty-cell" style="color:var(--red)">${err.message}</td></tr>`;
+  } finally {
+    loadTradesBtn.disabled = false;
+  }
+}
+
+async function loadTsl() {
+  try {
+    const data = await apiFetch('/api/trailing-stop/status');
+    tslStatus.textContent = data.enabled
+      ? `Enabled · trigger ROE ≥ ${data.triggerRoe}% → lock ${data.lockMarginPct}% margin`
+      : 'Disabled (set TRAILING_STOP_ENABLED=true)';
+
+    const entries = Object.entries(data.protected ?? {});
+    if (!entries.length) {
+      tslBody.textContent = data.enabled ? 'No positions protected yet.' : '';
+      return;
+    }
+    tslBody.innerHTML = `<table class="positions-table" style="margin-top:0"><thead><tr>
+      <th>Symbol</th><th>Stop Price</th><th>ROE at trigger</th><th>Set at</th>
+    </tr></thead><tbody>` + entries.map(([sym, info]) => `
+      <tr>
+        <td><strong>${sym}</strong></td>
+        <td class="positive">${fmt(info.stopPrice)}</td>
+        <td class="positive">+${fmt(info.roe, 2)}%</td>
+        <td>${new Date(info.at).toLocaleTimeString('vi-VN', { hour12: false })}</td>
+      </tr>`).join('') + '</tbody></table>';
+  } catch (err) {
+    tslBody.textContent = err.message;
+  }
+}
+
+async function loadSlTp() {
+  try {
+    const [regular, algo] = await Promise.all([
+      apiFetch('/api/open-orders'),
+      apiFetch('/api/open-algo-orders'),
+    ]);
+
+    const isSlType = (t) => { const u = String(t || '').toUpperCase(); return u.includes('STOP') && !u.includes('PROFIT'); };
+    const isTpType = (t) => { const u = String(t || '').toUpperCase(); return u.includes('PROFIT') || u.includes('TAKE'); };
+
+    const bySymbol = new Map();
+    const upsert = (sym) => { if (!bySymbol.has(sym)) bySymbol.set(sym, { sl: [], tp: [] }); return bySymbol.get(sym); };
+
+    for (const o of regular) {
+      if (!isSlType(o.type) && !isTpType(o.type)) continue;
+      const entry = upsert(o.symbol);
+      const price = fmt(Number(o.stopPrice) || Number(o.price));
+      if (isSlType(o.type)) entry.sl.push(price);
+      else entry.tp.push(price);
+    }
+    for (const o of algo) {
+      const entry = upsert(o.symbol);
+      const price = fmt(Number(o.triggerPrice) || Number(o.stopPrice) || Number(o.price));
+      if (!price || price === '-') continue;
+      if (isTpType(o.type)) entry.tp.push(price);
+      else entry.sl.push(price);
+    }
+
+    const rows = [...bySymbol.entries()].filter(([, v]) => v.sl.length || v.tp.length);
+
+    const hint = `Regular: ${regular.length} · Algo: ${algo.length}`;
+    if (!rows.length) {
+      slTpBody.innerHTML = `<p class="explain" style="color:var(--muted)">Không có SL/TP nào đang active. <small>(${hint})</small></p>`;
+      return;
+    }
+
+    slTpBody.innerHTML = `<p style="font-size:11px;color:var(--muted);margin-bottom:8px">${hint}</p>
+      <table class="positions-table" style="margin-top:0"><thead><tr>
+        <th>Symbol</th><th>Stop Loss</th><th>Take Profit</th>
+      </tr></thead><tbody>` + rows.map(([sym, v]) => `
+      <tr>
+        <td><strong>${sym}</strong></td>
+        <td class="${v.sl.length ? 'pnl-negative' : ''}">${v.sl.length ? v.sl.join(', ') : '<span style="color:var(--muted)">—</span>'}</td>
+        <td class="${v.tp.length ? 'pnl-positive' : ''}">${v.tp.length ? v.tp.join(', ') : '<span style="color:var(--muted)">—</span>'}</td>
+      </tr>`).join('') + '</tbody></table>';
+  } catch (err) {
+    slTpBody.textContent = err.message;
+  }
+}
+
+async function refresh() {
+  status.textContent = 'Refreshing...';
+  try {
+    await Promise.all([loadBalance(), loadPositions(), loadOpenOrders(), loadTsl(), loadSlTp()]);
+    lastRefresh.textContent = `Last: ${new Date().toLocaleTimeString('vi-VN', { hour12: false })}`;
+    status.textContent = 'Live';
+  } catch {
+    status.textContent = 'Error';
+  }
+}
+
+// ── Settings ─────────────────────────────────────────────────
+const settingAvgDown = document.getElementById('settingAvgDown');
+const settingAvgDownRoe = document.getElementById('settingAvgDownRoe');
+const settingAvgDownMargin = document.getElementById('settingAvgDownMargin');
+
+function applyAvgDownSettings() {
+  avgDownEnabled = settingAvgDown.checked;
+  avgDownTriggerRoe = Number(settingAvgDownRoe.value) || -60;
+  avgDownMarginUsdt = Math.max(1, Number(settingAvgDownMargin.value) || 2);
+}
+
+async function loadSettings() {
+  try {
+    const data = await apiFetch('/api/settings');
+    settingOrderEnabled.checked = !!data.orderEnabled;
+    settingAutoTradeEnabled.checked = !!data.autoTradeEnabled;
+    settingDryRun.checked = !!data.dryRun;
+    settingBtcReversalGuard.checked = !!data.btcReversalGuard;
+    if (data.btcReversalGuardRoe != null) settingBtcReversalRoe.value = data.btcReversalGuardRoe;
+    // Avg down is client-side only — restore from localStorage
+    const saved = JSON.parse(localStorage.getItem('avgDownSettings') ?? '{}');
+    if (saved.enabled != null) settingAvgDown.checked = saved.enabled;
+    if (saved.roe != null) settingAvgDownRoe.value = saved.roe;
+    if (saved.margin != null) settingAvgDownMargin.value = saved.margin;
+    applyAvgDownSettings();
+  } catch { /* ignore */ }
+}
+
+async function saveSetting(key, value) {
+  try {
+    await apiFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    });
+    settingsSaved.textContent = 'Saved ✓';
+    setTimeout(() => { settingsSaved.textContent = ''; }, 2000);
+  } catch (err) {
+    settingsSaved.textContent = err.message;
+  }
+}
+
+settingOrderEnabled.addEventListener('change', () => saveSetting('orderEnabled', settingOrderEnabled.checked));
+settingAutoTradeEnabled.addEventListener('change', () => saveSetting('autoTradeEnabled', settingAutoTradeEnabled.checked));
+settingDryRun.addEventListener('change', () => saveSetting('dryRun', settingDryRun.checked));
+settingBtcReversalGuard.addEventListener('change', () => saveSetting('btcReversalGuard', settingBtcReversalGuard.checked));
+settingBtcReversalRoe.addEventListener('change', () => saveSetting('btcReversalGuardRoe', Number(settingBtcReversalRoe.value)));
+
+function saveAvgDownSettings() {
+  localStorage.setItem('avgDownSettings', JSON.stringify({
+    enabled: settingAvgDown.checked,
+    roe: Number(settingAvgDownRoe.value),
+    margin: Number(settingAvgDownMargin.value),
+  }));
+  applyAvgDownSettings();
+}
+settingAvgDown.addEventListener('change', saveAvgDownSettings);
+settingAvgDownRoe.addEventListener('change', saveAvgDownSettings);
+settingAvgDownMargin.addEventListener('change', saveAvgDownSettings);
+
+loadTradesBtn.addEventListener('click', loadTrades);
+
+// ── Place Order form ─────────────────────────────────────────
+const orderSymbolInput = document.getElementById('orderSymbolInput');
+const orderTypeInput = document.getElementById('orderTypeInput');
+const orderMarginInput = document.getElementById('orderMarginInput');
+const orderLevInput = document.getElementById('orderLevInput');
+const orderLimitPriceInput = document.getElementById('orderLimitPriceInput');
+const orderTpInput = document.getElementById('orderTpInput');
+const orderSlInput = document.getElementById('orderSlInput');
+const orderDryRunInput = document.getElementById('orderDryRunInput');
+const orderMaxPositionsInput = document.getElementById('orderMaxPositionsInput');
+
+// Restore saved max positions
+const savedMaxPos = localStorage.getItem('maxOpenPositions');
+if (savedMaxPos !== null) orderMaxPositionsInput.value = savedMaxPos;
+orderMaxPositionsInput.addEventListener('change', () => {
+  localStorage.setItem('maxOpenPositions', orderMaxPositionsInput.value);
+});
+const orderLongBtn = document.getElementById('orderLongBtn');
+const orderShortBtn = document.getElementById('orderShortBtn');
+const orderFormResult = document.getElementById('orderFormResult');
+
+orderTypeInput.addEventListener('change', () => {
+  orderLimitPriceInput.disabled = orderTypeInput.value !== 'LIMIT';
+  if (orderLimitPriceInput.disabled) orderLimitPriceInput.value = '';
+});
+
+async function submitOrder(side) {
+  const symbol = orderSymbolInput.value.trim().toUpperCase();
+  const margin = Number(orderMarginInput.value);
+  const leverage = Number(orderLevInput.value);
+
+  if (!symbol || margin <= 0 || leverage < 1) {
+    orderFormResult.style.display = 'block';
+    orderFormResult.textContent = 'Vui lòng điền đủ Symbol, Margin, Leverage.';
+    return;
+  }
+
+  orderLongBtn.disabled = true;
+  orderShortBtn.disabled = true;
+  orderFormResult.style.display = 'block';
+  orderFormResult.textContent = 'Sending...';
+
+  try {
+    const payload = {
+      symbol,
+      side,
+      notionalUsdt: margin * leverage,
+      leverage,
+      orderType: orderTypeInput.value,
+      dryRun: orderDryRunInput.checked,
+      maxOpenPositions: Number(orderMaxPositionsInput.value) || 0,
+    };
+    if (orderTypeInput.value === 'LIMIT' && orderLimitPriceInput.value) {
+      payload.limitPrice = Number(orderLimitPriceInput.value);
+    }
+    if (orderTpInput.value) payload.takeProfitPrice = Number(orderTpInput.value);
+    if (orderSlInput.value) payload.stopLossPrice = Number(orderSlInput.value);
+
+    const result = await apiFetch('/api/order', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    orderFormResult.textContent = JSON.stringify(result, null, 2);
+    if (result.status === 'submitted') await refresh();
+  } catch (err) {
+    orderFormResult.textContent = `Error: ${err.message}`;
+  } finally {
+    orderLongBtn.disabled = false;
+    orderShortBtn.disabled = false;
+  }
+}
+
+orderLongBtn.addEventListener('click', () => submitOrder('BUY'));
+orderShortBtn.addEventListener('click', () => submitOrder('SELL'));
+
+// Init sort on all tables
+initSort(document.getElementById('positionsHead'), positionsBody);
+initSort(document.getElementById('openOrdersHead'), openOrdersBody);
+initSort(document.getElementById('tradesHead'), tradesBody);

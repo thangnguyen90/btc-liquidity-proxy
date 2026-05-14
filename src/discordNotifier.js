@@ -1,6 +1,7 @@
 import { fetchAnalysis } from './marketAnalysis.js';
 
-const cooldowns = new Map();
+const cooldowns = new Map();        // for full order-placed alerts
+const signalCooldowns = new Map();  // for lightweight signal-detected alerts
 const firstSeenPrices = new Map();
 const LIVE_MOMENTUM_WINDOW_MS = 5 * 60 * 1000;
 
@@ -34,6 +35,50 @@ function computeQuickScore(row) {
 function isCoolingDown(symbol, cooldownMs) {
   const last = cooldowns.get(symbol);
   return last ? Date.now() - last < cooldownMs : false;
+}
+
+export function isDiscordCoolingDown(symbol, cooldownMs = 3600000) {
+  return isCoolingDown(symbol, cooldownMs);
+}
+
+export async function tryNotifySignal(symbol, quickScore, analysis, { webhookUrl, cooldownMs = 3600000 }) {
+  if (!webhookUrl) return;
+  if (isCoolingDown(symbol, cooldownMs)) return;
+  const payload = buildEmbed(symbol, quickScore, analysis);
+  await sendWebhook(webhookUrl, payload);
+  cooldowns.set(symbol, Date.now());
+  console.log(`[Discord] Signal alert: ${symbol} score=${quickScore.toFixed(3)}`);
+}
+
+// Lightweight alert: signal detected (no fetchAnalysis needed)
+export async function sendSignalDetected(symbol, score, webhookUrl, cooldownMs = 1800000) {
+  if (!webhookUrl) return;
+  const last = signalCooldowns.get(symbol);
+  if (last && Date.now() - last < cooldownMs) return;
+  const isLong = score >= 0;
+  const color = isLong ? 0x36d399 : 0xfb7185;
+  const dir = isLong ? '🟢 LONG' : '🔴 SHORT';
+  await sendWebhook(webhookUrl, {
+    username: 'Liquidity Proxy',
+    embeds: [{
+      title: `⚡ ${dir} signal: ${symbol}`,
+      color,
+      description: `Score **${score >= 0 ? '+' : ''}${score.toFixed(3)}** — chờ xác nhận vào lệnh`,
+      footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
+    }],
+  });
+  signalCooldowns.set(symbol, Date.now());
+  console.log(`[Discord] Signal detected: ${symbol} score=${score.toFixed(3)}`);
+}
+
+// Full alert when order is actually placed
+export async function sendOrderPlaced(symbol, score, analysis, webhookUrl) {
+  if (!webhookUrl) return;
+  const payload = buildEmbed(symbol, score, analysis);
+  payload.embeds[0].title = `✅ ORDER: ${payload.embeds[0].title}`;
+  await sendWebhook(webhookUrl, payload);
+  cooldowns.set(symbol, Date.now()); // block signal scanner from re-sending within cooldown
+  console.log(`[Discord] Order placed: ${symbol} score=${score.toFixed(3)}`);
 }
 
 function digits(value) {
@@ -204,7 +249,13 @@ export function startDiscordScanner({ client, webhookUrl, threshold = 0.7, inter
   const run = async () => {
     try {
       const snapshot = await getSnapshot();
+      const minVolume = Number(process.env.AUTO_TRADE_MIN_VOLUME_USDT ?? 5_000_000);
+      const maxChangePct = Number(process.env.AUTO_TRADE_MAX_CHANGE_PCT ?? 30);
+      const blacklist = new Set(
+        (process.env.AUTO_TRADE_BLACKLIST ?? '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean),
+      );
       const candidates = snapshot
+        .filter((row) => !blacklist.has(row.symbol) && row.quoteVolume >= minVolume && Math.abs(row.change24hPct) <= maxChangePct)
         .map((row) => ({ row, score: computeQuickScore(row) }))
         .filter(({ score }) => Math.abs(score) >= threshold)
         .filter(({ row }) => !isCoolingDown(row.symbol, cooldownMs))

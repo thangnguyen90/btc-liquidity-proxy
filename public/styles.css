@@ -643,6 +643,38 @@ pre {
   color: var(--muted);
 }
 
+.kill-long-row {
+  background: rgba(167, 139, 250, 0.07);
+  border-bottom: 1px solid rgba(167, 139, 250, 0.2);
+}
+
+.kill-long-row td {
+  border-top: 1px solid rgba(167, 139, 250, 0.2);
+}
+
+.kill-long-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.15);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.crowd-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.12);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
 .symbol-link {
   color: var(--text);
   font-weight: 900;

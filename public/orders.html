@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Order Management</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .auth-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(17, 19, 18, 0.96);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+      }
+      .auth-box {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 36px 40px;
+        width: min(380px, calc(100vw - 40px));
+        display: grid;
+        gap: 18px;
+      }
+      .auth-box h2 { font-size: 20px; margin: 0; }
+      .auth-box p { color: var(--muted); font-size: 13px; margin: 0; }
+      .auth-error { color: var(--red); font-size: 13px; min-height: 18px; }
+      .auth-box input { width: 100%; height: 44px; }
+      .auth-box button { width: 100%; height: 44px; }
+      .orders-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+        margin-top: 14px;
+      }
+      .balance-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        gap: 10px;
+        margin-top: 10px;
+      }
+      .balance-item {
+        display: grid;
+        gap: 5px;
+        padding: 12px;
+        border-radius: 6px;
+        background: var(--panel-2);
+      }
+      .balance-item span { color: var(--muted); font-size: 12px; }
+      .balance-item strong { font-size: 18px; }
+      .balance-item small { color: var(--muted); font-size: 11px; }
+      .positions-table,
+      .orders-table,
+      .trades-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        margin-top: 10px;
+      }
+      .positions-table th,
+      .positions-table td,
+      .orders-table th,
+      .orders-table td,
+      .trades-table th,
+      .trades-table td {
+        padding: 10px 9px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        white-space: nowrap;
+      }
+      .positions-table th,
+      .orders-table th,
+      .trades-table th {
+        background: #151817;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+      .table-scroll {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .pnl-positive { color: var(--green); }
+      .pnl-negative { color: var(--red); }
+      .action-btn {
+        height: 28px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 5px;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .close-btn { background: var(--red); color: #21070b; }
+      .cancel-btn { background: var(--amber); color: #1a1000; }
+      .action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+      .refresh-note { color: var(--muted); font-size: 12px; }
+      th[data-sort] { cursor: pointer; user-select: none; }
+      th[data-sort]:hover { color: var(--fg); }
+      .sort-icon { font-size: 10px; margin-left: 3px; opacity: 0.7; }
+      .symbol-search {
+        display: flex;
+        gap: 10px;
+        align-items: end;
+        margin-top: 10px;
+      }
+      .symbol-search .field { flex: 1 1 200px; }
+      .symbol-search button { height: 42px; }
+      .order-form-grid {
+        display: grid;
+        grid-template-columns: 180px 120px 130px 130px 130px 130px 1fr;
+        gap: 10px;
+        align-items: end;
+        margin-top: 12px;
+      }
+      .order-form-actions {
+        display: flex;
+        gap: 8px;
+        align-items: end;
+      }
+      .order-form-actions button { flex: 1; height: 42px; }
+      .order-form-row2 {
+        display: grid;
+        grid-template-columns: 130px 180px 1fr;
+        gap: 10px;
+        align-items: end;
+        margin-top: 10px;
+      }
+      .order-result-box {
+        margin-top: 10px;
+        display: none;
+      }
+      @media (max-width: 920px) {
+        .orders-grid { grid-template-columns: 1fr; }
+        .order-form-grid { grid-template-columns: 1fr 1fr; }
+        .order-form-row2 { grid-template-columns: 1fr 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="auth-overlay" id="authOverlay">
+      <div class="auth-box">
+        <div>
+          <h2>🔒 Order Management</h2>
+          <p>Nhập Binance API Key để truy cập</p>
+        </div>
+        <label class="field">
+          <span>Binance API Key</span>
+          <input id="authApiKeyInput" type="password" placeholder="API Key" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Binance API Secret</span>
+          <input id="authApiSecretInput" type="password" placeholder="API Secret" autocomplete="off">
+        </label>
+        <div class="auth-error" id="authError"></div>
+        <button class="primary" id="authSubmitBtn" type="button">Unlock</button>
+      </div>
+    </div>
+
+    <main class="shell wide-shell" id="mainContent" style="display:none">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Binance USD-M Futures</p>
+          <h1>Order Management</h1>
+        </div>
+        <div class="top-actions">
+          <div class="ext-links">
+            <a class="nav-link" href="/">Detail Dashboard</a>
+            <a class="nav-link" href="/signals" style="margin-left:12px">All Signals</a>
+          </div>
+          <div class="status" id="status">Loading...</div>
+        </div>
+      </section>
+
+      <!-- Place Order -->
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Place Order</h2>
+          <span class="refresh-note">Futures · reduceOnly cho TP/SL</span>
+        </div>
+        <div class="order-form-grid">
+          <label class="field">
+            <span>Symbol</span>
+            <input id="orderSymbolInput" value="BTCUSDT" autocomplete="off" placeholder="BTCUSDT">
+          </label>
+          <label class="field">
+            <span>Type</span>
+            <select id="orderTypeInput">
+              <option value="MARKET" selected>Market</option>
+              <option value="LIMIT">Limit</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Margin USDT</span>
+            <input id="orderMarginInput" type="number" min="1" step="0.1" value="5">
+          </label>
+          <label class="field">
+            <span>Leverage</span>
+            <input id="orderLevInput" type="number" min="1" max="125" step="1" value="10">
+          </label>
+          <label class="field">
+            <span>Limit Price</span>
+            <input id="orderLimitPriceInput" type="number" min="0" step="any" placeholder="Market nếu để trống" disabled>
+          </label>
+          <label class="field">
+            <span>Take Profit</span>
+            <input id="orderTpInput" type="number" min="0" step="any" placeholder="Tùy chọn">
+          </label>
+          <label class="field">
+            <span>Stop Loss</span>
+            <input id="orderSlInput" type="number" min="0" step="any" placeholder="Tùy chọn">
+          </label>
+        </div>
+        <div class="order-form-row2">
+          <label class="toggle" style="height:42px">
+            <input id="orderDryRunInput" type="checkbox" checked>
+            <span>Dry run</span>
+          </label>
+          <label class="field">
+            <span>Max Positions <small style="font-weight:400;color:var(--muted)">(0 = không giới hạn)</small></span>
+            <input id="orderMaxPositionsInput" type="number" min="0" max="100" step="1" value="0" style="height:42px">
+          </label>
+          <div class="order-form-actions" style="grid-column:3/-1">
+            <button class="success" id="orderLongBtn" type="button">Long</button>
+            <button class="danger" id="orderShortBtn" type="button">Short</button>
+          </div>
+        </div>
+        <pre id="orderFormResult" class="order-result-box"></pre>
+      </section>
+
+      <!-- Runtime Settings -->
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Settings</h2>
+          <span class="refresh-note" id="settingsSaved"></span>
+        </div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;padding:4px 0">
+          <label class="toggle">
+            <input type="checkbox" id="settingOrderEnabled">
+            <span>Order Enabled</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="settingAutoTradeEnabled">
+            <span>Auto Trade</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="settingDryRun">
+            <span>Dry Run</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="settingBtcReversalGuard">
+            <span>BTC Reversal → Cut Shorts</span>
+          </label>
+          <label class="field" style="margin:0">
+            <span style="font-size:11px;color:var(--muted)">Min ROE%</span>
+            <input id="settingBtcReversalRoe" type="number" min="0" max="100" step="0.5" value="1" style="width:72px;height:36px">
+          </label>
+          <div style="width:1px;height:36px;background:var(--line);margin:0 4px"></div>
+          <label class="toggle">
+            <input type="checkbox" id="settingAvgDown">
+            <span>Avg Down</span>
+          </label>
+          <label class="field" style="margin:0">
+            <span style="font-size:11px;color:var(--muted)">Trigger ROE%</span>
+            <input id="settingAvgDownRoe" type="number" min="-100" max="0" step="1" value="-60" style="width:72px;height:36px">
+          </label>
+          <label class="field" style="margin:0">
+            <span style="font-size:11px;color:var(--muted)">Margin $</span>
+            <input id="settingAvgDownMargin" type="number" min="1" step="1" value="2" style="width:60px;height:36px">
+          </label>
+        </div>
+      </section>
+
+      <!-- TSL Status -->
+      <section class="panel" style="margin-top:14px" id="tslPanel">
+        <div class="panel-head">
+          <h2>Trailing Stop</h2>
+          <span class="refresh-note" id="tslStatus">-</span>
+        </div>
+        <div id="tslBody" style="color:var(--muted);font-size:13px">Loading...</div>
+      </section>
+
+      <!-- SL/TP Summary -->
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Active SL / TP</h2>
+          <span class="refresh-note">Regular + Algo orders · grouped by symbol</span>
+        </div>
+        <div id="slTpBody" style="color:var(--muted);font-size:13px">Loading...</div>
+      </section>
+
+      <!-- Balance -->
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Account Balance</h2>
+          <span class="refresh-note" id="lastRefresh">-</span>
+        </div>
+        <div class="balance-row" id="balanceRow">
+          <p class="explain">Loading balance...</p>
+        </div>
+      </section>
+
+      <!-- Positions -->
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Open Positions</h2>
+          <span class="refresh-note" id="positionsNote">Connecting...</span>
+        </div>
+        <div class="table-scroll">
+          <table class="positions-table">
+            <thead id="positionsHead">
+              <tr>
+                <th data-sort>Symbol</th>
+                <th data-sort>Side</th>
+                <th data-sort>Size</th>
+                <th data-sort>Entry Price</th>
+                <th data-sort>Mark Price</th>
+                <th data-sort>Liq. Price</th>
+                <th data-sort>Leverage</th>
+                <th data-sort>Margin</th>
+                <th data-sort>Unrealised PnL</th>
+                <th data-sort>ROE%</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="positionsBody">
+              <tr><td colspan="11" class="empty-cell">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Open Orders -->
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Open Orders</h2>
+          <span class="refresh-note">Limit / Stop orders pending</span>
+        </div>
+        <div class="table-scroll">
+          <table class="orders-table">
+            <thead id="openOrdersHead">
+              <tr>
+                <th data-sort>Symbol</th>
+                <th data-sort>Type</th>
+                <th data-sort>Side</th>
+                <th data-sort>Price</th>
+                <th data-sort>Qty</th>
+                <th data-sort>Filled</th>
+                <th data-sort>Reduce Only</th>
+                <th data-sort>Time</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="openOrdersBody">
+              <tr><td colspan="9" class="empty-cell">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Trade History -->
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Trade History</h2>
+          <span class="refresh-note">Recent fills</span>
+        </div>
+        <div class="symbol-search">
+          <label class="field">
+            <span>Symbol</span>
+            <input id="tradeSymbolInput" value="BTCUSDT" autocomplete="off" placeholder="BTCUSDT...">
+          </label>
+          <button class="primary" id="loadTradesBtn" type="button">Load</button>
+        </div>
+        <div class="table-scroll" style="margin-top:10px">
+          <table class="trades-table">
+            <thead id="tradesHead">
+              <tr>
+                <th data-sort>Time</th>
+                <th data-sort>Symbol</th>
+                <th data-sort>Side</th>
+                <th data-sort>Price</th>
+                <th data-sort>Qty</th>
+                <th data-sort>Realised PnL</th>
+                <th>Commission</th>
+                <th>Buyer?</th>
+              </tr>
+            </thead>
+            <tbody id="tradesBody">
+              <tr><td colspan="8" class="empty-cell">Enter a symbol and click Load.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <pre id="actionResult" style="margin-top:14px;display:none"></pre>
+    </main>
+    <script src="/orders.js" type="module"></script>
+  </body>
+</html>

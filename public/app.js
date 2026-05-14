@@ -299,6 +299,7 @@ async function placeSetupOrder() {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        'x-orders-token': localStorage.getItem('orders_token') ?? '',
       },
       body: JSON.stringify({
         symbol: latestAnalysis.symbol,
@@ -354,6 +355,7 @@ async function placeQuickOrder(side) {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        'x-orders-token': localStorage.getItem('orders_token') ?? '',
       },
       body: JSON.stringify({
         symbol,

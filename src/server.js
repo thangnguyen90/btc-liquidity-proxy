@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 
+import crypto from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
-import { startDiscordScanner } from './discordNotifier.js';
+import { startDiscordScanner, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced } from './discordNotifier.js';
+import { startTrailingStopScanner } from './trailingStop.js';
+import { startBtcReversalGuard } from './btcReversalGuard.js';
+import { startPositionMonitor } from './positionMonitor.js';
 
 loadEnv();
 
@@ -17,10 +21,8 @@ const publicDir = join(rootDir, 'public');
 const client = new BinanceClient({
   baseUrl: process.env.BINANCE_FUTURES_BASE_URL || undefined,
 });
-const symbolCache = {
-  data: null,
-  expiresAt: 0,
-};
+const symbolCache = { data: null, expiresAt: 0 };
+const snapshotCache = { data: null, expiresAt: 0 };
 const autoTradeState = {
   startedAt: null,
   lastScanAt: null,
@@ -28,12 +30,87 @@ const autoTradeState = {
   lastErrors: [],
   firstSeenPrices: new Map(),
   symbolCooldowns: new Map(),
+  signalStreak: new Map(),   // symbol → { direction, count }
 };
 const port = Number(process.env.PORT ?? 19082);
+const ordersTokens = new Set();
+const runtimeSettings = {
+  orderEnabled: process.env.BINANCE_ORDER_ENABLED === 'true',
+  autoTradeEnabled: process.env.AUTO_TRADE_ENABLED === 'true',
+  dryRun: process.env.AUTO_TRADE_DRY_RUN !== 'false',
+  btcReversalGuard: false,
+  btcReversalGuardRoe: 1,
+};
+const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
+let tslScanner = null;
+const longShortCache = new Map();    // symbol → { longShortRatio, longAccount }
+const hedgeModeCache = new Map();    // apiKey → bool
+const topPositionCache = new Map(); // symbol → { longShortRatio, longPosition, shortPosition }
+
+const BLACKLIST_FILE = join(rootDir, 'data', 'dynamic-blacklist.json');
+const dynamicBlacklist = new Map(); // symbol → { expiresAt, addedAt, reason }
+
+async function loadDynamicBlacklist() {
+  try {
+    const text = await readFile(BLACKLIST_FILE, 'utf8');
+    const entries = JSON.parse(text);
+    const now = Date.now();
+    let loaded = 0;
+    for (const [symbol, entry] of Object.entries(entries)) {
+      if (entry.expiresAt > now) { dynamicBlacklist.set(symbol, entry); loaded++; }
+    }
+    if (loaded > 0) console.log(`[Blacklist] Loaded ${loaded} active entries from file`);
+  } catch { /* file not found yet — ok */ }
+}
+
+async function saveDynamicBlacklist() {
+  try {
+    await mkdir(join(rootDir, 'data'), { recursive: true });
+    await writeFile(BLACKLIST_FILE, JSON.stringify(Object.fromEntries(dynamicBlacklist), null, 2));
+  } catch (err) {
+    console.warn('[Blacklist] Save failed:', err.message);
+  }
+}
+
+function isDynamicBlacklisted(symbol) {
+  const entry = dynamicBlacklist.get(symbol);
+  if (!entry) return false;
+  if (Date.now() > entry.expiresAt) { dynamicBlacklist.delete(symbol); return false; }
+  return true;
+}
+
+async function addToDynamicBlacklist(symbol, durationMs = 2 * 60 * 60 * 1000, reason = 'SL hit') {
+  const expiresAt = Date.now() + durationMs;
+  dynamicBlacklist.set(symbol, { expiresAt, addedAt: new Date().toISOString(), reason });
+  console.log(`[Blacklist] +${symbol} for ${durationMs / 60000}min — ${reason}`);
+  await saveDynamicBlacklist();
+}
 
 const server = createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host}`);
+
+    if (requestUrl.pathname === '/api/auth' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      if (!body.apiKey || !body.apiSecret) {
+        await sendJson(response, { error: 'API Key và API Secret là bắt buộc.' }, 400);
+        return;
+      }
+      const token = crypto.randomUUID();
+      ordersTokens.add(token);
+      sessionCredentials.set(token, { apiKey: String(body.apiKey), apiSecret: String(body.apiSecret) });
+      await sendJson(response, { token });
+      return;
+    }
+
+    const ordersRoutes = ['/api/balance', '/api/positions', '/api/open-orders', '/api/open-algo-orders', '/api/trades', '/api/cancel-order', '/api/cancel-all-orders', '/api/close-position', '/api/order', '/api/settings'];
+    if (ordersRoutes.some((r) => requestUrl.pathname === r)) {
+      const token = request.headers['x-orders-token'] ?? '';
+      if (!ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Unauthorized.' }, 401);
+        return;
+      }
+    }
 
     if (requestUrl.pathname === '/api/symbols') {
       await sendJson(response, await getSymbols());
@@ -70,12 +147,119 @@ const server = createServer(async (request, response) => {
     }
 
     if (requestUrl.pathname === '/api/order' && request.method === 'POST') {
-      await sendJson(response, await placeOrder(await readJsonBody(request)));
+      const token = request.headers['x-orders-token'] ?? '';
+      await sendJson(response, await placeOrder(await readJsonBody(request), token));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/balance') {
+      const token = request.headers['x-orders-token'] ?? '';
+      await sendJson(response, await getAccountBalance(token));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/positions') {
+      const token = request.headers['x-orders-token'] ?? '';
+      await sendJson(response, await getPositions(token));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/open-orders') {
+      const token = request.headers['x-orders-token'] ?? '';
+      const symbol = requestUrl.searchParams.get('symbol') ?? undefined;
+      await sendJson(response, await getOpenOrders(symbol, token));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/open-algo-orders') {
+      const token = request.headers['x-orders-token'] ?? '';
+      await sendJson(response, await getOpenAlgoOrdersList(token));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/trades') {
+      const token = request.headers['x-orders-token'] ?? '';
+      const symbol = normalizeSymbol(requestUrl.searchParams.get('symbol') ?? 'BTCUSDT');
+      const limit = Number(requestUrl.searchParams.get('limit') ?? 50);
+      await sendJson(response, await getRecentTrades(symbol, limit, token));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/cancel-order' && request.method === 'POST') {
+      const token = request.headers['x-orders-token'] ?? '';
+      await sendJson(response, await cancelOrder(await readJsonBody(request), token));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/blacklist') {
+      if (request.method === 'GET') {
+        const now = Date.now();
+        const active = [...dynamicBlacklist.entries()]
+          .filter(([, e]) => e.expiresAt > now)
+          .map(([symbol, e]) => ({ symbol, ...e, remainingMs: e.expiresAt - now }));
+        await sendJson(response, active);
+        return;
+      }
+      if (request.method === 'DELETE') {
+        const body = await readJsonBody(request);
+        const symbol = normalizeSymbol(body.symbol ?? '');
+        if (!symbol) { await sendJson(response, { error: 'symbol is required.' }, 400); return; }
+        const removed = dynamicBlacklist.delete(symbol);
+        await saveDynamicBlacklist();
+        await sendJson(response, { removed, symbol });
+        return;
+      }
+    }
+
+    if (requestUrl.pathname === '/api/cancel-all-orders' && request.method === 'POST') {
+      const token = request.headers['x-orders-token'] ?? '';
+      const body = await readJsonBody(request);
+      const symbol = normalizeSymbol(body.symbol ?? '');
+      if (!symbol) { await sendJson(response, { error: 'symbol is required.' }, 400); return; }
+      const { apiKey, apiSecret } = getApiCredentials(token);
+      await sendJson(response, await cancelAllOrdersForSymbol(symbol, apiKey, apiSecret));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/close-position' && request.method === 'POST') {
+      const token = request.headers['x-orders-token'] ?? '';
+      await sendJson(response, await closePosition(await readJsonBody(request), token));
       return;
     }
 
     if (requestUrl.pathname === '/api/auto-trade/status') {
       await sendJson(response, getAutoTradeStatus());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/settings') {
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        if (typeof body.orderEnabled === 'boolean') runtimeSettings.orderEnabled = body.orderEnabled;
+        if (typeof body.autoTradeEnabled === 'boolean') runtimeSettings.autoTradeEnabled = body.autoTradeEnabled;
+        if (typeof body.dryRun === 'boolean') runtimeSettings.dryRun = body.dryRun;
+        if (typeof body.btcReversalGuard === 'boolean') runtimeSettings.btcReversalGuard = body.btcReversalGuard;
+        if (typeof body.btcReversalGuardRoe === 'number') runtimeSettings.btcReversalGuardRoe = body.btcReversalGuardRoe;
+      }
+      await sendJson(response, { ...runtimeSettings });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/trailing-stop/status') {
+      const token = request.headers['x-orders-token'] ?? '';
+      if (!ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Unauthorized.' }, 401);
+        return;
+      }
+      const protected_ = tslScanner
+        ? Object.fromEntries(tslScanner.protectedPositions)
+        : {};
+      await sendJson(response, {
+        enabled: process.env.TRAILING_STOP_ENABLED === 'true',
+        triggerRoe: Number(process.env.TRAILING_STOP_TRIGGER_ROE ?? 15),
+        lockMarginPct: Number(process.env.TRAILING_STOP_LOCK_MARGIN_PCT ?? 1),
+        protected: protected_,
+      });
       return;
     }
 
@@ -96,15 +280,40 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, '127.0.0.1', () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
+  loadDynamicBlacklist();
+  const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
+  // Stagger service startup to avoid burst at t=0
   startAutoTrader();
-  startDiscordScanner({
-    client,
-    webhookUrl: process.env.DISCORD_WEBHOOK_URL || '',
-    threshold: Number(process.env.DISCORD_SIGNAL_THRESHOLD ?? 0.7),
-    intervalMs: Math.max(Number(process.env.DISCORD_INTERVAL_MS ?? 30000), 15000),
-    cooldownMs: Number(process.env.DISCORD_COOLDOWN_MS ?? 3600000),
-    getSnapshot: getMarketSnapshot,
-  });
+  setTimeout(() => startLongShortRefresh(), 3000);
+  setTimeout(() => {
+    tslScanner = startTrailingStopScanner({ client, getSymbols, intervalMs: tslIntervalMs });
+  }, 7000);
+  setTimeout(() => {
+    startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: tslIntervalMs });
+  }, 12000);
+  setTimeout(() => {
+    startDiscordScanner({
+      client,
+      webhookUrl: process.env.DISCORD_WEBHOOK_URL || '',
+      threshold: Number(process.env.DISCORD_SIGNAL_THRESHOLD ?? 0.7),
+      intervalMs: Math.max(Number(process.env.DISCORD_INTERVAL_MS ?? 30000), 15000),
+      cooldownMs: Number(process.env.DISCORD_COOLDOWN_MS ?? 3600000),
+      getSnapshot: getMarketSnapshot,
+    });
+  }, 17000);
+  setTimeout(() => {
+    runStaleOrderCleaner(); // seed initial position set, no cancellations on first run
+    setInterval(runStaleOrderCleaner, 30000);
+  }, 22000);
+  setTimeout(() => {
+    startPositionMonitor({
+      client,
+      getRoeThreshold: () => Number(process.env.TP_ENTRY_GUARD_ROE ?? -50),
+      onRoeThreshold: (symbol, pos, markPrice, roe) => {
+        handleTpEntryGuard(symbol, pos, markPrice, roe).catch(() => {});
+      },
+    });
+  }, 25000);
 });
 
 async function getSymbols() {
@@ -121,6 +330,7 @@ async function getSymbols() {
       quoteAsset: item.quoteAsset,
       quantityPrecision: item.quantityPrecision,
       filters: item.filters,
+      orderTypes: item.orderTypes ?? [],
     }))
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
 
@@ -130,7 +340,7 @@ async function getSymbols() {
   return symbols;
 }
 
-async function placeOrder(payload) {
+async function placeOrder(payload, token = null) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   const side = String(payload.side ?? '').toUpperCase();
   const orderType = String(payload.orderType ?? payload.type ?? 'MARKET').toUpperCase();
@@ -140,16 +350,21 @@ async function placeOrder(payload) {
   const limitPrice = payload.limitPrice === undefined || payload.limitPrice === null || payload.limitPrice === ''
     ? null
     : Number(payload.limitPrice);
-  const takeProfitPrice = payload.takeProfitPrice === undefined || payload.takeProfitPrice === null
+  const takeProfitPrice = payload.takeProfitPrice === undefined || payload.takeProfitPrice === null || payload.takeProfitPrice === ''
     ? null
     : Number(payload.takeProfitPrice);
+  const stopLossPrice = payload.stopLossPrice === undefined || payload.stopLossPrice === null || payload.stopLossPrice === ''
+    ? null
+    : Number(payload.stopLossPrice);
+  const maxOpenPositions = Number(payload.maxOpenPositions ?? 0);
   const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
 
   if (!['BUY', 'SELL'].includes(side)) {
     throw new Error('Invalid order side.');
   }
 
-  if (!['MARKET', 'LIMIT'].includes(orderType)) {
+  const isLimitIOC = orderType === 'LIMIT_IOC';
+  if (!['MARKET', 'LIMIT', 'LIMIT_IOC'].includes(orderType)) {
     throw new Error('Invalid order type.');
   }
 
@@ -180,8 +395,11 @@ async function placeOrder(payload) {
   const roundedTakeProfitPrice = takeProfitPrice
     ? priceFromTick(symbolInfo, takeProfitPrice)
     : null;
+  const roundedStopLossPrice = stopLossPrice
+    ? priceFromTick(symbolInfo, stopLossPrice)
+    : null;
   const plannedOrder = {
-    enabled: process.env.BINANCE_ORDER_ENABLED === 'true',
+    enabled: runtimeSettings.orderEnabled,
     dryRun,
     baseUrl: process.env.BINANCE_FUTURES_BASE_URL ?? 'https://fapi.binance.com',
     symbol,
@@ -193,23 +411,27 @@ async function placeOrder(payload) {
     quantity,
     leverage,
     takeProfitPrice: roundedTakeProfitPrice,
+    stopLossPrice: roundedStopLossPrice,
   };
 
-  if (dryRun || process.env.BINANCE_ORDER_ENABLED !== 'true') {
+  if (dryRun || !runtimeSettings.orderEnabled) {
     return {
       status: 'planned',
       message: dryRun
         ? 'Dry run only. No order was sent to Binance.'
-        : 'BINANCE_ORDER_ENABLED is not true. No order was sent to Binance.',
+        : 'Order execution is disabled. Enable it in Settings.',
       order: plannedOrder,
     };
   }
 
-  const apiKey = process.env.BINANCE_API_KEY;
-  const apiSecret = process.env.BINANCE_API_SECRET;
+  const { apiKey, apiSecret } = getApiCredentials(token);
 
-  if (!apiKey || !apiSecret) {
-    throw new Error('Missing BINANCE_API_KEY or BINANCE_API_SECRET in .env.');
+  if (maxOpenPositions > 0) {
+    const positions = await client.getPositions({ apiKey, apiSecret });
+    const openCount = positions.filter((p) => Number(p.positionAmt) !== 0).length;
+    if (openCount >= maxOpenPositions) {
+      throw new Error(`Max open positions (${maxOpenPositions}) reached. Currently ${openCount} open.`);
+    }
   }
 
   const orderParams = {
@@ -225,17 +447,33 @@ async function placeOrder(payload) {
     orderParams.price = roundedLimitPrice;
     orderParams.timeInForce = 'GTC';
   }
-  const takeProfitParams = roundedTakeProfitPrice ? {
-    symbol,
-    side: side === 'BUY' ? 'SELL' : 'BUY',
-    type: 'TAKE_PROFIT_MARKET',
-    stopPrice: roundedTakeProfitPrice,
-    quantity,
-    reduceOnly: 'true',
-    workingType: 'MARK_PRICE',
-    recvWindow,
-    newClientOrderId: `lp_tp_${Date.now()}`,
-  } : null;
+  if (isLimitIOC) {
+    orderParams.type = 'LIMIT';
+    orderParams.price = roundedLimitPrice;
+    orderParams.timeInForce = 'IOC';
+  }
+  const isHedge = await getHedgeMode(token);
+  const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
+  const positionSide = isHedge ? (side === 'BUY' ? 'LONG' : 'SHORT') : undefined;
+
+  const tpSlBase = (type, triggerPrice, clientId) => {
+    const p = { algoType: 'CONDITIONAL', symbol, side: closeSide, type, triggerPrice, quantity, workingType: 'MARK_PRICE', recvWindow, newClientOrderId: clientId };
+    if (isHedge) p.positionSide = positionSide;
+    else p.reduceOnly = 'true';
+    return p;
+  };
+
+  if (isHedge) orderParams.positionSide = positionSide;
+
+  const supportsStopMarket = !symbolInfo.orderTypes?.length || symbolInfo.orderTypes.includes('STOP_MARKET');
+  const supportsTpMarket = !symbolInfo.orderTypes?.length || symbolInfo.orderTypes.includes('TAKE_PROFIT_MARKET');
+
+  const takeProfitParams = roundedTakeProfitPrice && supportsTpMarket
+    ? tpSlBase('TAKE_PROFIT_MARKET', roundedTakeProfitPrice, `lp_tp_${Date.now()}`)
+    : null;
+  const stopLossParams = roundedStopLossPrice && supportsStopMarket
+    ? tpSlBase('STOP_MARKET', roundedStopLossPrice, `lp_sl_${Date.now()}`)
+    : null;
   const leverageResult = await client.setLeverage({
     symbol,
     leverage,
@@ -243,17 +481,21 @@ async function placeOrder(payload) {
     apiSecret,
     recvWindow,
   });
-  const orderResult = await client.placeFuturesOrder({
-    params: orderParams,
-    apiKey,
-    apiSecret,
-  });
+  let orderResult = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret });
+
+  // LIMIT IOC: if not filled, fall back to MARKET immediately
+  if (isLimitIOC && Number(orderResult.executedQty ?? 0) === 0) {
+    console.log(`[Order] ${symbol} IOC not filled → MARKET fallback`);
+    const marketParams = { ...orderParams, type: 'MARKET', timeInForce: undefined };
+    delete marketParams.price;
+    delete marketParams.timeInForce;
+    orderResult = await client.placeFuturesOrder({ params: marketParams, apiKey, apiSecret });
+  }
   const takeProfitResult = takeProfitParams
-    ? await client.placeFuturesOrder({
-      params: takeProfitParams,
-      apiKey,
-      apiSecret,
-    })
+    ? await client.placeAlgoOrder({ params: takeProfitParams, apiKey, apiSecret })
+    : null;
+  const stopLossResult = stopLossParams
+    ? await client.placeAlgoOrder({ params: stopLossParams, apiKey, apiSecret })
     : null;
 
   return {
@@ -263,10 +505,12 @@ async function placeOrder(payload) {
     leverageResult,
     orderResult,
     takeProfitResult,
+    stopLossResult,
   };
 }
 
 async function getMarketSnapshot() {
+  if (snapshotCache.data && Date.now() < snapshotCache.expiresAt) return snapshotCache.data;
   const [symbols, tickers, premiumRows] = await Promise.all([
     getSymbols(),
     client.getTicker24hr(),
@@ -279,11 +523,12 @@ async function getMarketSnapshot() {
       .map((item) => [item.symbol, item]),
   );
 
-  return tickers
+  const result = tickers
     .filter((item) => allowedSymbols.has(item.symbol))
     .map((item) => {
       const premium = premiumBySymbol.get(item.symbol);
-
+      const lsr = longShortCache.get(item.symbol);
+      const tp = topPositionCache.get(item.symbol);
       return {
         symbol: item.symbol,
         markPrice: Number(premium?.markPrice ?? item.lastPrice),
@@ -291,30 +536,44 @@ async function getMarketSnapshot() {
         fundingRate: Number(premium?.lastFundingRate ?? 0),
         change24hPct: Number(item.priceChangePercent),
         quoteVolume: Number(item.quoteVolume),
+        longShortRatio: lsr?.longShortRatio ?? null,
+        longAccount: lsr?.longAccount ?? null,
+        topLongPosition: tp?.longPosition ?? null,
+        topShortPosition: tp?.shortPosition ?? null,
       };
     });
+  snapshotCache.data = result;
+  snapshotCache.expiresAt = Date.now() + 15000;
+  return result;
 }
 
 function startAutoTrader() {
-  if (process.env.AUTO_TRADE_ENABLED !== 'true') {
-    console.log('Auto trader disabled. Set AUTO_TRADE_ENABLED=true to enable.');
-    return;
-  }
-
   autoTradeState.startedAt = new Date().toISOString();
   const intervalMs = Math.max(Number(process.env.AUTO_TRADE_INTERVAL_MS ?? 15000), 5000);
-
-  console.log(`Auto trader enabled. Scan interval ${intervalMs}ms.`);
+  console.log(`Auto trader ready. Scan interval ${intervalMs}ms. Currently ${runtimeSettings.autoTradeEnabled ? 'enabled' : 'disabled'}.`);
   runAutoTradeScan();
   setInterval(runAutoTradeScan, intervalMs);
 }
 
 async function runAutoTradeScan() {
+  if (!runtimeSettings.autoTradeEnabled) return;
   try {
     const snapshot = await getMarketSnapshot();
     const threshold = Number(process.env.AUTO_TRADE_THRESHOLD ?? 0.7);
     const maxOrders = Math.max(1, Number(process.env.AUTO_TRADE_MAX_ORDERS_PER_SCAN ?? 1));
+    const minVolume = Number(process.env.AUTO_TRADE_MIN_VOLUME_USDT ?? 5_000_000);
+    const maxChangePct = Number(process.env.AUTO_TRADE_MAX_CHANGE_PCT ?? 30);
+    const blacklist = new Set(
+      (process.env.AUTO_TRADE_BLACKLIST ?? '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean),
+    );
     const candidates = snapshot
+      .filter((row) => {
+        if (blacklist.has(row.symbol)) return false;
+        if (isDynamicBlacklisted(row.symbol)) return false;
+        if (row.quoteVolume < minVolume) return false;
+        if (Math.abs(row.change24hPct) > maxChangePct) return false;
+        return true;
+      })
       .map((row) => ({
         row,
         setup: buildAutoTradeSignal(row),
@@ -325,26 +584,68 @@ async function runAutoTradeScan() {
 
     autoTradeState.lastScanAt = new Date().toISOString();
 
-    for (const candidate of candidates) {
-      if (placed >= maxOrders) {
-        break;
-      }
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL || '';
+    const minStreak = Math.max(1, Number(process.env.AUTO_TRADE_MIN_STREAK ?? 2));
 
-      if (isAutoTradeCoolingDown(candidate.row.symbol)) {
+    // Decay streaks for symbols no longer qualifying
+    const qualifyingSymbols = new Set(candidates.map(({ row }) => row.symbol));
+    for (const sym of autoTradeState.signalStreak.keys()) {
+      if (!qualifyingSymbols.has(sym)) autoTradeState.signalStreak.delete(sym);
+    }
+
+    for (const candidate of candidates) {
+      const { row, setup } = candidate;
+      if (placed >= maxOrders) break;
+      if (isAutoTradeCoolingDown(row.symbol)) continue;
+
+      // ── Streak confirmation ──────────────────────────────────
+      const streak = autoTradeState.signalStreak.get(row.symbol) ?? { direction: null, count: 0 };
+      if (streak.direction !== setup.direction) {
+        autoTradeState.signalStreak.set(row.symbol, { direction: setup.direction, count: 1 });
+        console.log(`[AutoTrade] ${row.symbol} new signal ${setup.direction} score=${setup.score.toFixed(3)} — streak 1/${minStreak}`);
+        // Discord #1: signal detected (lightweight, no analysis)
+        if (webhookUrl) {
+          sendSignalDetected(row.symbol, setup.score, webhookUrl)
+            .catch((err) => console.error(`[Discord] signal alert ${row.symbol}:`, err.message));
+        }
+        continue;
+      }
+      if (streak.count < minStreak) {
+        autoTradeState.signalStreak.set(row.symbol, { ...streak, count: streak.count + 1 });
+        console.log(`[AutoTrade] ${row.symbol} streak ${streak.count + 1}/${minStreak}`);
         continue;
       }
 
-      const result = await placeAutoTrade(candidate.row, candidate.setup);
+      // ── Bounce/dip entry filter ──────────────────────────────
+      // SHORT: track lowest seen → wait for price to bounce ≥ bouncePct above that low
+      // LONG:  anchor to signal price → wait for price to dip ≥ bouncePct below signal price
+      //        (can't track "highest" for LONG because rising price keeps updating extreme → move always 0)
+      // ── Calculate entry level (EMA99 / ATR-based) → LIMIT IOC ─
+      const [symbols] = await Promise.all([getSymbols()]);
+      const symbolInfo = symbols.find((s) => s.symbol === row.symbol);
+      const limitPrice = symbolInfo
+        ? await calculateEntryLevel(row.symbol, setup.direction, row.markPrice, symbolInfo)
+        : null;
 
+      // ── Place order ──────────────────────────────────────────
+      console.log(`[AutoTrade] ${row.symbol} ${setup.direction.toUpperCase()} ENTRY — streak OK → ${limitPrice ? `LIMIT IOC @ ${limitPrice}` : 'MARKET'}`);
+      const result = await placeAutoTrade(row, setup, limitPrice);
+      // Discord #2: order placed (full analysis embed)
+      if (webhookUrl) {
+        fetchAnalysis({ client, symbol: row.symbol, interval: '15m', limit: 192 })
+          .then((analysis) => sendOrderPlaced(row.symbol, setup.score, analysis, webhookUrl))
+          .catch((err) => console.error(`[Discord] order alert ${row.symbol}:`, err.message));
+      }
       autoTradeState.lastOrders.unshift({
         at: new Date().toISOString(),
-        symbol: candidate.row.symbol,
-        direction: candidate.setup.direction,
-        score: candidate.setup.score,
+        symbol: row.symbol,
+        direction: setup.direction,
+        score: setup.score,
         result,
       });
       autoTradeState.lastOrders = autoTradeState.lastOrders.slice(0, 20);
-      autoTradeState.symbolCooldowns.set(candidate.row.symbol, Date.now());
+      autoTradeState.symbolCooldowns.set(row.symbol, Date.now());
+      autoTradeState.signalStreak.delete(row.symbol);
       placed += 1;
     }
   } catch (error) {
@@ -357,21 +658,92 @@ async function runAutoTradeScan() {
   }
 }
 
-async function placeAutoTrade(row, setup) {
+async function placeAutoTrade(row, setup, limitPrice = null) {
   const marginUsdt = Number(process.env.AUTO_TRADE_MARGIN_USDT ?? 2);
   const leverage = Math.max(1, Math.min(125, Number(process.env.AUTO_TRADE_LEVERAGE ?? 10)));
   const notionalUsdt = marginUsdt * leverage;
-  const dryRun = process.env.AUTO_TRADE_DRY_RUN !== 'false';
+  const dryRun = runtimeSettings.dryRun;
   const side = setup.direction === 'long' ? 'BUY' : 'SELL';
+  const tpRoePct = Number(process.env.AUTO_TRADE_TP_ROE ?? 20) / 100;
+  const mark = row.markPrice;
+
+  const takeProfitPrice = tpRoePct > 0 && mark > 0
+    ? (side === 'BUY'
+      ? mark * (1 + tpRoePct / leverage)
+      : mark * (1 - tpRoePct / leverage))
+    : undefined;
 
   return placeOrder({
     symbol: row.symbol,
     side,
+    orderType: limitPrice && !dryRun ? 'LIMIT_IOC' : 'MARKET',
     notionalUsdt,
     leverage,
     dryRun,
+    limitPrice: limitPrice ?? undefined,
+    takeProfitPrice,
     source: 'auto-trader',
   });
+}
+
+// symbol → entry price at the time avg-down was placed (reset when position closes)
+const avgDownTriggered = new Map();
+
+async function runAvgDownScan() {
+  if (process.env.AVG_DOWN_ENABLED !== 'true') return;
+  const triggerRoe = Number(process.env.AVG_DOWN_TRIGGER_ROE ?? -60);
+  const marginUsdt = Number(process.env.AVG_DOWN_MARGIN_USDT ?? 2);
+
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const positions = await client.getPositions({ apiKey, apiSecret });
+    const active = positions.filter((p) => Number(p.positionAmt) !== 0);
+
+    // Clear triggered map for closed positions
+    const activeSymbols = new Set(active.map((p) => p.symbol));
+    for (const sym of avgDownTriggered.keys()) {
+      if (!activeSymbols.has(sym)) avgDownTriggered.delete(sym);
+    }
+
+    for (const pos of active) {
+      const amt = Number(pos.positionAmt);
+      const entry = Number(pos.entryPrice);
+      const upnl = Number(pos.unRealizedProfit);
+      const lev = Number(pos.leverage) || 1;
+      const isolatedMargin = Number(pos.isolatedMargin);
+      const initialMargin = Number(pos.initialMargin);
+      const margin = isolatedMargin > 0 ? isolatedMargin
+        : initialMargin > 0 ? initialMargin
+          : Math.abs(amt) * entry / lev;
+      const roe = margin > 0 ? (upnl / margin) * 100 : 0;
+
+      if (roe > triggerRoe) continue;
+
+      // Already averaged for this position entry price (within 1% means same position, not re-opened)
+      const prevEntry = avgDownTriggered.get(pos.symbol);
+      if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.01) continue;
+
+      const side = amt > 0 ? 'BUY' : 'SELL';
+      const notionalUsdt = marginUsdt * lev;
+
+      if (runtimeSettings.dryRun) {
+        console.log(`[AvgDown] [DRY RUN] ${pos.symbol} ROE=${roe.toFixed(1)}% → would avg down $${marginUsdt} ${side}`);
+        avgDownTriggered.set(pos.symbol, entry);
+        continue;
+      }
+
+      try {
+        await placeOrder({ symbol: pos.symbol, side, notionalUsdt, leverage: lev, dryRun: false, source: 'avg-down' });
+        avgDownTriggered.set(pos.symbol, entry);
+        console.log(`[AvgDown] ✅ ${pos.symbol} ROE=${roe.toFixed(1)}% → avg down $${marginUsdt} ${side}`);
+      } catch (err) {
+        console.error(`[AvgDown] ❌ ${pos.symbol}:`, err.message);
+      }
+    }
+  } catch (err) {
+    if (err.message?.includes('Missing Binance API')) return; // no credentials yet
+    console.error('[AvgDown] Scan error:', err.message);
+  }
 }
 
 function buildAutoTradeSignal(row) {
@@ -416,18 +788,65 @@ function buildAutoTradeSignal(row) {
 
 function isAutoTradeCoolingDown(symbol) {
   const lastOrderAt = autoTradeState.symbolCooldowns.get(symbol);
-
-  if (!lastOrderAt) {
-    return false;
-  }
-
+  if (!lastOrderAt) return false;
   return Date.now() - lastOrderAt < Number(process.env.AUTO_TRADE_COOLDOWN_MS ?? 900000);
+}
+
+function computeEMA(closes, period) {
+  const k = 2 / (period + 1);
+  let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < closes.length; i++) {
+    ema = closes[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+function computeATR(klines, period = 14) {
+  const trs = [];
+  for (let i = 1; i < klines.length; i++) {
+    const { high, low } = klines[i];
+    const prevClose = klines[i - 1].close;
+    trs.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+  }
+  const recent = trs.slice(-period);
+  return recent.reduce((a, b) => a + b, 0) / recent.length;
+}
+
+async function calculateEntryLevel(symbol, direction, markPrice, symbolInfo) {
+  try {
+    const klines = await client.getKlines(symbol, '15m', 110);
+    if (klines.length < 100) return null;
+    const closes = klines.map((k) => k.close);
+    const ema99 = computeEMA(closes, 99);
+    const atr = computeATR(klines, 14);
+
+    let rawLimit;
+    if (direction === 'short') {
+      // Enter into a micro-bounce: limit just above current price (0.5×ATR above mark)
+      rawLimit = markPrice + atr * 0.5;
+      // Cap at 1% above mark to avoid ridiculous levels
+      rawLimit = Math.min(rawLimit, markPrice * 1.01);
+    } else {
+      // Enter at EMA99 (MA support). If EMA99 too far (> 2×ATR below), use 1×ATR below instead
+      const floorPrice = markPrice - atr * 2;
+      rawLimit = Math.max(ema99, floorPrice);
+      // Must be at least slightly below mark to be a real improvement
+      rawLimit = Math.min(rawLimit, markPrice * 0.9995);
+    }
+
+    const limitPrice = Number(priceFromTick(symbolInfo, rawLimit));
+    console.log(`[AutoTrade] ${symbol} entry level: ${direction} → LIMIT ${limitPrice} (EMA99=${ema99.toFixed(4)} ATR=${atr.toFixed(4)})`);
+    return limitPrice;
+  } catch (err) {
+    console.warn(`[AutoTrade] ${symbol} calculateEntryLevel failed: ${err.message}`);
+    return null;
+  }
 }
 
 function getAutoTradeStatus() {
   return {
-    enabled: process.env.AUTO_TRADE_ENABLED === 'true',
-    dryRun: process.env.AUTO_TRADE_DRY_RUN !== 'false',
+    enabled: runtimeSettings.autoTradeEnabled,
+    dryRun: runtimeSettings.dryRun,
     threshold: Number(process.env.AUTO_TRADE_THRESHOLD ?? 0.7),
     marginUsdt: Number(process.env.AUTO_TRADE_MARGIN_USDT ?? 2),
     leverage: Number(process.env.AUTO_TRADE_LEVERAGE ?? 10),
@@ -493,12 +912,320 @@ async function readJsonBody(request) {
   return raw ? JSON.parse(raw) : {};
 }
 
+async function batchedAllSettled(items, fn, batchSize = 5, delayMs = 300) {
+  const results = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    results.push(...await Promise.allSettled(batch.map(fn)));
+    if (i + batchSize < items.length) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return results;
+}
+
+function startLongShortRefresh() {
+  const run = async () => {
+    try {
+      const [symbols, tickers] = await Promise.all([getSymbols(), client.getTicker24hr()]);
+      const allowed = new Set(symbols.map((s) => s.symbol));
+      const top = tickers
+        .filter((t) => allowed.has(t.symbol))
+        .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+        .slice(0, 40)
+        .map((t) => t.symbol);
+
+      // Stagger calls: 5 per batch, 300ms between batches → ~2.4s total instead of burst
+      const [globalResults, topResults] = await Promise.all([
+        batchedAllSettled(top, (sym) => client.getGlobalLongShortRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] }))),
+        batchedAllSettled(top, (sym) => client.getTopLongShortPositionRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] }))),
+      ]);
+
+      for (const r of globalResults) {
+        if (r.status === 'fulfilled' && r.value.row) {
+          longShortCache.set(r.value.sym, {
+            longShortRatio: Number(r.value.row.longShortRatio),
+            longAccount: Number(r.value.row.longAccount),
+          });
+        }
+      }
+      for (const r of topResults) {
+        if (r.status === 'fulfilled' && r.value.row) {
+          const d = r.value.row;
+          topPositionCache.set(r.value.sym, {
+            longShortRatio: Number(d.longShortRatio),
+            longPosition: Number(d.longAccount),   // API field is named longAccount but represents position %
+            shortPosition: Number(d.shortAccount),
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[LongShort] Refresh error:', err.message);
+    }
+  };
+  setTimeout(run, 8000);
+  setInterval(run, 5 * 60 * 1000);
+}
+
+async function getHedgeMode(token = null) {
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  if (hedgeModeCache.has(apiKey)) return hedgeModeCache.get(apiKey);
+  try {
+    const mode = await client.getPositionMode({ apiKey, apiSecret });
+    hedgeModeCache.set(apiKey, mode);
+    console.log(`[PositionMode] Account is in ${mode ? 'Hedge' : 'One-way'} mode.`);
+    return mode;
+  } catch {
+    hedgeModeCache.set(apiKey, false);
+    return false;
+  }
+}
+
+function getApiCredentials(token = null) {
+  const creds = token ? sessionCredentials.get(token) : null;
+  let apiKey = creds?.apiKey || process.env.BINANCE_API_KEY;
+  let apiSecret = creds?.apiSecret || process.env.BINANCE_API_SECRET;
+  // Background services (auto-trader, TSL) run with token=null — fall back to any logged-in session
+  if ((!apiKey || !apiSecret) && sessionCredentials.size > 0) {
+    const first = sessionCredentials.values().next().value;
+    apiKey = apiKey || first?.apiKey;
+    apiSecret = apiSecret || first?.apiSecret;
+  }
+  if (!apiKey || !apiSecret) throw new Error('Missing Binance API credentials. Enter API key on login or set BINANCE_API_KEY in .env.');
+  return { apiKey, apiSecret };
+}
+
+async function getAccountBalance(token = null) {
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  const rows = await client.getBalance({ apiKey, apiSecret });
+  return rows.filter((b) => Number(b.balance) > 0 || Number(b.crossUnPnl) !== 0);
+}
+
+async function getPositions(token = null) {
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  const rows = await client.getPositions({ apiKey, apiSecret });
+  return rows.filter((p) => Number(p.positionAmt) !== 0);
+}
+
+async function getOpenOrders(symbol, token = null) {
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  return client.getOpenOrders({ symbol, apiKey, apiSecret });
+}
+
+async function getOpenAlgoOrdersList(token = null) {
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  const result = await client.getOpenAlgoOrders({ apiKey, apiSecret });
+  return Array.isArray(result?.orders) ? result.orders : Array.isArray(result) ? result : [];
+}
+
+async function getRecentTrades(symbol, limit, token = null) {
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  return client.getUserTrades({ symbol, limit, apiKey, apiSecret });
+}
+
+async function cancelOrder(payload, token = null) {
+  const symbol = normalizeSymbol(payload.symbol ?? '');
+  const orderId = Number(payload.orderId);
+  if (!symbol || !orderId) throw new Error('symbol and orderId are required.');
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  return client.cancelOrder({ symbol, orderId, apiKey, apiSecret });
+}
+
+async function cancelAllOrdersForSymbol(symbol, apiKey, apiSecret) {
+  const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+  let regularCount = 0;
+  let algoCount = 0;
+
+  try {
+    await client.cancelAllOpenOrders({ symbol, apiKey, apiSecret, recvWindow });
+    regularCount = 1; // API doesn't return count, just success
+    console.log(`[CancelAll] ${symbol} regular orders cancelled`);
+  } catch (err) {
+    // -2011 = no open orders, not a real error
+    if (!err.message?.includes('-2011')) {
+      console.warn(`[CancelAll] ${symbol} regular: ${err.message}`);
+    }
+  }
+
+  try {
+    const algoResult = await client.getOpenAlgoOrders({ apiKey, apiSecret, recvWindow });
+    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+    // Filter client-side: only cancel orders belonging to this symbol
+    const algoOrders = allAlgo.filter((o) => o.symbol === symbol);
+    for (const o of algoOrders) {
+      try {
+        await client.cancelAlgoOrder({ algoId: o.algoId, apiKey, apiSecret, recvWindow });
+        algoCount += 1;
+      } catch (err) {
+        console.warn(`[CancelAll] ${symbol} algoId=${o.algoId}: ${err.message}`);
+      }
+    }
+    if (algoCount > 0) console.log(`[CancelAll] ${symbol} ${algoCount} algo order(s) cancelled`);
+  } catch (err) {
+    console.warn(`[CancelAll] ${symbol} algo fetch: ${err.message}`);
+  }
+
+  return { symbol, regularCount, algoCount };
+}
+
+const lastKnownPositions = new Map(); // symbol → { unRealizedProfit, positionAmt }
+
+async function runStaleOrderCleaner() {
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const positions = await client.getPositions({ apiKey, apiSecret });
+    const activeMap = new Map(
+      positions
+        .filter((p) => Number(p.positionAmt) !== 0)
+        .map((p) => [p.symbol, { unRealizedProfit: Number(p.unRealizedProfit), positionAmt: Number(p.positionAmt) }]),
+    );
+
+    if (lastKnownPositions.size > 0) {
+      for (const [sym, prev] of lastKnownPositions) {
+        if (activeMap.has(sym)) continue;
+
+        console.log(`[StaleOrders] ${sym} closed → cancelling open orders`);
+        cancelAllOrdersForSymbol(sym, apiKey, apiSecret).catch((err) =>
+          console.warn(`[StaleOrders] ${sym}: ${err.message}`),
+        );
+
+        // Detect SL: fetch last few trades, if closing trade has negative realizedPnl → blacklist 2h
+        try {
+          const trades = await client.getUserTrades({ symbol: sym, limit: 5, apiKey, apiSecret });
+          if (trades.length > 0) {
+            const last = trades[trades.length - 1];
+            const pnl = Number(last.realizedPnl);
+            if (pnl < 0) {
+              await addToDynamicBlacklist(sym, 2 * 60 * 60 * 1000, `SL hit pnl=${pnl.toFixed(4)}`);
+            }
+          }
+        } catch (err) {
+          console.warn(`[StaleOrders] ${sym} trade check: ${err.message}`);
+        }
+      }
+    }
+
+    lastKnownPositions.clear();
+    for (const [sym, data] of activeMap) lastKnownPositions.set(sym, data);
+  } catch (err) {
+    if (err.message?.includes('Missing Binance API')) return;
+    console.error('[StaleOrders] Scan error:', err.message);
+  }
+}
+
+const tpMovedToEntry = new Map(); // symbol → entryPrice when TP was moved to entry
+
+async function handleTpEntryGuard(symbol, pos, markPrice, roe) {
+  const entry = pos.entry;
+
+  // Already moved for this entry price
+  const prevEntry = tpMovedToEntry.get(symbol);
+  if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.005) return;
+
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+    const [algoResult, symbols] = await Promise.all([
+      client.getOpenAlgoOrders({ apiKey, apiSecret }),
+      getSymbols(),
+    ]);
+
+    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+    const tpOrder = allAlgo.find((o) => {
+      if (o.symbol !== symbol) return false;
+      const t = String(o.type ?? '').toUpperCase();
+      return t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
+    });
+    if (!tpOrder) return;
+
+    const isLong = pos.amt > 0;
+    const currentTpPrice = Number(tpOrder.triggerPrice);
+    if (isLong && currentTpPrice <= entry) return;
+    if (!isLong && currentTpPrice >= entry) return;
+
+    const symbolInfo = symbols.find((s) => s.symbol === symbol);
+    if (!symbolInfo) return;
+
+    const newTpPrice = priceFromTick(symbolInfo, entry);
+    const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
+    const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
+    const steppedQty = Math.floor(Math.abs(pos.amt) / stepSize) * stepSize;
+    const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
+
+    const positionSide = pos.positionSide ?? 'BOTH';
+    const isHedge = positionSide !== 'BOTH';
+
+    await client.cancelAlgoOrder({ algoId: tpOrder.algoId, apiKey, apiSecret, recvWindow });
+    const tpParams = {
+      algoType: 'CONDITIONAL',
+      symbol,
+      side: isLong ? 'SELL' : 'BUY',
+      type: 'TAKE_PROFIT_MARKET',
+      triggerPrice: String(newTpPrice),
+      quantity,
+      workingType: 'MARK_PRICE',
+      recvWindow,
+      newClientOrderId: `lp_tpe_${Date.now()}`.slice(0, 36),
+    };
+    if (isHedge) { tpParams.positionSide = positionSide; } else { tpParams.reduceOnly = 'true'; }
+
+    await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
+    tpMovedToEntry.set(symbol, entry);
+    console.log(`[TpGuard] ${symbol} ROE=${roe.toFixed(1)}% → TP moved to entry ${newTpPrice}`);
+  } catch (err) {
+    console.error(`[TpGuard] ${symbol} failed:`, err.message);
+  }
+}
+
+async function closePosition(payload, token = null) {
+  const symbol = normalizeSymbol(payload.symbol ?? '');
+  const positionAmt = Number(payload.positionAmt);
+  if (!symbol || !positionAmt) throw new Error('symbol and positionAmt are required.');
+  const side = positionAmt > 0 ? 'SELL' : 'BUY';
+  const quantity = Math.abs(positionAmt);
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+  const [symbols, premiumIndex] = await Promise.all([
+    getSymbols(),
+    client.getPremiumIndex(symbol),
+  ]);
+  const symbolInfo = symbols.find((s) => s.symbol === symbol);
+  if (!symbolInfo) throw new Error(`Symbol ${symbol} not found.`);
+
+  const markPrice = Number(premiumIndex.markPrice);
+  const steppedQty = quantityFromNotional(symbolInfo, quantity * markPrice, markPrice);
+
+  const isHedge = await getHedgeMode(token);
+  const closeParams = {
+    symbol,
+    side,
+    type: 'MARKET',
+    quantity: steppedQty,
+    recvWindow,
+    newClientOrderId: `lp_close_${Date.now()}`,
+  };
+  if (isHedge) {
+    closeParams.positionSide = positionAmt > 0 ? 'LONG' : 'SHORT';
+  } else {
+    closeParams.reduceOnly = 'true';
+  }
+
+  const result = await client.placeFuturesOrder({ params: closeParams, apiKey, apiSecret });
+  // Cancel all dangling TP/SL/algo orders for this symbol (non-blocking)
+  cancelAllOrdersForSymbol(symbol, apiKey, apiSecret).catch((err) =>
+    console.warn(`[CancelAll] post-close ${symbol}: ${err.message}`),
+  );
+  return result;
+}
+
 async function sendStatic(pathname, response) {
   const staticPath = pathname === '/'
     ? '/index.html'
     : pathname === '/signals'
       ? '/signals.html'
-      : pathname;
+      : pathname === '/orders'
+        ? '/orders.html'
+        : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);
 

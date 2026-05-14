@@ -111,6 +111,10 @@ async function loadSymbols() {
       firstSeenPrice: null,
       firstSeenAt: null,
       liveMomentumPct: 0,
+      longShortRatio: null,
+      longAccount: null,
+      topLongPosition: null,
+      topShortPosition: null,
       lastUpdate: 0,
     });
   });
@@ -137,6 +141,10 @@ async function loadMarketSnapshot() {
       state.fundingRate = row.fundingRate;
       state.change24hPct = row.change24hPct;
       state.quoteVolume = row.quoteVolume;
+      if (row.longShortRatio != null) state.longShortRatio = row.longShortRatio;
+      if (row.longAccount != null) state.longAccount = row.longAccount;
+      if (row.topLongPosition != null) state.topLongPosition = row.topLongPosition;
+      if (row.topShortPosition != null) state.topShortPosition = row.topShortPosition;
       updateLiveMomentum(state, row.markPrice);
       state.lastUpdate = Date.now();
     });
@@ -270,7 +278,7 @@ function render() {
   const btcHtml = btcRow ? renderRow(btcRow, true) : '';
   elements.signalsBody.innerHTML = visibleRows.length || btcHtml
     ? btcHtml + visibleRows.map((row) => renderRow(row, false)).join('')
-    : '<tr><td colspan="13" class="empty-cell">No symbols match current filter.</td></tr>';
+    : '<tr><td colspan="15" class="empty-cell">No symbols match current filter.</td></tr>';
 }
 
 function buildSocketSetup(row) {
@@ -377,6 +385,10 @@ function sortRows(rows) {
   });
 }
 
+function isCrowdedLong(row, setup) {
+  return setup.direction === 'long' && row.longAccount != null && row.longAccount >= 0.60;
+}
+
 function renderRow(row, isPinned = false) {
   const digits = priceDigitsFor(row.markPrice);
   const setup = row.setup;
@@ -386,6 +398,7 @@ function renderRow(row, isPinned = false) {
       ? 'negative'
       : 'neutral';
   const href = `/?symbol=${encodeURIComponent(row.symbol)}`;
+  const crowded = isCrowdedLong(row, setup);
 
   const setupCell = setup.direction === 'wait'
     ? `<span class="setup-wait">—</span>`
@@ -393,12 +406,27 @@ function renderRow(row, isPinned = false) {
        <span class="setup-range">${setup.entry ? `${formatPrice(setup.entry.low, digits)} – ${formatPrice(setup.entry.high, digits)}` : ''}</span>
        <span class="setup-trigger">${setup.trigger ? `▶ ${formatPrice(setup.trigger, digits)}` : ''}</span>`;
 
+  const lsrCell = row.longAccount != null
+    ? `${formatNumber(row.longAccount * 100, 1)}% L${crowded ? ' <span class="crowd-badge">CROWD</span>' : ''}`
+    : '-';
+
+  const topPos = row.topLongPosition;
+  const topPosCell = topPos != null
+    ? (() => {
+        const longPct = topPos * 100;
+        const cls = longPct >= 60 ? 'positive' : longPct <= 40 ? 'negative' : 'neutral';
+        return `<span class="${cls}">${formatNumber(longPct, 1)}%</span> L`;
+      })()
+    : '-';
+
   const symbolCell = isPinned
     ? `<td><span class="pin-badge">⬡ BTC</span> <a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a></td>`
-    : `<td><a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a></td>`;
+    : `<td><a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a>${crowded ? ' <span class="kill-long-badge">⚡ kill long</span>' : ''}</td>`;
+
+  const rowClass = isPinned ? 'pinned-row' : crowded ? 'kill-long-row' : '';
 
   return `
-    <tr class="${isPinned ? 'pinned-row' : ''}">
+    <tr class="${rowClass}">
       ${symbolCell}
       <td><span class="signal-pill ${directionClass}">${setup.direction.toUpperCase()}</span><small>${formatNumber(setup.score, 3)}</small></td>
       <td><span class="confidence-pill confidence-${setup.confidence}">${setup.confidence.toUpperCase()}</span></td>
@@ -407,6 +435,8 @@ function renderRow(row, isPinned = false) {
       <td class="${classFor(row.change24hPct)}">${signed(row.change24hPct)}%</td>
       <td class="${classFor(row.liveMomentumPct)}">${signed(row.liveMomentumPct)}%</td>
       <td class="${classFor(-Math.abs(row.fundingRate ?? 0) + 0.0002)}">${formatNumber((row.fundingRate ?? 0) * 100, 4)}%</td>
+      <td>${lsrCell}</td>
+      <td>${topPosCell}</td>
       <td>${setup.entry ? `${formatPrice(setup.entry.low, digits)} - ${formatPrice(setup.entry.high, digits)}` : '-'}</td>
       <td>${setup.trigger ? formatPrice(setup.trigger, digits) : '-'}</td>
       <td>${setup.stop ? formatPrice(setup.stop, digits) : '-'}</td>

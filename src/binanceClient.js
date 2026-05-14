@@ -57,6 +57,15 @@ export class BinanceClient {
     return this.get('/futures/data/globalLongShortAccountRatio', { symbol, period, limit });
   }
 
+  async getTopLongShortPositionRatio(symbol, period = '15m', limit = 1) {
+    return this.get('/futures/data/topLongShortPositionRatio', { symbol, period, limit });
+  }
+
+  async getPositionMode({ apiKey, apiSecret }) {
+    const res = await this.signedRequest('GET', '/fapi/v1/positionSide/dual', {}, { apiKey, apiSecret });
+    return res.dualSidePosition; // true = hedge mode
+  }
+
   async getExchangeInfo() {
     return this.get('/fapi/v1/exchangeInfo');
   }
@@ -75,6 +84,63 @@ export class BinanceClient {
 
   async placeFuturesOrder({ params, apiKey, apiSecret }) {
     return this.signedRequest('POST', '/fapi/v1/order', params, { apiKey, apiSecret });
+  }
+
+  async placeAlgoOrder({ params, apiKey, apiSecret }) {
+    return this.signedRequest('POST', '/fapi/v1/algoOrder', params, { apiKey, apiSecret });
+  }
+
+  async getBalance({ apiKey, apiSecret, recvWindow = 5000 }) {
+    return this.signedRequest('GET', '/fapi/v2/balance', { recvWindow }, { apiKey, apiSecret });
+  }
+
+  async getPositions({ apiKey, apiSecret, recvWindow = 5000 }) {
+    return this.signedRequest('GET', '/fapi/v2/positionRisk', { recvWindow }, { apiKey, apiSecret });
+  }
+
+  async getOpenOrders({ symbol, apiKey, apiSecret, recvWindow = 5000 }) {
+    const params = { recvWindow };
+    if (symbol) params.symbol = symbol;
+    return this.signedRequest('GET', '/fapi/v1/openOrders', params, { apiKey, apiSecret });
+  }
+
+  async getUserTrades({ symbol, limit = 50, apiKey, apiSecret, recvWindow = 5000 }) {
+    return this.signedRequest('GET', '/fapi/v1/userTrades', { symbol, limit, recvWindow }, { apiKey, apiSecret });
+  }
+
+  async cancelOrder({ symbol, orderId, apiKey, apiSecret, recvWindow = 5000 }) {
+    return this.signedRequest('DELETE', '/fapi/v1/order', { symbol, orderId, recvWindow }, { apiKey, apiSecret });
+  }
+
+  async createListenKey({ apiKey }) {
+    const res = await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
+      method: 'POST',
+      headers: { 'X-MBX-APIKEY': apiKey, 'user-agent': 'btc-liquidity-proxy/0.1.0' },
+    });
+    if (!res.ok) throw new Error(`createListenKey ${res.status}`);
+    return res.json();
+  }
+
+  async keepAliveListenKey({ listenKey, apiKey }) {
+    await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
+      method: 'PUT',
+      headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/json', 'user-agent': 'btc-liquidity-proxy/0.1.0' },
+      body: JSON.stringify({ listenKey }),
+    });
+  }
+
+  async cancelAllOpenOrders({ symbol, apiKey, apiSecret, recvWindow = 5000 }) {
+    return this.signedRequest('DELETE', '/fapi/v1/allOpenOrders', { symbol, recvWindow }, { apiKey, apiSecret });
+  }
+
+  async cancelAlgoOrder({ algoId, apiKey, apiSecret, recvWindow = 5000 }) {
+    return this.signedRequest('DELETE', '/fapi/v1/algoOrder', { algoId, recvWindow }, { apiKey, apiSecret });
+  }
+
+  async getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow = 5000 }) {
+    const params = { recvWindow };
+    if (symbol) params.symbol = symbol;
+    return this.signedRequest('GET', '/fapi/v1/openAlgoOrders', params, { apiKey, apiSecret });
   }
 
   async signedRequest(method, path, params, { apiKey, apiSecret }) {
@@ -98,8 +164,13 @@ export class BinanceClient {
     query.set('signature', signature);
 
     const url = new URL(path, this.baseUrl);
+    const useQueryString = method === 'GET' || method === 'DELETE';
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    if (useQueryString) {
+      query.forEach((value, key) => url.searchParams.set(key, value));
+    }
 
     try {
       const response = await fetch(url, {
@@ -110,7 +181,7 @@ export class BinanceClient {
           'user-agent': 'btc-liquidity-proxy/0.1.0',
           'X-MBX-APIKEY': apiKey,
         },
-        body: query.toString(),
+        body: useQueryString ? undefined : query.toString(),
         signal: controller.signal,
       });
       const text = await response.text();
