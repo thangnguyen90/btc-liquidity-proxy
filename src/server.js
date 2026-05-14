@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
-import { startDiscordScanner, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced } from './discordNotifier.js';
+import { startDiscordScanner, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked } from './discordNotifier.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -644,7 +644,20 @@ async function runAutoTradeScan() {
 
       // ── Place order ──────────────────────────────────────────
       console.log(`[AutoTrade] ${row.symbol} ${setup.direction.toUpperCase()} ENTRY — streak OK → ${limitPrice ? `LIMIT IOC @ ${limitPrice}` : 'MARKET'}`);
-      const result = await placeAutoTrade(row, setup, limitPrice, setup.score);
+      let result;
+      try {
+        result = await placeAutoTrade(row, setup, limitPrice, setup.score);
+      } catch (placeErr) {
+        const reason = placeErr instanceof Error ? placeErr.message : String(placeErr);
+        console.warn(`[AutoTrade] ${row.symbol} blocked: ${reason}`);
+        autoTradeState.lastErrors.unshift({ at: new Date().toISOString(), message: reason });
+        autoTradeState.lastErrors = autoTradeState.lastErrors.slice(0, 20);
+        if (webhookUrl) {
+          sendOrderBlocked(row.symbol, setup.score, setup.direction, reason, webhookUrl)
+            .catch((err) => console.error(`[Discord] blocked alert ${row.symbol}:`, err.message));
+        }
+        continue;
+      }
       // Track position immediately so positionMonitor picks it up before next REST sync
       if (posMonitor && result?.status === 'submitted') {
         const isLong = setup.direction === 'long';
@@ -722,6 +735,8 @@ async function placeAutoTrade(row, setup, limitPrice = null, score = 0) {
     ? (isLong ? mark * (1 - slRoePct / leverage) : mark * (1 + slRoePct / leverage))
     : undefined;
 
+  const maxPositions = Number(process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+
   return placeOrder({
     symbol: row.symbol,
     side,
@@ -732,6 +747,7 @@ async function placeAutoTrade(row, setup, limitPrice = null, score = 0) {
     limitPrice: limitPrice ?? undefined,
     takeProfitPrice,
     stopLossPrice,
+    maxOpenPositions: maxPositions,
     source: 'auto-trader',
   });
 }

@@ -71,6 +71,23 @@ export async function sendSignalDetected(symbol, score, webhookUrl, cooldownMs =
   console.log(`[Discord] Signal detected: ${symbol} score=${score.toFixed(3)}`);
 }
 
+// Alert when an order attempt was blocked (max positions, cooldown, etc.)
+export async function sendOrderBlocked(symbol, score, direction, reason, webhookUrl) {
+  if (!webhookUrl) return;
+  const isLong = direction === 'long';
+  const dir = isLong ? '🟢 LONG' : '🔴 SHORT';
+  await sendWebhook(webhookUrl, {
+    username: 'Liquidity Proxy',
+    embeds: [{
+      title: `🚫 BLOCKED: ${dir} ${symbol}`,
+      color: 0x9daaa5,
+      description: `Score **${score >= 0 ? '+' : ''}${score.toFixed(3)}** — ${reason}`,
+      footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
+    }],
+  });
+  console.log(`[Discord] Order blocked: ${symbol} ${direction} — ${reason}`);
+}
+
 // Full alert when order is actually placed
 export async function sendOrderPlaced(symbol, score, analysis, webhookUrl) {
   if (!webhookUrl) return;
