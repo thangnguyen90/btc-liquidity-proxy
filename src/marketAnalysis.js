@@ -21,6 +21,7 @@ export async function fetchAnalysis({
   interval = '15m',
   limit = 192,
   rangePct = 0.04,
+  liqRangePct = 5.0,
   binSizePct = 0.001,
   depthLimit = 1000,
 }) {
@@ -41,6 +42,7 @@ export async function fetchAnalysis({
     openInterest,
     longShortRatio,
     rangePct,
+    liqRangePct,
     binSizePct,
     interval,
   });

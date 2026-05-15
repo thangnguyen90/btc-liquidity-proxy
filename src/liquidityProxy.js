@@ -1,8 +1,19 @@
-const DEFAULT_LEVERAGES = [5, 10, 20, 25, 50, 75, 100];
+const DEFAULT_LEVERAGES = [3, 5, 10, 20, 25, 50, 75, 100];
 
 function intervalToMinutes(interval) {
   const map = { '1m': 1, '3m': 3, '5m': 5, '15m': 15, '30m': 30, '1h': 60, '2h': 120, '4h': 240, '6h': 360, '12h': 720, '1d': 1440 };
   return map[interval] ?? 15;
+}
+
+function buildSweepTarget(zones) {
+  const bias = zones.bias;
+  if (Math.abs(bias) < 0.1) return null;
+  if (bias > 0) {
+    const zone = zones.above.strongest[0] ?? null;
+    return zone ? { direction: 'above', price: zone.price, distancePct: zone.distancePct, score: zone.score } : null;
+  }
+  const zone = zones.below.strongest[0] ?? null;
+  return zone ? { direction: 'below', price: zone.price, distancePct: zone.distancePct, score: zone.score } : null;
 }
 
 export function analyzeMarket({
@@ -13,6 +24,7 @@ export function analyzeMarket({
   openInterest,
   longShortRatio = null,
   rangePct = 0.04,
+  liqRangePct = 5.0,
   binSizePct = 0.001,
   leverages = DEFAULT_LEVERAGES,
   interval = '15m',
@@ -37,7 +49,7 @@ export function analyzeMarket({
     klines,
     currentPrice,
     priceDigits,
-    rangePct,
+    rangePct: liqRangePct,
     binSizePct,
     leverages,
   });
@@ -99,6 +111,9 @@ export function analyzeMarket({
       nearestBelow: zones.below.nearest,
       strongestAbove: zones.above.strongest,
       strongestBelow: zones.below.strongest,
+      sweepTarget: buildSweepTarget(zones),
+      heatmapAbove: zones.heatmapAbove,
+      heatmapBelow: zones.heatmapBelow,
     },
     signal,
     tradeSetup,
@@ -231,12 +246,14 @@ function buildLiquidationMap({ klines, currentPrice, priceDigits, rangePct, binS
   const binSize = currentPrice * binSizePct;
   const binKeyDigits = Math.max(priceDigits + 2, 8);
   const bins = new Map();
-  const recentKlines = klines.slice(-Math.min(klines.length, 240));
+  const recentKlines = klines.slice(-Math.min(klines.length, 500));
 
   recentKlines.forEach((kline, index) => {
-    const ageWeight = (index + 1) / recentKlines.length;
+    const ageWeight = Math.pow((index + 1) / recentKlines.length, 2);
     const volumeWeight = Math.max(kline.quoteVolume, 1);
     const buyPressure = safeDivide(kline.takerBuyQuoteVolume, kline.quoteVolume, 0.5);
+    // High buy pressure → price rising → contrarian SHORTS accumulate above
+    // High sell pressure → price falling → contrarian LONGS accumulate below
     const longWeight = volumeWeight * (1 - buyPressure) * ageWeight;
     const shortWeight = volumeWeight * buyPressure * ageWeight;
 
@@ -245,18 +262,25 @@ function buildLiquidationMap({ klines, currentPrice, priceDigits, rangePct, binS
       const shortLiquidationPrice = kline.close * (1 + 1 / leverage);
       const leverageWeight = Math.sqrt(leverage);
 
-      addBin(bins, longLiquidationPrice, longWeight * leverageWeight, 'below', {
-        minPrice,
-        maxPrice,
-        binSize,
-        binKeyDigits,
-      });
-      addBin(bins, shortLiquidationPrice, shortWeight * leverageWeight, 'above', {
-        minPrice,
-        maxPrice,
-        binSize,
-        binKeyDigits,
-      });
+      // Only model TRAPPED positions — those still underwater at current price:
+      // Trapped longs: entered ABOVE current price → liq is below current → bearish magnet
+      if (kline.close > currentPrice && currentPrice > longLiquidationPrice) {
+        addBin(bins, longLiquidationPrice, longWeight * leverageWeight, 'below', {
+          minPrice,
+          maxPrice,
+          binSize,
+          binKeyDigits,
+        });
+      }
+      // Trapped shorts: entered BELOW current price → liq is above current → bullish magnet
+      if (kline.close < currentPrice && currentPrice < shortLiquidationPrice) {
+        addBin(bins, shortLiquidationPrice, shortWeight * leverageWeight, 'above', {
+          minPrice,
+          maxPrice,
+          binSize,
+          binKeyDigits,
+        });
+      }
     });
   });
 
@@ -293,18 +317,33 @@ function summarizeZones(liquidationMap, currentPrice, priceDigits) {
   const aboveTotal = sum(above.map((zone) => zone.totalScore));
   const belowTotal = sum(below.map((zone) => zone.totalScore));
 
+  const aboveSorted = [...above].sort((a, b) => b.totalScore - a.totalScore);
+  const belowSorted = [...below].sort((a, b) => b.totalScore - a.totalScore);
+  const maxScore = Math.max(...aboveSorted.slice(0, 20).map((z) => z.totalScore), ...belowSorted.slice(0, 20).map((z) => z.totalScore), 1);
+
+  function toHeatmapZone(zone) {
+    return {
+      price: round(zone.price, priceDigits),
+      distancePct: round(((zone.price - currentPrice) / currentPrice) * 100, 3),
+      score: round(zone.totalScore, 2),
+      intensity: round(zone.totalScore / maxScore, 3),
+    };
+  }
+
   return {
     bias: round(safeDivide(aboveTotal - belowTotal, aboveTotal + belowTotal, 0), 4),
     above: {
       total: round(aboveTotal, 2),
       nearest: formatZones(above.slice(0, 5), currentPrice, priceDigits),
-      strongest: formatZones([...above].sort((a, b) => b.totalScore - a.totalScore).slice(0, 5), currentPrice, priceDigits),
+      strongest: formatZones(aboveSorted.slice(0, 5), currentPrice, priceDigits),
     },
     below: {
       total: round(belowTotal, 2),
       nearest: formatZones(below.slice(-5).reverse(), currentPrice, priceDigits),
-      strongest: formatZones([...below].sort((a, b) => b.totalScore - a.totalScore).slice(0, 5), currentPrice, priceDigits),
+      strongest: formatZones(belowSorted.slice(0, 5), currentPrice, priceDigits),
     },
+    heatmapAbove: aboveSorted.slice(0, 20).map(toHeatmapZone).sort((a, b) => b.price - a.price),
+    heatmapBelow: belowSorted.slice(0, 20).map(toHeatmapZone).sort((a, b) => b.price - a.price),
   };
 }
 

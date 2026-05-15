@@ -45,14 +45,8 @@ const elements = {
   bidBar: document.querySelector('#bidBar'),
   askBar: document.querySelector('#askBar'),
   bookExplain: document.querySelector('#bookExplain'),
-  aboveTotal: document.querySelector('#aboveTotal'),
-  belowTotal: document.querySelector('#belowTotal'),
-  aboveCode: document.querySelector('#aboveCode'),
-  belowCode: document.querySelector('#belowCode'),
-  aboveList: document.querySelector('#aboveList'),
-  belowList: document.querySelector('#belowList'),
-  aboveExplain: document.querySelector('#aboveExplain'),
-  belowExplain: document.querySelector('#belowExplain'),
+  liqHeatmap: document.querySelector('#liqHeatmap'),
+  liqHeatmapMeta: document.querySelector('#liqHeatmapMeta'),
   tradeContext: document.querySelector('#tradeContext'),
   coinglassLink: document.querySelector('#coinglassLink'),
   binanceLink: document.querySelector('#binanceLink'),
@@ -183,33 +177,28 @@ function render(data) {
   elements.liquidityBias.className = classFor(data.liquidationProxy.bias);
   elements.bookImbalance.textContent = formatNumber(data.orderBook.imbalance, 4);
   elements.bookImbalance.className = classFor(data.orderBook.imbalance);
+
+  const st = data.liquidationProxy.sweepTarget;
+  const sweepBox = document.getElementById('sweepTargetBox');
+  const sweepLabel = document.getElementById('sweepTargetLabel');
+  const sweepPrice = document.getElementById('sweepTargetPrice');
+  const sweepDist = document.getElementById('sweepTargetDist');
+  if (st) {
+    const isAbove = st.direction === 'above';
+    sweepLabel.textContent = isAbove ? '🚀 Kéo lên quét short tại' : '💥 Kéo xuống quét long tại';
+    sweepPrice.textContent = formatPrice(st.price, priceDigits);
+    sweepPrice.className = isAbove ? 'positive' : 'negative';
+    sweepDist.textContent = `${st.distancePct > 0 ? '+' : ''}${formatNumber(st.distancePct, 2)}% away`;
+    sweepBox.style.display = 'block';
+  } else {
+    sweepBox.style.display = 'none';
+  }
   elements.bidNotional.textContent = formatCurrency(data.orderBook.bidNotional);
   elements.askNotional.textContent = formatCurrency(data.orderBook.askNotional);
 
   renderTradeSetup(data.tradeSetup, coin, priceDigits);
   renderBookBars(data.orderBook);
-  renderZones({
-    coin,
-    side: 'above',
-    zones: data.liquidationProxy.strongestAbove,
-    total: data.liquidationProxy.liquidityAbove,
-    priceDigits,
-    codeElement: elements.aboveCode,
-    listElement: elements.aboveList,
-    totalElement: elements.aboveTotal,
-    explainElement: elements.aboveExplain,
-  });
-  renderZones({
-    coin,
-    side: 'below',
-    zones: data.liquidationProxy.strongestBelow,
-    total: data.liquidationProxy.liquidityBelow,
-    priceDigits,
-    codeElement: elements.belowCode,
-    listElement: elements.belowList,
-    totalElement: elements.belowTotal,
-    explainElement: elements.belowExplain,
-  });
+  renderHeatmap(data.liquidationProxy, data.price.mark, priceDigits);
 
   elements.marketExplain.textContent = marketExplanation(data, coin);
   elements.bookExplain.textContent = bookExplanation(data.orderBook);
@@ -641,4 +630,119 @@ function connectPriceSocket(symbol) {
       // ignore fetch errors, will retry next tick
     }
   }, 1000);
+}
+
+// ── Liquidation Heatmap ────────────────────────────────────────────────────────
+function zoneColor(intensity, side) {
+  if (side === 'above') {
+    const h = Math.round(120 - intensity * 80);   // green(120) → yellow-green(40)
+    const s = Math.round(40 + intensity * 60);
+    const l = Math.round(22 + intensity * 33);
+    return `hsl(${h},${s}%,${l}%)`;
+  }
+  const h = Math.round(intensity * 28);            // red(0) → orange(28)
+  const s = Math.round(40 + intensity * 60);
+  const l = Math.round(22 + intensity * 33);
+  return `hsl(${h},${s}%,${l}%)`;
+}
+
+function renderHeatmap(liq, currentPrice, priceDigits) {
+  const el = elements.liqHeatmap;
+  const metaEl = elements.liqHeatmapMeta;
+  if (!el) return;
+
+  const zonesAbove = liq.heatmapAbove ?? [];
+  const zonesBelow = liq.heatmapBelow ?? [];
+  const allScores = [...zonesAbove, ...zonesBelow].map((z) => z.score);
+  const maxScore = allScores.length ? Math.max(...allScores) : 1;
+
+  const aboveCount = formatCompact(liq.liquidityAbove);
+  const belowCount = formatCompact(liq.liquidityBelow);
+  if (metaEl) metaEl.textContent = `↑${aboveCount}  ↓${belowCount}`;
+
+  function row(zone, side) {
+    const intensity = zone.score / maxScore;
+    const color = zoneColor(intensity, side);
+    const barW = Math.max(4, Math.round(intensity * 100));
+    const sign = zone.distancePct >= 0 ? '+' : '';
+    return `<div class="liq-row liq-${side}">
+      <span class="liq-p">${formatPrice(zone.price, priceDigits)}</span>
+      <div class="liq-bar-wrap"><div class="liq-bar" style="width:${barW}%;background:${color}"></div></div>
+      <span class="liq-d">${sign}${formatNumber(zone.distancePct, 2)}%</span>
+    </div>`;
+  }
+
+  const aboveHtml = zonesAbove.length
+    ? zonesAbove.map((z) => row(z, 'above')).join('')
+    : '<p class="liq-empty">Không có vùng trapped short</p>';
+
+  const belowHtml = zonesBelow.length
+    ? zonesBelow.map((z) => row(z, 'below')).join('')
+    : '<p class="liq-empty">Không có vùng trapped long</p>';
+
+  el.innerHTML = `
+    ${aboveHtml}
+    <div class="liq-current-price">
+      <span>▶ ${formatPrice(currentPrice, priceDigits)}</span>
+    </div>
+    ${belowHtml}
+  `;
+}
+
+// ── AI Analysis ────────────────────────────────────────────────────────────────
+const aiAnalyzeBtn = document.getElementById('aiAnalyzeBtn');
+const aiResult = document.getElementById('aiResult');
+
+aiAnalyzeBtn.addEventListener('click', async () => {
+  const symbol = normalizeSymbol(elements.symbolInput.value);
+  aiAnalyzeBtn.disabled = true;
+  aiAnalyzeBtn.textContent = 'Đang phân tích...';
+  aiResult.innerHTML = '<p class="ai-loading">⏳ GPT đang phân tích dữ liệu...</p>';
+  try {
+    const res = await fetch('/api/ai-analysis', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? 'AI analysis failed');
+    renderAiResult(data);
+  } catch (e) {
+    aiResult.innerHTML = `<p style="color:var(--red);padding:8px 0">${e.message}</p>`;
+  } finally {
+    aiAnalyzeBtn.disabled = false;
+    aiAnalyzeBtn.textContent = 'Phân tích AI';
+  }
+});
+
+function renderAiResult(d) {
+  const rec = String(d.recommendation ?? 'WAIT').toUpperCase();
+  const dirColor = rec === 'LONG' ? 'var(--green)' : rec === 'SHORT' ? 'var(--red)' : 'var(--muted)';
+  const riskClass = String(d.riskLevel ?? 'MEDIUM').toLowerCase();
+  const digits = (v) => {
+    const abs = Math.abs(Number(v));
+    if (!isFinite(abs) || abs === 0) return 4;
+    if (abs >= 1000) return 2;
+    if (abs >= 100) return 3;
+    if (abs >= 10) return 4;
+    if (abs >= 1) return 5;
+    return 6;
+  };
+  const fmt = (v) => v == null ? '-' : Number(v).toLocaleString('en-US', { maximumFractionDigits: digits(v) });
+  const entry = d.entry ?? {};
+  const reasoning = Array.isArray(d.reasoning) ? d.reasoning : [];
+  aiResult.innerHTML = `
+    <div class="ai-rec">
+      <span class="ai-dir" style="color:${dirColor}">${rec}</span>
+      <span class="ai-conf">Confidence ${d.confidence ?? '-'}%</span>
+      <span class="ai-risk ${riskClass}">${String(d.riskLevel ?? 'MEDIUM').toUpperCase()} RISK</span>
+    </div>
+    <div class="ai-prices">
+      <div><span>Entry</span><strong>${fmt(entry.low)} – ${fmt(entry.high)}</strong></div>
+      <div><span>Stop Loss</span><strong style="color:var(--red)">${fmt(d.stopLoss)}</strong></div>
+      <div><span>Target</span><strong style="color:var(--green)">${fmt(d.target)}</strong></div>
+    </div>
+    <p class="ai-summary">${d.summary ?? ''}</p>
+    <ul class="ai-reasons">${reasoning.map((r) => `<li>${r}</li>`).join('')}</ul>
+  `;
 }

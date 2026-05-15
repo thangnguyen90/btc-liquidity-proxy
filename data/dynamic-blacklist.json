@@ -1,32 +1,7 @@
 {
-  "PTBUSDT": {
-    "expiresAt": 1778756429351,
-    "addedAt": "2026-05-14T09:00:29.351Z",
-    "reason": "SL hit pnl=-0.5689"
-  },
-  "AINUSDT": {
-    "expiresAt": 1778756459365,
-    "addedAt": "2026-05-14T09:00:59.365Z",
-    "reason": "SL hit pnl=-1.2849"
-  },
-  "RIVERUSDT": {
-    "expiresAt": 1778756489553,
-    "addedAt": "2026-05-14T09:01:29.553Z",
-    "reason": "SL hit pnl=-0.0045"
-  },
-  "NAORISUSDT": {
-    "expiresAt": 1778757820095,
-    "addedAt": "2026-05-14T09:23:40.095Z",
-    "reason": "SL hit pnl=-0.2982"
-  },
-  "ATAUSDT": {
-    "expiresAt": 1778758060115,
-    "addedAt": "2026-05-14T09:27:40.115Z",
-    "reason": "SL hit pnl=-0.4458"
-  },
-  "GUAUSDT": {
-    "expiresAt": 1778758180095,
-    "addedAt": "2026-05-14T09:29:40.095Z",
-    "reason": "SL hit pnl=-0.9330"
+  "DYMUSDT": {
+    "expiresAt": 1778826059552,
+    "addedAt": "2026-05-15T04:20:59.552Z",
+    "reason": "SL hit pnl=-0.0009"
   }
 }

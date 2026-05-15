@@ -170,6 +170,11 @@
             <div><span>Liquidity Bias</span><strong id="liquidityBias">-</strong></div>
             <div><span>Book Imbalance</span><strong id="bookImbalance">-</strong></div>
           </div>
+          <div id="sweepTargetBox" class="sweep-target-box" style="display:none">
+            <span id="sweepTargetLabel">Sweep Target</span>
+            <strong id="sweepTargetPrice">-</strong>
+            <small id="sweepTargetDist">-</small>
+          </div>
           <p class="explain" id="marketExplain">Chọn symbol và bấm Analyze để xem trạng thái.</p>
         </article>
 
@@ -196,26 +201,14 @@
         </article>
       </section>
 
-      <section class="zones-grid">
-        <article class="panel zone-panel">
-          <div class="panel-head">
-            <h2>Strong Above</h2>
-            <span id="aboveTotal">-</span>
-          </div>
-          <pre id="aboveCode">strong above: -</pre>
-          <ul id="aboveList" class="zone-list"></ul>
-          <p class="explain" id="aboveExplain">Các vùng liquidation/liquidity mạnh phía trên sẽ hiển thị ở đây.</p>
-        </article>
-
-        <article class="panel zone-panel">
-          <div class="panel-head">
-            <h2>Strong Below</h2>
-            <span id="belowTotal">-</span>
-          </div>
-          <pre id="belowCode">strong below: -</pre>
-          <ul id="belowList" class="zone-list"></ul>
-          <p class="explain" id="belowExplain">Các vùng liquidation/liquidity mạnh phía dưới sẽ hiển thị ở đây.</p>
-        </article>
+      <section class="panel liq-heatmap-panel">
+        <div class="panel-head">
+          <h2>Liquidation Map</h2>
+          <span id="liqHeatmapMeta">-</span>
+        </div>
+        <div id="liqHeatmap" class="liq-heatmap">
+          <p class="explain">Chọn symbol và bấm Analyze để xem liquidation zones.</p>
+        </div>
       </section>
 
       <section class="panel">
@@ -224,6 +217,14 @@
           <span>Not financial advice</span>
         </div>
         <div id="tradeContext" class="trade-context"></div>
+      </section>
+
+      <section class="panel ai-panel">
+        <div class="panel-head">
+          <h2>AI Analysis <small class="ai-model-label">GPT-4o-mini</small></h2>
+          <button id="aiAnalyzeBtn" class="ai-btn">Phân tích AI</button>
+        </div>
+        <div id="aiResult" class="ai-result"></div>
       </section>
     </main>
 

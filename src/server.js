@@ -50,6 +50,7 @@ const topPositionCache = new Map(); // symbol → { longShortRatio, longPosition
 
 const BLACKLIST_FILE = join(rootDir, 'data', 'dynamic-blacklist.json');
 const dynamicBlacklist = new Map(); // symbol → { expiresAt, addedAt, reason }
+const aiCache = new Map(); // symbol → { at, data }
 
 async function loadDynamicBlacklist() {
   try {
@@ -144,6 +145,30 @@ const server = createServer(async (request, response) => {
       });
 
       await sendJson(response, analysis);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/ai-analysis' && request.method === 'POST') {
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        await sendJson(response, { error: 'OPENAI_API_KEY chưa được cấu hình trong .env' }, 503);
+        return;
+      }
+      const body = await readJsonBody(request);
+      const symbol = normalizeSymbol(body.symbol ?? 'BTCUSDT');
+      const interval = body.interval ?? '15m';
+      const cached = aiCache.get(symbol);
+      if (cached && Date.now() - cached.at < 60_000) {
+        await sendJson(response, cached.data);
+        return;
+      }
+      const t0 = Date.now();
+      const analysis = await fetchAnalysis({ client, symbol, interval, limit: 200 });
+      const messages = buildAiPrompt(symbol, analysis);
+      const result = await callOpenAI(messages);
+      aiCache.set(symbol, { at: Date.now(), data: result });
+      console.log(`[AI] ${symbol} analyzed in ${Date.now() - t0}ms`);
+      await sendJson(response, result);
       return;
     }
 
@@ -560,6 +585,112 @@ async function getMarketSnapshot() {
   snapshotCache.data = result;
   snapshotCache.expiresAt = Date.now() + 15000;
   return result;
+}
+
+async function callOpenAI(messages) {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
+      response_format: { type: 'json_object' },
+      messages,
+      temperature: 0.2,
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`OpenAI ${res.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  return JSON.parse(data.choices[0].message.content);
+}
+
+function fp(v, d = 4) { return v == null ? '-' : Number(v).toFixed(d); }
+
+function buildAiPrompt(symbol, a) {
+  const d = a;
+  const liq = d.liquidationProxy;
+  const sig = d.signal;
+  const setup = d.tradeSetup;
+  const m = d.market;
+  const ob = d.orderBook;
+
+  const zonesAbove = (liq.strongestAbove ?? []).slice(0, 5)
+    .map((z) => `  • ${fp(z.price, 4)} (+${fp(z.distancePct, 2)}%) score=${fp(z.score, 2)}`).join('\n');
+  const zonesBelow = (liq.strongestBelow ?? []).slice(0, 5)
+    .map((z) => `  • ${fp(z.price, 4)} (${fp(z.distancePct, 2)}%) score=${fp(z.score, 2)}`).join('\n');
+
+  const lrLine = m.longShortRatio
+    ? `Long/Short ratio: ${fp(m.longShortRatio.longShortRatio, 3)} (long accounts: ${(m.longShortRatio.longAccount * 100).toFixed(1)}%)`
+    : 'Long/Short ratio: N/A';
+
+  const setupLine = setup.direction !== 'wait'
+    ? `Direction: ${setup.direction.toUpperCase()} | Confidence: ${setup.confidence}
+Entry zone: ${setup.entry ? `${fp(setup.entry.low, 6)} – ${fp(setup.entry.high, 6)}` : 'N/A'}
+Stop loss: ${fp(setup.stopLoss, 6)}
+Targets: ${(setup.targets ?? []).map((t) => fp(t, 6)).join(' → ')}
+Reasons: ${(setup.reason ?? []).join('; ')}`
+    : `Direction: WAIT
+Breakout long above: ${fp(setup.breakoutLevels?.longAbove, 6)}
+Breakout short below: ${fp(setup.breakoutLevels?.shortBelow, 6)}`;
+
+  const userContent = `## ${symbol} Futures Analysis
+
+**Price:** Mark ${fp(d.price.mark, 6)}  |  Index ${fp(d.price.index, 6)}
+
+**Momentum:** 24h ${fp(m.momentumPct * 100, 2)}%  |  48h ${fp(m.momentumPct48h * 100, 2)}%  |  Trend aligned: ${m.trendAligned}
+**ATR:** ${m.atrPct}% of price
+**Funding rate:** ${m.fundingRatePct}% (positive = longs pay shorts → bearish pressure)
+**Open Interest:** ${m.openInterest}
+
+**Taker buy ratio:** ${(m.takerBuyRatio * 100).toFixed(1)}% (>50% = buy pressure)
+${lrLine}
+
+**Order Book (${(ob.rangePct * 100).toFixed(1)}% range):**
+Bid: ${ob.bidNotional?.toFixed(0)} USDT  |  Ask: ${ob.askNotional?.toFixed(0)} USDT  |  Imbalance: ${fp(ob.imbalance, 3)} (positive = buy wall)
+
+**Estimated Liquidation Zones (from leveraged position history):**
+Above current price (short liquidations → bullish magnet):
+${zonesAbove || '  (none)'}
+Below current price (long liquidations → bearish magnet):
+${zonesBelow || '  (none)'}
+Liquidity bias: ${fp(liq.bias, 3)} (>0 = more liquidity above = short squeeze potential)
+
+**Internal Signal:**
+Label: ${sig.label}  |  Score: ${sig.score} (range -1 to +1)
+Components → momentum:${sig.components.momentum} funding:${sig.components.funding} takerFlow:${sig.components.takerFlow} orderBook:${sig.components.orderBook} liquidityMagnet:${sig.components.liquidityMagnet} crowding:${sig.components.crowding}
+
+**Heuristic Trade Setup:**
+${setupLine}
+
+Based on ALL the above data, provide your trading recommendation. Focus especially on:
+1. Where liquidation clusters sit relative to price (they act as magnets)
+2. Whether funding rate and taker flow confirm or contradict momentum
+3. Realistic entry price within the next 1-4 hours
+
+Respond ONLY with JSON in this exact format:
+{
+  "recommendation": "LONG or SHORT or WAIT",
+  "entry": { "low": number, "high": number },
+  "stopLoss": number,
+  "target": number,
+  "riskLevel": "LOW or MEDIUM or HIGH",
+  "confidence": number (0-100),
+  "reasoning": ["bullet 1", "bullet 2", "bullet 3"],
+  "summary": "one sentence in Vietnamese"
+}`;
+
+  return [
+    {
+      role: 'system',
+      content: 'You are an expert crypto futures trader. Analyze Binance USD-M Futures market data and return a precise JSON trading recommendation. Be specific with price levels. Do not add commentary outside the JSON.',
+    },
+    { role: 'user', content: userContent },
+  ];
 }
 
 function startAutoTrader() {
