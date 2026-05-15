@@ -431,7 +431,7 @@ async function placeOrder(payload, token = null) {
     ? priceFromTick(symbolInfo, limitPrice)
     : null;
   const executionPrice = roundedLimitPrice ? Number(roundedLimitPrice) : markPrice;
-  const quantity = quantityFromNotional(symbolInfo, notionalUsdt, executionPrice);
+  const quantity = quantityFromNotional(symbolInfo, notionalUsdt, executionPrice, dryRun);
   const roundedTakeProfitPrice = takeProfitPrice
     ? priceFromTick(symbolInfo, takeProfitPrice)
     : null;
@@ -1061,14 +1061,14 @@ function getAutoTradeStatus() {
   };
 }
 
-function quantityFromNotional(symbolInfo, notionalUsdt, markPrice) {
+function quantityFromNotional(symbolInfo, notionalUsdt, markPrice, skipMinCheck = false) {
   const lotSize = symbolInfo.filters?.find((filter) => filter.filterType === 'LOT_SIZE');
   const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
   const minQty = Number(lotSize?.minQty ?? stepSize);
   const rawQuantity = notionalUsdt / markPrice;
   const minNotional = minQty * markPrice;
 
-  if (rawQuantity < minQty) {
+  if (!skipMinCheck && rawQuantity < minQty) {
     throw new Error(`Order size too small for ${symbolInfo.symbol}. Minimum is about ${minNotional.toFixed(2)} USDT.`);
   }
 
