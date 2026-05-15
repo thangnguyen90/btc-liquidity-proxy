@@ -5,6 +5,14 @@ function intervalToMinutes(interval) {
   return map[interval] ?? 15;
 }
 
+function computeEma(closes, period) {
+  if (closes.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < closes.length; i++) ema = closes[i] * k + ema * (1 - k);
+  return ema;
+}
+
 function buildSweepTarget(zones) {
   const bias = zones.bias;
   if (Math.abs(bias) < 0.1) return null;
@@ -19,6 +27,8 @@ function buildSweepTarget(zones) {
 export function analyzeMarket({
   symbol,
   klines,
+  klines1h = null,
+  klines4h = null,
   depth,
   premiumIndex,
   openInterest,
@@ -82,6 +92,11 @@ export function analyzeMarket({
   );
   const quickDirection = quickScore >= 0.34 ? 'long' : quickScore <= -0.34 ? 'short' : 'wait';
 
+  const ema99Current = computeEma(klines.map((k) => k.close), 99);
+  const ema99_1h = klines1h ? computeEma(klines1h.map((k) => k.close), 99) : null;
+  const ema99_4h = klines4h ? computeEma(klines4h.map((k) => k.close), 99) : null;
+  const emaDistPct = (ema) => ema != null ? round((currentPrice - ema) / ema * 100, 3) : null;
+
   return {
     symbol,
     generatedAt: new Date().toISOString(),
@@ -118,6 +133,11 @@ export function analyzeMarket({
     signal,
     tradeSetup,
     quickScan: { score: quickScore, direction: quickDirection },
+    ema99: {
+      current: ema99Current != null ? { value: round(ema99Current, priceDigits), distPct: emaDistPct(ema99Current), label: interval } : null,
+      h1: ema99_1h != null ? { value: round(ema99_1h, priceDigits), distPct: emaDistPct(ema99_1h), label: '1h' } : null,
+      h4: ema99_4h != null ? { value: round(ema99_4h, priceDigits), distPct: emaDistPct(ema99_4h), label: '4h' } : null,
+    },
   };
 }
 

@@ -47,6 +47,14 @@ const elements = {
   bookExplain: document.querySelector('#bookExplain'),
   liqHeatmap: document.querySelector('#liqHeatmap'),
   liqHeatmapMeta: document.querySelector('#liqHeatmapMeta'),
+  emaRow: document.querySelector('#emaRow'),
+  emaCurrentLabel: document.querySelector('#emaCurrentLabel'),
+  emaCurrentValue: document.querySelector('#emaCurrentValue'),
+  emaCurrentDist: document.querySelector('#emaCurrentDist'),
+  ema1hValue: document.querySelector('#ema1hValue'),
+  ema1hDist: document.querySelector('#ema1hDist'),
+  ema4hValue: document.querySelector('#ema4hValue'),
+  ema4hDist: document.querySelector('#ema4hDist'),
   tradeContext: document.querySelector('#tradeContext'),
   coinglassLink: document.querySelector('#coinglassLink'),
   binanceLink: document.querySelector('#binanceLink'),
@@ -193,6 +201,29 @@ function render(data) {
   } else {
     sweepBox.style.display = 'none';
   }
+  const ema = data.ema99;
+  if (ema && (ema.current || ema.h1 || ema.h4)) {
+    elements.emaRow.style.display = '';
+    if (ema.current) {
+      elements.emaCurrentLabel.textContent = `EMA99 ${ema.current.label}`;
+      elements.emaCurrentValue.textContent = formatPrice(ema.current.value, priceDigits);
+      elements.emaCurrentDist.textContent = `${ema.current.distPct > 0 ? '+' : ''}${formatNumber(ema.current.distPct, 2)}%`;
+      elements.emaCurrentDist.className = classFor(ema.current.distPct);
+    }
+    if (ema.h1) {
+      elements.ema1hValue.textContent = formatPrice(ema.h1.value, priceDigits);
+      elements.ema1hDist.textContent = `${ema.h1.distPct > 0 ? '+' : ''}${formatNumber(ema.h1.distPct, 2)}%`;
+      elements.ema1hDist.className = classFor(ema.h1.distPct);
+    }
+    if (ema.h4) {
+      elements.ema4hValue.textContent = formatPrice(ema.h4.value, priceDigits);
+      elements.ema4hDist.textContent = `${ema.h4.distPct > 0 ? '+' : ''}${formatNumber(ema.h4.distPct, 2)}%`;
+      elements.ema4hDist.className = classFor(ema.h4.distPct);
+    }
+  } else {
+    elements.emaRow.style.display = 'none';
+  }
+
   elements.bidNotional.textContent = formatCurrency(data.orderBook.bidNotional);
   elements.askNotional.textContent = formatCurrency(data.orderBook.askNotional);
 
