@@ -13,5 +13,10 @@
     "expiresAt": 1778834739531,
     "addedAt": "2026-05-15T06:45:39.531Z",
     "reason": "SL hit pnl=-1.2107"
+  },
+  "MLNUSDT": {
+    "expiresAt": 1778837574276,
+    "addedAt": "2026-05-15T07:32:54.276Z",
+    "reason": "SL hit pnl=-0.0377"
   }
 }

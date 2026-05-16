@@ -260,6 +260,20 @@ function buildTradeSetup({ currentPrice, atrPct, signal, zones, book, momentumPc
   };
 }
 
+export function computeHeatmapData({ klines, currentPrice, liqRangePct = 5.0, binSizePct = 0.001, leverages = DEFAULT_LEVERAGES }) {
+  const priceDigits = priceDigitsFor(currentPrice);
+  const liquidationMap = buildLiquidationMap({ klines, currentPrice, priceDigits, rangePct: liqRangePct, binSizePct, leverages });
+  const zones = summarizeZones(liquidationMap, currentPrice, priceDigits);
+  return {
+    heatmapAbove: zones.heatmapAbove,
+    heatmapBelow: zones.heatmapBelow,
+    sweepTarget: buildSweepTarget(zones),
+    bias: zones.bias,
+    liquidityAbove: zones.above.total,
+    liquidityBelow: zones.below.total,
+  };
+}
+
 function buildLiquidationMap({ klines, currentPrice, priceDigits, rangePct, binSizePct, leverages }) {
   const minPrice = currentPrice * (1 - rangePct);
   const maxPrice = currentPrice * (1 + rangePct);

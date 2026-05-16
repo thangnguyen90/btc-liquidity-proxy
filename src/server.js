@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
-import { startDiscordScanner, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked } from './discordNotifier.js';
+import { startDiscordScanner, startLiqImbalanceScanner, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked } from './discordNotifier.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -331,6 +331,15 @@ server.listen(port, '127.0.0.1', () => {
       intervalMs: Math.max(Number(process.env.DISCORD_INTERVAL_MS ?? 30000), 15000),
       cooldownMs: Number(process.env.DISCORD_COOLDOWN_MS ?? 3600000),
       getSnapshot: getMarketSnapshot,
+    });
+    startLiqImbalanceScanner({
+      client,
+      webhookUrl: process.env.LIQ_SCAN_WEBHOOK_URL || '',
+      getSnapshot: getMarketSnapshot,
+      biasThreshold: Number(process.env.LIQ_SCAN_BIAS_THRESHOLD ?? 0.4),
+      intervalMs: Number(process.env.LIQ_SCAN_INTERVAL_MS ?? 5 * 60 * 1000),
+      cooldownMs: Number(process.env.LIQ_SCAN_COOLDOWN_MS ?? 2 * 60 * 60 * 1000),
+      minVolumeUsdt: Number(process.env.LIQ_SCAN_MIN_VOLUME ?? 5_000_000),
     });
   }, 17000);
   setTimeout(() => {

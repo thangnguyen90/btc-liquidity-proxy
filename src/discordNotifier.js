@@ -1,4 +1,5 @@
 import { fetchAnalysis } from './marketAnalysis.js';
+import { computeHeatmapData } from './liquidityProxy.js';
 
 const cooldowns = new Map();        // for full order-placed alerts
 const signalCooldowns = new Map();  // for lightweight signal-detected alerts
@@ -296,5 +297,119 @@ export function startDiscordScanner({ client, webhookUrl, threshold = 0.7, inter
   };
 
   setTimeout(run, 5000);
+  setInterval(run, intervalMs);
+}
+
+// ── Liquidation Imbalance Scanner ────────────────────────────────────────────
+
+const liqCooldowns = new Map(); // symbol → last alert timestamp
+
+function buildLiqImbalanceEmbed(symbol, heatmap, markPrice) {
+  const above = heatmap.liquidityAbove;
+  const below = heatmap.liquidityBelow;
+  const bias = heatmap.bias;
+  const isAboveHeavy = bias > 0;
+  const color = isAboveHeavy ? 0xfbbf24 : 0xfb7185; // amber = above, red = below
+  const dirLabel = isAboveHeavy ? '⬆️ TRÊN DÀY HƠN' : '⬇️ DƯỚI DÀY HƠN';
+  const action = isAboveHeavy
+    ? `Có thể bị hút lên quét short trước khi đảo chiều`
+    : `Có thể bị kéo xuống quét long trước khi đảo chiều`;
+
+  const d = digits(markPrice);
+  const pct = (v, total) => total > 0 ? ((v / total) * 100).toFixed(1) + '%' : '0%';
+  const total = above + below;
+
+  const lines = [
+    `Mark: **${fp(markPrice, d)}**`,
+    `↑ Above: **${compact(above)}** (${pct(above, total)}) | ↓ Below: **${compact(below)}** (${pct(below, total)})`,
+    `Bias: **${bias >= 0 ? '+' : ''}${bias.toFixed(3)}**`,
+  ];
+
+  if (heatmap.sweepTarget) {
+    const st = heatmap.sweepTarget;
+    const sign = st.distancePct >= 0 ? '+' : '';
+    lines.push(`🎯 Sweep target: **${fp(st.price, d)}** (${sign}${st.distancePct.toFixed(2)}%)`);
+  }
+
+  const topAbove = (heatmap.heatmapAbove ?? []).slice(0, 3);
+  const topBelow = (heatmap.heatmapBelow ?? []).slice(0, 3);
+  if (topAbove.length) {
+    lines.push(`Zones trên: ${topAbove.map((z) => `${fp(z.price, d)}(+${z.distancePct.toFixed(1)}%)`).join(', ')}`);
+  }
+  if (topBelow.length) {
+    lines.push(`Zones dưới: ${topBelow.map((z) => `${fp(z.price, d)}(${z.distancePct.toFixed(1)}%)`).join(', ')}`);
+  }
+
+  return {
+    username: 'Liquidity Proxy',
+    embeds: [{
+      title: `🌊 LIQ IMBALANCE: ${symbol} — ${dirLabel}`,
+      color,
+      description: `${action}\n\n${lines.join('\n')}`,
+      footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
+    }],
+  };
+}
+
+export function startLiqImbalanceScanner({
+  client,
+  webhookUrl,
+  getSnapshot,
+  biasThreshold = 0.4,
+  intervalMs = 5 * 60 * 1000,
+  cooldownMs = 2 * 60 * 60 * 1000,
+  minVolumeUsdt = 5_000_000,
+  maxCoins = 60,
+}) {
+  if (!webhookUrl) return;
+  console.log(`[LiqScan] Started. threshold=±${biasThreshold} interval=${intervalMs / 60000}min cooldown=${cooldownMs / 60000}min`);
+
+  const run = async () => {
+    try {
+      const snapshot = await getSnapshot();
+      const now = Date.now();
+      const candidates = snapshot
+        .filter((row) => row.quoteVolume >= minVolumeUsdt)
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, maxCoins)
+        .filter((row) => {
+          const last = liqCooldowns.get(row.symbol) ?? 0;
+          return now - last >= cooldownMs;
+        });
+
+      let alertCount = 0;
+      for (const row of candidates) {
+        try {
+          const klines = await client.getKlines(row.symbol, '15m', 500);
+          const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice });
+          const total = heatmap.liquidityAbove + heatmap.liquidityBelow;
+
+          const isImbalanced = Math.abs(heatmap.bias) >= biasThreshold;
+          const isOneSided = total > 0 && (
+            heatmap.liquidityAbove < total * 0.12 ||
+            heatmap.liquidityBelow < total * 0.12
+          );
+
+          if (isImbalanced || isOneSided) {
+            const embed = buildLiqImbalanceEmbed(row.symbol, heatmap, row.markPrice);
+            await sendWebhook(webhookUrl, embed);
+            liqCooldowns.set(row.symbol, Date.now());
+            alertCount++;
+            console.log(`[LiqScan] Alert: ${row.symbol} bias=${heatmap.bias.toFixed(3)} above=${compact(heatmap.liquidityAbove)} below=${compact(heatmap.liquidityBelow)}`);
+          }
+
+          await new Promise((r) => setTimeout(r, 300));
+        } catch (err) {
+          // skip individual coin failures silently
+        }
+      }
+
+      if (alertCount > 0) console.log(`[LiqScan] Cycle done — ${alertCount} alerts sent`);
+    } catch (err) {
+      console.error('[LiqScan] Scan error:', err.message);
+    }
+  };
+
+  setTimeout(run, 20000); // first run after 20s
   setInterval(run, intervalMs);
 }
