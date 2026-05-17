@@ -386,8 +386,9 @@ const server = createServer(async (request, response) => {
 server.listen(port, '127.0.0.1', () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
   loadDynamicBlacklist();
-  await loadSlTracking();
-  adoptExistingSlPositions().catch((err) => console.warn('[SlTracking] Adopt failed:', err.message));
+  loadSlTracking().then(() =>
+    adoptExistingSlPositions().catch((err) => console.warn('[SlTracking] Adopt failed:', err.message)),
+  );
   const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
   // Stagger service startup to avoid burst at t=0
   startAutoTrader();
@@ -1462,11 +1463,13 @@ async function runStaleOrderCleaner() {
 }
 
 function getTargetLockRoe(roe) {
-  if (roe < 15) return null;
-  // Every 5% above 15% raises the floor by 5% (lock = trigger - 10)
-  // 15→5, 20→10, 25→15, 30→20, ...
-  const steps = Math.floor((roe - 15) / 5);
-  return (15 + steps * 5) - 10;
+  // 10→1, 15→5, 20→10, 25→15, 30→20, ...
+  if (roe >= 15) {
+    const steps = Math.floor((roe - 15) / 5);
+    return (15 + steps * 5) - 10;
+  }
+  if (roe >= 10) return 1;
+  return null;
 }
 
 const slTrailRunning = new Set();
