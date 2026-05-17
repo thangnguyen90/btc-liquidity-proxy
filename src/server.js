@@ -77,6 +77,45 @@ async function saveSlTracking() {
   }
 }
 
+async function adoptExistingSlPositions() {
+  // Adopt active positions that already have a STOP_MARKET order into slTracking
+  // so the SL trail can manage them even if opened before the JSON was created
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const [positions, algoResult] = await Promise.all([
+      client.getPositions({ apiKey, apiSecret }),
+      client.getOpenAlgoOrders({ apiKey, apiSecret }),
+    ]);
+    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+    const active = positions.filter((p) => Number(p.positionAmt) !== 0);
+    let adopted = 0;
+    for (const p of active) {
+      const symbol = p.symbol;
+      if (slTracking.positions[symbol]) continue; // already tracked
+      const hasSl = allAlgo.some((o) => {
+        if (o.symbol !== symbol) return false;
+        const t = String(o.type ?? '').toUpperCase();
+        return t === 'STOP_MARKET' || t === 'STOP';
+      });
+      if (!hasSl) continue;
+      slTracking.positions[symbol] = {
+        openedAt: Date.now(),
+        openedAtStr: new Date().toISOString(),
+        slPlaced: true,
+        adopted: true,
+      };
+      adopted++;
+    }
+    if (adopted > 0) {
+      await saveSlTracking();
+      console.log(`[SlTracking] Adopted ${adopted} existing position(s) with SL`);
+    }
+  } catch (err) {
+    if (err.message?.includes('Missing Binance API')) return;
+    throw err;
+  }
+}
+
 async function loadDynamicBlacklist() {
   try {
     const text = await readFile(BLACKLIST_FILE, 'utf8');
@@ -347,7 +386,8 @@ const server = createServer(async (request, response) => {
 server.listen(port, '127.0.0.1', () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
   loadDynamicBlacklist();
-  loadSlTracking();
+  await loadSlTracking();
+  adoptExistingSlPositions().catch((err) => console.warn('[SlTracking] Adopt failed:', err.message));
   const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
   // Stagger service startup to avoid burst at t=0
   startAutoTrader();
