@@ -446,10 +446,8 @@ server.listen(port, '127.0.0.1', () => {
         if (roe <= avgDownRoe) {
           handleAvgDown(symbol, pos, roe).catch(() => {});
         }
-        // SL trail: move SL up as profit grows in steps
-        if (slTracking.positions[symbol]?.slPlaced) {
-          handleSlTrailByProfit(symbol, pos, roe).catch(() => {});
-        }
+        // SL trail: move SL up as profit grows (all positions with existing SL)
+        handleSlTrailByProfit(symbol, pos, roe).catch(() => {});
         // Track continuous negative duration → set TP at entry after timeout
         if (roe < 0) {
           if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
@@ -1410,6 +1408,7 @@ async function runStaleOrderCleaner() {
         avgDownFired.delete(sym);
         tpMovedToEntry.delete(sym);
         negativeSince.delete(sym);
+        slTrailLockRoe.delete(sym);
         if (slTracking.positions[sym]) {
           delete slTracking.positions[sym];
           saveSlTracking();
@@ -1473,18 +1472,16 @@ function getTargetLockRoe(roe) {
 }
 
 const slTrailRunning = new Set();
+const slTrailLockRoe = new Map(); // symbol → current lock ROE level (in-memory dedup)
 
 async function handleSlTrailByProfit(symbol, pos, roe) {
   if (process.env.AUTO_SL_ENABLED === 'false') return;
   if (slTrailRunning.has(symbol)) return;
 
-  const tracked = slTracking.positions[symbol];
-  if (!tracked?.slPlaced) return;
-
   const targetLockRoe = getTargetLockRoe(roe);
   if (targetLockRoe === null) return;
 
-  const currentLockRoe = tracked.slLockRoe ?? -Infinity;
+  const currentLockRoe = slTrailLockRoe.get(symbol) ?? -Infinity;
   if (targetLockRoe <= currentLockRoe) return;
 
   slTrailRunning.add(symbol);
@@ -1497,6 +1494,15 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
       getSymbols(),
     ]);
     const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+
+    const slOrder = allAlgo.find((o) => {
+      if (o.symbol !== symbol) return false;
+      const t = String(o.type ?? '').toUpperCase();
+      return t === 'STOP_MARKET' || t === 'STOP';
+    });
+
+    // No existing SL → nothing to trail
+    if (!slOrder) { slTrailLockRoe.set(symbol, targetLockRoe); return; }
 
     const symbolInfo = symbolList.find((s) => s.symbol === symbol);
     if (!symbolInfo) return;
@@ -1512,21 +1518,14 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
         : entry * (1 - (targetLockRoe / 100) / leverage),
     );
 
-    const slOrder = allAlgo.find((o) => {
-      if (o.symbol !== symbol) return false;
-      const t = String(o.type ?? '').toUpperCase();
-      return t === 'STOP_MARKET' || t === 'STOP';
-    });
-
-    if (slOrder) {
-      const curSl = Number(slOrder.triggerPrice);
-      if ((isLong && curSl >= newSlPrice) || (!isLong && curSl <= newSlPrice)) {
-        tracked.slLockRoe = targetLockRoe;
-        saveSlTracking();
-        return;
-      }
-      await client.cancelAlgoOrder({ algoId: slOrder.algoId, apiKey, apiSecret, recvWindow });
+    // Current SL already at or better than target → just record it
+    const curSl = Number(slOrder.triggerPrice);
+    if ((isLong && curSl >= newSlPrice) || (!isLong && curSl <= newSlPrice)) {
+      slTrailLockRoe.set(symbol, targetLockRoe);
+      return;
     }
+
+    await client.cancelAlgoOrder({ algoId: slOrder.algoId, apiKey, apiSecret, recvWindow });
 
     const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
     const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
@@ -1550,10 +1549,7 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
     if (isHedge) { slParams.positionSide = positionSide; } else { slParams.reduceOnly = 'true'; }
 
     await client.placeAlgoOrder({ params: slParams, apiKey, apiSecret });
-    tracked.slLockRoe = targetLockRoe;
-    tracked.slPrice = newSlPrice;
-    tracked.slUpdatedAt = new Date().toISOString();
-    saveSlTracking();
+    slTrailLockRoe.set(symbol, targetLockRoe);
     console.log(`[SlTrail] ✅ ${symbol} ROE=${roe.toFixed(1)}% → SL dời lên +${targetLockRoe}% ROE @ ${newSlPrice}`);
   } catch (err) {
     console.error(`[SlTrail] ❌ ${symbol}:`, err.message);
