@@ -12,6 +12,7 @@ const SNAPSHOT_REFRESH_MS = 15000;
 const elements = {
   socketStatus: document.querySelector('#socketStatus'),
   searchInput: document.querySelector('#searchInput'),
+  searchClear: document.querySelector('#searchClear'),
   signalFilter: document.querySelector('#signalFilter'),
   sortInput: document.querySelector('#sortInput'),
   visibleCount: document.querySelector('#visibleCount'),
@@ -33,7 +34,17 @@ let socketUrlIndex = 0;
 let lastSocketMessageAt = 0;
 let snapshotTimer = null;
 
-elements.searchInput.addEventListener('input', render);
+elements.searchInput.addEventListener('input', () => {
+  elements.searchClear.style.display = elements.searchInput.value ? '' : 'none';
+  render();
+});
+
+elements.searchClear.addEventListener('click', () => {
+  elements.searchInput.value = '';
+  elements.searchClear.style.display = 'none';
+  elements.searchInput.focus();
+  render();
+});
 elements.signalFilter.addEventListener('change', render);
 elements.sortInput.addEventListener('change', render);
 

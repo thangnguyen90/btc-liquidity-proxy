@@ -164,6 +164,32 @@ h2 {
   gap: 7px;
 }
 
+.search-field {
+  position: relative;
+}
+
+.search-field input {
+  padding-right: 32px;
+}
+
+.search-clear {
+  position: absolute;
+  right: 8px;
+  bottom: 9px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.search-clear:hover {
+  color: var(--text);
+}
+
 .field span,
 .toggle span {
   color: var(--muted);
