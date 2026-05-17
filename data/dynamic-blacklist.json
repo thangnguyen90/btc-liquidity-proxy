@@ -1,22 +1,7 @@
 {
-  "SONICUSDT": {
-    "expiresAt": 1778830596848,
-    "addedAt": "2026-05-15T05:36:36.848Z",
-    "reason": "SL hit pnl=-0.5530"
-  },
-  "UBUSDT": {
-    "expiresAt": 1778833060919,
-    "addedAt": "2026-05-15T06:17:40.919Z",
-    "reason": "SL hit pnl=-0.0274"
-  },
-  "LABUSDT": {
-    "expiresAt": 1778834739531,
-    "addedAt": "2026-05-15T06:45:39.531Z",
-    "reason": "SL hit pnl=-1.2107"
-  },
-  "MLNUSDT": {
-    "expiresAt": 1778837574276,
-    "addedAt": "2026-05-15T07:32:54.276Z",
-    "reason": "SL hit pnl=-0.0377"
+  "BILLUSDT": {
+    "expiresAt": 1779019481824,
+    "addedAt": "2026-05-17T10:04:41.824Z",
+    "reason": "SL hit pnl=-2.5383"
   }
 }

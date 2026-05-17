@@ -52,6 +52,31 @@ const BLACKLIST_FILE = join(rootDir, 'data', 'dynamic-blacklist.json');
 const dynamicBlacklist = new Map(); // symbol → { expiresAt, addedAt, reason }
 const aiCache = new Map(); // symbol → { at, data }
 
+const SL_TRACKING_FILE = join(rootDir, 'data', 'sl-tracking.json');
+// { createdAt, positions: { [symbol]: { openedAt, entry, slPlaced, slPrice? } } }
+let slTracking = { createdAt: Date.now(), positions: {} };
+
+async function loadSlTracking() {
+  try {
+    const text = await readFile(SL_TRACKING_FILE, 'utf8');
+    slTracking = JSON.parse(text);
+    const count = Object.keys(slTracking.positions).length;
+    console.log(`[SlTracking] Loaded — createdAt ${new Date(slTracking.createdAt).toISOString()}, ${count} position(s)`);
+  } catch {
+    await saveSlTracking();
+    console.log(`[SlTracking] Created new — ${new Date(slTracking.createdAt).toISOString()}`);
+  }
+}
+
+async function saveSlTracking() {
+  try {
+    await mkdir(join(rootDir, 'data'), { recursive: true });
+    await writeFile(SL_TRACKING_FILE, JSON.stringify(slTracking, null, 2));
+  } catch (err) {
+    console.warn('[SlTracking] Save failed:', err.message);
+  }
+}
+
 async function loadDynamicBlacklist() {
   try {
     const text = await readFile(BLACKLIST_FILE, 'utf8');
@@ -322,6 +347,7 @@ const server = createServer(async (request, response) => {
 server.listen(port, '127.0.0.1', () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
   loadDynamicBlacklist();
+  loadSlTracking();
   const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
   // Stagger service startup to avoid burst at t=0
   startAutoTrader();
@@ -359,8 +385,13 @@ server.listen(port, '127.0.0.1', () => {
   setTimeout(() => {
     posMonitor = startPositionMonitor({
       client,
-      onOrderFill: (symbol) => {
-        // Order filled → wait 1s for position to settle, then check/place SL
+      onOrderFill: (symbol, { fillTime }) => {
+        // Only track fills that happened after sl-tracking.json was created
+        if (fillTime < slTracking.createdAt) return;
+        if (!slTracking.positions[symbol]) {
+          slTracking.positions[symbol] = { openedAt: fillTime, openedAtStr: new Date(fillTime).toISOString(), slPlaced: false };
+          saveSlTracking();
+        }
         setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
       },
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
@@ -373,6 +404,17 @@ server.listen(port, '127.0.0.1', () => {
         const avgDownRoe = Number(process.env.AVG_DOWN_ROE ?? -60);
         if (roe <= avgDownRoe) {
           handleAvgDown(symbol, pos, roe).catch(() => {});
+        }
+        // Track continuous negative duration → set TP at entry after timeout
+        if (roe < 0) {
+          if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
+          const negMs = Date.now() - negativeSince.get(symbol);
+          const timeoutMs = Number(process.env.NEG_TP_TIMEOUT_MS ?? 4 * 3600 * 1000);
+          if (negMs >= timeoutMs) {
+            handleNegativeTimeoutTp(symbol, pos).catch(() => {});
+          }
+        } else {
+          negativeSince.delete(symbol);
         }
       },
     });
@@ -1322,7 +1364,11 @@ async function runStaleOrderCleaner() {
 
         avgDownFired.delete(sym);
         tpMovedToEntry.delete(sym);
-        slFired.delete(sym);
+        negativeSince.delete(sym);
+        if (slTracking.positions[sym]) {
+          delete slTracking.positions[sym];
+          saveSlTracking();
+        }
         console.log(`[StaleOrders] ${sym} closed → cancelling open orders`);
         cancelAllOrdersForSymbol(sym, apiKey, apiSecret).catch((err) =>
           console.warn(`[StaleOrders] ${sym}: ${err.message}`),
@@ -1380,8 +1426,6 @@ async function runStaleOrderCleaner() {
   }
 }
 
-const slFired = new Map(); // symbol → entry price when auto-SL was placed
-
 async function triggerSlGuardForSymbol(symbol) {
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
@@ -1415,18 +1459,31 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
 
   for (const p of rawPositions) {
     const symbol = p.symbol;
+
+    // Only process positions registered in sl-tracking.json (opened after json was created)
+    const tracked = slTracking.positions[symbol];
+    if (!tracked) continue;
+    if (tracked.slPlaced) continue;
+
     const entry = Number(p.entryPrice);
     const amt = Number(p.positionAmt);
     const leverage = Number(p.leverage) || 10;
     if (!entry || !amt) continue;
 
-    // Dedup: already placed SL for this entry price
-    const prevEntry = slFired.get(symbol);
-    if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.001) continue;
+    // Skip positions already in loss
+    const markPrice = Number(p.markPrice ?? 0);
+    if (markPrice > 0) {
+      const currentRoe = ((markPrice - entry) / entry) * leverage * (amt > 0 ? 1 : -1) * 100;
+      if (currentRoe < 0) continue;
+    }
 
     // Check regular STOP_MARKET orders
     const hasRegularSl = allOrders.some((o) => o.symbol === symbol && (o.type === 'STOP_MARKET' || o.type === 'STOP'));
-    if (hasRegularSl) { slFired.set(symbol, entry); continue; }
+    if (hasRegularSl) {
+      slTracking.positions[symbol].slPlaced = true;
+      saveSlTracking();
+      continue;
+    }
 
     // Check algo STOP_MARKET orders (lazy-loaded once per cycle)
     const algo = await getAlgoOrders();
@@ -1435,7 +1492,11 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
       const t = String(o.type ?? '').toUpperCase();
       return t === 'STOP_MARKET' || t === 'STOP';
     });
-    if (hasAlgoSl) { slFired.set(symbol, entry); continue; }
+    if (hasAlgoSl) {
+      slTracking.positions[symbol].slPlaced = true;
+      saveSlTracking();
+      continue;
+    }
 
     const isLong = amt > 0;
     const rawSlPrice = isLong
@@ -1467,16 +1528,20 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
     };
     if (isHedge) { slParams.positionSide = positionSide; } else { slParams.reduceOnly = 'true'; }
 
-    slFired.set(symbol, entry);
     try {
       await client.placeAlgoOrder({ params: slParams, apiKey, apiSecret });
+      slTracking.positions[symbol].slPlaced = true;
+      slTracking.positions[symbol].slPrice = slPrice;
+      slTracking.positions[symbol].slPlacedAt = new Date().toISOString();
+      saveSlTracking();
       console.log(`[SlGuard] ✅ ${symbol} ${isLong ? 'LONG' : 'SHORT'} entry=${entry} lev=${leverage}x → SL @ ${slPrice} (-${slRoe}% ROE)`);
     } catch (err) {
-      slFired.delete(symbol);
       console.error(`[SlGuard] ❌ ${symbol}: ${err.message}`);
     }
   }
 }
+
+const negativeSince = new Map(); // symbol → timestamp when position first went negative
 
 const tpMovedToEntry = new Map(); // symbol → entryPrice when TP was moved to entry
 
@@ -1540,6 +1605,75 @@ async function handleTpEntryGuard(symbol, pos, markPrice, roe) {
     console.log(`[TpGuard] ${symbol} ROE=${roe.toFixed(1)}% → TP moved to entry ${newTpPrice}`);
   } catch (err) {
     console.error(`[TpGuard] ${symbol} failed:`, err.message);
+  }
+}
+
+async function handleNegativeTimeoutTp(symbol, pos) {
+  const entry = pos.entry;
+
+  // Dedup: already set TP to entry for this position
+  const prevEntry = tpMovedToEntry.get(symbol);
+  if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.005) return;
+
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+    const [algoResult, symbols] = await Promise.all([
+      client.getOpenAlgoOrders({ apiKey, apiSecret }),
+      getSymbols(),
+    ]);
+    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+
+    const symbolInfo = symbols.find((s) => s.symbol === symbol);
+    if (!symbolInfo) return;
+
+    const isLong = pos.amt > 0;
+    const newTpPrice = priceFromTick(symbolInfo, entry);
+
+    // Cancel existing TP if price not yet at entry
+    const tpOrder = allAlgo.find((o) => {
+      if (o.symbol !== symbol) return false;
+      const t = String(o.type ?? '').toUpperCase();
+      return t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
+    });
+    if (tpOrder) {
+      const cur = Number(tpOrder.triggerPrice);
+      if ((isLong && cur <= entry) || (!isLong && cur >= entry)) {
+        tpMovedToEntry.set(symbol, entry);
+        return;
+      }
+      await client.cancelAlgoOrder({ algoId: tpOrder.algoId, apiKey, apiSecret, recvWindow });
+    }
+
+    const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
+    const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
+    const steppedQty = Math.floor(Math.abs(pos.amt) / stepSize) * stepSize;
+    const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
+
+    const positionSide = pos.positionSide ?? 'BOTH';
+    const isHedge = positionSide !== 'BOTH';
+
+    const tpParams = {
+      algoType: 'CONDITIONAL',
+      symbol,
+      side: isLong ? 'SELL' : 'BUY',
+      type: 'TAKE_PROFIT_MARKET',
+      triggerPrice: String(newTpPrice),
+      quantity,
+      workingType: 'MARK_PRICE',
+      recvWindow,
+      newClientOrderId: `lp_neg_tp_${Date.now()}`.slice(0, 36),
+    };
+    if (isHedge) { tpParams.positionSide = positionSide; } else { tpParams.reduceOnly = 'true'; }
+
+    await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
+    tpMovedToEntry.set(symbol, entry);
+
+    const hours = ((Date.now() - (negativeSince.get(symbol) ?? Date.now())) / 3_600_000).toFixed(1);
+    console.log(`[NegTp] ✅ ${symbol} âm ${hours}h liên tiếp → TP đặt về entry ${newTpPrice}`);
+  } catch (err) {
+    console.error(`[NegTp] ❌ ${symbol}:`, err.message);
   }
 }
 

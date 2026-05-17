@@ -4,6 +4,7 @@ const elements = {
   symbolsList: document.querySelector('#symbolsList'),
   intervalInput: document.querySelector('#intervalInput'),
   rangeInput: document.querySelector('#rangeInput'),
+  binSizeInput: document.querySelector('#binSizeInput'),
   refreshButton: document.querySelector('#refreshButton'),
   autoRefreshInput: document.querySelector('#autoRefreshInput'),
   quickOrderTypeInput: document.querySelector('#quickOrderTypeInput'),
@@ -69,10 +70,12 @@ let autoRefreshTimer = null;
 let latestAnalysis = null;
 let priceWsSymbol = null;
 let priceWsReconnectTimer = null;
-const initialSymbol = new URLSearchParams(window.location.search).get('symbol');
+const initialSymbol = new URLSearchParams(window.location.search).get('symbol')
+  || localStorage.getItem('lastSymbol');
 
 if (initialSymbol) {
   elements.symbolInput.value = normalizeSymbol(initialSymbol);
+  elements.symbolClear.style.display = '';
 }
 
 elements.refreshButton.addEventListener('click', () => {
@@ -145,6 +148,7 @@ async function loadAnalysis() {
     symbol,
     interval: elements.intervalInput.value,
     rangePct: elements.rangeInput.value,
+    binSizePct: elements.binSizeInput.value,
     depthLimit: '500',
   });
 
@@ -159,6 +163,7 @@ async function loadAnalysis() {
     }
 
     elements.symbolInput.value = payload.symbol;
+    localStorage.setItem('lastSymbol', payload.symbol);
     render(payload);
     elements.status.textContent = 'Updated';
     connectPriceSocket(payload.symbol);
@@ -454,7 +459,7 @@ function renderLsRatioChart(rows) {
   const canvas = elements.lsRatioChart;
   const dpr = window.devicePixelRatio || 1;
   const W = canvas.offsetWidth;
-  const H = 180;
+  const H = 260;
   canvas.width = W * dpr;
   canvas.height = H * dpr;
   canvas.style.height = H + 'px';

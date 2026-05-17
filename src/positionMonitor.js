@@ -115,7 +115,7 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }
         const o = msg.o;
         // Only care about fills that open/increase a position (not reduceOnly)
         if (o && o.x === 'TRADE' && !o.R && Number(o.l) > 0) {
-          onOrderFill(o.s, { side: o.S, filledQty: Number(o.l), avgPrice: Number(o.ap || o.p), positionSide: o.ps ?? 'BOTH' });
+          onOrderFill(o.s, { side: o.S, filledQty: Number(o.l), avgPrice: Number(o.ap || o.p), positionSide: o.ps ?? 'BOTH', fillTime: Number(o.T) });
         }
       }
     });
