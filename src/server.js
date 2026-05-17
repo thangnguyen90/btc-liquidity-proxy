@@ -427,12 +427,17 @@ server.listen(port, '127.0.0.1', () => {
     posMonitor = startPositionMonitor({
       client,
       onOrderFill: (symbol, { fillTime }) => {
+        console.log(`[SlGuard] onOrderFill ${symbol} fillTime=${fillTime} createdAt=${slTracking.createdAt}`);
         // Only track fills that happened after sl-tracking.json was created
-        if (fillTime < slTracking.createdAt) return;
+        if (fillTime < slTracking.createdAt) {
+          console.log(`[SlGuard] Skip ${symbol} — filled before JSON created`);
+          return;
+        }
         if (!slTracking.positions[symbol]) {
           slTracking.positions[symbol] = { openedAt: fillTime, openedAtStr: new Date(fillTime).toISOString(), slPlaced: false };
           saveSlTracking();
         }
+        console.log(`[SlGuard] Registered ${symbol}, triggering SL guard in 1s`);
         setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
       },
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
@@ -1559,11 +1564,12 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
 }
 
 async function triggerSlGuardForSymbol(symbol) {
+  console.log(`[SlGuard] triggerSlGuardForSymbol called: ${symbol}`);
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
     const positions = await client.getPositions({ apiKey, apiSecret });
     const pos = positions.find((p) => p.symbol === symbol && Number(p.positionAmt) !== 0);
-    if (!pos) return;
+    if (!pos) { console.log(`[SlGuard] ${symbol} no active position found`); return; }
     const allOrders = await client.getOpenOrders({ apiKey, apiSecret });
     await handleMissingSl([pos], allOrders, apiKey, apiSecret);
   } catch (err) {
