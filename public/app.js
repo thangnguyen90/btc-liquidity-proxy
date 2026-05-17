@@ -55,6 +55,9 @@ const elements = {
   ema1hDist: document.querySelector('#ema1hDist'),
   ema4hValue: document.querySelector('#ema4hValue'),
   ema4hDist: document.querySelector('#ema4hDist'),
+  lsRatioChart: document.querySelector('#lsRatioChart'),
+  lsRatioMeta: document.querySelector('#lsRatioMeta'),
+  lsRatioExplain: document.querySelector('#lsRatioExplain'),
   tradeContext: document.querySelector('#tradeContext'),
   coinglassLink: document.querySelector('#coinglassLink'),
   binanceLink: document.querySelector('#binanceLink'),
@@ -148,6 +151,7 @@ async function loadAnalysis() {
     render(payload);
     elements.status.textContent = 'Updated';
     connectPriceSocket(payload.symbol);
+    loadLsRatioChart(payload.symbol);
   } catch (error) {
     elements.status.textContent = messageFor(error);
   } finally {
@@ -400,6 +404,122 @@ async function placeQuickOrder(side) {
     elements.quickLongButton.disabled = false;
     elements.quickShortButton.disabled = false;
   }
+}
+
+let lsRatioPeriod = '5m';
+let lsRatioSymbol = null;
+
+document.querySelectorAll('.ls-tab').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.ls-tab').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    lsRatioPeriod = btn.dataset.period;
+    if (lsRatioSymbol) loadLsRatioChart(lsRatioSymbol);
+  });
+});
+
+async function loadLsRatioChart(symbol) {
+  lsRatioSymbol = symbol;
+  try {
+    const res = await fetch(`/api/ls-ratio?symbol=${symbol}&period=${lsRatioPeriod}&limit=50`);
+    if (!res.ok) throw new Error('fetch failed');
+    const rows = await res.json();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      elements.lsRatioExplain.style.display = '';
+      elements.lsRatioChart.style.display = 'none';
+      return;
+    }
+    elements.lsRatioExplain.style.display = 'none';
+    elements.lsRatioChart.style.display = '';
+    elements.lsRatioMeta.textContent = `${rows.length} candles · L/S ${Number(rows[rows.length - 1].longShortRatio).toFixed(3)}`;
+    renderLsRatioChart(rows);
+  } catch {
+    elements.lsRatioExplain.style.display = '';
+    elements.lsRatioChart.style.display = 'none';
+  }
+}
+
+function renderLsRatioChart(rows) {
+  const canvas = elements.lsRatioChart;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.offsetWidth;
+  const H = 180;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const PAD = { top: 8, right: 48, bottom: 24, left: 4 };
+  const chartW = W - PAD.left - PAD.right;
+  const chartH = H - PAD.top - PAD.bottom;
+  const n = rows.length;
+  const barW = Math.max(1, Math.floor(chartW / n) - 1);
+
+  const green = '#36d399';
+  const red = '#fb7185';
+  const lineColor = '#f4f4f4';
+  const mutedColor = '#9daaa5';
+
+  ctx.clearRect(0, 0, W, H);
+
+  // stacked bars: long% (bottom green) + short% (top red)
+  rows.forEach((row, i) => {
+    const x = PAD.left + i * (chartW / n);
+    const longPct = Number(row.longAccount);   // 0–1
+    const shortPct = 1 - longPct;
+
+    const longH = longPct * chartH;
+    const shortH = shortPct * chartH;
+
+    ctx.fillStyle = green + 'bb';
+    ctx.fillRect(x, PAD.top + shortH, barW, longH);
+
+    ctx.fillStyle = red + 'bb';
+    ctx.fillRect(x, PAD.top, barW, shortH);
+  });
+
+  // ratio line (longShortRatio), scale to fit min-max
+  const ratioVals = rows.map((r) => Number(r.longShortRatio));
+  const rMin = Math.min(...ratioVals);
+  const rMax = Math.max(...ratioVals);
+  const rRange = rMax - rMin || 0.01;
+
+  ctx.beginPath();
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 1.5;
+  rows.forEach((row, i) => {
+    const x = PAD.left + i * (chartW / n) + barW / 2;
+    const ratio = Number(row.longShortRatio);
+    const y = PAD.top + chartH - ((ratio - rMin) / rRange) * chartH;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // y-axis labels: 0%, 50%, 100% for bars
+  ctx.fillStyle = mutedColor;
+  ctx.font = '10px Inter, sans-serif';
+  ctx.textAlign = 'right';
+  ['100%', '50%', '0%'].forEach((label, i) => {
+    const y = PAD.top + i * (chartH / 2) + (i === 2 ? 0 : 3);
+    ctx.fillText(label, W - PAD.right + 2, y + 10);
+  });
+
+  // ratio axis labels right side
+  ctx.textAlign = 'left';
+  ctx.fillText(rMax.toFixed(2), W - PAD.right + 4, PAD.top + 10);
+  ctx.fillText(rMin.toFixed(2), W - PAD.right + 4, PAD.top + chartH);
+
+  // time labels: first and last
+  ctx.textAlign = 'left';
+  ctx.fillText(formatTime(rows[0].timestamp), PAD.left, H - 4);
+  ctx.textAlign = 'right';
+  ctx.fillText(formatTime(rows[rows.length - 1].timestamp), W - PAD.right, H - 4);
+}
+
+function formatTime(ts) {
+  const d = new Date(Number(ts));
+  return d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
 }
 
 function renderBookBars(orderBook) {

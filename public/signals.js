@@ -271,9 +271,9 @@ function render() {
   sortRows(rows);
   renderSummary(allReady);
 
-  const visibleRows = rows.slice(0, 160);
+  const visibleRows = rows.slice(0, 200);
 
-  elements.visibleCount.textContent = String(visibleRows.length);
+  elements.visibleCount.textContent = String(allReady.length);
 
   const btcHtml = btcRow ? renderRow(btcRow, true) : '';
   elements.signalsBody.innerHTML = visibleRows.length || btcHtml

@@ -216,6 +216,19 @@
         </div>
       </section>
 
+      <section class="panel ls-ratio-panel">
+        <div class="panel-head">
+          <h2>Top Trader L/S Ratio</h2>
+          <div class="ls-ratio-controls">
+            <button class="ls-tab active" data-period="5m">5m</button>
+            <button class="ls-tab" data-period="15m">15m</button>
+            <span id="lsRatioMeta" class="ls-ratio-meta"></span>
+          </div>
+        </div>
+        <canvas id="lsRatioChart" class="ls-ratio-canvas" style="display:none"></canvas>
+        <p class="explain" id="lsRatioExplain">Chọn symbol và bấm Analyze để xem tỉ lệ Long/Short.</p>
+      </section>
+
       <section class="panel">
         <div class="panel-head">
           <h2>Trade Context</h2>

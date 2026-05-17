@@ -61,6 +61,10 @@ export class BinanceClient {
     return this.get('/futures/data/topLongShortPositionRatio', { symbol, period, limit });
   }
 
+  async getTopLongShortAccountRatio(symbol, period = '5m', limit = 50) {
+    return this.get('/futures/data/topLongShortAccountRatio', { symbol, period, limit });
+  }
+
   async getPositionMode({ apiKey, apiSecret }) {
     const res = await this.signedRequest('GET', '/fapi/v1/positionSide/dual', {}, { apiKey, apiSecret });
     return res.dualSidePosition; // true = hedge mode

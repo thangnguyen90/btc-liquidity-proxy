@@ -13,7 +13,7 @@
 
 const WS_BASE = 'wss://fstream.binance.com';
 
-export function startPositionMonitor({ client, onRoeUpdate }) {
+export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }) {
   // symbol → { amt, entry, leverage, isolatedMargin, initialMargin }
   const posCache = new Map();
 
@@ -92,20 +92,30 @@ export function startPositionMonitor({ client, onRoeUpdate }) {
     ws.addEventListener('message', ({ data }) => {
       let msg;
       try { msg = JSON.parse(data); } catch { return; }
-      if (msg.e !== 'ACCOUNT_UPDATE') return;
 
-      for (const p of msg.a?.P ?? []) {
-        const amt = Number(p.pa);
-        if (amt === 0) {
-          posCache.delete(p.s);
-          updateMarkPriceSubscriptions();
-        } else {
-          upsert(p.s, {
-            amt,
-            entry: Number(p.ep),
-            isolatedMargin: Number(p.iw ?? 0),
-            positionSide: p.ps ?? 'BOTH',
-          });
+      if (msg.e === 'ACCOUNT_UPDATE') {
+        for (const p of msg.a?.P ?? []) {
+          const amt = Number(p.pa);
+          if (amt === 0) {
+            posCache.delete(p.s);
+            updateMarkPriceSubscriptions();
+          } else {
+            upsert(p.s, {
+              amt,
+              entry: Number(p.ep),
+              isolatedMargin: Number(p.iw ?? 0),
+              positionSide: p.ps ?? 'BOTH',
+            });
+          }
+        }
+        return;
+      }
+
+      if (msg.e === 'ORDER_TRADE_UPDATE' && onOrderFill) {
+        const o = msg.o;
+        // Only care about fills that open/increase a position (not reduceOnly)
+        if (o && o.x === 'TRADE' && !o.R && Number(o.l) > 0) {
+          onOrderFill(o.s, { side: o.S, filledQty: Number(o.l), avgPrice: Number(o.ap || o.p), positionSide: o.ps ?? 'BOTH' });
         }
       }
     });

@@ -148,6 +148,15 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/ls-ratio') {
+      const symbol = normalizeSymbol(requestUrl.searchParams.get('symbol') ?? 'BTCUSDT');
+      const period = ['5m', '15m', '30m', '1h'].includes(requestUrl.searchParams.get('period')) ? requestUrl.searchParams.get('period') : '5m';
+      const limit = Math.min(Number(requestUrl.searchParams.get('limit') ?? 50), 500);
+      const rows = await client.getTopLongShortAccountRatio(symbol, period, limit);
+      await sendJson(response, rows);
+      return;
+    }
+
     if (requestUrl.pathname === '/api/ai-analysis' && request.method === 'POST') {
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
@@ -340,6 +349,7 @@ server.listen(port, '127.0.0.1', () => {
       intervalMs: Number(process.env.LIQ_SCAN_INTERVAL_MS ?? 5 * 60 * 1000),
       cooldownMs: Number(process.env.LIQ_SCAN_COOLDOWN_MS ?? 2 * 60 * 60 * 1000),
       minVolumeUsdt: Number(process.env.LIQ_SCAN_MIN_VOLUME ?? 5_000_000),
+      maxCoins: Number(process.env.LIQ_SCAN_MAX_COINS ?? 200),
     });
   }, 17000);
   setTimeout(() => {
@@ -349,6 +359,10 @@ server.listen(port, '127.0.0.1', () => {
   setTimeout(() => {
     posMonitor = startPositionMonitor({
       client,
+      onOrderFill: (symbol) => {
+        // Order filled → wait 1s for position to settle, then check/place SL
+        setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
+      },
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
         // TP entry guard: move TP to entry when ROE ≤ threshold
         const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
@@ -1308,6 +1322,7 @@ async function runStaleOrderCleaner() {
 
         avgDownFired.delete(sym);
         tpMovedToEntry.delete(sym);
+        slFired.delete(sym);
         console.log(`[StaleOrders] ${sym} closed → cancelling open orders`);
         cancelAllOrdersForSymbol(sym, apiKey, apiSecret).catch((err) =>
           console.warn(`[StaleOrders] ${sym}: ${err.message}`),
@@ -1332,10 +1347,15 @@ async function runStaleOrderCleaner() {
     lastKnownPositions.clear();
     for (const [sym, data] of activeMap) lastKnownPositions.set(sym, data);
 
+    const rawPositions = positions.filter((p) => Number(p.positionAmt) !== 0);
+
     // Cancel LIMIT orders older than STALE_ORDER_TIMEOUT_MS (default 30 min)
     const staleMs = Number(process.env.STALE_ORDER_TIMEOUT_MS ?? 30 * 60 * 1000);
+    const allOrders = staleMs > 0 || rawPositions.length > 0
+      ? await client.getOpenOrders({ apiKey, apiSecret })
+      : [];
+
     if (staleMs > 0) {
-      const allOrders = await client.getOpenOrders({ apiKey, apiSecret });
       const now = Date.now();
       const stale = allOrders.filter(
         (o) => o.type === 'LIMIT' && !o.reduceOnly && (now - Number(o.time)) > staleMs,
@@ -1350,9 +1370,111 @@ async function runStaleOrderCleaner() {
         }
       }
     }
+
+    if (rawPositions.length > 0) {
+      await handleMissingSl(rawPositions, allOrders, apiKey, apiSecret);
+    }
   } catch (err) {
     if (err.message?.includes('Missing Binance API')) return;
     console.error('[StaleOrders] Scan error:', err.message);
+  }
+}
+
+const slFired = new Map(); // symbol → entry price when auto-SL was placed
+
+async function triggerSlGuardForSymbol(symbol) {
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const positions = await client.getPositions({ apiKey, apiSecret });
+    const pos = positions.find((p) => p.symbol === symbol && Number(p.positionAmt) !== 0);
+    if (!pos) return;
+    const allOrders = await client.getOpenOrders({ apiKey, apiSecret });
+    await handleMissingSl([pos], allOrders, apiKey, apiSecret);
+  } catch (err) {
+    if (err.message?.includes('Missing Binance API')) return;
+    console.error(`[SlGuard] triggerSlGuard ${symbol}:`, err.message);
+  }
+}
+
+async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
+  if (process.env.AUTO_SL_ENABLED === 'false') return;
+  const slRoe = Number(process.env.AUTO_SL_ROE ?? 25);
+  if (slRoe <= 0) return;
+
+  const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+  let algoOrders = null;
+  const getAlgoOrders = async () => {
+    if (algoOrders !== null) return algoOrders;
+    const result = await client.getOpenAlgoOrders({ apiKey, apiSecret });
+    algoOrders = Array.isArray(result?.orders) ? result.orders : Array.isArray(result) ? result : [];
+    return algoOrders;
+  };
+
+  const symbols = await getSymbols();
+
+  for (const p of rawPositions) {
+    const symbol = p.symbol;
+    const entry = Number(p.entryPrice);
+    const amt = Number(p.positionAmt);
+    const leverage = Number(p.leverage) || 10;
+    if (!entry || !amt) continue;
+
+    // Dedup: already placed SL for this entry price
+    const prevEntry = slFired.get(symbol);
+    if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.001) continue;
+
+    // Check regular STOP_MARKET orders
+    const hasRegularSl = allOrders.some((o) => o.symbol === symbol && (o.type === 'STOP_MARKET' || o.type === 'STOP'));
+    if (hasRegularSl) { slFired.set(symbol, entry); continue; }
+
+    // Check algo STOP_MARKET orders (lazy-loaded once per cycle)
+    const algo = await getAlgoOrders();
+    const hasAlgoSl = algo.some((o) => {
+      if (o.symbol !== symbol) return false;
+      const t = String(o.type ?? '').toUpperCase();
+      return t === 'STOP_MARKET' || t === 'STOP';
+    });
+    if (hasAlgoSl) { slFired.set(symbol, entry); continue; }
+
+    const isLong = amt > 0;
+    const rawSlPrice = isLong
+      ? entry * (1 - (slRoe / 100) / leverage)
+      : entry * (1 + (slRoe / 100) / leverage);
+
+    const symbolInfo = symbols.find((s) => s.symbol === symbol);
+    if (!symbolInfo) continue;
+    const slPrice = priceFromTick(symbolInfo, rawSlPrice);
+
+    const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
+    const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
+    const steppedQty = Math.floor(Math.abs(amt) / stepSize) * stepSize;
+    const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
+
+    const positionSide = p.positionSide ?? 'BOTH';
+    const isHedge = positionSide !== 'BOTH';
+
+    const slParams = {
+      algoType: 'CONDITIONAL',
+      symbol,
+      side: isLong ? 'SELL' : 'BUY',
+      type: 'STOP_MARKET',
+      triggerPrice: String(slPrice),
+      quantity,
+      workingType: 'MARK_PRICE',
+      recvWindow,
+      newClientOrderId: `lp_slg_${Date.now()}`.slice(0, 36),
+    };
+    if (isHedge) { slParams.positionSide = positionSide; } else { slParams.reduceOnly = 'true'; }
+
+    slFired.set(symbol, entry);
+    try {
+      await client.placeAlgoOrder({ params: slParams, apiKey, apiSecret });
+      console.log(`[SlGuard] ✅ ${symbol} ${isLong ? 'LONG' : 'SHORT'} entry=${entry} lev=${leverage}x → SL @ ${slPrice} (-${slRoe}% ROE)`);
+    } catch (err) {
+      slFired.delete(symbol);
+      console.error(`[SlGuard] ❌ ${symbol}: ${err.message}`);
+    }
   }
 }
 
