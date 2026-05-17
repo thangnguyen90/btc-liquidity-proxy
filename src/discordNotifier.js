@@ -1,6 +1,11 @@
 import { fetchAnalysis } from './marketAnalysis.js';
 import { computeHeatmapData } from './liquidityProxy.js';
 
+const symbolUrl = (symbol) => {
+  const base = process.env.LIQUIDITY_BASE_URL;
+  return base ? `${base}/?symbol=${symbol}` : undefined;
+};
+
 const cooldowns = new Map();        // for full order-placed alerts
 const signalCooldowns = new Map();  // for lightweight signal-detected alerts
 const firstSeenPrices = new Map();
@@ -63,6 +68,7 @@ export async function sendSignalDetected(symbol, score, webhookUrl, cooldownMs =
     username: 'Liquidity Proxy',
     embeds: [{
       title: `⚡ ${dir} signal: ${symbol}`,
+      url: symbolUrl(symbol),
       color,
       description: `Score **${score >= 0 ? '+' : ''}${score.toFixed(3)}** — chờ xác nhận vào lệnh`,
       footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
@@ -81,6 +87,7 @@ export async function sendOrderBlocked(symbol, score, direction, reason, webhook
     username: 'Liquidity Proxy',
     embeds: [{
       title: `🚫 BLOCKED: ${dir} ${symbol}`,
+      url: symbolUrl(symbol),
       color: 0x9daaa5,
       description: `Score **${score >= 0 ? '+' : ''}${score.toFixed(3)}** — ${reason}`,
       footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
@@ -234,6 +241,7 @@ function buildEmbed(symbol, quickScore, data) {
     avatar_url: 'https://www.binance.com/favicon.ico',
     embeds: [{
       title: `${dirLabel} ${symbol}  ·  Quick score ${signed(quickScore, 3)}`,
+      url: symbolUrl(symbol),
       color,
       fields,
       footer: {
@@ -319,6 +327,14 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice) {
   const pct = (v, total) => total > 0 ? ((v / total) * 100).toFixed(1) + '%' : '0%';
   const total = above + below;
 
+  // Sweep probability: bias strength (60%) + volume skew (40%)
+  const dominantPct = total > 0 ? (isAboveHeavy ? above : below) / total : 0.5;
+  const sweepProb = Math.min(99, Math.round((Math.abs(bias) * 0.6 + (dominantPct - 0.5) * 2 * 0.4) * 100));
+  const filled = Math.round(sweepProb / 10);
+  const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
+  const sweepIcon = sweepProb >= 70 ? '🔥' : sweepProb >= 45 ? '⚡' : '🔵';
+  const sweepLabel = sweepProb >= 70 ? 'CAO' : sweepProb >= 45 ? 'TRUNG BÌNH' : 'THẤP';
+
   const lines = [
     `Mark: **${fp(markPrice, d)}**`,
     `↑ Above: **${compact(above)}** (${pct(above, total)}) | ↓ Below: **${compact(below)}** (${pct(below, total)})`,
@@ -344,8 +360,16 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice) {
     username: 'Liquidity Proxy',
     embeds: [{
       title: `🌊 LIQ IMBALANCE: ${symbol} — ${dirLabel}`,
+      url: symbolUrl(symbol),
       color,
-      description: `${action}\n\n${lines.join('\n')}`,
+      description: [
+        `${sweepIcon} **XÁC SUẤT QUÉT: ${sweepProb}%** — ${sweepLabel}`,
+        `\`${bar}\` ${sweepProb}%`,
+        '',
+        action,
+        '',
+        lines.join('\n'),
+      ].join('\n'),
       footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
     }],
   };

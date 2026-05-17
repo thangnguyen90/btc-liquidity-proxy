@@ -1,7 +1,7 @@
 {
-  "BILLUSDT": {
-    "expiresAt": 1779019481824,
-    "addedAt": "2026-05-17T10:04:41.824Z",
-    "reason": "SL hit pnl=-2.5383"
+  "POLUSDT": {
+    "expiresAt": 1779030779556,
+    "addedAt": "2026-05-17T13:12:59.556Z",
+    "reason": "SL hit pnl=-2.7137"
   }
 }
