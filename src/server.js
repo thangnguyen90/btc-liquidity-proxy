@@ -1393,15 +1393,10 @@ async function runStaleOrderCleaner() {
     lastKnownPositions.clear();
     for (const [sym, data] of activeMap) lastKnownPositions.set(sym, data);
 
-    const rawPositions = positions.filter((p) => Number(p.positionAmt) !== 0);
-
     // Cancel LIMIT orders older than STALE_ORDER_TIMEOUT_MS (default 30 min)
     const staleMs = Number(process.env.STALE_ORDER_TIMEOUT_MS ?? 30 * 60 * 1000);
-    const allOrders = staleMs > 0 || rawPositions.length > 0
-      ? await client.getOpenOrders({ apiKey, apiSecret })
-      : [];
-
     if (staleMs > 0) {
+      const allOrders = await client.getOpenOrders({ apiKey, apiSecret });
       const now = Date.now();
       const stale = allOrders.filter(
         (o) => o.type === 'LIMIT' && !o.reduceOnly && (now - Number(o.time)) > staleMs,
@@ -1415,10 +1410,6 @@ async function runStaleOrderCleaner() {
           console.warn(`[StaleOrders] Cancel ${o.symbol} #${o.orderId}: ${err.message}`);
         }
       }
-    }
-
-    if (rawPositions.length > 0) {
-      await handleMissingSl(rawPositions, allOrders, apiKey, apiSecret);
     }
   } catch (err) {
     if (err.message?.includes('Missing Binance API')) return;
