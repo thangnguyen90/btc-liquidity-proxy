@@ -405,6 +405,10 @@ server.listen(port, '127.0.0.1', () => {
         if (roe <= avgDownRoe) {
           handleAvgDown(symbol, pos, roe).catch(() => {});
         }
+        // SL trail: move SL up as profit grows in steps
+        if (slTracking.positions[symbol]?.slPlaced) {
+          handleSlTrailByProfit(symbol, pos, roe).catch(() => {});
+        }
         // Track continuous negative duration → set TP at entry after timeout
         if (roe < 0) {
           if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
@@ -1414,6 +1418,104 @@ async function runStaleOrderCleaner() {
   } catch (err) {
     if (err.message?.includes('Missing Binance API')) return;
     console.error('[StaleOrders] Scan error:', err.message);
+  }
+}
+
+function getTargetLockRoe(roe) {
+  if (roe < 15) return null;
+  // Every 5% above 15% raises the floor by 5% (lock = trigger - 10)
+  // 15→5, 20→10, 25→15, 30→20, ...
+  const steps = Math.floor((roe - 15) / 5);
+  return (15 + steps * 5) - 10;
+}
+
+const slTrailRunning = new Set();
+
+async function handleSlTrailByProfit(symbol, pos, roe) {
+  if (process.env.AUTO_SL_ENABLED === 'false') return;
+  if (slTrailRunning.has(symbol)) return;
+
+  const tracked = slTracking.positions[symbol];
+  if (!tracked?.slPlaced) return;
+
+  const targetLockRoe = getTargetLockRoe(roe);
+  if (targetLockRoe === null) return;
+
+  const currentLockRoe = tracked.slLockRoe ?? -Infinity;
+  if (targetLockRoe <= currentLockRoe) return;
+
+  slTrailRunning.add(symbol);
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+    const [algoResult, symbolList] = await Promise.all([
+      client.getOpenAlgoOrders({ apiKey, apiSecret }),
+      getSymbols(),
+    ]);
+    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+
+    const symbolInfo = symbolList.find((s) => s.symbol === symbol);
+    if (!symbolInfo) return;
+
+    const isLong = pos.amt > 0;
+    const entry = pos.entry;
+    const leverage = pos.leverage || 10;
+
+    const newSlPrice = priceFromTick(
+      symbolInfo,
+      isLong
+        ? entry * (1 + (targetLockRoe / 100) / leverage)
+        : entry * (1 - (targetLockRoe / 100) / leverage),
+    );
+
+    const slOrder = allAlgo.find((o) => {
+      if (o.symbol !== symbol) return false;
+      const t = String(o.type ?? '').toUpperCase();
+      return t === 'STOP_MARKET' || t === 'STOP';
+    });
+
+    if (slOrder) {
+      const curSl = Number(slOrder.triggerPrice);
+      if ((isLong && curSl >= newSlPrice) || (!isLong && curSl <= newSlPrice)) {
+        tracked.slLockRoe = targetLockRoe;
+        saveSlTracking();
+        return;
+      }
+      await client.cancelAlgoOrder({ algoId: slOrder.algoId, apiKey, apiSecret, recvWindow });
+    }
+
+    const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
+    const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
+    const steppedQty = Math.floor(Math.abs(pos.amt) / stepSize) * stepSize;
+    const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
+
+    const positionSide = pos.positionSide ?? 'BOTH';
+    const isHedge = positionSide !== 'BOTH';
+
+    const slParams = {
+      algoType: 'CONDITIONAL',
+      symbol,
+      side: isLong ? 'SELL' : 'BUY',
+      type: 'STOP_MARKET',
+      triggerPrice: String(newSlPrice),
+      quantity,
+      workingType: 'MARK_PRICE',
+      recvWindow,
+      newClientOrderId: `lp_slt_${Date.now()}`.slice(0, 36),
+    };
+    if (isHedge) { slParams.positionSide = positionSide; } else { slParams.reduceOnly = 'true'; }
+
+    await client.placeAlgoOrder({ params: slParams, apiKey, apiSecret });
+    tracked.slLockRoe = targetLockRoe;
+    tracked.slPrice = newSlPrice;
+    tracked.slUpdatedAt = new Date().toISOString();
+    saveSlTracking();
+    console.log(`[SlTrail] ✅ ${symbol} ROE=${roe.toFixed(1)}% → SL dời lên +${targetLockRoe}% ROE @ ${newSlPrice}`);
+  } catch (err) {
+    console.error(`[SlTrail] ❌ ${symbol}:`, err.message);
+  } finally {
+    slTrailRunning.delete(symbol);
   }
 }
 
