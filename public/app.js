@@ -1,5 +1,6 @@
 const elements = {
   symbolInput: document.querySelector('#symbolInput'),
+  symbolClear: document.querySelector('#symbolClear'),
   symbolsList: document.querySelector('#symbolsList'),
   intervalInput: document.querySelector('#intervalInput'),
   rangeInput: document.querySelector('#rangeInput'),
@@ -78,10 +79,20 @@ elements.refreshButton.addEventListener('click', () => {
   loadAnalysis();
 });
 
+elements.symbolInput.addEventListener('input', () => {
+  elements.symbolClear.style.display = elements.symbolInput.value ? '' : 'none';
+});
+
 elements.symbolInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     loadAnalysis();
   }
+});
+
+elements.symbolClear.addEventListener('click', () => {
+  elements.symbolInput.value = '';
+  elements.symbolClear.style.display = 'none';
+  elements.symbolInput.focus();
 });
 
 elements.autoRefreshInput.addEventListener('change', () => {
