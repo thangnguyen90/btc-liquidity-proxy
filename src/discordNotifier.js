@@ -308,6 +308,177 @@ export function startDiscordScanner({ client, webhookUrl, threshold = 0.7, inter
   setInterval(run, intervalMs);
 }
 
+// ── Volume Dump Scanner ───────────────────────────────────────────────────────
+
+const volDumpCooldowns = new Map();
+const volDumpActive = new Map(); // symbol → { timestamp, dumpCandlePct, move4cPct, highVolCount }
+const VOL_DUMP_TTL_MS = 60 * 60 * 1000; // 1h hiển thị sau khi alert
+
+export function getVolDumpFlags() {
+  const now = Date.now();
+  for (const [sym, info] of volDumpActive) {
+    if (now - info.timestamp > VOL_DUMP_TTL_MS) volDumpActive.delete(sym);
+  }
+  return Object.fromEntries(volDumpActive);
+}
+
+const HIGH_VOL_TTL_MS = 5 * 60_000; // 5 min (scanner runs every 60s)
+const highVolMap = new Map(); // symbol → { price, change24h, maxRatio, lastRatio, highVolCount, dumpCandlePct, move4cPct, isVolDump, scannedAt }
+
+export function getHighVolData() {
+  const now = Date.now();
+  for (const [sym, info] of highVolMap) {
+    if (now - info.scannedAt > HIGH_VOL_TTL_MS) highVolMap.delete(sym);
+  }
+  return Object.fromEntries(highVolMap);
+}
+
+function buildVolDumpEmbed(symbol, markPrice, stats) {
+  const { dumpCandlePct, move4cPct, highVolCount, avgVol, lastVol, maxVol } = stats;
+  const d = digits(markPrice);
+  const volMultLast = avgVol > 0 ? (lastVol / avgVol).toFixed(1) : '?';
+  const volMultMax = avgVol > 0 ? (maxVol / avgVol).toFixed(1) : '?';
+
+  return {
+    username: 'Liquidity Proxy',
+    embeds: [{
+      title: `💥 VOL DUMP: ${symbol} — Short entry?`,
+      url: symbolUrl(symbol),
+      color: 0xfb7185,
+      description: [
+        `**Volume cao liên tiếp rồi sập mạnh** — cân nhắc vào short`,
+        '',
+        `Mark: **${fp(markPrice, d)}**`,
+        `Nến cuối sập: **${dumpCandlePct.toFixed(2)}%**  |  4 nến gần nhất: **${move4cPct.toFixed(2)}%**`,
+        `Volume cao: **${highVolCount}/5** nến vừa rồi (cao nhất **${volMultMax}x** avg, nến cuối **${volMultLast}x** avg)`,
+        `Vol trung bình: ${compact(avgVol)} USDT  →  Nến cuối: ${compact(lastVol)} USDT`,
+      ].join('\n'),
+      footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
+    }],
+  };
+}
+
+export function startVolumeDumpScanner({
+  client,
+  webhookUrl,
+  getSnapshot,
+  intervalMs = 60_000,
+  cooldownMs = 2 * 3_600_000,
+  minVolumeUsdt = 5_000_000,
+  maxCoins = 150,
+  volMult = 1.8,
+  sustainedCandles = 3,
+  dumpPct = 1.5,
+  move4cPct = 2.5,
+}) {
+  console.log(`[VolDump] Started. volMult=${volMult}x sustained=${sustainedCandles} dumpPct=${dumpPct}% interval=${intervalMs / 1000}s${webhookUrl ? '' : ' (no webhook — tracking only)'}`);
+
+  const run = async () => {
+    try {
+      const snapshot = await getSnapshot();
+      const now = Date.now();
+
+      const candidates = snapshot
+        .filter((r) => r.quoteVolume >= minVolumeUsdt)
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, maxCoins);
+
+      for (const row of candidates) {
+        try {
+          const klines = await client.getKlines(row.symbol, '15m', 42);
+          if (klines.length < 22) continue;
+
+          const closed = klines.slice(0, -1);
+          const baseline = closed.slice(-36, -13); // candles 14-36 from end → clean baseline
+          const recent12 = closed.slice(-12);     // last 12 candles = 3h lookback
+          const recent5 = closed.slice(-5);       // last 5 for "hot now" count
+          const lastClosed = closed[closed.length - 1];
+
+          const avgVol = baseline.length > 0
+            ? baseline.reduce((s, k) => s + Number(k.quoteVolume), 0) / baseline.length
+            : 0;
+          if (avgVol <= 0) continue;
+
+          // maxRatio uses 3h window to catch recent spikes
+          const maxVol12 = Math.max(...recent12.map((k) => Number(k.quoteVolume)));
+          const maxRatio = maxVol12 / avgVol;
+          // highVolCount uses recent 5 for "currently sustained" detection
+          const recent5Vols = recent5.map((k) => Number(k.quoteVolume));
+          const maxVol5 = Math.max(...recent5Vols);
+          const highVolCount = recent5.filter((k) => Number(k.quoteVolume) >= avgVol * volMult).length;
+          const lastVol = Number(lastClosed.quoteVolume);
+          const lastRatio = lastVol / avgVol;
+
+          // Compute price stats (needed for both highVol tracking and dump detection)
+          const lastOpen = Number(lastClosed.open);
+          const lastClose = Number(lastClosed.close);
+          const dumpCandlePct = (lastClose - lastOpen) / lastOpen * 100;
+          const startPrice = Number(closed[closed.length - 5].close);
+          const move4cPctVal = (lastClose - startPrice) / startPrice * 100;
+
+          // Track all elevated-volume coins (lower threshold, for high-vol page)
+          if (maxRatio >= 1.5) {
+            // find which candle had peak vol and how long ago (in candles)
+            const peakIdx = recent12.reduce((best, k, i) => Number(k.quoteVolume) > Number(recent12[best].quoteVolume) ? i : best, 0);
+            const peakCandlesAgo = recent12.length - 1 - peakIdx; // 0 = last closed, 11 = 3h ago
+            highVolMap.set(row.symbol, {
+              price: row.markPrice,
+              change24h: row.change24hPct ?? 0,
+              maxRatio: Math.round(maxRatio * 10) / 10,
+              lastRatio: Math.round(lastRatio * 10) / 10,
+              highVolCount,
+              peakCandlesAgo,
+              dumpCandlePct: Math.round(dumpCandlePct * 100) / 100,
+              move4cPct: Math.round(move4cPctVal * 100) / 100,
+              isVolDump: false,
+              scannedAt: Date.now(),
+            });
+          } else {
+            highVolMap.delete(row.symbol);
+          }
+
+          // Discord dump alert: check cooldown + conditions
+          const lastAlerted = volDumpCooldowns.get(row.symbol) ?? 0;
+          if (now - lastAlerted < cooldownMs) continue;
+          if (highVolCount < sustainedCandles) continue;
+          const isDumpCandle = dumpCandlePct <= -dumpPct;
+          const isSteadyDrop = move4cPctVal <= -move4cPct;
+          if (!isDumpCandle && !isSteadyDrop) continue;
+
+          // Mark as dump in highVolMap
+          const hvEntry = highVolMap.get(row.symbol);
+          if (hvEntry) hvEntry.isVolDump = true;
+
+          volDumpCooldowns.set(row.symbol, Date.now());
+          volDumpActive.set(row.symbol, { timestamp: Date.now(), dumpCandlePct, move4cPct: move4cPctVal, highVolCount });
+
+          if (webhookUrl) {
+            const embed = buildVolDumpEmbed(row.symbol, row.markPrice, {
+              dumpCandlePct,
+              move4cPct: move4cPctVal,
+              highVolCount,
+              avgVol,
+              lastVol,
+              maxVol: maxVol5,
+            });
+            await sendWebhook(webhookUrl, embed);
+          }
+          console.log(`[VolDump] Alert: ${row.symbol} dump=${dumpCandlePct.toFixed(2)}% 4c=${move4cPctVal.toFixed(2)}% hvol=${highVolCount}/5`);
+
+          await new Promise((r) => setTimeout(r, 300));
+        } catch {
+          // skip individual coin failures
+        }
+      }
+    } catch (err) {
+      console.error('[VolDump] Scan error:', err.message);
+    }
+  };
+
+  setTimeout(run, 30_000);
+  setInterval(run, intervalMs);
+}
+
 // ── Liquidation Imbalance Scanner ────────────────────────────────────────────
 
 const liqCooldowns = new Map(); // symbol → last alert timestamp

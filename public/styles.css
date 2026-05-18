@@ -118,6 +118,21 @@ select {
   margin-top: 4px;
 }
 
+.vol-dump-badge {
+  display: inline-flex;
+  align-items: center;
+  background: #fb718522;
+  color: var(--red);
+  border: 1px solid #fb718555;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  margin-top: 4px;
+  cursor: default;
+  white-space: nowrap;
+}
+
 .live-dot {
   color: var(--green);
   font-size: 10px;
@@ -1015,6 +1030,16 @@ pre {
   line-height: 1.5;
 }
 
+/* High Volume page */
+.vol-status-badge { font-size: 11px; padding: 2px 7px; border-radius: 3px; font-weight: 600; white-space: nowrap; }
+.status-dump { background: rgba(251,113,133,0.15); color: var(--red); }
+.status-surge { background: rgba(54,211,153,0.15); color: var(--green); }
+.status-drop { background: rgba(251,191,36,0.15); color: var(--amber); }
+.status-high { background: rgba(100,160,255,0.12); color: #64a0ff; }
+.sym-suffix { color: var(--muted); font-weight: 400; font-size: 11px; }
+.muted-text { color: var(--muted); font-size: 12px; }
+.table-empty { color: var(--muted); text-align: center !important; padding: 28px !important; }
+
 @media (max-width: 920px) {
   .controls,
   .summary-grid,
@@ -1067,3 +1092,4 @@ pre {
     justify-items: start;
   }
 }
+

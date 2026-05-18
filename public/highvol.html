@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>High Volume Coins</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell wide-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Volume Scanner · 15m</p>
+          <h1>High Volume Coins</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Detail</a>
+          <a class="nav-link" href="/signals">Signals</a>
+          <a class="nav-link" href="/orders">Orders</a>
+          <div class="status" id="scanStatus">Loading...</div>
+        </div>
+      </section>
+
+      <section class="controls signal-controls">
+        <label class="field search-field">
+          <span>Search</span>
+          <input id="searchInput" placeholder="BTC, ETH..." autocomplete="off">
+          <button id="searchClear" class="search-clear" type="button" style="display:none">✕</button>
+        </label>
+        <label class="field short">
+          <span>Filter</span>
+          <select id="typeFilter">
+            <option value="all">All</option>
+            <option value="dump">Dump only</option>
+            <option value="surge">Surge only</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Sort</span>
+          <select id="sortInput">
+            <option value="maxRatio">Max Ratio</option>
+            <option value="highVolCount">Vol Count</option>
+            <option value="dumpCandlePct">Last Candle</option>
+            <option value="move4cPct">4c Move</option>
+          </select>
+        </label>
+        <div class="socket-note">
+          <strong id="visibleCount">0</strong>
+          <span>symbols · auto-refresh 65s</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <table class="signal-table" id="volTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Max Ratio</th>
+              <th>Vol Count</th>
+              <th>Last Candle</th>
+              <th>4c Move</th>
+              <th>Price</th>
+              <th>24h</th>
+              <th>Status</th>
+              <th>Scanned</th>
+            </tr>
+          </thead>
+          <tbody id="volTableBody">
+            <tr><td colspan="9" class="table-empty">Đang tải...</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+    <script src="/highvol.js" type="module"></script>
+  </body>
+</html>

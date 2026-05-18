@@ -64,6 +64,7 @@ const elements = {
   coinglassLink: document.querySelector('#coinglassLink'),
   binanceLink: document.querySelector('#binanceLink'),
   quickScanBadge: document.querySelector('#quickScanBadge'),
+  volDumpBadge: document.querySelector('#volDumpBadge'),
 };
 
 let autoRefreshTimer = null;
@@ -187,6 +188,13 @@ function render(data) {
   const qd = data.quickScan.direction;
   const qdClass = qd === 'long' ? 'positive' : qd === 'short' ? 'negative' : 'neutral';
   elements.quickScanBadge.innerHTML = `Scan: <span class="${qdClass}">${qd.toUpperCase()}</span> ${formatNumber(data.quickScan.score, 3)}`;
+  const vd = data.volDump;
+  if (vd?.triggered) {
+    elements.volDumpBadge.style.display = '';
+    elements.volDumpBadge.title = `${vd.highVolCount}/5 nến vol cao | nến cuối ${vd.dumpCandlePct.toFixed(2)}% | 4 nến ${vd.move4cPct.toFixed(2)}%`;
+  } else {
+    elements.volDumpBadge.style.display = 'none';
+  }
   elements.markPrice.textContent = formatPrice(data.price.mark, priceDigits);
   elements.indexPrice.textContent = `Index ${formatPrice(data.price.index, priceDigits)}`;
   elements.momentum.textContent = `${formatNumber(data.market.momentumPct, 3)}%`;

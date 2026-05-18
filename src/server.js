@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
-import { startDiscordScanner, startLiqImbalanceScanner, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked } from './discordNotifier.js';
+import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked } from './discordNotifier.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -186,6 +186,15 @@ const server = createServer(async (request, response) => {
     if (requestUrl.pathname === '/api/market-snapshot') {
       await sendJson(response, await getMarketSnapshot());
       return;
+    }
+
+    if (requestUrl.pathname === '/api/vol-dump-flags') {
+      await sendJson(response, getVolDumpFlags());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/high-volume') {
+      return sendJson(response, getHighVolData());
     }
 
     if (requestUrl.pathname === '/api/price') {
@@ -418,11 +427,27 @@ server.listen(port, '127.0.0.1', () => {
       minVolumeUsdt: Number(process.env.LIQ_SCAN_MIN_VOLUME ?? 5_000_000),
       maxCoins: Number(process.env.LIQ_SCAN_MAX_COINS ?? 200),
     });
+    startVolumeDumpScanner({
+      client,
+      webhookUrl: process.env.VOL_DUMP_WEBHOOK_URL || process.env.LIQ_SCAN_WEBHOOK_URL || '',
+      getSnapshot: getMarketSnapshot,
+      intervalMs: Number(process.env.VOL_DUMP_INTERVAL_MS ?? 60_000),
+      cooldownMs: Number(process.env.VOL_DUMP_COOLDOWN_MS ?? 2 * 3_600_000),
+      minVolumeUsdt: Number(process.env.VOL_DUMP_MIN_VOLUME ?? 5_000_000),
+      maxCoins: Number(process.env.VOL_DUMP_MAX_COINS ?? 150),
+      volMult: Number(process.env.VOL_DUMP_VOL_MULT ?? 1.8),
+      sustainedCandles: Number(process.env.VOL_DUMP_SUSTAINED ?? 3),
+      dumpPct: Number(process.env.VOL_DUMP_DROP_PCT ?? 1.5),
+      move4cPct: Number(process.env.VOL_DUMP_MOVE4C_PCT ?? 2.5),
+    });
   }, 17000);
   setTimeout(() => {
     runStaleOrderCleaner(); // seed initial position set, no cancellations on first run
     setInterval(runStaleOrderCleaner, 30000);
   }, 22000);
+  setTimeout(() => {
+    startNegTpScanner();
+  }, 28000);
   setTimeout(() => {
     posMonitor = startPositionMonitor({
       client,
@@ -453,7 +478,7 @@ server.listen(port, '127.0.0.1', () => {
         }
         // SL trail: move SL up as profit grows (all positions with existing SL)
         handleSlTrailByProfit(symbol, pos, roe).catch(() => {});
-        // Track continuous negative duration → set TP at entry after timeout
+        // Time-based: âm liên tiếp quá NEG_TP_TIMEOUT_MS → đặt TP về entry
         if (roe < 0) {
           if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
           const negMs = Date.now() - negativeSince.get(symbol);
@@ -1684,66 +1709,58 @@ const negativeSince = new Map(); // symbol → timestamp when position first wen
 const tpMovedToEntry = new Map(); // symbol → entryPrice when TP was moved to entry
 
 async function handleTpEntryGuard(symbol, pos, markPrice, roe) {
-  const entry = pos.entry;
+  return handleNegativeTimeoutTp(symbol, pos);
+}
 
-  // Already moved for this entry price
-  const prevEntry = tpMovedToEntry.get(symbol);
-  if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.005) return;
+function startNegTpScanner() {
+  const intervalMs = Number(process.env.NEG_TP_SCAN_INTERVAL_MS ?? 30000);
+  const negTpRoe = Number(process.env.NEG_TP_ROE ?? -30);
+  const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
+  const timeoutMs = Number(process.env.NEG_TP_TIMEOUT_MS ?? 4 * 3600 * 1000);
+  console.log(`[NegTp] Scanner started. ROE threshold=${negTpRoe}% timeout=${timeoutMs / 3_600_000}h interval=${intervalMs / 1000}s`);
 
-  try {
-    const { apiKey, apiSecret } = getApiCredentials(null);
-    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+  const run = async () => {
+    const apiKey = process.env.BINANCE_API_KEY;
+    const apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) return;
+    try {
+      const positions = await client.getPositions({ apiKey, apiSecret });
+      const active = positions.filter((p) => Number(p.positionAmt) !== 0);
+      const activeSymbols = new Set(active.map((p) => p.symbol));
+      for (const sym of negativeSince.keys()) {
+        if (!activeSymbols.has(sym)) negativeSince.delete(sym);
+      }
+      for (const p of active) {
+        const symbol = p.symbol;
+        const amt = Number(p.positionAmt);
+        const entry = Number(p.entryPrice);
+        const lev = Number(p.leverage) || 1;
+        const upnl = Number(p.unRealizedProfit);
+        const isolated = Number(p.isolatedMargin);
+        const initial = Number(p.initialMargin);
+        const margin = isolated > 0 ? isolated : initial > 0 ? initial : Math.abs(amt) * entry / lev;
+        if (margin <= 0) continue;
+        const roe = (upnl / margin) * 100;
+        const pos = { amt, entry, leverage: lev, positionSide: p.positionSide ?? 'BOTH' };
+        if (roe <= negTpRoe || roe <= tpGuardRoe) {
+          handleNegativeTimeoutTp(symbol, pos).catch(() => {});
+        }
+        if (roe < 0) {
+          if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
+          const negMs = Date.now() - negativeSince.get(symbol);
+          if (negMs >= timeoutMs) handleNegativeTimeoutTp(symbol, pos).catch(() => {});
+        } else {
+          negativeSince.delete(symbol);
+          tpMovedToEntry.delete(symbol);
+        }
+      }
+    } catch (err) {
+      console.error('[NegTp] Scanner error:', err.message);
+    }
+  };
 
-    const [algoResult, symbols] = await Promise.all([
-      client.getOpenAlgoOrders({ apiKey, apiSecret }),
-      getSymbols(),
-    ]);
-
-    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
-    const tpOrder = allAlgo.find((o) => {
-      if (o.symbol !== symbol) return false;
-      const t = String(o.type ?? '').toUpperCase();
-      return t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
-    });
-    if (!tpOrder) return;
-
-    const isLong = pos.amt > 0;
-    const currentTpPrice = Number(tpOrder.triggerPrice);
-    if (isLong && currentTpPrice <= entry) return;
-    if (!isLong && currentTpPrice >= entry) return;
-
-    const symbolInfo = symbols.find((s) => s.symbol === symbol);
-    if (!symbolInfo) return;
-
-    const newTpPrice = priceFromTick(symbolInfo, entry);
-    const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
-    const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
-    const steppedQty = Math.floor(Math.abs(pos.amt) / stepSize) * stepSize;
-    const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
-
-    const positionSide = pos.positionSide ?? 'BOTH';
-    const isHedge = positionSide !== 'BOTH';
-
-    await client.cancelAlgoOrder({ algoId: tpOrder.algoId, apiKey, apiSecret, recvWindow });
-    const tpParams = {
-      algoType: 'CONDITIONAL',
-      symbol,
-      side: isLong ? 'SELL' : 'BUY',
-      type: 'TAKE_PROFIT_MARKET',
-      triggerPrice: String(newTpPrice),
-      quantity,
-      workingType: 'MARK_PRICE',
-      recvWindow,
-      newClientOrderId: `lp_tpe_${Date.now()}`.slice(0, 36),
-    };
-    if (isHedge) { tpParams.positionSide = positionSide; } else { tpParams.reduceOnly = 'true'; }
-
-    await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
-    tpMovedToEntry.set(symbol, entry);
-    console.log(`[TpGuard] ${symbol} ROE=${roe.toFixed(1)}% → TP moved to entry ${newTpPrice}`);
-  } catch (err) {
-    console.error(`[TpGuard] ${symbol} failed:`, err.message);
-  }
+  setInterval(run, intervalMs);
+  run();
 }
 
 async function handleNegativeTimeoutTp(symbol, pos) {
@@ -1753,35 +1770,58 @@ async function handleNegativeTimeoutTp(symbol, pos) {
   const prevEntry = tpMovedToEntry.get(symbol);
   if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.005) return;
 
+  console.log(`[NegTp] ${symbol} checking — entry=${entry} amt=${pos.amt}`);
+
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
 
-    const [algoResult, symbols] = await Promise.all([
-      client.getOpenAlgoOrders({ apiKey, apiSecret }),
+    const [openOrders, algoResult, symbols] = await Promise.all([
+      client.getOpenOrders({ symbol, apiKey, apiSecret, recvWindow }),
+      client.getOpenAlgoOrders({ apiKey, apiSecret }).catch(() => ({ orders: [] })),
       getSymbols(),
     ]);
-    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
 
     const symbolInfo = symbols.find((s) => s.symbol === symbol);
-    if (!symbolInfo) return;
+    if (!symbolInfo) { console.warn(`[NegTp] ${symbol} not found in symbols`); return; }
 
     const isLong = pos.amt > 0;
     const newTpPrice = priceFromTick(symbolInfo, entry);
 
-    // Cancel existing TP if price not yet at entry
-    const tpOrder = allAlgo.find((o) => {
+    // Check if a suitable close order already exists at/better than entry
+    const allOpen = Array.isArray(openOrders) ? openOrders : [];
+    const existingClose = allOpen.find((o) => {
+      const t = String(o.type ?? '').toUpperCase();
+      const sideOk = isLong ? o.side === 'SELL' : o.side === 'BUY';
+      if (!sideOk) return false;
+      if (t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT') {
+        const p = Number(o.stopPrice);
+        return isLong ? p >= newTpPrice * 0.995 : p <= newTpPrice * 1.005;
+      }
+      if (t === 'LIMIT') {
+        const p = Number(o.price);
+        return isLong ? p >= newTpPrice * 0.995 : p <= newTpPrice * 1.005;
+      }
+      return false;
+    });
+    if (existingClose) {
+      tpMovedToEntry.set(symbol, entry);
+      console.log(`[NegTp] ${symbol} đã có lệnh close ở entry, skip`);
+      return;
+    }
+
+    // Check algo orders
+    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+    const existingAlgo = allAlgo.find((o) => {
       if (o.symbol !== symbol) return false;
       const t = String(o.type ?? '').toUpperCase();
-      return t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT';
+      if (t !== 'TAKE_PROFIT_MARKET' && t !== 'TAKE_PROFIT') return false;
+      const p = Number(o.triggerPrice);
+      return isLong ? p >= newTpPrice * 0.995 : p <= newTpPrice * 1.005;
     });
-    if (tpOrder) {
-      const cur = Number(tpOrder.triggerPrice);
-      if ((isLong && cur <= entry) || (!isLong && cur >= entry)) {
-        tpMovedToEntry.set(symbol, entry);
-        return;
-      }
-      await client.cancelAlgoOrder({ algoId: tpOrder.algoId, apiKey, apiSecret, recvWindow });
+    if (existingAlgo) {
+      tpMovedToEntry.set(symbol, entry);
+      return;
     }
 
     const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
@@ -1792,24 +1832,24 @@ async function handleNegativeTimeoutTp(symbol, pos) {
     const positionSide = pos.positionSide ?? 'BOTH';
     const isHedge = positionSide !== 'BOTH';
 
+    // LIMIT order at entry — works on all symbols without algo permission
     const tpParams = {
-      algoType: 'CONDITIONAL',
       symbol,
       side: isLong ? 'SELL' : 'BUY',
-      type: 'TAKE_PROFIT_MARKET',
-      triggerPrice: String(newTpPrice),
+      type: 'LIMIT',
+      price: String(newTpPrice),
       quantity,
-      workingType: 'MARK_PRICE',
+      timeInForce: 'GTC',
       recvWindow,
-      newClientOrderId: `lp_neg_tp_${Date.now()}`.slice(0, 36),
     };
     if (isHedge) { tpParams.positionSide = positionSide; } else { tpParams.reduceOnly = 'true'; }
 
-    await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
+    await client.placeFuturesOrder({ params: tpParams, apiKey, apiSecret });
     tpMovedToEntry.set(symbol, entry);
 
-    const hours = ((Date.now() - (negativeSince.get(symbol) ?? Date.now())) / 3_600_000).toFixed(1);
-    console.log(`[NegTp] ✅ ${symbol} âm ${hours}h liên tiếp → TP đặt về entry ${newTpPrice}`);
+    const negMs = Date.now() - (negativeSince.get(symbol) ?? Date.now());
+    const hours = (negMs / 3_600_000).toFixed(1);
+    console.log(`[NegTp] ✅ ${symbol} âm ${hours}h → LIMIT close đặt tại entry ${newTpPrice}`);
   } catch (err) {
     console.error(`[NegTp] ❌ ${symbol}:`, err.message);
   }
@@ -1896,7 +1936,9 @@ async function sendStatic(pathname, response) {
       ? '/signals.html'
       : pathname === '/orders'
         ? '/orders.html'
-        : pathname;
+        : pathname === '/highvol'
+          ? '/highvol.html'
+          : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);
 

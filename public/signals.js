@@ -25,6 +25,14 @@ const elements = {
 
 const allowedSymbols = new Set();
 const marketState = new Map();
+let volDumpFlags = new Map(); // symbol → { dumpCandlePct, move4cPct, highVolCount }
+
+async function loadVolDumpFlags() {
+  try {
+    const res = await fetch('/api/vol-dump-flags');
+    if (res.ok) volDumpFlags = new Map(Object.entries(await res.json()));
+  } catch {}
+}
 let socket = null;
 let reconnectAttempt = 0;
 let lastRenderAt = 0;
@@ -33,6 +41,7 @@ let staleTimer = null;
 let socketUrlIndex = 0;
 let lastSocketMessageAt = 0;
 let snapshotTimer = null;
+
 
 elements.searchInput.addEventListener('input', () => {
   elements.searchClear.style.display = elements.searchInput.value ? '' : 'none';
@@ -51,6 +60,8 @@ elements.sortInput.addEventListener('change', render);
 await loadSymbols();
 connectSocket();
 snapshotTimer = setInterval(loadMarketSnapshot, SNAPSHOT_REFRESH_MS);
+loadVolDumpFlags();
+setInterval(loadVolDumpFlags, 60_000);
 setTimeout(() => {
   if (!hasRenderableData()) {
     loadMarketSnapshot();
@@ -290,6 +301,7 @@ function render() {
   elements.signalsBody.innerHTML = visibleRows.length || btcHtml
     ? btcHtml + visibleRows.map((row) => renderRow(row, false)).join('')
     : '<tr><td colspan="15" class="empty-cell">No symbols match current filter.</td></tr>';
+
 }
 
 function buildSocketSetup(row) {
@@ -430,9 +442,13 @@ function renderRow(row, isPinned = false) {
       })()
     : '-';
 
+  const vdump = volDumpFlags.get(row.symbol);
+  const dumpBadge = vdump
+    ? ` <span class="vol-dump-badge" title="Vol cao ${vdump.highVolCount}/5 nến | nến cuối ${vdump.dumpCandlePct?.toFixed(1) ?? '?'}% | 4 nến ${vdump.move4cPct?.toFixed(1) ?? '?'}%">💥</span>`
+    : '';
   const symbolCell = isPinned
-    ? `<td><span class="pin-badge">⬡ BTC</span> <a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a></td>`
-    : `<td><a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a>${crowded ? ' <span class="kill-long-badge">⚡ kill long</span>' : ''}</td>`;
+    ? `<td><span class="pin-badge">⬡ BTC</span> <a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a>${dumpBadge}</td>`
+    : `<td><a class="symbol-link" href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.symbol)}</a>${crowded ? ' <span class="kill-long-badge">⚡ kill long</span>' : ''}${dumpBadge}</td>`;
 
   const rowClass = isPinned ? 'pinned-row' : crowded ? 'kill-long-row' : '';
 

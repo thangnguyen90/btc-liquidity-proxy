@@ -97,6 +97,17 @@ export function analyzeMarket({
   const ema99_4h = klines4h ? computeEma(klines4h.map((k) => k.close), 99) : null;
   const emaDistPct = (ema) => ema != null ? round((currentPrice - ema) / ema * 100, 3) : null;
 
+  // Vol dump: volume cao liên tiếp + sập mạnh
+  const vlClosed = klines.slice(0, -1);
+  const vlBase = vlClosed.slice(-24, -4);
+  const vlRecent = vlClosed.slice(-5);
+  const vlLast = vlClosed[vlClosed.length - 1];
+  const vlAvg = vlBase.length > 0 ? vlBase.reduce((s, k) => s + k.quoteVolume, 0) / vlBase.length : 0;
+  const vlHighCount = vlAvg > 0 ? vlRecent.filter((k) => k.quoteVolume >= vlAvg * 1.8).length : 0;
+  const vlDumpPct = vlLast?.open > 0 ? (vlLast.close - vlLast.open) / vlLast.open * 100 : 0;
+  const vl4cBase = vlClosed.length >= 5 ? vlClosed[vlClosed.length - 5].close : (vlLast?.close ?? currentPrice);
+  const vl4cPct = vl4cBase > 0 ? (vlLast.close - vl4cBase) / vl4cBase * 100 : 0;
+
   return {
     symbol,
     generatedAt: new Date().toISOString(),
@@ -133,6 +144,14 @@ export function analyzeMarket({
     signal,
     tradeSetup,
     quickScan: { score: quickScore, direction: quickDirection },
+    volDump: {
+      triggered: vlHighCount >= 3 && (vlDumpPct <= -1.5 || vl4cPct <= -2.5),
+      highVolCount: vlHighCount,
+      dumpCandlePct: round(vlDumpPct, 3),
+      move4cPct: round(vl4cPct, 3),
+      avgVol: round(vlAvg, 0),
+      lastVol: round(vlLast?.quoteVolume ?? 0, 0),
+    },
     ema99: {
       current: ema99Current != null ? { value: round(ema99Current, priceDigits), distPct: emaDistPct(ema99Current), label: interval } : null,
       h1: ema99_1h != null ? { value: round(ema99_1h, priceDigits), distPct: emaDistPct(ema99_1h), label: '1h' } : null,

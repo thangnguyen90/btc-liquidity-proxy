@@ -1,7 +1,12 @@
 {
-  "POLUSDT": {
-    "expiresAt": 1779030779556,
-    "addedAt": "2026-05-17T13:12:59.556Z",
-    "reason": "SL hit pnl=-2.7137"
+  "ZEREBROUSDT": {
+    "expiresAt": 1779091967827,
+    "addedAt": "2026-05-18T06:12:47.827Z",
+    "reason": "SL hit pnl=-0.0117"
+  },
+  "LYNUSDT": {
+    "expiresAt": 1779097866724,
+    "addedAt": "2026-05-18T07:51:06.724Z",
+    "reason": "SL hit pnl=-0.1820"
   }
 }
