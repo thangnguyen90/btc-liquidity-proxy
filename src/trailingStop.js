@@ -66,41 +66,39 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
 
         if (roe < triggerRoe) continue;
 
-        // Check for any existing STOP_MARKET order — only SL types, not TP
         const algoList = Array.isArray(openAlgoOrders?.orders) ? openAlgoOrders.orders
           : Array.isArray(openAlgoOrders) ? openAlgoOrders : [];
-        const isSlOrder = (o) => {
-          const t = String(o.type || '').toUpperCase();
-          return t === 'STOP_MARKET' || t === 'STOP';
-        };
-        const hasAlgoSl = algoList.some((o) => o.symbol === pos.symbol && isSlOrder(o));
-        const hasRegularSl = openOrders.some((o) => o.symbol === pos.symbol && isSlOrder(o));
 
-        // Dời SL khi ROE tăng thêm updateRoe pp so với lần đặt cuối (chỉ dời SL do TSL tự đặt, không đụng SL manual)
+        // Kiểm tra bằng algoId đã lưu — algo order type là 'CONDITIONAL' không phải 'STOP_MARKET'
+        const myAlgoOpen = existingProtected?.algoId &&
+          algoList.some((o) => String(o.algoId) === String(existingProtected.algoId));
+
+        // Check manual SL (regular order STOP_MARKET từ user, không phải TSL)
+        const isSlOrder = (o) => { const t = String(o.type || '').toUpperCase(); return t === 'STOP_MARKET' || t === 'STOP'; };
+        const hasManualSl = openOrders.some((o) => o.symbol === pos.symbol && isSlOrder(o));
+
         const roeGain = existingProtected?.roe != null ? roe - existingProtected.roe : 0;
-        const shouldUpdate = existingProtected && !existingProtected.manual && roeGain >= updateRoe;
+        const shouldUpdate = myAlgoOpen && !existingProtected.manual && roeGain >= updateRoe;
 
-        if ((hasAlgoSl || hasRegularSl) && !shouldUpdate) {
-          if (!existingProtected) {
-            // SL không phải do TSL đặt → đánh dấu manual, không đụng vào
-            protectedPositions.set(pos.symbol, { algoId: null, stopPrice: null, roe: Number(roe.toFixed(2)), at: new Date().toISOString(), manual: true });
-          }
+        if (hasManualSl) {
+          // User đặt SL tay → không đụng vào
+          if (!existingProtected) protectedPositions.set(pos.symbol, { algoId: null, stopPrice: null, roe: Number(roe.toFixed(2)), at: new Date().toISOString(), manual: true });
           continue;
         }
 
-        // Cancel SL cũ (update case hoặc TSL bị filled/cancelled)
-        const existingTsl = existingProtected ?? null;
-        if (existingTsl?.algoId) {
+        if (myAlgoOpen && !shouldUpdate) {
+          // TSL đã đặt và ROE chưa tăng đủ updateRoe → giữ nguyên
+          continue;
+        }
+
+        // Cancel algo SL cũ nếu có (trường hợp update hoặc filled/cancelled từ bên ngoài)
+        if (existingProtected?.algoId) {
           try {
-            await client.cancelAlgoOrder({ algoId: existingTsl.algoId, apiKey, apiSecret });
+            await client.cancelAlgoOrder({ algoId: existingProtected.algoId, apiKey, apiSecret });
             if (shouldUpdate) {
-              console.log(`[TSL] ${pos.symbol} dời SL lên — ROE ${existingTsl.roe?.toFixed(1)}% → ${roe.toFixed(1)}% (+${roeGain.toFixed(1)}pp)`);
-            } else {
-              console.log(`[TSL] ${pos.symbol} cancelled old TSL algoId=${existingTsl.algoId}`);
+              console.log(`[TSL] ${pos.symbol} dời SL lên — ROE ${existingProtected.roe?.toFixed(1)}% → ${roe.toFixed(1)}% (+${roeGain.toFixed(1)}pp)`);
             }
-          } catch (err) {
-            console.error(`[TSL] ${pos.symbol} cancel failed (may already be gone):`, err.message);
-          }
+          } catch { /* already gone */ }
         }
         protectedPositions.delete(pos.symbol);
 

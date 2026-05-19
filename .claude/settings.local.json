@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sleep 5 && tail -4 /tmp/btc-server.log)",
+      "Read(//private/tmp/**)"
+    ]
+  }
+}
