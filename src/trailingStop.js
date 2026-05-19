@@ -8,8 +8,10 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
 
   const triggerRoe = Number(process.env.TRAILING_STOP_TRIGGER_ROE ?? 1);
   const lockMarginPct = Number(process.env.TRAILING_STOP_LOCK_MARGIN_PCT ?? 1) / 100;
+  // Dời SL mỗi khi ROE tăng thêm triggerRoe/3 (e.g. mỗi 5pp với trigger=15)
+  const updateRoe = Math.max(3, triggerRoe / 3);
 
-  console.log(`[TSL] Enabled. Trigger ROE >= ${triggerRoe}% → lock ${lockMarginPct * 100}% margin. Interval: ${intervalMs / 1000}s`);
+  console.log(`[TSL] Enabled. Trigger ROE >= ${triggerRoe}% → lock ${lockMarginPct * 100}% margin. Update every ${updateRoe}pp. Interval: ${intervalMs / 1000}s`);
 
   const run = async () => {
     const apiKey = process.env.BINANCE_API_KEY;
@@ -58,9 +60,9 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
             : notionalMargin;
 
         const roe = margin > 0 ? (upnl / margin) * 100 : 0;
-        const isProtected = protectedPositions.has(pos.symbol);
+        const existingProtected = protectedPositions.get(pos.symbol);
 
-        console.log(`[TSL] ${pos.symbol} | amt=${amt} entry=${entry} mark=${mark} upnl=${upnl.toFixed(4)} margin=${margin.toFixed(4)} ROE=${roe.toFixed(2)}% ${isProtected ? '(protected)' : ''}`);
+        console.log(`[TSL] ${pos.symbol} | amt=${amt} entry=${entry} mark=${mark} upnl=${upnl.toFixed(4)} margin=${margin.toFixed(4)} ROE=${roe.toFixed(2)}%${existingProtected ? ` (SL@${existingProtected.stopPrice} placed@ROE${existingProtected.roe?.toFixed(1)}%)` : ''}`);
 
         if (roe < triggerRoe) continue;
 
@@ -74,31 +76,38 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
         const hasAlgoSl = algoList.some((o) => o.symbol === pos.symbol && isSlOrder(o));
         const hasRegularSl = openOrders.some((o) => o.symbol === pos.symbol && isSlOrder(o));
 
-        if (hasAlgoSl || hasRegularSl) {
-          console.log(`[TSL] ${pos.symbol} already has SL order — skip.`);
-          if (!protectedPositions.has(pos.symbol)) {
+        // Dời SL khi ROE tăng thêm updateRoe pp so với lần đặt cuối (chỉ dời SL do TSL tự đặt, không đụng SL manual)
+        const roeGain = existingProtected?.roe != null ? roe - existingProtected.roe : 0;
+        const shouldUpdate = existingProtected && !existingProtected.manual && roeGain >= updateRoe;
+
+        if ((hasAlgoSl || hasRegularSl) && !shouldUpdate) {
+          if (!existingProtected) {
+            // SL không phải do TSL đặt → đánh dấu manual, không đụng vào
             protectedPositions.set(pos.symbol, { algoId: null, stopPrice: null, roe: Number(roe.toFixed(2)), at: new Date().toISOString(), manual: true });
           }
           continue;
         }
 
-        // TSL was filled/cancelled — cancel old entry and re-place
-        const existingTsl = protectedPositions.get(pos.symbol) ?? null;
+        // Cancel SL cũ (update case hoặc TSL bị filled/cancelled)
+        const existingTsl = existingProtected ?? null;
         if (existingTsl?.algoId) {
           try {
             await client.cancelAlgoOrder({ algoId: existingTsl.algoId, apiKey, apiSecret });
-            console.log(`[TSL] ${pos.symbol} cancelled old TSL algoId=${existingTsl.algoId}`);
+            if (shouldUpdate) {
+              console.log(`[TSL] ${pos.symbol} dời SL lên — ROE ${existingTsl.roe?.toFixed(1)}% → ${roe.toFixed(1)}% (+${roeGain.toFixed(1)}pp)`);
+            } else {
+              console.log(`[TSL] ${pos.symbol} cancelled old TSL algoId=${existingTsl.algoId}`);
+            }
           } catch (err) {
             console.error(`[TSL] ${pos.symbol} cancel failed (may already be gone):`, err.message);
           }
         }
-        if (isProtected) {
-          console.log(`[TSL] ${pos.symbol} re-placing TSL...`);
-          protectedPositions.delete(pos.symbol);
-        }
+        protectedPositions.delete(pos.symbol);
 
-        // Calculate stop price that locks lockMarginPct of margin as profit
-        const lockedProfit = margin * lockMarginPct;
+        // Progressive lock: khoá nhiều hơn khi ROE tăng
+        // ROE=15% → lock 1×, ROE=30% → lock 2×, ROE=45% → lock 3×, ...
+        const progressiveLockPct = lockMarginPct * (roe / triggerRoe);
+        const lockedProfit = margin * progressiveLockPct;
         const isLong = amt > 0;
         const rawStop = isLong
           ? entry + lockedProfit / Math.abs(amt)
@@ -149,7 +158,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
             roe: Number(roe.toFixed(2)),
             at: new Date().toISOString(),
           });
-          console.log(`[TSL] ✅ ${pos.symbol} ROE=${roe.toFixed(1)}% → SL @ ${stopPrice} (locks ${(lockMarginPct * 100).toFixed(0)}% margin) algoId=${result.algoId ?? result.orderId}`);
+          console.log(`[TSL] ✅ ${pos.symbol} ROE=${roe.toFixed(1)}% → SL @ ${stopPrice} (locks ${(progressiveLockPct * 100).toFixed(1)}% margin)${shouldUpdate ? ' [TRAIL]' : ''} algoId=${result.algoId ?? result.orderId}`);
         } catch (err) {
           console.error(`[TSL] ❌ ${pos.symbol} place SL failed:`, err.message);
         }

@@ -555,9 +555,10 @@ export function startLiqImbalanceScanner({
   cooldownMs = 2 * 60 * 60 * 1000,
   minVolumeUsdt = 5_000_000,
   maxCoins = 60,
+  onHighProbAlert = null,
+  highProbThreshold = 90,
 }) {
-  if (!webhookUrl) return;
-  console.log(`[LiqScan] Started. threshold=±${biasThreshold} interval=${intervalMs / 60000}min cooldown=${cooldownMs / 60000}min`);
+  console.log(`[LiqScan] Started. threshold=±${biasThreshold} interval=${intervalMs / 60000}min cooldown=${cooldownMs / 60000}min${onHighProbAlert ? ` autoOrder≥${highProbThreshold}%` : ''}`);
 
   const run = async () => {
     try {
@@ -586,11 +587,27 @@ export function startLiqImbalanceScanner({
           );
 
           if (isImbalanced || isOneSided) {
-            const embed = buildLiqImbalanceEmbed(row.symbol, heatmap, row.markPrice);
-            await sendWebhook(webhookUrl, embed);
+            // Compute sweepProb inline for auto-order check
+            const dominantPct = total > 0 ? (heatmap.bias > 0 ? heatmap.liquidityAbove : heatmap.liquidityBelow) / total : 0.5;
+            const sweepProb = Math.min(99, Math.round((Math.abs(heatmap.bias) * 0.6 + (dominantPct - 0.5) * 2 * 0.4) * 100));
+
+            if (onHighProbAlert && sweepProb >= highProbThreshold && heatmap.sweepTarget) {
+              await onHighProbAlert({
+                symbol: row.symbol,
+                markPrice: row.markPrice,
+                direction: heatmap.bias > 0 ? 'short' : 'long',
+                sweepTargetPrice: heatmap.sweepTarget.price,
+                sweepProb,
+              });
+            }
+
+            if (webhookUrl) {
+              const embed = buildLiqImbalanceEmbed(row.symbol, heatmap, row.markPrice);
+              await sendWebhook(webhookUrl, embed);
+            }
             liqCooldowns.set(row.symbol, Date.now());
             alertCount++;
-            console.log(`[LiqScan] Alert: ${row.symbol} bias=${heatmap.bias.toFixed(3)} above=${compact(heatmap.liquidityAbove)} below=${compact(heatmap.liquidityBelow)}`);
+            console.log(`[LiqScan] Alert: ${row.symbol} bias=${heatmap.bias.toFixed(3)} above=${compact(heatmap.liquidityAbove)} below=${compact(heatmap.liquidityBelow)} sweepProb=${sweepProb}%`);
           }
 
           await new Promise((r) => setTimeout(r, 300));

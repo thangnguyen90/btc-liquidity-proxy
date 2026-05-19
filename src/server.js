@@ -197,6 +197,15 @@ const server = createServer(async (request, response) => {
       return sendJson(response, getHighVolData());
     }
 
+    if (requestUrl.pathname === '/api/ls-ratio-scan') {
+      const period = requestUrl.searchParams.get('period') ?? '15m';
+      const cache = lsRatioCache[period] ?? lsRatioCache['15m'];
+      if (!cache.scanning && Date.now() - cache.updatedAt > 90_000) {
+        runLsRatioScan(period).catch(() => {});
+      }
+      return sendJson(response, { data: cache.data, updatedAt: cache.updatedAt, scanning: cache.scanning, period });
+    }
+
     if (requestUrl.pathname === '/api/price') {
       const symbol = normalizeSymbol(requestUrl.searchParams.get('symbol') ?? 'BTCUSDT');
       const data = await client.getPremiumIndex(symbol);
@@ -426,6 +435,8 @@ server.listen(port, '127.0.0.1', () => {
       cooldownMs: Number(process.env.LIQ_SCAN_COOLDOWN_MS ?? 2 * 60 * 60 * 1000),
       minVolumeUsdt: Number(process.env.LIQ_SCAN_MIN_VOLUME ?? 5_000_000),
       maxCoins: Number(process.env.LIQ_SCAN_MAX_COINS ?? 200),
+      onHighProbAlert: process.env.AUTO_LIQ_ORDER_ENABLED === 'true' ? handleLiqAutoOrder : null,
+      highProbThreshold: Number(process.env.AUTO_LIQ_ORDER_MIN_PROB ?? 90),
     });
     startVolumeDumpScanner({
       client,
@@ -1704,6 +1715,170 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
   }
 }
 
+const liqAutoOrderFired = new Map(); // `${symbol}:${price}` → timestamp
+let lastGlobalAutoLiqAt = 0; // global: chỉ 1 lệnh mỗi 5 phút
+
+async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPrice, sweepProb }) {
+  if (Date.now() - lastGlobalAutoLiqAt < 5 * 60 * 1000) return; // 5-min global cooldown
+  lastGlobalAutoLiqAt = Date.now(); // claim slot trước khi async
+
+  const key = `${symbol}:${Math.round(sweepTargetPrice * 1e8)}`;
+  const last = liqAutoOrderFired.get(key) ?? 0;
+  if (Date.now() - last < 2 * 3600 * 1000) { lastGlobalAutoLiqAt = 0; return; } // release slot nếu đã dedup
+
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const margin = Number(process.env.AUTO_LIQ_ORDER_MARGIN ?? 5);
+    const leverage = Number(process.env.AUTO_LIQ_ORDER_LEVERAGE ?? 10);
+    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+    const [symbols] = await Promise.all([getSymbols()]);
+    const symbolInfo = symbols.find((s) => s.symbol === symbol);
+    if (!symbolInfo) { console.warn(`[AutoLiq] ${symbol} not in symbols`); return; }
+
+    const price = priceFromTick(symbolInfo, sweepTargetPrice);
+    const notional = margin * leverage;
+    const rawQty = notional / price;
+    const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
+    const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
+    const steppedQty = Math.floor(rawQty / stepSize) * stepSize;
+    const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
+
+    if (Number(quantity) <= 0) { console.warn(`[AutoLiq] ${symbol} qty=0, skip`); return; }
+
+    await client.setLeverage({ symbol, leverage, apiKey, apiSecret }).catch(() => {});
+
+    const isHedge = await getHedgeMode(null);
+    const positionSide = isHedge ? (direction === 'short' ? 'SHORT' : 'LONG') : undefined;
+
+    const side = direction === 'short' ? 'SELL' : 'BUY';
+    const entryParams = { symbol, side, type: 'LIMIT', price: String(price), quantity, timeInForce: 'GTC', recvWindow };
+    if (isHedge) { entryParams.positionSide = positionSide; } else { entryParams.reduceOnly = 'false'; }
+    await client.placeFuturesOrder({ params: entryParams, apiKey, apiSecret });
+
+    // TP động theo sweepProb: 90%→30% ROE, 99%→50% ROE
+    const tpRoePct = 30 + ((sweepProb - 90) / 9) * 20;
+    const tpRoe = tpRoePct / 100;
+    const rawTpPrice = direction === 'short'
+      ? price * (1 - tpRoe / leverage)
+      : price * (1 + tpRoe / leverage);
+    const tpPrice = priceFromTick(symbolInfo, rawTpPrice);
+    const tpSide = direction === 'short' ? 'BUY' : 'SELL';
+    const tpParams = { symbol, side: tpSide, type: 'LIMIT', price: String(tpPrice), quantity, timeInForce: 'GTC', recvWindow };
+    if (isHedge) { tpParams.positionSide = positionSide; } else { tpParams.reduceOnly = 'true'; }
+    await client.placeFuturesOrder({ params: tpParams, apiKey, apiSecret }).catch((e) => {
+      console.warn(`[AutoLiq] TP order failed for ${symbol}: ${e.message}`);
+    });
+
+    liqAutoOrderFired.set(key, Date.now());
+    console.log(`[AutoLiq] ✅ ${symbol} ${direction.toUpperCase()} LIMIT @${price} TP @${tpPrice} (${tpRoePct.toFixed(1)}% ROE) qty=${quantity} sweepProb=${sweepProb}% margin=${margin}USDT lev=${leverage}x mark=${markPrice}`);
+  } catch (err) {
+    console.error(`[AutoLiq] ❌ ${symbol}:`, err.message);
+  }
+}
+
+// ── L/S Ratio Reversal Scanner ──────────────────────────────────────────────
+
+const lsRatioCache = {
+  '5m':  { data: [], updatedAt: 0, scanning: false },
+  '15m': { data: [], updatedAt: 0, scanning: false },
+};
+
+function detectLsReversal(data) {
+  const values = data.map((d) => Number(d.longAccount));
+  const n = values.length;
+  if (n < 6) return null;
+
+  // Exclude current bar when finding window extreme
+  const prev = values.slice(0, -1);
+  const windowMax = Math.max(...prev);
+  const windowMin = Math.min(...prev);
+  const windowRange = windowMax - windowMin;
+  if (windowRange < 0.004) return null; // filter flat coins (<0.4pp variation)
+
+  const current = values[n - 1];
+
+  // Use last occurrence so we pick the most recent peak/bottom
+  const maxIdx = prev.lastIndexOf(windowMax);
+  const minIdx = prev.lastIndexOf(windowMin);
+  const barsFromPeak   = (n - 2) - maxIdx;
+  const barsFromBottom = (n - 2) - minIdx;
+
+  // Peak reversal → SHORT signal
+  if (barsFromPeak >= 2 && barsFromPeak <= 8) {
+    const drop = windowMax - current;
+    if (drop / windowRange >= 0.35 && drop >= 0.002) {
+      const after = values.slice(maxIdx + 1);
+      if (after[after.length - 1] < after[0]) { // net decline since peak
+        return {
+          direction: 'short',
+          extreme: +(windowMax * 100).toFixed(1),
+          current: +(current * 100).toFixed(1),
+          barsAgo: barsFromPeak,
+          strength: +(drop * 100).toFixed(2),
+          range: +(windowRange * 100).toFixed(2),
+          extremeTs: data[maxIdx].timestamp,
+        };
+      }
+    }
+  }
+
+  // Bottom reversal → LONG signal
+  if (barsFromBottom >= 2 && barsFromBottom <= 8) {
+    const rise = current - windowMin;
+    if (rise / windowRange >= 0.35 && rise >= 0.002) {
+      const after = values.slice(minIdx + 1);
+      if (after[after.length - 1] > after[0]) { // net rise since bottom
+        return {
+          direction: 'long',
+          extreme: +(windowMin * 100).toFixed(1),
+          current: +(current * 100).toFixed(1),
+          barsAgo: barsFromBottom,
+          strength: +(rise * 100).toFixed(2),
+          range: +(windowRange * 100).toFixed(2),
+          extremeTs: data[minIdx].timestamp,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+async function runLsRatioScan(period = '15m') {
+  const cache = lsRatioCache[period];
+  if (!cache || cache.scanning) return;
+  cache.scanning = true;
+  console.log(`[LSRatio] Starting scan period=${period}…`);
+  try {
+    const snapshot = await getMarketSnapshot();
+    const coins = snapshot
+      .filter((r) => r.quoteVolume >= 5_000_000)
+      .sort((a, b) => b.quoteVolume - a.quoteVolume)
+      .slice(0, 150);
+
+    const results = [];
+    for (const coin of coins) {
+      try {
+        const data = await client.getTopLongShortPositionRatio(coin.symbol, period, 20);
+        if (!data || data.length < 4) continue;
+        const signal = detectLsReversal(data);
+        if (signal) results.push({ symbol: coin.symbol, volume: coin.quoteVolume, markPrice: coin.markPrice, ...signal });
+      } catch { /* skip unsupported symbols */ }
+      await new Promise((r) => setTimeout(r, 80));
+    }
+
+    results.sort((a, b) => b.strength - a.strength);
+    cache.data = results;
+    cache.updatedAt = Date.now();
+    console.log(`[LSRatio] Scan done period=${period} — ${results.length} signals`);
+  } finally {
+    cache.scanning = false;
+  }
+}
+
+// ── End L/S Ratio Scanner ────────────────────────────────────────────────────
+
 const negativeSince = new Map(); // symbol → timestamp when position first went negative
 
 const tpMovedToEntry = new Map(); // symbol → entryPrice when TP was moved to entry
@@ -1938,7 +2113,9 @@ async function sendStatic(pathname, response) {
         ? '/orders.html'
         : pathname === '/highvol'
           ? '/highvol.html'
-          : pathname;
+          : pathname === '/lsratio'
+            ? '/lsratio.html'
+            : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);
 

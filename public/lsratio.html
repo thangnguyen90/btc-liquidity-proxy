@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>L/S Ratio Reversal</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell wide-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Top Trader L/S Ratio · Reversal Scanner</p>
+          <h1>L/S Ratio Signals</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Detail</a>
+          <a class="nav-link" href="/signals">Signals</a>
+          <a class="nav-link" href="/highvol">High Vol</a>
+          <a class="nav-link" href="/orders">Orders</a>
+          <div class="status" id="scanStatus">Loading...</div>
+        </div>
+      </section>
+
+      <section class="controls signal-controls">
+        <label class="field search-field">
+          <span>Search</span>
+          <input id="searchInput" placeholder="BTC, ETH..." autocomplete="off">
+          <button id="searchClear" class="search-clear" type="button" style="display:none">✕</button>
+        </label>
+        <label class="field short">
+          <span>Timeframe</span>
+          <select id="periodSelect">
+            <option value="15m" selected>15m</option>
+            <option value="5m">5m</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Direction</span>
+          <select id="dirFilter">
+            <option value="all">All</option>
+            <option value="long">Long only</option>
+            <option value="short">Short only</option>
+          </select>
+        </label>
+        <button id="refreshBtn" class="btn-secondary">Scan now</button>
+      </section>
+
+      <div id="scanningBanner" class="scanning-banner" style="display:none">
+        ⏳ Đang scan 150 coins (~15s)…
+      </div>
+
+      <section class="table-wrap">
+        <table id="lsTable">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Signal</th>
+              <th>L/S hiện tại</th>
+              <th>Đỉnh / Đáy</th>
+              <th>Bars trước</th>
+              <th>Độ mạnh</th>
+              <th>Giá</th>
+            </tr>
+          </thead>
+          <tbody id="lsBody">
+            <tr><td colspan="7" class="empty-row">Đang tải...</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+    <script src="/lsratio.js"></script>
+  </body>
+</html>

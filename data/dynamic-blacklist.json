@@ -1,12 +1,7 @@
 {
-  "ZEREBROUSDT": {
-    "expiresAt": 1779091967827,
-    "addedAt": "2026-05-18T06:12:47.827Z",
-    "reason": "SL hit pnl=-0.0117"
-  },
-  "LYNUSDT": {
-    "expiresAt": 1779097866724,
-    "addedAt": "2026-05-18T07:51:06.724Z",
-    "reason": "SL hit pnl=-0.1820"
+  "CGPTUSDT": {
+    "expiresAt": 1779173749706,
+    "addedAt": "2026-05-19T04:55:49.706Z",
+    "reason": "SL hit pnl=-0.0066"
   }
 }
