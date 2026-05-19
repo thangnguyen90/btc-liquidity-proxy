@@ -412,7 +412,7 @@ server.listen(port, '127.0.0.1', () => {
   startAutoTrader();
   setTimeout(() => startLongShortRefresh(), 3000);
   setTimeout(() => {
-    tslScanner = startTrailingStopScanner({ client, getSymbols, intervalMs: tslIntervalMs });
+    tslScanner = startTrailingStopScanner({ client, getSymbols, intervalMs: tslIntervalMs, webhookUrl: process.env.TSL_WEBHOOK_URL });
   }, 7000);
   setTimeout(() => {
     startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: tslIntervalMs });

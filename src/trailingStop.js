@@ -1,6 +1,9 @@
-const protectedPositions = new Map(); // symbol → { orderId, stopPrice, roe, at }
+import { createMarkPriceTicker } from './markPriceTicker.js';
 
-export function startTrailingStopScanner({ client, getSymbols, intervalMs = 30000 }) {
+const protectedPositions = new Map(); // symbol → { orderId, stopPrice, roe, at }
+const positionDataCache = new Map();  // symbol → { amt, entry, margin } — updated each REST scan
+
+export function startTrailingStopScanner({ client, getSymbols, intervalMs = 30000, webhookUrl }) {
   if (process.env.TRAILING_STOP_ENABLED !== 'true') {
     console.log('[TSL] Disabled. Set TRAILING_STOP_ENABLED=true to enable.');
     return { protectedPositions };
@@ -12,6 +15,18 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
   const updateRoe = Math.max(3, triggerRoe / 3);
 
   console.log(`[TSL] Enabled. Trigger ROE >= ${triggerRoe}% → lock ${lockMarginPct * 100}% margin. Update every ${updateRoe}pp. Interval: ${intervalMs / 1000}s`);
+
+  const notify = (content) => {
+    if (!webhookUrl) return;
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content }),
+    }).catch(() => {});
+  };
+
+  // Startup ping
+  notify(`🟢 **[TSL]** Khởi động — trigger ROE ≥ ${triggerRoe}% → lock ${lockMarginPct * 100}% margin, dời mỗi ${updateRoe}pp`);
 
   const run = async () => {
     const apiKey = process.env.BINANCE_API_KEY;
@@ -30,8 +45,12 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
 
       const active = positions.filter((p) => Number(p.positionAmt) !== 0);
 
+      // Update position cache + ticker subscription
+      const activeSymbolSet = new Set(active.map((p) => p.symbol));
+      ticker?.setSymbols([...activeSymbolSet]);
+
       // Clean up closed positions from map
-      const activeSymbols = new Set(active.map((p) => p.symbol));
+      const activeSymbols = activeSymbolSet;
       for (const sym of protectedPositions.keys()) {
         if (!activeSymbols.has(sym)) {
           console.log(`[TSL] ${sym} closed — removed from protected.`);
@@ -43,6 +62,8 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
         console.log('[TSL] No open positions.');
         return;
       }
+
+      console.log(`[TSL] Scanning ${active.length} position(s): ${active.map(p => p.symbol).join(', ')}`);
 
       for (const pos of active) {
         const amt = Number(pos.positionAmt);
@@ -60,6 +81,10 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
             : notionalMargin;
 
         const roe = margin > 0 ? (upnl / margin) * 100 : 0;
+
+        // Cache cho tick-triggered check
+        positionDataCache.set(pos.symbol, { amt, entry, margin });
+
         const existingProtected = protectedPositions.get(pos.symbol);
 
         console.log(`[TSL] ${pos.symbol} | amt=${amt} entry=${entry} mark=${mark} upnl=${upnl.toFixed(4)} margin=${margin.toFixed(4)} ROE=${roe.toFixed(2)}%${existingProtected ? ` (SL@${existingProtected.stopPrice} placed@ROE${existingProtected.roe?.toFixed(1)}%)` : ''}`);
@@ -97,6 +122,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
             await client.cancelAlgoOrder({ algoId: existingProtected.algoId, apiKey, apiSecret });
             if (shouldUpdate) {
               console.log(`[TSL] ${pos.symbol} dời SL lên — ROE ${existingProtected.roe?.toFixed(1)}% → ${roe.toFixed(1)}% (+${roeGain.toFixed(1)}pp)`);
+          notify(`🔼 **[TSL] ${pos.symbol}** dời SL — ROE ${existingProtected.roe?.toFixed(1)}% → ${roe.toFixed(1)}% (+${roeGain.toFixed(1)}pp) | SL cũ: ${existingProtected.stopPrice}`);
             }
           } catch { /* already gone */ }
         }
@@ -157,6 +183,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
             at: new Date().toISOString(),
           });
           console.log(`[TSL] ✅ ${pos.symbol} ROE=${roe.toFixed(1)}% → SL @ ${stopPrice} (locks ${(progressiveLockPct * 100).toFixed(1)}% margin)${shouldUpdate ? ' [TRAIL]' : ''} algoId=${result.algoId ?? result.orderId}`);
+          notify(`✅ **[TSL] ${pos.symbol}** ROE=${roe.toFixed(1)}% → SL @ **${stopPrice}** (lock ${(progressiveLockPct * 100).toFixed(1)}% margin)${shouldUpdate ? ' **[TRAIL]**' : ' [NEW]'} | algoId=${result.algoId ?? result.orderId}`);
         } catch (err) {
           console.error(`[TSL] ❌ ${pos.symbol} place SL failed:`, err.message);
         }
@@ -165,6 +192,42 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
       console.error('[TSL] Scan error:', err.message);
     }
   };
+
+  // Mark price ticker — trigger immediate TSL scan khi ROE vượt ngưỡng
+  let lastTickScan = 0;
+  let wsNotified = false;
+  const ticker = createMarkPriceTicker({
+    onPrice: ({ symbol, markPrice }) => {
+      if (!wsNotified) {
+        wsNotified = true;
+        notify(`📡 **[MarkTick]** WebSocket bookTicker connected — đang nhận giá realtime từ Binance futures`);
+      }
+      const cached = positionDataCache.get(symbol);
+      if (!cached) return;
+
+      const { amt, entry, margin } = cached;
+      const upnl = (markPrice - entry) * amt;
+      const roe = margin > 0 ? (upnl / margin) * 100 : 0;
+
+      const existing = protectedPositions.get(symbol);
+      const roeGain = existing?.roe != null ? roe - existing.roe : 0;
+
+      // Trigger nếu: chưa có SL và ROE >= trigger, HOẶC có SL và ROE tăng đủ để dời
+      const needsAction = roe >= triggerRoe && (
+        (!existing) ||
+        (!existing.manual && roeGain >= updateRoe)
+      );
+      if (!needsAction) return;
+
+      const now = Date.now();
+      if (now - lastTickScan < 8_000) return; // debounce 8s
+      lastTickScan = now;
+
+      console.log(`[MarkTick] 🎯 ${symbol} ROE≈${roe.toFixed(1)}% → immediate TSL scan`);
+      notify(`🎯 **[MarkTick] ${symbol}** ROE≈${roe.toFixed(1)}% → trigger TSL scan ngay`);
+      run().catch(() => {});
+    },
+  });
 
   setTimeout(run, 5000);
   setInterval(run, intervalMs);
