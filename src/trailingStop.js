@@ -201,6 +201,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
     onPrice: ({ symbol, markPrice }) => {
       if (!wsNotified) {
         wsNotified = true;
+        console.log('[MarkTick] ✅ First tick received — realtime price tracking active');
         notify(`📡 **[MarkTick]** WebSocket bookTicker connected — đang nhận giá realtime từ Binance futures`);
       }
       const cached = positionDataCache.get(symbol);

@@ -478,6 +478,10 @@ server.listen(port, '127.0.0.1', () => {
         setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
       },
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
+        // Đặt TP pending từ AutoLiq nếu position đã mở
+        if (pendingLiqTp.has(symbol)) {
+          placePendingLiqTp(symbol, pos).catch(() => {});
+        }
         // TP entry guard: move TP to entry when ROE ≤ threshold
         const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
         if (roe <= tpGuardRoe) {
@@ -1717,6 +1721,7 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
 }
 
 const liqAutoOrderFired = new Map(); // `${symbol}:${price}` → timestamp
+const pendingLiqTp = new Map(); // symbol → { tpPrice, tpRoePct, direction, at }
 
 async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPrice, sweepProb }) {
   const key = `${symbol}:${Math.round(sweepTargetPrice * 1e8)}`;
@@ -1757,25 +1762,72 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
     await client.placeFuturesOrder({ params: entryParams, apiKey, apiSecret });
 
     // TP động theo sweepProb: 90%→30% ROE, 99%→50% ROE
-    // Chỉ đặt TP trong hedge mode — one-way mode reject reduceOnly khi chưa có position
     const tpRoePct = 30 + ((sweepProb - 90) / 9) * 20;
     const tpRoe = tpRoePct / 100;
     const rawTpPrice = direction === 'short'
       ? price * (1 - tpRoe / leverage)
       : price * (1 + tpRoe / leverage);
     const tpPrice = priceFromTick(symbolInfo, rawTpPrice);
-    if (isHedge) {
-      const tpSide = direction === 'short' ? 'BUY' : 'SELL';
-      const tpParams = { symbol, side: tpSide, type: 'LIMIT', price: String(tpPrice), quantity, timeInForce: 'GTC', recvWindow, positionSide };
-      await client.placeFuturesOrder({ params: tpParams, apiKey, apiSecret }).catch((e) => {
-        console.warn(`[AutoLiq] TP order failed for ${symbol}: ${e.message}`);
-      });
-    }
+
+    // Lưu pending TP — sẽ đặt sau khi position monitor xác nhận position đã mở
+    // (không đặt ngay vì entry là LIMIT chưa fill, one-way mode reject reduceOnly trước khi có position)
+    pendingLiqTp.set(symbol, { tpPrice, tpRoePct, direction, isHedge, positionSide, leverage, at: Date.now() });
 
     liqAutoOrderFired.set(key, Date.now());
-    console.log(`[AutoLiq] ✅ ${symbol} ${direction.toUpperCase()} LIMIT @${price} TP @${tpPrice} (${tpRoePct.toFixed(1)}% ROE) qty=${quantity} sweepProb=${sweepProb}% margin=${margin}USDT lev=${leverage}x mark=${markPrice}`);
+    console.log(`[AutoLiq] ✅ ${symbol} ${direction.toUpperCase()} LIMIT @${price} — pending TP @${tpPrice} (${tpRoePct.toFixed(1)}% ROE) qty=${quantity} sweepProb=${sweepProb}%`);
   } catch (err) {
     console.error(`[AutoLiq] ❌ ${symbol}:`, err.message);
+  }
+}
+
+const placingLiqTp = new Set();
+async function placePendingLiqTp(symbol, pos) {
+  const pending = pendingLiqTp.get(symbol);
+  if (!pending) return;
+  if (placingLiqTp.has(symbol)) return;
+  // Bỏ qua nếu pending đã quá 2h (entry chưa fill sau 2h, bỏ)
+  if (Date.now() - pending.at > 2 * 3600 * 1000) { pendingLiqTp.delete(symbol); return; }
+
+  placingLiqTp.add(symbol);
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+    // Kiểm tra đã có TP chưa (tránh đặt trùng)
+    const algoResult = await client.getOpenAlgoOrders({ apiKey, apiSecret });
+    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+    const hasTp = allAlgo.some((o) => o.symbol === symbol &&
+      String(o.type ?? '').toUpperCase() === 'TAKE_PROFIT_MARKET');
+    if (hasTp) { pendingLiqTp.delete(symbol); return; }
+
+    const symbolList = await getSymbols();
+    const symbolInfo = symbolList.find((s) => s.symbol === symbol);
+    if (!symbolInfo) return;
+
+    const tpSide = pending.direction === 'short' ? 'BUY' : 'SELL';
+    const positionSide = pos?.positionSide ?? pending.positionSide ?? 'BOTH';
+    const isHedge = positionSide !== 'BOTH';
+    const tpParams = {
+      algoType: 'CONDITIONAL',
+      symbol,
+      side: tpSide,
+      type: 'TAKE_PROFIT_MARKET',
+      triggerPrice: String(pending.tpPrice),
+      workingType: 'MARK_PRICE',
+      closePosition: 'true',
+      priceProtect: 'true',
+      clientAlgoId: `liqtp_${symbol}_${Date.now()}`.slice(0, 36),
+      recvWindow,
+    };
+    if (isHedge) tpParams.positionSide = positionSide;
+
+    await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
+    pendingLiqTp.delete(symbol);
+    console.log(`[AutoLiq] ✅ TP placed ${symbol} @${pending.tpPrice} (${pending.tpRoePct.toFixed(1)}% ROE)`);
+  } catch (e) {
+    console.warn(`[AutoLiq] TP place failed ${symbol}: ${e.message}`);
+  } finally {
+    placingLiqTp.delete(symbol);
   }
 }
 
