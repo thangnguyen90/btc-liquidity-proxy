@@ -1760,9 +1760,15 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
     const maxLimitOrders = Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30);
 
-    // Count existing open LIMIT entry orders (non-reduceOnly)
+    // Count existing open LIMIT entry orders (non-reduceOnly) and check per-symbol dedup
     const openOrders = await client.getOpenOrders({ apiKey, apiSecret });
-    const openLimitCount = openOrders.filter((o) => o.type === 'LIMIT' && !o.reduceOnly).length;
+    const openLimitEntries = openOrders.filter((o) => o.type === 'LIMIT' && !o.reduceOnly);
+    const symbolAlreadyHasLimit = openLimitEntries.some((o) => o.symbol === symbol);
+    if (symbolAlreadyHasLimit) {
+      console.log(`[AutoLiq] ⏭ ${symbol} skip — đã có lệnh LIMIT đang chờ cho symbol này`);
+      return;
+    }
+    const openLimitCount = openLimitEntries.length;
     if (openLimitCount >= maxLimitOrders) {
       console.log(`[AutoLiq] ⏭ ${symbol} skip — đã có ${openLimitCount} lệnh LIMIT chờ (max ${maxLimitOrders})`);
       const liqWh = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
