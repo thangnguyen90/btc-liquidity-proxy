@@ -1746,10 +1746,10 @@ const liqAutoOrderFired = new Map(); // `${symbol}:${price}` → timestamp
 const pendingLiqTp = new Map(); // symbol → { tpPrice, tpRoePct, direction, at }
 
 async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPrice, sweepProb }) {
-  const key = `${symbol}:${Math.round(sweepTargetPrice * 1e8)}`;
-  const last = liqAutoOrderFired.get(key) ?? 0;
+  // Dedup theo symbol (không theo price) — tránh đặt nhiều lệnh khi price thay đổi nhẹ giữa các scan
+  const last = liqAutoOrderFired.get(symbol) ?? 0;
   if (Date.now() - last < 2 * 3600 * 1000) {
-    console.log(`[AutoLiq] ⏭ ${symbol} skip — 2h dedup (same price @${sweepTargetPrice} already fired)`);
+    console.log(`[AutoLiq] ⏭ ${symbol} skip — 2h dedup (đã đặt lệnh trong 2h qua)`);
     return;
   }
 
@@ -1818,7 +1818,7 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
     // (không đặt ngay vì entry là LIMIT chưa fill, one-way mode reject reduceOnly trước khi có position)
     pendingLiqTp.set(symbol, { tpPrice, tpRoePct, direction, isHedge, positionSide, leverage, at: Date.now() });
 
-    liqAutoOrderFired.set(key, Date.now());
+    liqAutoOrderFired.set(symbol, Date.now());
     console.log(`[AutoLiq] ✅ ${symbol} ${direction.toUpperCase()} LIMIT @${price} — pending TP @${tpPrice} (${tpRoePct.toFixed(1)}% ROE) qty=${quantity} sweepProb=${sweepProb}%`);
   } catch (err) {
     console.error(`[AutoLiq] ❌ ${symbol}:`, err.message);
