@@ -57,7 +57,7 @@ function render() {
   lsBody.querySelectorAll('tr[data-sym]').forEach((tr) => {
     tr.style.cursor = 'pointer';
     tr.addEventListener('click', () => {
-      window.location.href = `/?s=${tr.dataset.sym}`;
+      window.open(`/?symbol=${tr.dataset.sym}`, '_blank');
     });
   });
 }

@@ -3,5 +3,10 @@
     "expiresAt": 1779173749706,
     "addedAt": "2026-05-19T04:55:49.706Z",
     "reason": "SL hit pnl=-0.0066"
+  },
+  "WLDUSDT": {
+    "expiresAt": 1779176639728,
+    "addedAt": "2026-05-19T05:43:59.728Z",
+    "reason": "SL hit pnl=-0.0490"
   }
 }

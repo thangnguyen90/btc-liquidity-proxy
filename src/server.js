@@ -1716,15 +1716,14 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
 }
 
 const liqAutoOrderFired = new Map(); // `${symbol}:${price}` → timestamp
-let lastGlobalAutoLiqAt = 0; // global: chỉ 1 lệnh mỗi 5 phút
 
 async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPrice, sweepProb }) {
-  if (Date.now() - lastGlobalAutoLiqAt < 5 * 60 * 1000) return; // 5-min global cooldown
-  lastGlobalAutoLiqAt = Date.now(); // claim slot trước khi async
-
   const key = `${symbol}:${Math.round(sweepTargetPrice * 1e8)}`;
   const last = liqAutoOrderFired.get(key) ?? 0;
-  if (Date.now() - last < 2 * 3600 * 1000) { lastGlobalAutoLiqAt = 0; return; } // release slot nếu đã dedup
+  if (Date.now() - last < 2 * 3600 * 1000) {
+    console.log(`[AutoLiq] ⏭ ${symbol} skip — 2h dedup (same price @${sweepTargetPrice} already fired)`);
+    return;
+  }
 
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);

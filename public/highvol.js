@@ -1,5 +1,5 @@
 const API = '/api/high-volume';
-const DETAIL_BASE = '/'; // detail page uses ?s=SYMBOL
+const DETAIL_BASE = '/'; // detail page uses ?symbol=SYMBOL
 
 let data = {};
 let lastUpdated = null;
@@ -83,14 +83,14 @@ function render() {
     const c24 = r.change24h >= 0 ? 'positive' : 'negative';
     const candleColor = r.dumpCandlePct >= 0 ? 'positive' : 'negative';
     const move4Color = r.move4cPct >= 0 ? 'positive' : 'negative';
-    const detailUrl = `/?s=${r.symbol}`;
+    const detailUrl = `/?symbol=${r.symbol}`;
     const ratioColor = r.maxRatio >= 3 ? 'style="color:var(--amber)"' : r.maxRatio >= 2 ? 'style="color:var(--green)"' : '';
     // Peak timing label
     const ago = r.peakCandlesAgo ?? 0;
     const peakLabel = ago === 0 ? 'now' : ago === 1 ? '15m' : `${ago * 15}m`;
     const peakCls = ago <= 1 ? 'positive' : ago <= 4 ? '' : 'muted-text';
     return `<tr>
-      <td><a class="symbol-link" href="${detailUrl}">${r.symbol.replace('USDT', '')}<span class="sym-suffix">USDT</span></a></td>
+      <td><a class="symbol-link" href="${detailUrl}" target="_blank">${r.symbol.replace('USDT', '')}<span class="sym-suffix">USDT</span></a></td>
       <td ${ratioColor}><strong>${r.maxRatio}x</strong> <small class="muted-text ${peakCls}">@${peakLabel}</small></td>
       <td>${r.highVolCount}/5 <small class="muted-text">hot</small></td>
       <td class="${candleColor}">${fmtPct(r.dumpCandlePct)}</td>
