@@ -429,6 +429,7 @@ server.listen(port, '127.0.0.1', () => {
     startLiqImbalanceScanner({
       client,
       webhookUrl: process.env.LIQ_SCAN_WEBHOOK_URL || '',
+      highProbWebhookUrl: process.env.LIQ_HIGH_PROB_WEBHOOK_URL || '',
       getSnapshot: getMarketSnapshot,
       biasThreshold: Number(process.env.LIQ_SCAN_BIAS_THRESHOLD ?? 0.4),
       intervalMs: Number(process.env.LIQ_SCAN_INTERVAL_MS ?? 5 * 60 * 1000),

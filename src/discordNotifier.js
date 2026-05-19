@@ -549,6 +549,7 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice) {
 export function startLiqImbalanceScanner({
   client,
   webhookUrl,
+  highProbWebhookUrl,
   getSnapshot,
   biasThreshold = 0.4,
   intervalMs = 5 * 60 * 1000,
@@ -601,9 +602,12 @@ export function startLiqImbalanceScanner({
               });
             }
 
+            const embed = buildLiqImbalanceEmbed(row.symbol, heatmap, row.markPrice);
             if (webhookUrl) {
-              const embed = buildLiqImbalanceEmbed(row.symbol, heatmap, row.markPrice);
               await sendWebhook(webhookUrl, embed);
+            }
+            if (highProbWebhookUrl && sweepProb >= 80) {
+              await sendWebhook(highProbWebhookUrl, embed);
             }
             liqCooldowns.set(row.symbol, Date.now());
             alertCount++;
