@@ -1,12 +1,12 @@
 {
-  "CGPTUSDT": {
-    "expiresAt": 1779173749706,
-    "addedAt": "2026-05-19T04:55:49.706Z",
-    "reason": "SL hit pnl=-0.0066"
+  "UBUSDT": {
+    "expiresAt": 1779190503236,
+    "addedAt": "2026-05-19T09:35:03.236Z",
+    "reason": "SL hit pnl=-0.0016"
   },
-  "WLDUSDT": {
-    "expiresAt": 1779176639728,
-    "addedAt": "2026-05-19T05:43:59.728Z",
-    "reason": "SL hit pnl=-0.0490"
+  "COLLECTUSDT": {
+    "expiresAt": 1779191493347,
+    "addedAt": "2026-05-19T09:51:33.347Z",
+    "reason": "SL hit pnl=-1.7231"
   }
 }

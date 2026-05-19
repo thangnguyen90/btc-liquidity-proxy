@@ -442,6 +442,7 @@ server.listen(port, '127.0.0.1', () => {
     startVolumeDumpScanner({
       client,
       webhookUrl: process.env.VOL_DUMP_WEBHOOK_URL || process.env.LIQ_SCAN_WEBHOOK_URL || '',
+      bigCandleWebhookUrl: process.env.BIG_CANDLE_WEBHOOK_URL || '',
       getSnapshot: getMarketSnapshot,
       intervalMs: Number(process.env.VOL_DUMP_INTERVAL_MS ?? 60_000),
       cooldownMs: Number(process.env.VOL_DUMP_COOLDOWN_MS ?? 2 * 3_600_000),
@@ -451,6 +452,8 @@ server.listen(port, '127.0.0.1', () => {
       sustainedCandles: Number(process.env.VOL_DUMP_SUSTAINED ?? 3),
       dumpPct: Number(process.env.VOL_DUMP_DROP_PCT ?? 1.5),
       move4cPct: Number(process.env.VOL_DUMP_MOVE4C_PCT ?? 2.5),
+      bigCandlePct: Number(process.env.BIG_CANDLE_DROP_PCT ?? 8),
+      bigCandleCooldownMs: 3_600_000,
     });
   }, 17000);
   setTimeout(() => {
@@ -1535,17 +1538,33 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
     const { apiKey, apiSecret } = getApiCredentials(null);
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
 
-    const [algoResult, symbolList] = await Promise.all([
+    const [algoResult, openOrdersResult, symbolList] = await Promise.all([
       client.getOpenAlgoOrders({ apiKey, apiSecret }),
+      client.getOpenOrders({ apiKey, apiSecret }),
       getSymbols(),
     ]);
     const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+    const allOpen = Array.isArray(openOrdersResult) ? openOrdersResult : [];
 
-    const slOrder = allAlgo.find((o) => {
+    const isLong = pos.amt > 0;
+    const entry = pos.entry;
+
+    // Algo SL: type=CONDITIONAL, closing side, triggerPrice on loss side of entry
+    const algoSl = allAlgo.find((o) => {
+      if (o.symbol !== symbol) return false;
+      const side = String(o.side ?? '').toUpperCase();
+      const closingSide = (isLong && side === 'SELL') || (!isLong && side === 'BUY');
+      const triggerP = Number(o.triggerPrice ?? 0);
+      const isSLSide = triggerP > 0 && (isLong ? triggerP < entry : triggerP > entry);
+      return closingSide && isSLSide;
+    });
+    // Regular SL: STOP_MARKET or STOP type
+    const regularSl = allOpen.find((o) => {
       if (o.symbol !== symbol) return false;
       const t = String(o.type ?? '').toUpperCase();
       return t === 'STOP_MARKET' || t === 'STOP';
     });
+    const slOrder = algoSl || regularSl;
 
     // No existing SL → nothing to trail
     if (!slOrder) { slTrailLockRoe.set(symbol, targetLockRoe); return; }
@@ -1553,8 +1572,6 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
     const symbolInfo = symbolList.find((s) => s.symbol === symbol);
     if (!symbolInfo) return;
 
-    const isLong = pos.amt > 0;
-    const entry = pos.entry;
     const leverage = pos.leverage || 10;
 
     const newSlPrice = priceFromTick(
@@ -1571,7 +1588,12 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
       return;
     }
 
-    await client.cancelAlgoOrder({ algoId: slOrder.algoId, apiKey, apiSecret, recvWindow });
+    // Cancel: algo orders use algoId, regular orders use orderId via cancelOrder
+    if (algoSl) {
+      await client.cancelAlgoOrder({ algoId: algoSl.algoId, apiKey, apiSecret, recvWindow });
+    } else if (regularSl) {
+      await client.cancelOrder({ symbol, orderId: regularSl.orderId, apiKey, apiSecret, recvWindow });
+    }
 
     const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
     const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
@@ -1736,6 +1758,23 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
     const margin = Number(process.env.AUTO_LIQ_ORDER_MARGIN ?? 5);
     const leverage = Number(process.env.AUTO_LIQ_ORDER_LEVERAGE ?? 10);
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+    const maxLimitOrders = Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30);
+
+    // Count existing open LIMIT entry orders (non-reduceOnly)
+    const openOrders = await client.getOpenOrders({ apiKey, apiSecret });
+    const openLimitCount = openOrders.filter((o) => o.type === 'LIMIT' && !o.reduceOnly).length;
+    if (openLimitCount >= maxLimitOrders) {
+      console.log(`[AutoLiq] ⏭ ${symbol} skip — đã có ${openLimitCount} lệnh LIMIT chờ (max ${maxLimitOrders})`);
+      const liqWh = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+      if (liqWh) {
+        fetch(liqWh, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: `⚠️ **[AutoLiq]** Bỏ qua **${symbol}** — đã có **${openLimitCount}** lệnh LIMIT đang chờ (max ${maxLimitOrders}). Huỷ bớt lệnh cũ để tiếp tục đặt.` }),
+        }).catch(() => {});
+      }
+      return;
+    }
 
     const [symbols] = await Promise.all([getSymbols()]);
     const symbolInfo = symbols.find((s) => s.symbol === symbol);

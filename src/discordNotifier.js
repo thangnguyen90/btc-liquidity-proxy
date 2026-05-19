@@ -358,9 +358,37 @@ function buildVolDumpEmbed(symbol, markPrice, stats) {
   };
 }
 
+function buildBigCandleEmbed(symbol, markPrice, candlePct, volRatio, symbolUrl) {
+  const isDump = candlePct < 0;
+  const color = isDump ? 0xef4444 : 0x22c55e;
+  const icon = isDump ? '📉' : '📈';
+  const label = isDump ? 'XẢ MẠNH' : 'TĂNG MẠNH';
+  const d = digits(markPrice);
+  const fp = (p) => p >= 1000 ? p.toLocaleString('en', { maximumFractionDigits: 2 })
+    : p.toFixed(d);
+  const sign = candlePct >= 0 ? '+' : '';
+  const description = [
+    `Mark: **${fp(markPrice)}**`,
+    `Nến 15m: **${sign}${candlePct.toFixed(2)}%**`,
+    volRatio > 0 ? `Volume: **${volRatio.toFixed(1)}×** trung bình` : null,
+  ].filter(Boolean).join('\n');
+  return {
+    embeds: [{
+      title: `${icon} ${label}: ${symbol}`,
+      description,
+      color,
+      url: symbolUrl ? `${symbolUrl}/?symbol=${symbol}` : undefined,
+      footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
+    }],
+  };
+}
+
+const bigCandleCooldowns = new Map();
+
 export function startVolumeDumpScanner({
   client,
   webhookUrl,
+  bigCandleWebhookUrl,
   getSnapshot,
   intervalMs = 60_000,
   cooldownMs = 2 * 3_600_000,
@@ -370,6 +398,8 @@ export function startVolumeDumpScanner({
   sustainedCandles = 3,
   dumpPct = 1.5,
   move4cPct = 2.5,
+  bigCandlePct = 8,
+  bigCandleCooldownMs = 3_600_000,
 }) {
   console.log(`[VolDump] Started. volMult=${volMult}x sustained=${sustainedCandles} dumpPct=${dumpPct}% interval=${intervalMs / 1000}s${webhookUrl ? '' : ' (no webhook — tracking only)'}`);
 
@@ -437,6 +467,18 @@ export function startVolumeDumpScanner({
             highVolMap.delete(row.symbol);
           }
 
+          // Big candle alert: nến body >= bigCandlePct% (không cần volume điều kiện)
+          if (bigCandleWebhookUrl && Math.abs(dumpCandlePct) >= bigCandlePct) {
+            const lastBig = bigCandleCooldowns.get(row.symbol) ?? 0;
+            if (now - lastBig >= bigCandleCooldownMs) {
+              bigCandleCooldowns.set(row.symbol, now);
+              const volRatio = avgVol > 0 ? lastVol / avgVol : 0;
+              const symbolUrl = process.env.LIQUIDITY_BASE_URL;
+              await sendWebhook(bigCandleWebhookUrl, buildBigCandleEmbed(row.symbol, row.markPrice, dumpCandlePct, volRatio, symbolUrl)).catch(() => {});
+              console.log(`[BigCandle] 🕯️ ${row.symbol} nến ${dumpCandlePct.toFixed(1)}% vol=${volRatio.toFixed(1)}x`);
+            }
+          }
+
           // Discord dump alert: check cooldown + conditions
           const lastAlerted = volDumpCooldowns.get(row.symbol) ?? 0;
           if (now - lastAlerted < cooldownMs) continue;
@@ -483,7 +525,7 @@ export function startVolumeDumpScanner({
 
 const liqCooldowns = new Map(); // symbol → last alert timestamp
 
-function buildLiqImbalanceEmbed(symbol, heatmap, markPrice) {
+function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null) {
   const above = heatmap.liquidityAbove;
   const below = heatmap.liquidityBelow;
   const bias = heatmap.bias;
@@ -525,6 +567,13 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice) {
   }
   if (topBelow.length) {
     lines.push(`Zones dưới: ${topBelow.map((z) => `${fp(z.price, d)}(${z.distancePct.toFixed(1)}%)`).join(', ')}`);
+  }
+
+  if (bigCandle) {
+    const sign = bigCandle.pct >= 0 ? '+' : '';
+    const timeLabel = bigCandle.candlesAgo === 0 ? 'vừa đóng' : `${bigCandle.candlesAgo * 15}m trước`;
+    const candleIcon = bigCandle.pct < 0 ? '🕯️📉' : '🕯️📈';
+    lines.push(`${candleIcon} Nến mạnh: **${sign}${bigCandle.pct.toFixed(1)}%** (${timeLabel})`);
   }
 
   return {
@@ -602,7 +651,20 @@ export function startLiqImbalanceScanner({
               });
             }
 
-            const embed = buildLiqImbalanceEmbed(row.symbol, heatmap, row.markPrice);
+            // Detect big candle in last 5 closed 15m candles
+            const closedKlines = klines.slice(0, -1);
+            const recent5k = closedKlines.slice(-5);
+            let bigCandle = null;
+            for (let i = recent5k.length - 1; i >= 0; i--) {
+              const c = recent5k[i];
+              const pct = (Number(c.close) - Number(c.open)) / Number(c.open) * 100;
+              if (Math.abs(pct) >= 8) {
+                bigCandle = { pct, candlesAgo: recent5k.length - 1 - i };
+                break;
+              }
+            }
+
+            const embed = buildLiqImbalanceEmbed(row.symbol, heatmap, row.markPrice, bigCandle);
             if (webhookUrl) {
               await sendWebhook(webhookUrl, embed);
             }
