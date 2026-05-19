@@ -1756,18 +1756,20 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
     await client.placeFuturesOrder({ params: entryParams, apiKey, apiSecret });
 
     // TP động theo sweepProb: 90%→30% ROE, 99%→50% ROE
+    // Chỉ đặt TP trong hedge mode — one-way mode reject reduceOnly khi chưa có position
     const tpRoePct = 30 + ((sweepProb - 90) / 9) * 20;
     const tpRoe = tpRoePct / 100;
     const rawTpPrice = direction === 'short'
       ? price * (1 - tpRoe / leverage)
       : price * (1 + tpRoe / leverage);
     const tpPrice = priceFromTick(symbolInfo, rawTpPrice);
-    const tpSide = direction === 'short' ? 'BUY' : 'SELL';
-    const tpParams = { symbol, side: tpSide, type: 'LIMIT', price: String(tpPrice), quantity, timeInForce: 'GTC', recvWindow };
-    if (isHedge) { tpParams.positionSide = positionSide; } else { tpParams.reduceOnly = 'true'; }
-    await client.placeFuturesOrder({ params: tpParams, apiKey, apiSecret }).catch((e) => {
-      console.warn(`[AutoLiq] TP order failed for ${symbol}: ${e.message}`);
-    });
+    if (isHedge) {
+      const tpSide = direction === 'short' ? 'BUY' : 'SELL';
+      const tpParams = { symbol, side: tpSide, type: 'LIMIT', price: String(tpPrice), quantity, timeInForce: 'GTC', recvWindow, positionSide };
+      await client.placeFuturesOrder({ params: tpParams, apiKey, apiSecret }).catch((e) => {
+        console.warn(`[AutoLiq] TP order failed for ${symbol}: ${e.message}`);
+      });
+    }
 
     liqAutoOrderFired.set(key, Date.now());
     console.log(`[AutoLiq] ✅ ${symbol} ${direction.toUpperCase()} LIMIT @${price} TP @${tpPrice} (${tpRoePct.toFixed(1)}% ROE) qty=${quantity} sweepProb=${sweepProb}% margin=${margin}USDT lev=${leverage}x mark=${markPrice}`);
