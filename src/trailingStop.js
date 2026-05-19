@@ -9,12 +9,13 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
     return { protectedPositions };
   }
 
-  const triggerRoe = Number(process.env.TRAILING_STOP_TRIGGER_ROE ?? 1);
-  const lockMarginPct = Number(process.env.TRAILING_STOP_LOCK_MARGIN_PCT ?? 1) / 100;
+  const triggerRoe = Number(process.env.TRAILING_STOP_TRIGGER_ROE ?? 15);
+  // bufferRoe: khoảng cách giữa ROE hiện tại và ROE khoá (e.g. ROE=15% buffer=10 → SL tại 5%)
+  const bufferRoe = Number(process.env.TRAILING_STOP_BUFFER_ROE ?? 10);
   // Dời SL mỗi khi ROE tăng thêm triggerRoe/3 (e.g. mỗi 5pp với trigger=15)
   const updateRoe = Math.max(3, triggerRoe / 3);
 
-  console.log(`[TSL] Enabled. Trigger ROE >= ${triggerRoe}% → lock ${lockMarginPct * 100}% margin. Update every ${updateRoe}pp. Interval: ${intervalMs / 1000}s`);
+  console.log(`[TSL] Enabled. Trigger ROE >= ${triggerRoe}% → SL tại ROE - ${bufferRoe}pp (VD: 15%→5%, 20%→10%). Dời mỗi ${updateRoe}pp. Interval: ${intervalMs / 1000}s`);
 
   const notify = (content) => {
     if (!webhookUrl) return;
@@ -26,7 +27,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
   };
 
   // Startup ping
-  notify(`🟢 **[TSL]** Khởi động — trigger ROE ≥ ${triggerRoe}% → lock ${lockMarginPct * 100}% margin, dời mỗi ${updateRoe}pp`);
+  notify(`🟢 **[TSL]** Khởi động — trigger ROE ≥ ${triggerRoe}% → SL tại ROE - ${bufferRoe}pp (15%→5%, 20%→10%), dời mỗi ${updateRoe}pp`);
 
   const run = async () => {
     const apiKey = process.env.BINANCE_API_KEY;
@@ -128,9 +129,9 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
         }
         protectedPositions.delete(pos.symbol);
 
-        // Progressive lock: khoá nhiều hơn khi ROE tăng
-        // ROE=15% → lock 1×, ROE=30% → lock 2×, ROE=45% → lock 3×, ...
-        const progressiveLockPct = lockMarginPct * (roe / triggerRoe);
+        // SL tại ROE - bufferRoe: ROE=15% buffer=10 → khóa 5% ROE, ROE=20% → khóa 10% ROE
+        const lockRoe = Math.max(0, roe - bufferRoe);
+        const progressiveLockPct = lockRoe / 100;
         const lockedProfit = margin * progressiveLockPct;
         const isLong = amt > 0;
         const rawStop = isLong
@@ -182,8 +183,8 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
             roe: Number(roe.toFixed(2)),
             at: new Date().toISOString(),
           });
-          console.log(`[TSL] ✅ ${pos.symbol} ROE=${roe.toFixed(1)}% → SL @ ${stopPrice} (locks ${(progressiveLockPct * 100).toFixed(1)}% margin)${shouldUpdate ? ' [TRAIL]' : ''} algoId=${result.algoId ?? result.orderId}`);
-          notify(`✅ **[TSL] ${pos.symbol}** ROE=${roe.toFixed(1)}% → SL @ **${stopPrice}** (lock ${(progressiveLockPct * 100).toFixed(1)}% margin)${shouldUpdate ? ' **[TRAIL]**' : ' [NEW]'} | algoId=${result.algoId ?? result.orderId}`);
+          console.log(`[TSL] ✅ ${pos.symbol} ROE=${roe.toFixed(1)}% → SL @ ${stopPrice} (locks ${lockRoe.toFixed(1)}% ROE)${shouldUpdate ? ' [TRAIL]' : ''} algoId=${result.algoId ?? result.orderId}`);
+          notify(`✅ **[TSL] ${pos.symbol}** ROE=${roe.toFixed(1)}% → SL @ **${stopPrice}** (khóa ${lockRoe.toFixed(1)}% ROE)${shouldUpdate ? ' **[TRAIL]**' : ' [NEW]'} | algoId=${result.algoId ?? result.orderId}`);
         } catch (err) {
           console.error(`[TSL] ❌ ${pos.symbol} place SL failed:`, err.message);
         }
