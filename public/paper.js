@@ -1,28 +1,34 @@
 let topTraderTrends = {}; // symbol → { label, direction } | null
 
 const autoProbeChk = document.getElementById('autoProbeChk');
+const autoProbeMarginInput = document.getElementById('autoProbeMargin');
 
 async function loadAutoProbeState() {
   try {
     const res = await fetch('/api/auto-probe-enabled');
     if (res.ok) {
-      const { enabled } = await res.json();
+      const { enabled, margin } = await res.json();
       autoProbeChk.checked = !!enabled;
+      if (margin) autoProbeMarginInput.value = margin;
     }
   } catch { /* silent */ }
 }
 
-autoProbeChk.addEventListener('change', async () => {
+async function saveAutoProbeState() {
+  const margin = autoProbeMarginInput.value ? Number(autoProbeMarginInput.value) : 1;
   try {
     await fetch('/api/auto-probe-enabled', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ enabled: autoProbeChk.checked }),
+      body: JSON.stringify({ enabled: autoProbeChk.checked, margin }),
     });
   } catch (err) {
-    autoProbeChk.checked = !autoProbeChk.checked; // revert on error
+    autoProbeChk.checked = !autoProbeChk.checked;
   }
-});
+}
+
+autoProbeChk.addEventListener('change', saveAutoProbeState);
+autoProbeMarginInput.addEventListener('change', saveAutoProbeState);
 
 loadAutoProbeState();
 
@@ -228,7 +234,7 @@ function renderOpen(trades) {
   els.openBody.innerHTML = open.map((t) => `
     <tr>
       <td style="white-space:nowrap">
-        ${t.status === 'OPEN' || t.status === 'ENTRY_READY' ? `<input type="number" class="open-margin-input" data-id="${t.id}" min="0.1" step="0.1" value="2" style="width:52px;height:28px;padding:0 4px;font-size:12px;background:var(--panel-2);border:1px solid var(--line);border-radius:4px;color:var(--text)" placeholder="2">` : ''}
+        ${t.status === 'OPEN' || t.status === 'ENTRY_READY' ? `<input type="number" class="open-margin-input" data-id="${t.id}" min="1" max="100" step="1" style="width:60px;height:28px;padding:0 4px;font-size:12px;background:var(--panel-2);border:1px solid var(--line);border-radius:4px;color:var(--text)" placeholder="2">` : ''}
         ${t.status === 'OPEN' ? `<button class="action-btn market-btn" data-open-binance="${t.id}">Open Binance</button>` : ''}
         ${t.status === 'ENTRY_READY' ? `<button class="action-btn market-btn" data-market="${t.id}">Market</button>` : ''}
         ${t.status === 'OPEN' ? `<button class="action-btn close-btn" data-close="${t.id}">Close</button>` : ''}

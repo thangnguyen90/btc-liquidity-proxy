@@ -44,6 +44,7 @@ const runtimeSettings = {
   btcReversalGuard: false,
   btcReversalGuardRoe: 1,
   autoProbeEnabled: process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION === 'true',
+  autoProbeMargin: Number(process.env.AUTO_LIQ_PROBE_MARGIN ?? 1),
 };
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
 let tslScanner = null;
@@ -275,14 +276,15 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/auto-probe-enabled') {
       if (request.method === 'GET') {
-        await sendJson(response, { enabled: runtimeSettings.autoProbeEnabled });
+        await sendJson(response, { enabled: runtimeSettings.autoProbeEnabled, margin: runtimeSettings.autoProbeMargin });
         return;
       }
       if (request.method === 'POST') {
         const body = await readJsonBody(request);
         if (typeof body.enabled === 'boolean') runtimeSettings.autoProbeEnabled = body.enabled;
-        console.log(`[AutoProbe] ${runtimeSettings.autoProbeEnabled ? '✅ Bật' : '⏸ Tắt'} auto vô $1 khi READY`);
-        await sendJson(response, { enabled: runtimeSettings.autoProbeEnabled });
+        if (typeof body.margin === 'number' && body.margin > 0) runtimeSettings.autoProbeMargin = body.margin;
+        console.log(`[AutoProbe] ${runtimeSettings.autoProbeEnabled ? '✅ Bật' : '⏸ Tắt'} auto vô $${runtimeSettings.autoProbeMargin} khi READY`);
+        await sendJson(response, { enabled: runtimeSettings.autoProbeEnabled, margin: runtimeSettings.autoProbeMargin });
         return;
       }
     }
@@ -1205,7 +1207,7 @@ async function autoPlaceBinanceOnEntryReady(trade, reason, markPrice) {
   if (!runtimeSettings.autoProbeEnabled) return;
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
-    const marginUsdt = Number(process.env.AUTO_LIQ_PROBE_MARGIN ?? 1);
+    const marginUsdt = runtimeSettings.autoProbeMargin;
     const leverage = Math.max(1, Math.min(125, Number(trade.leverage ?? process.env.AUTO_LIQ_ORDER_LEVERAGE ?? 10)));
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
     const symbol = normalizeSymbol(trade.symbol);

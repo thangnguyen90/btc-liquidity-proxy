@@ -13,5 +13,15 @@
     "expiresAt": 1779262369470,
     "addedAt": "2026-05-20T05:32:49.470Z",
     "reason": "SL hit pnl=-0.0009"
+  },
+  "LABUSDT": {
+    "expiresAt": 1779266109109,
+    "addedAt": "2026-05-20T06:35:09.109Z",
+    "reason": "SL hit pnl=-0.0046"
+  },
+  "PLAYUSDT": {
+    "expiresAt": 1779266772757,
+    "addedAt": "2026-05-20T06:46:12.757Z",
+    "reason": "SL hit pnl=-0.4057"
   }
 }
