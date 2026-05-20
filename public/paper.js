@@ -197,6 +197,7 @@ async function placeBinanceMarket(id) {
     showResult(JSON.stringify(data, null, 2));
     await loadTrades();
   } catch (err) {
+    alert(`❌ ${err.message}`);
     showResult(`Error: ${err.message}`);
   }
 }

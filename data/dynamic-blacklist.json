@@ -1,27 +1,12 @@
 {
-  "CGPTUSDT": {
-    "expiresAt": 1779260732603,
-    "addedAt": "2026-05-20T05:05:32.603Z",
-    "reason": "SL hit pnl=-0.0455"
+  "SPKUSDT": {
+    "expiresAt": 1779272244311,
+    "addedAt": "2026-05-20T08:17:24.311Z",
+    "reason": "SL hit pnl=-1.2813"
   },
-  "FOGOUSDT": {
-    "expiresAt": 1779261602779,
-    "addedAt": "2026-05-20T05:20:02.779Z",
-    "reason": "SL hit pnl=-0.0390"
-  },
-  "XLMUSDT": {
-    "expiresAt": 1779262369470,
-    "addedAt": "2026-05-20T05:32:49.470Z",
-    "reason": "SL hit pnl=-0.0009"
-  },
-  "LABUSDT": {
-    "expiresAt": 1779266109109,
-    "addedAt": "2026-05-20T06:35:09.109Z",
-    "reason": "SL hit pnl=-0.0046"
-  },
-  "PLAYUSDT": {
-    "expiresAt": 1779266772757,
-    "addedAt": "2026-05-20T06:46:12.757Z",
-    "reason": "SL hit pnl=-0.4057"
+  "BROCCOLIF3BUSDT": {
+    "expiresAt": 1779275461737,
+    "addedAt": "2026-05-20T09:11:01.737Z",
+    "reason": "SL hit pnl=-0.5272"
   }
 }

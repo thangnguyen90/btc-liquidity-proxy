@@ -155,6 +155,20 @@ export class BinanceClient {
     return this.signedRequest('GET', '/fapi/v1/openAlgoOrders', params, { apiKey, apiSecret });
   }
 
+  async getAccountUid({ apiKey, apiSecret, recvWindow = 5000 }) {
+    // Spot API endpoint trả về UID
+    const params = { recvWindow };
+    const payload = { ...params, timestamp: Date.now() };
+    const query = new URLSearchParams();
+    Object.entries(payload).forEach(([k, v]) => { if (v !== undefined) query.set(k, String(v)); });
+    const sig = (await import('node:crypto')).createHmac('sha256', apiSecret).update(query.toString()).digest('hex');
+    query.set('signature', sig);
+    const res = await fetch(`https://api.binance.com/sapi/v1/account/uid?${query}`, {
+      headers: { 'X-MBX-APIKEY': apiKey },
+    });
+    return res.json();
+  }
+
   async signedRequest(method, path, params, { apiKey, apiSecret }) {
     const payload = {
       ...params,

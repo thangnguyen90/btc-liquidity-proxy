@@ -165,6 +165,14 @@ const server = createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host}`);
 
+    if (requestUrl.pathname === '/api/logout' && request.method === 'POST') {
+      const token = request.headers['x-orders-token'] ?? '';
+      ordersTokens.delete(token);
+      sessionCredentials.delete(token);
+      await sendJson(response, { ok: true });
+      return;
+    }
+
     if (requestUrl.pathname === '/api/auth' && request.method === 'POST') {
       const body = await readJsonBody(request);
       if (!body.apiKey || !body.apiSecret) {
@@ -175,6 +183,15 @@ const server = createServer(async (request, response) => {
       ordersTokens.add(token);
       sessionCredentials.set(token, { apiKey: String(body.apiKey), apiSecret: String(body.apiSecret) });
       await sendJson(response, { token });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/account-uid' && request.method === 'GET') {
+      const token = request.headers['x-orders-token'] ?? '';
+      if (!ordersTokens.has(token)) { await sendJson(response, { error: 'Unauthorized.' }, 401); return; }
+      const { apiKey, apiSecret } = getApiCredentials(token);
+      const data = await client.getAccountUid({ apiKey, apiSecret });
+      await sendJson(response, data);
       return;
     }
 
@@ -266,6 +283,10 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/paper-trades/place-binance' && request.method === 'POST') {
       const token = request.headers['x-orders-token'] ?? null;
+      if (!token || !ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Chưa đăng nhập. Vào /orders và nhập API key trước.' }, 401);
+        return;
+      }
       await sendJson(response, await placeBinanceMarketFromPaperTrade(await readJsonBody(request), token));
       return;
     }

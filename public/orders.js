@@ -65,6 +65,15 @@ function showApp() {
   loadSettings();
   refresh();
   setInterval(refresh, 15000);
+  fetch('/api/account-uid', { headers: { 'x-orders-token': getToken() } })
+    .then((r) => r.json())
+    .then((d) => {
+      if (d.uid) {
+        const btn = document.getElementById('logoutBtn');
+        btn.textContent = `UID ${d.uid} · Logout`;
+      }
+    })
+    .catch(() => {});
 }
 
 function showAuthOverlay() {
@@ -83,6 +92,16 @@ function showAuthOverlay() {
 authSubmitBtn.addEventListener('click', tryLogin);
 authApiSecretInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryLogin(); });
 authApiKeyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') authApiSecretInput.focus(); });
+
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  const token = getToken();
+  if (token) {
+    await fetch('/api/logout', { method: 'POST', headers: { 'x-orders-token': token } }).catch(() => {});
+  }
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(CREDS_KEY);
+  showAuthOverlay();
+});
 
 // On page load: try existing token → if 401, try auto re-auth with stored creds
 (async () => {
