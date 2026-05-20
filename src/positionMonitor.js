@@ -11,11 +11,23 @@
 //
 // onRoeUpdate(symbol, pos, markPrice, roe) is called on every mark price tick.
 
+import WebSocket from 'ws';
+
 const WS_BASE = 'wss://fstream.binance.com';
 
-export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }) {
+export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, getCredentials = null }) {
   // symbol → { amt, entry, leverage, isolatedMargin, initialMargin }
   const posCache = new Map();
+  const stats = {
+    startedAt: Date.now(),
+    lastRestSyncAt: null,
+    lastRestSyncSymbols: [],
+    lastMarkConnectedAt: null,
+    lastMarkTickAt: null,
+    lastRoeUpdateAt: null,
+    lastRoeSymbol: null,
+    lastUserDataConnectedAt: null,
+  };
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function calcMargin(pos) {
@@ -34,9 +46,7 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }
   // ── REST position sync ─────────────────────────────────────────────────────
   async function syncPositions() {
     try {
-      const apiKey = process.env.BINANCE_API_KEY;
-      const apiSecret = process.env.BINANCE_API_SECRET;
-      if (!apiKey || !apiSecret) return;
+      const { apiKey, apiSecret } = resolveCredentials();
       const positions = await client.getPositions({ apiKey, apiSecret });
 
       const activeSymbols = new Set();
@@ -65,7 +75,10 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }
           updateMarkPriceSubscriptions();
         }
       }
+      stats.lastRestSyncAt = Date.now();
+      stats.lastRestSyncSymbols = [...activeSymbols].sort();
     } catch (err) {
+      if (err.message?.includes('Missing Binance API')) return;
       console.warn('[PosMonitor] REST sync failed:', err.message);
     }
   }
@@ -74,9 +87,23 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }
   let listenKey = null;
   let keepAliveTimer = null;
 
-  async function startUserDataStream() {
+  function resolveCredentials() {
+    if (getCredentials) return getCredentials();
     const apiKey = process.env.BINANCE_API_KEY;
-    if (!apiKey) { setTimeout(startUserDataStream, 60_000); return; }
+    const apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw new Error('Missing Binance API credentials.');
+    return { apiKey, apiSecret };
+  }
+
+  async function startUserDataStream() {
+    let apiKey;
+    try {
+      ({ apiKey } = resolveCredentials());
+    } catch (err) {
+      if (!err.message?.includes('Missing Binance API')) console.error('[PosMonitor] credentials failed:', err.message);
+      setTimeout(startUserDataStream, 60_000);
+      return;
+    }
 
     try {
       const res = await client.createListenKey({ apiKey });
@@ -136,6 +163,7 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }
     }, 30 * 60_000);
 
     console.log('[PosMonitor] User data stream connected.');
+    stats.lastUserDataConnectedAt = Date.now();
   }
 
   // ── Mark price combined stream ─────────────────────────────────────────────
@@ -169,6 +197,7 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }
 
     markWs.addEventListener('open', () => {
       wsReady = true;
+      stats.lastMarkConnectedAt = Date.now();
       const all = new Set([...posCache.keys()].map((s) => s.toLowerCase()));
       for (const s of pendingSubscribe) all.add(s);
       pendingSubscribe.clear();
@@ -191,6 +220,7 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }
 
       const symbol = d.s;
       const markPrice = Number(d.p);
+      stats.lastMarkTickAt = Date.now();
       const pos = posCache.get(symbol);
       if (!pos || !pos.entry || !pos.amt) return;
 
@@ -200,6 +230,8 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }
       if (margin <= 0) return;
 
       const roe = (upnl / margin) * 100;
+      stats.lastRoeUpdateAt = Date.now();
+      stats.lastRoeSymbol = symbol;
       onRoeUpdate(symbol, pos, markPrice, roe);
     });
 
@@ -228,6 +260,15 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null }
     // Call after placing an order to immediately track the position
     trackPosition(symbol, { amt, entry, leverage, isolatedMargin = 0, initialMargin = 0, positionSide = 'BOTH' }) {
       upsert(symbol, { amt, entry, leverage, isolatedMargin, initialMargin, positionSide });
+    },
+    getStatus() {
+      return {
+        ...stats,
+        wsReady,
+        cachedSymbols: [...posCache.keys()].sort(),
+        subscribedSymbols: [...subscribedSymbols].map((s) => s.toUpperCase()).sort(),
+        pendingSymbols: [...pendingSubscribe].map((s) => s.toUpperCase()).sort(),
+      };
     },
   };
 }

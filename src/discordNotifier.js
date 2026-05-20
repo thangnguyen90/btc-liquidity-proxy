@@ -526,7 +526,7 @@ export function startVolumeDumpScanner({
 
 const liqCooldowns = new Map(); // symbol → last alert timestamp
 
-function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null) {
+function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null, topTraderTrend = null) {
   const above = heatmap.liquidityAbove;
   const below = heatmap.liquidityBelow;
   const bias = heatmap.bias;
@@ -577,6 +577,10 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null) {
     lines.push(`${candleIcon} Nến mạnh: **${sign}${bigCandle.pct.toFixed(1)}%** (${timeLabel})`);
   }
 
+  if (topTraderTrend) {
+    lines.push(formatTopTraderTrend(topTraderTrend));
+  }
+
   return {
     username: 'Liquidity Proxy',
     embeds: [{
@@ -596,6 +600,66 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null) {
   };
 }
 
+function summarizeTopTraderTrend(rows) {
+  const valid = Array.isArray(rows)
+    ? rows
+      .filter((r) => r && r.longShortRatio != null)
+      .map((r) => ({
+        longAccount: Number(r.longAccount ?? 0),
+        shortAccount: Number(r.shortAccount ?? 0),
+        longShortRatio: Number(r.longShortRatio),
+        timestamp: Number(r.timestamp ?? 0),
+      }))
+      .filter((r) => Number.isFinite(r.longShortRatio))
+    : [];
+  if (valid.length < 2) return null;
+
+  const first = valid[0];
+  const latest = valid.at(-1);
+  const ratioDelta = latest.longShortRatio - first.longShortRatio;
+  const threshold = Number(process.env.LIQ_TOP_TRADER_TREND_THRESHOLD ?? 0.003);
+  const slope = linearSlope(valid.map((r) => r.longShortRatio));
+  let direction = 'flat';
+  if (ratioDelta >= threshold && slope > 0) direction = 'long';
+  if (ratioDelta <= -threshold && slope < 0) direction = 'short';
+
+  return {
+    direction,
+    longPct: latest.longAccount * 100,
+    shortPct: latest.shortAccount * 100,
+    ratio: latest.longShortRatio,
+    ratioDelta,
+    slope,
+    firstRatio: first.longShortRatio,
+    points: valid.length,
+    latestAt: latest.timestamp,
+  };
+}
+
+function linearSlope(values) {
+  const n = values.length;
+  if (n < 2) return 0;
+  const meanX = (n - 1) / 2;
+  const meanY = values.reduce((sum_, v) => sum_ + v, 0) / n;
+  let numerator = 0;
+  let denominator = 0;
+  for (let i = 0; i < n; i++) {
+    numerator += (i - meanX) * (values[i] - meanY);
+    denominator += (i - meanX) ** 2;
+  }
+  return denominator ? numerator / denominator : 0;
+}
+
+function formatTopTraderTrend(trend) {
+  const label = trend.direction === 'long'
+    ? '🟢 Top trader L/S 5m: **đường trắng đi lên — tăng LONG**'
+    : trend.direction === 'short'
+      ? '🔴 Top trader L/S 5m: **đường trắng đi xuống — tăng SHORT**'
+      : '⚪ Top trader L/S 5m: **đường trắng ngang/ít đổi**';
+  const ratioDelta = trend.ratioDelta >= 0 ? `+${trend.ratioDelta.toFixed(3)}` : trend.ratioDelta.toFixed(3);
+  return `${label} | L/S ${trend.firstRatio.toFixed(3)} → ${trend.ratio.toFixed(3)} (${ratioDelta}), Long ${trend.longPct.toFixed(1)}%, Short ${trend.shortPct.toFixed(1)}%`;
+}
+
 export function startLiqImbalanceScanner({
   client,
   klineCache,
@@ -612,6 +676,8 @@ export function startLiqImbalanceScanner({
 }) {
   const getKlines = (symbol, interval, limit) =>
     klineCache ? klineCache.getKlines(symbol, interval, limit) : client.getKlines(symbol, interval, limit);
+  const getTopTraderRatio = (symbol) =>
+    client.getTopLongShortPositionRatio(symbol, '5m', Number(process.env.LIQ_TOP_TRADER_RATIO_LIMIT ?? 50));
   console.log(`[LiqScan] Started. threshold=±${biasThreshold} interval=${intervalMs / 60000}min cooldown=${cooldownMs / 60000}min${klineCache ? ' ws-cache' : ''}${onHighProbAlert ? ` autoOrder≥${highProbThreshold}%` : ''}`);
 
   const run = async () => {
@@ -646,14 +712,25 @@ export function startLiqImbalanceScanner({
             const sweepProb = Math.min(99, Math.round((Math.abs(heatmap.bias) * 0.6 + (dominantPct - 0.5) * 2 * 0.4) * 100));
 
             if (onHighProbAlert && sweepProb >= highProbThreshold && heatmap.sweepTarget) {
+              const direction = heatmap.bias > 0 ? 'short' : 'long';
               await onHighProbAlert({
                 symbol: row.symbol,
                 markPrice: row.markPrice,
-                direction: heatmap.bias > 0 ? 'short' : 'long',
+                direction,
                 sweepTargetPrice: heatmap.sweepTarget.price,
                 sweepProb,
+                confirmation: assessSweepReversal({
+                  direction,
+                  sweepTargetPrice: heatmap.sweepTarget.price,
+                  markPrice: row.markPrice,
+                  klines,
+                }),
               });
             }
+
+            const topTraderTrend = await getTopTraderRatio(row.symbol)
+              .then(summarizeTopTraderTrend)
+              .catch(() => null);
 
             // Detect big candle in last 5 closed 15m candles
             const closedKlines = klines.slice(0, -1);
@@ -668,7 +745,7 @@ export function startLiqImbalanceScanner({
               }
             }
 
-            const embed = buildLiqImbalanceEmbed(row.symbol, heatmap, row.markPrice, bigCandle);
+            const embed = buildLiqImbalanceEmbed(row.symbol, heatmap, row.markPrice, bigCandle, topTraderTrend);
             if (webhookUrl) {
               await sendWebhook(webhookUrl, embed);
             }
@@ -692,4 +769,49 @@ export function startLiqImbalanceScanner({
 
   setTimeout(run, 20000); // first run after 20s
   setInterval(run, intervalMs);
+}
+
+function assessSweepReversal({ direction, sweepTargetPrice, markPrice, klines }) {
+  const closed = klines.slice(0, -1);
+  const last = closed.at(-1);
+  if (!last || !sweepTargetPrice || !markPrice) {
+    return { confirmed: false, reason: 'missing candle/target data' };
+  }
+
+  const target = Number(sweepTargetPrice);
+  const open = Number(last.open);
+  const high = Number(last.high);
+  const low = Number(last.low);
+  const close = Number(last.close);
+  const wickPct = Math.abs(high - low) / target;
+  const rejectPct = Number(process.env.AUTO_LIQ_REJECTION_PCT ?? 0.002);
+  const minWickPct = Number(process.env.AUTO_LIQ_MIN_WICK_PCT ?? 0.003);
+
+  if (direction === 'short') {
+    const swept = high >= target || markPrice >= target;
+    const rejected = close <= target * (1 - rejectPct) && close < open;
+    const hasWick = high > Math.max(open, close) && wickPct >= minWickPct;
+    return {
+      confirmed: swept && rejected && hasWick,
+      swept,
+      rejected,
+      hasWick,
+      reason: swept && rejected && hasWick
+        ? 'above sweep rejected by closed candle'
+        : 'waiting for above sweep + bearish rejection',
+    };
+  }
+
+  const swept = low <= target || markPrice <= target;
+  const rejected = close >= target * (1 + rejectPct) && close > open;
+  const hasWick = low < Math.min(open, close) && wickPct >= minWickPct;
+  return {
+    confirmed: swept && rejected && hasWick,
+    swept,
+    rejected,
+    hasWick,
+    reason: swept && rejected && hasWick
+      ? 'below sweep rejected by closed candle'
+      : 'waiting for below sweep + bullish rejection',
+  };
 }

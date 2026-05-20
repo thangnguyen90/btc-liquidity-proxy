@@ -14,6 +14,7 @@ import { KlineCache } from './klineCache.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
+import { createMarkPriceTicker } from './markPriceTicker.js';
 
 loadEnv();
 
@@ -57,6 +58,10 @@ const aiCache = new Map(); // symbol → { at, data }
 const SL_TRACKING_FILE = join(rootDir, 'data', 'sl-tracking.json');
 // { createdAt, positions: { [symbol]: { openedAt, entry, slPlaced, slPrice? } } }
 let slTracking = { createdAt: Date.now(), positions: {} };
+const PAPER_TRADES_FILE = join(rootDir, 'data', 'paper-trades.json');
+const paperMarkCache = new Map(); // symbol → { markPrice, at }
+let paperTicker = null;
+const paperFillLocks = new Set();
 
 async function loadSlTracking() {
   try {
@@ -241,6 +246,32 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        await sendJson(response, await createPaperTrade(await readJsonBody(request)));
+        return;
+      }
+    }
+
+    if (requestUrl.pathname === '/api/paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closePaperTrade(await readJsonBody(request)));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/paper-trades/place-binance' && request.method === 'POST') {
+      await sendJson(response, await placeBinanceMarketFromPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deletePaperTrade(await readJsonBody(request)));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/ai-analysis' && request.method === 'POST') {
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
@@ -381,9 +412,22 @@ const server = createServer(async (request, response) => {
         : {};
       await sendJson(response, {
         enabled: process.env.TRAILING_STOP_ENABLED === 'true',
-        triggerRoe: Number(process.env.TRAILING_STOP_TRIGGER_ROE ?? 15),
-        lockMarginPct: Number(process.env.TRAILING_STOP_LOCK_MARGIN_PCT ?? 1),
+        triggerRoe: Number(process.env.TRAILING_STOP_TRIGGER_ROE ?? 10),
+        updateRoe: Number(process.env.TRAILING_STOP_UPDATE_ROE ?? 5),
         protected: protected_,
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/position-monitor/status') {
+      const token = request.headers['x-orders-token'] ?? '';
+      if (!ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Unauthorized.' }, 401);
+        return;
+      }
+      await sendJson(response, {
+        enabled: Boolean(posMonitor),
+        status: posMonitor?.getStatus ? posMonitor.getStatus() : null,
       });
       return;
     }
@@ -459,8 +503,8 @@ server.listen(port, '127.0.0.1', () => {
       cooldownMs: Number(process.env.LIQ_SCAN_COOLDOWN_MS ?? 2 * 60 * 60 * 1000),
       minVolumeUsdt: Number(process.env.LIQ_SCAN_MIN_VOLUME ?? 5_000_000),
       maxCoins: Number(process.env.LIQ_SCAN_MAX_COINS ?? 200),
-      onHighProbAlert: process.env.AUTO_LIQ_ORDER_ENABLED === 'true' ? handleLiqAutoOrder : null,
-      highProbThreshold: Number(process.env.AUTO_LIQ_ORDER_MIN_PROB ?? 90),
+      onHighProbAlert: getLiqHighProbHandler(),
+      highProbThreshold: getLiqHighProbThreshold(),
     });
     startVolumeDumpScanner({
       client,
@@ -488,8 +532,18 @@ server.listen(port, '127.0.0.1', () => {
     startNegTpScanner();
   }, 28000);
   setTimeout(() => {
+    startPaperTradeTicker();
+  }, 29000);
+  setTimeout(() => {
+    startMissingTpScanner();
+  }, 31000);
+  setTimeout(() => {
+    startSlTrailSafetyScanner();
+  }, 34000);
+  setTimeout(() => {
     posMonitor = startPositionMonitor({
       client,
+      getCredentials: () => getApiCredentials(null),
       onOrderFill: (symbol, { fillTime }) => {
         console.log(`[SlGuard] onOrderFill ${symbol} fillTime=${fillTime} createdAt=${slTracking.createdAt}`);
         // Only track fills that happened after sl-tracking.json was created
@@ -520,7 +574,7 @@ server.listen(port, '127.0.0.1', () => {
           handleAvgDown(symbol, pos, roe).catch(() => {});
         }
         // SL trail: move SL up as profit grows (all positions with existing SL)
-        handleSlTrailByProfit(symbol, pos, roe).catch(() => {});
+        handleSlTrailByProfit(symbol, pos, roe, markPrice).catch(() => {});
         // Time-based: âm liên tiếp quá NEG_TP_TIMEOUT_MS → đặt TP về entry
         if (roe < 0) {
           if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
@@ -719,6 +773,18 @@ async function placeOrder(payload, token = null) {
     ? await client.placeAlgoOrder({ params: stopLossParams, apiKey, apiSecret })
     : null;
 
+  trackSubmittedOrderPosition({
+    symbol,
+    side,
+    quantity,
+    leverage,
+    markPrice,
+    orderResult,
+    isHedge,
+    positionSide,
+    orderType,
+  });
+
   return {
     status: 'submitted',
     message: 'Order submitted to Binance.',
@@ -728,6 +794,22 @@ async function placeOrder(payload, token = null) {
     takeProfitResult,
     stopLossResult,
   };
+}
+
+function trackSubmittedOrderPosition({ symbol, side, quantity, leverage, markPrice, orderResult, isHedge, positionSide, orderType }) {
+  if (!posMonitor) return;
+  const executedQty = Number(orderResult?.executedQty ?? 0);
+  if (executedQty <= 0) return;
+
+  const avgPrice = Number(orderResult?.avgPrice ?? orderResult?.price ?? 0) || markPrice;
+  const amt = (side === 'BUY' ? 1 : -1) * executedQty;
+  posMonitor.trackPosition(symbol, {
+    amt,
+    entry: avgPrice,
+    leverage,
+    positionSide: isHedge ? positionSide : 'BOTH',
+  });
+  console.log(`[PosMonitor] Seeded ${symbol} from submitted ${orderType} order qty=${executedQty} entry=${avgPrice}`);
 }
 
 async function getMarketSnapshot() {
@@ -766,6 +848,384 @@ async function getMarketSnapshot() {
   snapshotCache.data = result;
   snapshotCache.expiresAt = Date.now() + 15000;
   return result;
+}
+
+async function readPaperStore() {
+  try {
+    const text = await readFile(PAPER_TRADES_FILE, 'utf8');
+    const parsed = JSON.parse(text);
+    return {
+      createdAt: parsed.createdAt ?? new Date().toISOString(),
+      updatedAt: parsed.updatedAt ?? null,
+      trades: Array.isArray(parsed.trades) ? parsed.trades : [],
+    };
+  } catch {
+    const fresh = { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
+    await writePaperStore(fresh);
+    return fresh;
+  }
+}
+
+async function writePaperStore(store) {
+  await mkdir(join(rootDir, 'data'), { recursive: true });
+  const payload = { ...store, updatedAt: new Date().toISOString() };
+  await writeFile(PAPER_TRADES_FILE, JSON.stringify(payload, null, 2));
+  return payload;
+}
+
+async function getPaperMark(symbol) {
+  const cached = paperMarkCache.get(symbol);
+  if (cached && Date.now() - cached.at < 30_000) return cached.markPrice;
+  const price = await client.getPremiumIndex(symbol);
+  return Number(price.markPrice);
+}
+
+function enrichPaperTrade(trade, markPrice = null) {
+  const currentPrice = trade.status === 'CLOSED'
+    ? Number(trade.exitPrice)
+    : Number(markPrice ?? trade.markPrice ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const qty = Number(trade.quantity);
+  const entry = Number(trade.entryPrice);
+  const margin = Number(trade.marginUsdt);
+  const isLivePaper = trade.status === 'OPEN' || trade.status === 'CLOSED';
+  const pnl = isLivePaper ? (currentPrice - entry) * qty * sideMult : 0;
+  const roe = isLivePaper && margin > 0 ? (pnl / margin) * 100 : 0;
+  return {
+    ...trade,
+    markPrice: currentPrice,
+    pnl,
+    roe,
+    notionalUsdt: margin * Number(trade.leverage),
+  };
+}
+
+function paperSummary(trades) {
+  const enriched = trades.map((t) => enrichPaperTrade(t, t.markPrice));
+  const closed = enriched.filter((t) => t.status === 'CLOSED');
+  const open = enriched.filter((t) => t.status === 'OPEN');
+  const pending = enriched.filter((t) => t.status === 'PENDING');
+  const entryReady = enriched.filter((t) => t.status === 'ENTRY_READY');
+  const realizedPnl = closed.reduce((sum_, t) => sum_ + Number(t.pnl ?? 0), 0);
+  const unrealizedPnl = open.reduce((sum_, t) => sum_ + Number(t.pnl ?? 0), 0);
+  const wins = closed.filter((t) => Number(t.pnl) > 0).length;
+  return {
+    total: enriched.length,
+    open: open.length,
+    pending: pending.length,
+    entryReady: entryReady.length,
+    closed: closed.length,
+    realizedPnl,
+    unrealizedPnl,
+    totalPnl: realizedPnl + unrealizedPnl,
+    winRate: closed.length ? (wins / closed.length) * 100 : 0,
+  };
+}
+
+async function getPaperTrades() {
+  const store = await readPaperStore();
+  const activeSymbols = [...new Set(store.trades.filter((t) => ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status)).map((t) => t.symbol))];
+  const marks = new Map();
+  await Promise.all(activeSymbols.map(async (symbol) => {
+    try { marks.set(symbol, await getPaperMark(symbol)); }
+    catch { /* keep stored price */ }
+  }));
+  const trades = store.trades
+    .map((t) => enrichPaperTrade(t, marks.get(t.symbol)))
+    .sort((a, b) => new Date(b.openedAt ?? b.entryReadyAt ?? b.createdAt ?? 0) - new Date(a.openedAt ?? a.entryReadyAt ?? a.createdAt ?? 0));
+  return { ...store, trades, summary: paperSummary(trades) };
+}
+
+async function createPaperTrade(payload) {
+  const symbol = normalizeSymbol(payload.symbol ?? '');
+  const side = String(payload.side ?? '').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 1)));
+  const note = String(payload.note ?? '').slice(0, 500);
+
+  if (!symbol) throw new Error('symbol is required.');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT.');
+  if (!Number.isFinite(marginUsdt) || marginUsdt <= 0) throw new Error('marginUsdt must be greater than 0.');
+  const entryPrice = payload.entryPrice ? Number(payload.entryPrice) : await getPaperMark(symbol);
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice must be greater than 0.');
+
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol,
+    side,
+    status: ['PENDING', 'ENTRY_READY'].includes(payload.status) ? payload.status : 'OPEN',
+    marginUsdt,
+    leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    createdAt: new Date().toISOString(),
+    openedAt: ['PENDING', 'ENTRY_READY'].includes(payload.status) ? null : new Date().toISOString(),
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note,
+  };
+
+  const store = await readPaperStore();
+  store.trades.unshift(trade);
+  await writePaperStore(store);
+  return { trade: enrichPaperTrade(trade, entryPrice) };
+}
+
+async function closePaperTrade(payload) {
+  const id = String(payload.id ?? '');
+  if (!id) throw new Error('id is required.');
+  const store = await readPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === id);
+  if (idx < 0) throw new Error('Paper trade not found.');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : await getPaperMark(trade.symbol);
+  if (!Number.isFinite(exitPrice) || exitPrice <= 0) throw new Error('exitPrice must be greater than 0.');
+  store.trades[idx] = {
+    ...trade,
+    status: 'CLOSED',
+    exitPrice,
+    closedAt: new Date().toISOString(),
+    closeNote: String(payload.closeNote ?? '').slice(0, 500),
+  };
+  await writePaperStore(store);
+  return { trade: enrichPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deletePaperTrade(payload) {
+  const id = String(payload.id ?? '');
+  if (!id) throw new Error('id is required.');
+  const store = await readPaperStore();
+  const before = store.trades.length;
+  store.trades = store.trades.filter((t) => t.id !== id);
+  await writePaperStore(store);
+  return { deleted: before - store.trades.length, id };
+}
+
+async function placeBinanceMarketFromPaperTrade(payload) {
+  const id = String(payload.id ?? '');
+  if (!id) throw new Error('id is required.');
+
+  const store = await readPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === id);
+  if (idx < 0) throw new Error('Paper trade not found.');
+  const trade = store.trades[idx];
+  if (trade.status !== 'ENTRY_READY') {
+    throw new Error(`Paper trade must be ENTRY_READY. Current status: ${trade.status}`);
+  }
+
+  const { apiKey, apiSecret } = getApiCredentials(null);
+  const symbol = normalizeSymbol(trade.symbol);
+  const side = trade.side === 'LONG' ? 'BUY' : 'SELL';
+  const marginUsdt = Number(payload.marginUsdt ?? process.env.PAPER_BINANCE_MARKET_MARGIN ?? process.env.AUTO_LIQ_ORDER_MARGIN ?? 2);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? trade.leverage ?? process.env.AUTO_LIQ_ORDER_LEVERAGE ?? 10)));
+  const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+  const [symbols, premiumIndex] = await Promise.all([
+    getSymbols(),
+    client.getPremiumIndex(symbol),
+  ]);
+  const symbolInfo = symbols.find((s) => s.symbol === symbol);
+  if (!symbolInfo) throw new Error(`Symbol ${symbol} is not tradable.`);
+
+  const markPrice = Number(premiumIndex.markPrice);
+  const quantity = quantityFromNotional(symbolInfo, marginUsdt * leverage, markPrice, false);
+  await client.setLeverage({ symbol, leverage, apiKey, apiSecret, recvWindow }).catch(() => {});
+
+  const isHedge = await getHedgeMode(null);
+  const positionSide = isHedge ? (side === 'BUY' ? 'LONG' : 'SHORT') : undefined;
+  const params = {
+    symbol,
+    side,
+    type: 'MARKET',
+    quantity,
+    recvWindow,
+    newClientOrderId: `paper_mkt_${Date.now()}`.slice(0, 36),
+  };
+  if (isHedge) params.positionSide = positionSide;
+  else params.reduceOnly = 'false';
+
+  const orderResult = await client.placeFuturesOrder({ params, apiKey, apiSecret });
+  const executedQty = Number(orderResult.executedQty ?? quantity);
+  const avgPrice = Number(orderResult.avgPrice ?? 0) || markPrice;
+
+  store.trades[idx] = {
+    ...trade,
+    status: 'OPEN',
+    marginUsdt,
+    leverage,
+    quantity: executedQty || Number(trade.quantity),
+    entryPrice: avgPrice,
+    openedAt: new Date().toISOString(),
+    binancePlacedAt: new Date().toISOString(),
+    binanceOrderId: orderResult.orderId,
+    binanceClientOrderId: orderResult.clientOrderId,
+    binanceStatus: orderResult.status,
+    note: appendPaperNote(trade.note, `binanceMarket=placed margin=${marginUsdt} mark=${markPrice}`),
+  };
+  await writePaperStore(store);
+
+  trackSubmittedOrderPosition({
+    symbol,
+    side,
+    quantity: executedQty || quantity,
+    leverage,
+    markPrice: avgPrice,
+    orderResult,
+    isHedge,
+    positionSide,
+    orderType: 'MARKET',
+  });
+
+  return { trade: enrichPaperTrade(store.trades[idx], avgPrice), order: orderResult };
+}
+
+function appendPaperNote(note, part) {
+  return [String(note ?? '').trim(), part].filter(Boolean).join(' | ');
+}
+
+async function createLiqPaperTrade({ symbol, markPrice, direction, sweepTargetPrice, sweepProb, confirmation = null }) {
+  if (process.env.PAPER_LIQ_ENABLED === 'false') return null;
+  const minProb = Number(process.env.PAPER_LIQ_MIN_PROB ?? 80);
+  if (sweepProb < minProb) return null;
+
+  const side = direction === 'short' ? 'SHORT' : 'LONG';
+  const store = await readPaperStore();
+  const existingIdx = store.trades.findIndex((t) =>
+    ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status) &&
+    t.symbol === symbol &&
+    t.side === side &&
+    String(t.source ?? '').startsWith('liq-sweep')
+  );
+  if (existingIdx >= 0) {
+    const existing = store.trades[existingIdx];
+    if (existing.status === 'PENDING' && confirmation?.confirmed === true) {
+      store.trades[existingIdx] = {
+        ...existing,
+        status: 'ENTRY_READY',
+        entryReadyAt: new Date().toISOString(),
+        markPriceAtReady: markPrice,
+        note: updatePaperConfirmationNote(existing.note, confirmation.reason, markPrice),
+      };
+      await writePaperStore(store);
+      console.log(`[PaperLiq] 🎯 ENTRY_READY ${symbol} ${side} mark=${markPrice} reason=${confirmation.reason}`);
+      return { trade: enrichPaperTrade(store.trades[existingIdx], markPrice) };
+    }
+    console.log(`[PaperLiq] ⏭ ${symbol} ${side} skip — paper trade đang chờ/sẵn sàng/mở`);
+    return null;
+  }
+
+  const marginUsdt = Number(process.env.PAPER_LIQ_MARGIN ?? process.env.AUTO_LIQ_PROBE_MARGIN ?? 1);
+  const leverage = Number(process.env.PAPER_LIQ_LEVERAGE ?? process.env.AUTO_LIQ_ORDER_LEVERAGE ?? 10);
+  const note = [
+    `sweepProb=${sweepProb}%`,
+    `target=${sweepTargetPrice}`,
+    confirmation?.reason ? `confirmation=${confirmation.reason}` : null,
+  ].filter(Boolean).join(' | ');
+  const status = confirmation?.confirmed === true ? 'ENTRY_READY' : 'PENDING';
+
+  const result = await createPaperTrade({
+    symbol,
+    side,
+    marginUsdt,
+    leverage,
+    entryPrice: sweepTargetPrice || markPrice,
+    status,
+    source: `liq-sweep-${sweepProb}`,
+    note,
+  });
+  console.log(`[PaperLiq] ${status === 'ENTRY_READY' ? '🎯' : '🕓'} ${symbol} ${side} ${status} entry=${sweepTargetPrice || markPrice} mark=${markPrice} margin=${marginUsdt} lev=${leverage}x sweepProb=${sweepProb}%`);
+  return result;
+}
+
+function paperEntryTouched(trade, markPrice) {
+  const entry = Number(trade.entryPrice);
+  if (!entry || !markPrice) return false;
+  return trade.side === 'LONG' ? markPrice <= entry : markPrice >= entry;
+}
+
+function updatePaperFillNote(note, markPrice) {
+  const filledText = `confirmation=entry touched by mark price (${markPrice})`;
+  const base = String(note ?? '');
+  if (base.includes('confirmation=')) {
+    return base.replace(/confirmation=[^|]+/, filledText);
+  }
+  return [base, filledText].filter(Boolean).join(' | ');
+}
+
+function updatePaperConfirmationNote(note, reason, markPrice) {
+  const readyText = `confirmation=${reason ?? 'entry ready'} @ mark ${markPrice}`;
+  const base = String(note ?? '');
+  if (base.includes('confirmation=')) {
+    return base.replace(/confirmation=[^|]+/, readyText);
+  }
+  return [base, readyText].filter(Boolean).join(' | ');
+}
+
+async function fillPendingPaperTrade(trade, markPrice) {
+  const store = await readPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+  if (idx < 0) return null;
+  const current = store.trades[idx];
+  if (!paperEntryTouched(current, markPrice)) return null;
+
+  store.trades[idx] = {
+    ...current,
+    status: 'OPEN',
+    openedAt: new Date().toISOString(),
+    filledAt: new Date().toISOString(),
+    fillPrice: Number(current.entryPrice),
+    fillMarkPrice: markPrice,
+    note: updatePaperFillNote(current.note, markPrice),
+  };
+  await writePaperStore(store);
+  console.log(`[PaperLiq] ✅ FILLED ${current.symbol} ${current.side} entry=${current.entryPrice} mark=${markPrice}`);
+  return store.trades[idx];
+}
+
+async function processPaperPendingFillsForSymbol(symbol, markPrice) {
+  if (paperFillLocks.has(symbol)) return;
+  paperFillLocks.add(symbol);
+  try {
+    const store = await readPaperStore();
+    const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+    for (const trade of pending) {
+      if (paperEntryTouched(trade, markPrice)) await fillPendingPaperTrade(trade, markPrice);
+    }
+  } finally {
+    paperFillLocks.delete(symbol);
+  }
+}
+
+async function processAllPaperPendingFills() {
+  const store = await readPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING');
+  for (const trade of pending) {
+    const markPrice = await getPaperMark(trade.symbol).catch(() => null);
+    if (markPrice) await processPaperPendingFillsForSymbol(trade.symbol, markPrice);
+  }
+}
+
+async function syncPaperTickerSymbols() {
+  if (!paperTicker) return;
+  const store = await readPaperStore();
+  const symbols = [...new Set(store.trades
+    .filter((t) => ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status))
+    .map((t) => t.symbol)
+    .filter(Boolean))];
+  paperTicker.setSymbols(symbols);
+}
+
+function startPaperTradeTicker() {
+  if (process.env.PAPER_TRADE_TICKER_ENABLED === 'false') return;
+  if (paperTicker) return;
+  paperTicker = createMarkPriceTicker({
+    onPrice: ({ symbol, markPrice }) => {
+      paperMarkCache.set(symbol, { markPrice, at: Date.now() });
+    },
+  });
+  console.log('[PaperLiq] Mark ticker started for paper trades.');
+  syncPaperTickerSymbols().catch(() => {});
+  setInterval(() => syncPaperTickerSymbols().catch(() => {}), 10_000);
 }
 
 async function callOpenAI(messages) {
@@ -1408,8 +1868,21 @@ async function getOpenOrders(symbol, token = null) {
 
 async function getOpenAlgoOrdersList(token = null) {
   const { apiKey, apiSecret } = getApiCredentials(token);
-  const result = await client.getOpenAlgoOrders({ apiKey, apiSecret });
-  return Array.isArray(result?.orders) ? result.orders : Array.isArray(result) ? result : [];
+  const positions = await client.getPositions({ apiKey, apiSecret });
+  const activeSymbols = [...new Set(positions.filter((p) => Number(p.positionAmt) !== 0).map((p) => p.symbol))];
+  const collected = [];
+  for (const symbol of activeSymbols) {
+    try {
+      const result = await client.getOpenAlgoOrders({ symbol, apiKey, apiSecret });
+      const rows = Array.isArray(result?.orders) ? result.orders : Array.isArray(result) ? result : [];
+      collected.push(...rows);
+    } catch (err) {
+      console.warn(`[OpenAlgo] ${symbol}: ${err.message}`);
+    }
+  }
+  const byId = new Map();
+  for (const row of collected) byId.set(row.algoId ?? row.clientAlgoId ?? `${row.symbol}:${row.triggerPrice}:${row.side}`, row);
+  return [...byId.values()];
 }
 
 async function getRecentTrades(symbol, limit, token = null) {
@@ -1547,7 +2020,7 @@ function getTargetLockRoe(roe) {
 const slTrailRunning = new Set();
 const slTrailLockRoe = new Map(); // symbol → current lock ROE level (in-memory dedup)
 
-async function handleSlTrailByProfit(symbol, pos, roe) {
+async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
   if (process.env.AUTO_SL_ENABLED === 'false') return;
   if (slTrailRunning.has(symbol)) return;
 
@@ -1563,8 +2036,8 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
 
     const [algoResult, openOrdersResult, symbolList] = await Promise.all([
-      client.getOpenAlgoOrders({ apiKey, apiSecret }),
-      client.getOpenOrders({ apiKey, apiSecret }),
+      client.getOpenAlgoOrders({ symbol, apiKey, apiSecret }),
+      client.getOpenOrders({ symbol, apiKey, apiSecret }),
       getSymbols(),
     ]);
     const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
@@ -1578,7 +2051,7 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
       if (o.symbol !== symbol) return false;
       const side = String(o.side ?? '').toUpperCase();
       const closingSide = (isLong && side === 'SELL') || (!isLong && side === 'BUY');
-      const triggerP = Number(o.triggerPrice ?? 0);
+      const triggerP = Number(o.triggerPrice ?? o.stopPrice ?? 0);
       const isSLSide = triggerP > 0 && (isLong ? triggerP < entry : triggerP > entry);
       return closingSide && isSLSide;
     });
@@ -1589,9 +2062,6 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
       return t === 'STOP_MARKET' || t === 'STOP';
     });
     const slOrder = algoSl || regularSl;
-
-    // No existing SL → nothing to trail
-    if (!slOrder) { slTrailLockRoe.set(symbol, targetLockRoe); return; }
 
     const symbolInfo = symbolList.find((s) => s.symbol === symbol);
     if (!symbolInfo) return;
@@ -1605,11 +2075,25 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
         : entry * (1 - (targetLockRoe / 100) / leverage),
     );
 
+    const mark = Number(markPrice ?? 0);
+    if (mark > 0) {
+      if (isLong && Number(newSlPrice) >= mark) {
+        console.warn(`[SlTrail] ${symbol} SKIP: SL ${newSlPrice} >= mark ${mark} — would trigger immediately`);
+        return;
+      }
+      if (!isLong && Number(newSlPrice) <= mark) {
+        console.warn(`[SlTrail] ${symbol} SKIP: SL ${newSlPrice} <= mark ${mark} — would trigger immediately`);
+        return;
+      }
+    }
+
     // Current SL already at or better than target → just record it
-    const curSl = Number(slOrder.triggerPrice);
-    if ((isLong && curSl >= newSlPrice) || (!isLong && curSl <= newSlPrice)) {
-      slTrailLockRoe.set(symbol, targetLockRoe);
-      return;
+    if (slOrder) {
+      const curSl = Number(slOrder.triggerPrice ?? slOrder.stopPrice ?? 0);
+      if ((isLong && curSl >= newSlPrice) || (!isLong && curSl <= newSlPrice)) {
+        slTrailLockRoe.set(symbol, targetLockRoe);
+        return;
+      }
     }
 
     // Cancel: algo orders use algoId, regular orders use orderId via cancelOrder
@@ -1642,7 +2126,7 @@ async function handleSlTrailByProfit(symbol, pos, roe) {
 
     await client.placeAlgoOrder({ params: slParams, apiKey, apiSecret });
     slTrailLockRoe.set(symbol, targetLockRoe);
-    console.log(`[SlTrail] ✅ ${symbol} ROE=${roe.toFixed(1)}% → SL dời lên +${targetLockRoe}% ROE @ ${newSlPrice}`);
+    console.log(`[SlTrail] ✅ ${symbol} ROE=${roe.toFixed(1)}% → ${slOrder ? 'SL dời lên' : 'SL mới'} +${targetLockRoe}% ROE @ ${newSlPrice}`);
   } catch (err) {
     console.error(`[SlTrail] ❌ ${symbol}:`, err.message);
   } finally {
@@ -1769,7 +2253,34 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
 const liqAutoOrderFired = new Map(); // `${symbol}:${price}` → timestamp
 const pendingLiqTp = new Map(); // symbol → { tpPrice, tpRoePct, direction, at }
 
-async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPrice, sweepProb }) {
+function getLiqHighProbThreshold() {
+  const thresholds = [];
+  if (process.env.PAPER_LIQ_ENABLED !== 'false') thresholds.push(Number(process.env.PAPER_LIQ_MIN_PROB ?? 80));
+  if (process.env.AUTO_LIQ_ORDER_ENABLED === 'true') thresholds.push(Number(process.env.AUTO_LIQ_ORDER_MIN_PROB ?? 90));
+  return thresholds.length ? Math.min(...thresholds) : 80;
+}
+
+function getLiqHighProbHandler() {
+  const paperEnabled = process.env.PAPER_LIQ_ENABLED !== 'false';
+  const realEnabled = process.env.AUTO_LIQ_ORDER_ENABLED === 'true';
+  if (!paperEnabled && !realEnabled) return null;
+
+  return async (payload) => {
+    if (paperEnabled) {
+      await createLiqPaperTrade(payload).catch((err) => {
+        console.error(`[PaperLiq] ❌ ${payload.symbol}:`, err.message);
+      });
+    }
+
+    const autoMarketOnConfirmation = process.env.AUTO_LIQ_AUTO_MARKET_ON_CONFIRMATION === 'true';
+    const realMinProb = Number(process.env.AUTO_LIQ_ORDER_MIN_PROB ?? 90);
+    if (autoMarketOnConfirmation && realEnabled && payload.sweepProb >= realMinProb) {
+      await handleLiqAutoOrder(payload);
+    }
+  };
+}
+
+async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPrice, sweepProb, confirmation = null }) {
   // Dedup theo symbol (không theo price) — tránh đặt nhiều lệnh khi price thay đổi nhẹ giữa các scan
   const last = liqAutoOrderFired.get(symbol) ?? 0;
   if (Date.now() - last < 2 * 3600 * 1000) {
@@ -1779,7 +2290,18 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
 
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
-    const margin = Number(process.env.AUTO_LIQ_ORDER_MARGIN ?? 5);
+    const requireConfirmation = process.env.AUTO_LIQ_REQUIRE_REVERSAL_CONFIRMATION !== 'false';
+    const allowProbe = process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION !== 'false';
+    const isConfirmed = confirmation?.confirmed === true;
+    if (requireConfirmation && !isConfirmed && !allowProbe) {
+      console.log(`[AutoLiq] ⏳ ${symbol} skip — ${confirmation?.reason ?? 'waiting for reversal confirmation'}`);
+      return;
+    }
+
+    const baseMargin = Number(process.env.AUTO_LIQ_ORDER_MARGIN ?? 5);
+    const probeMargin = Number(process.env.AUTO_LIQ_PROBE_MARGIN ?? 1);
+    const isProbe = requireConfirmation && !isConfirmed;
+    const margin = isProbe ? probeMargin : baseMargin;
     const leverage = Number(process.env.AUTO_LIQ_ORDER_LEVERAGE ?? 10);
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
     const maxLimitOrders = Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30);
@@ -1810,7 +2332,11 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
     const symbolInfo = symbols.find((s) => s.symbol === symbol);
     if (!symbolInfo) { console.warn(`[AutoLiq] ${symbol} not in symbols`); return; }
 
-    const price = priceFromTick(symbolInfo, sweepTargetPrice);
+    const confirmedOrderType = String(process.env.AUTO_LIQ_CONFIRMED_ORDER_TYPE ?? 'MARKET').toUpperCase();
+    const useMarket = isConfirmed && confirmedOrderType === 'MARKET';
+    const price = useMarket
+      ? priceFromTick(symbolInfo, markPrice || sweepTargetPrice)
+      : priceFromTick(symbolInfo, sweepTargetPrice);
     const notional = margin * leverage;
     const rawQty = notional / price;
     const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
@@ -1826,7 +2352,18 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
     const positionSide = isHedge ? (direction === 'short' ? 'SHORT' : 'LONG') : undefined;
 
     const side = direction === 'short' ? 'SELL' : 'BUY';
-    const entryParams = { symbol, side, type: 'LIMIT', price: String(price), quantity, timeInForce: 'GTC', recvWindow };
+    const entryParams = {
+      symbol,
+      side,
+      type: useMarket ? 'MARKET' : 'LIMIT',
+      quantity,
+      recvWindow,
+      newClientOrderId: `${isProbe ? 'liq_probe' : useMarket ? 'liq_mkt' : 'liq_conf'}_${Date.now()}`.slice(0, 36),
+    };
+    if (!useMarket) {
+      entryParams.price = String(price);
+      entryParams.timeInForce = 'GTC';
+    }
     if (isHedge) { entryParams.positionSide = positionSide; } else { entryParams.reduceOnly = 'false'; }
     await client.placeFuturesOrder({ params: entryParams, apiKey, apiSecret });
 
@@ -1843,7 +2380,7 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
     pendingLiqTp.set(symbol, { tpPrice, tpRoePct, direction, isHedge, positionSide, leverage, at: Date.now() });
 
     liqAutoOrderFired.set(symbol, Date.now());
-    console.log(`[AutoLiq] ✅ ${symbol} ${direction.toUpperCase()} LIMIT @${price} — pending TP @${tpPrice} (${tpRoePct.toFixed(1)}% ROE) qty=${quantity} sweepProb=${sweepProb}%`);
+    console.log(`[AutoLiq] ✅ ${isProbe ? '[PROBE]' : '[CONFIRMED]'} ${symbol} ${direction.toUpperCase()} ${entryParams.type}${useMarket ? '' : ` @${price}`} — pending TP @${tpPrice} (${tpRoePct.toFixed(1)}% ROE) margin=${margin} qty=${quantity} sweepProb=${sweepProb}%${confirmation?.reason ? ` reason=${confirmation.reason}` : ''}`);
   } catch (err) {
     console.error(`[AutoLiq] ❌ ${symbol}:`, err.message);
   }
@@ -2061,6 +2598,155 @@ function startNegTpScanner() {
   run();
 }
 
+function startMissingTpScanner() {
+  if (process.env.AUTO_TP_SCAN_ENABLED === 'false') return;
+  const intervalMs = Math.max(Number(process.env.AUTO_TP_SCAN_INTERVAL_MS ?? 60_000), 30_000);
+  console.log(`[AutoTP] Scanner started. interval=${intervalMs / 1000}s`);
+  const run = () => runMissingTpScan().catch((err) => {
+    if (err.message?.includes('Missing Binance API')) return;
+    console.error('[AutoTP] Scan error:', err.message);
+  });
+  run();
+  setInterval(run, intervalMs);
+}
+
+function startSlTrailSafetyScanner() {
+  if (process.env.SL_TRAIL_SAFETY_SCAN_ENABLED === 'false') return;
+  const intervalMs = Math.max(Number(process.env.SL_TRAIL_SAFETY_SCAN_INTERVAL_MS ?? 30_000), 10_000);
+  console.log(`[SlTrailScan] Safety scanner started. interval=${intervalMs / 1000}s`);
+  const run = () => runSlTrailSafetyScan().catch((err) => {
+    if (err.message?.includes('Missing Binance API')) return;
+    console.error('[SlTrailScan] Scan error:', err.message);
+  });
+  run();
+  setInterval(run, intervalMs);
+}
+
+async function runSlTrailSafetyScan() {
+  if (process.env.AUTO_SL_ENABLED === 'false') return;
+  const { apiKey, apiSecret } = getApiCredentials(null);
+  const positions = await client.getPositions({ apiKey, apiSecret });
+  const active = positions.filter((p) => Number(p.positionAmt) !== 0);
+  if (!active.length) return;
+
+  for (const p of active) {
+    const amt = Number(p.positionAmt);
+    const entry = Number(p.entryPrice);
+    const mark = Number(p.markPrice);
+    const leverage = Number(p.leverage) || 1;
+    if (!p.symbol || !amt || !entry) continue;
+
+    const isolatedMargin = Number(p.isolatedMargin);
+    const initialMargin = Number(p.initialMargin);
+    const margin = isolatedMargin > 0
+      ? isolatedMargin
+      : initialMargin > 0
+        ? initialMargin
+        : Math.abs(amt) * entry / leverage;
+    if (margin <= 0) continue;
+
+    const upnl = Number(p.unRealizedProfit ?? p.unrealizedProfit ?? 0);
+    const roe = upnl
+      ? (upnl / margin) * 100
+      : mark > 0
+        ? ((mark - entry) / entry) * leverage * (amt > 0 ? 1 : -1) * 100
+        : 0;
+
+    await handleSlTrailByProfit(p.symbol, {
+      amt,
+      entry,
+      leverage,
+      isolatedMargin,
+      initialMargin,
+      positionSide: p.positionSide ?? 'BOTH',
+    }, roe, mark || null);
+  }
+}
+
+async function runMissingTpScan() {
+  const { apiKey, apiSecret } = getApiCredentials(null);
+  const positions = await client.getPositions({ apiKey, apiSecret });
+  const active = positions.filter((p) => Number(p.positionAmt) !== 0);
+  if (!active.length) return;
+
+  const symbols = await getSymbols();
+  for (const pos of active) {
+    await ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret);
+    await new Promise((r) => setTimeout(r, 80));
+  }
+}
+
+async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
+  const symbol = pos.symbol;
+  const amt = Number(pos.positionAmt);
+  const entry = Number(pos.entryPrice);
+  const leverage = Number(pos.leverage) || 1;
+  if (!symbol || !amt || !entry) return;
+
+  const isLong = amt > 0;
+  const closeSide = isLong ? 'SELL' : 'BUY';
+  const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+  const [openOrders, algoResult] = await Promise.all([
+    client.getOpenOrders({ symbol, apiKey, apiSecret, recvWindow }).catch(() => []),
+    client.getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow }).catch(() => ({ orders: [] })),
+  ]);
+
+  const algoRows = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+  const hasAlgoTp = algoRows.some((o) => {
+    const t = String(o.orderType ?? o.type ?? '').toUpperCase();
+    return o.symbol === symbol && (t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT');
+  });
+  const hasRegularTp = openOrders.some((o) => {
+    const t = String(o.origType ?? o.type ?? '').toUpperCase();
+    return o.symbol === symbol && o.side === closeSide && (t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT');
+  });
+  if (hasAlgoTp || hasRegularTp) return;
+
+  const symbolInfo = symbols.find((s) => s.symbol === symbol);
+  if (!symbolInfo) return;
+
+  const defaultTp = Number(process.env.AUTO_TRADE_TP_ROE ?? 20);
+  const tpRoe = (isLong
+    ? Number(process.env.AUTO_TRADE_LONG_TP_ROE ?? defaultTp)
+    : Number(process.env.AUTO_TRADE_SHORT_TP_ROE ?? defaultTp)) / 100;
+  if (!Number.isFinite(tpRoe) || tpRoe <= 0) return;
+
+  const rawTpPrice = isLong
+    ? entry * (1 + tpRoe / leverage)
+    : entry * (1 - tpRoe / leverage);
+  const triggerPrice = priceFromTick(symbolInfo, rawTpPrice);
+
+  const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
+  const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
+  const steppedQty = Math.floor(Math.abs(amt) / stepSize) * stepSize;
+  const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
+  if (Number(quantity) <= 0) return;
+
+  const positionSide = pos.positionSide ?? 'BOTH';
+  const isHedge = positionSide !== 'BOTH';
+  const tpParams = {
+    algoType: 'CONDITIONAL',
+    symbol,
+    side: closeSide,
+    type: 'TAKE_PROFIT_MARKET',
+    triggerPrice: String(triggerPrice),
+    quantity,
+    workingType: 'MARK_PRICE',
+    recvWindow,
+    newClientOrderId: `tp_scan_${Date.now()}`.slice(0, 36),
+  };
+  if (isHedge) tpParams.positionSide = positionSide;
+  else tpParams.reduceOnly = 'true';
+
+  try {
+    const result = await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
+    console.log(`[AutoTP] ✅ ${symbol} ${isLong ? 'LONG' : 'SHORT'} entry=${entry} lev=${leverage}x → TP @ ${triggerPrice} qty=${quantity} algoId=${result.algoId}`);
+  } catch (err) {
+    console.error(`[AutoTP] ❌ ${symbol}:`, err.message);
+  }
+}
+
 async function handleNegativeTimeoutTp(symbol, pos) {
   const entry = pos.entry;
 
@@ -2238,7 +2924,9 @@ async function sendStatic(pathname, response) {
           ? '/highvol.html'
           : pathname === '/lsratio'
             ? '/lsratio.html'
-            : pathname;
+            : pathname === '/paper'
+              ? '/paper.html'
+              : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);
 

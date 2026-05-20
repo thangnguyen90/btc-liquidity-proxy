@@ -1,49 +1,4 @@
 {
-  "BROCCOLIF3BUSDT": {
-    "expiresAt": 1779201937335,
-    "addedAt": "2026-05-19T12:45:37.335Z",
-    "reason": "SL hit pnl=-0.3037"
-  },
-  "LABUSDT": {
-    "expiresAt": 1779206824989,
-    "addedAt": "2026-05-19T14:07:04.989Z",
-    "reason": "SL hit pnl=-0.1258"
-  },
-  "COMPUSDT": {
-    "expiresAt": 1779209104843,
-    "addedAt": "2026-05-19T14:45:04.843Z",
-    "reason": "SL hit pnl=-0.0698"
-  },
-  "BILLUSDT": {
-    "expiresAt": 1779209254845,
-    "addedAt": "2026-05-19T14:47:34.845Z",
-    "reason": "SL hit pnl=-0.1329"
-  },
-  "TRUTHUSDT": {
-    "expiresAt": 1779214455632,
-    "addedAt": "2026-05-19T16:14:15.632Z",
-    "reason": "SL hit pnl=-8.4436"
-  },
-  "PLAYUSDT": {
-    "expiresAt": 1779220783784,
-    "addedAt": "2026-05-19T17:59:43.784Z",
-    "reason": "SL hit pnl=-3.2736"
-  },
-  "VVVUSDT": {
-    "expiresAt": 1779221243893,
-    "addedAt": "2026-05-19T18:07:23.893Z",
-    "reason": "SL hit pnl=-1.7675"
-  },
-  "PROMPTUSDT": {
-    "expiresAt": 1779229915535,
-    "addedAt": "2026-05-19T20:31:55.535Z",
-    "reason": "SL hit pnl=-1.9562"
-  },
-  "FIGHTUSDT": {
-    "expiresAt": 1779235705510,
-    "addedAt": "2026-05-19T22:08:25.510Z",
-    "reason": "SL hit pnl=-0.0208"
-  },
   "FOGOUSDT": {
     "expiresAt": 1779243535608,
     "addedAt": "2026-05-20T00:18:55.608Z",
@@ -53,5 +8,10 @@
     "expiresAt": 1779243775595,
     "addedAt": "2026-05-20T00:22:55.595Z",
     "reason": "SL hit pnl=-66.0439"
+  },
+  "SAGAUSDT": {
+    "expiresAt": 1779251073853,
+    "addedAt": "2026-05-20T02:24:33.853Z",
+    "reason": "SL hit pnl=-0.0157"
   }
 }

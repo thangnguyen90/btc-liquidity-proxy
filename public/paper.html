@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Paper Trading Journal</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .paper-form {
+        display: grid;
+        grid-template-columns: 160px 120px 130px 120px 150px 1fr 220px;
+        gap: 10px;
+        align-items: end;
+      }
+      .paper-actions {
+        display: flex;
+        gap: 8px;
+      }
+      .paper-actions button {
+        flex: 1;
+        height: 42px;
+      }
+      .paper-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      .paper-table th,
+      .paper-table td {
+        padding: 10px 9px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        white-space: nowrap;
+      }
+      .paper-table th {
+        background: #151817;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+      .paper-table th[data-sort-key] {
+        cursor: pointer;
+        user-select: none;
+      }
+      .paper-table th[data-sort-key]::after {
+        content: "↕";
+        margin-left: 6px;
+        color: #62706a;
+        font-size: 10px;
+      }
+      .paper-table th.sort-active {
+        color: var(--text);
+      }
+      .paper-table th.sort-active[data-sort-dir="asc"]::after {
+        content: "↑";
+        color: var(--green);
+      }
+      .paper-table th.sort-active[data-sort-dir="desc"]::after {
+        content: "↓";
+        color: var(--green);
+      }
+      .table-scroll {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .action-btn {
+        height: 28px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 5px;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .close-btn { background: var(--red); color: #21070b; }
+      .market-btn { background: var(--green); color: #062018; }
+      .cancel-btn { background: var(--amber); color: #1a1000; }
+      .pnl-positive { color: var(--green); }
+      .pnl-negative { color: var(--red); }
+      .paper-side {
+        font-weight: 800;
+      }
+      .paper-long { color: var(--green); }
+      .paper-short { color: var(--red); }
+      .paper-result {
+        margin-top: 10px;
+        display: none;
+      }
+      @media (max-width: 1100px) {
+        .paper-form { grid-template-columns: 1fr 1fr; }
+        .paper-actions { grid-column: 1 / -1; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell wide-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">JSON only · no Binance order</p>
+          <h1>Paper Trading Journal</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Detail</a>
+          <a class="nav-link" href="/signals">Signals</a>
+          <a class="nav-link" href="/lsratio">L/S Ratio</a>
+          <a class="nav-link" href="/orders">Orders</a>
+          <div class="status" id="status">Loading...</div>
+        </div>
+      </section>
+
+      <section class="summary-grid">
+        <article class="metric">
+          <span>Open</span>
+          <strong id="openCount">0</strong>
+          <small>virtual positions</small>
+        </article>
+        <article class="metric">
+          <span>Unrealized P&L</span>
+          <strong id="unrealizedPnl">0</strong>
+          <small>mark price</small>
+        </article>
+        <article class="metric">
+          <span>Realized P&L</span>
+          <strong id="realizedPnl">0</strong>
+          <small>closed trades</small>
+        </article>
+        <article class="metric">
+          <span>Win Rate</span>
+          <strong id="winRate">0%</strong>
+          <small id="closedCount">0 closed</small>
+        </article>
+      </section>
+
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Open Paper Trade</h2>
+          <span class="refresh-note">Lưu vào data/paper-trades.json</span>
+        </div>
+        <div class="paper-form">
+          <label class="field">
+            <span>Symbol</span>
+            <input id="symbolInput" value="BTCUSDT" autocomplete="off" placeholder="BTCUSDT">
+          </label>
+          <label class="field">
+            <span>Margin USDT</span>
+            <input id="marginInput" type="number" min="0.1" step="0.1" value="1">
+          </label>
+          <label class="field">
+            <span>Leverage</span>
+            <input id="leverageInput" type="number" min="1" max="125" step="1" value="10">
+          </label>
+          <label class="field">
+            <span>Entry</span>
+            <input id="entryInput" type="number" min="0" step="any" placeholder="Mark">
+          </label>
+          <label class="field">
+            <span>Source</span>
+            <input id="sourceInput" value="manual" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Note</span>
+            <input id="noteInput" placeholder="Lý do vào lệnh, setup, cảm giác thị trường...">
+          </label>
+          <div class="paper-actions">
+            <button class="success" id="longBtn" type="button">Long</button>
+            <button class="danger" id="shortBtn" type="button">Short</button>
+          </div>
+        </div>
+        <pre id="resultBox" class="paper-result"></pre>
+      </section>
+
+      <section class="panel table-panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Open Trades</h2>
+          <span class="refresh-note" id="lastUpdated">-</span>
+        </div>
+        <div class="table-scroll">
+          <table class="paper-table">
+            <thead>
+              <tr>
+                <th data-sort-table="open" data-sort-key="symbol">Symbol</th>
+                <th data-sort-table="open" data-sort-key="side">Side</th>
+                <th data-sort-table="open" data-sort-key="status">Status</th>
+                <th data-sort-table="open" data-sort-key="margin">Margin</th>
+                <th data-sort-table="open" data-sort-key="leverage">Lev</th>
+                <th data-sort-table="open" data-sort-key="entry">Entry</th>
+                <th data-sort-table="open" data-sort-key="mark">Mark</th>
+                <th data-sort-table="open" data-sort-key="qty">Qty</th>
+                <th data-sort-table="open" data-sort-key="pnl">P&L</th>
+                <th data-sort-table="open" data-sort-key="roe">ROE</th>
+                <th data-sort-table="open" data-sort-key="time">Opened</th>
+                <th data-sort-table="open" data-sort-key="note">Note</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="openBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel table-panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Closed Trades</h2>
+          <span class="refresh-note">History from JSON</span>
+        </div>
+        <div class="table-scroll">
+          <table class="paper-table">
+            <thead>
+              <tr>
+                <th data-sort-table="closed" data-sort-key="symbol">Symbol</th>
+                <th data-sort-table="closed" data-sort-key="side">Side</th>
+                <th data-sort-table="closed" data-sort-key="margin">Margin</th>
+                <th data-sort-table="closed" data-sort-key="leverage">Lev</th>
+                <th data-sort-table="closed" data-sort-key="entry">Entry</th>
+                <th data-sort-table="closed" data-sort-key="exit">Exit</th>
+                <th data-sort-table="closed" data-sort-key="pnl">P&L</th>
+                <th data-sort-table="closed" data-sort-key="roe">ROE</th>
+                <th data-sort-table="closed" data-sort-key="time">Opened</th>
+                <th data-sort-table="closed" data-sort-key="closedAt">Closed</th>
+                <th data-sort-table="closed" data-sort-key="note">Note</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="closedBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/paper.js" type="module"></script>
+  </body>
+</html>

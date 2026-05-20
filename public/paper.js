@@ -1,0 +1,276 @@
+const els = {
+  status: document.getElementById('status'),
+  openCount: document.getElementById('openCount'),
+  unrealizedPnl: document.getElementById('unrealizedPnl'),
+  realizedPnl: document.getElementById('realizedPnl'),
+  winRate: document.getElementById('winRate'),
+  closedCount: document.getElementById('closedCount'),
+  symbolInput: document.getElementById('symbolInput'),
+  marginInput: document.getElementById('marginInput'),
+  leverageInput: document.getElementById('leverageInput'),
+  entryInput: document.getElementById('entryInput'),
+  sourceInput: document.getElementById('sourceInput'),
+  noteInput: document.getElementById('noteInput'),
+  longBtn: document.getElementById('longBtn'),
+  shortBtn: document.getElementById('shortBtn'),
+  resultBox: document.getElementById('resultBox'),
+  lastUpdated: document.getElementById('lastUpdated'),
+  openBody: document.getElementById('openBody'),
+  closedBody: document.getElementById('closedBody'),
+};
+
+const sortState = {
+  open: { key: 'time', dir: 'desc' },
+  closed: { key: 'closedAt', dir: 'desc' },
+};
+
+const sortGetters = {
+  symbol: (t) => t.symbol,
+  side: (t) => t.side,
+  status: (t) => t.status,
+  margin: (t) => Number(t.marginUsdt ?? 0),
+  leverage: (t) => Number(t.leverage ?? 0),
+  entry: (t) => Number(t.entryPrice ?? 0),
+  mark: (t) => Number(t.markPrice ?? t.exitPrice ?? 0),
+  exit: (t) => Number(t.exitPrice ?? 0),
+  qty: (t) => Number(t.quantity ?? 0),
+  pnl: (t) => Number(t.pnl ?? 0),
+  roe: (t) => Number(t.roe ?? 0),
+  time: (t) => Date.parse(t.openedAt ?? t.entryReadyAt ?? t.createdAt ?? 0) || 0,
+  closedAt: (t) => Date.parse(t.closedAt ?? 0) || 0,
+  note: (t) => t.note ?? '',
+};
+
+function fmt(value, d = 4) {
+  if (value == null || isNaN(value)) return '-';
+  return Number(value).toLocaleString('en-US', { maximumFractionDigits: d });
+}
+
+function fmtTime(value) {
+  return value ? new Date(value).toLocaleString('vi-VN', { hour12: false }) : '-';
+}
+
+function clsPnl(value) {
+  const n = Number(value);
+  return n > 0 ? 'pnl-positive' : n < 0 ? 'pnl-negative' : '';
+}
+
+function sortTrades(rows, table) {
+  const state = sortState[table];
+  const getter = sortGetters[state.key] ?? sortGetters.time;
+  const dir = state.dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = getter(a);
+    const bv = getter(b);
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+    return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' }) * dir;
+  });
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll('[data-sort-table][data-sort-key]').forEach((th) => {
+    const state = sortState[th.dataset.sortTable];
+    const active = state?.key === th.dataset.sortKey;
+    th.classList.toggle('sort-active', active);
+    th.dataset.sortDir = active ? state.dir : '';
+  });
+}
+
+function showResult(text) {
+  els.resultBox.style.display = 'block';
+  els.resultBox.textContent = text;
+}
+
+async function api(url, opts = {}) {
+  const res = await fetch(url, {
+    ...opts,
+    headers: { 'content-type': 'application/json', ...(opts.headers ?? {}) },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+async function openTrade(side) {
+  const symbol = els.symbolInput.value.trim().toUpperCase();
+  const marginUsdt = Number(els.marginInput.value);
+  const leverage = Number(els.leverageInput.value);
+  const entryPrice = els.entryInput.value ? Number(els.entryInput.value) : undefined;
+  const source = els.sourceInput.value.trim() || 'manual';
+  const note = els.noteInput.value.trim();
+  if (!symbol || !marginUsdt || !leverage) {
+    showResult('Nhập đủ symbol, margin và leverage.');
+    return;
+  }
+  els.longBtn.disabled = true;
+  els.shortBtn.disabled = true;
+  try {
+    const data = await api('/api/paper-trades', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, side, marginUsdt, leverage, entryPrice, source, note }),
+    });
+    showResult(JSON.stringify(data.trade, null, 2));
+    els.noteInput.value = '';
+    await loadTrades();
+  } catch (err) {
+    showResult(`Error: ${err.message}`);
+  } finally {
+    els.longBtn.disabled = false;
+    els.shortBtn.disabled = false;
+  }
+}
+
+async function closeTrade(id) {
+  if (!confirm('Close paper trade at current mark price?')) return;
+  try {
+    const data = await api('/api/paper-trades/close', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+    showResult(JSON.stringify(data.trade, null, 2));
+    await loadTrades();
+  } catch (err) {
+    showResult(`Error: ${err.message}`);
+  }
+}
+
+async function placeBinanceMarket(id) {
+  if (!confirm('Place real Binance MARKET order with 2 USDT margin?')) return;
+  try {
+    const data = await api('/api/paper-trades/place-binance', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+    showResult(JSON.stringify(data, null, 2));
+    await loadTrades();
+  } catch (err) {
+    showResult(`Error: ${err.message}`);
+  }
+}
+
+async function deleteTrade(id) {
+  if (!confirm('Delete this paper trade from JSON?')) return;
+  try {
+    await api('/api/paper-trades/delete', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    });
+    await loadTrades();
+  } catch (err) {
+    showResult(`Error: ${err.message}`);
+  }
+}
+
+function renderSummary(summary) {
+  els.openCount.textContent = `${summary.open ?? 0} / ${summary.entryReady ?? 0} / ${summary.pending ?? 0}`;
+  els.unrealizedPnl.textContent = fmt(summary.unrealizedPnl, 4);
+  els.unrealizedPnl.className = clsPnl(summary.unrealizedPnl);
+  els.realizedPnl.textContent = fmt(summary.realizedPnl, 4);
+  els.realizedPnl.className = clsPnl(summary.realizedPnl);
+  els.winRate.textContent = `${fmt(summary.winRate, 1)}%`;
+  els.closedCount.textContent = `${summary.closed ?? 0} closed`;
+}
+
+function renderOpen(trades) {
+  const open = sortTrades(trades.filter((t) => ['OPEN', 'ENTRY_READY', 'PENDING'].includes(t.status)), 'open');
+  if (!open.length) {
+    els.openBody.innerHTML = '<tr><td colspan="13" class="empty-cell">No open paper trades.</td></tr>';
+    return;
+  }
+  els.openBody.innerHTML = open.map((t) => `
+    <tr>
+      <td><strong>${t.symbol}</strong></td>
+      <td class="paper-side ${t.side === 'LONG' ? 'paper-long' : 'paper-short'}">${t.side}</td>
+      <td>${t.status}</td>
+      <td>${fmt(t.marginUsdt, 4)}</td>
+      <td>${fmt(t.leverage, 0)}x</td>
+      <td>${fmt(t.entryPrice)}</td>
+      <td>${fmt(t.markPrice)}</td>
+      <td>${fmt(t.quantity, 6)}</td>
+      <td class="${clsPnl(t.pnl)}">${fmt(t.pnl, 4)}</td>
+      <td class="${clsPnl(t.roe)}">${fmt(t.roe, 2)}%</td>
+      <td>${fmtTime(t.openedAt ?? t.createdAt)}</td>
+      <td>${escapeHtml(t.note ?? '')}</td>
+      <td>
+        ${t.status === 'ENTRY_READY' ? `<button class="action-btn market-btn" data-market="${t.id}">Market $2</button>` : ''}
+        ${t.status === 'OPEN' ? `<button class="action-btn close-btn" data-close="${t.id}">Close</button>` : ''}
+        <button class="action-btn cancel-btn" data-delete="${t.id}">Delete</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function renderClosed(trades) {
+  const closed = sortTrades(trades.filter((t) => t.status === 'CLOSED'), 'closed');
+  if (!closed.length) {
+    els.closedBody.innerHTML = '<tr><td colspan="12" class="empty-cell">No closed paper trades.</td></tr>';
+    return;
+  }
+  els.closedBody.innerHTML = closed.map((t) => `
+    <tr>
+      <td><strong>${t.symbol}</strong></td>
+      <td class="paper-side ${t.side === 'LONG' ? 'paper-long' : 'paper-short'}">${t.side}</td>
+      <td>${fmt(t.marginUsdt, 4)}</td>
+      <td>${fmt(t.leverage, 0)}x</td>
+      <td>${fmt(t.entryPrice)}</td>
+      <td>${fmt(t.exitPrice)}</td>
+      <td class="${clsPnl(t.pnl)}">${fmt(t.pnl, 4)}</td>
+      <td class="${clsPnl(t.roe)}">${fmt(t.roe, 2)}%</td>
+      <td>${fmtTime(t.openedAt)}</td>
+      <td>${fmtTime(t.closedAt)}</td>
+      <td>${escapeHtml(t.note ?? '')}</td>
+      <td><button class="action-btn cancel-btn" data-delete="${t.id}">Delete</button></td>
+    </tr>
+  `).join('');
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+async function loadTrades() {
+  els.status.textContent = 'Loading...';
+  try {
+    const data = await api('/api/paper-trades');
+    renderSummary(data.summary ?? {});
+    renderOpen(data.trades ?? []);
+    renderClosed(data.trades ?? []);
+    updateSortHeaders();
+    els.status.textContent = 'Ready';
+    els.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString('vi-VN', { hour12: false })}`;
+  } catch (err) {
+    els.status.textContent = 'Error';
+    showResult(`Error: ${err.message}`);
+  }
+}
+
+els.longBtn.addEventListener('click', () => openTrade('LONG'));
+els.shortBtn.addEventListener('click', () => openTrade('SHORT'));
+document.addEventListener('click', (event) => {
+  const sortKey = event.target?.dataset?.sortKey;
+  const sortTable = event.target?.dataset?.sortTable;
+  if (sortKey && sortTable && sortState[sortTable]) {
+    const state = sortState[sortTable];
+    if (state.key === sortKey) state.dir = state.dir === 'asc' ? 'desc' : 'asc';
+    else {
+      state.key = sortKey;
+      state.dir = ['symbol', 'side', 'status', 'note'].includes(sortKey) ? 'asc' : 'desc';
+    }
+    loadTrades();
+    return;
+  }
+  const closeId = event.target?.dataset?.close;
+  const marketId = event.target?.dataset?.market;
+  const deleteId = event.target?.dataset?.delete;
+  if (marketId) placeBinanceMarket(marketId);
+  if (closeId) closeTrade(closeId);
+  if (deleteId) deleteTrade(deleteId);
+});
+
+loadTrades();
+setInterval(loadTrades, 3000);

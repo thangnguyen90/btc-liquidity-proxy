@@ -9,13 +9,11 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
     return { protectedPositions };
   }
 
-  const triggerRoe = Number(process.env.TRAILING_STOP_TRIGGER_ROE ?? 15);
-  // bufferRoe: khoảng cách giữa ROE hiện tại và ROE khoá (e.g. ROE=15% buffer=10 → SL tại 5%)
-  const bufferRoe = Number(process.env.TRAILING_STOP_BUFFER_ROE ?? 10);
-  // Dời SL mỗi khi ROE tăng thêm triggerRoe/3 (e.g. mỗi 5pp với trigger=15)
-  const updateRoe = Math.max(3, triggerRoe / 3);
+  const triggerRoe = Number(process.env.TRAILING_STOP_TRIGGER_ROE ?? 10);
+  // Ladder khóa lời: 10→1, 15→5, 20→10, 25→15...
+  const updateRoe = Number(process.env.TRAILING_STOP_UPDATE_ROE ?? 5);
 
-  console.log(`[TSL] Enabled. Trigger ROE >= ${triggerRoe}% → SL tại ROE - ${bufferRoe}pp (VD: 15%→5%, 20%→10%). Dời mỗi ${updateRoe}pp. Interval: ${intervalMs / 1000}s`);
+  console.log(`[TSL] Enabled. Trigger ROE >= ${triggerRoe}% → SL ladder 10→1%, 15→5%, 20→10%. Dời mỗi ${updateRoe}pp. Interval: ${intervalMs / 1000}s`);
 
   const notify = (content) => {
     if (!webhookUrl) return;
@@ -27,7 +25,16 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
   };
 
   // Startup ping
-  notify(`🟢 **[TSL]** Khởi động — trigger ROE ≥ ${triggerRoe}% → SL tại ROE - ${bufferRoe}pp (15%→5%, 20%→10%), dời mỗi ${updateRoe}pp`);
+  notify(`🟢 **[TSL]** Khởi động — trigger ROE ≥ ${triggerRoe}% → SL ladder 10→1%, 15→5%, 20→10%, dời mỗi ${updateRoe}pp`);
+
+  function getTargetLockRoe(roe) {
+    if (roe >= 15) {
+      const steps = Math.floor((roe - 15) / 5);
+      return (15 + steps * 5) - 10;
+    }
+    if (roe >= 10) return 1;
+    return null;
+  }
 
   const run = async () => {
     const apiKey = process.env.BINANCE_API_KEY;
@@ -37,9 +44,8 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
 
     try {
-      const [positions, openAlgoOrders, openOrders, symbols] = await Promise.all([
+      const [positions, openOrders, symbols] = await Promise.all([
         client.getPositions({ apiKey, apiSecret }),
-        client.getOpenAlgoOrders({ apiKey, apiSecret }),
         client.getOpenOrders({ apiKey, apiSecret }),
         getSymbols(),
       ]);
@@ -92,6 +98,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
 
         if (roe < triggerRoe) continue;
 
+        const openAlgoOrders = await client.getOpenAlgoOrders({ symbol: pos.symbol, apiKey, apiSecret }).catch(() => ({ orders: [] }));
         const algoList = Array.isArray(openAlgoOrders?.orders) ? openAlgoOrders.orders
           : Array.isArray(openAlgoOrders) ? openAlgoOrders : [];
 
@@ -129,8 +136,8 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
         }
         protectedPositions.delete(pos.symbol);
 
-        // SL tại ROE - bufferRoe: ROE=15% buffer=10 → khóa 5% ROE, ROE=20% → khóa 10% ROE
-        const lockRoe = Math.max(0, roe - bufferRoe);
+        const lockRoe = getTargetLockRoe(roe);
+        if (lockRoe === null) continue;
         const progressiveLockPct = lockRoe / 100;
         const lockedProfit = margin * progressiveLockPct;
         const isLong = amt > 0;
