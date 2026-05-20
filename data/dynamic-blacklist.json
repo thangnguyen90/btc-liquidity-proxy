@@ -8,5 +8,10 @@
     "expiresAt": 1779297398238,
     "addedAt": "2026-05-20T15:16:38.238Z",
     "reason": "SL hit pnl=-0.0173"
+  },
+  "LAYERUSDT": {
+    "expiresAt": 1779300510424,
+    "addedAt": "2026-05-20T16:08:30.424Z",
+    "reason": "SL hit pnl=-0.1097"
   }
 }

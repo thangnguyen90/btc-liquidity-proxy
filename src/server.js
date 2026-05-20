@@ -235,7 +235,7 @@ const server = createServer(async (request, response) => {
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
-        .slice(0, 200)
+        .slice(0, 280)
         .map((r) => r.symbol);
       const { signals, processed } = await runPumpScan(topSymbols, klineCache, snapshotMap);
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed };
@@ -569,7 +569,7 @@ server.listen(port, '127.0.0.1', () => {
       const snapshot = await getMarketSnapshot();
       const volDumpMax = Number(process.env.VOL_DUMP_MAX_COINS ?? 150);
       const liqScanMax = Number(process.env.LIQ_SCAN_MAX_COINS ?? 200);
-      const seedMax = Math.max(volDumpMax, liqScanMax, 200); // 200 covers pump scan
+      const seedMax = Math.max(volDumpMax, liqScanMax, 280); // 280 covers pump scan
       const topSymbols = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
         .slice(0, seedMax)
