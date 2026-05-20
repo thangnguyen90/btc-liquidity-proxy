@@ -171,11 +171,13 @@ async function closeTrade(id) {
 }
 
 async function placeBinanceMarket(id) {
-  if (!confirm('Place real Binance MARKET order with 2 USDT margin?')) return;
+  const marginInput = document.querySelector(`.open-margin-input[data-id="${id}"]`);
+  const marginUsdt = marginInput ? Number(marginInput.value) || 2 : 2;
+  if (!confirm(`Place real Binance MARKET order — $${marginUsdt} margin?`)) return;
   try {
     const data = await api('/api/paper-trades/place-binance', {
       method: 'POST',
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ id, marginUsdt }),
     });
     showResult(JSON.stringify(data, null, 2));
     await loadTrades();
@@ -222,9 +224,10 @@ function renderOpen(trades) {
   }
   els.openBody.innerHTML = open.map((t) => `
     <tr>
-      <td>
+      <td style="white-space:nowrap">
+        ${(t.status === 'OPEN' && !t.binanceOrderId) || t.status === 'ENTRY_READY' ? `<input type="number" class="open-margin-input" data-id="${t.id}" min="0.1" step="0.1" value="2" style="width:52px;height:28px;padding:0 4px;font-size:12px;background:var(--panel-2);border:1px solid var(--line);border-radius:4px;color:var(--text)">` : ''}
         ${t.status === 'OPEN' && !t.binanceOrderId ? `<button class="action-btn market-btn" data-open-binance="${t.id}">Open Binance</button>` : ''}
-        ${t.status === 'ENTRY_READY' ? `<button class="action-btn market-btn" data-market="${t.id}">Market $2</button>` : ''}
+        ${t.status === 'ENTRY_READY' ? `<button class="action-btn market-btn" data-market="${t.id}">Market</button>` : ''}
         ${t.status === 'OPEN' ? `<button class="action-btn close-btn" data-close="${t.id}">Close</button>` : ''}
         <button class="action-btn cancel-btn" data-delete="${t.id}">Delete</button>
       </td>

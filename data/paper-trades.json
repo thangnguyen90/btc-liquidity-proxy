@@ -1,6 +1,6 @@
 {
   "createdAt": "2026-05-20T02:42:17.303Z",
-  "updatedAt": "2026-05-20T04:51:32.251Z",
+  "updatedAt": "2026-05-20T04:54:38.163Z",
   "trades": [
     {
       "id": "13eb623d-8252-41cf-aa08-3ba925a6408a",
@@ -457,13 +457,17 @@
       "symbol": "COOKIEUSDT",
       "side": "LONG",
       "status": "OPEN",
-      "marginUsdt": 1,
+      "marginUsdt": 2,
       "leverage": 10,
       "quantity": 590.7159536429748,
-      "entryPrice": 0.01692861,
-      "openedAt": "2026-05-20T03:34:42.346Z",
+      "entryPrice": 0.01702,
+      "openedAt": "2026-05-20T04:54:27.162Z",
       "source": "liq-sweep-86",
-      "note": "sweepProb=86% | target=0.016827 | confirmation=below sweep rejected by closed candle"
+      "note": "sweepProb=86% | target=0.016827 | confirmation=below sweep rejected by closed candle | binanceMarket=placed margin=2 mark=0.01702",
+      "binancePlacedAt": "2026-05-20T04:54:27.162Z",
+      "binanceOrderId": 1630292592,
+      "binanceClientOrderId": "paper_mkt_1779252867059",
+      "binanceStatus": "NEW"
     },
     {
       "id": "71391532-4567-465c-844e-751c4a3c43f2",
@@ -500,13 +504,17 @@
       "symbol": "SWARMSUSDT",
       "side": "SHORT",
       "status": "OPEN",
-      "marginUsdt": 1,
+      "marginUsdt": 2,
       "leverage": 10,
       "quantity": 780.7620237351655,
-      "entryPrice": 0.012808,
-      "openedAt": "2026-05-20T03:34:37.429Z",
+      "entryPrice": 0.013036,
+      "openedAt": "2026-05-20T04:54:32.449Z",
       "source": "liq-sweep-96",
-      "note": "sweepProb=96% | target=0.012872 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=96% | target=0.012872 | confirmation=waiting for above sweep + bearish rejection | binanceMarket=placed margin=2 mark=0.013036",
+      "binancePlacedAt": "2026-05-20T04:54:32.449Z",
+      "binanceOrderId": 2143202068,
+      "binanceClientOrderId": "paper_mkt_1779252872348",
+      "binanceStatus": "NEW"
     },
     {
       "id": "59a61d6f-13bb-42cf-bb1e-c77220f6f956",
@@ -526,13 +534,17 @@
       "symbol": "GENIUSUSDT",
       "side": "LONG",
       "status": "OPEN",
-      "marginUsdt": 1,
+      "marginUsdt": 2,
       "leverage": 10,
       "quantity": 24.05002405002405,
-      "entryPrice": 0.4158,
-      "openedAt": "2026-05-20T03:34:34.073Z",
+      "entryPrice": 0.4121,
+      "openedAt": "2026-05-20T04:54:38.163Z",
       "source": "liq-sweep-84",
-      "note": "sweepProb=84% | target=0.414553 | confirmation=waiting for below sweep + bullish rejection"
+      "note": "sweepProb=84% | target=0.414553 | confirmation=waiting for below sweep + bullish rejection | binanceMarket=placed margin=2 mark=0.4121",
+      "binancePlacedAt": "2026-05-20T04:54:38.163Z",
+      "binanceOrderId": 218559701,
+      "binanceClientOrderId": "paper_mkt_1779252878060",
+      "binanceStatus": "NEW"
     },
     {
       "id": "1eab3f40-9c52-41b8-b907-b73a710a5e86",
