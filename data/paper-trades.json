@@ -1,6 +1,6 @@
 {
   "createdAt": "2026-05-20T02:42:17.303Z",
-  "updatedAt": "2026-05-20T09:00:11.828Z",
+  "updatedAt": "2026-05-20T09:28:08.384Z",
   "trades": [
     {
       "id": "0d790afd-4eda-46bd-bc0d-503708378e7a",
@@ -594,16 +594,16 @@
       "marginUsdt": 2,
       "leverage": 10,
       "quantity": 0,
-      "entryPrice": 0.3337,
+      "entryPrice": 0.32618,
       "createdAt": "2026-05-20T05:29:49.277Z",
-      "openedAt": "2026-05-20T08:47:52.178Z",
+      "openedAt": "2026-05-20T09:28:08.384Z",
       "source": "liq-sweep-89",
-      "note": "sweepProb=89% | target=0.337141 | confirmation=above sweep rejected by closed candle @ mark 0.36701928 | autoProbe=placed margin=1 mark=0.36746 | binanceMarket=placed margin=2 mark=0.34663109 | binanceMarket=placed margin=2 mark=0.3337",
+      "note": "sweepProb=89% | target=0.337141 | confirmation=above sweep rejected by closed candle @ mark 0.36701928 | autoProbe=placed margin=1 mark=0.36746 | binanceMarket=placed margin=2 mark=0.34663109 | binanceMarket=placed margin=2 mark=0.3337 | binanceMarket=placed margin=2 mark=0.32618",
       "entryReadyAt": "2026-05-20T06:54:34.560Z",
       "markPriceAtReady": 0.36701928,
-      "binancePlacedAt": "2026-05-20T08:47:52.178Z",
-      "binanceOrderId": 1474380093,
-      "binanceClientOrderId": "paper_mkt_1779266872075",
+      "binancePlacedAt": "2026-05-20T09:28:08.384Z",
+      "binanceOrderId": 1475506489,
+      "binanceClientOrderId": "paper_mkt_1779269288284",
       "binanceStatus": "NEW"
     },
     {

@@ -255,7 +255,7 @@ function renderOpen(trades) {
         ${t.status === 'OPEN' ? `<button class="action-btn close-btn" data-close="${t.id}">Close</button>` : ''}
         <button class="action-btn cancel-btn" data-delete="${t.id}">Delete</button>
       </td>
-      <td><strong>${t.symbol}</strong></td>
+      <td><a href="/?symbol=${encodeURIComponent(t.symbol)}" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol}</a></td>
       <td class="paper-side ${t.side === 'LONG' ? 'paper-long' : 'paper-short'}">${t.side}</td>
       <td>${t.status}</td>
       <td>${fmt(t.marginUsdt, 4)}</td>
@@ -284,7 +284,7 @@ function renderClosed(trades) {
   }
   els.closedBody.innerHTML = closed.map((t) => `
     <tr>
-      <td><strong>${t.symbol}</strong></td>
+      <td><a href="/?symbol=${encodeURIComponent(t.symbol)}" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol}</a></td>
       <td class="paper-side ${t.side === 'LONG' ? 'paper-long' : 'paper-short'}">${t.side}</td>
       <td>${fmt(t.marginUsdt, 4)}</td>
       <td>${fmt(t.leverage, 0)}x</td>
