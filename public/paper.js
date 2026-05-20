@@ -123,10 +123,19 @@ function showResult(text) {
   els.resultBox.textContent = text;
 }
 
+function getOrdersToken() {
+  return localStorage.getItem('orders_token') ?? null;
+}
+
 async function api(url, opts = {}) {
+  const token = getOrdersToken();
   const res = await fetch(url, {
     ...opts,
-    headers: { 'content-type': 'application/json', ...(opts.headers ?? {}) },
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { 'x-orders-token': token } : {}),
+      ...(opts.headers ?? {}),
+    },
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -231,6 +240,11 @@ function renderOpen(trades) {
     els.openBody.innerHTML = '<tr><td colspan="14" class="empty-cell">No open paper trades.</td></tr>';
     return;
   }
+  // Giữ lại giá trị đang nhập trong margin inputs trước khi re-render
+  const savedMargins = {};
+  document.querySelectorAll('.open-margin-input').forEach((el) => {
+    if (el.value) savedMargins[el.dataset.id] = el.value;
+  });
   els.openBody.innerHTML = open.map((t) => `
     <tr>
       <td style="white-space:nowrap">
@@ -255,6 +269,10 @@ function renderOpen(trades) {
       <td>${escapeHtml(t.note ?? '')}</td>
     </tr>
   `).join('');
+  // Restore giá trị đã nhập
+  document.querySelectorAll('.open-margin-input').forEach((el) => {
+    if (savedMargins[el.dataset.id]) el.value = savedMargins[el.dataset.id];
+  });
 }
 
 function renderClosed(trades) {

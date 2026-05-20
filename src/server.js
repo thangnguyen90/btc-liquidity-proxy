@@ -265,7 +265,8 @@ const server = createServer(async (request, response) => {
     }
 
     if (requestUrl.pathname === '/api/paper-trades/place-binance' && request.method === 'POST') {
-      await sendJson(response, await placeBinanceMarketFromPaperTrade(await readJsonBody(request)));
+      const token = request.headers['x-orders-token'] ?? null;
+      await sendJson(response, await placeBinanceMarketFromPaperTrade(await readJsonBody(request), token));
       return;
     }
 
@@ -1121,7 +1122,7 @@ async function deletePaperTrade(payload) {
   return { deleted: before - store.trades.length, id };
 }
 
-async function placeBinanceMarketFromPaperTrade(payload) {
+async function placeBinanceMarketFromPaperTrade(payload, token = null) {
   const id = String(payload.id ?? '');
   if (!id) throw new Error('id is required.');
 
@@ -1133,7 +1134,7 @@ async function placeBinanceMarketFromPaperTrade(payload) {
     throw new Error(`Paper trade must be ENTRY_READY or OPEN. Current status: ${trade.status}`);
   }
 
-  const { apiKey, apiSecret } = getApiCredentials(null);
+  const { apiKey, apiSecret } = getApiCredentials(token);
   const symbol = normalizeSymbol(trade.symbol);
   const side = trade.side === 'LONG' ? 'BUY' : 'SELL';
   const marginUsdt = Number(payload.marginUsdt ?? process.env.PAPER_BINANCE_MARKET_MARGIN ?? process.env.AUTO_LIQ_ORDER_MARGIN ?? 2);
