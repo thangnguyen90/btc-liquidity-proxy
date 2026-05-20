@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Capitulation · Spring · UTAD</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .cap-controls {
+        grid-template-columns: minmax(220px, 1fr) 140px 110px auto;
+      }
+
+      .cap-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+
+      /* ── Card ── */
+      .cap-card {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel);
+        padding: 14px;
+        display: grid;
+        gap: 10px;
+        position: relative;
+        overflow: hidden;
+      }
+      .cap-card::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+      }
+      .cap-card.long::before  { background: var(--green); }
+      .cap-card.short::before { background: var(--red); }
+
+      /* ── Header row ── */
+      .cap-card-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .cap-symbol-wrap { display: flex; flex-direction: column; gap: 3px; }
+      .cap-symbol {
+        font-size: 18px;
+        font-weight: 900;
+        color: var(--text);
+        text-decoration: none;
+        line-height: 1;
+      }
+      .cap-symbol:hover { color: var(--blue); }
+      .cap-symbol .sym-usdt { color: var(--muted); font-weight: 400; font-size: 13px; }
+      .cap-change { font-size: 12px; font-weight: 600; }
+
+      .cap-right {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 5px;
+        flex-shrink: 0;
+      }
+
+      /* ── Badges ── */
+      .cap-action-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        font-weight: 900;
+        padding: 3px 9px;
+        border-radius: 999px;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+      .cap-action-badge.long  { background: rgba(54,211,153,.15); color: var(--green); border: 1px solid rgba(54,211,153,.3); }
+      .cap-action-badge.short { background: rgba(251,113,133,.15); color: var(--red);   border: 1px solid rgba(251,113,133,.3); }
+
+      .cap-score-wrap { display: flex; align-items: baseline; gap: 5px; }
+      .cap-score-num  { font-size: 22px; font-weight: 900; line-height: 1; }
+      .cap-grade {
+        font-size: 12px; font-weight: 800;
+        padding: 1px 6px; border-radius: 4px;
+      }
+      .grade-a { background: rgba(54,211,153,.2); color: var(--green); }
+      .grade-b { background: rgba(96,165,250,.2); color: var(--blue); }
+      .grade-c { background: rgba(251,191,36,.2);  color: var(--amber); }
+      .grade-d { background: rgba(157,170,165,.15); color: var(--muted); }
+
+      .cap-type-badge {
+        font-size: 10px; font-weight: 700;
+        padding: 1px 6px; border-radius: 3px;
+        background: var(--panel-2);
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: .04em;
+      }
+      .cap-type-badge.long-type  { background: rgba(54,211,153,.12); color: var(--green); }
+      .cap-type-badge.short-type { background: rgba(251,113,133,.12); color: var(--red); }
+
+      /* ── Wyckoff phase indicator ── */
+      .cap-phase {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--muted);
+        padding: 6px 10px;
+        background: var(--panel-2);
+        border-radius: 6px;
+      }
+      .cap-phase-dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .cap-phase-dot.long  { background: var(--green); box-shadow: 0 0 6px rgba(54,211,153,.5); }
+      .cap-phase-dot.short { background: var(--red);   box-shadow: 0 0 6px rgba(251,113,133,.5); }
+
+      /* ── Prices grid ── */
+      .cap-prices {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+      .cap-price-cell {
+        background: var(--panel-2);
+        border-radius: 6px;
+        padding: 8px 10px;
+        display: grid;
+        gap: 3px;
+      }
+      .cap-price-cell span   { font-size: 10px; color: var(--muted); text-transform: uppercase; font-weight: 700; }
+      .cap-price-cell strong { font-size: 13px; font-weight: 700; }
+
+      /* ── Factor chips ── */
+      .cap-factors {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .cap-factor {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 4px;
+        background: var(--panel-2);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .cap-factor.ok   { background: rgba(54,211,153,.1); color: var(--green); }
+      .cap-factor.warn { background: rgba(251,113,133,.1); color: var(--red); }
+
+      /* ── Note / footer ── */
+      .cap-note {
+        font-size: 11px;
+        color: var(--muted);
+        font-family: 'SF Mono', 'Fira Code', monospace;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+      .cap-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-top: 1px solid var(--line);
+        padding-top: 8px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      /* ── Empty state ── */
+      .cap-empty {
+        grid-column: 1 / -1;
+        text-align: center;
+        padding: 48px 0;
+        color: var(--muted);
+      }
+      .cap-empty strong { display: block; font-size: 18px; margin-bottom: 6px; color: var(--text); }
+
+      /* ── Scan meta bar ── */
+      .scan-meta {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-size: 12px;
+        color: var(--muted);
+        padding: 10px 14px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        margin-top: 10px;
+      }
+      .scan-meta strong { color: var(--text); }
+      .scan-meta .scan-dot { color: var(--green); font-size: 10px; }
+
+      @media (max-width: 640px) {
+        .cap-controls { grid-template-columns: 1fr 1fr; }
+        .cap-controls .search-field { grid-column: 1 / -1; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell wide-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Wyckoff · Capitulation · Spring · UTAD</p>
+          <h1>Capitulation Signal Board</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Detail</a>
+          <a class="nav-link" href="/signals">Signals</a>
+          <a class="nav-link" href="/pump">Pump</a>
+          <a class="nav-link" href="/highvol">High Vol</a>
+          <a class="nav-link" href="/lsratio">L/S Ratio</a>
+          <a class="nav-link" href="/orders">Orders</a>
+          <div class="status" id="scanStatus">Loading...</div>
+        </div>
+      </section>
+
+      <section class="summary-grid signal-summary">
+        <article class="metric">
+          <span>SC → Spring (LONG)</span>
+          <strong id="longCount">-</strong>
+          <small>Selling climax reversal</small>
+        </article>
+        <article class="metric">
+          <span>BC → UTAD (SHORT)</span>
+          <strong id="shortCount">-</strong>
+          <small>Buying climax exhaustion</small>
+        </article>
+        <article class="metric">
+          <span>Cached / Scanned</span>
+          <strong id="totalScanned">-</strong>
+          <small>Top 200 by volume · 15m</small>
+        </article>
+        <article class="metric">
+          <span>Last Scan</span>
+          <strong id="lastScan">-</strong>
+          <small id="nextRefresh">Refresh every 45s</small>
+        </article>
+      </section>
+
+      <section class="controls cap-controls">
+        <label class="field search-field">
+          <span>Search</span>
+          <input id="searchInput" placeholder="BTC, ETH, SOL..." autocomplete="off">
+          <button id="searchClear" class="search-clear" type="button" style="display:none">✕</button>
+        </label>
+        <label class="field">
+          <span>Direction</span>
+          <select id="actionFilter">
+            <option value="all">All</option>
+            <option value="LONG">Long only</option>
+            <option value="SHORT">Short only</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Min Score</span>
+          <select id="scoreFilter">
+            <option value="0">Any</option>
+            <option value="55">≥ 55 (C+)</option>
+            <option value="70">≥ 70 (B+)</option>
+            <option value="85">≥ 85 (A)</option>
+          </select>
+        </label>
+        <div class="socket-note">
+          <strong id="visibleCount">0</strong>
+          <span>signals</span>
+        </div>
+      </section>
+
+      <div id="scanMeta" class="scan-meta" style="display:none">
+        <span class="scan-dot">●</span>
+        <span>Cached <strong id="metaTotal">0</strong> coins</span>
+        <span>·</span>
+        <span>Found <strong id="metaSignals">0</strong> signals</span>
+        <span>·</span>
+        <span>Updated <strong id="metaTime">-</strong></span>
+      </div>
+
+      <div class="cap-grid" id="capGrid">
+        <div class="cap-empty">
+          <strong>Đang tải...</strong>
+          Đang quét top coins theo Wyckoff
+        </div>
+      </div>
+    </main>
+
+    <script src="/cap.js" type="module"></script>
+  </body>
+</html>

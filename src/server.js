@@ -12,6 +12,7 @@ import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
 import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked, summarizeTopTraderTrend, formatTopTraderTrend } from './discordNotifier.js';
 import { KlineCache } from './klineCache.js';
 import { runPumpScan } from './pumpDetector.js';
+import { runCapScan }  from './capDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -26,6 +27,7 @@ const client = new BinanceClient({
 });
 const klineCache = new KlineCache({ client, maxKlines: 500 });
 const pumpScanCache = { data: null, expiresAt: 0 };
+const capScanCache  = { data: null, expiresAt: 0 };
 const symbolCache = { data: null, expiresAt: 0 };
 const snapshotCache = { data: null, expiresAt: 0 };
 const autoTradeState = {
@@ -239,6 +241,23 @@ const server = createServer(async (request, response) => {
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed };
       pumpScanCache.data = result;
       pumpScanCache.expiresAt = Date.now() + 30_000;
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/cap-signals') {
+      if (capScanCache.data && Date.now() < capScanCache.expiresAt) {
+        return sendJson(response, capScanCache.data);
+      }
+      const snapshot = await getMarketSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 200)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runCapScan(topSymbols, klineCache, snapshotMap);
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed };
+      capScanCache.data = result;
+      capScanCache.expiresAt = Date.now() + 30_000;
       return sendJson(response, result);
     }
 
@@ -3153,6 +3172,8 @@ async function sendStatic(pathname, response) {
       ? '/signals.html'
       : pathname === '/pump'
         ? '/pump.html'
+        : pathname === '/cap'
+          ? '/cap.html'
         : pathname === '/orders'
           ? '/orders.html'
           : pathname === '/highvol'

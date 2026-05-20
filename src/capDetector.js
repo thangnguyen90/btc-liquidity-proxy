@@ -1,0 +1,381 @@
+// ── Indicator helpers ──────────────────────────────────────────────────────────
+
+function calcEma(closes, period) {
+  if (closes.length < period) return NaN;
+  const alpha = 2 / (period + 1);
+  let ema = 0;
+  for (let i = 0; i < period; i++) ema += closes[i];
+  ema /= period;
+  for (let i = period; i < closes.length; i++) {
+    ema = alpha * closes[i] + (1 - alpha) * ema;
+  }
+  return ema;
+}
+
+function calcRsi(closes, period) {
+  if (closes.length < period + 1) return NaN;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d > 0) gains += d; else losses -= d;
+  }
+  let ag = gains / period, al = losses / period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    ag = (ag * (period - 1) + (d > 0 ? d : 0)) / period;
+    al = (al * (period - 1) + (d < 0 ? -d : 0)) / period;
+  }
+  return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+}
+
+function gradeScore(score) {
+  if (score >= 85) return 'A';
+  if (score >= 70) return 'B';
+  if (score >= 55) return 'C';
+  return 'D';
+}
+
+// ── Shared ATR / SMA / Bollinger helpers ──────────────────────────────────────
+
+function makeHelpers(closes, highs, lows) {
+  const n = closes.length;
+
+  function sma(arr, m) {
+    let s = 0;
+    for (let i = arr.length - m; i < arr.length; i++) s += arr[i];
+    return s / m;
+  }
+
+  function atr(period) {
+    const trs = [];
+    for (let i = 1; i < n; i++) {
+      const hi = highs[i], lo = lows[i], pc = closes[i - 1];
+      trs.push(Math.max(hi - lo, Math.abs(hi - pc), Math.abs(lo - pc)));
+    }
+    let a = 0;
+    for (let k = 0; k < period; k++) a += trs[k];
+    a /= period;
+    for (let k = period; k < trs.length; k++) a = (a * (period - 1) + trs[k]) / period;
+    return a;
+  }
+
+  function boll(len, k, endIdx) {
+    const tail = closes.slice(endIdx - len, endIdx);
+    const m = tail.reduce((s, v) => s + v, 0) / len;
+    const variance = tail.reduce((s, v) => s + (v - m) * (v - m), 0) / len;
+    const sd = Math.sqrt(variance);
+    return { mid: m, upper: m + k * sd, lower: m - k * sd };
+  }
+
+  return { sma, atr, boll, n };
+}
+
+// ── LONG: Selling Climax → Spring / Automatic Rally ───────────────────────────
+// Wyckoff phase A: panic selling at new low with volume spike + shakeout wick
+// → confirmed by price re-entering BB + RSI kick + early EMA turn
+
+function detectCapitulationSpringAction(candles, state = {}, cfg = {}) {
+  const C = Object.assign({
+    lookback:       60,    // bars to establish the prior low
+    scanTail:       6,     // look for SC in last N bars
+    volLB:          20,    // volume moving average period
+    bbLen:          20,
+    bbK:            2,
+    rsiKick:        30,    // RSI6 must be > this after SC
+    atrPeriod:      14,
+    scVolX:         2.5,   // SC volume >= 2.5× avg
+    scRangeATR:     1.5,   // SC range >= 1.5× ATR
+    scWickFrac:     0.6,   // lower wick >= 60% of body (shakeout)
+    confirmBars:    3,
+    entryOffsetPct: 0.0015,
+    pullbackFrac:   0.35,
+    slAtrMult:      0.6,
+    tpAtrMult:      2.0,
+    minScore:       50,
+  }, cfg || {});
+
+  const minLen = Math.max(C.lookback, C.bbLen, C.atrPeriod) + 5;
+  if (!Array.isArray(candles) || candles.length < minLen)
+    return { pass: false, action: null, reason: 'Not enough candles' };
+
+  const n      = candles.length;
+  const closes = candles.map((c) => +c.close);
+  const highs  = candles.map((c) => +c.high);
+  const lows   = candles.map((c) => +c.low);
+  const vols   = candles.map((c) => +c.volume);
+  const { sma, atr, boll } = makeHelpers(closes, highs, lows);
+
+  const A         = atr(C.atrPeriod);
+  const avgVol    = sma(vols, C.volLB);
+  const floorIdx  = Math.max(n - C.scanTail, 1);
+  // lookback low excludes the scanTail window so the SC is truly a new low
+  const lookbackLow = Math.min(...lows.slice(Math.max(0, floorIdx - C.lookback), floorIdx));
+
+  // ── Step 1: find Selling Climax ──────────────────────────────────────────────
+  let sc = null, scIdx = -1;
+  for (let i = floorIdx; i < n; i++) {
+    const o = +candles[i].open, h = +candles[i].high;
+    const l = +candles[i].low,  c = +candles[i].close, v = +candles[i].volume;
+    const range  = h - l;
+    const body   = Math.abs(c - o);
+    const lowerW = Math.min(o, c) - l; // FIXED: was (o<c?o:l)-l → gave 0 for bearish candles
+    if (
+      l <= lookbackLow &&
+      v >= avgVol * C.scVolX &&
+      range >= A * C.scRangeATR &&
+      body > 0 && lowerW >= body * C.scWickFrac
+    ) {
+      sc = { o, h, l, c, v, idx: i }; scIdx = i; break;
+    }
+  }
+  if (!sc) return { pass: false, action: null, reason: 'No selling climax in recent bars' };
+
+  // BB computed at the SC bar (not current bar) to avoid look-ahead
+  const bbAtSc = boll(C.bbLen, C.bbK, scIdx);
+
+  // ── Step 2: confirmation (Spring / AR) ──────────────────────────────────────
+  let confirm = null;
+  const maxJ = Math.min(n - 1, scIdx + C.confirmBars);
+  for (let j = scIdx + 1; j <= maxJ; j++) {
+    const o = +candles[j].open, h = +candles[j].high;
+    const l = +candles[j].low,  c = +candles[j].close;
+    const reentered = c > bbAtSc.lower;
+    const rsiOK     = state.rsi6 == null ? true : state.rsi6 > C.rsiKick;
+    const ribbonOK  = isFinite(state.ema5) && isFinite(state.ema13) && state.ema5 > state.ema13;
+    const prevHigh  = +(candles[j - 1]?.high ?? h);
+    const engulfUp  = c > o && c > Math.max(prevHigh, sc.o);
+    if (reentered && rsiOK && (engulfUp || ribbonOK)) {
+      confirm = { h, c, idx: j }; break;
+    }
+  }
+  if (!confirm) return { pass: false, action: null, reason: 'No confirmation after SC' };
+
+  // ── Step 3: Entry / SL / TP ──────────────────────────────────────────────────
+  const triggerHigh = Math.max(confirm.h, +(candles[confirm.idx - 1]?.high ?? confirm.h));
+  const entry    = +(triggerHigh    * (1 + C.entryOffsetPct)).toFixed(8);
+  const altEntry = +(Math.max(state.ema5 || confirm.c, state.ema13 || confirm.c) * (1 + C.entryOffsetPct * 0.5)).toFixed(8);
+  const sl       = +(sc.l - C.slAtrMult * A).toFixed(8);
+  const tp       = +(entry + C.tpAtrMult * A).toFixed(8);
+
+  // ── Step 4: Score ─────────────────────────────────────────────────────────────
+  const volX    = sc.v / avgVol;
+  const rangeX  = (sc.h - sc.l) / A;
+  const wickFrac = Math.min(1, (Math.max(sc.o, sc.c) - sc.l) / Math.max(1e-9, Math.abs(sc.c - sc.o)));
+  let score = 0;
+  // SC quality: volume + range + wick (max 40)
+  score += Math.min(40,
+    20 * Math.log2(Math.max(1, volX)) +
+    10 * (rangeX >= 1.5 ? 1 : rangeX / 1.5) +
+    10 * Math.min(1, wickFrac)
+  );
+  // Confirmation quality: BB re-entry + RSI + EMA (max 35)
+  const bbBack = closes[confirm.idx] > bbAtSc.lower ? 1 : 0;
+  const rsiPts = state.rsi6 != null ? Math.max(0, (state.rsi6 - 30) / 30) : 0.5;
+  const emaPts = (state.ema5 > state.ema13 && state.ema13 > state.ema25) ? 1 : (state.ema5 > state.ema13 ? 0.6 : 0);
+  score += 35 * (0.5 * bbBack + 0.3 * rsiPts + 0.2 * emaPts);
+  // Follow-through: current volume + distance from EMA13 (max 25)
+  const vNowX = vols[n - 1] / avgVol;
+  const ext   = Math.min(2.5, Math.abs(closes[n - 1] - (state.ema13 || closes[n - 1])) / Math.max(1e-9, A));
+  score += 25 * (Math.min(1, vNowX / 2) * (ext >= 0.4 ? 1 : ext / 0.4));
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  if (score < C.minScore) return { pass: false, action: null, reason: `Score too low (${score})` };
+
+  return {
+    pass:       true,
+    action:     'LONG',
+    type:       'sc_spring',
+    blockShort: true,
+    entry, altEntry, sl, tp, score,
+    grade:  gradeScore(score),
+    reason: 'Selling Climax → Spring/AR: re-entry BB + RSI kick + EMA turn',
+    note:   `SC vol=${volX.toFixed(2)}x · range=${rangeX.toFixed(2)}× ATR | ATR=${A.toFixed(8)}`,
+    factors: {
+      volRatio: +volX.toFixed(2),
+      rangeX:   +rangeX.toFixed(2),
+      bbBack,
+      rsi6val:  state.rsi6 != null ? +state.rsi6.toFixed(1) : null,
+      emaBull:  isFinite(state.ema5) && isFinite(state.ema13) && state.ema5 > state.ema13 ? 1 : 0,
+      vNowX:    +vNowX.toFixed(2),
+    },
+  };
+}
+
+// ── SHORT: Buying Climax → UTAD / Distribution ────────────────────────────────
+// Mirror of SC: euphoric buying spike at new high with volume spike + rejection wick
+// → confirmed by close back below BB upper + RSI exhaustion + early EMA bear turn
+
+function detectBuyingClimaxAction(candles, state = {}, cfg = {}) {
+  const C = Object.assign({
+    lookback:       60,
+    scanTail:       6,
+    volLB:          20,
+    bbLen:          20,
+    bbK:            2,
+    rsiKick:        70,    // RSI6 must be < this after BC (exhaustion)
+    atrPeriod:      14,
+    bcVolX:         2.5,
+    bcRangeATR:     1.5,
+    bcWickFrac:     0.6,   // upper wick >= 60% of body (rejection)
+    confirmBars:    3,
+    entryOffsetPct: 0.0015,
+    pullbackFrac:   0.35,
+    slAtrMult:      0.6,
+    tpAtrMult:      2.0,
+    minScore:       50,
+  }, cfg || {});
+
+  const minLen = Math.max(C.lookback, C.bbLen, C.atrPeriod) + 5;
+  if (!Array.isArray(candles) || candles.length < minLen)
+    return { pass: false, action: null, reason: 'Not enough candles' };
+
+  const n      = candles.length;
+  const closes = candles.map((c) => +c.close);
+  const highs  = candles.map((c) => +c.high);
+  const lows   = candles.map((c) => +c.low);
+  const vols   = candles.map((c) => +c.volume);
+  const { sma, atr, boll } = makeHelpers(closes, highs, lows);
+
+  const A          = atr(C.atrPeriod);
+  const avgVol     = sma(vols, C.volLB);
+  const floorIdx   = Math.max(n - C.scanTail, 1);
+  const lookbackHigh = Math.max(...highs.slice(Math.max(0, floorIdx - C.lookback), floorIdx));
+
+  // ── Step 1: find Buying Climax ───────────────────────────────────────────────
+  let bc = null, bcIdx = -1;
+  for (let i = floorIdx; i < n; i++) {
+    const o = +candles[i].open, h = +candles[i].high;
+    const l = +candles[i].low,  c = +candles[i].close, v = +candles[i].volume;
+    const range  = h - l;
+    const body   = Math.abs(c - o);
+    const upperW = h - Math.max(o, c); // rejection wick above body
+    if (
+      h >= lookbackHigh &&
+      v >= avgVol * C.bcVolX &&
+      range >= A * C.bcRangeATR &&
+      body > 0 && upperW >= body * C.bcWickFrac
+    ) {
+      bc = { o, h, l, c, v, idx: i }; bcIdx = i; break;
+    }
+  }
+  if (!bc) return { pass: false, action: null, reason: 'No buying climax in recent bars' };
+
+  const bbAtBc = boll(C.bbLen, C.bbK, bcIdx);
+
+  // ── Step 2: confirmation (UTAD / distribution) ───────────────────────────────
+  let confirm = null;
+  const maxJ = Math.min(n - 1, bcIdx + C.confirmBars);
+  for (let j = bcIdx + 1; j <= maxJ; j++) {
+    const o = +candles[j].open, h = +candles[j].high;
+    const l = +candles[j].low,  c = +candles[j].close;
+    const reentered = c < bbAtBc.upper;
+    const rsiOK     = state.rsi6 == null ? true : state.rsi6 < C.rsiKick;
+    const ribbonOK  = isFinite(state.ema5) && isFinite(state.ema13) && state.ema5 < state.ema13;
+    const prevLow   = +(candles[j - 1]?.low ?? l);
+    const engulfDn  = c < o && c < Math.min(prevLow, bc.o);
+    if (reentered && rsiOK && (engulfDn || ribbonOK)) {
+      confirm = { l, c, idx: j }; break;
+    }
+  }
+  if (!confirm) return { pass: false, action: null, reason: 'No confirmation after BC' };
+
+  // ── Step 3: Entry / SL / TP ──────────────────────────────────────────────────
+  const triggerLow = Math.min(confirm.l, +(candles[confirm.idx - 1]?.low ?? confirm.l));
+  const entry    = +(triggerLow    * (1 - C.entryOffsetPct)).toFixed(8);
+  const altEntry = +(Math.min(state.ema5 || confirm.c, state.ema13 || confirm.c) * (1 - C.entryOffsetPct * 0.5)).toFixed(8);
+  const sl       = +(bc.h + C.slAtrMult * A).toFixed(8);
+  const tp       = +(entry - C.tpAtrMult * A).toFixed(8);
+
+  // ── Step 4: Score (mirror of SC scorer) ──────────────────────────────────────
+  const volX    = bc.v / avgVol;
+  const rangeX  = (bc.h - bc.l) / A;
+  const wickFrac = Math.min(1, (bc.h - Math.min(bc.o, bc.c)) / Math.max(1e-9, Math.abs(bc.c - bc.o)));
+  let score = 0;
+  score += Math.min(40,
+    20 * Math.log2(Math.max(1, volX)) +
+    10 * (rangeX >= 1.5 ? 1 : rangeX / 1.5) +
+    10 * Math.min(1, wickFrac)
+  );
+  const bbBack = closes[confirm.idx] < bbAtBc.upper ? 1 : 0;
+  const rsiPts = state.rsi6 != null ? Math.max(0, (70 - state.rsi6) / 30) : 0.5;
+  const emaPts = (state.ema5 < state.ema13 && state.ema13 < state.ema25) ? 1 : (state.ema5 < state.ema13 ? 0.6 : 0);
+  score += 35 * (0.5 * bbBack + 0.3 * rsiPts + 0.2 * emaPts);
+  const vNowX = vols[n - 1] / avgVol;
+  const ext   = Math.min(2.5, Math.abs(closes[n - 1] - (state.ema13 || closes[n - 1])) / Math.max(1e-9, A));
+  score += 25 * (Math.min(1, vNowX / 2) * (ext >= 0.4 ? 1 : ext / 0.4));
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  if (score < C.minScore) return { pass: false, action: null, reason: `Score too low (${score})` };
+
+  return {
+    pass:      true,
+    action:    'SHORT',
+    type:      'bc_utad',
+    blockLong: true,
+    entry, altEntry, sl, tp, score,
+    grade:  gradeScore(score),
+    reason: 'Buying Climax → UTAD/Distribution: re-entry BB + RSI exhaustion + EMA turn',
+    note:   `BC vol=${volX.toFixed(2)}x · range=${rangeX.toFixed(2)}× ATR | ATR=${A.toFixed(8)}`,
+    factors: {
+      volRatio: +volX.toFixed(2),
+      rangeX:   +rangeX.toFixed(2),
+      bbBack,
+      rsi6val:  state.rsi6 != null ? +state.rsi6.toFixed(1) : null,
+      emaBear:  isFinite(state.ema5) && isFinite(state.ema13) && state.ema5 < state.ema13 ? 1 : 0,
+      vNowX:    +vNowX.toFixed(2),
+    },
+  };
+}
+
+// ── Scan orchestrator ──────────────────────────────────────────────────────────
+
+export async function runCapScan(symbols, klineCache, snapshotMap) {
+  const results = [];
+  let processed = 0;
+  for (const symbol of symbols) {
+    try {
+      const klines = klineCache.getIfCached(symbol, '15m', 200);
+      if (!klines || klines.length < 80) continue;
+      processed++;
+
+      const closes = klines.map((k) => +k.close);
+      const state  = {
+        ema5:  calcEma(closes, 5),
+        ema13: calcEma(closes, 13),
+        ema25: calcEma(closes, 25),
+        ema99: calcEma(closes, 99),
+        rsi6:  calcRsi(closes, 6),
+        rsi14: calcRsi(closes, 14),
+      };
+
+      const snap = snapshotMap.get(symbol);
+
+      // Try LONG (SC→Spring) first, then SHORT (BC→UTAD)
+      let det = detectCapitulationSpringAction(klines, state);
+      if (!det.pass) det = detectBuyingClimaxAction(klines, state);
+      if (!det.pass) continue;
+
+      results.push({
+        symbol,
+        action:     det.action,
+        type:       det.type,
+        score:      det.score,
+        grade:      det.grade,
+        entry:      det.entry,
+        altEntry:   det.altEntry,
+        sl:         det.sl,
+        tp:         det.tp,
+        reason:     det.reason,
+        note:       det.note,
+        factors:    det.factors ?? {},
+        blockShort: det.blockShort ?? false,
+        blockLong:  det.blockLong  ?? false,
+        markPrice:  snap?.markPrice,
+        change24h:  snap?.change24hPct,
+        volume:     snap?.quoteVolume,
+        scannedAt:  Date.now(),
+      });
+    } catch { /* skip bad symbol */ }
+  }
+  return { signals: results.sort((a, b) => b.score - a.score), processed };
+}
