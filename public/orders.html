@@ -288,6 +288,34 @@
         </div>
       </section>
 
+      <!-- Set TP / SL -->
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <h2>Set TP / SL</h2>
+          <span class="refresh-note">Huỷ TP/SL cũ → đặt lại theo giá nhập</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <label class="field" style="min-width:160px">
+            <span>Symbol</span>
+            <select id="tpslSymbolSelect" style="height:38px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:4px;padding:0 8px;font-size:13px">
+              <option value="">— chọn vị thế —</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>TP ROE% <small style="font-weight:400;color:var(--muted)">(để trống = bỏ qua)</small></span>
+            <input id="tpslTpRoe" type="number" step="any" placeholder="VD: 20" style="height:38px;width:110px">
+          </label>
+          <div style="align-self:flex-end;padding-bottom:10px;font-size:12px;color:var(--muted);min-width:80px" id="tpslTpPrice">—</div>
+          <label class="field">
+            <span>SL ROE% <small style="font-weight:400;color:var(--muted)">(để trống = bỏ qua)</small></span>
+            <input id="tpslSlRoe" type="number" step="any" placeholder="VD: -25" style="height:38px;width:110px">
+          </label>
+          <div style="align-self:flex-end;padding-bottom:10px;font-size:12px;color:var(--muted);min-width:80px" id="tpslSlPrice">—</div>
+          <button class="primary" id="setTpSlBtn" type="button" style="height:38px;padding:0 18px">Set TP/SL</button>
+        </div>
+        <pre id="tpslResult" style="margin-top:10px;display:none;font-size:12px"></pre>
+      </section>
+
       <!-- TSL Status -->
       <section class="panel" style="margin-top:14px" id="tslPanel">
         <div class="panel-head">

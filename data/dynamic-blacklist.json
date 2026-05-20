@@ -1,17 +1,17 @@
 {
+  "CGPTUSDT": {
+    "expiresAt": 1779260732603,
+    "addedAt": "2026-05-20T05:05:32.603Z",
+    "reason": "SL hit pnl=-0.0455"
+  },
   "FOGOUSDT": {
-    "expiresAt": 1779243535608,
-    "addedAt": "2026-05-20T00:18:55.608Z",
-    "reason": "SL hit pnl=-4.3621"
+    "expiresAt": 1779261602779,
+    "addedAt": "2026-05-20T05:20:02.779Z",
+    "reason": "SL hit pnl=-0.0390"
   },
-  "ORCAUSDT": {
-    "expiresAt": 1779243775595,
-    "addedAt": "2026-05-20T00:22:55.595Z",
-    "reason": "SL hit pnl=-66.0439"
-  },
-  "SAGAUSDT": {
-    "expiresAt": 1779251073853,
-    "addedAt": "2026-05-20T02:24:33.853Z",
-    "reason": "SL hit pnl=-0.0157"
+  "XLMUSDT": {
+    "expiresAt": 1779262369470,
+    "addedAt": "2026-05-20T05:32:49.470Z",
+    "reason": "SL hit pnl=-0.0009"
   }
 }

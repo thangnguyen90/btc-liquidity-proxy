@@ -177,7 +177,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    const ordersRoutes = ['/api/balance', '/api/positions', '/api/open-orders', '/api/open-algo-orders', '/api/trades', '/api/cancel-order', '/api/cancel-all-orders', '/api/close-position', '/api/order', '/api/settings', '/api/daily-pnl'];
+    const ordersRoutes = ['/api/balance', '/api/positions', '/api/open-orders', '/api/open-algo-orders', '/api/trades', '/api/cancel-order', '/api/cancel-all-orders', '/api/close-position', '/api/order', '/api/set-tp-sl', '/api/settings', '/api/daily-pnl'];
     if (ordersRoutes.some((r) => requestUrl.pathname === r)) {
       const token = request.headers['x-orders-token'] ?? '';
       if (!ordersTokens.has(token)) {
@@ -330,6 +330,12 @@ const server = createServer(async (request, response) => {
     if (requestUrl.pathname === '/api/order' && request.method === 'POST') {
       const token = request.headers['x-orders-token'] ?? '';
       await sendJson(response, await placeOrder(await readJsonBody(request), token));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/set-tp-sl' && request.method === 'POST') {
+      const token = request.headers['x-orders-token'] ?? '';
+      await sendJson(response, await setTpSl(await readJsonBody(request), token));
       return;
     }
 
@@ -843,6 +849,87 @@ function trackSubmittedOrderPosition({ symbol, side, quantity, leverage, markPri
   console.log(`[PosMonitor] Seeded ${symbol} from submitted ${orderType} order qty=${executedQty} entry=${avgPrice}`);
 }
 
+async function setTpSl(payload, token = null) {
+  const symbol = normalizeSymbol(payload.symbol ?? '');
+  if (!symbol) throw new Error('symbol is required.');
+  const tpPrice = payload.tpPrice !== '' && payload.tpPrice != null ? Number(payload.tpPrice) : null;
+  const slPrice = payload.slPrice !== '' && payload.slPrice != null ? Number(payload.slPrice) : null;
+  if (!tpPrice && !slPrice) throw new Error('Nhập ít nhất một trong hai: TP price hoặc SL price.');
+
+  const { apiKey, apiSecret } = getApiCredentials(token);
+  const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+
+  const [symbols, openOrders, algoResult, positions] = await Promise.all([
+    getSymbols(),
+    client.getOpenOrders({ apiKey, apiSecret }),
+    client.getOpenAlgoOrders({ apiKey, apiSecret }),
+    client.getPositions({ apiKey, apiSecret }),
+  ]);
+
+  const symbolInfo = symbols.find((s) => s.symbol === symbol);
+  if (!symbolInfo) throw new Error(`Symbol ${symbol} không tìm thấy.`);
+
+  const pos = positions.find((p) => p.symbol === symbol && Number(p.positionAmt) !== 0);
+  if (!pos) throw new Error(`Không có vị thế mở cho ${symbol}.`);
+
+  const isHedge = String(pos.positionSide ?? 'BOTH') !== 'BOTH';
+  const positionSide = pos.positionSide ?? 'BOTH';
+  const isLong = Number(pos.positionAmt) > 0;
+  const closeSide = isLong ? 'SELL' : 'BUY';
+  const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+
+  const markPrice = Number((await client.getPremiumIndex(symbol)).markPrice);
+  const isTpTypeRegular = (t) => { const u = String(t ?? '').toUpperCase(); return u === 'TAKE_PROFIT_MARKET' || u === 'TAKE_PROFIT'; };
+  const isSlTypeRegular = (t) => { const u = String(t ?? '').toUpperCase(); return u === 'STOP_MARKET' || u === 'STOP'; };
+  // TP: trigger chưa chạm (còn xa hơn mark theo hướng lãi). SL/TSL: trigger đã qua mark hoặc phía lỗ.
+  const isAlgoTp = (o) => { const t = Number(o.triggerPrice ?? 0); return t > 0 && (isLong ? t > markPrice : t < markPrice); };
+  const isAlgoSl = (o) => { const t = Number(o.triggerPrice ?? 0); return t > 0 && (isLong ? t < markPrice : t > markPrice); };
+
+  const cancelled = { tp: [], sl: [] };
+  const placed = { tp: null, sl: null };
+
+  // Cancel existing TP/SL — regular orders
+  for (const o of openOrders.filter((o) => o.symbol === symbol && o.reduceOnly)) {
+    if (tpPrice && isTpTypeRegular(o.type)) {
+      await client.cancelOrder({ symbol, orderId: o.orderId, apiKey, apiSecret, recvWindow }).catch(() => {});
+      cancelled.tp.push(o.orderId);
+    }
+    if (slPrice && isSlTypeRegular(o.type)) {
+      await client.cancelOrder({ symbol, orderId: o.orderId, apiKey, apiSecret, recvWindow }).catch(() => {});
+      cancelled.sl.push(o.orderId);
+    }
+  }
+  // Cancel existing TP/SL — algo orders (type=CONDITIONAL, dùng triggerPrice vs mark để phân loại)
+  for (const o of allAlgo.filter((o) => o.symbol === symbol)) {
+    if (tpPrice && isAlgoTp(o)) {
+      await client.cancelAlgoOrder({ algoId: o.algoId, apiKey, apiSecret, recvWindow }).catch(() => {});
+      cancelled.tp.push(o.algoId);
+    } else if (slPrice && isAlgoSl(o)) {
+      await client.cancelAlgoOrder({ algoId: o.algoId, apiKey, apiSecret, recvWindow }).catch(() => {});
+      cancelled.sl.push(o.algoId);
+    }
+  }
+
+  const qty = String(Math.abs(Number(pos.positionAmt)));
+  const tpSlBase = (type, triggerPrice, clientId) => {
+    const p = { algoType: 'CONDITIONAL', symbol, side: closeSide, type, triggerPrice: String(priceFromTick(symbolInfo, triggerPrice)), quantity: qty, workingType: 'MARK_PRICE', recvWindow, newClientOrderId: clientId };
+    if (isHedge) p.positionSide = positionSide; else p.reduceOnly = 'true';
+    return p;
+  };
+
+  if (tpPrice) {
+    const params = tpSlBase('TAKE_PROFIT_MARKET', tpPrice, `lp_tp_${Date.now()}`.slice(0, 36));
+    placed.tp = await client.placeAlgoOrder({ params, apiKey, apiSecret });
+  }
+  if (slPrice) {
+    const params = tpSlBase('STOP_MARKET', slPrice, `lp_sl_${Date.now()}`.slice(0, 36));
+    placed.sl = await client.placeAlgoOrder({ params, apiKey, apiSecret });
+  }
+
+  console.log(`[SetTpSl] ${symbol} tp=${tpPrice ?? '-'} sl=${slPrice ?? '-'} cancelled=${JSON.stringify(cancelled)}`);
+  return { symbol, cancelled, placed };
+}
+
 async function getMarketSnapshot() {
   if (snapshotCache.data && Date.now() < snapshotCache.expiresAt) return snapshotCache.data;
   const [symbols, tickers, premiumRows] = await Promise.all([
@@ -1042,10 +1129,6 @@ async function placeBinanceMarketFromPaperTrade(payload) {
   const trade = store.trades[idx];
   if (!['ENTRY_READY', 'OPEN'].includes(trade.status)) {
     throw new Error(`Paper trade must be ENTRY_READY or OPEN. Current status: ${trade.status}`);
-  }
-  // OPEN trade đã có binanceOrderId → không đặt lại
-  if (trade.status === 'OPEN' && trade.binanceOrderId) {
-    throw new Error(`Paper trade đã được đặt lên Binance (orderId=${trade.binanceOrderId}).`);
   }
 
   const { apiKey, apiSecret } = getApiCredentials(null);

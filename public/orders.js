@@ -384,6 +384,7 @@ async function loadPositions() {
     }).join('');
 
     if (symbolsChanged) startMarkPriceWs([...newSymbols]);
+    updateTpSlSymbolSelect(rows.map((p) => ({ ...p, roe: (() => { const amt = Number(p.positionAmt), entry = Number(p.entryPrice), lev = Number(p.leverage)||1, upnl = Number(p.unRealizedProfit), margin = Number(p.isolatedMargin)||Number(p.initialMargin)||(Math.abs(amt)*entry/lev); return margin>0?(upnl/margin)*100:0; })() })));
 
     positionsBody.querySelectorAll('.close-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -716,6 +717,98 @@ async function submitOrder(side) {
 
 orderLongBtn.addEventListener('click', () => submitOrder('BUY'));
 orderShortBtn.addEventListener('click', () => submitOrder('SELL'));
+
+// ── Set TP / SL ──────────────────────────────────────────────
+const tpslSymbolSelect = document.getElementById('tpslSymbolSelect');
+const tpslTpRoe = document.getElementById('tpslTpRoe');
+const tpslSlRoe = document.getElementById('tpslSlRoe');
+const tpslTpPrice = document.getElementById('tpslTpPrice');
+const tpslSlPrice = document.getElementById('tpslSlPrice');
+const setTpSlBtn = document.getElementById('setTpSlBtn');
+const tpslResult = document.getElementById('tpslResult');
+
+// positions map: symbol → { entry, leverage, isLong }
+const openPositionsMap = new Map();
+
+function roeToPrice(roe, entry, leverage, isLong) {
+  if (!entry || !leverage) return null;
+  return isLong
+    ? entry * (1 + roe / 100 / leverage)
+    : entry * (1 - roe / 100 / leverage);
+}
+
+function updateTpSlPriceHints() {
+  const sym = tpslSymbolSelect.value;
+  const pos = openPositionsMap.get(sym);
+  if (!pos) { tpslTpPrice.textContent = '—'; tpslSlPrice.textContent = '—'; return; }
+  const { entry, leverage, isLong } = pos;
+  const tpRoe = tpslTpRoe.value !== '' ? Number(tpslTpRoe.value) : null;
+  const slRoe = tpslSlRoe.value !== '' ? Number(tpslSlRoe.value) : null;
+  tpslTpPrice.textContent = tpRoe != null ? `@ ${roeToPrice(tpRoe, entry, leverage, isLong)?.toFixed(6).replace(/\.?0+$/, '') ?? '—'}` : '—';
+  tpslSlPrice.textContent = slRoe != null ? `@ ${roeToPrice(slRoe, entry, leverage, isLong)?.toFixed(6).replace(/\.?0+$/, '') ?? '—'}` : '—';
+}
+
+function updateTpSlSymbolSelect(positions) {
+  const current = tpslSymbolSelect.value;
+  tpslSymbolSelect.innerHTML = '<option value="">— chọn vị thế —</option>';
+  openPositionsMap.clear();
+  positions.forEach((p) => {
+    const amt = Number(p.positionAmt);
+    if (!amt) return;
+    const isLong = amt > 0;
+    const entry = Number(p.entryPrice);
+    const leverage = Number(p.leverage) || 10;
+    openPositionsMap.set(p.symbol, { entry, leverage, isLong });
+    const roe = Number(p.roe ?? 0);
+    const opt = document.createElement('option');
+    opt.value = p.symbol;
+    opt.textContent = `${p.symbol} ${isLong ? '▲' : '▼'} ROE ${roe >= 0 ? '+' : ''}${roe.toFixed(1)}%`;
+    tpslSymbolSelect.appendChild(opt);
+  });
+  if (current && openPositionsMap.has(current)) tpslSymbolSelect.value = current;
+  updateTpSlPriceHints();
+}
+
+tpslSymbolSelect.addEventListener('change', updateTpSlPriceHints);
+tpslTpRoe.addEventListener('input', updateTpSlPriceHints);
+tpslSlRoe.addEventListener('input', updateTpSlPriceHints);
+
+setTpSlBtn.addEventListener('click', async () => {
+  const symbol = tpslSymbolSelect.value;
+  if (!symbol) { tpslResult.style.display = 'block'; tpslResult.textContent = 'Chọn vị thế.'; return; }
+  const pos = openPositionsMap.get(symbol);
+  if (!pos) { tpslResult.style.display = 'block'; tpslResult.textContent = 'Không tìm thấy vị thế.'; return; }
+
+  const tpRoe = tpslTpRoe.value !== '' ? Number(tpslTpRoe.value) : null;
+  const slRoe = tpslSlRoe.value !== '' ? Number(tpslSlRoe.value) : null;
+  if (tpRoe == null && slRoe == null) { tpslResult.style.display = 'block'; tpslResult.textContent = 'Nhập ít nhất TP% hoặc SL%.'; return; }
+
+  const tpPrice = tpRoe != null ? roeToPrice(tpRoe, pos.entry, pos.leverage, pos.isLong) : null;
+  const slPrice = slRoe != null ? roeToPrice(slRoe, pos.entry, pos.leverage, pos.isLong) : null;
+
+  const parts = [];
+  if (tpPrice) parts.push(`TP ${tpRoe}% @ ${tpPrice.toFixed(4)}`);
+  if (slPrice) parts.push(`SL ${slRoe}% @ ${slPrice.toFixed(4)}`);
+  if (!confirm(`Set ${parts.join(', ')} cho ${symbol}?\nTP/SL cũ cùng loại sẽ bị huỷ.`)) return;
+
+  setTpSlBtn.disabled = true;
+  tpslResult.style.display = 'none';
+  try {
+    const result = await apiFetch('/api/set-tp-sl', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol, tpPrice, slPrice }),
+    });
+    tpslResult.style.display = 'block';
+    tpslResult.textContent = JSON.stringify(result, null, 2);
+    await refresh();
+  } catch (err) {
+    tpslResult.style.display = 'block';
+    tpslResult.textContent = `Error: ${err.message}`;
+  } finally {
+    setTpSlBtn.disabled = false;
+  }
+});
 
 // Init sort on all tables
 initSort(document.getElementById('positionsHead'), positionsBody);
