@@ -1,3 +1,39 @@
+let topTraderTrends = {}; // symbol → { label, direction } | null
+
+const autoProbeChk = document.getElementById('autoProbeChk');
+
+async function loadAutoProbeState() {
+  try {
+    const res = await fetch('/api/auto-probe-enabled');
+    if (res.ok) {
+      const { enabled } = await res.json();
+      autoProbeChk.checked = !!enabled;
+    }
+  } catch { /* silent */ }
+}
+
+autoProbeChk.addEventListener('change', async () => {
+  try {
+    await fetch('/api/auto-probe-enabled', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: autoProbeChk.checked }),
+    });
+  } catch (err) {
+    autoProbeChk.checked = !autoProbeChk.checked; // revert on error
+  }
+});
+
+loadAutoProbeState();
+
+async function loadTopTraderTrends(symbols) {
+  if (!symbols.length) return;
+  try {
+    const res = await fetch(`/api/top-trader-trend?symbols=${symbols.join(',')}`);
+    if (res.ok) topTraderTrends = await res.json();
+  } catch { /* silent */ }
+}
+
 const els = {
   status: document.getElementById('status'),
   openCount: document.getElementById('openCount'),
@@ -171,10 +207,17 @@ function renderSummary(summary) {
   els.closedCount.textContent = `${summary.closed ?? 0} closed`;
 }
 
+function renderTrendCell(symbol) {
+  const trend = topTraderTrends[symbol];
+  if (!trend) return '<td style="color:var(--muted);font-size:11px">—</td>';
+  const color = trend.direction === 'long' ? 'var(--green)' : trend.direction === 'short' ? 'var(--red)' : 'var(--muted)';
+  return `<td style="font-size:11px;color:${color};white-space:normal;max-width:280px">${escapeHtml(trend.label ?? '')}</td>`;
+}
+
 function renderOpen(trades) {
   const open = sortTrades(trades.filter((t) => ['OPEN', 'ENTRY_READY', 'PENDING'].includes(t.status)), 'open');
   if (!open.length) {
-    els.openBody.innerHTML = '<tr><td colspan="13" class="empty-cell">No open paper trades.</td></tr>';
+    els.openBody.innerHTML = '<tr><td colspan="14" class="empty-cell">No open paper trades.</td></tr>';
     return;
   }
   els.openBody.innerHTML = open.map((t) => `
@@ -196,6 +239,7 @@ function renderOpen(trades) {
       <td class="${clsPnl(t.pnl)}">${fmt(t.pnl, 4)}</td>
       <td class="${clsPnl(t.roe)}">${fmt(t.roe, 2)}%</td>
       <td>${fmtTime(t.openedAt ?? t.createdAt)}</td>
+      ${renderTrendCell(t.symbol)}
       <td>${escapeHtml(t.note ?? '')}</td>
     </tr>
   `).join('');
@@ -234,13 +278,27 @@ function escapeHtml(text) {
     .replaceAll("'", '&#039;');
 }
 
+let lastTrendFetch = 0;
+
 async function loadTrades() {
   els.status.textContent = 'Loading...';
   try {
     const data = await api('/api/paper-trades');
+    const trades = data.trades ?? [];
+
+    // Refresh top trader trends mỗi 30s
+    const now = Date.now();
+    if (now - lastTrendFetch > 30_000) {
+      lastTrendFetch = now;
+      const openSymbols = [...new Set(
+        trades.filter((t) => ['OPEN', 'ENTRY_READY', 'PENDING'].includes(t.status)).map((t) => t.symbol)
+      )];
+      loadTopTraderTrends(openSymbols).then(() => renderOpen(trades));
+    }
+
     renderSummary(data.summary ?? {});
-    renderOpen(data.trades ?? []);
-    renderClosed(data.trades ?? []);
+    renderOpen(trades);
+    renderClosed(trades);
     updateSortHeaders();
     els.status.textContent = 'Ready';
     els.lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString('vi-VN', { hour12: false })}`;

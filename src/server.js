@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
-import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked } from './discordNotifier.js';
+import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked, summarizeTopTraderTrend, formatTopTraderTrend } from './discordNotifier.js';
 import { KlineCache } from './klineCache.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
@@ -43,6 +43,7 @@ const runtimeSettings = {
   dryRun: process.env.AUTO_TRADE_DRY_RUN !== 'false',
   btcReversalGuard: false,
   btcReversalGuardRoe: 1,
+  autoProbeEnabled: process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION === 'true',
 };
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
 let tslScanner = null;
@@ -269,6 +270,36 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/paper-trades/delete' && request.method === 'POST') {
       await sendJson(response, await deletePaperTrade(await readJsonBody(request)));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/auto-probe-enabled') {
+      if (request.method === 'GET') {
+        await sendJson(response, { enabled: runtimeSettings.autoProbeEnabled });
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        if (typeof body.enabled === 'boolean') runtimeSettings.autoProbeEnabled = body.enabled;
+        console.log(`[AutoProbe] ${runtimeSettings.autoProbeEnabled ? '✅ Bật' : '⏸ Tắt'} auto vô $1 khi READY`);
+        await sendJson(response, { enabled: runtimeSettings.autoProbeEnabled });
+        return;
+      }
+    }
+
+    if (requestUrl.pathname === '/api/top-trader-trend' && request.method === 'GET') {
+      const symbolsParam = requestUrl.searchParams.get('symbols') ?? '';
+      const symbols = symbolsParam.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+      const limit = Number(process.env.LIQ_TOP_TRADER_RATIO_LIMIT ?? 50);
+      const result = {};
+      await Promise.allSettled(symbols.map(async (sym) => {
+        try {
+          const rows = await client.getTopLongShortPositionRatio(sym, '5m', limit);
+          const trend = summarizeTopTraderTrend(rows);
+          result[sym] = trend ? { ...trend, label: formatTopTraderTrend(trend) } : null;
+        } catch { result[sym] = null; }
+      }));
+      await sendJson(response, result);
       return;
     }
 
@@ -1088,7 +1119,7 @@ function appendPaperNote(note, part) {
 }
 
 async function autoPlaceBinanceOnEntryReady(trade, reason, markPrice) {
-  if (process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION !== 'true') return;
+  if (!runtimeSettings.autoProbeEnabled) return;
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
     const marginUsdt = Number(process.env.AUTO_LIQ_PROBE_MARGIN ?? 1);

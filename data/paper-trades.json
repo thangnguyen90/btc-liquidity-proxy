@@ -1,7 +1,21 @@
 {
   "createdAt": "2026-05-20T02:42:17.303Z",
-  "updatedAt": "2026-05-20T04:38:13.227Z",
+  "updatedAt": "2026-05-20T04:51:32.251Z",
   "trades": [
+    {
+      "id": "13eb623d-8252-41cf-aa08-3ba925a6408a",
+      "symbol": "DYMUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 388.2831671481378,
+      "entryPrice": 0.0257544,
+      "createdAt": "2026-05-20T04:51:32.251Z",
+      "openedAt": null,
+      "source": "liq-sweep-85",
+      "note": "sweepProb=85% | target=0.0257544 | confirmation=waiting for above sweep + bearish rejection"
+    },
     {
       "id": "8bde291e-4a43-4efe-8008-7e5c24594eab",
       "symbol": "ENSUSDT",
@@ -456,13 +470,17 @@
       "symbol": "SPKUSDT",
       "side": "LONG",
       "status": "OPEN",
-      "marginUsdt": 1,
+      "marginUsdt": 2,
       "leverage": 10,
       "quantity": 361.14120621162874,
-      "entryPrice": 0.02769,
-      "openedAt": "2026-05-20T03:34:39.433Z",
+      "entryPrice": 0.0274366,
+      "openedAt": "2026-05-20T04:41:01.211Z",
       "source": "liq-sweep-82",
-      "note": "sweepProb=82% | target=0.0274962 | confirmation=waiting for below sweep + bullish rejection"
+      "note": "sweepProb=82% | target=0.0274962 | confirmation=waiting for below sweep + bullish rejection | binanceMarket=placed margin=2 mark=0.0274366",
+      "binancePlacedAt": "2026-05-20T04:41:01.211Z",
+      "binanceOrderId": 1865090523,
+      "binanceClientOrderId": "paper_mkt_1779252061109",
+      "binanceStatus": "NEW"
     },
     {
       "id": "980f6e58-3942-4540-81c2-b9d916bc5a04",
@@ -560,13 +578,17 @@
       "symbol": "CGPTUSDT",
       "side": "LONG",
       "status": "OPEN",
-      "marginUsdt": 1,
+      "marginUsdt": 2,
       "leverage": 10,
       "quantity": 381.2428516965307,
-      "entryPrice": 0.02623,
-      "openedAt": "2026-05-20T03:34:24.086Z",
+      "entryPrice": 0.02612133,
+      "openedAt": "2026-05-20T04:49:48.569Z",
       "source": "liq-sweep-91",
-      "note": "sweepProb=91% | target=0.0260202 | confirmation=waiting for below sweep + bullish rejection"
+      "note": "sweepProb=91% | target=0.0260202 | confirmation=waiting for below sweep + bullish rejection | binanceMarket=placed margin=2 mark=0.02612133",
+      "binancePlacedAt": "2026-05-20T04:49:48.569Z",
+      "binanceOrderId": 1346481202,
+      "binanceClientOrderId": "paper_mkt_1779252588462",
+      "binanceStatus": "NEW"
     },
     {
       "id": "767fab41-e6bc-4e51-b887-61fbd1f5c2ed",
@@ -586,13 +608,17 @@
       "symbol": "ATOMUSDT",
       "side": "LONG",
       "status": "OPEN",
-      "marginUsdt": 1,
+      "marginUsdt": 2,
       "leverage": 10,
       "quantity": 4.9825610363726955,
-      "entryPrice": 2.007,
-      "openedAt": "2026-05-20T03:34:20.235Z",
+      "entryPrice": 2.002588,
+      "openedAt": "2026-05-20T04:41:18.769Z",
       "source": "liq-sweep-85",
-      "note": "sweepProb=85% | target=1.99697 | confirmation=waiting for below sweep + bullish rejection"
+      "note": "sweepProb=85% | target=1.99697 | confirmation=waiting for below sweep + bullish rejection | binanceMarket=placed margin=2 mark=2.002588",
+      "binancePlacedAt": "2026-05-20T04:41:18.769Z",
+      "binanceOrderId": 24431923377,
+      "binanceClientOrderId": "paper_mkt_1779252078665",
+      "binanceStatus": "NEW"
     },
     {
       "id": "fcec3dd2-d90f-45e7-a3e6-5fd6cdc730ff",

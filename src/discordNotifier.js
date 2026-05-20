@@ -600,7 +600,7 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null, to
   };
 }
 
-function summarizeTopTraderTrend(rows) {
+export function summarizeTopTraderTrend(rows) {
   const valid = Array.isArray(rows)
     ? rows
       .filter((r) => r && r.longShortRatio != null)
@@ -650,7 +650,7 @@ function linearSlope(values) {
   return denominator ? numerator / denominator : 0;
 }
 
-function formatTopTraderTrend(trend) {
+export function formatTopTraderTrend(trend) {
   const label = trend.direction === 'long'
     ? '🟢 Top trader L/S 5m: **đường trắng đi lên — tăng LONG**'
     : trend.direction === 'short'
