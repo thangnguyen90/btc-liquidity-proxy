@@ -1,7 +1,77 @@
 {
   "createdAt": "2026-05-20T02:42:17.303Z",
-  "updatedAt": "2026-05-20T05:44:55.064Z",
+  "updatedAt": "2026-05-20T06:19:17.291Z",
   "trades": [
+    {
+      "id": "33b05ae2-c770-4f93-8adc-3b61d5c49c98",
+      "symbol": "KATUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 1146.2894610146955,
+      "entryPrice": 0.0087238,
+      "createdAt": "2026-05-20T06:19:17.290Z",
+      "openedAt": null,
+      "source": "liq-sweep-83",
+      "note": "sweepProb=83% | target=0.0087238 | confirmation=waiting for above sweep + bearish rejection"
+    },
+    {
+      "id": "2f696d12-0470-4040-9c6f-657613f78011",
+      "symbol": "VVVUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 0.5765815632279343,
+      "entryPrice": 17.3436,
+      "createdAt": "2026-05-20T06:18:37.173Z",
+      "openedAt": null,
+      "source": "liq-sweep-83",
+      "note": "sweepProb=83% | target=17.3436 | confirmation=waiting for above sweep + bearish rejection"
+    },
+    {
+      "id": "bfb34142-88c0-424f-ab83-72aa68f7e83e",
+      "symbol": "HYPEUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 0.20470954785802165,
+      "entryPrice": 48.8497,
+      "createdAt": "2026-05-20T06:17:06.576Z",
+      "openedAt": null,
+      "source": "liq-sweep-80",
+      "note": "sweepProb=80% | target=48.8497 | confirmation=waiting for above sweep + bearish rejection"
+    },
+    {
+      "id": "8b2e65d2-93a6-4d7b-869f-f3db868f00c1",
+      "symbol": "DASHUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 0.23047422376281435,
+      "entryPrice": 43.3888,
+      "createdAt": "2026-05-20T06:15:05.040Z",
+      "openedAt": null,
+      "source": "liq-sweep-91",
+      "note": "sweepProb=91% | target=43.3888 | confirmation=waiting for above sweep + bearish rejection"
+    },
+    {
+      "id": "cd1e6a7d-4bfa-4c75-b087-2d11c3e0bf08",
+      "symbol": "AIAUSDT",
+      "side": "LONG",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 170.76998478439435,
+      "entryPrice": 0.0585583,
+      "createdAt": "2026-05-20T06:15:00.461Z",
+      "openedAt": null,
+      "source": "liq-sweep-84",
+      "note": "sweepProb=84% | target=0.0585583 | confirmation=waiting for below sweep + bullish rejection"
+    },
     {
       "id": "08fb1086-530f-4f47-809e-ccd64db80d53",
       "symbol": "EDGEUSDT",
@@ -372,7 +442,7 @@
       "id": "8d23db68-94ae-4a7b-8aa2-a07d74f360c5",
       "symbol": "BABYUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 659.2175088170342,
@@ -380,7 +450,9 @@
       "createdAt": "2026-05-20T04:18:50.021Z",
       "openedAt": null,
       "source": "liq-sweep-99",
-      "note": "sweepProb=99% | target=0.0151695 | confirmation=waiting for below sweep + bullish rejection"
+      "note": "sweepProb=99% | target=0.0151695 | confirmation=below sweep rejected by closed candle @ mark 0.01528",
+      "entryReadyAt": "2026-05-20T06:15:34.067Z",
+      "markPriceAtReady": 0.01528
     },
     {
       "id": "7fb7032c-9125-4e57-b5d1-80b75509e730",
@@ -434,7 +506,7 @@
       "id": "4655474f-ce58-4e55-a0ea-47de524b6faf",
       "symbol": "PLAYUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 70.17937849142407,
@@ -442,7 +514,9 @@
       "createdAt": "2026-05-20T03:51:59.331Z",
       "openedAt": null,
       "source": "liq-sweep-88",
-      "note": "sweepProb=88% | target=0.142492 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=88% | target=0.142492 | confirmation=above sweep rejected by closed candle @ mark 0.14708277",
+      "entryReadyAt": "2026-05-20T06:18:36.225Z",
+      "markPriceAtReady": 0.14708277
     },
     {
       "id": "53960552-5c6f-4b58-bafa-042201b63ab3",

@@ -30,7 +30,7 @@ async function loadTopTraderTrends(symbols) {
   if (!symbols.length) return;
   try {
     const res = await fetch(`/api/top-trader-trend?symbols=${symbols.join(',')}`);
-    if (res.ok) topTraderTrends = await res.json();
+    if (res.ok) Object.assign(topTraderTrends, await res.json());
   } catch { /* silent */ }
 }
 
@@ -211,9 +211,12 @@ function renderSummary(summary) {
 
 function renderTrendCell(symbol) {
   const trend = topTraderTrends[symbol];
-  if (!trend) return '<td style="color:var(--muted);font-size:11px">—</td>';
-  const color = trend.direction === 'long' ? 'var(--green)' : trend.direction === 'short' ? 'var(--red)' : 'var(--muted)';
-  return `<td style="font-size:11px;color:${color};white-space:normal;max-width:280px">${escapeHtml(trend.label ?? '')}</td>`;
+  const label = trend ? escapeHtml(trend.label ?? '') : '—';
+  const color = trend?.direction === 'long' ? 'var(--green)' : trend?.direction === 'short' ? 'var(--red)' : 'var(--muted)';
+  return `<td style="font-size:11px;white-space:normal;max-width:300px">
+    <span style="color:${color}">${label}</span>
+    <button data-refresh-trend="${escapeHtml(symbol)}" style="margin-left:8px;background:var(--panel-2);border:1px solid var(--line);border-radius:5px;color:var(--text);font-size:13px;padding:4px 10px;cursor:pointer;min-width:36px;line-height:1">↺</button>
+  </td>`;
 }
 
 function renderOpen(trades) {
@@ -324,6 +327,14 @@ document.addEventListener('click', (event) => {
       state.dir = ['symbol', 'side', 'status', 'note'].includes(sortKey) ? 'asc' : 'desc';
     }
     loadTrades();
+    return;
+  }
+  const refreshTrend = event.target?.dataset?.refreshTrend;
+  if (refreshTrend) {
+    const btn = event.target;
+    btn.textContent = '⏳';
+    btn.disabled = true;
+    loadTopTraderTrends([refreshTrend]).then(() => loadTrades());
     return;
   }
   const closeId = event.target?.dataset?.close;
