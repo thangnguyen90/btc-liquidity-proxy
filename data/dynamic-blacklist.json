@@ -1,17 +1,12 @@
 {
-  "SPKUSDT": {
-    "expiresAt": 1779272244311,
-    "addedAt": "2026-05-20T08:17:24.311Z",
-    "reason": "SL hit pnl=-1.2813"
+  "GUAUSDT": {
+    "expiresAt": 1779296558196,
+    "addedAt": "2026-05-20T15:02:38.196Z",
+    "reason": "SL hit pnl=-0.0328"
   },
-  "BROCCOLIF3BUSDT": {
-    "expiresAt": 1779275461737,
-    "addedAt": "2026-05-20T09:11:01.737Z",
-    "reason": "SL hit pnl=-0.5272"
-  },
-  "EDENUSDT": {
-    "expiresAt": 1779277231871,
-    "addedAt": "2026-05-20T09:40:31.871Z",
-    "reason": "SL hit pnl=-1.5494"
+  "NILUSDT": {
+    "expiresAt": 1779297398238,
+    "addedAt": "2026-05-20T15:16:38.238Z",
+    "reason": "SL hit pnl=-0.0173"
   }
 }

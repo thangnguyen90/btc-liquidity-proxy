@@ -127,6 +127,14 @@ export class KlineCache {
     return this.client.getKlines(symbol, interval, limit);
   }
 
+  // Cache-only variant — returns null on miss instead of calling REST.
+  // Use this in hot scan loops to avoid any Binance REST calls.
+  getIfCached(symbol, interval, limit) {
+    const arr = this._cache.get(this._key(symbol, interval));
+    if (!arr || arr.length === 0) return null;
+    return arr.slice(-limit);
+  }
+
   // How many symbols are cached for a given interval
   stats(interval) {
     let count = 0;

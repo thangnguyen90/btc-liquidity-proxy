@@ -11,6 +11,7 @@ import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
 import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked, summarizeTopTraderTrend, formatTopTraderTrend } from './discordNotifier.js';
 import { KlineCache } from './klineCache.js';
+import { runPumpScan } from './pumpDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -24,6 +25,7 @@ const client = new BinanceClient({
   baseUrl: process.env.BINANCE_FUTURES_BASE_URL || undefined,
 });
 const klineCache = new KlineCache({ client, maxKlines: 500 });
+const pumpScanCache = { data: null, expiresAt: 0 };
 const symbolCache = { data: null, expiresAt: 0 };
 const snapshotCache = { data: null, expiresAt: 0 };
 const autoTradeState = {
@@ -221,6 +223,23 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/high-volume') {
       return sendJson(response, getHighVolData());
+    }
+
+    if (requestUrl.pathname === '/api/pump-signals') {
+      if (pumpScanCache.data && Date.now() < pumpScanCache.expiresAt) {
+        return sendJson(response, pumpScanCache.data);
+      }
+      const snapshot = await getMarketSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 200)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runPumpScan(topSymbols, klineCache, snapshotMap);
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed };
+      pumpScanCache.data = result;
+      pumpScanCache.expiresAt = Date.now() + 30_000;
+      return sendJson(response, result);
     }
 
     if (requestUrl.pathname === '/api/ls-ratio-scan') {
@@ -531,10 +550,8 @@ server.listen(port, '127.0.0.1', () => {
       const snapshot = await getMarketSnapshot();
       const volDumpMax = Number(process.env.VOL_DUMP_MAX_COINS ?? 150);
       const liqScanMax = Number(process.env.LIQ_SCAN_MAX_COINS ?? 200);
-      const seedMax = Math.max(volDumpMax, liqScanMax);
-      const minVol = Number(process.env.VOL_DUMP_MIN_VOLUME ?? 5_000_000);
+      const seedMax = Math.max(volDumpMax, liqScanMax, 200); // 200 covers pump scan
       const topSymbols = snapshot
-        .filter((r) => r.quoteVolume >= minVol)
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
         .slice(0, seedMax)
         .map((r) => r.symbol);
@@ -3134,14 +3151,16 @@ async function sendStatic(pathname, response) {
     ? '/index.html'
     : pathname === '/signals'
       ? '/signals.html'
-      : pathname === '/orders'
-        ? '/orders.html'
-        : pathname === '/highvol'
-          ? '/highvol.html'
-          : pathname === '/lsratio'
-            ? '/lsratio.html'
-            : pathname === '/paper'
-              ? '/paper.html'
+      : pathname === '/pump'
+        ? '/pump.html'
+        : pathname === '/orders'
+          ? '/orders.html'
+          : pathname === '/highvol'
+            ? '/highvol.html'
+            : pathname === '/lsratio'
+              ? '/lsratio.html'
+              : pathname === '/paper'
+                ? '/paper.html'
               : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);

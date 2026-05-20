@@ -1,0 +1,305 @@
+const API = '/api/pump-signals';
+const REFRESH_MS = 45_000;
+
+let allSignals = [];
+let scannedAt = null;
+let total = 0;
+let refreshTimer = null;
+let countdown = REFRESH_MS / 1000;
+
+const grid        = document.getElementById('pumpGrid');
+const longCount   = document.getElementById('longCount');
+const shortCount  = document.getElementById('shortCount');
+const totalScanned= document.getElementById('totalScanned');
+const lastScan    = document.getElementById('lastScan');
+const nextRefresh = document.getElementById('nextRefresh');
+const scanStatus  = document.getElementById('scanStatus');
+const scanMeta    = document.getElementById('scanMeta');
+const metaTotal   = document.getElementById('metaTotal');
+const metaSignals = document.getElementById('metaSignals');
+const metaTime    = document.getElementById('metaTime');
+const visibleCount= document.getElementById('visibleCount');
+const searchInput = document.getElementById('searchInput');
+const searchClear = document.getElementById('searchClear');
+const actionFilter= document.getElementById('actionFilter');
+const typeFilter  = document.getElementById('typeFilter');
+const scoreFilter = document.getElementById('scoreFilter');
+
+// ── Formatters ────────────────────────────────────────────────────────────────
+
+function fmtPrice(p) {
+  if (p == null || isNaN(p)) return '-';
+  if (p >= 10000) return p.toLocaleString('en', { maximumFractionDigits: 1 });
+  if (p >= 1000)  return p.toLocaleString('en', { maximumFractionDigits: 2 });
+  if (p >= 100)   return p.toFixed(3);
+  if (p >= 1)     return p.toFixed(4);
+  if (p >= 0.01)  return p.toFixed(5);
+  return p.toFixed(6);
+}
+
+function fmtPct(v, digits = 2) {
+  if (v == null || isNaN(v)) return '-';
+  return (v >= 0 ? '+' : '') + Number(v).toFixed(digits) + '%';
+}
+
+function timeAgo(ts) {
+  if (!ts) return '-';
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}s ago`;
+  return `${Math.floor(s / 60)}m ago`;
+}
+
+// ── Signal type labels ────────────────────────────────────────────────────────
+
+const TYPE_LABELS = {
+  pump_breakout: 'Pump Breakout',
+  early_pump:    'Early Pump',
+  climax_top:    'Climax Top',
+  fade_short:    'Fade Short',
+  early_dump:    'Early Dump',
+  dump:          'Sustained Dump',
+  unknown:       'Unknown',
+};
+
+// ── Factor chip builder ───────────────────────────────────────────────────────
+
+function buildFactors(sig) {
+  const f = sig.factors || {};
+  const chips = [];
+
+  // EMA ribbon
+  if (sig.action === 'LONG') {
+    const ribbonOk = f.emaRibbon >= 0.8;
+    chips.push({ label: ribbonOk ? 'EMA ✓' : 'EMA ✗', ok: ribbonOk ? 'ok' : 'warn' });
+  } else {
+    const bearOk = (f.emaBear ?? f.emaRibbon) >= 0.7;
+    chips.push({ label: bearOk ? 'Bear EMA ✓' : 'Bear EMA ✗', ok: bearOk ? 'ok' : '' });
+  }
+
+  // RSI
+  const rsiVal = f.rsi14val;
+  if (rsiVal != null) {
+    const rsiOk = sig.action === 'LONG' ? rsiVal >= 55 : rsiVal <= 50;
+    chips.push({ label: `RSI ${rsiVal}`, ok: rsiOk ? 'ok' : 'warn' });
+  }
+
+  // Volume
+  const vol = f.volRatio ?? f.volume;
+  if (vol != null) {
+    const volOk = vol >= 1.8;
+    chips.push({ label: `Vol ${Number(vol).toFixed(1)}×`, ok: volOk ? 'ok' : '' });
+  }
+
+  // Squeeze (via bbBreak or squeeze factor)
+  if (f.squeeze != null) {
+    const sqOk = f.squeeze >= 0.5;
+    chips.push({ label: sqOk ? 'Squeeze ✓' : 'No Squeeze', ok: sqOk ? 'ok' : '' });
+  }
+
+  // Regime
+  if (f.regime != null) {
+    chips.push({ label: f.regime ? 'Regime ✓' : 'Regime ✗', ok: f.regime ? 'ok' : 'warn' });
+  }
+
+  // Trigger (fade)
+  if (f.trigger) {
+    const t = f.trigger === 'WICK_REJECT_BB_UPPER' ? 'Wick Reject' : 'Breakout Fade';
+    chips.push({ label: t, ok: 'ok' });
+  }
+
+  // Sustained dump extras
+  if (f.consec != null) {
+    chips.push({ label: `${f.consec} nến đỏ`, ok: 'ok' });
+  }
+  if (f.movePct != null) {
+    chips.push({ label: `−${Math.abs(f.movePct).toFixed(2)}%`, ok: f.movePct >= 1.5 ? 'ok' : '' });
+  }
+
+  // Quality penalty (long only)
+  if (f.qPenalty != null && f.qPenalty > 0.05) {
+    chips.push({ label: `Penalty −${(f.qPenalty * 100).toFixed(0)}pt`, ok: 'warn' });
+  }
+
+  // Market distance warning (long only)
+  if (sig.marketOk === false) {
+    chips.push({ label: 'Too far EMA', ok: 'warn' });
+  }
+
+  return chips.map((c) => `<span class="pump-factor ${c.ok}">${c.label}</span>`).join('');
+}
+
+// ── Card builder ──────────────────────────────────────────────────────────────
+
+function buildCard(sig) {
+  const isLong = sig.action === 'LONG';
+  const dirClass = isLong ? 'long' : 'short';
+  const dirIcon  = isLong ? '🟢' : '🔴';
+  const dirLabel = isLong ? 'LONG' : 'SHORT';
+  const changeClass = (sig.change24h ?? 0) >= 0 ? 'positive' : 'negative';
+  const gradeClass  = `grade-${(sig.grade || 'd').toLowerCase()}`;
+  const typeLabel   = TYPE_LABELS[sig.type] ?? sig.type;
+  const detailUrl   = `/?symbol=${sig.symbol}`;
+
+  const slColor = isLong ? 'negative' : 'positive';
+  const tpColor = isLong ? 'positive' : 'negative';
+
+  const factors = buildFactors(sig);
+
+  const marketWarn = sig.marketOk === false
+    ? `<span class="pump-market-warn">⚠ Too far from EMA — wait pullback</span>`
+    : '';
+
+  return `
+    <article class="pump-card ${dirClass}">
+      <div class="pump-card-top">
+        <div class="pump-symbol-wrap">
+          <a class="pump-symbol" href="${detailUrl}" target="_blank">
+            ${sig.symbol.replace(/USDT$/, '')}<span class="sym-usdt">USDT</span>
+          </a>
+          <span class="pump-change ${changeClass}">${fmtPct(sig.change24h)} 24h · ${fmtPrice(sig.markPrice)}</span>
+        </div>
+        <div class="pump-right">
+          <span class="pump-action-badge ${dirClass}">${dirIcon} ${dirLabel}</span>
+          <div class="pump-score-wrap">
+            <span class="pump-score-num">${sig.score}</span>
+            <span class="pump-grade ${gradeClass}">${sig.grade}</span>
+          </div>
+          <span class="pump-type-badge">${typeLabel}</span>
+        </div>
+      </div>
+
+      <div class="pump-prices">
+        <div class="pump-price-cell">
+          <span>Entry</span>
+          <strong>${fmtPrice(sig.entry)}</strong>
+        </div>
+        <div class="pump-price-cell">
+          <span>SL</span>
+          <strong class="${slColor}">${fmtPrice(sig.sl)}</strong>
+        </div>
+        <div class="pump-price-cell">
+          <span>TP</span>
+          <strong class="${tpColor}">${fmtPrice(sig.tp)}</strong>
+        </div>
+      </div>
+
+      <div class="pump-factors">${factors}</div>
+
+      ${marketWarn}
+
+      <div class="pump-note">${sig.note || ''}</div>
+
+      <div class="pump-footer">
+        <span>${timeAgo(sig.scannedAt)}</span>
+        <span>${sig.blockShort ? '🔒 blocks short' : ''}</span>
+      </div>
+    </article>
+  `;
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+
+function render() {
+  const search   = searchInput.value.trim().toUpperCase();
+  const action   = actionFilter.value;
+  const type     = typeFilter.value;
+  const minScore = Number(scoreFilter.value);
+
+  let rows = allSignals.slice();
+
+  if (search) rows = rows.filter((s) => s.symbol.includes(search));
+  if (action !== 'all') rows = rows.filter((s) => s.action === action);
+  if (type !== 'all')   rows = rows.filter((s) => s.type === type);
+  if (minScore > 0)     rows = rows.filter((s) => s.score >= minScore);
+
+  visibleCount.textContent = rows.length;
+
+  const longs  = allSignals.filter((s) => s.action === 'LONG').length;
+  const shorts = allSignals.filter((s) => s.action === 'SHORT').length;
+  longCount.textContent   = longs;
+  shortCount.textContent  = shorts;
+  totalScanned.textContent = total || '-';
+  longCount.className  = longs  > 0 ? 'positive' : '';
+  shortCount.className = shorts > 0 ? 'negative' : '';
+
+  if (scannedAt) {
+    lastScan.textContent = new Date(scannedAt).toLocaleTimeString('vi');
+    metaTime.textContent = new Date(scannedAt).toLocaleTimeString('vi');
+  }
+
+  if (rows.length === 0) {
+    const isEmpty = allSignals.length === 0;
+    grid.innerHTML = `
+      <div class="pump-empty">
+        <strong>${isEmpty ? 'Chưa có signal' : 'Không có kết quả'}</strong>
+        ${isEmpty
+          ? 'Không có coin nào vượt ngưỡng. Thị trường đang sideway hoặc cache chưa warm.'
+          : 'Thử bỏ bộ lọc hoặc hạ min score.'
+        }
+      </div>`;
+    return;
+  }
+
+  grid.innerHTML = rows.map(buildCard).join('');
+}
+
+// ── Fetch ─────────────────────────────────────────────────────────────────────
+
+async function load() {
+  scanStatus.textContent = 'Scanning...';
+  try {
+    const res = await fetch(API);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    allSignals = data.signals ?? [];
+    scannedAt  = data.scannedAt;
+    total      = data.total ?? 0;
+    const processed = data.processed ?? 0;
+
+    scanMeta.style.display = '';
+    metaTotal.textContent   = processed > 0 ? `${processed}/${total}` : total;
+    metaSignals.textContent = allSignals.length;
+
+    scanStatus.textContent = allSignals.length > 0
+      ? `${allSignals.length} signals · ${new Date().toLocaleTimeString('vi')}`
+      : `No signals · ${new Date().toLocaleTimeString('vi')}`;
+
+    render();
+  } catch (e) {
+    scanStatus.textContent = `Error: ${e.message}`;
+  }
+}
+
+// ── Countdown timer ───────────────────────────────────────────────────────────
+
+function startCountdown() {
+  clearInterval(refreshTimer);
+  countdown = REFRESH_MS / 1000;
+  refreshTimer = setInterval(() => {
+    countdown--;
+    nextRefresh.textContent = `Refresh in ${countdown}s`;
+    if (countdown <= 0) {
+      clearInterval(refreshTimer);
+      load().then(startCountdown);
+    }
+  }, 1000);
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+
+searchInput.addEventListener('input', () => {
+  searchClear.style.display = searchInput.value ? '' : 'none';
+  render();
+});
+searchClear.addEventListener('click', () => {
+  searchInput.value = '';
+  searchClear.style.display = 'none';
+  render();
+});
+actionFilter.addEventListener('change', render);
+typeFilter.addEventListener('change', render);
+scoreFilter.addEventListener('change', render);
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+
+load().then(startCountdown);

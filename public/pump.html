@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pump / Climax Signals</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .pump-controls {
+        grid-template-columns: minmax(220px, 1fr) 130px 130px 110px auto;
+      }
+
+      .pump-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+
+      .pump-card {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel);
+        padding: 14px;
+        display: grid;
+        gap: 10px;
+        position: relative;
+        overflow: hidden;
+      }
+      .pump-card::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+      }
+      .pump-card.long::before  { background: var(--green); }
+      .pump-card.short::before { background: var(--red); }
+
+      .pump-card-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .pump-symbol-wrap { display: flex; flex-direction: column; gap: 3px; }
+
+      .pump-symbol {
+        font-size: 18px;
+        font-weight: 900;
+        color: var(--text);
+        text-decoration: none;
+        line-height: 1;
+      }
+      .pump-symbol:hover { color: var(--blue); }
+      .pump-symbol .sym-usdt { color: var(--muted); font-weight: 400; font-size: 13px; }
+
+      .pump-change {
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .pump-right {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 5px;
+        flex-shrink: 0;
+      }
+
+      .pump-action-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        font-weight: 900;
+        padding: 3px 9px;
+        border-radius: 999px;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+      .pump-action-badge.long  { background: rgba(54,211,153,.15); color: var(--green); border: 1px solid rgba(54,211,153,.3); }
+      .pump-action-badge.short { background: rgba(251,113,133,.15); color: var(--red);   border: 1px solid rgba(251,113,133,.3); }
+
+      .pump-score-wrap {
+        display: flex;
+        align-items: baseline;
+        gap: 5px;
+      }
+      .pump-score-num {
+        font-size: 22px;
+        font-weight: 900;
+        line-height: 1;
+      }
+      .pump-grade {
+        font-size: 12px;
+        font-weight: 800;
+        padding: 1px 6px;
+        border-radius: 4px;
+      }
+      .grade-a { background: rgba(54,211,153,.2); color: var(--green); }
+      .grade-b { background: rgba(96,165,250,.2); color: var(--blue); }
+      .grade-c { background: rgba(251,191,36,.2);  color: var(--amber); }
+      .grade-d { background: rgba(157,170,165,.15); color: var(--muted); }
+
+      .pump-type-badge {
+        font-size: 10px;
+        font-weight: 700;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: var(--panel-2);
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: .04em;
+      }
+
+      .pump-prices {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+      .pump-price-cell {
+        background: var(--panel-2);
+        border-radius: 6px;
+        padding: 8px 10px;
+        display: grid;
+        gap: 3px;
+      }
+      .pump-price-cell span { font-size: 10px; color: var(--muted); text-transform: uppercase; font-weight: 700; }
+      .pump-price-cell strong { font-size: 13px; font-weight: 700; }
+
+      .pump-factors {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .pump-factor {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 4px;
+        background: var(--panel-2);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .pump-factor.ok   { background: rgba(54,211,153,.1); color: var(--green); }
+      .pump-factor.warn { background: rgba(251,113,133,.1); color: var(--red); }
+
+      .pump-note {
+        font-size: 11px;
+        color: var(--muted);
+        font-family: 'SF Mono', 'Fira Code', monospace;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+
+      .pump-reason {
+        font-size: 12px;
+        color: #d7dfdc;
+        line-height: 1.5;
+      }
+
+      .pump-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-top: 1px solid var(--line);
+        padding-top: 8px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .pump-market-warn {
+        font-size: 10px;
+        color: var(--amber);
+        font-weight: 700;
+      }
+
+      .pump-empty {
+        grid-column: 1 / -1;
+        text-align: center;
+        padding: 48px 0;
+        color: var(--muted);
+      }
+      .pump-empty strong { display: block; font-size: 18px; margin-bottom: 6px; color: var(--text); }
+
+      .scan-meta {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-size: 12px;
+        color: var(--muted);
+        padding: 10px 14px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        margin-top: 10px;
+      }
+      .scan-meta strong { color: var(--text); }
+      .scan-meta .scan-dot { color: var(--green); font-size: 10px; }
+
+      @media (max-width: 640px) {
+        .pump-controls { grid-template-columns: 1fr 1fr; }
+        .pump-controls .search-field { grid-column: 1 / -1; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell wide-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Pump · Climax · Breakdown</p>
+          <h1>Pump Signal Board</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Detail</a>
+          <a class="nav-link" href="/signals">Signals</a>
+          <a class="nav-link" href="/highvol">High Vol</a>
+          <a class="nav-link" href="/lsratio">L/S Ratio</a>
+          <a class="nav-link" href="/orders">Orders</a>
+          <div class="status" id="scanStatus">Loading...</div>
+        </div>
+      </section>
+
+      <section class="summary-grid signal-summary">
+        <article class="metric">
+          <span>LONG Signals</span>
+          <strong id="longCount">-</strong>
+          <small>Pump breakout / Early pump</small>
+        </article>
+        <article class="metric">
+          <span>SHORT Signals</span>
+          <strong id="shortCount">-</strong>
+          <small>Climax / Fade / Dump</small>
+        </article>
+        <article class="metric">
+          <span>Coins Scanned</span>
+          <strong id="totalScanned">-</strong>
+          <small>Top by volume · 15m</small>
+        </article>
+        <article class="metric">
+          <span>Last Scan</span>
+          <strong id="lastScan">-</strong>
+          <small id="nextRefresh">Refresh every 45s</small>
+        </article>
+      </section>
+
+      <section class="controls pump-controls">
+        <label class="field search-field">
+          <span>Search</span>
+          <input id="searchInput" placeholder="BTC, ETH, SOL..." autocomplete="off">
+          <button id="searchClear" class="search-clear" type="button" style="display:none">✕</button>
+        </label>
+        <label class="field">
+          <span>Direction</span>
+          <select id="actionFilter">
+            <option value="all">All</option>
+            <option value="LONG">Long only</option>
+            <option value="SHORT">Short only</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Type</span>
+          <select id="typeFilter">
+            <option value="all">All types</option>
+            <option value="pump_breakout">Pump Breakout</option>
+            <option value="early_pump">Early Pump</option>
+            <option value="climax_top">Climax Top</option>
+            <option value="fade_short">Fade Short</option>
+            <option value="early_dump">Early Dump</option>
+            <option value="dump">Sustained Dump</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Min Score</span>
+          <select id="scoreFilter">
+            <option value="0">Any</option>
+            <option value="55">≥ 55 (C+)</option>
+            <option value="70">≥ 70 (B+)</option>
+            <option value="85">≥ 85 (A)</option>
+          </select>
+        </label>
+        <div class="socket-note">
+          <strong id="visibleCount">0</strong>
+          <span>signals</span>
+        </div>
+      </section>
+
+      <div id="scanMeta" class="scan-meta" style="display:none">
+        <span class="scan-dot">●</span>
+        <span>Cached <strong id="metaTotal">0</strong> coins</span>
+        <span>·</span>
+        <span>Found <strong id="metaSignals">0</strong> signals</span>
+        <span>·</span>
+        <span>Updated <strong id="metaTime">-</strong></span>
+      </div>
+
+      <div class="pump-grid" id="pumpGrid">
+        <div class="pump-empty">
+          <strong>Đang tải...</strong>
+          Đang quét top coins
+        </div>
+      </div>
+    </main>
+
+    <script src="/pump.js" type="module"></script>
+  </body>
+</html>
