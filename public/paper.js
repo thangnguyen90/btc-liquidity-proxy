@@ -179,6 +179,12 @@ function renderOpen(trades) {
   }
   els.openBody.innerHTML = open.map((t) => `
     <tr>
+      <td>
+        ${t.status === 'OPEN' && !t.binanceOrderId ? `<button class="action-btn market-btn" data-open-binance="${t.id}">Open Binance</button>` : ''}
+        ${t.status === 'ENTRY_READY' ? `<button class="action-btn market-btn" data-market="${t.id}">Market $2</button>` : ''}
+        ${t.status === 'OPEN' ? `<button class="action-btn close-btn" data-close="${t.id}">Close</button>` : ''}
+        <button class="action-btn cancel-btn" data-delete="${t.id}">Delete</button>
+      </td>
       <td><strong>${t.symbol}</strong></td>
       <td class="paper-side ${t.side === 'LONG' ? 'paper-long' : 'paper-short'}">${t.side}</td>
       <td>${t.status}</td>
@@ -191,11 +197,6 @@ function renderOpen(trades) {
       <td class="${clsPnl(t.roe)}">${fmt(t.roe, 2)}%</td>
       <td>${fmtTime(t.openedAt ?? t.createdAt)}</td>
       <td>${escapeHtml(t.note ?? '')}</td>
-      <td>
-        ${t.status === 'ENTRY_READY' ? `<button class="action-btn market-btn" data-market="${t.id}">Market $2</button>` : ''}
-        ${t.status === 'OPEN' ? `<button class="action-btn close-btn" data-close="${t.id}">Close</button>` : ''}
-        <button class="action-btn cancel-btn" data-delete="${t.id}">Delete</button>
-      </td>
     </tr>
   `).join('');
 }
@@ -266,8 +267,10 @@ document.addEventListener('click', (event) => {
   }
   const closeId = event.target?.dataset?.close;
   const marketId = event.target?.dataset?.market;
+  const openBinanceId = event.target?.dataset?.openBinance;
   const deleteId = event.target?.dataset?.delete;
   if (marketId) placeBinanceMarket(marketId);
+  if (openBinanceId) placeBinanceMarket(openBinanceId);
   if (closeId) closeTrade(closeId);
   if (deleteId) deleteTrade(deleteId);
 });

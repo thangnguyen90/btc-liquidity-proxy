@@ -1009,8 +1009,12 @@ async function placeBinanceMarketFromPaperTrade(payload) {
   const idx = store.trades.findIndex((t) => t.id === id);
   if (idx < 0) throw new Error('Paper trade not found.');
   const trade = store.trades[idx];
-  if (trade.status !== 'ENTRY_READY') {
-    throw new Error(`Paper trade must be ENTRY_READY. Current status: ${trade.status}`);
+  if (!['ENTRY_READY', 'OPEN'].includes(trade.status)) {
+    throw new Error(`Paper trade must be ENTRY_READY or OPEN. Current status: ${trade.status}`);
+  }
+  // OPEN trade đã có binanceOrderId → không đặt lại
+  if (trade.status === 'OPEN' && trade.binanceOrderId) {
+    throw new Error(`Paper trade đã được đặt lên Binance (orderId=${trade.binanceOrderId}).`);
   }
 
   const { apiKey, apiSecret } = getApiCredentials(null);
@@ -1083,6 +1087,73 @@ function appendPaperNote(note, part) {
   return [String(note ?? '').trim(), part].filter(Boolean).join(' | ');
 }
 
+async function autoPlaceBinanceOnEntryReady(trade, reason, markPrice) {
+  if (process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION !== 'true') return;
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const marginUsdt = Number(process.env.AUTO_LIQ_PROBE_MARGIN ?? 1);
+    const leverage = Math.max(1, Math.min(125, Number(trade.leverage ?? process.env.AUTO_LIQ_ORDER_LEVERAGE ?? 10)));
+    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+    const symbol = normalizeSymbol(trade.symbol);
+    const side = trade.side === 'LONG' ? 'BUY' : 'SELL';
+
+    const [symbols, premiumIndex] = await Promise.all([getSymbols(), client.getPremiumIndex(symbol)]);
+    const symbolInfo = symbols.find((s) => s.symbol === symbol);
+    if (!symbolInfo) { console.warn(`[AutoProbe] ${symbol} not in symbols`); return; }
+
+    const currentMark = Number(premiumIndex.markPrice) || markPrice;
+    const quantity = quantityFromNotional(symbolInfo, marginUsdt * leverage, currentMark, false);
+    await client.setLeverage({ symbol, leverage, apiKey, apiSecret, recvWindow }).catch(() => {});
+
+    const isHedge = await getHedgeMode(null);
+    const positionSide = isHedge ? (side === 'BUY' ? 'LONG' : 'SHORT') : undefined;
+    const params = { symbol, side, type: 'MARKET', quantity, recvWindow, newClientOrderId: `paper_probe_${Date.now()}`.slice(0, 36) };
+    if (isHedge) params.positionSide = positionSide; else params.reduceOnly = 'false';
+
+    const orderResult = await client.placeFuturesOrder({ params, apiKey, apiSecret });
+    const executedQty = Number(orderResult.executedQty ?? quantity);
+    const avgPrice = Number(orderResult.avgPrice ?? 0) || currentMark;
+
+    // Update paper trade → OPEN
+    const store = await readPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id);
+    if (idx >= 0) {
+      store.trades[idx] = {
+        ...store.trades[idx],
+        status: 'OPEN',
+        marginUsdt,
+        leverage,
+        quantity: executedQty,
+        entryPrice: avgPrice,
+        openedAt: new Date().toISOString(),
+        binancePlacedAt: new Date().toISOString(),
+        binanceOrderId: orderResult.orderId,
+        binanceClientOrderId: orderResult.clientOrderId,
+        binanceStatus: orderResult.status,
+        note: appendPaperNote(store.trades[idx].note, `autoProbe=placed margin=${marginUsdt} mark=${avgPrice}`),
+      };
+      await writePaperStore(store);
+    }
+
+    console.log(`[AutoProbe] ✅ ${symbol} ${trade.side} MARKET @${avgPrice} margin=${marginUsdt} qty=${executedQty}`);
+
+    // Discord notification
+    const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+    if (webhookUrl) {
+      const dirIcon = trade.side === 'LONG' ? '🟢' : '🔴';
+      fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          content: `${dirIcon} **[AutoProbe] ${symbol} ${trade.side}** MARKET @${avgPrice}\n💰 Margin: $${marginUsdt} × ${leverage}x\n📋 Lý do: ${reason ?? trade.note ?? '-'}`,
+        }),
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.error(`[AutoProbe] ❌ ${trade.symbol}:`, err.message);
+  }
+}
+
 async function createLiqPaperTrade({ symbol, markPrice, direction, sweepTargetPrice, sweepProb, confirmation = null }) {
   if (process.env.PAPER_LIQ_ENABLED === 'false') return null;
   const minProb = Number(process.env.PAPER_LIQ_MIN_PROB ?? 80);
@@ -1108,6 +1179,7 @@ async function createLiqPaperTrade({ symbol, markPrice, direction, sweepTargetPr
       };
       await writePaperStore(store);
       console.log(`[PaperLiq] 🎯 ENTRY_READY ${symbol} ${side} mark=${markPrice} reason=${confirmation.reason}`);
+      autoPlaceBinanceOnEntryReady(store.trades[existingIdx], confirmation.reason, markPrice).catch(() => {});
       return { trade: enrichPaperTrade(store.trades[existingIdx], markPrice) };
     }
     console.log(`[PaperLiq] ⏭ ${symbol} ${side} skip — paper trade đang chờ/sẵn sàng/mở`);
@@ -1134,6 +1206,9 @@ async function createLiqPaperTrade({ symbol, markPrice, direction, sweepTargetPr
     note,
   });
   console.log(`[PaperLiq] ${status === 'ENTRY_READY' ? '🎯' : '🕓'} ${symbol} ${side} ${status} entry=${sweepTargetPrice || markPrice} mark=${markPrice} margin=${marginUsdt} lev=${leverage}x sweepProb=${sweepProb}%`);
+  if (status === 'ENTRY_READY' && result?.trade) {
+    autoPlaceBinanceOnEntryReady(result.trade, confirmation?.reason ?? note, markPrice).catch(() => {});
+  }
   return result;
 }
 
@@ -1821,17 +1896,20 @@ async function getHedgeMode(token = null) {
 }
 
 function getApiCredentials(token = null) {
-  const creds = token ? sessionCredentials.get(token) : null;
-  let apiKey = creds?.apiKey || process.env.BINANCE_API_KEY;
-  let apiSecret = creds?.apiSecret || process.env.BINANCE_API_SECRET;
-  // Background services (auto-trader, TSL) run with token=null — fall back to any logged-in session
-  if ((!apiKey || !apiSecret) && sessionCredentials.size > 0) {
-    const first = sessionCredentials.values().next().value;
-    apiKey = apiKey || first?.apiKey;
-    apiSecret = apiSecret || first?.apiSecret;
+  // Token cụ thể → dùng session của token đó
+  if (token) {
+    const creds = sessionCredentials.get(token);
+    const apiKey = creds?.apiKey || process.env.BINANCE_API_KEY;
+    const apiSecret = creds?.apiSecret || process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw new Error('Missing Binance API credentials. Enter API key on login or set BINANCE_API_KEY in .env.');
+    return { apiKey, apiSecret };
   }
-  if (!apiKey || !apiSecret) throw new Error('Missing Binance API credentials. Enter API key on login or set BINANCE_API_KEY in .env.');
-  return { apiKey, apiSecret };
+  // Background (token=null): chỉ dùng session đã đăng nhập, không lấy từ env
+  if (sessionCredentials.size > 0) {
+    const first = sessionCredentials.values().next().value;
+    if (first?.apiKey && first?.apiSecret) return { apiKey: first.apiKey, apiSecret: first.apiSecret };
+  }
+  throw new Error('Chưa đăng nhập. Vào /orders và nhập API key để sử dụng.');
 }
 
 async function getAccountBalance(token = null) {
