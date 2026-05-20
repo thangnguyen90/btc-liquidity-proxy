@@ -387,6 +387,7 @@ const bigCandleCooldowns = new Map();
 
 export function startVolumeDumpScanner({
   client,
+  klineCache,
   webhookUrl,
   bigCandleWebhookUrl,
   getSnapshot,
@@ -401,7 +402,9 @@ export function startVolumeDumpScanner({
   bigCandlePct = 8,
   bigCandleCooldownMs = 3_600_000,
 }) {
-  console.log(`[VolDump] Started. volMult=${volMult}x sustained=${sustainedCandles} dumpPct=${dumpPct}% interval=${intervalMs / 1000}s${webhookUrl ? '' : ' (no webhook — tracking only)'}`);
+  const getKlines = (symbol, interval, limit) =>
+    klineCache ? klineCache.getKlines(symbol, interval, limit) : client.getKlines(symbol, interval, limit);
+  console.log(`[VolDump] Started. volMult=${volMult}x sustained=${sustainedCandles} dumpPct=${dumpPct}% interval=${intervalMs / 1000}s${klineCache ? ' ws-cache' : ''}${webhookUrl ? '' : ' (no webhook — tracking only)'}`);
 
   const run = async () => {
     try {
@@ -415,7 +418,7 @@ export function startVolumeDumpScanner({
 
       for (const row of candidates) {
         try {
-          const klines = await client.getKlines(row.symbol, '15m', 42);
+          const klines = await getKlines(row.symbol, '15m', 42);
           if (klines.length < 22) continue;
 
           const closed = klines.slice(0, -1);
@@ -506,8 +509,6 @@ export function startVolumeDumpScanner({
             await sendWebhook(webhookUrl, embed);
           }
           console.log(`[VolDump] Alert: ${row.symbol} dump=${dumpCandlePct.toFixed(2)}% 4c=${move4cPctVal.toFixed(2)}% hvol=${highVolCount}/5`);
-
-          await new Promise((r) => setTimeout(r, 300));
         } catch {
           // skip individual coin failures
         }
@@ -597,6 +598,7 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null) {
 
 export function startLiqImbalanceScanner({
   client,
+  klineCache,
   webhookUrl,
   highProbWebhookUrl,
   getSnapshot,
@@ -608,7 +610,9 @@ export function startLiqImbalanceScanner({
   onHighProbAlert = null,
   highProbThreshold = 90,
 }) {
-  console.log(`[LiqScan] Started. threshold=±${biasThreshold} interval=${intervalMs / 60000}min cooldown=${cooldownMs / 60000}min${onHighProbAlert ? ` autoOrder≥${highProbThreshold}%` : ''}`);
+  const getKlines = (symbol, interval, limit) =>
+    klineCache ? klineCache.getKlines(symbol, interval, limit) : client.getKlines(symbol, interval, limit);
+  console.log(`[LiqScan] Started. threshold=±${biasThreshold} interval=${intervalMs / 60000}min cooldown=${cooldownMs / 60000}min${klineCache ? ' ws-cache' : ''}${onHighProbAlert ? ` autoOrder≥${highProbThreshold}%` : ''}`);
 
   const run = async () => {
     try {
@@ -626,7 +630,7 @@ export function startLiqImbalanceScanner({
       let alertCount = 0;
       for (const row of candidates) {
         try {
-          const klines = await client.getKlines(row.symbol, '15m', 500);
+          const klines = await getKlines(row.symbol, '15m', 500);
           const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice });
           const total = heatmap.liquidityAbove + heatmap.liquidityBelow;
 
@@ -675,8 +679,6 @@ export function startLiqImbalanceScanner({
             alertCount++;
             console.log(`[LiqScan] Alert: ${row.symbol} bias=${heatmap.bias.toFixed(3)} above=${compact(heatmap.liquidityAbove)} below=${compact(heatmap.liquidityBelow)} sweepProb=${sweepProb}%`);
           }
-
-          await new Promise((r) => setTimeout(r, 300));
         } catch (err) {
           // skip individual coin failures silently
         }

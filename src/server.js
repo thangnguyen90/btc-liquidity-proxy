@@ -10,6 +10,7 @@ import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
 import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked } from './discordNotifier.js';
+import { KlineCache } from './klineCache.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -21,6 +22,7 @@ const publicDir = join(rootDir, 'public');
 const client = new BinanceClient({
   baseUrl: process.env.BINANCE_FUTURES_BASE_URL || undefined,
 });
+const klineCache = new KlineCache({ client, maxKlines: 500 });
 const symbolCache = { data: null, expiresAt: 0 };
 const snapshotCache = { data: null, expiresAt: 0 };
 const autoTradeState = {
@@ -417,7 +419,27 @@ server.listen(port, '127.0.0.1', () => {
   setTimeout(() => {
     startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: tslIntervalMs });
   }, 12000);
-  setTimeout(() => {
+  setTimeout(async () => {
+    // Seed kline cache before starting scanners so REST calls are eliminated from the first scan.
+    // getMarketSnapshot() is cheap (cached for 15s) and gives us the top coins by volume.
+    try {
+      const snapshot = await getMarketSnapshot();
+      const volDumpMax = Number(process.env.VOL_DUMP_MAX_COINS ?? 150);
+      const liqScanMax = Number(process.env.LIQ_SCAN_MAX_COINS ?? 200);
+      const seedMax = Math.max(volDumpMax, liqScanMax);
+      const minVol = Number(process.env.VOL_DUMP_MIN_VOLUME ?? 5_000_000);
+      const topSymbols = snapshot
+        .filter((r) => r.quoteVolume >= minVol)
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, seedMax)
+        .map((r) => r.symbol);
+      // Fire-and-forget: seeding runs in background while scanners start
+      // LiqScan needs 500 candles; VolDump only needs 42 but 500 covers both
+      klineCache.seed(topSymbols, '15m', 500).catch(() => {});
+    } catch (err) {
+      console.warn('[KlineCache] Seed failed:', err.message);
+    }
+
     startDiscordScanner({
       client,
       webhookUrl: process.env.DISCORD_WEBHOOK_URL || '',
@@ -428,6 +450,7 @@ server.listen(port, '127.0.0.1', () => {
     });
     startLiqImbalanceScanner({
       client,
+      klineCache,
       webhookUrl: process.env.LIQ_SCAN_WEBHOOK_URL || '',
       highProbWebhookUrl: process.env.LIQ_HIGH_PROB_WEBHOOK_URL || '',
       getSnapshot: getMarketSnapshot,
@@ -441,6 +464,7 @@ server.listen(port, '127.0.0.1', () => {
     });
     startVolumeDumpScanner({
       client,
+      klineCache,
       webhookUrl: process.env.VOL_DUMP_WEBHOOK_URL || process.env.LIQ_SCAN_WEBHOOK_URL || '',
       bigCandleWebhookUrl: process.env.BIG_CANDLE_WEBHOOK_URL || '',
       getSnapshot: getMarketSnapshot,
