@@ -219,6 +219,10 @@
           <a class="nav-link" href="/highvol">High Vol</a>
           <a class="nav-link" href="/lsratio">L/S Ratio</a>
           <a class="nav-link" href="/orders">Orders</a>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:var(--text)">
+            <input type="checkbox" id="pumpAutoOrderChk" style="width:15px;height:15px;cursor:pointer">
+            Auto LIMIT ≥90
+          </label>
           <div class="status" id="scanStatus">Loading...</div>
         </div>
       </section>
@@ -266,6 +270,7 @@
             <option value="all">All types</option>
             <option value="pump_breakout">Pump Breakout</option>
             <option value="early_pump">Early Pump</option>
+            <option value="ema_pullback">EMA Pullback</option>
             <option value="climax_top">Climax Top</option>
             <option value="fade_short">Fade Short</option>
             <option value="early_dump">Early Dump</option>

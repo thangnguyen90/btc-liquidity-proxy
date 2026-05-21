@@ -96,6 +96,7 @@ export class KlineCache extends EventEmitter {
         const closed = k.x === true;
         this._applyTick(k.s, k.i, k);
         if (closed) this.emit('candleClose', { symbol: k.s, interval: k.i });
+        else this.emit('candleTick', { symbol: k.s, interval: k.i });
       } catch {}
     });
 

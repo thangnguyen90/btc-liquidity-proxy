@@ -1,5 +1,24 @@
 const SSE_URL = '/api/pump-stream';
 
+const pumpAutoOrderChk = document.getElementById('pumpAutoOrderChk');
+
+(async () => {
+  try {
+    const res = await fetch('/api/pump-auto-order-enabled');
+    if (res.ok) { const { enabled } = await res.json(); pumpAutoOrderChk.checked = !!enabled; }
+  } catch {}
+})();
+
+pumpAutoOrderChk.addEventListener('change', async () => {
+  try {
+    await fetch('/api/pump-auto-order-enabled', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: pumpAutoOrderChk.checked }),
+    });
+  } catch { pumpAutoOrderChk.checked = !pumpAutoOrderChk.checked; }
+});
+
 let allSignals = [];
 let scannedAt  = null;
 let total      = 0;
@@ -51,6 +70,7 @@ function timeAgo(ts) {
 const TYPE_LABELS = {
   pump_breakout: 'Pump Breakout',
   early_pump:    'Early Pump',
+  ema_pullback:  'EMA Pullback',
   climax_top:    'Climax Top',
   fade_short:    'Fade Short',
   early_dump:    'Early Dump',
@@ -210,11 +230,14 @@ function render() {
 
   if (rows.length === 0) {
     const isEmpty = allSignals.length === 0;
+    const isWarm  = total > 0;
     grid.innerHTML = `
       <div class="pump-empty">
-        <strong>${isEmpty ? 'Chưa có signal' : 'Không có kết quả'}</strong>
+        <strong>${isEmpty ? (isWarm ? 'Không có signal' : 'Đang warm cache...') : 'Không có kết quả'}</strong>
         ${isEmpty
-          ? 'Không có coin nào vượt ngưỡng. Thị trường đang sideway hoặc cache chưa warm.'
+          ? (isWarm
+              ? 'Không có coin nào vượt ngưỡng lúc này. Thị trường đang sideway.'
+              : 'Kline cache đang được tải. Tự động cập nhật khi xong (~30-60s).')
           : 'Thử bỏ bộ lọc hoặc hạ min score.'
         }
       </div>`;
@@ -252,7 +275,7 @@ function applyData(data) {
       staleEl.style.cssText = 'background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);border-radius:6px;padding:8px 14px;font-size:12px;color:#fbbf24;margin-top:8px';
       scanMeta.insertAdjacentElement('afterend', staleEl);
     }
-    staleEl.textContent = `⚠ Kline data stale — last tick ${staleSec}s ago. WebSocket đang reconnect.`;
+    staleEl.textContent = `⚠ Kline data stale${staleSec != null ? ` — last tick ${staleSec}s ago` : ''}. WebSocket đang reconnect.`;
   } else if (staleEl) {
     staleEl.remove();
   }
@@ -272,7 +295,12 @@ function connect() {
   };
 
   es.onmessage = (e) => {
-    try { applyData(JSON.parse(e.data)); } catch {}
+    try {
+      const data = JSON.parse(e.data);
+      // Không ghi đè data tốt bằng data trống từ SSE
+      if ((data.signals ?? []).length === 0 && allSignals.length > 0) return;
+      applyData(data);
+    } catch {}
   };
 
   es.onerror = () => {
@@ -300,4 +328,24 @@ scoreFilter.addEventListener('change', render);
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-connect();
+// Load data qua REST; nếu cache chưa warm (processed=0) thì retry với backoff
+async function fetchAndApply(attempt = 0) {
+  try {
+    scanStatus.textContent = attempt === 0 ? 'Đang tải...' : `Warming cache... (${attempt})`;
+    const res = await fetch('/api/pump-signals');
+    if (res.ok) {
+      const data = await res.json();
+      applyData(data);
+      if ((data.processed ?? 0) === 0 && attempt < 12) {
+        // Cache chưa warm — retry với backoff (5s, 8s, 12s, 18s, ...)
+        const delay = Math.min(5000 + attempt * 3000, 20000);
+        setTimeout(() => fetchAndApply(attempt + 1), delay);
+      }
+    }
+  } catch {}
+}
+
+(async () => {
+  await fetchAndApply();
+  connect();
+})();

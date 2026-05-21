@@ -58,6 +58,10 @@ async function schedulePumpScan() {
       pumpScanCache.data = result;
       pumpScanCache.expiresAt = Date.now() + 30_000;
       pushSse(pumpSseClients, result);
+      // Auto-order: đặt LIMIT $1 cho signal score≥90 + marketOk
+      for (const sig of signals) {
+        handlePumpAutoOrder(sig).catch((e) => console.error('[PumpAuto] unhandled:', e.message));
+      }
     } catch (e) {
       console.error('[PumpScan] error:', e.message);
     }
@@ -73,7 +77,7 @@ async function scheduleCapScan() {
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols  = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
-        .slice(0, 200)
+        .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runCapScan(topSymbols, klineCache, snapshotMap);
       const cacheStats = klineCache.stats('15m');
@@ -92,6 +96,36 @@ klineCache.on('candleClose', ({ interval }) => {
   schedulePumpScan();
   scheduleCapScan();
 });
+
+// Scan theo tick (mỗi khi có cập nhật nến) với debounce 60s — bắt signal sớm hơn trong nến
+let _tickScanDebounce = null;
+klineCache.on('candleTick', ({ interval }) => {
+  if (interval !== '15m') return;
+  clearTimeout(_tickScanDebounce);
+  _tickScanDebounce = setTimeout(() => {
+    schedulePumpScan();
+    scheduleCapScan();
+  }, 60_000);
+});
+
+// Chạy scan ngay sau 30s để có data ban đầu dù WebSocket chưa kết nối
+setTimeout(() => { schedulePumpScan(); scheduleCapScan(); }, 30_000);
+
+// Fallback: scan mỗi 5 phút kể cả khi WebSocket không có tick
+setInterval(async () => {
+  schedulePumpScan();
+  scheduleCapScan();
+  // Re-seed nếu WebSocket stale (không có tick trong 3 phút)
+  const stats = klineCache.stats('15m');
+  if (stats.isStale) {
+    try {
+      const snapshot = await getMarketSnapshot();
+      const topSymbols = snapshot.sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, 400).map((r) => r.symbol);
+      klineCache.seed(topSymbols, '15m', 500).catch(() => {});
+      console.log('[KlineCache] Re-seed triggered (WebSocket stale)');
+    } catch {}
+  }
+}, 5 * 60 * 1000);
 const symbolCache = { data: null, expiresAt: 0 };
 const snapshotCache = { data: null, expiresAt: 0 };
 const autoTradeState = {
@@ -113,6 +147,7 @@ const runtimeSettings = {
   btcReversalGuardRoe: 1,
   autoProbeEnabled: process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION === 'true',
   autoProbeMargin: Number(process.env.AUTO_LIQ_PROBE_MARGIN ?? 1),
+  pumpAutoOrderEnabled: process.env.PUMP_AUTO_ORDER_ENABLED === 'true',
 };
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
 let tslScanner = null;
@@ -299,8 +334,8 @@ const server = createServer(async (request, response) => {
         'X-Accel-Buffering': 'no',
       });
       response.write(': connected\n\n');
-      // Send latest cached result immediately so client doesn't wait for next candle
-      if (pumpScanCache.data) {
+      // Chỉ push cache nếu có signals hoặc đã processed xong
+      if (pumpScanCache.data && (pumpScanCache.data.signals?.length > 0 || pumpScanCache.data.processed > 0)) {
         response.write(`data: ${JSON.stringify(pumpScanCache.data)}\n\n`);
       }
       pumpSseClients.add(response);
@@ -319,6 +354,10 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runPumpScan(topSymbols, klineCache, snapshotMap);
+      // Cache trống → seed ngay, scan lại sau 15s
+      if (processed === 0) {
+        klineCache.seed(topSymbols, '15m', 500).then(() => schedulePumpScan()).catch(() => {});
+      }
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       pumpScanCache.data = result;
@@ -334,7 +373,7 @@ const server = createServer(async (request, response) => {
         'X-Accel-Buffering': 'no',
       });
       response.write(': connected\n\n');
-      if (capScanCache.data) {
+      if (capScanCache.data && (capScanCache.data.signals?.length > 0 || capScanCache.data.processed > 0)) {
         response.write(`data: ${JSON.stringify(capScanCache.data)}\n\n`);
       }
       capSseClients.add(response);
@@ -350,9 +389,12 @@ const server = createServer(async (request, response) => {
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
-        .slice(0, 200)
+        .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runCapScan(topSymbols, klineCache, snapshotMap);
+      if (processed === 0) {
+        klineCache.seed(topSymbols, '15m', 500).then(() => scheduleCapScan()).catch(() => {});
+      }
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       capScanCache.data = result;
@@ -431,6 +473,20 @@ const server = createServer(async (request, response) => {
     if (requestUrl.pathname === '/api/paper-trades/delete' && request.method === 'POST') {
       await sendJson(response, await deletePaperTrade(await readJsonBody(request)));
       return;
+    }
+
+    if (requestUrl.pathname === '/api/pump-auto-order-enabled') {
+      if (request.method === 'GET') {
+        await sendJson(response, { enabled: runtimeSettings.pumpAutoOrderEnabled });
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        if (typeof body.enabled === 'boolean') runtimeSettings.pumpAutoOrderEnabled = body.enabled;
+        console.log(`[PumpAuto] ${runtimeSettings.pumpAutoOrderEnabled ? '✅ Bật' : '⏸ Tắt'} pump auto order`);
+        await sendJson(response, { enabled: runtimeSettings.pumpAutoOrderEnabled });
+        return;
+      }
     }
 
     if (requestUrl.pathname === '/api/auto-probe-enabled') {
@@ -662,7 +718,7 @@ server.listen(port, '127.0.0.1', () => {
     startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: tslIntervalMs });
   }, 12000);
   setTimeout(async () => {
-    // Seed kline cache before starting scanners so REST calls are eliminated from the first scan.
+    // Seed kline cache sớm để pump/cap scan có data ngay khi browser mở trang.
     // getMarketSnapshot() is cheap (cached for 15s) and gives us the top coins by volume.
     try {
       const snapshot = await getMarketSnapshot();
@@ -719,7 +775,7 @@ server.listen(port, '127.0.0.1', () => {
       bigCandlePct: Number(process.env.BIG_CANDLE_DROP_PCT ?? 8),
       bigCandleCooldownMs: 3_600_000,
     });
-  }, 17000);
+  }, 5000);
   setTimeout(() => {
     runStaleOrderCleaner(); // seed initial position set, no cancellations on first run
     setInterval(runStaleOrderCleaner, 30000);
@@ -2629,6 +2685,77 @@ function getLiqHighProbHandler() {
       await handleLiqAutoOrder(payload);
     }
   };
+}
+
+const pumpAutoOrderFired = new Map(); // symbol → timestamp
+
+async function handlePumpAutoOrder(signal) {
+  if (!runtimeSettings.pumpAutoOrderEnabled) return;
+  const { symbol, action, score, marketOk, entry, sl, factors } = signal;
+  if (score < 90) return;
+  if (marketOk === false) return;
+  if (!entry || !sl) return;
+
+  const last = pumpAutoOrderFired.get(symbol) ?? 0;
+  if (Date.now() - last < 2 * 3600 * 1000) {
+    console.log(`[PumpAuto] ⏭ ${symbol} skip — 2h dedup`);
+    return;
+  }
+
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const margin = Number(process.env.PUMP_AUTO_ORDER_MARGIN ?? 1);
+    const leverage = Number(process.env.PUMP_AUTO_ORDER_LEVERAGE ?? 10);
+    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+    const maxLimitOrders = Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30);
+
+    const openOrders = await client.getOpenOrders({ apiKey, apiSecret });
+    const openLimitEntries = openOrders.filter((o) => o.type === 'LIMIT' && !o.reduceOnly);
+    if (openLimitEntries.some((o) => o.symbol === symbol)) {
+      console.log(`[PumpAuto] ⏭ ${symbol} skip — already has LIMIT order`);
+      return;
+    }
+    if (openLimitEntries.length >= maxLimitOrders) {
+      console.log(`[PumpAuto] ⚠ ${symbol} skip — max ${maxLimitOrders} limit orders reached`);
+      return;
+    }
+
+    const symbols = await getSymbols();
+    const info = symbols.find((s) => s.symbol === symbol);
+    const tickSize = Number(info?.filters?.find((f) => f.filterType === 'PRICE_FILTER')?.tickSize ?? 0);
+    const stepSize = Number(info?.filters?.find((f) => f.filterType === 'LOT_SIZE')?.stepSize ?? 0);
+
+    await client.setLeverage({ symbol, leverage, apiKey, apiSecret, recvWindow });
+
+    const premiumIndex = await client.getPremiumIndex(symbol);
+    const markPrice = Number(premiumIndex.markPrice);
+    const notional = margin * leverage;
+    const qtyRaw = notional / entry;
+    const qty = stepSize > 0 ? Math.floor(qtyRaw / stepSize) * stepSize : qtyRaw;
+    const qtyStr = stepSize > 0 ? qty.toFixed(Math.max(0, -Math.floor(Math.log10(stepSize)))) : qty.toFixed(6);
+    const side = action === 'LONG' ? 'BUY' : 'SELL';
+    const entryStr = tickSize > 0 ? entry.toFixed(Math.max(0, -Math.floor(Math.log10(tickSize)))) : entry.toFixed(8);
+
+    const order = await client.placeFuturesOrder({
+      params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow },
+      apiKey, apiSecret,
+    });
+
+    pumpAutoOrderFired.set(symbol, Date.now());
+    console.log(`[PumpAuto] ✅ ${symbol} ${side} LIMIT @${entryStr} qty=${qtyStr} margin=$${margin} score=${score}`);
+
+    const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+    if (webhookUrl) {
+      await sendDiscordMessage(webhookUrl,
+        `🎯 **Pump Auto LIMIT** | **${symbol}** ${action === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\n` +
+        `Score: **${score}** | Entry: \`${entryStr}\` | SL: \`${sl}\`\n` +
+        `Margin: $${margin} × ${leverage}x | RSI: ${factors?.rsi14val ?? '-'} | Vol: ${factors?.volRatio ?? '-'}×\n` +
+        `OrderId: ${order.orderId}`
+      );
+    }
+  } catch (err) {
+    console.error(`[PumpAuto] ❌ ${symbol} error:`, err.message);
+  }
 }
 
 async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPrice, sweepProb, confirmation = null }) {
