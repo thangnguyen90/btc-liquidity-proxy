@@ -1,7 +1,63 @@
 {
   "createdAt": "2026-05-21T08:29:34.010Z",
-  "updatedAt": "2026-05-21T09:46:27.954Z",
+  "updatedAt": "2026-05-21T09:56:06.381Z",
   "trades": [
+    {
+      "id": "5d16a927-4cf8-4ea8-bf50-a27add112b72",
+      "symbol": "ETCUSDT",
+      "side": "LONG",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 1.1258370598540015,
+      "entryPrice": 8.88228,
+      "createdAt": "2026-05-21T09:56:06.380Z",
+      "openedAt": null,
+      "source": "liq-sweep-70",
+      "note": "sweepProb=70% | target=8.88228 | confirmation=waiting for below sweep + bullish rejection"
+    },
+    {
+      "id": "116c410c-6bca-419b-8faf-04fb4a88d057",
+      "symbol": "JUPUSDT",
+      "side": "LONG",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 47.77853692564226,
+      "entryPrice": 0.209299,
+      "createdAt": "2026-05-21T09:56:05.935Z",
+      "openedAt": null,
+      "source": "liq-sweep-78",
+      "note": "sweepProb=78% | target=0.209299 | confirmation=waiting for below sweep + bullish rejection"
+    },
+    {
+      "id": "eba504a8-3ca1-4547-9a9e-5b620614cefa",
+      "symbol": "HUSDT",
+      "side": "LONG",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 40.46977312645185,
+      "entryPrice": 0.247098,
+      "createdAt": "2026-05-21T09:55:57.528Z",
+      "openedAt": null,
+      "source": "liq-sweep-75",
+      "note": "sweepProb=75% | target=0.247098 | confirmation=waiting for below sweep + bullish rejection"
+    },
+    {
+      "id": "4c9b1442-5311-4ebb-b02c-b304546003a0",
+      "symbol": "FIDAUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 313.307746534033,
+      "entryPrice": 0.0319175,
+      "createdAt": "2026-05-21T09:55:35.529Z",
+      "openedAt": null,
+      "source": "liq-sweep-71",
+      "note": "sweepProb=71% | target=0.0319175 | confirmation=waiting for above sweep + bearish rejection"
+    },
     {
       "id": "5acdd63d-5aa6-4dcb-8d9c-46536043d065",
       "symbol": "SPXUSDT",
@@ -3416,7 +3472,7 @@
       "id": "05b4a0e6-5ac3-48e6-99ac-3ce109070021",
       "symbol": "RENDERUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 5.091753396199516,
@@ -3424,7 +3480,9 @@
       "createdAt": "2026-05-21T08:29:34.012Z",
       "openedAt": null,
       "source": "liq-sweep-99",
-      "note": "sweepProb=99% | target=1.96396 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=99% | target=1.96396 | confirmation=above sweep rejected by closed candle @ mark 1.92681875",
+      "entryReadyAt": "2026-05-21T09:56:03.565Z",
+      "markPriceAtReady": 1.92681875
     }
   ]
 }

@@ -3137,7 +3137,6 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
 
     pumpAutoOrderFired.set(symbol, Date.now());
     invalidateOpenOrdersCache();
-    addPumpPendingOrder({ orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr), margin, score, placedAt: Date.now() }).catch(() => {});
     console.log(`[PumpAuto] ✅ ${symbol} ${side} LIMIT @${entryStr} qty=${qtyStr} margin=$${margin} score=${score}`);
 
     // Đặt SL ngay sau entry order — STOP_MARKET reduceOnly
@@ -3145,8 +3144,10 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     const slPriceRaw = side === 'BUY'
       ? Number(entryStr) * (1 - slRoePct / 100 / leverage)
       : Number(entryStr) * (1 + slRoePct / 100 / leverage);
+    let slPlaced = false;
+    let slPriceStr = null;
     if (isFinite(slPriceRaw) && slPriceRaw > 0 && info) {
-      const slPriceStr = tickSize > 0
+      slPriceStr = tickSize > 0
         ? slPriceRaw.toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
         : slPriceRaw.toFixed(8);
       const slParams = {
@@ -3160,27 +3161,30 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
         recvWindow,
         newClientOrderId: `lp_psl_${order.orderId}`.slice(0, 36),
       };
-      const placeSl = () => client.placeFuturesOrder({ params: slParams, apiKey, apiSecret })
-        .catch((e) => {
-          if (e.message?.includes('not supported') || e.message?.includes('Algo Order')) {
-            // fallback: một số symbol yêu cầu algo endpoint cho STOP_MARKET
-            const algoParams = { ...slParams, algoType: 'CONDITIONAL', triggerPrice: slPriceStr };
-            delete algoParams.stopPrice;
-            delete algoParams.reduceOnly;
-            algoParams.reduceOnly = 'true';
-            return client.placeAlgoOrder({ params: algoParams, apiKey, apiSecret });
-          }
-          throw e;
-        });
-      placeSl()
-        .then(() => console.log(`[PumpAuto] 🛡 ${symbol} SL @${slPriceStr} (${slRoePct}% ROE)`))
-        .catch((e) => console.warn(`[PumpAuto] SL failed ${symbol}:`, e.message));
+      try {
+        await client.placeFuturesOrder({ params: slParams, apiKey, apiSecret })
+          .catch((e) => {
+            if (e.message?.includes('not supported') || e.message?.includes('Algo Order')) {
+              const algoParams = { ...slParams, algoType: 'CONDITIONAL', triggerPrice: slPriceStr };
+              delete algoParams.stopPrice;
+              return client.placeAlgoOrder({ params: algoParams, apiKey, apiSecret });
+            }
+            throw e;
+          });
+        slPlaced = true;
+        console.log(`[PumpAuto] 🛡 ${symbol} SL @${slPriceStr} (${slRoePct}% ROE)`);
+      } catch (e) {
+        console.warn(`[PumpAuto] ⚠ SL failed ${symbol}:`, e.message);
+      }
     }
+
+    addPumpPendingOrder({ orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr), margin, score, slPlaced, slPrice: slPriceStr ? Number(slPriceStr) : null, placedAt: Date.now() }).catch(() => {});
 
     const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
     if (webhookUrl) {
+      const slStatus = slPlaced ? `🛡 SL: \`${slPriceStr}\` (−${slRoePct}% ROE)` : `⚠ **SL không đặt được**`;
       const msg = `🎯 **Pump Auto LIMIT** | **${symbol}** ${action === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\n` +
-        `Score: **${score}** | Entry: \`${entryStr}\` | SL: \`${sl}\`\n` +
+        `Score: **${score}** | Entry: \`${entryStr}\` | ${slStatus}\n` +
         `Margin: $${margin} × ${leverage}x | RSI: ${factors?.rsi14val ?? '-'} | Vol: ${factors?.volRatio ?? '-'}×\n` +
         `OrderId: ${order.orderId}`;
       fetch(webhookUrl, {
