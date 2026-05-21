@@ -116,7 +116,7 @@ function buildCard(sig) {
           <a class="cap-symbol" href="${detailUrl}" target="_blank">
             ${sig.symbol.replace(/USDT$/, '')}<span class="sym-usdt">USDT</span>
           </a>
-          <span class="cap-change ${changeClass}">${fmtPct(sig.change24h)} 24h · ${fmtPrice(sig.markPrice)}</span>
+          <span class="cap-change ${changeClass}" data-price="${sig.symbol}">${fmtPct(sig.change24h)} 24h · ${fmtPrice(sig.markPrice)}</span>
         </div>
         <div class="cap-right">
           <span class="cap-action-badge ${dirClass}">${dirIcon} ${dirLabel}</span>
@@ -283,6 +283,40 @@ searchClear.addEventListener('click', () => {
 actionFilter.addEventListener('change', render);
 scoreFilter.addEventListener('change', render);
 
+// ── Live price socket ─────────────────────────────────────────────────────────
+
+const PRICE_URLS = [
+  'wss://fstream.binance.com/ws/!markPrice@arr@1s',
+  'wss://fstream.binancefuture.com/ws/!markPrice@arr@1s',
+];
+let priceUrlIdx = 0;
+
+function connectPriceSocket() {
+  const ws = new WebSocket(PRICE_URLS[priceUrlIdx % PRICE_URLS.length]);
+
+  ws.onmessage = (e) => {
+    try {
+      const rows = JSON.parse(e.data);
+      if (!Array.isArray(rows)) return;
+      rows.forEach((row) => {
+        if (row.e !== 'markPriceUpdate') return;
+        const p = Number(row.p);
+        if (!isFinite(p)) return;
+        document.querySelectorAll(`[data-price="${row.s}"]`).forEach((el) => {
+          const text = el.textContent;
+          const dot  = text.indexOf('·');
+          if (dot !== -1) el.textContent = text.slice(0, dot + 2) + fmtPrice(p);
+        });
+      });
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    priceUrlIdx++;
+    setTimeout(connectPriceSocket, 3000);
+  };
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 async function fetchAndApply(attempt = 0) {
@@ -303,4 +337,5 @@ async function fetchAndApply(attempt = 0) {
 (async () => {
   await fetchAndApply();
   connect();
+  connectPriceSocket();
 })();

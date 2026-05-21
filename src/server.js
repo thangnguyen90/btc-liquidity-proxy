@@ -139,22 +139,29 @@ klineCache.on('candleTick', ({ interval }) => {
 // Chạy scan ngay sau 30s để có data ban đầu dù WebSocket chưa kết nối
 setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); }, 30_000);
 
-// Fallback: scan mỗi 5 phút kể cả khi WebSocket không có tick
+// Fallback: scan mỗi 2 phút kể cả khi WebSocket không có tick
+let _staleReseedLock = false;
 setInterval(async () => {
   schedulePumpScan();
   scheduleCapScan();
   scheduleKillShortScan();
   // Re-seed nếu WebSocket stale (không có tick trong 3 phút)
   const stats = klineCache.stats('15m');
-  if (stats.isStale) {
+  if (stats.isStale && !_staleReseedLock) {
+    _staleReseedLock = true;
     try {
       const snapshot = await getMarketSnapshot();
       const topSymbols = snapshot.sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, 400).map((r) => r.symbol);
-      klineCache.seed(topSymbols, '15m', 500).catch(() => {});
+      await klineCache.seed(topSymbols, '15m', 500);
       console.log('[KlineCache] Re-seed triggered (WebSocket stale)');
-    } catch {}
+      schedulePumpScan();
+      scheduleCapScan();
+      scheduleKillShortScan();
+    } catch {} finally {
+      _staleReseedLock = false;
+    }
   }
-}, 5 * 60 * 1000);
+}, 2 * 60 * 1000);
 const symbolCache = { data: null, expiresAt: 0 };
 const snapshotCache = { data: null, expiresAt: 0 };
 const autoTradeState = {
