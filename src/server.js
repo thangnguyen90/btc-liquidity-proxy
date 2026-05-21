@@ -2580,7 +2580,8 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
     const allOpen = Array.isArray(openOrdersResult) ? openOrdersResult : [];
 
     const isLong = pos.amt > 0;
-    const entry = pos.entry;
+    const entry = Number(pos.entry);
+    if (!isFinite(entry) || entry <= 0) return;
 
     // Algo SL: type=CONDITIONAL, closing side, triggerPrice on loss side of entry
     const algoSl = allAlgo.find((o) => {
@@ -2604,12 +2605,12 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
 
     const leverage = pos.leverage || 10;
 
-    const newSlPrice = priceFromTick(
-      symbolInfo,
-      isLong
-        ? entry * (1 + (targetLockRoe / 100) / leverage)
-        : entry * (1 - (targetLockRoe / 100) / leverage),
-    );
+    const rawSlPrice = isLong
+      ? entry * (1 + (targetLockRoe / 100) / leverage)
+      : entry * (1 - (targetLockRoe / 100) / leverage);
+    if (!isFinite(rawSlPrice) || rawSlPrice <= 0) return;
+    const newSlPrice = priceFromTick(symbolInfo, rawSlPrice);
+    if (!newSlPrice || newSlPrice === 'NaN' || Number(newSlPrice) <= 0) return;
 
     const mark = Number(markPrice ?? 0);
     if (mark > 0) {
