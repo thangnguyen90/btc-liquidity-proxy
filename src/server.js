@@ -29,17 +29,18 @@ const klineCache = new KlineCache({ client, maxKlines: 500 });
 const pumpScanCache = { data: null, expiresAt: 0 };
 const capScanCache  = { data: null, expiresAt: 0 };
 
-// ── SSE clients for pump signals push ─────────────────────────────────────────
+// ── SSE helpers ───────────────────────────────────────────────────────────────
 const pumpSseClients = new Set();
+const capSseClients  = new Set();
 
-function pushPumpSse(data) {
+function pushSse(clients, data) {
   const payload = `data: ${JSON.stringify(data)}\n\n`;
-  for (const res of pumpSseClients) {
-    try { res.write(payload); } catch { pumpSseClients.delete(res); }
+  for (const res of clients) {
+    try { res.write(payload); } catch { clients.delete(res); }
   }
 }
 
-// Debounced pump scan triggered by candle close events
+// ── Debounced scans triggered by 15m candle close ────────────────────────────
 let _pumpScanDebounce = null;
 async function schedulePumpScan() {
   clearTimeout(_pumpScanDebounce);
@@ -56,15 +57,40 @@ async function schedulePumpScan() {
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       pumpScanCache.data = result;
       pumpScanCache.expiresAt = Date.now() + 30_000;
-      pushPumpSse(result);
+      pushSse(pumpSseClients, result);
     } catch (e) {
       console.error('[PumpScan] error:', e.message);
     }
-  }, 2_000); // 2s debounce — batch all closes at the same minute boundary
+  }, 2_000);
+}
+
+let _capScanDebounce = null;
+async function scheduleCapScan() {
+  clearTimeout(_capScanDebounce);
+  _capScanDebounce = setTimeout(async () => {
+    try {
+      const snapshot    = await getMarketSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols  = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 200)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runCapScan(topSymbols, klineCache, snapshotMap);
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      capScanCache.data = result;
+      capScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(capSseClients, result);
+    } catch (e) {
+      console.error('[CapScan] error:', e.message);
+    }
+  }, 2_000);
 }
 
 klineCache.on('candleClose', ({ interval }) => {
-  if (interval === '15m') schedulePumpScan();
+  if (interval !== '15m') return;
+  schedulePumpScan();
+  scheduleCapScan();
 });
 const symbolCache = { data: null, expiresAt: 0 };
 const snapshotCache = { data: null, expiresAt: 0 };
@@ -300,6 +326,22 @@ const server = createServer(async (request, response) => {
       return sendJson(response, result);
     }
 
+    if (requestUrl.pathname === '/api/cap-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (capScanCache.data) {
+        response.write(`data: ${JSON.stringify(capScanCache.data)}\n\n`);
+      }
+      capSseClients.add(response);
+      request.on('close', () => capSseClients.delete(response));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/cap-signals') {
       if (capScanCache.data && Date.now() < capScanCache.expiresAt) {
         return sendJson(response, capScanCache.data);
@@ -311,7 +353,8 @@ const server = createServer(async (request, response) => {
         .slice(0, 200)
         .map((r) => r.symbol);
       const { signals, processed } = await runCapScan(topSymbols, klineCache, snapshotMap);
-      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed };
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       capScanCache.data = result;
       capScanCache.expiresAt = Date.now() + 30_000;
       return sendJson(response, result);

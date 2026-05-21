@@ -1,11 +1,8 @@
-const API        = '/api/cap-signals';
-const REFRESH_MS = 45_000;
+const SSE_URL = '/api/cap-stream';
 
-let allSignals  = [];
-let scannedAt   = null;
-let total       = 0;
-let refreshTimer = null;
-let countdown   = REFRESH_MS / 1000;
+let allSignals = [];
+let scannedAt  = null;
+let total      = 0;
 
 const grid        = document.getElementById('capGrid');
 const longCount   = document.getElementById('longCount');
@@ -54,40 +51,35 @@ const TYPE_META = {
   sc_spring: {
     label: 'SC → Spring',
     phase: 'Wyckoff Phase A–B: Selling Climax confirmed by Spring / Automatic Rally',
-    cls: 'long-type',
+    cls:   'long-type',
   },
   bc_utad: {
     label: 'BC → UTAD',
     phase: 'Wyckoff Phase A–B: Buying Climax confirmed by UTAD / Distribution',
-    cls: 'short-type',
+    cls:   'short-type',
   },
 };
 
 // ── Factor chips ──────────────────────────────────────────────────────────────
 
 function buildFactors(sig) {
-  const f   = sig.factors || {};
+  const f      = sig.factors || {};
   const isLong = sig.action === 'LONG';
   const chips  = [];
 
-  // Volume spike
   const volOk = (f.volRatio ?? 0) >= 2.5;
   chips.push({ label: `Vol ${(f.volRatio ?? 0).toFixed(1)}×`, ok: volOk ? 'ok' : 'warn' });
 
-  // Range vs ATR
   const rngOk = (f.rangeX ?? 0) >= 1.5;
   chips.push({ label: `Range ${(f.rangeX ?? 0).toFixed(1)}× ATR`, ok: rngOk ? 'ok' : '' });
 
-  // BB re-entry
   chips.push({ label: f.bbBack ? 'BB re-entry ✓' : 'BB re-entry ✗', ok: f.bbBack ? 'ok' : 'warn' });
 
-  // RSI6
   if (f.rsi6val != null) {
     const rsiOk = isLong ? f.rsi6val > 30 : f.rsi6val < 70;
     chips.push({ label: `RSI6 ${f.rsi6val}`, ok: rsiOk ? 'ok' : 'warn' });
   }
 
-  // EMA direction
   if (isLong && f.emaBull != null) {
     chips.push({ label: f.emaBull ? 'EMA Bull ✓' : 'EMA Bull ✗', ok: f.emaBull ? 'ok' : '' });
   }
@@ -95,10 +87,8 @@ function buildFactors(sig) {
     chips.push({ label: f.emaBear ? 'EMA Bear ✓' : 'EMA Bear ✗', ok: f.emaBear ? 'ok' : '' });
   }
 
-  // Current volume follow-through
   if (f.vNowX != null) {
-    const vOk = f.vNowX >= 1.5;
-    chips.push({ label: `Now ${f.vNowX.toFixed(1)}× vol`, ok: vOk ? 'ok' : '' });
+    chips.push({ label: `Now ${f.vNowX.toFixed(1)}× vol`, ok: f.vNowX >= 1.5 ? 'ok' : '' });
   }
 
   return chips.map((c) => `<span class="cap-factor ${c.ok}">${c.label}</span>`).join('');
@@ -159,7 +149,6 @@ function buildCard(sig) {
       </div>
 
       <div class="cap-factors">${factors}</div>
-
       <div class="cap-note">${sig.note || ''}</div>
 
       <div class="cap-footer">
@@ -181,16 +170,16 @@ function render() {
   const minScore = Number(scoreFilter.value);
 
   let rows = allSignals.slice();
-  if (search)        rows = rows.filter((s) => s.symbol.includes(search));
+  if (search)           rows = rows.filter((s) => s.symbol.includes(search));
   if (action !== 'all') rows = rows.filter((s) => s.action === action);
-  if (minScore > 0)  rows = rows.filter((s) => s.score >= minScore);
+  if (minScore > 0)     rows = rows.filter((s) => s.score  >= minScore);
 
   visibleCount.textContent = rows.length;
 
   const longs  = allSignals.filter((s) => s.action === 'LONG').length;
   const shorts = allSignals.filter((s) => s.action === 'SHORT').length;
-  longCount.textContent  = longs;
-  shortCount.textContent = shorts;
+  longCount.textContent    = longs;
+  shortCount.textContent   = shorts;
   totalScanned.textContent = total || '-';
   longCount.className  = longs  > 0 ? 'positive' : '';
   shortCount.className = shorts > 0 ? 'negative' : '';
@@ -216,46 +205,61 @@ function render() {
   grid.innerHTML = rows.map(buildCard).join('');
 }
 
-// ── Fetch ─────────────────────────────────────────────────────────────────────
+// ── Apply new data from SSE push ──────────────────────────────────────────────
 
-async function load() {
-  scanStatus.textContent = 'Scanning...';
-  try {
-    const res = await fetch(API);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    allSignals = data.signals ?? [];
-    scannedAt  = data.scannedAt;
-    total      = data.total ?? 0;
-    const processed = data.processed ?? 0;
+function applyData(data) {
+  allSignals = data.signals ?? [];
+  scannedAt  = data.scannedAt;
+  total      = data.total ?? 0;
+  const processed = data.processed ?? 0;
+  const cs        = data.cacheStats  ?? {};
+  const staleSec  = cs.staleSec ?? null;
+  const isStale   = cs.isStale  ?? false;
 
-    scanMeta.style.display  = '';
-    metaTotal.textContent   = processed > 0 ? `${processed}/${total}` : total;
-    metaSignals.textContent = allSignals.length;
+  scanMeta.style.display  = '';
+  metaTotal.textContent   = processed > 0 ? `${processed}/${total}` : total;
+  metaSignals.textContent = allSignals.length;
 
-    scanStatus.textContent = allSignals.length > 0
-      ? `${allSignals.length} signals · ${new Date().toLocaleTimeString('vi')}`
-      : `No signals · ${new Date().toLocaleTimeString('vi')}`;
+  scanStatus.textContent = allSignals.length > 0
+    ? `${allSignals.length} signals · ${new Date().toLocaleTimeString('vi')}`
+    : `No signals · ${new Date().toLocaleTimeString('vi')}`;
 
-    render();
-  } catch (e) {
-    scanStatus.textContent = `Error: ${e.message}`;
+  let staleEl = document.getElementById('staleWarn');
+  if (isStale || (staleSec != null && staleSec > 90)) {
+    if (!staleEl) {
+      staleEl = document.createElement('div');
+      staleEl.id = 'staleWarn';
+      staleEl.style.cssText = 'background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);border-radius:6px;padding:8px 14px;font-size:12px;color:#fbbf24;margin-top:8px';
+      scanMeta.insertAdjacentElement('afterend', staleEl);
+    }
+    staleEl.textContent = `⚠ Kline data stale — last tick ${staleSec}s ago. WebSocket đang reconnect.`;
+  } else if (staleEl) {
+    staleEl.remove();
   }
+
+  render();
 }
 
-// ── Countdown ─────────────────────────────────────────────────────────────────
+// ── SSE connection ────────────────────────────────────────────────────────────
 
-function startCountdown() {
-  clearInterval(refreshTimer);
-  countdown = REFRESH_MS / 1000;
-  refreshTimer = setInterval(() => {
-    countdown--;
-    nextRefresh.textContent = `Refresh in ${countdown}s`;
-    if (countdown <= 0) {
-      clearInterval(refreshTimer);
-      load().then(startCountdown);
-    }
-  }, 1000);
+function connect() {
+  const es = new EventSource(SSE_URL);
+
+  es.onopen = () => {
+    scanStatus.textContent  = '● Live';
+    scanStatus.style.color  = 'var(--green)';
+    nextRefresh.textContent = 'Cập nhật mỗi nến 15m';
+  };
+
+  es.onmessage = (e) => {
+    try { applyData(JSON.parse(e.data)); } catch {}
+  };
+
+  es.onerror = () => {
+    scanStatus.textContent  = 'Reconnecting...';
+    scanStatus.style.color  = 'var(--amber)';
+    nextRefresh.textContent = '';
+  };
 }
 
 // ── Events ────────────────────────────────────────────────────────────────────
@@ -274,4 +278,4 @@ scoreFilter.addEventListener('change', render);
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-load().then(startCountdown);
+connect();
