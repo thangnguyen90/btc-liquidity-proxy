@@ -140,6 +140,13 @@ function buildFactors(sig) {
 
 // ── Card builder ──────────────────────────────────────────────────────────────
 
+function isAutoEligible(sig) {
+  if (sig.score < 85) return false;
+  if (sig.marketOk === false) return false;
+  if ((sig.factors?.emaRibbon ?? 1) === 0) return false;
+  return true;
+}
+
 function buildCard(sig) {
   const isLong      = sig.action === 'LONG';
   const dirClass    = isLong ? 'long' : 'short';
@@ -157,8 +164,13 @@ function buildCard(sig) {
     ? `<span class="pump-market-warn">⚠ Too far from EMA — wait pullback</span>`
     : '';
 
+  const autoDot = isAutoEligible(sig)
+    ? `<span class="auto-dot ${dirClass}" title="Đủ điều kiện Auto LIMIT ≥85"></span>`
+    : '';
+
   return `
     <article class="pump-card ${dirClass}">
+      ${autoDot}
       <div class="pump-card-top">
         <div class="pump-symbol-wrap">
           <a class="pump-symbol" href="${detailUrl}" target="_blank">
