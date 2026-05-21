@@ -2984,7 +2984,8 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
 
     const premiumIndex = await client.getPremiumIndex(symbol);
     const markPrice = Number(premiumIndex.markPrice);
-    const notional = margin * leverage;
+    const minNotionalFilter = Number(info?.filters?.find((f) => f.filterType === 'MIN_NOTIONAL')?.notional ?? 0);
+    const notional = Math.max(margin * leverage, minNotionalFilter > 0 ? minNotionalFilter : 0);
     const qtyRaw = notional / entry;
     const qty = stepSize > 0 ? Math.floor(qtyRaw / stepSize) * stepSize : qtyRaw;
     const qtyStr = stepSize > 0 ? qty.toFixed(Math.max(0, -Math.floor(Math.log10(stepSize)))) : qty.toFixed(6);
@@ -3017,12 +3018,23 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
         stopPrice: slPriceStr,
         quantity: qtyStr,
         workingType: 'MARK_PRICE',
-        timeInForce: 'GTC',
         reduceOnly: 'true',
         recvWindow,
         newClientOrderId: `lp_psl_${order.orderId}`.slice(0, 36),
       };
-      client.placeFuturesOrder({ params: slParams, apiKey, apiSecret })
+      const placeSl = () => client.placeFuturesOrder({ params: slParams, apiKey, apiSecret })
+        .catch((e) => {
+          if (e.message?.includes('not supported') || e.message?.includes('Algo Order')) {
+            // fallback: một số symbol yêu cầu algo endpoint cho STOP_MARKET
+            const algoParams = { ...slParams, algoType: 'CONDITIONAL', triggerPrice: slPriceStr };
+            delete algoParams.stopPrice;
+            delete algoParams.reduceOnly;
+            algoParams.reduceOnly = 'true';
+            return client.placeAlgoOrder({ params: algoParams, apiKey, apiSecret });
+          }
+          throw e;
+        });
+      placeSl()
         .then(() => console.log(`[PumpAuto] 🛡 ${symbol} SL @${slPriceStr} (${slRoePct}% ROE)`))
         .catch((e) => console.warn(`[PumpAuto] SL failed ${symbol}:`, e.message));
     }

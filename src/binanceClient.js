@@ -112,6 +112,10 @@ export class BinanceClient {
     return this.signedRequest('GET', '/fapi/v1/userTrades', { symbol, limit, recvWindow }, { apiKey, apiSecret });
   }
 
+  async getOrder({ symbol, orderId, apiKey, apiSecret, recvWindow = 5000 }) {
+    return this.signedRequest('GET', '/fapi/v1/order', { symbol, orderId, recvWindow }, { apiKey, apiSecret });
+  }
+
   async cancelOrder({ symbol, orderId, apiKey, apiSecret, recvWindow = 5000 }) {
     return this.signedRequest('DELETE', '/fapi/v1/order', { symbol, orderId, recvWindow }, { apiKey, apiSecret });
   }
