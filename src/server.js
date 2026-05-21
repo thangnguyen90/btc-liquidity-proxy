@@ -1029,7 +1029,7 @@ server.listen(port, '127.0.0.1', () => {
         setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
         appendFillLog({ symbol, side, filledQty, avgPrice, positionSide, fillTime }).catch(() => {});
         invalidateOpenOrdersCache();
-        tpConfirmedSet.delete(symbol);
+        tpConfirmedClear(symbol);
         negTpLastRun.delete(symbol);
       },
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
@@ -2704,7 +2704,7 @@ async function runStaleOrderCleaner() {
 
         avgDownFired.delete(sym);
         tpMovedToEntry.delete(sym);
-        tpConfirmedSet.delete(sym);
+        tpConfirmedClear(sym);
         negTpLastRun.delete(sym);
         negativeSince.delete(sym);
         slTrailLockRoe.delete(sym);
@@ -3473,9 +3473,8 @@ function startNegTpScanner() {
   console.log(`[NegTp] Scanner started. ROE threshold=${negTpRoe}% timeout=${timeoutMs / 3_600_000}h interval=${intervalMs / 1000}s`);
 
   const run = async () => {
-    const apiKey = process.env.BINANCE_API_KEY;
-    const apiSecret = process.env.BINANCE_API_SECRET;
-    if (!apiKey || !apiSecret) return;
+    let apiKey, apiSecret;
+    try { ({ apiKey, apiSecret } = getApiCredentials(null)); } catch { return; }
     try {
       const positions = await client.getPositions({ apiKey, apiSecret });
       const active = positions.filter((p) => Number(p.positionAmt) !== 0);
@@ -3516,15 +3515,18 @@ function startNegTpScanner() {
   run();
 }
 
-// Symbols confirmed to already have a TP order — skip API check until position changes or fill
+// symbol|entry keys confirmed to have a TP — skip API check until position changes or fill
 const tpConfirmedSet = new Set();
+function tpConfirmedClear(symbol) {
+  for (const k of tpConfirmedSet) { if (k.startsWith(`${symbol}|`)) tpConfirmedSet.delete(k); }
+}
 
 function startMissingTpScanner() {
   if (process.env.AUTO_TP_SCAN_ENABLED === 'false') return;
   const intervalMs = Math.max(Number(process.env.AUTO_TP_SCAN_INTERVAL_MS ?? 60_000), 30_000);
   console.log(`[AutoTP] Scanner started. interval=${intervalMs / 1000}s`);
   const run = () => runMissingTpScan().catch((err) => {
-    if (err.message?.includes('Missing Binance API')) return;
+    if (err.message?.includes('Missing Binance API') || err.message?.includes('Chưa đăng nhập')) return;
     console.error('[AutoTP] Scan error:', err.message);
   });
   run();
@@ -3604,8 +3606,9 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
   const leverage = Number(pos.leverage) || 1;
   if (!symbol || !amt || !entry) return;
 
-  // Skip API calls if we already confirmed a TP exists for this symbol+entry
-  if (tpConfirmedSet.has(symbol)) return;
+  // Skip API calls if we already confirmed a TP exists for this symbol+entry combo
+  const tpKey = `${symbol}|${entry.toFixed(8)}`;
+  if (tpConfirmedSet.has(tpKey)) return;
 
   const isLong = amt > 0;
   const closeSide = isLong ? 'SELL' : 'BUY';
@@ -3626,7 +3629,7 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
     return o.symbol === symbol && o.side === closeSide && (t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT');
   });
   if (hasAlgoTp || hasRegularTp) {
-    tpConfirmedSet.add(symbol);
+    tpConfirmedSet.add(tpKey);
     return;
   }
 
@@ -3670,7 +3673,7 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
 
   try {
     const result = await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
-    tpConfirmedSet.add(symbol);
+    tpConfirmedSet.add(tpKey);
     console.log(`[AutoTP] ✅ ${symbol} ${isLong ? 'LONG' : 'SHORT'} entry=${entry} lev=${leverage}x → TP @ ${triggerPrice} qty=${quantity} algoId=${result.algoId}`);
   } catch (err) {
     console.error(`[AutoTP] ❌ ${symbol}:`, err.message);
