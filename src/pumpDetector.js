@@ -451,8 +451,8 @@ function detectPumpClimaxSimpleActionNew(candles, state, opts) {
     var scoreLong = Math.round(scoreLongRaw01 * 100);
     var gradeLong = gradeByScore(scoreLong);
     var atrPct100  = offInfo.atrPct * 100;
-    var mktMaxE13  = Math.min(2.0, 2.5 * atrPct100);
-    var mktMaxE25  = Math.min(3.5, 4.0 * atrPct100);
+    var mktMaxE13  = Math.min(2.5, 3.0 * atrPct100);
+    var mktMaxE25  = Math.min(4.0, 5.0 * atrPct100);
     var marketOk = (distEma13Pct != null && distEma13Pct <= mktMaxE13) && (distEma25Pct != null && distEma25Pct <= mktMaxE25);
 
     result.pass = true;

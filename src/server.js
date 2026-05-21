@@ -2738,8 +2738,9 @@ const pumpAutoOrderFired = new Map(); // symbol → timestamp
 async function handlePumpAutoOrder(signal) {
   if (!runtimeSettings.pumpAutoOrderEnabled) return;
   const { symbol, action, score, marketOk, entry, sl, factors } = signal;
-  if (score < 90) return;
+  if (score < 85) return;
   if (marketOk === false) return;
+  if (factors?.emaRibbon === 0) return; // EMA ribbon không bullish → không đặt lệnh
   if (!entry || !sl) return;
 
   const last = pumpAutoOrderFired.get(symbol) ?? 0;
