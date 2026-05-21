@@ -3,21 +3,22 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Pump / Climax Signals</title>
+    <title>Kill Short · Stop Hunt Signals</title>
     <link rel="stylesheet" href="/styles.css">
     <style>
-      .pump-controls {
-        grid-template-columns: minmax(220px, 1fr) 130px 130px 110px auto;
+      .ks-controls {
+        grid-template-columns: minmax(220px, 1fr) 110px auto;
       }
 
-      .pump-grid {
+      .ks-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: 12px;
         margin-top: 14px;
       }
 
-      .pump-card {
+      /* ── Card ── */
+      .ks-card {
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--panel);
@@ -27,40 +28,34 @@
         position: relative;
         overflow: hidden;
       }
-      .pump-card::before {
+      .ks-card::before {
         content: '';
         position: absolute;
         top: 0; left: 0; right: 0;
         height: 3px;
+        background: var(--green);
       }
-      .pump-card.long::before  { background: var(--green); }
-      .pump-card.short::before { background: var(--red); }
 
-      .pump-card-top {
+      /* ── Header row ── */
+      .ks-card-top {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 8px;
       }
-
-      .pump-symbol-wrap { display: flex; flex-direction: column; gap: 3px; }
-
-      .pump-symbol {
+      .ks-symbol-wrap { display: flex; flex-direction: column; gap: 3px; }
+      .ks-symbol {
         font-size: 18px;
         font-weight: 900;
         color: var(--text);
         text-decoration: none;
         line-height: 1;
       }
-      .pump-symbol:hover { color: var(--blue); }
-      .pump-symbol .sym-usdt { color: var(--muted); font-weight: 400; font-size: 13px; }
+      .ks-symbol:hover { color: var(--blue); }
+      .ks-symbol .sym-usdt { color: var(--muted); font-weight: 400; font-size: 13px; }
+      .ks-change { font-size: 12px; font-weight: 600; }
 
-      .pump-change {
-        font-size: 12px;
-        font-weight: 600;
-      }
-
-      .pump-right {
+      .ks-right {
         display: flex;
         flex-direction: column;
         align-items: flex-end;
@@ -68,7 +63,8 @@
         flex-shrink: 0;
       }
 
-      .pump-action-badge {
+      /* ── Badges ── */
+      .ks-action-badge {
         display: inline-flex;
         align-items: center;
         gap: 4px;
@@ -78,68 +74,73 @@
         border-radius: 999px;
         letter-spacing: .04em;
         text-transform: uppercase;
+        background: rgba(54,211,153,.15);
+        color: var(--green);
+        border: 1px solid rgba(54,211,153,.3);
       }
-      .pump-action-badge.long  { background: rgba(54,211,153,.15); color: var(--green); border: 1px solid rgba(54,211,153,.3); }
-      .pump-action-badge.short { background: rgba(251,113,133,.15); color: var(--red);   border: 1px solid rgba(251,113,133,.3); }
 
-      .pump-score-wrap {
-        display: flex;
-        align-items: baseline;
-        gap: 5px;
-      }
-      .pump-score-num {
-        font-size: 22px;
-        font-weight: 900;
-        line-height: 1;
-      }
-      .pump-grade {
-        font-size: 12px;
-        font-weight: 800;
-        padding: 1px 6px;
-        border-radius: 4px;
+      .ks-score-wrap { display: flex; align-items: baseline; gap: 5px; }
+      .ks-score-num  { font-size: 22px; font-weight: 900; line-height: 1; }
+      .ks-grade {
+        font-size: 12px; font-weight: 800;
+        padding: 1px 6px; border-radius: 4px;
       }
       .grade-a { background: rgba(54,211,153,.2); color: var(--green); }
       .grade-b { background: rgba(96,165,250,.2); color: var(--blue); }
       .grade-c { background: rgba(251,191,36,.2);  color: var(--amber); }
       .grade-d { background: rgba(157,170,165,.15); color: var(--muted); }
 
-      .pump-type-badge {
-        font-size: 10px;
-        font-weight: 700;
-        padding: 1px 6px;
-        border-radius: 3px;
-        background: var(--panel-2);
-        color: var(--muted);
+      .ks-type-badge {
+        font-size: 10px; font-weight: 700;
+        padding: 1px 6px; border-radius: 3px;
+        background: rgba(54,211,153,.12);
+        color: var(--green);
         text-transform: uppercase;
         letter-spacing: .04em;
       }
-      .pump-type-badge.type-danger {
-        background: rgba(251,113,133,.2);
-        color: var(--red);
-        border: 1px solid rgba(251,113,133,.4);
+
+      /* ── Pattern description row ── */
+      .ks-pattern {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--muted);
+        padding: 6px 10px;
+        background: var(--panel-2);
+        border-radius: 6px;
+      }
+      .ks-pattern-dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: var(--green);
+        box-shadow: 0 0 6px rgba(54,211,153,.5);
       }
 
-      .pump-prices {
+      /* ── Prices grid ── */
+      .ks-prices {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 6px;
       }
-      .pump-price-cell {
+      .ks-price-cell {
         background: var(--panel-2);
         border-radius: 6px;
         padding: 8px 10px;
         display: grid;
         gap: 3px;
       }
-      .pump-price-cell span { font-size: 10px; color: var(--muted); text-transform: uppercase; font-weight: 700; }
-      .pump-price-cell strong { font-size: 13px; font-weight: 700; }
+      .ks-price-cell span   { font-size: 10px; color: var(--muted); text-transform: uppercase; font-weight: 700; }
+      .ks-price-cell strong { font-size: 13px; font-weight: 700; }
 
-      .pump-factors {
+      /* ── Factor chips ── */
+      .ks-factors {
         display: flex;
         flex-wrap: wrap;
         gap: 5px;
       }
-      .pump-factor {
+      .ks-factor {
         display: inline-flex;
         align-items: center;
         gap: 3px;
@@ -150,24 +151,18 @@
         color: var(--muted);
         white-space: nowrap;
       }
-      .pump-factor.ok   { background: rgba(54,211,153,.1); color: var(--green); }
-      .pump-factor.warn { background: rgba(251,113,133,.1); color: var(--red); }
+      .ks-factor.ok   { background: rgba(54,211,153,.1); color: var(--green); }
+      .ks-factor.warn { background: rgba(251,113,133,.1); color: var(--red); }
 
-      .pump-note {
+      /* ── Note / footer ── */
+      .ks-note {
         font-size: 11px;
         color: var(--muted);
         font-family: 'SF Mono', 'Fira Code', monospace;
         line-height: 1.5;
         overflow-wrap: anywhere;
       }
-
-      .pump-reason {
-        font-size: 12px;
-        color: #d7dfdc;
-        line-height: 1.5;
-      }
-
-      .pump-footer {
+      .ks-footer {
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -176,20 +171,17 @@
         font-size: 11px;
         color: var(--muted);
       }
-      .pump-market-warn {
-        font-size: 10px;
-        color: var(--amber);
-        font-weight: 700;
-      }
 
-      .pump-empty {
+      /* ── Empty state ── */
+      .ks-empty {
         grid-column: 1 / -1;
         text-align: center;
         padding: 48px 0;
         color: var(--muted);
       }
-      .pump-empty strong { display: block; font-size: 18px; margin-bottom: 6px; color: var(--text); }
+      .ks-empty strong { display: block; font-size: 18px; margin-bottom: 6px; color: var(--text); }
 
+      /* ── Scan meta bar ── */
       .scan-meta {
         display: flex;
         align-items: center;
@@ -206,8 +198,8 @@
       .scan-meta .scan-dot { color: var(--green); font-size: 10px; }
 
       @media (max-width: 640px) {
-        .pump-controls { grid-template-columns: 1fr 1fr; }
-        .pump-controls .search-field { grid-column: 1 / -1; }
+        .ks-controls { grid-template-columns: 1fr 1fr; }
+        .ks-controls .search-field { grid-column: 1 / -1; }
       }
     </style>
   </head>
@@ -215,40 +207,36 @@
     <main class="shell wide-shell">
       <section class="topbar">
         <div>
-          <p class="eyebrow">Pump · Climax · Breakdown</p>
-          <h1>Pump Signal Board</h1>
+          <p class="eyebrow">Stop Hunt · Short Squeeze · Reversal</p>
+          <h1>Kill Short Signal Board</h1>
         </div>
         <div class="top-actions">
           <a class="nav-link" href="/">Detail</a>
           <a class="nav-link" href="/signals">Signals</a>
+          <a class="nav-link" href="/pump">Pump</a>
+          <a class="nav-link" href="/cap">Cap</a>
           <a class="nav-link" href="/highvol">High Vol</a>
           <a class="nav-link" href="/lsratio">L/S Ratio</a>
-          <a class="nav-link" href="/cap">Cap</a>
-          <a class="nav-link" href="/killshort">Kill Short</a>
           <a class="nav-link" href="/orders">Orders</a>
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:var(--text)">
-            <input type="checkbox" id="pumpAutoOrderChk" style="width:15px;height:15px;cursor:pointer">
-            Auto LIMIT ≥90
-          </label>
           <div class="status" id="scanStatus">Loading...</div>
         </div>
       </section>
 
       <section class="summary-grid signal-summary">
         <article class="metric">
-          <span>LONG Signals</span>
+          <span>Kill Short (LONG)</span>
           <strong id="longCount">-</strong>
-          <small>Pump breakout / Early pump</small>
+          <small>Stop hunt + reversal</small>
         </article>
         <article class="metric">
-          <span>SHORT Signals</span>
-          <strong id="shortCount">-</strong>
-          <small>Climax / Fade / Dump</small>
+          <span>Avg Score</span>
+          <strong id="avgScore">-</strong>
+          <small>Sweep + reversal quality</small>
         </article>
         <article class="metric">
-          <span>Coins Scanned</span>
+          <span>Cached / Scanned</span>
           <strong id="totalScanned">-</strong>
-          <small>Top by volume · 15m</small>
+          <small>Top 400 by volume · 15m</small>
         </article>
         <article class="metric">
           <span>Last Scan</span>
@@ -257,34 +245,11 @@
         </article>
       </section>
 
-      <section class="controls pump-controls">
+      <section class="controls ks-controls">
         <label class="field search-field">
           <span>Search</span>
           <input id="searchInput" placeholder="BTC, ETH, SOL..." autocomplete="off">
           <button id="searchClear" class="search-clear" type="button" style="display:none">✕</button>
-        </label>
-        <label class="field">
-          <span>Direction</span>
-          <select id="actionFilter">
-            <option value="all">All</option>
-            <option value="LONG">Long only</option>
-            <option value="SHORT">Short only</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>Type</span>
-          <select id="typeFilter">
-            <option value="all">All types</option>
-            <option value="pump_breakout">Pump Breakout</option>
-            <option value="early_pump">Early Pump</option>
-            <option value="ema_pullback">EMA Pullback</option>
-            <option value="dist_top">Distribution Top</option>
-            <option value="vol_climax">Vol Climax</option>
-            <option value="climax_top">Climax Top</option>
-            <option value="fade_short">Fade Short</option>
-            <option value="early_dump">Early Dump</option>
-            <option value="dump">Sustained Dump</option>
-          </select>
         </label>
         <label class="field">
           <span>Min Score</span>
@@ -310,14 +275,14 @@
         <span>Updated <strong id="metaTime">-</strong></span>
       </div>
 
-      <div class="pump-grid" id="pumpGrid">
-        <div class="pump-empty">
+      <div class="ks-grid" id="ksGrid">
+        <div class="ks-empty">
           <strong>Đang tải...</strong>
-          Đang quét top coins
+          Đang quét kill short pattern
         </div>
       </div>
     </main>
 
-    <script src="/pump.js" type="module"></script>
+    <script src="/killshort.js" type="module"></script>
   </body>
 </html>

@@ -13,6 +13,7 @@ import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, 
 import { KlineCache } from './klineCache.js';
 import { runPumpScan } from './pumpDetector.js';
 import { runCapScan }  from './capDetector.js';
+import { runKillShortScan } from './killShortDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -27,11 +28,13 @@ const client = new BinanceClient({
 });
 const klineCache = new KlineCache({ client, maxKlines: 500 });
 const pumpScanCache = { data: null, expiresAt: 0 };
-const capScanCache  = { data: null, expiresAt: 0 };
+const capScanCache       = { data: null, expiresAt: 0 };
+const killShortScanCache = { data: null, expiresAt: 0 };
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 const pumpSseClients = new Set();
-const capSseClients  = new Set();
+const capSseClients       = new Set();
+const killShortSseClients = new Set();
 
 function pushSse(clients, data) {
   const payload = `data: ${JSON.stringify(data)}\n\n`;
@@ -91,10 +94,34 @@ async function scheduleCapScan() {
   }, 2_000);
 }
 
+let _killShortScanDebounce = null;
+async function scheduleKillShortScan() {
+  clearTimeout(_killShortScanDebounce);
+  _killShortScanDebounce = setTimeout(async () => {
+    try {
+      const snapshot    = await getMarketSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols  = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runKillShortScan(topSymbols, klineCache, snapshotMap);
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      killShortScanCache.data = result;
+      killShortScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(killShortSseClients, result);
+    } catch (e) {
+      console.error('[KillShortScan] error:', e.message);
+    }
+  }, 2_000);
+}
+
 klineCache.on('candleClose', ({ interval }) => {
   if (interval !== '15m') return;
   schedulePumpScan();
   scheduleCapScan();
+  scheduleKillShortScan();
 });
 
 // Scan theo tick (mỗi khi có cập nhật nến) với debounce 60s — bắt signal sớm hơn trong nến
@@ -105,16 +132,18 @@ klineCache.on('candleTick', ({ interval }) => {
   _tickScanDebounce = setTimeout(() => {
     schedulePumpScan();
     scheduleCapScan();
+    scheduleKillShortScan();
   }, 60_000);
 });
 
 // Chạy scan ngay sau 30s để có data ban đầu dù WebSocket chưa kết nối
-setTimeout(() => { schedulePumpScan(); scheduleCapScan(); }, 30_000);
+setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); }, 30_000);
 
 // Fallback: scan mỗi 5 phút kể cả khi WebSocket không có tick
 setInterval(async () => {
   schedulePumpScan();
   scheduleCapScan();
+  scheduleKillShortScan();
   // Re-seed nếu WebSocket stale (không có tick trong 3 phút)
   const stats = klineCache.stats('15m');
   if (stats.isStale) {
@@ -399,6 +428,43 @@ const server = createServer(async (request, response) => {
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       capScanCache.data = result;
       capScanCache.expiresAt = Date.now() + 30_000;
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/killshort-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (killShortScanCache.data && (killShortScanCache.data.signals?.length > 0 || killShortScanCache.data.processed > 0)) {
+        response.write(`data: ${JSON.stringify(killShortScanCache.data)}\n\n`);
+      }
+      killShortSseClients.add(response);
+      request.on('close', () => killShortSseClients.delete(response));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/killshort-signals') {
+      if (killShortScanCache.data && Date.now() < killShortScanCache.expiresAt) {
+        return sendJson(response, killShortScanCache.data);
+      }
+      const snapshot = await getMarketSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runKillShortScan(topSymbols, klineCache, snapshotMap);
+      if (processed === 0) {
+        klineCache.seed(topSymbols, '15m', 500).then(() => scheduleKillShortScan()).catch(() => {});
+      }
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      killShortScanCache.data = result;
+      killShortScanCache.expiresAt = Date.now() + 30_000;
       return sendJson(response, result);
     }
 
@@ -3447,6 +3513,8 @@ async function sendStatic(pathname, response) {
         ? '/pump.html'
         : pathname === '/cap'
           ? '/cap.html'
+        : pathname === '/killshort'
+          ? '/killshort.html'
         : pathname === '/orders'
           ? '/orders.html'
           : pathname === '/highvol'

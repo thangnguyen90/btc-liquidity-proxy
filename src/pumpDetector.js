@@ -553,6 +553,69 @@ function detectPumpClimaxSimpleActionNew(candles, state, opts) {
     return result;
   }
 
+  // ── LONG: EMA pullback — coin đã pump, đang kéo về test EMA13 ──────────────
+  // Đặt TRƯỚC dist_top/vol_climax vì pullback về EMA13 là tín hiệu LONG ưu tiên cao
+  // Điều kiện: trend bull (ema13>ema25>ema50), giá kéo về gần EMA13 (trong ±1.5×ATR),
+  // nến đang bounce (close > open, vol không quá yếu), RSI chưa OB
+  var pbDistToEma13 = isFiniteNum(ema13) ? Math.abs(pxNow - ema13) / Math.max(ema13, 1e-9) : Infinity;
+  var pbTrendOk = isFiniteNum(ema13) && isFiniteNum(ema25) && isFiniteNum(ema50) && ema13 > ema25 && ema25 > ema50;
+  var pbNearEma13 = pbDistToEma13 <= (offInfo.atrPct * 1.5); // giá trong 1.5×ATR% từ EMA13
+  var pbBounceOk = lc > lo; // nến cuối xanh
+  var pbPrevDropOk = pc < +candles[n - 3]?.close; // 1-2 nến trước đang kéo xuống (pullback)
+  var pbRsiOk = isFiniteNum(rsi14) && rsi14 >= 40 && rsi14 <= 70; // RSI không OB, không quá yếu
+  var pbVolOk = volRatioNow >= 0.6; // không cần vol spike, chỉ cần không quá yếu
+  // Regime riêng: không dùng minLongRsi14 vì pullback thường RSI14 < 55
+  var pbRegimeOk = (function() {
+    if (CFG.requireEma99ForRegime && !hasEma99) return false;
+    if (CFG.requireLongAboveEma99 && hasEma99 && !(pxNow > ema99)) return false;
+    if (CFG.requireLongEma13AboveEma25 && !(isFiniteNum(ema13) && isFiniteNum(ema25) && ema13 > ema25)) return false;
+    return true; // bỏ qua minLongRsi14 — pullback thường RSI14 40-54
+  })();
+  var isEmaPullback = pbTrendOk && pbNearEma13 && pbBounceOk && pbPrevDropOk && pbRsiOk && pbVolOk && pbRegimeOk;
+
+  if (isEmaPullback) {
+    var pbEntryRaw = ema13 * (1 + offInfo.off * 0.5);
+    var pbSlRaw    = ema25 - offInfo.atr * 0.5;
+    var pbTpRaw    = pbEntryRaw + offInfo.atr * 2.0;
+    var pbEntry = roundToTickSide(pbEntryRaw, tickSize, 'CEIL');
+    var pbSl    = roundToTickSide(pbSlRaw, tickSize, 'FLOOR');
+    var pbTp    = roundToTickSide(pbTpRaw, tickSize, 'CEIL');
+
+    var pbNearScore  = clamp01(1 - pbDistToEma13 / Math.max(offInfo.atrPct * 2, 1e-9));
+    var pbRsiScore   = clamp01((rsi14 - 40) / 30);
+    var pbVolScore   = clamp01((volRatioNow - 0.6) / 1.4);
+    var pbTrendScore = (isFiniteNum(ema5) && ema5 > ema13) ? 1 : 0.6;
+    var pbBbScore    = clamp01((bbNow.upper - pxNow) / Math.max(_atr, 1e-9));
+    var scorePb01 = weightedScore01(
+      { nearEma: pbNearScore, rsi: pbRsiScore, volume: pbVolScore, trend: pbTrendScore, bbRoom: pbBbScore },
+      { nearEma: 0.30, rsi: 0.20, volume: 0.15, trend: 0.20, bbRoom: 0.15 }
+    );
+    var scorePb = Math.round(scorePb01 * 100);
+    var gradePb = gradeByScore(scorePb);
+
+    result.pass = true;
+    result.action = 'LONG';
+    result.blockShort = true;
+    result.longSetup = {
+      isPumpEarly: false,
+      pass: scorePb >= 55,
+      entry: pbEntry, altEntry: pbEntry, sl: pbSl, tp: pbTp,
+      reason: 'EMA pullback: coin đã pump, đang kéo về test EMA13 → bounce',
+      score: scorePb, grade: gradePb,
+      marketOk: true,
+      factors: {
+        nearEma: +pbNearScore.toFixed(2), rsi: +pbRsiScore.toFixed(2),
+        volume: +pbVolScore.toFixed(2), trend: +pbTrendScore.toFixed(2),
+        bbRoom: +pbBbScore.toFixed(2), emaRibbon: 1,
+        volRatio: +volRatioNow.toFixed(2), rsi14val: isFiniteNum(rsi14) ? +rsi14.toFixed(1) : null,
+        ema13DistPct: +(pbDistToEma13 * 100).toFixed(2),
+      },
+    };
+    result.reason = 'EMA pullback – LONG tại EMA13';
+    result.note = `EMA_PB | dist13=${(pbDistToEma13 * 100).toFixed(2)}% | RSI=${isFiniteNum(rsi14) ? rsi14.toFixed(1) : '-'} | vol=${volRatioNow.toFixed(1)}x | score=${scorePb}(${gradePb})`;
+    return result;
+  }
+
   // ── SHORT: distribution top (RSI divergence + overextension) ────────────────
   // Phát hiện sớm: giá overextended + RSI thấp bất thường (divergence proxy) + không bull
   var distToEma13Pct = isFiniteNum(ema13) ? (lc - ema13) / Math.max(ema13, 1e-9) : 0;
@@ -562,12 +625,13 @@ function detectPumpClimaxSimpleActionNew(candles, state, opts) {
   for (var di = 10; di <= divLookback && di < n - 1; di++) {
     if (lc >= +candles[n - 1 - di].high * 0.998) { priceAtNewHigh = true; break; }
   }
-  var rsiDivFound = priceAtNewHigh && isFiniteNum(rsi6) && rsi6 < 55; // giá lên high mới nhưng RSI yếu
+  // Tighten: RSI phải thực sự yếu (<45), overext lớn hơn (3×ATR), cần wick rõ, vol đủ cao
+  var rsiDivFound = priceAtNewHigh && isFiniteNum(rsi6) && rsi6 < 45; // giá lên high mới nhưng RSI yếu rõ rệt
   var divPastRsi  = rsi6; // dùng cho display
-  var dtOverext  = distToEma13Pct >= offInfo.atrPct * 2.0;          // price > EMA13 + 2×ATR
-  var dtUpperW   = currentUpperW >= body(lo, lc) * 0.5;             // upper wick ≥ 0.5× body
-  var dtVolOk    = offInfo.dvRatio >= 1.5;                          // có volume hỗ trợ
-  var isDistTop  = rsiDivFound && dtOverext && !emaBull && (dtUpperW || dtVolOk);
+  var dtOverext  = distToEma13Pct >= offInfo.atrPct * 3.0;          // price > EMA13 + 3×ATR (rất overextended)
+  var dtUpperW   = currentUpperW >= body(lo, lc) * 0.6;             // upper wick ≥ 0.6× body (wick rõ hơn)
+  var dtVolOk    = offInfo.dvRatio >= 2.0;                          // volume hỗ trợ đủ mạnh
+  var isDistTop  = rsiDivFound && dtOverext && !emaBull && dtUpperW && dtVolOk; // cần cả wick lẫn vol
 
   if (isDistTop) {
     var dtEntryRaw = lc * (1 - offInfo.off);
@@ -597,13 +661,14 @@ function detectPumpClimaxSimpleActionNew(candles, state, opts) {
 
   // ── SHORT: volume climax (volume spike 3× trên nến tăng lớn = supply hitting bid) ──
   // Detect ngay TRONG nến pump: vol cực cao + overextended + wick forming
-  var vcVolSpike  = offInfo.dvRatio >= 3.0;
+  var vcVolSpike  = offInfo.dvRatio >= 3.5;                         // vol phải rất cao (3.5× thay vì 3×)
   var vcGreen     = lc > lo;
-  var vcBigBody   = bodyPct(lo, lc) >= offInfo.atrPct * 0.8;
-  var vcUpperWick = currentUpperW >= body(lo, lc) * 0.4;
-  var vcRsiWeak   = isFiniteNum(rsi6) && rsi6 < 75;
-  var vcOverext   = distToEma13Pct >= offInfo.atrPct * 1.5;
-  var isVolClimax = vcVolSpike && vcGreen && vcBigBody && vcRsiWeak && vcOverext && (vcUpperWick || offInfo.dvRatio >= 4.0);
+  var vcBigBody   = bodyPct(lo, lc) >= offInfo.atrPct * 1.0;       // body lớn hơn (1.0× ATR% thay vì 0.8×)
+  var vcUpperWick = currentUpperW >= body(lo, lc) * 0.5;           // wick rõ hơn (0.5× thay vì 0.4×)
+  var vcRsiWeak   = isFiniteNum(rsi6) && rsi6 < 65;                // RSI phải rõ ràng yếu hơn (< 65 thay vì < 75)
+  var vcOverext   = distToEma13Pct >= offInfo.atrPct * 2.5;        // overextended hơn (2.5× thay vì 1.5×)
+  // Cần đồng thời: vol spike + big body + rsi yếu + overext + wick (không cho pass bằng vol ≥4 mà không wick)
+  var isVolClimax = vcVolSpike && vcGreen && vcBigBody && vcRsiWeak && vcOverext && vcUpperWick;
 
   if (isVolClimax) {
     var vcEntryRaw = lc * (1 - offInfo.off * 0.5);
@@ -755,62 +820,6 @@ function detectPumpClimaxSimpleActionNew(candles, state, opts) {
     };
     result.reason = `Sustained dump (${DUMP_CONSEC} nến đỏ) – SHORT`;
     result.note = `DUMP | move=${(dumpMovePct * 100).toFixed(2)}% | vol=${dumpVolRatio.toFixed(1)}x | body=${dumpBodySum2.toFixed(0)} | score=${scoreDump}(${gradeDump})`;
-    return result;
-  }
-
-  // ── LONG: EMA pullback — coin đã pump, đang kéo về test EMA13 ──────────────
-  // Điều kiện: trend bull (ema13>ema25>ema50), giá kéo về gần EMA13 (trong ±1×ATR),
-  // nến đang có dấu hiệu bounce (close > open, vol không quá yếu), RSI chưa OB
-  var pbDistToEma13 = isFiniteNum(ema13) ? Math.abs(pxNow - ema13) / Math.max(ema13, 1e-9) : Infinity;
-  var pbTrendOk = isFiniteNum(ema13) && isFiniteNum(ema25) && isFiniteNum(ema50) && ema13 > ema25 && ema25 > ema50;
-  var pbNearEma13 = pbDistToEma13 <= (offInfo.atrPct * 1.5); // giá trong 1.5×ATR% từ EMA13
-  var pbBounceOk = lc > lo; // nến cuối xanh
-  var pbPrevDropOk = pc < +candles[n - 3]?.close; // 1-2 nến trước đang kéo xuống (pullback)
-  var pbRsiOk = isFiniteNum(rsi14) && rsi14 >= 40 && rsi14 <= 70; // RSI không OB, không quá yếu
-  var pbVolOk = volRatioNow >= 0.6; // không cần vol spike, chỉ cần không quá yếu
-  var pbRegimeOk = longRegimeOk;
-  var isEmaPullback = pbTrendOk && pbNearEma13 && pbBounceOk && pbPrevDropOk && pbRsiOk && pbVolOk && pbRegimeOk;
-
-  if (isEmaPullback) {
-    var pbEntryRaw = ema13 * (1 + offInfo.off * 0.5);
-    var pbSlRaw    = ema25 - offInfo.atr * 0.5;
-    var pbTpRaw    = pbEntryRaw + offInfo.atr * 2.0;
-    var pbEntry = roundToTickSide(pbEntryRaw, tickSize, 'CEIL');
-    var pbSl    = roundToTickSide(pbSlRaw, tickSize, 'FLOOR');
-    var pbTp    = roundToTickSide(pbTpRaw, tickSize, 'CEIL');
-
-    var pbNearScore  = clamp01(1 - pbDistToEma13 / Math.max(offInfo.atrPct * 2, 1e-9));
-    var pbRsiScore   = clamp01((rsi14 - 40) / 30);
-    var pbVolScore   = clamp01((volRatioNow - 0.6) / 1.4);
-    var pbTrendScore = (isFiniteNum(ema5) && ema5 > ema13) ? 1 : 0.6;
-    var pbBbScore    = clamp01((bbNow.upper - pxNow) / Math.max(_atr, 1e-9)); // còn room lên BB
-    var scorePb01 = weightedScore01(
-      { nearEma: pbNearScore, rsi: pbRsiScore, volume: pbVolScore, trend: pbTrendScore, bbRoom: pbBbScore },
-      { nearEma: 0.30, rsi: 0.20, volume: 0.15, trend: 0.20, bbRoom: 0.15 }
-    );
-    var scorePb = Math.round(scorePb01 * 100);
-    var gradePb = gradeByScore(scorePb);
-
-    result.pass = true;
-    result.action = 'LONG';
-    result.blockShort = true;
-    result.longSetup = {
-      isPumpEarly: false,
-      pass: scorePb >= 55,
-      entry: pbEntry, altEntry: pbEntry, sl: pbSl, tp: pbTp,
-      reason: 'EMA pullback: coin đã pump, đang kéo về test EMA13 → bounce',
-      score: scorePb, grade: gradePb,
-      marketOk: true,
-      factors: {
-        nearEma: +pbNearScore.toFixed(2), rsi: +pbRsiScore.toFixed(2),
-        volume: +pbVolScore.toFixed(2), trend: +pbTrendScore.toFixed(2),
-        bbRoom: +pbBbScore.toFixed(2), emaRibbon: 1,
-        volRatio: +volRatioNow.toFixed(2), rsi14val: isFiniteNum(rsi14) ? +rsi14.toFixed(1) : null,
-        ema13DistPct: +(pbDistToEma13 * 100).toFixed(2),
-      },
-    };
-    result.reason = 'EMA pullback – LONG tại EMA13';
-    result.note = `EMA_PB | dist13=${(pbDistToEma13 * 100).toFixed(2)}% | RSI=${isFiniteNum(rsi14) ? rsi14.toFixed(1) : '-'} | vol=${volRatioNow.toFixed(1)}x | score=${scorePb}(${gradePb})`;
     return result;
   }
 

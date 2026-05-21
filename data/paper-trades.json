@@ -1,7 +1,21 @@
 {
   "createdAt": "2026-05-20T02:42:17.303Z",
-  "updatedAt": "2026-05-21T04:16:24.863Z",
+  "updatedAt": "2026-05-21T04:50:28.212Z",
   "trades": [
+    {
+      "id": "a5982927-1832-480f-8f6e-f21a1b14747e",
+      "symbol": "ATOMUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 4.804435454811882,
+      "entryPrice": 2.08141,
+      "createdAt": "2026-05-21T04:50:28.211Z",
+      "openedAt": null,
+      "source": "liq-sweep-76",
+      "note": "sweepProb=76% | target=2.08141 | confirmation=waiting for above sweep + bearish rejection"
+    },
     {
       "id": "9347ec7f-4349-48d7-b5c0-dfe743203a14",
       "symbol": "ICPUSDT",
