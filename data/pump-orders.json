@@ -1,15 +1,5 @@
 [
   {
-    "orderId": 1459688482,
-    "symbol": "DEXEUSDT",
-    "side": "SELL",
-    "entry": 13.546,
-    "qty": 0.73,
-    "margin": 1,
-    "score": 95,
-    "placedAt": 1779354710915
-  },
-  {
     "orderId": 1281684693,
     "symbol": "DIAUSDT",
     "side": "BUY",
@@ -50,26 +40,6 @@
     "placedAt": 1779355071006
   },
   {
-    "orderId": 913763928,
-    "symbol": "PROMPTUSDT",
-    "side": "SELL",
-    "entry": 0.0361,
-    "qty": 276,
-    "margin": 1,
-    "score": 88,
-    "placedAt": 1779355190943
-  },
-  {
-    "orderId": 2059956491,
-    "symbol": "JELLYJELLYUSDT",
-    "side": "BUY",
-    "entry": 0.06513,
-    "qty": 153,
-    "margin": 1,
-    "score": 90,
-    "placedAt": 1779355190949
-  },
-  {
     "orderId": 1067776482,
     "symbol": "KAIAUSDT",
     "side": "BUY",
@@ -90,13 +60,43 @@
     "placedAt": 1779355310992
   },
   {
-    "orderId": 11112106695,
-    "symbol": "TAOUSDT",
-    "side": "BUY",
-    "entry": 284.59,
-    "qty": 0.035,
+    "orderId": 429591259,
+    "symbol": "JCTUSDT",
+    "side": "SELL",
+    "entry": 0.003203,
+    "qty": 3122,
     "margin": 1,
-    "score": 87,
-    "placedAt": 1779355346919
+    "score": 90,
+    "placedAt": 1779355634731
+  },
+  {
+    "orderId": 919705269,
+    "symbol": "AVAUSDT",
+    "side": "SELL",
+    "entry": 0.2424,
+    "qty": 41.2,
+    "margin": 1,
+    "score": 94,
+    "placedAt": 1779355994677
+  },
+  {
+    "orderId": 8115480953,
+    "symbol": "NOTUSDT",
+    "side": "SELL",
+    "entry": 0.0004875,
+    "qty": 20514,
+    "margin": 1,
+    "score": 93,
+    "placedAt": 1779356234819
+  },
+  {
+    "orderId": 1142118789,
+    "symbol": "DUSDT",
+    "side": "SELL",
+    "entry": 0.013124,
+    "qty": 761,
+    "margin": 1,
+    "score": 93,
+    "placedAt": 1779356594739
   }
 ]

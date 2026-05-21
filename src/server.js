@@ -566,6 +566,11 @@ const server = createServer(async (request, response) => {
       return sendJson(response, result);
     }
 
+    if (requestUrl.pathname === '/api/btc-health') {
+      await sendJson(response, await getBtcHealth());
+      return;
+    }
+
     if (requestUrl.pathname === '/api/ls-ratio-scan') {
       const period = requestUrl.searchParams.get('period') ?? '15m';
       const cache = lsRatioCache[period] ?? lsRatioCache['15m'];
@@ -1059,6 +1064,99 @@ server.listen(port, '127.0.0.1', () => {
     });
   }, 25000);
 });
+
+// ── BTC Health ────────────────────────────────────────────────────────────────
+let btcHealthCache = { data: null, expiresAt: 0 };
+
+function calcRsiSimple(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) gains += diff; else losses -= diff;
+  }
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  return 100 - 100 / (1 + avgGain / avgLoss);
+}
+
+async function getBtcHealth() {
+  if (btcHealthCache.data && Date.now() < btcHealthCache.expiresAt) return btcHealthCache.data;
+
+  try {
+    const [klines4h, klines1d, premiumRaw, lsRaw] = await Promise.all([
+      client.getKlines('BTCUSDT', '4h', 60),
+      client.getKlines('BTCUSDT', '1d', 30),
+      client.getPremiumIndex('BTCUSDT'),
+      client.getGlobalLongShortRatio('BTCUSDT', '5m', 1).catch(() => null),
+    ]);
+
+    // Funding rate
+    const fundingRate = Number(premiumRaw.lastFundingRate) * 100; // % per 8h
+
+    // L/S ratio
+    const lsData = Array.isArray(lsRaw) ? lsRaw[0] : lsRaw;
+    const lsRatio = lsData ? Number(lsData.longShortRatio) : null;
+    const longPct = lsRatio ? (lsRatio / (1 + lsRatio)) * 100 : null;
+
+    // RSI 4h — current and 3 candles ago (divergence check)
+    const closes4h = klines4h.map((k) => Number(k[4] ?? k.close));
+    const highs4h  = klines4h.map((k) => Number(k[2] ?? k.high));
+    const rsi4h    = calcRsiSimple(closes4h, 14);
+
+    // Bearish divergence: price higher high but RSI lower high vs 10 candles ago
+    const rsiPrev  = calcRsiSimple(closes4h.slice(0, -10), 14);
+    const pricePeak  = Math.max(...closes4h.slice(-5));
+    const pricePrev  = Math.max(...closes4h.slice(-15, -10));
+    const bearishDiv = rsi4h != null && rsiPrev != null && pricePeak > pricePrev && rsi4h < rsiPrev - 3;
+
+    // RSI 1D
+    const closes1d = klines1d.map((k) => Number(k[4] ?? k.close));
+    const rsi1d    = calcRsiSimple(closes1d, 14);
+
+    // OBV trend 4h (last 20 candles) — rising/falling/flat
+    const vols4h   = klines4h.map((k) => Number(k[5] ?? k.volume));
+    let obv = 0;
+    const obvArr = [];
+    for (let i = 1; i < closes4h.length; i++) {
+      obv += closes4h[i] > closes4h[i - 1] ? vols4h[i] : closes4h[i] < closes4h[i - 1] ? -vols4h[i] : 0;
+      obvArr.push(obv);
+    }
+    const obvRecent = obvArr.slice(-20);
+    const obvTrend  = obvRecent[obvRecent.length - 1] > obvRecent[0] * 1.02 ? 'rising'
+                    : obvRecent[obvRecent.length - 1] < obvRecent[0] * 0.98 ? 'falling' : 'flat';
+
+    // Overall bias
+    let bearPoints = 0;
+    if (fundingRate > 0.05) bearPoints++;
+    if (bearishDiv) bearPoints++;
+    if (longPct != null && longPct > 62) bearPoints++;
+    if (rsi4h != null && rsi4h > 70) bearPoints++;
+    if (obvTrend === 'falling') bearPoints++;
+    const bias = bearPoints >= 3 ? 'bearish' : bearPoints >= 2 ? 'caution' : 'neutral';
+
+    const data = {
+      price: Number(premiumRaw.markPrice),
+      fundingRate: +fundingRate.toFixed(4),
+      lsRatio,
+      longPct: longPct != null ? +longPct.toFixed(1) : null,
+      rsi4h: rsi4h != null ? +rsi4h.toFixed(1) : null,
+      rsi1d: rsi1d != null ? +rsi1d.toFixed(1) : null,
+      bearishDiv,
+      obvTrend,
+      bias,
+      bearPoints,
+      updatedAt: Date.now(),
+    };
+
+    btcHealthCache = { data, expiresAt: Date.now() + 60_000 };
+    return data;
+  } catch (e) {
+    console.warn('[BtcHealth] error:', e.message);
+    return btcHealthCache.data ?? { error: e.message };
+  }
+}
 
 async function getSymbols() {
   if (symbolCache.data && Date.now() < symbolCache.expiresAt) {
@@ -2951,6 +3049,34 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
   if (factors?.emaRibbon === 0) return; // EMA ribbon không bullish → không đặt lệnh
   if (!entry || !sl) return;
 
+  // Block khi BTC health = bearish (chỉ block LONG — SHORT vẫn cho qua)
+  if (action === 'LONG' || action == null) {
+    const health = btcHealthCache.data;
+    if (health?.bias === 'bearish') {
+      console.log(`[PumpAuto] ⛔ ${symbol} block — BTC bias=bearish (funding=${health.fundingRate}% RSI4h=${health.rsi4h})`);
+      const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+      if (webhookUrl) {
+        const reasons = [
+          health.fundingRate > 0.05 ? `Funding **${health.fundingRate}%** (cao)` : null,
+          health.bearishDiv ? `RSI Divergence ⚠` : null,
+          health.longPct > 62 ? `Long ratio **${health.longPct}%** (overleveraged)` : null,
+          health.rsi4h > 70 ? `RSI 4h **${health.rsi4h}** (overbought)` : null,
+          health.obvTrend === 'falling' ? `OBV 4h ↓ (lực mua yếu)` : null,
+        ].filter(Boolean);
+        const msg = `⛔ **Pump Auto BLOCKED** | **${symbol}** 🟢 LONG\n` +
+          `Score: **${score}** | Entry: \`${entry}\`\n` +
+          `BTC Health: **bearish** (${health.bearPoints}/5)\n` +
+          `Lý do: ${reasons.join(' · ') || 'tổng hợp nhiều yếu tố'}`;
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: msg }),
+        }).catch(() => {});
+      }
+      return;
+    }
+  }
+
   const last = pumpAutoOrderFired.get(symbol) ?? 0;
   if (Date.now() - last < 2 * 3600 * 1000) {
     console.log(`[PumpAuto] ⏭ ${symbol} skip — 2h dedup`);
@@ -2973,6 +3099,18 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     if (openLimitEntries.length >= maxLimitOrders) {
       console.log(`[PumpAuto] ⚠ ${symbol} skip — max ${maxLimitOrders} limit orders reached`);
       return;
+    }
+
+    // Max positions check: positions đang mở + LIMIT pending không vượt ngưỡng
+    const maxPositions = Number(process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+    if (maxPositions > 0) {
+      const positions = await client.getPositions({ apiKey, apiSecret });
+      const openCount = positions.filter((p) => Number(p.positionAmt) !== 0).length;
+      const pendingCount = openLimitEntries.length;
+      if (openCount + pendingCount >= maxPositions) {
+        console.log(`[PumpAuto] ⚠ ${symbol} skip — max positions ${maxPositions} reached (open=${openCount} pending=${pendingCount})`);
+        return;
+      }
     }
 
     const symbols = await getSymbols();
