@@ -93,7 +93,7 @@ function detectKillShort(candles, state, cfg = {}) {
     sweepSearchBack: 6,   // tìm sweep candle trong 6 nến gần nhất (trừ nến hiện tại)
     sweepVolX:       1.5, // volume sweep tối thiểu
     sweepWickFrac:   0.4, // lower wick / body tối thiểu
-    revVolX:         1.5, // volume reversal tối thiểu
+    revVolX:         2.0, // volume reversal tối thiểu
     revClosePosMin:  0.55,// close pos trong nến reversal (close near high)
     engulfPct:       0.97,// close ≥ 97% sweep high
     rsiAtSweepMax:   55,  // RSI tại sweep candle (không quá bullish)

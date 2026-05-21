@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'node:events';
 
-const FSTREAM_WS = 'wss://fstream.binance.com';
+const FSTREAM_WS = 'wss://fstream.binancefuture.com';
 const MAX_STREAMS_PER_CONN = 200;
 const STALE_MS   = 3 * 60 * 1000;  // force reconnect if no tick for 3 min
 const PING_MS    = 2 * 60 * 1000;  // send ping every 2 min to keep alive

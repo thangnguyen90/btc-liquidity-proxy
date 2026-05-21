@@ -376,6 +376,10 @@ const server = createServer(async (request, response) => {
       }
       pumpSseClients.add(response);
       request.on('close', () => pumpSseClients.delete(response));
+      // Nếu cache stale, trigger scan ngay để client nhận data mới qua SSE
+      if (!pumpScanCache.data || Date.now() > pumpScanCache.expiresAt) {
+        schedulePumpScan();
+      }
       return; // keep response open
     }
 
@@ -414,6 +418,9 @@ const server = createServer(async (request, response) => {
       }
       capSseClients.add(response);
       request.on('close', () => capSseClients.delete(response));
+      if (!capScanCache.data || Date.now() > capScanCache.expiresAt) {
+        scheduleCapScan();
+      }
       return;
     }
 
@@ -451,6 +458,9 @@ const server = createServer(async (request, response) => {
       }
       killShortSseClients.add(response);
       request.on('close', () => killShortSseClients.delete(response));
+      if (!killShortScanCache.data || Date.now() > killShortScanCache.expiresAt) {
+        scheduleKillShortScan();
+      }
       return;
     }
 
@@ -2866,12 +2876,15 @@ async function handlePumpAutoOrder(signal) {
 
     const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
     if (webhookUrl) {
-      await sendDiscordMessage(webhookUrl,
-        `🎯 **Pump Auto LIMIT** | **${symbol}** ${action === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\n` +
+      const msg = `🎯 **Pump Auto LIMIT** | **${symbol}** ${action === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\n` +
         `Score: **${score}** | Entry: \`${entryStr}\` | SL: \`${sl}\`\n` +
         `Margin: $${margin} × ${leverage}x | RSI: ${factors?.rsi14val ?? '-'} | Vol: ${factors?.volRatio ?? '-'}×\n` +
-        `OrderId: ${order.orderId}`
-      );
+        `OrderId: ${order.orderId}`;
+      fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: msg }),
+      }).catch(() => {});
     }
   } catch (err) {
     console.error(`[PumpAuto] ❌ ${symbol} error:`, err.message);
@@ -3313,7 +3326,9 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
   const rawTpPrice = isLong
     ? entry * (1 + tpRoe / leverage)
     : entry * (1 - tpRoe / leverage);
+  if (!isFinite(rawTpPrice) || rawTpPrice <= 0) return;
   const triggerPrice = priceFromTick(symbolInfo, rawTpPrice);
+  if (!triggerPrice || triggerPrice === 'NaN' || Number(triggerPrice) <= 0) return;
 
   const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
   const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));

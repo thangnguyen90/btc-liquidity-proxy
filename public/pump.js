@@ -278,7 +278,13 @@ function applyData(data) {
       staleEl.style.cssText = 'background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);border-radius:6px;padding:8px 14px;font-size:12px;color:#fbbf24;margin-top:8px';
       scanMeta.insertAdjacentElement('afterend', staleEl);
     }
-    staleEl.textContent = `⚠ Kline data stale${staleSec != null ? ` — last tick ${staleSec}s ago` : ''}. WebSocket đang reconnect.`;
+    const isBlocked = staleSec === null;
+    staleEl.style.cssText = isBlocked
+      ? 'background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);border-radius:6px;padding:8px 14px;font-size:12px;color:#f87171;margin-top:8px'
+      : 'background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);border-radius:6px;padding:8px 14px;font-size:12px;color:#fbbf24;margin-top:8px';
+    staleEl.textContent = isBlocked
+      ? '🚫 Binance IP bị block — kline WebSocket không nhận được tick nào. Đổi IP hoặc chờ vài phút.'
+      : `⚠ Kline data stale — last tick ${staleSec}s ago. WebSocket đang reconnect.`;
   } else if (staleEl) {
     staleEl.remove();
   }
