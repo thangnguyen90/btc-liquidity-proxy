@@ -200,6 +200,7 @@ const SL_TRACKING_FILE = join(rootDir, 'data', 'sl-tracking.json');
 // { createdAt, positions: { [symbol]: { openedAt, entry, slPlaced, slPrice? } } }
 let slTracking = { createdAt: Date.now(), positions: {} };
 const PAPER_TRADES_FILE = join(rootDir, 'data', 'paper-trades.json');
+const FILLS_DIR = join(rootDir, 'data', 'fills');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
 const paperFillLocks = new Set();
@@ -214,6 +215,27 @@ async function loadSlTracking() {
     await saveSlTracking();
     console.log(`[SlTracking] Created new — ${new Date(slTracking.createdAt).toISOString()}`);
   }
+}
+
+function detectFillSource(symbol) {
+  if (pumpScanCache.data?.signals?.find((s) => s.symbol === symbol)) return 'pump';
+  if (capScanCache.data?.signals?.find((s) => s.symbol === symbol)) return 'cap';
+  if (killShortScanCache.data?.signals?.find((s) => s.symbol === symbol)) return 'killshort';
+  return 'liq';
+}
+
+async function appendFillLog(record) {
+  try {
+    const source = record.source ?? detectFillSource(record.symbol);
+    const dir = join(FILLS_DIR, source);
+    await mkdir(dir, { recursive: true });
+    const day = new Date(record.fillTime).toISOString().slice(0, 10);
+    const file = join(dir, `${day}.json`);
+    let arr = [];
+    try { arr = JSON.parse(await readFile(file, 'utf8')); } catch {}
+    arr.push({ ...record, source, loggedAt: new Date().toISOString() });
+    await writeFile(file, JSON.stringify(arr, null, 2));
+  } catch {}
 }
 
 async function saveSlTracking() {
@@ -925,7 +947,7 @@ server.listen(port, '127.0.0.1', () => {
     posMonitor = startPositionMonitor({
       client,
       getCredentials: () => getApiCredentials(null),
-      onOrderFill: (symbol, { fillTime }) => {
+      onOrderFill: (symbol, { side, filledQty, avgPrice, positionSide, fillTime }) => {
         console.log(`[SlGuard] onOrderFill ${symbol} fillTime=${fillTime} createdAt=${slTracking.createdAt}`);
         // Only track fills that happened after sl-tracking.json was created
         if (fillTime < slTracking.createdAt) {
@@ -938,6 +960,7 @@ server.listen(port, '127.0.0.1', () => {
         }
         console.log(`[SlGuard] Registered ${symbol}, triggering SL guard in 1s`);
         setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
+        appendFillLog({ symbol, side, filledQty, avgPrice, positionSide, fillTime }).catch(() => {});
       },
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
         // Đặt TP pending từ AutoLiq nếu position đã mở

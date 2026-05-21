@@ -1,7 +1,12 @@
 {
-  "LABUSDT": {
-    "expiresAt": 1779344621552,
-    "addedAt": "2026-05-21T04:23:41.552Z",
-    "reason": "SL hit pnl=-0.0868"
+  "USELESSUSDT": {
+    "expiresAt": 1779355829991,
+    "addedAt": "2026-05-21T07:30:29.991Z",
+    "reason": "SL hit pnl=-0.0077"
+  },
+  "BEATUSDT": {
+    "expiresAt": 1779356640013,
+    "addedAt": "2026-05-21T07:44:00.013Z",
+    "reason": "SL hit pnl=-0.0994"
   }
 }
