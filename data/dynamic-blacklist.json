@@ -13,5 +13,10 @@
     "expiresAt": 1779358170639,
     "addedAt": "2026-05-21T08:09:30.640Z",
     "reason": "SL hit pnl=-0.0080"
+  },
+  "GPSUSDT": {
+    "expiresAt": 1779361647441,
+    "addedAt": "2026-05-21T09:07:27.441Z",
+    "reason": "SL hit pnl=-0.0027"
   }
 }

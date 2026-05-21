@@ -3001,6 +3001,32 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     addPumpPendingOrder({ orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr), margin, score, placedAt: Date.now() }).catch(() => {});
     console.log(`[PumpAuto] ✅ ${symbol} ${side} LIMIT @${entryStr} qty=${qtyStr} margin=$${margin} score=${score}`);
 
+    // Đặt SL ngay sau entry order — STOP_MARKET reduceOnly
+    const slRoePct = Number(process.env.PUMP_AUTO_ORDER_SL_ROE ?? 30);
+    const slPriceRaw = side === 'BUY'
+      ? Number(entryStr) * (1 - slRoePct / 100 / leverage)
+      : Number(entryStr) * (1 + slRoePct / 100 / leverage);
+    if (isFinite(slPriceRaw) && slPriceRaw > 0 && info) {
+      const slPriceStr = tickSize > 0
+        ? slPriceRaw.toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
+        : slPriceRaw.toFixed(8);
+      const slParams = {
+        symbol,
+        side: side === 'BUY' ? 'SELL' : 'BUY',
+        type: 'STOP_MARKET',
+        stopPrice: slPriceStr,
+        quantity: qtyStr,
+        workingType: 'MARK_PRICE',
+        timeInForce: 'GTC',
+        reduceOnly: 'true',
+        recvWindow,
+        newClientOrderId: `lp_psl_${order.orderId}`.slice(0, 36),
+      };
+      client.placeFuturesOrder({ params: slParams, apiKey, apiSecret })
+        .then(() => console.log(`[PumpAuto] 🛡 ${symbol} SL @${slPriceStr} (${slRoePct}% ROE)`))
+        .catch((e) => console.warn(`[PumpAuto] SL failed ${symbol}:`, e.message));
+    }
+
     const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
     if (webhookUrl) {
       const msg = `🎯 **Pump Auto LIMIT** | **${symbol}** ${action === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\n` +
