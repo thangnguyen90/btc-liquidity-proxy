@@ -278,8 +278,49 @@ async function pollPumpOrders() {
       const order = await client.getOrder({ symbol: o.symbol, orderId: o.orderId, apiKey, apiSecret });
       const status = String(order.status ?? '').toUpperCase();
       if (status === 'FILLED') {
-        console.log(`[PumpOrders] ✅ FILLED ${o.symbol} orderId=${o.orderId} @ ${order.avgPrice ?? o.entry}`);
+        const avgPrice = Number(order.avgPrice ?? o.entry);
+        console.log(`[PumpOrders] ✅ FILLED ${o.symbol} orderId=${o.orderId} @ ${avgPrice}`);
         invalidateOpenOrdersCache();
+        // Đặt TP_MARKET ngay sau khi fill
+        if (o.tp && o.qty && creds) {
+          const { apiKey, apiSecret } = creds;
+          const symbols = await getSymbols().catch(() => []);
+          const info = symbols.find((s) => s.symbol === o.symbol);
+          const tickSize = Number(info?.filters?.find((f) => f.filterType === 'PRICE_FILTER')?.tickSize ?? 0);
+          const stepSize = Number(info?.filters?.find((f) => f.filterType === 'LOT_SIZE')?.stepSize ?? 0);
+          const tpPriceStr = tickSize > 0
+            ? o.tp.toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
+            : o.tp.toFixed(8);
+          const qtyStr = stepSize > 0
+            ? o.qty.toFixed(Math.max(0, -Math.floor(Math.log10(stepSize))))
+            : o.qty.toFixed(6);
+          const tpSide = o.side === 'BUY' ? 'SELL' : 'BUY';
+          const tpParams = {
+            symbol: o.symbol,
+            side: tpSide,
+            type: 'TAKE_PROFIT_MARKET',
+            stopPrice: tpPriceStr,
+            quantity: qtyStr,
+            workingType: 'MARK_PRICE',
+            reduceOnly: 'true',
+            recvWindow: Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000),
+            newClientOrderId: `lp_ptp_${o.orderId}`.slice(0, 36),
+          };
+          try {
+            await client.placeFuturesOrder({ params: tpParams, apiKey, apiSecret })
+              .catch(async (e) => {
+                // Fallback to algo order if TAKE_PROFIT_MARKET not supported
+                if (e.message?.includes('not supported') || e.message?.includes('Algo')) {
+                  const algoParams = { ...tpParams, algoType: 'CONDITIONAL', triggerPrice: tpPriceStr };
+                  delete algoParams.stopPrice;
+                  await client.placeAlgoOrder({ params: algoParams, apiKey, apiSecret });
+                } else throw e;
+              });
+            console.log(`[PumpOrders] 🎯 TP placed ${o.symbol} @${tpPriceStr}`);
+          } catch (tpErr) {
+            console.warn(`[PumpOrders] ⚠ TP failed ${o.symbol}:`, tpErr.message);
+          }
+        }
       } else if (status === 'CANCELED' || status === 'EXPIRED' || status === 'REJECTED') {
         console.log(`[PumpOrders] 🗑 ${status} ${o.symbol} orderId=${o.orderId}`);
       } else {
@@ -2855,13 +2896,6 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
       }
     }
 
-    // Cancel: algo orders use algoId, regular orders use orderId via cancelOrder
-    if (algoSl) {
-      await client.cancelAlgoOrder({ algoId: algoSl.algoId, apiKey, apiSecret, recvWindow });
-    } else if (regularSl) {
-      await client.cancelOrder({ symbol, orderId: regularSl.orderId, apiKey, apiSecret, recvWindow });
-    }
-
     const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
     const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
     const steppedQty = Math.floor(Math.abs(pos.amt) / stepSize) * stepSize;
@@ -2883,7 +2917,20 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
     };
     if (isHedge) { slParams.positionSide = positionSide; } else { slParams.reduceOnly = 'true'; }
 
+    // Place new SL FIRST — cancel old one only after placement succeeds.
+    // If cancel-first and placement fails (e.g. "max stop order limit"),
+    // the position ends up with NO SL at all.
     await client.placeAlgoOrder({ params: slParams, apiKey, apiSecret });
+
+    // New SL confirmed placed → safe to remove old one now
+    if (algoSl) {
+      await client.cancelAlgoOrder({ algoId: algoSl.algoId, apiKey, apiSecret, recvWindow })
+        .catch((e) => console.warn(`[SlTrail] ⚠ ${symbol} cancel old algo SL (non-critical):`, e.message));
+    } else if (regularSl) {
+      await client.cancelOrder({ symbol, orderId: regularSl.orderId, apiKey, apiSecret, recvWindow })
+        .catch((e) => console.warn(`[SlTrail] ⚠ ${symbol} cancel old regular SL (non-critical):`, e.message));
+    }
+
     slTrailLockRoe.set(symbol, targetLockRoe);
     console.log(`[SlTrail] ✅ ${symbol} ROE=${roe.toFixed(1)}% → ${slOrder ? 'SL dời lên' : 'SL mới'} +${targetLockRoe}% ROE @ ${newSlPrice}`);
   } catch (err) {
@@ -3178,7 +3225,9 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
       }
     }
 
-    addPumpPendingOrder({ orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr), margin, score, slPlaced, slPrice: slPriceStr ? Number(slPriceStr) : null, placedAt: Date.now() }).catch(() => {});
+    // Lưu tp từ signal để pollPumpOrders đặt TP_MARKET khi order filled
+    const tpFromSignal = signal.tp ?? null;
+    addPumpPendingOrder({ orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr), margin, score, slPlaced, slPrice: slPriceStr ? Number(slPriceStr) : null, tp: tpFromSignal, placedAt: Date.now() }).catch(() => {});
 
     const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
     if (webhookUrl) {

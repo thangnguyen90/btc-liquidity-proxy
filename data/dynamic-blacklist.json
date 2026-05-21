@@ -1,22 +1,12 @@
 {
-  "USELESSUSDT": {
-    "expiresAt": 1779355829991,
-    "addedAt": "2026-05-21T07:30:29.991Z",
-    "reason": "SL hit pnl=-0.0077"
+  "RIFUSDT": {
+    "expiresAt": 1779380578371,
+    "addedAt": "2026-05-21T14:22:58.371Z",
+    "reason": "SL hit pnl=-0.2926"
   },
-  "BEATUSDT": {
-    "expiresAt": 1779356640013,
-    "addedAt": "2026-05-21T07:44:00.013Z",
-    "reason": "SL hit pnl=-0.0994"
-  },
-  "BANKUSDT": {
-    "expiresAt": 1779358170639,
-    "addedAt": "2026-05-21T08:09:30.640Z",
-    "reason": "SL hit pnl=-0.0080"
-  },
-  "GPSUSDT": {
-    "expiresAt": 1779361647441,
-    "addedAt": "2026-05-21T09:07:27.441Z",
-    "reason": "SL hit pnl=-0.0027"
+  "币安人生USDT": {
+    "expiresAt": 1779380698373,
+    "addedAt": "2026-05-21T14:24:58.373Z",
+    "reason": "SL hit pnl=-0.0013"
   }
 }
