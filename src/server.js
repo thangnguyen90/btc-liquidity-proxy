@@ -62,8 +62,17 @@ async function schedulePumpScan() {
       pumpScanCache.expiresAt = Date.now() + 30_000;
       pushSse(pumpSseClients, result);
       // Auto-order: đặt LIMIT $1 cho signal score≥90 + marketOk
-      for (const sig of signals) {
-        handlePumpAutoOrder(sig).catch((e) => console.error('[PumpAuto] unhandled:', e.message));
+      // Dùng cached open orders — chỉ gọi API 1 lần, tái sử dụng cho toàn bộ signals
+      if (runtimeSettings.pumpAutoOrderEnabled && signals.length > 0) {
+        try {
+          const { apiKey, apiSecret } = getApiCredentials(null);
+          const openOrders = await getCachedOpenOrders(apiKey, apiSecret);
+          for (const sig of signals) {
+            handlePumpAutoOrder(sig, openOrders).catch((e) => console.error('[PumpAuto] unhandled:', e.message));
+          }
+        } catch (e) {
+          console.error('[PumpAuto] getOpenOrders failed:', e.message);
+        }
       }
     } catch (e) {
       console.error('[PumpScan] error:', e.message);
@@ -201,6 +210,7 @@ const SL_TRACKING_FILE = join(rootDir, 'data', 'sl-tracking.json');
 let slTracking = { createdAt: Date.now(), positions: {} };
 const PAPER_TRADES_FILE = join(rootDir, 'data', 'paper-trades.json');
 const FILLS_DIR = join(rootDir, 'data', 'fills');
+const PUMP_ORDERS_FILE = join(rootDir, 'data', 'pump-orders.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
 const paperFillLocks = new Set();
@@ -236,6 +246,55 @@ async function appendFillLog(record) {
     arr.push({ ...record, source, loggedAt: new Date().toISOString() });
     await writeFile(file, JSON.stringify(arr, null, 2));
   } catch {}
+}
+
+// ── Pump pending orders — lưu LIMIT orders chờ khớp ─────────────────────────
+let pumpPendingOrders = []; // [{ orderId, symbol, side, entry, qty, margin, score, placedAt }]
+
+async function loadPumpOrders() {
+  try { pumpPendingOrders = JSON.parse(await readFile(PUMP_ORDERS_FILE, 'utf8')); } catch {}
+}
+
+async function savePumpOrders() {
+  try {
+    await mkdir(join(rootDir, 'data'), { recursive: true });
+    await writeFile(PUMP_ORDERS_FILE, JSON.stringify(pumpPendingOrders, null, 2));
+  } catch {}
+}
+
+async function addPumpPendingOrder(record) {
+  pumpPendingOrders.push(record);
+  await savePumpOrders();
+}
+
+async function pollPumpOrders() {
+  if (!pumpPendingOrders.length) return;
+  let creds;
+  try { creds = getApiCredentials(null); } catch { return; }
+  const { apiKey, apiSecret } = creds;
+  const remaining = [];
+  for (const o of pumpPendingOrders) {
+    try {
+      const order = await client.getOrder({ symbol: o.symbol, orderId: o.orderId, apiKey, apiSecret });
+      const status = String(order.status ?? '').toUpperCase();
+      if (status === 'FILLED') {
+        console.log(`[PumpOrders] ✅ FILLED ${o.symbol} orderId=${o.orderId} @ ${order.avgPrice ?? o.entry}`);
+        invalidateOpenOrdersCache();
+      } else if (status === 'CANCELED' || status === 'EXPIRED' || status === 'REJECTED') {
+        console.log(`[PumpOrders] 🗑 ${status} ${o.symbol} orderId=${o.orderId}`);
+      } else {
+        remaining.push(o); // PARTIALLY_FILLED hoặc NEW → giữ lại
+      }
+    } catch (e) {
+      console.warn(`[PumpOrders] check ${o.symbol} ${o.orderId}:`, e.message);
+      remaining.push(o);
+    }
+    await new Promise((r) => setTimeout(r, 250)); // tránh burst
+  }
+  if (remaining.length !== pumpPendingOrders.length) {
+    pumpPendingOrders = remaining;
+    await savePumpOrders();
+  }
 }
 
 async function saveSlTracking() {
@@ -858,6 +917,9 @@ server.listen(port, '127.0.0.1', () => {
   loadSlTracking().then(() =>
     adoptExistingSlPositions().catch((err) => console.warn('[SlTracking] Adopt failed:', err.message)),
   );
+  loadPumpOrders().then(() => {
+    setInterval(() => pollPumpOrders().catch(() => {}), 60_000);
+  });
   const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
   // Stagger service startup to avoid burst at t=0
   startAutoTrader();
@@ -961,6 +1023,9 @@ server.listen(port, '127.0.0.1', () => {
         console.log(`[SlGuard] Registered ${symbol}, triggering SL guard in 1s`);
         setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
         appendFillLog({ symbol, side, filledQty, avgPrice, positionSide, fillTime }).catch(() => {});
+        invalidateOpenOrdersCache();
+        tpConfirmedSet.delete(symbol);
+        negTpLastRun.delete(symbol);
       },
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
         // Đặt TP pending từ AutoLiq nếu position đã mở
@@ -2270,6 +2335,15 @@ function quantityFromNotional(symbolInfo, notionalUsdt, markPrice, skipMinCheck 
   }
 
   const steppedQuantity = Math.floor(rawQuantity / stepSize) * stepSize;
+
+  if (!skipMinCheck) {
+    const notionalFilter = symbolInfo.filters?.find((f) => f.filterType === 'MIN_NOTIONAL');
+    const minNotionalFilter = Number(notionalFilter?.notional ?? notionalFilter?.minNotional ?? 0);
+    if (minNotionalFilter > 0 && steppedQuantity * markPrice < minNotionalFilter) {
+      throw new Error(`Order notional too small for ${symbolInfo.symbol}. Min ${minNotionalFilter} USDT required, got ${(steppedQuantity * markPrice).toFixed(2)} USDT.`);
+    }
+  }
+
   const precision = decimalsFromStep(stepSize);
 
   return steppedQuantity.toFixed(precision).replace(/\.?0+$/, '');
@@ -2420,6 +2494,26 @@ async function getPositions(token = null) {
   return rows.filter((p) => Number(p.positionAmt) !== 0);
 }
 
+// ── Open orders cache — tránh gọi REST liên tục ───────────────────────────────
+// Invalidate bằng invalidateOpenOrdersCache() sau mỗi lần đặt/hủy lệnh hoặc fill
+let _openOrdersCache = null;      // cached array (all symbols, no-token)
+let _openOrdersCacheAt = 0;
+const OPEN_ORDERS_TTL = 30_000;   // 30s TTL fallback nếu không invalidate
+
+function invalidateOpenOrdersCache() {
+  _openOrdersCache = null;
+  _openOrdersCacheAt = 0;
+}
+
+async function getCachedOpenOrders(apiKey, apiSecret) {
+  if (_openOrdersCache && Date.now() - _openOrdersCacheAt < OPEN_ORDERS_TTL) {
+    return _openOrdersCache;
+  }
+  _openOrdersCache = await client.getOpenOrders({ apiKey, apiSecret });
+  _openOrdersCacheAt = Date.now();
+  return _openOrdersCache;
+}
+
 async function getOpenOrders(symbol, token = null) {
   const { apiKey, apiSecret } = getApiCredentials(token);
   return client.getOpenOrders({ symbol, apiKey, apiSecret });
@@ -2512,6 +2606,8 @@ async function runStaleOrderCleaner() {
 
         avgDownFired.delete(sym);
         tpMovedToEntry.delete(sym);
+        tpConfirmedSet.delete(sym);
+        negTpLastRun.delete(sym);
         negativeSince.delete(sym);
         slTrailLockRoe.delete(sym);
         if (slTracking.positions[sym]) {
@@ -2578,10 +2674,14 @@ function getTargetLockRoe(roe) {
 
 const slTrailRunning = new Set();
 const slTrailLockRoe = new Map(); // symbol → current lock ROE level (in-memory dedup)
+const slTrailLastRun = new Map(); // symbol → timestamp of last API call
+const SL_TRAIL_COOLDOWN_MS = 60_000; // tối thiểu 60s giữa 2 lần gọi API cho cùng symbol
 
 async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
   if (process.env.AUTO_SL_ENABLED === 'false') return;
   if (slTrailRunning.has(symbol)) return;
+  const lastRun = slTrailLastRun.get(symbol) ?? 0;
+  if (Date.now() - lastRun < SL_TRAIL_COOLDOWN_MS) return;
 
   const targetLockRoe = getTargetLockRoe(roe);
   if (targetLockRoe === null) return;
@@ -2590,6 +2690,7 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
   if (targetLockRoe <= currentLockRoe) return;
 
   slTrailRunning.add(symbol);
+  slTrailLastRun.set(symbol, Date.now());
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
@@ -2842,7 +2943,7 @@ function getLiqHighProbHandler() {
 
 const pumpAutoOrderFired = new Map(); // symbol → timestamp
 
-async function handlePumpAutoOrder(signal) {
+async function handlePumpAutoOrder(signal, openOrders = null) {
   if (!runtimeSettings.pumpAutoOrderEnabled) return;
   const { symbol, action, score, marketOk, entry, sl, factors } = signal;
   if (score < 85) return;
@@ -2863,7 +2964,7 @@ async function handlePumpAutoOrder(signal) {
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
     const maxLimitOrders = Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30);
 
-    const openOrders = await client.getOpenOrders({ apiKey, apiSecret });
+    if (!openOrders) openOrders = await client.getOpenOrders({ apiKey, apiSecret });
     const openLimitEntries = openOrders.filter((o) => o.type === 'LIMIT' && !o.reduceOnly);
     if (openLimitEntries.some((o) => o.symbol === symbol)) {
       console.log(`[PumpAuto] ⏭ ${symbol} skip — already has LIMIT order`);
@@ -2896,6 +2997,8 @@ async function handlePumpAutoOrder(signal) {
     });
 
     pumpAutoOrderFired.set(symbol, Date.now());
+    invalidateOpenOrdersCache();
+    addPumpPendingOrder({ orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr), margin, score, placedAt: Date.now() }).catch(() => {});
     console.log(`[PumpAuto] ✅ ${symbol} ${side} LIMIT @${entryStr} qty=${qtyStr} margin=$${margin} score=${score}`);
 
     const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
@@ -3233,6 +3336,9 @@ function startNegTpScanner() {
   run();
 }
 
+// Symbols confirmed to already have a TP order — skip API check until position changes or fill
+const tpConfirmedSet = new Set();
+
 function startMissingTpScanner() {
   if (process.env.AUTO_TP_SCAN_ENABLED === 'false') return;
   const intervalMs = Math.max(Number(process.env.AUTO_TP_SCAN_INTERVAL_MS ?? 60_000), 30_000);
@@ -3318,6 +3424,9 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
   const leverage = Number(pos.leverage) || 1;
   if (!symbol || !amt || !entry) return;
 
+  // Skip API calls if we already confirmed a TP exists for this symbol+entry
+  if (tpConfirmedSet.has(symbol)) return;
+
   const isLong = amt > 0;
   const closeSide = isLong ? 'SELL' : 'BUY';
   const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
@@ -3336,7 +3445,10 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
     const t = String(o.origType ?? o.type ?? '').toUpperCase();
     return o.symbol === symbol && o.side === closeSide && (t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT');
   });
-  if (hasAlgoTp || hasRegularTp) return;
+  if (hasAlgoTp || hasRegularTp) {
+    tpConfirmedSet.add(symbol);
+    return;
+  }
 
   const symbolInfo = symbols.find((s) => s.symbol === symbol);
   if (!symbolInfo) return;
@@ -3378,6 +3490,7 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
 
   try {
     const result = await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
+    tpConfirmedSet.add(symbol);
     console.log(`[AutoTP] ✅ ${symbol} ${isLong ? 'LONG' : 'SHORT'} entry=${entry} lev=${leverage}x → TP @ ${triggerPrice} qty=${quantity} algoId=${result.algoId}`);
   } catch (err) {
     console.error(`[AutoTP] ❌ ${symbol}:`, err.message);
@@ -3391,6 +3504,11 @@ async function handleNegativeTimeoutTp(symbol, pos) {
   const prevEntry = tpMovedToEntry.get(symbol);
   if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.005) return;
 
+  // Cooldown: don't spam API if check was recent
+  const lastRun = negTpLastRun.get(symbol) ?? 0;
+  if (Date.now() - lastRun < NEG_TP_COOLDOWN_MS) return;
+  negTpLastRun.set(symbol, Date.now());
+
   console.log(`[NegTp] ${symbol} checking — entry=${entry} amt=${pos.amt}`);
 
   try {
@@ -3399,7 +3517,7 @@ async function handleNegativeTimeoutTp(symbol, pos) {
 
     const [openOrders, algoResult, symbols] = await Promise.all([
       client.getOpenOrders({ symbol, apiKey, apiSecret, recvWindow }),
-      client.getOpenAlgoOrders({ apiKey, apiSecret }).catch(() => ({ orders: [] })),
+      client.getOpenAlgoOrders({ symbol, apiKey, apiSecret }).catch(() => ({ orders: [] })),
       getSymbols(),
     ]);
 
@@ -3407,7 +3525,9 @@ async function handleNegativeTimeoutTp(symbol, pos) {
     if (!symbolInfo) { console.warn(`[NegTp] ${symbol} not found in symbols`); return; }
 
     const isLong = pos.amt > 0;
+    if (!isFinite(entry) || entry <= 0) { console.warn(`[NegTp] ${symbol} invalid entry ${entry}`); return; }
     const newTpPrice = priceFromTick(symbolInfo, entry);
+    if (!newTpPrice || newTpPrice === 'NaN' || Number(newTpPrice) <= 0) { console.warn(`[NegTp] ${symbol} priceFromTick returned invalid: ${newTpPrice}`); return; }
 
     // Check if a suitable close order already exists at/better than entry
     const allOpen = Array.isArray(openOrders) ? openOrders : [];
@@ -3448,6 +3568,7 @@ async function handleNegativeTimeoutTp(symbol, pos) {
     const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
     const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
     const steppedQty = Math.floor(Math.abs(pos.amt) / stepSize) * stepSize;
+    if (steppedQty <= 0) { console.warn(`[NegTp] ${symbol} qty rounds to 0, skip`); return; }
     const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
 
     const positionSide = pos.positionSide ?? 'BOTH';
@@ -3476,6 +3597,9 @@ async function handleNegativeTimeoutTp(symbol, pos) {
   }
 }
 
+const negTpLastRun = new Map(); // symbol → timestamp of last API call
+const NEG_TP_COOLDOWN_MS = 120_000; // 2 min minimum between API calls per symbol
+
 const avgDownFired = new Map(); // symbol → entryPrice when avg-down was placed
 
 async function handleAvgDown(symbol, pos, roe) {
@@ -3503,8 +3627,14 @@ async function handleAvgDown(symbol, pos, roe) {
     await placeOrder({ symbol, side, notionalUsdt, leverage, dryRun: false, source: 'avg-down' });
     console.log(`[AvgDown] ✅ ${symbol} ROE=${roe.toFixed(1)}% → avg-down $${marginUsdt} ${side}`);
   } catch (err) {
-    avgDownFired.delete(symbol); // allow retry on failure
-    console.error(`[AvgDown] ❌ ${symbol}:`, err.message);
+    const msg = err.message ?? '';
+    // Non-retriable: margin insufficient or notional too small → keep fired so we don't spam
+    if (msg.includes('Margin is insufficient') || msg.includes('notional')) {
+      console.warn(`[AvgDown] ⚠ ${symbol}: ${msg} — skip retry`);
+    } else {
+      avgDownFired.delete(symbol); // allow retry on transient failures
+      console.error(`[AvgDown] ❌ ${symbol}:`, msg);
+    }
   }
 }
 

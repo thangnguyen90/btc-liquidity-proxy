@@ -8,5 +8,10 @@
     "expiresAt": 1779356640013,
     "addedAt": "2026-05-21T07:44:00.013Z",
     "reason": "SL hit pnl=-0.0994"
+  },
+  "BANKUSDT": {
+    "expiresAt": 1779358170639,
+    "addedAt": "2026-05-21T08:09:30.640Z",
+    "reason": "SL hit pnl=-0.0080"
   }
 }

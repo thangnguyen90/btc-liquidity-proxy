@@ -13,7 +13,7 @@
 
 import WebSocket from 'ws';
 
-const WS_BASE = 'wss://fstream.binance.com';
+const WS_BASE = 'wss://fstream.binancefuture.com';
 
 export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, getCredentials = null }) {
   // symbol → { amt, entry, leverage, isolatedMargin, initialMargin }
