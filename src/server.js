@@ -28,6 +28,44 @@ const client = new BinanceClient({
 const klineCache = new KlineCache({ client, maxKlines: 500 });
 const pumpScanCache = { data: null, expiresAt: 0 };
 const capScanCache  = { data: null, expiresAt: 0 };
+
+// ── SSE clients for pump signals push ─────────────────────────────────────────
+const pumpSseClients = new Set();
+
+function pushPumpSse(data) {
+  const payload = `data: ${JSON.stringify(data)}\n\n`;
+  for (const res of pumpSseClients) {
+    try { res.write(payload); } catch { pumpSseClients.delete(res); }
+  }
+}
+
+// Debounced pump scan triggered by candle close events
+let _pumpScanDebounce = null;
+async function schedulePumpScan() {
+  clearTimeout(_pumpScanDebounce);
+  _pumpScanDebounce = setTimeout(async () => {
+    try {
+      const snapshot    = await getMarketSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols  = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runPumpScan(topSymbols, klineCache, snapshotMap);
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      pumpScanCache.data = result;
+      pumpScanCache.expiresAt = Date.now() + 30_000;
+      pushPumpSse(result);
+    } catch (e) {
+      console.error('[PumpScan] error:', e.message);
+    }
+  }, 2_000); // 2s debounce — batch all closes at the same minute boundary
+}
+
+klineCache.on('candleClose', ({ interval }) => {
+  if (interval === '15m') schedulePumpScan();
+});
 const symbolCache = { data: null, expiresAt: 0 };
 const snapshotCache = { data: null, expiresAt: 0 };
 const autoTradeState = {
@@ -227,18 +265,36 @@ const server = createServer(async (request, response) => {
       return sendJson(response, getHighVolData());
     }
 
+    if (requestUrl.pathname === '/api/pump-stream') {
+      response.writeHead(200, {
+        'Content-Type':  'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection':    'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      // Send latest cached result immediately so client doesn't wait for next candle
+      if (pumpScanCache.data) {
+        response.write(`data: ${JSON.stringify(pumpScanCache.data)}\n\n`);
+      }
+      pumpSseClients.add(response);
+      request.on('close', () => pumpSseClients.delete(response));
+      return; // keep response open
+    }
+
     if (requestUrl.pathname === '/api/pump-signals') {
       if (pumpScanCache.data && Date.now() < pumpScanCache.expiresAt) {
         return sendJson(response, pumpScanCache.data);
       }
-      const snapshot = await getMarketSnapshot();
+      const snapshot    = await getMarketSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
-      const topSymbols = snapshot
+      const topSymbols  = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
-        .slice(0, 280)
+        .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runPumpScan(topSymbols, klineCache, snapshotMap);
-      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed };
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       pumpScanCache.data = result;
       pumpScanCache.expiresAt = Date.now() + 30_000;
       return sendJson(response, result);
@@ -569,7 +625,7 @@ server.listen(port, '127.0.0.1', () => {
       const snapshot = await getMarketSnapshot();
       const volDumpMax = Number(process.env.VOL_DUMP_MAX_COINS ?? 150);
       const liqScanMax = Number(process.env.LIQ_SCAN_MAX_COINS ?? 200);
-      const seedMax = Math.max(volDumpMax, liqScanMax, 280); // 280 covers pump scan
+      const seedMax = Math.max(volDumpMax, liqScanMax, 400); // 400 covers pump scan
       const topSymbols = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
         .slice(0, seedMax)

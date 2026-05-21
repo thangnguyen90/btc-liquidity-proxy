@@ -1,11 +1,8 @@
-const API = '/api/pump-signals';
-const REFRESH_MS = 45_000;
+const SSE_URL = '/api/pump-stream';
 
 let allSignals = [];
-let scannedAt = null;
-let total = 0;
-let refreshTimer = null;
-let countdown = REFRESH_MS / 1000;
+let scannedAt  = null;
+let total      = 0;
 
 const grid        = document.getElementById('pumpGrid');
 const longCount   = document.getElementById('longCount');
@@ -67,7 +64,6 @@ function buildFactors(sig) {
   const f = sig.factors || {};
   const chips = [];
 
-  // EMA ribbon
   if (sig.action === 'LONG') {
     const ribbonOk = f.emaRibbon >= 0.8;
     chips.push({ label: ribbonOk ? 'EMA ✓' : 'EMA ✗', ok: ribbonOk ? 'ok' : 'warn' });
@@ -76,38 +72,32 @@ function buildFactors(sig) {
     chips.push({ label: bearOk ? 'Bear EMA ✓' : 'Bear EMA ✗', ok: bearOk ? 'ok' : '' });
   }
 
-  // RSI
   const rsiVal = f.rsi14val;
   if (rsiVal != null) {
     const rsiOk = sig.action === 'LONG' ? rsiVal >= 55 : rsiVal <= 50;
     chips.push({ label: `RSI ${rsiVal}`, ok: rsiOk ? 'ok' : 'warn' });
   }
 
-  // Volume
   const vol = f.volRatio ?? f.volume;
   if (vol != null) {
     const volOk = vol >= 1.8;
     chips.push({ label: `Vol ${Number(vol).toFixed(1)}×`, ok: volOk ? 'ok' : '' });
   }
 
-  // Squeeze (via bbBreak or squeeze factor)
   if (f.squeeze != null) {
     const sqOk = f.squeeze >= 0.5;
     chips.push({ label: sqOk ? 'Squeeze ✓' : 'No Squeeze', ok: sqOk ? 'ok' : '' });
   }
 
-  // Regime
   if (f.regime != null) {
     chips.push({ label: f.regime ? 'Regime ✓' : 'Regime ✗', ok: f.regime ? 'ok' : 'warn' });
   }
 
-  // Trigger (fade)
   if (f.trigger) {
     const t = f.trigger === 'WICK_REJECT_BB_UPPER' ? 'Wick Reject' : 'Breakout Fade';
     chips.push({ label: t, ok: 'ok' });
   }
 
-  // Sustained dump extras
   if (f.consec != null) {
     chips.push({ label: `${f.consec} nến đỏ`, ok: 'ok' });
   }
@@ -115,12 +105,10 @@ function buildFactors(sig) {
     chips.push({ label: `−${Math.abs(f.movePct).toFixed(2)}%`, ok: f.movePct >= 1.5 ? 'ok' : '' });
   }
 
-  // Quality penalty (long only)
   if (f.qPenalty != null && f.qPenalty > 0.05) {
     chips.push({ label: `Penalty −${(f.qPenalty * 100).toFixed(0)}pt`, ok: 'warn' });
   }
 
-  // Market distance warning (long only)
   if (sig.marketOk === false) {
     chips.push({ label: 'Too far EMA', ok: 'warn' });
   }
@@ -131,21 +119,18 @@ function buildFactors(sig) {
 // ── Card builder ──────────────────────────────────────────────────────────────
 
 function buildCard(sig) {
-  const isLong = sig.action === 'LONG';
-  const dirClass = isLong ? 'long' : 'short';
-  const dirIcon  = isLong ? '🟢' : '🔴';
-  const dirLabel = isLong ? 'LONG' : 'SHORT';
+  const isLong      = sig.action === 'LONG';
+  const dirClass    = isLong ? 'long' : 'short';
+  const dirIcon     = isLong ? '🟢' : '🔴';
+  const dirLabel    = isLong ? 'LONG' : 'SHORT';
   const changeClass = (sig.change24h ?? 0) >= 0 ? 'positive' : 'negative';
   const gradeClass  = `grade-${(sig.grade || 'd').toLowerCase()}`;
   const typeLabel   = TYPE_LABELS[sig.type] ?? sig.type;
   const detailUrl   = `/?symbol=${sig.symbol}`;
-
-  const slColor = isLong ? 'negative' : 'positive';
-  const tpColor = isLong ? 'positive' : 'negative';
-
-  const factors = buildFactors(sig);
-
-  const marketWarn = sig.marketOk === false
+  const slColor     = isLong ? 'negative' : 'positive';
+  const tpColor     = isLong ? 'positive' : 'negative';
+  const factors     = buildFactors(sig);
+  const marketWarn  = sig.marketOk === false
     ? `<span class="pump-market-warn">⚠ Too far from EMA — wait pullback</span>`
     : '';
 
@@ -184,11 +169,8 @@ function buildCard(sig) {
       </div>
 
       <div class="pump-factors">${factors}</div>
-
       ${marketWarn}
-
       <div class="pump-note">${sig.note || ''}</div>
-
       <div class="pump-footer">
         <span>${timeAgo(sig.scannedAt)}</span>
         <span>${sig.blockShort ? '🔒 blocks short' : ''}</span>
@@ -206,18 +188,17 @@ function render() {
   const minScore = Number(scoreFilter.value);
 
   let rows = allSignals.slice();
-
-  if (search) rows = rows.filter((s) => s.symbol.includes(search));
+  if (search)           rows = rows.filter((s) => s.symbol.includes(search));
   if (action !== 'all') rows = rows.filter((s) => s.action === action);
-  if (type !== 'all')   rows = rows.filter((s) => s.type === type);
-  if (minScore > 0)     rows = rows.filter((s) => s.score >= minScore);
+  if (type   !== 'all') rows = rows.filter((s) => s.type   === type);
+  if (minScore > 0)     rows = rows.filter((s) => s.score  >= minScore);
 
   visibleCount.textContent = rows.length;
 
   const longs  = allSignals.filter((s) => s.action === 'LONG').length;
   const shorts = allSignals.filter((s) => s.action === 'SHORT').length;
-  longCount.textContent   = longs;
-  shortCount.textContent  = shorts;
+  longCount.textContent    = longs;
+  shortCount.textContent   = shorts;
   totalScanned.textContent = total || '-';
   longCount.className  = longs  > 0 ? 'positive' : '';
   shortCount.className = shorts > 0 ? 'negative' : '';
@@ -243,46 +224,63 @@ function render() {
   grid.innerHTML = rows.map(buildCard).join('');
 }
 
-// ── Fetch ─────────────────────────────────────────────────────────────────────
+// ── Apply new data from SSE push ──────────────────────────────────────────────
 
-async function load() {
-  scanStatus.textContent = 'Scanning...';
-  try {
-    const res = await fetch(API);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    allSignals = data.signals ?? [];
-    scannedAt  = data.scannedAt;
-    total      = data.total ?? 0;
-    const processed = data.processed ?? 0;
+function applyData(data) {
+  allSignals = data.signals ?? [];
+  scannedAt  = data.scannedAt;
+  total      = data.total ?? 0;
+  const processed = data.processed ?? 0;
+  const cs        = data.cacheStats  ?? {};
+  const staleSec  = cs.staleSec ?? null;
+  const isStale   = cs.isStale  ?? false;
 
-    scanMeta.style.display = '';
-    metaTotal.textContent   = processed > 0 ? `${processed}/${total}` : total;
-    metaSignals.textContent = allSignals.length;
+  scanMeta.style.display  = '';
+  metaTotal.textContent   = processed > 0 ? `${processed}/${total}` : total;
+  metaSignals.textContent = allSignals.length;
 
-    scanStatus.textContent = allSignals.length > 0
-      ? `${allSignals.length} signals · ${new Date().toLocaleTimeString('vi')}`
-      : `No signals · ${new Date().toLocaleTimeString('vi')}`;
+  scanStatus.textContent = allSignals.length > 0
+    ? `${allSignals.length} signals · ${new Date().toLocaleTimeString('vi')}`
+    : `No signals · ${new Date().toLocaleTimeString('vi')}`;
 
-    render();
-  } catch (e) {
-    scanStatus.textContent = `Error: ${e.message}`;
+  // Stale warning
+  let staleEl = document.getElementById('staleWarn');
+  if (isStale || (staleSec != null && staleSec > 90)) {
+    if (!staleEl) {
+      staleEl = document.createElement('div');
+      staleEl.id = 'staleWarn';
+      staleEl.style.cssText = 'background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);border-radius:6px;padding:8px 14px;font-size:12px;color:#fbbf24;margin-top:8px';
+      scanMeta.insertAdjacentElement('afterend', staleEl);
+    }
+    staleEl.textContent = `⚠ Kline data stale — last tick ${staleSec}s ago. WebSocket đang reconnect.`;
+  } else if (staleEl) {
+    staleEl.remove();
   }
+
+  render();
 }
 
-// ── Countdown timer ───────────────────────────────────────────────────────────
+// ── SSE connection ────────────────────────────────────────────────────────────
 
-function startCountdown() {
-  clearInterval(refreshTimer);
-  countdown = REFRESH_MS / 1000;
-  refreshTimer = setInterval(() => {
-    countdown--;
-    nextRefresh.textContent = `Refresh in ${countdown}s`;
-    if (countdown <= 0) {
-      clearInterval(refreshTimer);
-      load().then(startCountdown);
-    }
-  }, 1000);
+function connect() {
+  const es = new EventSource(SSE_URL);
+
+  es.onopen = () => {
+    scanStatus.textContent = '● Live';
+    scanStatus.style.color = 'var(--green)';
+    nextRefresh.textContent = 'Cập nhật mỗi nến 15m';
+  };
+
+  es.onmessage = (e) => {
+    try { applyData(JSON.parse(e.data)); } catch {}
+  };
+
+  es.onerror = () => {
+    scanStatus.textContent = 'Reconnecting...';
+    scanStatus.style.color = 'var(--amber)';
+    nextRefresh.textContent = '';
+    // EventSource reconnects automatically; no manual retry needed
+  };
 }
 
 // ── Events ────────────────────────────────────────────────────────────────────
@@ -302,4 +300,4 @@ scoreFilter.addEventListener('change', render);
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-load().then(startCountdown);
+connect();
