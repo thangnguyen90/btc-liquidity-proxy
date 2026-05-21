@@ -71,6 +71,8 @@ const TYPE_LABELS = {
   pump_breakout: 'Pump Breakout',
   early_pump:    'Early Pump',
   ema_pullback:  'EMA Pullback',
+  dist_top:      'Distribution Top',
+  vol_climax:    'Vol Climax',
   climax_top:    'Climax Top',
   fade_short:    'Fade Short',
   early_dump:    'Early Dump',
@@ -146,6 +148,7 @@ function buildCard(sig) {
   const changeClass = (sig.change24h ?? 0) >= 0 ? 'positive' : 'negative';
   const gradeClass  = `grade-${(sig.grade || 'd').toLowerCase()}`;
   const typeLabel   = TYPE_LABELS[sig.type] ?? sig.type;
+  const typeExtra   = (sig.type === 'dist_top' || sig.type === 'vol_climax') ? ' type-danger' : '';
   const detailUrl   = `/?symbol=${sig.symbol}`;
   const slColor     = isLong ? 'negative' : 'positive';
   const tpColor     = isLong ? 'positive' : 'negative';
@@ -169,7 +172,7 @@ function buildCard(sig) {
             <span class="pump-score-num">${sig.score}</span>
             <span class="pump-grade ${gradeClass}">${sig.grade}</span>
           </div>
-          <span class="pump-type-badge">${typeLabel}</span>
+          <span class="pump-type-badge${typeExtra}">${typeLabel}</span>
         </div>
       </div>
 

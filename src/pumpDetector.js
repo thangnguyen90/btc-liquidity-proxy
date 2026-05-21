@@ -71,7 +71,9 @@ export async function runPumpScan(symbols, klineCache, snapshotMap) {
         type = r.includes('EMA pullback') ? 'ema_pullback' : setup?.isPumpEarly ? 'early_pump' : 'pump_breakout';
       } else {
         const r = setup?.reason ?? '';
-        if (r.includes('Fade') || r.includes('fade'))            type = 'fade_short';
+        if (r.includes('Distribution top'))                      type = 'dist_top';
+        else if (r.includes('Volume climax'))                    type = 'vol_climax';
+        else if (r.includes('Fade') || r.includes('fade'))       type = 'fade_short';
         else if (r.includes('Early dump') || r.includes('breakdown')) type = 'early_dump';
         else if (r.includes('Sustained dump'))                   type = 'dump';
         else                                                     type = 'climax_top';
@@ -548,6 +550,84 @@ function detectPumpClimaxSimpleActionNew(candles, state, opts) {
     };
     result.reason = 'Early dump breakdown – ưu tiên SHORT';
     result.note = 'EARLY_DUMP | range=' + (rangePct * 100).toFixed(2) + '% | BBW=' + (bbNow.bw * 100).toFixed(2) + '% | ATR%=' + (offInfo.atrPct * 100).toFixed(2) + '% | score=' + scoreShortDump + '(' + gradeShortDump + ')';
+    return result;
+  }
+
+  // ── SHORT: distribution top (RSI divergence + overextension) ────────────────
+  // Phát hiện sớm: giá overextended + RSI thấp bất thường (divergence proxy) + không bull
+  var distToEma13Pct = isFiniteNum(ema13) ? (lc - ema13) / Math.max(ema13, 1e-9) : 0;
+  var currentUpperW  = lh - Math.max(lo, lc);
+  // Proxy divergence: giá cao hơn high 10-20 nến trước nhưng RSI6 < 55 (weak momentum tại đỉnh)
+  var divLookback = 20, priceAtNewHigh = false;
+  for (var di = 10; di <= divLookback && di < n - 1; di++) {
+    if (lc >= +candles[n - 1 - di].high * 0.998) { priceAtNewHigh = true; break; }
+  }
+  var rsiDivFound = priceAtNewHigh && isFiniteNum(rsi6) && rsi6 < 55; // giá lên high mới nhưng RSI yếu
+  var divPastRsi  = rsi6; // dùng cho display
+  var dtOverext  = distToEma13Pct >= offInfo.atrPct * 2.0;          // price > EMA13 + 2×ATR
+  var dtUpperW   = currentUpperW >= body(lo, lc) * 0.5;             // upper wick ≥ 0.5× body
+  var dtVolOk    = offInfo.dvRatio >= 1.5;                          // có volume hỗ trợ
+  var isDistTop  = rsiDivFound && dtOverext && !emaBull && (dtUpperW || dtVolOk);
+
+  if (isDistTop) {
+    var dtEntryRaw = lc * (1 - offInfo.off);
+    var dtSlRaw    = lh + CFG.slAtrMultShort * offInfo.atr;
+    var dtTpRaw    = dtEntryRaw - CFG.tpAtrMultShort * offInfo.atr;
+    var dtEntry    = roundToTickSide(dtEntryRaw, tickSize, 'FLOOR');
+    var dtSl       = roundToTickSide(dtSlRaw, tickSize, 'CEIL');
+    var dtTp       = roundToTickSide(dtTpRaw, tickSize, 'FLOOR');
+    var dtRsiDivSc = isFiniteNum(divPastRsi) ? clamp01((divPastRsi - rsi6) / 30) : 0.5;
+    var dtOverextSc = clamp01((distToEma13Pct - offInfo.atrPct * 2) / Math.max(offInfo.atrPct * 3, 1e-9));
+    var dtWickSc    = dtUpperW ? clamp01(currentUpperW / Math.max(body(lo, lc), 1e-9) / 2) : 0;
+    var dtVolSc     = clamp01((offInfo.dvRatio - 1.5) / 3);
+    var dtRegimeSc  = shortRegimeOk ? 1 : 0.3;
+    var dtScore01   = weightedScore01({ rsiDiv: dtRsiDivSc, overext: dtOverextSc, wickReject: dtWickSc, volume: dtVolSc, regime: dtRegimeSc }, { rsiDiv: 0.35, overext: 0.25, wickReject: 0.20, volume: 0.10, regime: 0.10 });
+    var dtScore = Math.round(dtScore01 * 100), dtGrade = gradeByScore(dtScore);
+    result.pass = true; result.action = 'SHORT';
+    result.shortSetup = {
+      pass: true, entry: dtEntry, altEntry: dtEntry, sl: dtSl, tp: dtTp,
+      reason: 'Distribution top: RSI divergence + overextended vs EMA',
+      score: dtScore, grade: dtGrade,
+      factors: { rsiDiv: +dtRsiDivSc.toFixed(2), overext: +dtOverextSc.toFixed(2), wickReject: +dtWickSc.toFixed(2), volume: +dtVolSc.toFixed(2), regime: dtRegimeSc, volRatio: +offInfo.dvRatio.toFixed(2), rsi14val: isFiniteNum(rsi14) ? +rsi14.toFixed(1) : null, ema13DistPct: +(distToEma13Pct * 100).toFixed(2) },
+    };
+    result.reason = 'Distribution top (RSI divergence) – SHORT';
+    result.note = 'DIST_TOP | rsiDiv=' + (isFiniteNum(divPastRsi) ? divPastRsi.toFixed(1) : '?') + '→' + (isFiniteNum(rsi6) ? rsi6.toFixed(1) : '?') + ' | ema13Dist=' + (distToEma13Pct * 100).toFixed(2) + '% | score=' + dtScore + '(' + dtGrade + ')';
+    return result;
+  }
+
+  // ── SHORT: volume climax (volume spike 3× trên nến tăng lớn = supply hitting bid) ──
+  // Detect ngay TRONG nến pump: vol cực cao + overextended + wick forming
+  var vcVolSpike  = offInfo.dvRatio >= 3.0;
+  var vcGreen     = lc > lo;
+  var vcBigBody   = bodyPct(lo, lc) >= offInfo.atrPct * 0.8;
+  var vcUpperWick = currentUpperW >= body(lo, lc) * 0.4;
+  var vcRsiWeak   = isFiniteNum(rsi6) && rsi6 < 75;
+  var vcOverext   = distToEma13Pct >= offInfo.atrPct * 1.5;
+  var isVolClimax = vcVolSpike && vcGreen && vcBigBody && vcRsiWeak && vcOverext && (vcUpperWick || offInfo.dvRatio >= 4.0);
+
+  if (isVolClimax) {
+    var vcEntryRaw = lc * (1 - offInfo.off * 0.5);
+    var vcSlRaw    = lh + CFG.slAtrMultShort * offInfo.atr;
+    var vcTpRaw    = vcEntryRaw - CFG.tpAtrMultShort * offInfo.atr;
+    var vcEntry    = roundToTickSide(vcEntryRaw, tickSize, 'FLOOR');
+    var vcSl       = roundToTickSide(vcSlRaw, tickSize, 'CEIL');
+    var vcTp       = roundToTickSide(vcTpRaw, tickSize, 'FLOOR');
+    var vcVolSc    = clamp01((offInfo.dvRatio - 3) / 5);
+    var vcOverSc   = clamp01((distToEma13Pct - offInfo.atrPct * 1.5) / Math.max(offInfo.atrPct * 3, 1e-9));
+    var vcWickSc   = vcUpperWick ? clamp01(currentUpperW / Math.max(body(lo, lc), 1e-9) / 1.5) : 0;
+    var vcRsiSc    = isFiniteNum(rsi6) ? clamp01((75 - rsi6) / 35) : 0.5;
+    var vcRegimeSc = shortRegimeOk ? 1 : 0.3;
+    var vcScore01  = weightedScore01({ volSpike: vcVolSc, overext: vcOverSc, wick: vcWickSc, rsiWeak: vcRsiSc, regime: vcRegimeSc }, { volSpike: 0.35, overext: 0.25, wick: 0.20, rsiWeak: 0.10, regime: 0.10 });
+    var vcScore = Math.round(vcScore01 * 100), vcGrade = gradeByScore(vcScore);
+    result.pass = true; result.action = 'SHORT';
+    result.shortSetup = {
+      pass: true, entry: vcEntry, altEntry: vcEntry, sl: vcSl, tp: vcTp,
+      reason: 'Volume climax: spike 3× trên nến tăng lớn + overextended',
+      score: vcScore, grade: vcGrade,
+      factors: { volSpike: +vcVolSc.toFixed(2), overext: +vcOverSc.toFixed(2), wick: +vcWickSc.toFixed(2), rsiWeak: +vcRsiSc.toFixed(2), regime: vcRegimeSc, volRatio: +offInfo.dvRatio.toFixed(2), rsi14val: isFiniteNum(rsi14) ? +rsi14.toFixed(1) : null, ema13DistPct: +(distToEma13Pct * 100).toFixed(2) },
+    };
+    result.reason = 'Volume climax – SHORT';
+    result.note = 'VOL_CLIMAX | vol=' + offInfo.dvRatio.toFixed(1) + 'x | ema13Dist=' + (distToEma13Pct * 100).toFixed(2) + '% | score=' + vcScore + '(' + vcGrade + ')';
     return result;
   }
 

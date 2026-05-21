@@ -1,7 +1,49 @@
 {
   "createdAt": "2026-05-20T02:42:17.303Z",
-  "updatedAt": "2026-05-21T02:52:11.046Z",
+  "updatedAt": "2026-05-21T03:59:11.735Z",
   "trades": [
+    {
+      "id": "6d415ba8-2966-4d35-af35-ff3d326efbd9",
+      "symbol": "GENIUSUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 21.372499150443158,
+      "entryPrice": 0.467891,
+      "createdAt": "2026-05-21T03:59:11.734Z",
+      "openedAt": null,
+      "source": "liq-sweep-83",
+      "note": "sweepProb=83% | target=0.467891 | confirmation=waiting for above sweep + bearish rejection"
+    },
+    {
+      "id": "e4fd1e55-5c85-4e6b-9873-3189307fb0b3",
+      "symbol": "XVGUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 2767.1856062073507,
+      "entryPrice": 0.00361378,
+      "createdAt": "2026-05-21T03:27:41.555Z",
+      "openedAt": null,
+      "source": "liq-sweep-85",
+      "note": "sweepProb=85% | target=0.00361378 | confirmation=waiting for above sweep + bearish rejection"
+    },
+    {
+      "id": "6a84b83f-8403-4ea8-a0ab-8f75af0e3c41",
+      "symbol": "BCHUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 0.025991916513964156,
+      "entryPrice": 384.735,
+      "createdAt": "2026-05-21T03:12:51.235Z",
+      "openedAt": null,
+      "source": "liq-sweep-76",
+      "note": "sweepProb=76% | target=384.735 | confirmation=waiting for above sweep + bearish rejection"
+    },
     {
       "id": "9070ecf5-d12d-456b-b5ae-f6e465c81be5",
       "symbol": "CAKEUSDT",
@@ -136,7 +178,7 @@
       "id": "7663175a-27ca-4191-bbe1-6be825915fe4",
       "symbol": "FLOCKUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 138.3432018150628,
@@ -144,7 +186,9 @@
       "createdAt": "2026-05-21T02:04:13.670Z",
       "openedAt": null,
       "source": "liq-sweep-95",
-      "note": "sweepProb=95% | target=0.072284 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=95% | target=0.072284 | confirmation=above sweep rejected by closed candle @ mark 0.07211206",
+      "entryReadyAt": "2026-05-21T03:14:13.251Z",
+      "markPriceAtReady": 0.07211206
     },
     {
       "id": "a450275e-3807-4045-ac36-055bd3547959",
@@ -350,7 +394,7 @@
       "id": "1e041e58-ce29-4fc2-b0a3-d0e7da64afde",
       "symbol": "PHAROSUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 15.181072239132249,
@@ -358,7 +402,9 @@
       "createdAt": "2026-05-21T00:24:40.128Z",
       "openedAt": null,
       "source": "liq-sweep-75",
-      "note": "sweepProb=75% | target=0.658715 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=75% | target=0.658715 | confirmation=above sweep rejected by closed candle @ mark 0.689",
+      "entryReadyAt": "2026-05-21T03:18:49.076Z",
+      "markPriceAtReady": 0.689
     },
     {
       "id": "461e1d39-4182-4a39-810d-188e86bbb5c4",
@@ -396,7 +442,7 @@
       "id": "c535bf6a-bca5-4789-846b-0b377022942b",
       "symbol": "CFGUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 32.73215279368924,
@@ -404,7 +450,9 @@
       "createdAt": "2026-05-20T22:36:40.561Z",
       "openedAt": null,
       "source": "liq-sweep-99",
-      "note": "sweepProb=99% | target=0.30551 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=99% | target=0.30551 | confirmation=above sweep rejected by closed candle @ mark 0.30329852",
+      "entryReadyAt": "2026-05-21T03:19:54.878Z",
+      "markPriceAtReady": 0.30329852
     },
     {
       "id": "1d7225c7-407f-4671-9739-78a20bf7548b",
@@ -568,7 +616,7 @@
       "id": "4a4bca79-718d-4da8-b51d-f7a29ee90749",
       "symbol": "SAHARAUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 266.10111310095607,
@@ -576,7 +624,9 @@
       "createdAt": "2026-05-20T18:19:06.773Z",
       "openedAt": null,
       "source": "liq-sweep-72",
-      "note": "sweepProb=72% | target=0.0375797 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=72% | target=0.0375797 | confirmation=above sweep rejected by closed candle @ mark 0.03826",
+      "entryReadyAt": "2026-05-21T03:13:10.147Z",
+      "markPriceAtReady": 0.03826
     },
     {
       "id": "96f6893f-5a97-4fe3-8261-2be86991676e",
@@ -738,7 +788,7 @@
       "id": "540a20ff-98d7-45e4-8226-6957ddc432d8",
       "symbol": "LAYERUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 105.1204154358818,
@@ -746,7 +796,9 @@
       "createdAt": "2026-05-20T15:36:54.549Z",
       "openedAt": null,
       "source": "liq-sweep-73",
-      "note": "sweepProb=73% | target=0.095129 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=73% | target=0.095129 | confirmation=above sweep rejected by closed candle @ mark 0.09565",
+      "entryReadyAt": "2026-05-21T03:13:39.433Z",
+      "markPriceAtReady": 0.09565
     },
     {
       "id": "b7953eba-3fdc-414c-960d-006984b2918a",
@@ -880,7 +932,7 @@
       "id": "e340dd80-2951-47e2-a749-21f7725ecd1d",
       "symbol": "DOTUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 7.967746561917358,
@@ -888,7 +940,9 @@
       "createdAt": "2026-05-20T15:23:46.526Z",
       "openedAt": null,
       "source": "liq-sweep-78",
-      "note": "sweepProb=78% | target=1.25506 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=78% | target=1.25506 | confirmation=above sweep rejected by closed candle @ mark 1.26698797",
+      "entryReadyAt": "2026-05-21T03:15:30.250Z",
+      "markPriceAtReady": 1.26698797
     },
     {
       "id": "dba9acc8-a12e-49c6-b203-21e65780af68",
@@ -1030,7 +1084,7 @@
       "id": "c99fa21f-ba1d-4c0e-8573-ba89d1a5289c",
       "symbol": "NEARUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 5.905349065183243,
@@ -1038,7 +1092,9 @@
       "createdAt": "2026-05-20T14:50:33.083Z",
       "openedAt": null,
       "source": "liq-sweep-99",
-      "note": "sweepProb=99% | target=1.69338 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=99% | target=1.69338 | confirmation=above sweep rejected by closed candle @ mark 1.73560047",
+      "entryReadyAt": "2026-05-21T03:58:12.746Z",
+      "markPriceAtReady": 1.73560047
     },
     {
       "id": "79870bea-df62-4161-aa92-6b9fc16891b3",
@@ -1330,7 +1386,7 @@
       "id": "089a72cc-fdc1-47b3-b90a-309970b4350e",
       "symbol": "WIFUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "ENTRY_READY",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 51.50656708730364,
@@ -1338,7 +1394,9 @@
       "createdAt": "2026-05-20T12:22:23.404Z",
       "openedAt": null,
       "source": "liq-sweep-76",
-      "note": "sweepProb=76% | target=0.19415 | confirmation=waiting for above sweep + bearish rejection"
+      "note": "sweepProb=76% | target=0.19415 | confirmation=above sweep rejected by closed candle @ mark 0.197458",
+      "entryReadyAt": "2026-05-21T03:58:49.312Z",
+      "markPriceAtReady": 0.197458
     },
     {
       "id": "5166eebf-152e-4e71-8732-fe71213f86b3",

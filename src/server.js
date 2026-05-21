@@ -489,6 +489,52 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (requestUrl.pathname === '/api/pump-auto-order-test' && request.method === 'POST') {
+      const token = request.headers['x-orders-token'] ?? null;
+      if (!token || !ordersTokens.has(token)) { await sendJson(response, { error: 'Unauthorized' }, 401); return; }
+      const body = await readJsonBody(request);
+      const { symbol = 'BTCUSDT' } = body;
+      // Lấy signal hiện tại hoặc tạo fake signal để test
+      const cached = pumpScanCache.data?.signals?.find((s) => s.symbol === symbol);
+      const testSignal = cached ?? {
+        symbol, action: 'LONG', score: 90, marketOk: true,
+        entry: body.entry ?? 1, sl: body.sl ?? 0.9,
+        factors: { rsi14val: 55, volRatio: 2.5 },
+      };
+      // Bypass dedup để test
+      pumpAutoOrderFired.delete(symbol);
+      try {
+        const { apiKey, apiSecret } = getApiCredentials(token);
+        const margin = Number(process.env.PUMP_AUTO_ORDER_MARGIN ?? 1);
+        const leverage = Number(process.env.PUMP_AUTO_ORDER_LEVERAGE ?? 10);
+        const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+        const symbols = await getSymbols();
+        const info = symbols.find((s) => s.symbol === symbol);
+        const tickSize = Number(info?.filters?.find((f) => f.filterType === 'PRICE_FILTER')?.tickSize ?? 0);
+        const stepSize = Number(info?.filters?.find((f) => f.filterType === 'LOT_SIZE')?.stepSize ?? 0);
+        await client.setLeverage({ symbol, leverage, apiKey, apiSecret, recvWindow });
+        const premiumIndex = await client.getPremiumIndex(symbol);
+        const markPrice = Number(premiumIndex.markPrice);
+        const entry = testSignal.entry;
+        const notional = margin * leverage;
+        const qtyRaw = notional / entry;
+        const qty = stepSize > 0 ? Math.floor(qtyRaw / stepSize) * stepSize : qtyRaw;
+        const qtyStr = stepSize > 0 ? qty.toFixed(Math.max(0, -Math.floor(Math.log10(stepSize)))) : qty.toFixed(6);
+        const side = testSignal.action === 'LONG' ? 'BUY' : 'SELL';
+        const entryStr = tickSize > 0 ? entry.toFixed(Math.max(0, -Math.floor(Math.log10(tickSize)))) : entry.toFixed(8);
+        const order = await client.placeFuturesOrder({
+          params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow },
+          apiKey, apiSecret,
+        });
+        console.log(`[PumpAuto TEST] ✅ ${symbol} ${side} LIMIT @${entryStr} qty=${qtyStr} orderId=${order.orderId}`);
+        await sendJson(response, { ok: true, symbol, side, entry: entryStr, qty: qtyStr, markPrice, orderId: order.orderId });
+      } catch (err) {
+        console.error('[PumpAuto TEST] ❌', err.message);
+        await sendJson(response, { ok: false, error: err.message }, 400);
+      }
+      return;
+    }
+
     if (requestUrl.pathname === '/api/auto-probe-enabled') {
       if (request.method === 'GET') {
         await sendJson(response, { enabled: runtimeSettings.autoProbeEnabled, margin: runtimeSettings.autoProbeMargin });
