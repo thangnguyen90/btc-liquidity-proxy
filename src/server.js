@@ -106,7 +106,7 @@ async function scheduleCapScan() {
         const last = capPaperAutoFired.get(key) ?? 0;
         if (Date.now() - last < 4 * 3600 * 1000) continue;
         capPaperAutoFired.set(key, Date.now());
-        createPaperTrade({
+        createCapPaperTrade({
           symbol: sig.symbol,
           side: sig.action,
           marginUsdt: 1,
@@ -114,7 +114,7 @@ async function scheduleCapScan() {
           entryPrice: sig.entry,
           source: `cap-${sig.score}`,
           note: sig.note ?? '',
-        }).catch((e) => console.warn(`[CapPaper] auto create ${sig.symbol}:`, e.message));
+        }).then(() => syncCapPaperTicker()).catch((e) => console.warn(`[CapPaper] auto create ${sig.symbol}:`, e.message));
       }
     } catch (e) {
       console.error('[CapScan] error:', e.message);
@@ -234,9 +234,13 @@ const FILLS_DIR = join(rootDir, 'data', 'fills');
 const PUMP_ORDERS_FILE = join(rootDir, 'data', 'pump-orders.json');
 const PUMP_HISTORY_FILE = join(rootDir, 'data', 'pump-order-history.json');
 const PUMP_DAILY_FILE   = join(rootDir, 'data', 'pump-daily-stats.json');
+const CAP_PAPER_FILE    = join(rootDir, 'data', 'cap-paper-trades.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
 const paperFillLocks = new Set();
+const capMarkCache = new Map();  // symbol → markPrice  (for cap paper trades)
+let capPaperTicker = null;
+const capPaperFillLocks = new Set();
 
 async function loadSlTracking() {
   try {
@@ -861,6 +865,28 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/cap-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getCapPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const trade = await createCapPaperTrade({ ...body, status: 'PENDING' });
+        syncCapPaperTicker().catch(() => {});
+        await sendJson(response, trade);
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/cap-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closeCapPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/cap-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deleteCapPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/pump-auto-order-enabled') {
       if (request.method === 'GET') {
         await sendJson(response, { enabled: runtimeSettings.pumpAutoOrderEnabled });
@@ -1328,6 +1354,7 @@ server.listen(port, '127.0.0.1', () => {
   }, 28000);
   setTimeout(() => {
     startPaperTradeTicker();
+    startCapPaperTicker();
   }, 29000);
   setTimeout(() => {
     startMissingTpScanner();
@@ -2272,12 +2299,159 @@ async function syncPaperTickerSymbols() {
   paperTicker.setSymbols(symbols);
 }
 
+// ── Cap paper trade system (separate from liquidation paper trades) ──────────
+
+async function readCapPaperStore() {
+  try {
+    return JSON.parse(await readFile(CAP_PAPER_FILE, 'utf8'));
+  } catch {
+    return { trades: [] };
+  }
+}
+
+async function writeCapPaperStore(store) {
+  await writeFile(CAP_PAPER_FILE, JSON.stringify(store, null, 2));
+}
+
+function enrichCapPaperTrade(t, markPrice) {
+  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
+  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
+  return { ...t, markPrice: mark, pnl, roe };
+}
+
+async function getCapPaperTrades() {
+  const store = await readCapPaperStore();
+  const trades = store.trades.map((t) => enrichCapPaperTrade(t, capMarkCache.get(t.symbol)));
+  const open = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const summary = { total: trades.length, open: open.length, closed: closed.length, wins, losses: closed.length - wins };
+  return { trades, summary };
+}
+
+async function createCapPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? '').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+
+  const store = await readCapPaperStore();
+  // Dedup: skip if same symbol+side+entry already PENDING or OPEN
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol && t.side === side && Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichCapPaperTrade(dup, capMarkCache.get(symbol)) };
+
+  const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol, side, status,
+    marginUsdt, leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+  };
+  store.trades.unshift(trade);
+  await writeCapPaperStore(store);
+  console.log(`[CapPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
+  return { trade: enrichCapPaperTrade(trade, entryPrice) };
+}
+
+async function closeCapPaperTrade(payload) {
+  const store = await readCapPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('Cap paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichCapPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (capMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, closedAt: new Date().toISOString() };
+  await writeCapPaperStore(store);
+  return { trade: enrichCapPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deleteCapPaperTrade(payload) {
+  const store = await readCapPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writeCapPaperStore(store);
+  return { ok: true };
+}
+
+async function fillCapPendingTrade(trade, markPrice) {
+  if (capPaperFillLocks.has(trade.id)) return;
+  capPaperFillLocks.add(trade.id);
+  try {
+    const store = await readCapPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const entry = Number(store.trades[idx].entryPrice);
+    const touched = store.trades[idx].side === 'LONG' ? markPrice <= entry : markPrice >= entry;
+    if (!touched) return;
+    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    await writeCapPaperStore(store);
+    console.log(`[CapPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+  } finally {
+    capPaperFillLocks.delete(trade.id);
+  }
+}
+
+async function processCapPaperFills(symbol, markPrice) {
+  const store = await readCapPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillCapPendingTrade(t, markPrice);
+}
+
+async function syncCapPaperTicker() {
+  if (!capPaperTicker) return;
+  const store = await readCapPaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  capPaperTicker.setSymbols(symbols);
+}
+
+function startCapPaperTicker() {
+  if (capPaperTicker) return;
+  capPaperTicker = createMarkPriceTicker({
+    onPrice: ({ symbol, markPrice }) => {
+      capMarkCache.set(symbol, markPrice);
+      processCapPaperFills(symbol, markPrice).catch(() => {});
+    },
+  });
+  console.log('[CapPaper] Mark ticker started.');
+  syncCapPaperTicker().catch(() => {});
+  setInterval(() => syncCapPaperTicker().catch(() => {}), 30_000);
+}
+
+// ── End cap paper trade system ───────────────────────────────────────────────
+
 function startPaperTradeTicker() {
   if (process.env.PAPER_TRADE_TICKER_ENABLED === 'false') return;
   if (paperTicker) return;
   paperTicker = createMarkPriceTicker({
     onPrice: ({ symbol, markPrice }) => {
       paperMarkCache.set(symbol, { markPrice, at: Date.now() });
+      processPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
     },
   });
   console.log('[PaperLiq] Mark ticker started for paper trades.');

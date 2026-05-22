@@ -111,6 +111,8 @@
       .cancel-btn { background: var(--amber); color: #1a1000; }
       .action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
       .refresh-note { color: var(--muted); font-size: 12px; }
+      .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); margin-right: 4px; animation: livePulse 1.5s ease-in-out infinite; vertical-align: middle; }
+      @keyframes livePulse { 0%,100%{opacity:1} 50%{opacity:.3} }
       th[data-sort] { cursor: pointer; user-select: none; }
       th[data-sort]:hover { color: var(--fg); }
       .sort-icon { font-size: 10px; margin-left: 3px; opacity: 0.7; }
@@ -151,6 +153,12 @@
         .order-form-grid { grid-template-columns: 1fr 1fr; }
         .order-form-row2 { grid-template-columns: 1fr 1fr; }
       }
+      .sym-link {
+        color: var(--text);
+        text-decoration: none;
+        font-weight: inherit;
+      }
+      .sym-link:hover { color: var(--blue); text-decoration: underline; }
       .src-badge {
         font-size: 10px; font-weight: 800; padding: 1px 6px;
         border-radius: 4px; letter-spacing: .03em; text-transform: uppercase;

@@ -1,14 +1,4 @@
 {
-  "SIGNUSDT": {
-    "expiresAt": 1779434707570,
-    "addedAt": "2026-05-22T05:25:07.570Z",
-    "reason": "SL hit pnl=-0.2985"
-  },
-  "ZEREBROUSDT": {
-    "expiresAt": 1779435551454,
-    "addedAt": "2026-05-22T05:39:11.454Z",
-    "reason": "SL hit pnl=-0.0176"
-  },
   "EGLDUSDT": {
     "expiresAt": 1779436580802,
     "addedAt": "2026-05-22T05:56:20.802Z",
@@ -38,5 +28,50 @@
     "expiresAt": 1779439144681,
     "addedAt": "2026-05-22T06:39:04.681Z",
     "reason": "SL hit pnl=-0.1320"
+  },
+  "BATUSDT": {
+    "expiresAt": 1779440437626,
+    "addedAt": "2026-05-22T07:00:37.626Z",
+    "reason": "SL hit pnl=-0.2147"
+  },
+  "SAFEUSDT": {
+    "expiresAt": 1779440467646,
+    "addedAt": "2026-05-22T07:01:07.646Z",
+    "reason": "SL hit pnl=-0.0103"
+  },
+  "DRIFTUSDT": {
+    "expiresAt": 1779440497445,
+    "addedAt": "2026-05-22T07:01:37.445Z",
+    "reason": "SL hit pnl=-0.0568"
+  },
+  "STGUSDT": {
+    "expiresAt": 1779440699716,
+    "addedAt": "2026-05-22T07:04:59.716Z",
+    "reason": "SL hit pnl=-0.7248"
+  },
+  "ACHUSDT": {
+    "expiresAt": 1779441615412,
+    "addedAt": "2026-05-22T07:20:15.412Z",
+    "reason": "SL hit pnl=-0.0002"
+  },
+  "DOGSUSDT": {
+    "expiresAt": 1779442365311,
+    "addedAt": "2026-05-22T07:32:45.311Z",
+    "reason": "SL hit pnl=-0.2023"
+  },
+  "DUSKUSDT": {
+    "expiresAt": 1779443181306,
+    "addedAt": "2026-05-22T07:46:21.306Z",
+    "reason": "SL hit pnl=-0.3074"
+  },
+  "STXUSDT": {
+    "expiresAt": 1779443631171,
+    "addedAt": "2026-05-22T07:53:51.171Z",
+    "reason": "SL hit pnl=-0.2464"
+  },
+  "SAGAUSDT": {
+    "expiresAt": 1779444132725,
+    "addedAt": "2026-05-22T08:02:12.725Z",
+    "reason": "SL hit pnl=-0.2987"
   }
 }

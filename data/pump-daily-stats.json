@@ -1,21 +1,45 @@
 {
   "2026-05-22": {
     "date": "2026-05-22",
-    "orders": 1,
-    "wins": 0,
-    "losses": 1,
+    "orders": 19,
+    "wins": 11,
+    "losses": 8,
     "manualClose": 0,
     "canceled": 0,
-    "totalPnl": -0.3358,
-    "totalRoe": -6.72,
-    "winRate": 0,
-    "avgPnl": -0.3358,
+    "totalPnl": 4.8971,
+    "totalRoe": 97.93,
+    "winRate": 57.9,
+    "avgPnl": 0.2577,
     "byType": {
       "early_dump": {
+        "orders": 4,
+        "wins": 1,
+        "losses": 3,
+        "totalPnl": -0.0702
+      },
+      "unknown": {
+        "orders": 9,
+        "wins": 7,
+        "losses": 2,
+        "totalPnl": 3.8289
+      },
+      "ema_pullback": {
+        "orders": 3,
+        "wins": 2,
+        "losses": 1,
+        "totalPnl": 1.2272
+      },
+      "dump": {
+        "orders": 2,
+        "wins": 1,
+        "losses": 1,
+        "totalPnl": 0.1849
+      },
+      "pump_breakout": {
         "orders": 1,
         "wins": 0,
         "losses": 1,
-        "totalPnl": -0.3358
+        "totalPnl": -0.2737
       }
     }
   }

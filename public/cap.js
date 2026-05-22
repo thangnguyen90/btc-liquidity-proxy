@@ -147,6 +147,85 @@ function buildFactors(sig) {
   return chips.map((c) => `<span class="cap-factor ${c.ok}">${c.label}</span>`).join('');
 }
 
+// ── Binance order placement ───────────────────────────────────────────────────
+
+let capOpenLimitSymbols = new Set();
+
+async function loadCapOpenLimitOrders() {
+  const token = localStorage.getItem('orders_token') ?? '';
+  if (!token) return;
+  try {
+    const [ordersRes, posRes] = await Promise.all([
+      fetch('/api/open-orders', { headers: { 'x-orders-token': token } }),
+      fetch('/api/positions',   { headers: { 'x-orders-token': token } }),
+    ]);
+    const next = new Set();
+    if (ordersRes.ok) {
+      const arr = await ordersRes.json();
+      (Array.isArray(arr) ? arr : (arr.orders ?? []))
+        .filter((o) => String(o.type ?? '').toUpperCase() === 'LIMIT' && !o.reduceOnly)
+        .forEach((o) => next.add(o.symbol));
+    }
+    if (posRes.ok) {
+      const arr = await posRes.json();
+      (Array.isArray(arr) ? arr : (arr.positions ?? []))
+        .filter((p) => Number(p.positionAmt ?? 0) !== 0)
+        .forEach((p) => next.add(p.symbol));
+    }
+    capOpenLimitSymbols = next;
+    render();
+  } catch {}
+}
+
+window.placeCapOrder = async function(btn, symbol, action, entry, sl, tp, score, type) {
+  const row = btn.closest('.cap-order-row');
+  const input = row?.querySelector('.cap-order-margin');
+  const margin = Number(input?.value ?? 5);
+  if (!margin || margin <= 0) { btn.textContent = 'Nhập margin!'; return; }
+
+  const token = localStorage.getItem('orders_token') ?? '';
+  if (!token) {
+    btn.classList.add('error');
+    btn.textContent = 'Chưa đăng nhập';
+    setTimeout(() => { btn.classList.remove('error'); btn.textContent = '📥 LIMIT'; }, 3000);
+    return;
+  }
+
+  btn.disabled = true;
+  btn.classList.add('loading');
+  btn.textContent = 'Đang đặt...';
+
+  try {
+    const res = await fetch('/api/pump-manual-order', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-orders-token': token },
+      body: JSON.stringify({ symbol, action, entry, sl, tp, score, margin, type }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      btn.classList.remove('loading');
+      btn.classList.add('success');
+      btn.textContent = data.marketFilled ? `⚡ MKT #${data.orderId}` : `✅ #${data.orderId}`;
+      if (input) input.disabled = true;
+      capOpenLimitSymbols.add(symbol);
+      if (row && !row.querySelector('.cap-order-exists')) {
+        const badge = document.createElement('span');
+        badge.className = 'cap-order-exists';
+        badge.textContent = '✓ Đã có lệnh';
+        row.appendChild(badge);
+      }
+    } else {
+      throw new Error(data.error ?? 'Lỗi không xác định');
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    btn.classList.add('error');
+    btn.textContent = e.message.length > 30 ? e.message.slice(0, 30) + '…' : e.message;
+    setTimeout(() => { btn.classList.remove('error'); btn.textContent = '📥 LIMIT'; }, 4000);
+  }
+};
+
 // ── Card builder ──────────────────────────────────────────────────────────────
 
 function buildCard(sig) {
@@ -211,6 +290,13 @@ function buildCard(sig) {
           ${sig.blockLong  ? '🔒 blocks long'  : ''}
         </span>
         <button class="cap-paper-btn ${dirClass}" onclick="enterCapPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score})">+ Paper</button>
+      </div>
+
+      <div class="cap-order-row">
+        <input class="cap-order-margin" type="number" value="5" min="1" max="10000" step="1" title="Margin (USDT)">
+        <span class="cap-order-label" style="font-size:11px;color:var(--muted);flex-shrink:0">USDT</span>
+        <button class="cap-order-btn ${dirClass}" onclick="placeCapOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score},'${sig.type ?? ''}')">📥 LIMIT</button>
+        ${capOpenLimitSymbols.has(sig.symbol) ? '<span class="cap-order-exists">✓ Đã có lệnh</span>' : ''}
       </div>
     </article>
   `;
@@ -410,8 +496,10 @@ function renderCapPaperTrades(trades) {
       : `<span style="color:var(--red);font-weight:700">SHORT</span>`;
     const isClosed = t.status === 'CLOSED';
     const mark     = t.markPrice ?? t.exitPrice ?? '-';
-    const closeBtn = isClosed ? '' : `<button class="cap-paper-close-btn" onclick="closeCapPaperTrade('${t.id}')">Close</button>`;
-    const rowStyle = isClosed ? 'opacity:.55' : '';
+    const actionBtns = isClosed
+      ? `<button class="cap-paper-close-btn" style="opacity:.6;font-size:10px" onclick="deleteCapPaperTrade('${t.id}')">Del</button>`
+      : `<button class="cap-paper-close-btn" onclick="closeCapPaperTrade('${t.id}')">Close</button>`;
+    const rowStyle = isClosed ? 'opacity:.5' : '';
     return `<tr style="${rowStyle}">
       <td><strong>${t.symbol.replace(/USDT$/, '')}</strong><span style="color:var(--muted);font-size:11px">USDT</span></td>
       <td>${sideHtml}</td>
@@ -419,21 +507,20 @@ function renderCapPaperTrades(trades) {
       <td>${fmtPrice(mark)}</td>
       <td>${fmtPnl(t.pnl, t.roe)}</td>
       <td>${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
-      <td style="font-size:11px;color:var(--muted)">${t.status}</td>
+      <td style="font-size:11px">${t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>' : t.status === 'OPEN' ? '<span style="color:var(--green)">OPEN</span>' : `<span style="color:var(--muted)">${t.status}</span>`}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
-      <td>${closeBtn}</td>
+      <td>${actionBtns}</td>
     </tr>`;
   }).join('');
 }
 
 async function loadCapPaperTrades() {
   try {
-    const res = await fetch('/api/paper-trades');
+    const res = await fetch('/api/cap-paper-trades');
     if (!res.ok) return;
     const data = await res.json();
-    const trades = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('cap-'));
-    renderCapPaperTrades(trades);
+    renderCapPaperTrades(data.trades ?? []);
   } catch {}
 }
 
@@ -441,13 +528,13 @@ window.enterCapPaperTrade = async function(btn, symbol, side, entry, score) {
   btn.disabled = true;
   btn.textContent = '...';
   try {
-    const res = await fetch('/api/paper-trades', {
+    const res = await fetch('/api/cap-paper-trades', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice: entry, source: `cap-${score}` }),
     });
     if (res.ok) {
-      btn.textContent = 'OK';
+      btn.textContent = '⏳';
       setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
       loadCapPaperTrades();
     } else {
@@ -462,7 +549,19 @@ window.enterCapPaperTrade = async function(btn, symbol, side, entry, score) {
 
 window.closeCapPaperTrade = async function(id) {
   try {
-    const res = await fetch('/api/paper-trades/close', {
+    const res = await fetch('/api/cap-paper-trades/close', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) loadCapPaperTrades();
+  } catch {}
+};
+
+window.deleteCapPaperTrade = async function(id) {
+  if (!confirm('Xóa paper trade này?')) return;
+  try {
+    const res = await fetch('/api/cap-paper-trades/delete', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id }),
@@ -494,4 +593,6 @@ async function fetchAndApply(attempt = 0) {
   connectPriceSocket();
   loadCapPaperTrades();
   setInterval(loadCapPaperTrades, 30_000);
+  loadCapOpenLimitOrders();
+  setInterval(loadCapOpenLimitOrders, 30_000);
 })();

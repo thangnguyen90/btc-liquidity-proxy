@@ -65,6 +65,7 @@ function showApp() {
   loadSettings();
   refresh();
   setInterval(refresh, 15000);
+  setInterval(() => loadPositions(), 3000);
   fetch('/api/account-uid', { headers: { 'x-orders-token': getToken() } })
     .then((r) => r.json())
     .then((d) => {
@@ -158,6 +159,10 @@ function fmt(v, d = 4) {
 
 function fmtDate(ts) {
   return new Date(Number(ts)).toLocaleString('vi-VN', { hour12: false });
+}
+
+function symLink(symbol) {
+  return `<a href="/?symbol=${symbol}" target="_blank" class="sym-link">${symbol}</a>`;
 }
 
 function orderSource(o) {
@@ -346,7 +351,7 @@ function startMarkPriceWs(symbols) {
   };
 
   const note = document.getElementById('positionsNote');
-  markWs.onopen = () => { if (note) note.textContent = `Live · ${symbols.length} symbol${symbols.length > 1 ? 's' : ''}`; };
+  markWs.onopen = () => { if (note) note.innerHTML = `<span class="live-dot"></span>Live · ${symbols.length} symbol${symbols.length > 1 ? 's' : ''}`; };
   markWs.onerror = () => markWs?.close();
   markWs.onclose = () => {
     markWs = null;
@@ -357,24 +362,74 @@ function startMarkPriceWs(symbols) {
   };
 }
 
-async function loadPositions() {
+function _buildPositionRows(rows) {
+  positionsBody.innerHTML = rows.map((p) => {
+    const amt = Number(p.positionAmt);
+    const side = amt > 0 ? '<span class="positive">LONG</span>' : '<span class="negative">SHORT</span>';
+    const upnl = Number(p.unRealizedProfit);
+    const entry = Number(p.entryPrice);
+    const mark = Number(p.markPrice);
+    const liq = Number(p.liquidationPrice);
+    const lev = Number(p.leverage);
+    const margin = Number(p.isolatedMargin) || Number(p.initialMargin) || null;
+    const roe = entry > 0 ? ((upnl / (Math.abs(amt) * entry / lev)) * 100) : 0;
+    return `
+      <tr data-sym="${p.symbol}">
+        <td><strong>${symLink(p.symbol)}</strong></td>
+        <td data-v="${amt > 0 ? 1 : 0}">${side}</td>
+        <td data-v="${Math.abs(amt)}">${fmt(Math.abs(amt), 6)}</td>
+        <td data-v="${entry}">${fmt(entry)}</td>
+        <td data-v="${mark}">${fmt(mark)}</td>
+        <td data-v="${liq}">${fmt(liq)}</td>
+        <td data-v="${lev}">${lev}x</td>
+        <td data-v="${margin ?? 0}">${margin != null ? fmt(margin, 4) : '-'}</td>
+        <td data-v="${upnl}" class="${pnlClass(upnl)}">${upnl >= 0 ? '+' : ''}${fmt(upnl, 4)}</td>
+        <td data-v="${roe}" class="${pnlClass(roe)}">${roe >= 0 ? '+' : ''}${fmt(roe, 2)}%</td>
+        <td><button class="action-btn close-btn" data-symbol="${p.symbol}" data-amt="${p.positionAmt}">Close</button></td>
+      </tr>`;
+  }).join('');
+
+  positionsBody.querySelectorAll('.close-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const sym = btn.dataset.symbol;
+      const amt = btn.dataset.amt;
+      if (!confirm(`Close position ${sym} (${amt})?`)) return;
+      btn.disabled = true;
+      try {
+        const result = await apiFetch('/api/close-position', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ symbol: sym, positionAmt: amt }),
+        });
+        showAction(JSON.stringify(result, null, 2));
+        await loadPositions(true);
+      } catch (err) {
+        showAction(`Error: ${err.message}`);
+        btn.disabled = false;
+      }
+    });
+  });
+  applySort(document.getElementById('positionsHead'), positionsBody);
+}
+
+async function loadPositions(forceRebuild = false) {
   try {
     const rows = await apiFetch('/api/positions');
+
+    const newSymbols = new Set(rows.map((p) => p.symbol));
+    const oldSymbols = new Set(posStatic.keys());
+    for (const sym of avgDownTriggered.keys()) {
+      if (!newSymbols.has(sym)) avgDownTriggered.delete(sym);
+    }
+    const symbolsChanged = forceRebuild || newSymbols.size !== oldSymbols.size || [...newSymbols].some((s) => !oldSymbols.has(s));
+
     if (!rows.length) {
       positionsBody.innerHTML = '<tr><td colspan="11" class="empty-cell">No open positions.</td></tr>';
       posStatic.clear();
       startMarkPriceWs([]);
+      updateTpSlSymbolSelect([]);
       return;
     }
-
-    // Detect if symbols changed → need to restart WebSocket
-    const newSymbols = new Set(rows.map((p) => p.symbol));
-    const oldSymbols = new Set(posStatic.keys());
-    // Clear avg-down state for closed positions
-    for (const sym of avgDownTriggered.keys()) {
-      if (!newSymbols.has(sym)) avgDownTriggered.delete(sym);
-    }
-    const symbolsChanged = newSymbols.size !== oldSymbols.size || [...newSymbols].some((s) => !oldSymbols.has(s));
 
     posStatic.clear();
     rows.forEach((p) => {
@@ -385,56 +440,32 @@ async function loadPositions() {
       posStatic.set(p.symbol, { amt, entry, margin, lev });
     });
 
-    positionsBody.innerHTML = rows.map((p) => {
-      const amt = Number(p.positionAmt);
-      const side = amt > 0 ? '<span class="positive">LONG</span>' : '<span class="negative">SHORT</span>';
+    if (!symbolsChanged) {
+      // In-place update: only patch static cells; WebSocket keeps mark/pnl/roe live
+      for (const p of rows) {
+        const row = positionsBody.querySelector(`tr[data-sym="${p.symbol}"]`);
+        if (!row) continue;
+        const entry = Number(p.entryPrice);
+        const liq = Number(p.liquidationPrice);
+        const margin = Number(p.isolatedMargin) || Number(p.initialMargin) || null;
+        row.cells[3].textContent = fmt(entry);
+        row.cells[3].dataset.v = entry;
+        row.cells[5].textContent = fmt(liq);
+        row.cells[5].dataset.v = liq;
+        row.cells[7].textContent = margin != null ? fmt(margin, 4) : '-';
+        row.cells[7].dataset.v = margin ?? 0;
+      }
+    } else {
+      _buildPositionRows(rows);
+      startMarkPriceWs([...newSymbols]);
+    }
+
+    updateTpSlSymbolSelect(rows.map((p) => {
+      const amt = Number(p.positionAmt), entry = Number(p.entryPrice), lev = Number(p.leverage) || 1;
       const upnl = Number(p.unRealizedProfit);
-      const entry = Number(p.entryPrice);
-      const mark = Number(p.markPrice);
-      const liq = Number(p.liquidationPrice);
-      const lev = Number(p.leverage);
-      const margin = Number(p.isolatedMargin) || Number(p.initialMargin) || null;
-      const roe = entry > 0 ? ((upnl / (Math.abs(amt) * entry / lev)) * 100) : 0;
-      return `
-        <tr>
-          <td><strong>${p.symbol}</strong></td>
-          <td data-v="${amt > 0 ? 1 : 0}">${side}</td>
-          <td data-v="${Math.abs(amt)}">${fmt(Math.abs(amt), 6)}</td>
-          <td data-v="${entry}">${fmt(entry)}</td>
-          <td data-v="${mark}">${fmt(mark)}</td>
-          <td data-v="${liq}">${fmt(liq)}</td>
-          <td data-v="${lev}">${lev}x</td>
-          <td data-v="${margin ?? 0}">${margin != null ? fmt(margin, 4) : '-'}</td>
-          <td data-v="${upnl}" class="${pnlClass(upnl)}">${upnl >= 0 ? '+' : ''}${fmt(upnl, 4)}</td>
-          <td data-v="${roe}" class="${pnlClass(roe)}">${roe >= 0 ? '+' : ''}${fmt(roe, 2)}%</td>
-          <td><button class="action-btn close-btn" data-symbol="${p.symbol}" data-amt="${p.positionAmt}">Close</button></td>
-        </tr>`;
-    }).join('');
-
-    if (symbolsChanged) startMarkPriceWs([...newSymbols]);
-    updateTpSlSymbolSelect(rows.map((p) => ({ ...p, roe: (() => { const amt = Number(p.positionAmt), entry = Number(p.entryPrice), lev = Number(p.leverage)||1, upnl = Number(p.unRealizedProfit), margin = Number(p.isolatedMargin)||Number(p.initialMargin)||(Math.abs(amt)*entry/lev); return margin>0?(upnl/margin)*100:0; })() })));
-
-    positionsBody.querySelectorAll('.close-btn').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const sym = btn.dataset.symbol;
-        const amt = btn.dataset.amt;
-        if (!confirm(`Close position ${sym} (${amt})?`)) return;
-        btn.disabled = true;
-        try {
-          const result = await apiFetch('/api/close-position', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ symbol: sym, positionAmt: amt }),
-          });
-          showAction(JSON.stringify(result, null, 2));
-          await refresh();
-        } catch (err) {
-          showAction(`Error: ${err.message}`);
-          btn.disabled = false;
-        }
-      });
-    });
-    applySort(document.getElementById('positionsHead'), positionsBody);
+      const margin = Number(p.isolatedMargin) || Number(p.initialMargin) || (Math.abs(amt) * entry / lev);
+      return { ...p, roe: margin > 0 ? (upnl / margin) * 100 : 0 };
+    }));
   } catch (err) {
     positionsBody.innerHTML = `<tr><td colspan="11" class="empty-cell" style="color:var(--red)">${err.message}</td></tr>`;
   }
@@ -451,7 +482,7 @@ async function loadOpenOrders() {
       const sideClass = o.side === 'BUY' ? 'positive' : 'negative';
       return `
         <tr>
-          <td><strong>${o.symbol}</strong></td>
+          <td><strong>${symLink(o.symbol)}</strong></td>
           <td>${o.type}</td>
           <td data-v="${o.side === 'BUY' ? 1 : 0}"><span class="${sideClass}">${o.side}</span></td>
           <td>${orderSource(o)}</td>
@@ -505,7 +536,7 @@ async function loadTrades() {
       return `
         <tr>
           <td data-v="${t.time}">${fmtDate(t.time)}</td>
-          <td>${t.symbol}</td>
+          <td>${symLink(t.symbol)}</td>
           <td data-v="${t.buyer ? 1 : 0}"><span class="${sideClass}">${t.buyer ? 'BUY' : 'SELL'}</span></td>
           <td data-v="${t.price}">${fmt(t.price)}</td>
           <td data-v="${t.qty}">${fmt(t.qty, 6)}</td>
