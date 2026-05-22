@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/styles.css">
     <style>
       .cap-controls {
-        grid-template-columns: minmax(220px, 1fr) 140px 110px auto;
+        grid-template-columns: minmax(220px, 1fr) 130px 140px 110px auto;
       }
 
       .cap-grid {
@@ -98,8 +98,12 @@
         text-transform: uppercase;
         letter-spacing: .04em;
       }
-      .cap-type-badge.long-type  { background: rgba(54,211,153,.12); color: var(--green); }
-      .cap-type-badge.short-type { background: rgba(251,113,133,.12); color: var(--red); }
+      .cap-type-badge.long-type         { background: rgba(54,211,153,.12);  color: var(--green); }
+      .cap-type-badge.short-type        { background: rgba(251,113,133,.12); color: var(--red); }
+      .cap-type-badge.liq-long-type     { background: rgba(34,211,238,.15);  color: #22d3ee; }
+      .cap-type-badge.liq-short-type    { background: rgba(249,115,22,.15);  color: #f97316; }
+      .cap-type-badge.failed-bounce-type{ background: rgba(251,191,36,.18);  color: #fbbf24; border: 1px solid rgba(251,191,36,.4); }
+      .cap-type-badge.failed-top-type   { background: rgba(167,139,250,.18); color: #a78bfa; border: 1px solid rgba(167,139,250,.4); }
 
       /* ── Wyckoff phase indicator ── */
       .cap-phase {
@@ -199,6 +203,26 @@
       .scan-meta strong { color: var(--text); }
       .scan-meta .scan-dot { color: var(--green); font-size: 10px; }
 
+      /* ── Paper trades section ── */
+      .cap-paper-section { margin-top: 20px; }
+      .cap-paper-btn {
+        font-size: 10px; font-weight: 800;
+        padding: 3px 10px; border-radius: 4px;
+        border: none; cursor: pointer;
+        letter-spacing: .04em; text-transform: uppercase;
+        transition: opacity .15s;
+      }
+      .cap-paper-btn:hover { opacity: .75; }
+      .cap-paper-btn.long  { background: rgba(54,211,153,.2); color: var(--green); border: 1px solid rgba(54,211,153,.4); }
+      .cap-paper-btn.short { background: rgba(251,113,133,.2); color: var(--red);   border: 1px solid rgba(251,113,133,.4); }
+      .cap-paper-btn:disabled { opacity: .4; cursor: default; }
+      .cap-paper-close-btn {
+        font-size: 10px; padding: 2px 8px; border-radius: 4px;
+        border: 1px solid var(--line); background: var(--panel-2);
+        color: var(--muted); cursor: pointer;
+      }
+      .cap-paper-close-btn:hover { color: var(--red); border-color: var(--red); }
+
       @media (max-width: 640px) {
         .cap-controls { grid-template-columns: 1fr 1fr; }
         .cap-controls .search-field { grid-column: 1 / -1; }
@@ -227,14 +251,14 @@
       <div id="btcHealth"></div>
       <section class="summary-grid signal-summary">
         <article class="metric">
-          <span>SC → Spring (LONG)</span>
+          <span>LONG Signals</span>
           <strong id="longCount">-</strong>
-          <small>Selling climax reversal</small>
+          <small>SC→Spring / Liq Flush</small>
         </article>
         <article class="metric">
-          <span>BC → UTAD (SHORT)</span>
+          <span>SHORT Signals</span>
           <strong id="shortCount">-</strong>
-          <small>Buying climax exhaustion</small>
+          <small>BC→UTAD / Liq Top</small>
         </article>
         <article class="metric">
           <span>Cached / Scanned</span>
@@ -260,6 +284,18 @@
             <option value="all">All</option>
             <option value="LONG">Long only</option>
             <option value="SHORT">Short only</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Type</span>
+          <select id="typeFilter">
+            <option value="all">All types</option>
+            <option value="sc_spring">SC → Spring</option>
+            <option value="bc_utad">BC → UTAD</option>
+            <option value="liq_flush">Liq Flush</option>
+            <option value="liq_top">Liq Top</option>
+            <option value="failed_bounce">Failed Bounce</option>
+            <option value="failed_top">Failed Top</option>
           </select>
         </label>
         <label class="field">
@@ -292,6 +328,34 @@
           Đang quét top coins theo Wyckoff
         </div>
       </div>
+
+      <section class="panel cap-paper-section">
+        <div class="panel-head">
+          <h2>Paper Trades — Cap Signals</h2>
+          <span id="capPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+        </div>
+        <div class="table-wrap">
+          <table class="signal-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Entry</th>
+                <th>Mark</th>
+                <th>PnL</th>
+                <th>ROE</th>
+                <th>Status</th>
+                <th>Source</th>
+                <th>Time</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="capPaperBody">
+              <tr><td colspan="10" class="empty-cell">Chưa có paper trade nào từ cap signals.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script src="/btcHealth.js"></script>

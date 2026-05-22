@@ -76,22 +76,22 @@ function makeHelpers(closes, highs, lows) {
 
 function detectCapitulationSpringAction(candles, state = {}, cfg = {}) {
   const C = Object.assign({
-    lookback:       60,    // bars to establish the prior low
-    scanTail:       6,     // look for SC in last N bars
+    lookback:       30,    // bars to establish the prior low
+    scanTail:       8,     // look for SC in last N bars
     volLB:          20,    // volume moving average period
     bbLen:          20,
     bbK:            2,
     rsiKick:        30,    // RSI6 must be > this after SC
     atrPeriod:      14,
-    scVolX:         2.5,   // SC volume >= 2.5× avg
-    scRangeATR:     1.5,   // SC range >= 1.5× ATR
-    scWickFrac:     0.6,   // lower wick >= 60% of body (shakeout)
-    confirmBars:    3,
+    scVolX:         2.0,   // SC volume >= 2× avg
+    scRangeATR:     1.2,   // SC range >= 1.2× ATR
+    scWickFrac:     0.4,   // lower wick >= 40% of body (shakeout)
+    confirmBars:    5,
     entryOffsetPct: 0.0015,
     pullbackFrac:   0.35,
     slAtrMult:      0.6,
     tpAtrMult:      2.0,
-    minScore:       50,
+    minScore:       45,
   }, cfg || {});
 
   const minLen = Math.max(C.lookback, C.bbLen, C.atrPeriod) + 5;
@@ -108,6 +108,11 @@ function detectCapitulationSpringAction(candles, state = {}, cfg = {}) {
   const A         = atr(C.atrPeriod);
   const avgVol    = sma(vols, C.volLB);
   const floorIdx  = Math.max(n - C.scanTail, 1);
+
+  // EMA99 trend filter: không LONG khi giá dưới EMA99 quá sâu (> 20%)
+  if (isFinite(state.ema99) && closes[n - 1] < state.ema99 * 0.80)
+    return { pass: false, action: null, reason: 'Price > 20% below EMA99 — deep downtrend' };
+
   // lookback low excludes the scanTail window so the SC is truly a new low
   const lookbackLow = Math.min(...lows.slice(Math.max(0, floorIdx - C.lookback), floorIdx));
 
@@ -144,7 +149,7 @@ function detectCapitulationSpringAction(candles, state = {}, cfg = {}) {
     const ribbonOK  = isFinite(state.ema5) && isFinite(state.ema13) && state.ema5 > state.ema13;
     const prevHigh  = +(candles[j - 1]?.high ?? h);
     const engulfUp  = c > o && c > Math.max(prevHigh, sc.o);
-    if (reentered && rsiOK && (engulfUp || ribbonOK)) {
+    if (rsiOK && (reentered || engulfUp || ribbonOK)) {
       confirm = { h, c, idx: j }; break;
     }
   }
@@ -207,22 +212,22 @@ function detectCapitulationSpringAction(candles, state = {}, cfg = {}) {
 
 function detectBuyingClimaxAction(candles, state = {}, cfg = {}) {
   const C = Object.assign({
-    lookback:       60,
-    scanTail:       6,
+    lookback:       30,
+    scanTail:       8,
     volLB:          20,
     bbLen:          20,
     bbK:            2,
     rsiKick:        70,    // RSI6 must be < this after BC (exhaustion)
     atrPeriod:      14,
-    bcVolX:         2.5,
-    bcRangeATR:     1.5,
-    bcWickFrac:     0.6,   // upper wick >= 60% of body (rejection)
-    confirmBars:    3,
+    bcVolX:         2.0,
+    bcRangeATR:     1.2,
+    bcWickFrac:     0.4,   // upper wick >= 40% of body (rejection)
+    confirmBars:    5,
     entryOffsetPct: 0.0015,
     pullbackFrac:   0.35,
     slAtrMult:      0.6,
     tpAtrMult:      2.0,
-    minScore:       50,
+    minScore:       45,
   }, cfg || {});
 
   const minLen = Math.max(C.lookback, C.bbLen, C.atrPeriod) + 5;
@@ -239,6 +244,11 @@ function detectBuyingClimaxAction(candles, state = {}, cfg = {}) {
   const A          = atr(C.atrPeriod);
   const avgVol     = sma(vols, C.volLB);
   const floorIdx   = Math.max(n - C.scanTail, 1);
+
+  // EMA99 trend filter: không SHORT khi giá trên EMA99 quá cao (> 20%)
+  if (isFinite(state.ema99) && closes[n - 1] > state.ema99 * 1.20)
+    return { pass: false, action: null, reason: 'Price > 20% above EMA99 — strong uptrend' };
+
   const lookbackHigh = Math.max(...highs.slice(Math.max(0, floorIdx - C.lookback), floorIdx));
 
   // ── Step 1: find Buying Climax ───────────────────────────────────────────────
@@ -273,7 +283,7 @@ function detectBuyingClimaxAction(candles, state = {}, cfg = {}) {
     const ribbonOK  = isFinite(state.ema5) && isFinite(state.ema13) && state.ema5 < state.ema13;
     const prevLow   = +(candles[j - 1]?.low ?? l);
     const engulfDn  = c < o && c < Math.min(prevLow, bc.o);
-    if (reentered && rsiOK && (engulfDn || ribbonOK)) {
+    if (rsiOK && (reentered || engulfDn || ribbonOK)) {
       confirm = { l, c, idx: j }; break;
     }
   }
@@ -327,6 +337,292 @@ function detectBuyingClimaxAction(candles, state = {}, cfg = {}) {
   };
 }
 
+// ── LONG: Liquidation Flush + Quick Recovery ─────────────────────────────────
+// Sharp drop + volume spike + quick bounce — targets Binance liquidation cascades.
+// In downtrend (price >8% below EMA99): flips to SHORT "failed_bounce" instead.
+
+function detectLiqFlush(candles, state = {}, cfg = {}) {
+  const C = Object.assign({
+    scanTail:        8,
+    volLB:           20,
+    atrPeriod:       14,
+    flushMinBodyPct: 0.012,
+    flushVolX:       2.0,
+    flushWickPct:    0.25,
+    revVolX:         1.5,
+    revRecovPct:     0.50,
+    rsiMax:          52,      // only applied for LONG direction
+    confirmBars:     3,
+    minScore:        50,
+    ema99Thresh:     0.92,    // below this → flip to failed_bounce SHORT
+  }, cfg || {});
+
+  const minLen = Math.max(C.volLB, C.atrPeriod) + C.scanTail + 5;
+  if (!Array.isArray(candles) || candles.length < minLen)
+    return { pass: false, action: null, reason: 'Not enough candles' };
+
+  const n      = candles.length;
+  const closes = candles.map((c) => +c.close);
+  const highs  = candles.map((c) => +c.high);
+  const lows   = candles.map((c) => +c.low);
+  const opens  = candles.map((c) => +c.open);
+  const vols   = candles.map((c) => +c.volume);
+  const { sma, atr } = makeHelpers(closes, highs, lows);
+
+  const A      = atr(C.atrPeriod);
+  const avgVol = sma(vols, C.volLB);
+  if (!isFinite(A) || A <= 0) return { pass: false, action: null, reason: 'ATR invalid' };
+
+  // EMA99 determines direction: below threshold → failed_bounce SHORT, else → liq_flush LONG
+  const inDowntrend = isFinite(state.ema99) && closes[n - 1] < state.ema99 * C.ema99Thresh;
+  const ema99GapPct = isFinite(state.ema99)
+    ? +((1 - closes[n - 1] / state.ema99) * 100).toFixed(1)
+    : 0;
+
+  const floorIdx = Math.max(n - C.scanTail, 1);
+
+  // ── Step 1: flush candle ─────────────────────────────────────────────────────
+  let flush = null, flushIdx = -1;
+  for (let i = floorIdx; i < n - 1; i++) {
+    const o = opens[i], h = highs[i], l = lows[i], c = closes[i], v = vols[i];
+    if (c >= o) continue;
+    const bodyPct   = (o - c) / Math.max(1e-9, o);
+    if (bodyPct < C.flushMinBodyPct) continue;
+    if (v < avgVol * C.flushVolX) continue;
+    const range     = h - l;
+    const lowerWick = Math.min(o, c) - l;
+    if (range > 0 && lowerWick < range * C.flushWickPct) continue;
+    flush = { o, h, l, c, v, idx: i, bodyPct }; flushIdx = i; break;
+  }
+  if (!flush) return { pass: false, action: null, reason: 'No flush candle found' };
+
+  // ── Step 2: reversal candle ──────────────────────────────────────────────────
+  let rev = null;
+  const maxJ = Math.min(n - 1, flushIdx + C.confirmBars);
+  for (let j = flushIdx + 1; j <= maxJ; j++) {
+    const o = opens[j], h = highs[j], l = lows[j], c = closes[j], v = vols[j];
+    if (c <= o) continue;
+    if (v < avgVol * C.revVolX) continue;
+    const flushRange = Math.max(1e-9, flush.o - flush.c);
+    const recovery   = (c - flush.c) / flushRange;
+    if (recovery < C.revRecovPct) continue;
+    rev = { o, h, l, c, v, idx: j, recovery }; break;
+  }
+  if (!rev) return { pass: false, action: null, reason: 'No reversal after flush' };
+
+  // ── Step 3: RSI at flush (only filter for LONG) ───────────────────────────────
+  const rsiAtFlush = calcRsi(closes.slice(0, flushIdx + 1), 6);
+  if (!inDowntrend && isFinite(rsiAtFlush) && rsiAtFlush > C.rsiMax)
+    return { pass: false, action: null, reason: `RSI too high at flush (${rsiAtFlush.toFixed(1)})` };
+
+  // ── Step 4: Score ─────────────────────────────────────────────────────────────
+  const flushVolX = flush.v / avgVol;
+  const revVolX   = rev.v / avgVol;
+  let score = 0;
+  score += Math.min(1, Math.log2(Math.max(1, flushVolX)) / 2) * 20;
+  score += Math.min(1, flush.bodyPct / 0.03) * 15;
+  score += Math.min(1, Math.log2(Math.max(1, revVolX)) / 2) * 20;
+  score += Math.min(1, rev.recovery / 0.8) * 15;
+  const rsiNow   = state.rsi6 ?? rsiAtFlush;
+  const rsiDelta = isFinite(rsiNow) && isFinite(rsiAtFlush) ? rsiNow - rsiAtFlush : 0;
+  score += Math.min(1, Math.max(0, Math.abs(rsiDelta) / 15)) * 20;
+  if (inDowntrend) {
+    // Bonus for depth below EMA99 (deeper = stronger downtrend = better failed bounce)
+    score += Math.min(10, ema99GapPct * 0.5);
+  } else {
+    const emaOkLong = (isFinite(state.ema13) && isFinite(state.ema25) && state.ema13 > state.ema25)
+      || (isFinite(state.ema25) && closes[n - 1] > state.ema25);
+    if (emaOkLong) score += 10;
+    else score += 5;
+  }
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  if (score < C.minScore) return { pass: false, action: null, reason: `Score too low (${score})` };
+
+  const commonFactors = {
+    flushVolX:  +flushVolX.toFixed(2),
+    revVolX:    +revVolX.toFixed(2),
+    dropPct:    +(flush.bodyPct * 100).toFixed(2),
+    recovery:   +(rev.recovery * 100).toFixed(0),
+    rsiDelta:   +rsiDelta.toFixed(1),
+    ema99GapPct,
+  };
+
+  if (inDowntrend) {
+    // ── Failed Bounce SHORT ────────────────────────────────────────────────────
+    const entry    = +(rev.l * 0.999).toFixed(8);
+    const altEntry = +(closes[n - 1] * 0.999).toFixed(8);
+    const sl       = +(rev.h + 0.3 * A).toFixed(8);
+    const tp       = +(flush.l - 1.0 * A).toFixed(8);
+    return {
+      pass: true, action: 'SHORT', type: 'failed_bounce',
+      entry, altEntry, sl, tp, score,
+      grade:  gradeScore(score),
+      reason: `Failed bounce: flush bounce rejected in downtrend (${ema99GapPct}% below EMA99)`,
+      note:   `Flush vol=${flushVolX.toFixed(1)}× · Bounce ${(rev.recovery * 100).toFixed(0)}% → fail · EMA99 gap=${ema99GapPct}%`,
+      factors: { ...commonFactors, emaOk: 0 },
+    };
+  }
+
+  // ── Normal Liq Flush LONG ────────────────────────────────────────────────────
+  const emaOk = (isFinite(state.ema13) && isFinite(state.ema25) && state.ema13 > state.ema25)
+    || (isFinite(state.ema25) && closes[n - 1] > state.ema25);
+  const entry    = +(rev.h * 1.001).toFixed(8);
+  const altEntry = +(closes[n - 1] * 1.001).toFixed(8);
+  const sl       = +(flush.l - 0.4 * A).toFixed(8);
+  const tp       = +(entry + 2.0 * A).toFixed(8);
+  return {
+    pass: true, action: 'LONG', type: 'liq_flush', blockShort: true,
+    entry, altEntry, sl, tp, score,
+    grade:  gradeScore(score),
+    reason: `Liq flush: ${(flush.bodyPct * 100).toFixed(1)}% drop → ${(rev.recovery * 100).toFixed(0)}% recovery`,
+    note:   `Flush vol=${flushVolX.toFixed(1)}× · Rev vol=${revVolX.toFixed(1)}× · RSI Δ=+${rsiDelta.toFixed(0)}`,
+    factors: { ...commonFactors, emaOk: emaOk ? 1 : 0 },
+  };
+}
+
+// ── SHORT: Liquidation Top / Long Squeeze ─────────────────────────────────────
+// Euphoric spike + volume rejection + quick reversal down
+
+function detectLiqTop(candles, state = {}, cfg = {}) {
+  const C = Object.assign({
+    scanTail:        8,
+    volLB:           20,
+    atrPeriod:       14,
+    spikeMinBodyPct: 0.012,
+    spikeVolX:       2.0,
+    spikeWickPct:    0.25,
+    revVolX:         1.5,
+    revRecovPct:     0.50,
+    rsiMin:          48,
+    confirmBars:     3,
+    minScore:        50,
+  }, cfg || {});
+
+  const minLen = Math.max(C.volLB, C.atrPeriod) + C.scanTail + 5;
+  if (!Array.isArray(candles) || candles.length < minLen)
+    return { pass: false, action: null, reason: 'Not enough candles' };
+
+  const n      = candles.length;
+  const closes = candles.map((c) => +c.close);
+  const highs  = candles.map((c) => +c.high);
+  const lows   = candles.map((c) => +c.low);
+  const opens  = candles.map((c) => +c.open);
+  const vols   = candles.map((c) => +c.volume);
+  const { sma, atr } = makeHelpers(closes, highs, lows);
+
+  const A      = atr(C.atrPeriod);
+  const avgVol = sma(vols, C.volLB);
+  if (!isFinite(A) || A <= 0) return { pass: false, action: null, reason: 'ATR invalid' };
+
+  // EMA99 determines direction: above threshold → failed_top LONG, else → liq_top SHORT
+  const inUptrend = isFinite(state.ema99) && closes[n - 1] > state.ema99 * 1.08;
+  const ema99GapPct = isFinite(state.ema99)
+    ? +((closes[n - 1] / state.ema99 - 1) * 100).toFixed(1)
+    : 0;
+
+  const floorIdx = Math.max(n - C.scanTail, 1);
+
+  // ── Step 1: spike candle ─────────────────────────────────────────────────────
+  let spike = null, spikeIdx = -1;
+  for (let i = floorIdx; i < n - 1; i++) {
+    const o = opens[i], h = highs[i], l = lows[i], c = closes[i], v = vols[i];
+    if (c <= o) continue;
+    const bodyPct   = (c - o) / Math.max(1e-9, o);
+    if (bodyPct < C.spikeMinBodyPct) continue;
+    if (v < avgVol * C.spikeVolX) continue;
+    const range     = h - l;
+    const upperWick = h - Math.max(o, c);
+    if (range > 0 && upperWick < range * C.spikeWickPct) continue;
+    spike = { o, h, l, c, v, idx: i, bodyPct }; spikeIdx = i; break;
+  }
+  if (!spike) return { pass: false, action: null, reason: 'No spike candle found' };
+
+  // ── Step 2: reversal candle ──────────────────────────────────────────────────
+  let rev = null;
+  const maxJ = Math.min(n - 1, spikeIdx + C.confirmBars);
+  for (let j = spikeIdx + 1; j <= maxJ; j++) {
+    const o = opens[j], h = highs[j], l = lows[j], c = closes[j], v = vols[j];
+    if (c >= o) continue;
+    if (v < avgVol * C.revVolX) continue;
+    const spikeRange = Math.max(1e-9, spike.c - spike.o);
+    const recovery   = (spike.c - c) / spikeRange;
+    if (recovery < C.revRecovPct) continue;
+    rev = { o, h, l, c, v, idx: j, recovery }; break;
+  }
+  if (!rev) return { pass: false, action: null, reason: 'No reversal after spike' };
+
+  // ── Step 3: RSI at spike (only filter for SHORT) ──────────────────────────────
+  const rsiAtSpike = calcRsi(closes.slice(0, spikeIdx + 1), 6);
+  if (!inUptrend && isFinite(rsiAtSpike) && rsiAtSpike < C.rsiMin)
+    return { pass: false, action: null, reason: `RSI too low at spike (${rsiAtSpike.toFixed(1)})` };
+
+  // ── Step 4: Score ─────────────────────────────────────────────────────────────
+  const spikeVolX = spike.v / avgVol;
+  const revVolX   = rev.v / avgVol;
+  let score = 0;
+  score += Math.min(1, Math.log2(Math.max(1, spikeVolX)) / 2) * 20;
+  score += Math.min(1, spike.bodyPct / 0.03) * 15;
+  score += Math.min(1, Math.log2(Math.max(1, revVolX)) / 2) * 20;
+  score += Math.min(1, rev.recovery / 0.8) * 15;
+  const rsiNow   = state.rsi6 ?? rsiAtSpike;
+  const rsiDelta = isFinite(rsiNow) && isFinite(rsiAtSpike) ? rsiAtSpike - rsiNow : 0;
+  score += Math.min(1, Math.max(0, Math.abs(rsiDelta) / 15)) * 20;
+  if (inUptrend) {
+    score += Math.min(10, ema99GapPct * 0.5);
+  } else {
+    const emaOkShort = (isFinite(state.ema13) && isFinite(state.ema25) && state.ema13 < state.ema25)
+      || (isFinite(state.ema25) && closes[n - 1] < state.ema25);
+    if (emaOkShort) score += 10;
+    else score += 5;
+  }
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  if (score < C.minScore) return { pass: false, action: null, reason: `Score too low (${score})` };
+
+  const commonFactors = {
+    flushVolX:  +spikeVolX.toFixed(2),
+    revVolX:    +revVolX.toFixed(2),
+    dropPct:    +(spike.bodyPct * 100).toFixed(2),
+    recovery:   +(rev.recovery * 100).toFixed(0),
+    rsiDelta:   +rsiDelta.toFixed(1),
+    ema99GapPct,
+  };
+
+  if (inUptrend) {
+    // ── Failed Top LONG ────────────────────────────────────────────────────────
+    // Dip after spike rejected in uptrend → continuation long
+    const entry    = +(rev.h * 1.001).toFixed(8);
+    const altEntry = +(closes[n - 1] * 1.001).toFixed(8);
+    const sl       = +(rev.l - 0.3 * A).toFixed(8);
+    const tp       = +(spike.h + 1.5 * A).toFixed(8);
+    return {
+      pass: true, action: 'LONG', type: 'failed_top', blockShort: true,
+      entry, altEntry, sl, tp, score,
+      grade:  gradeScore(score),
+      reason: `Failed top: spike dip absorbed in uptrend (${ema99GapPct}% above EMA99)`,
+      note:   `Spike vol=${spikeVolX.toFixed(1)}× · Dip ${(rev.recovery * 100).toFixed(0)}% → absorbed · EMA99 gap=+${ema99GapPct}%`,
+      factors: { ...commonFactors, emaOk: 1 },
+    };
+  }
+
+  // ── Normal Liq Top SHORT ─────────────────────────────────────────────────────
+  const emaOk = (isFinite(state.ema13) && isFinite(state.ema25) && state.ema13 < state.ema25)
+    || (isFinite(state.ema25) && closes[n - 1] < state.ema25);
+  const entry    = +(rev.l * 0.999).toFixed(8);
+  const altEntry = +(closes[n - 1] * 0.999).toFixed(8);
+  const sl       = +(spike.h + 0.4 * A).toFixed(8);
+  const tp       = +(entry - 2.0 * A).toFixed(8);
+  return {
+    pass: true, action: 'SHORT', type: 'liq_top', blockLong: true,
+    entry, altEntry, sl, tp, score,
+    grade:  gradeScore(score),
+    reason: `Liq top: ${(spike.bodyPct * 100).toFixed(1)}% spike → ${(rev.recovery * 100).toFixed(0)}% reversal`,
+    note:   `Spike vol=${spikeVolX.toFixed(1)}× · Rev vol=${revVolX.toFixed(1)}× · RSI Δ=−${rsiDelta.toFixed(0)}`,
+    factors: { ...commonFactors, emaOk: emaOk ? 1 : 0 },
+  };
+}
+
 // ── Scan orchestrator ──────────────────────────────────────────────────────────
 
 export async function runCapScan(symbols, klineCache, snapshotMap) {
@@ -350,9 +646,10 @@ export async function runCapScan(symbols, klineCache, snapshotMap) {
 
       const snap = snapshotMap.get(symbol);
 
-      // Try LONG (SC→Spring) first, then SHORT (BC→UTAD)
       let det = detectCapitulationSpringAction(klines, state);
       if (!det.pass) det = detectBuyingClimaxAction(klines, state);
+      if (!det.pass) det = detectLiqFlush(klines, state);
+      if (!det.pass) det = detectLiqTop(klines, state);
       if (!det.pass) continue;
 
       results.push({

@@ -172,7 +172,7 @@ setInterval(async () => {
   }
 }, 2 * 60 * 1000);
 const symbolCache = { data: null, expiresAt: 0 };
-const snapshotCache = { data: null, expiresAt: 0 };
+const snapshotCache = { data: null, expiresAt: 0, inflight: null };
 const autoTradeState = {
   startedAt: null,
   lastScanAt: null,
@@ -211,6 +211,7 @@ let slTracking = { createdAt: Date.now(), positions: {} };
 const PAPER_TRADES_FILE = join(rootDir, 'data', 'paper-trades.json');
 const FILLS_DIR = join(rootDir, 'data', 'fills');
 const PUMP_ORDERS_FILE = join(rootDir, 'data', 'pump-orders.json');
+const PUMP_HISTORY_FILE = join(rootDir, 'data', 'pump-order-history.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
 const paperFillLocks = new Set();
@@ -250,6 +251,7 @@ async function appendFillLog(record) {
 
 // ── Pump pending orders — lưu LIMIT orders chờ khớp ─────────────────────────
 let pumpPendingOrders = []; // [{ orderId, symbol, side, entry, qty, margin, score, placedAt }]
+let pumpWatchingOrders = []; // filled orders awaiting position close → outcome tracking
 
 async function loadPumpOrders() {
   try { pumpPendingOrders = JSON.parse(await readFile(PUMP_ORDERS_FILE, 'utf8')); } catch {}
@@ -267,6 +269,63 @@ async function addPumpPendingOrder(record) {
   await savePumpOrders();
 }
 
+// ── Pump order history — ghi kết quả thắng/thua ──────────────────────────────
+async function upsertPumpHistory(record) {
+  try {
+    await mkdir(join(rootDir, 'data'), { recursive: true });
+    let history = [];
+    try { history = JSON.parse(await readFile(PUMP_HISTORY_FILE, 'utf8')); } catch {}
+    const idx = history.findIndex((h) => h.orderId === record.orderId);
+    if (idx >= 0) history[idx] = { ...history[idx], ...record };
+    else history.push(record);
+    await writeFile(PUMP_HISTORY_FILE, JSON.stringify(history, null, 2));
+  } catch (e) {
+    console.warn('[PumpHistory] upsert failed:', e.message);
+  }
+}
+
+async function loadPumpWatching() {
+  try {
+    const history = JSON.parse(await readFile(PUMP_HISTORY_FILE, 'utf8'));
+    pumpWatchingOrders = history.filter((h) => h.status === 'FILLED');
+    if (pumpWatchingOrders.length) console.log(`[PumpHistory] Loaded ${pumpWatchingOrders.length} watching order(s)`);
+  } catch {}
+}
+
+async function pollPumpWatching() {
+  if (!pumpWatchingOrders.length) return;
+  let creds;
+  try { creds = getApiCredentials(null); } catch { return; }
+  const { apiKey, apiSecret } = creds;
+  const stillWatching = [];
+  for (const o of pumpWatchingOrders) {
+    try {
+      const positions = await client.getPositions({ apiKey, apiSecret, symbol: o.symbol }).catch(() => []);
+      const pos = positions.find((p) => p.symbol === o.symbol);
+      const posAmt = Math.abs(Number(pos?.positionAmt ?? 0));
+      if (posAmt > 0) {
+        stillWatching.push(o); // position still open
+        continue;
+      }
+      // Position closed — determine outcome from recent trades
+      const trades = await client.getUserTrades({ symbol: o.symbol, limit: 10, apiKey, apiSecret }).catch(() => []);
+      const closingTrades = trades.filter((t) => Number(t.time ?? 0) >= (o.filledAt ?? 0) && t.realizedPnl !== undefined && Number(t.realizedPnl) !== 0);
+      let pnlUsdt = 0;
+      for (const t of closingTrades) pnlUsdt += Number(t.realizedPnl ?? 0);
+      const outcome = pnlUsdt > 0 ? 'WIN' : pnlUsdt < 0 ? 'LOSS' : 'MANUAL';
+      const roe = o.margin > 0 ? +((pnlUsdt / o.margin) * 100).toFixed(2) : 0;
+      const closedAt = closingTrades.length ? Math.max(...closingTrades.map((t) => Number(t.time))) : Date.now();
+      console.log(`[PumpHistory] ${outcome} ${o.symbol} pnl=${pnlUsdt.toFixed(4)} roe=${roe}%`);
+      await upsertPumpHistory({ ...o, status: 'CLOSED', outcome, pnlUsdt: +pnlUsdt.toFixed(6), roe, closedAt });
+    } catch (e) {
+      console.warn(`[PumpHistory] watch ${o.symbol}:`, e.message);
+      stillWatching.push(o);
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  pumpWatchingOrders = stillWatching;
+}
+
 async function pollPumpOrders() {
   if (!pumpPendingOrders.length) return;
   let creds;
@@ -281,6 +340,9 @@ async function pollPumpOrders() {
         const avgPrice = Number(order.avgPrice ?? o.entry);
         console.log(`[PumpOrders] ✅ FILLED ${o.symbol} orderId=${o.orderId} @ ${avgPrice}`);
         invalidateOpenOrdersCache();
+        const histRecord = { ...o, fillPrice: avgPrice, filledAt: Number(order.updateTime ?? Date.now()), status: 'FILLED' };
+        await upsertPumpHistory(histRecord);
+        pumpWatchingOrders.push(histRecord);
         // Đặt TP_MARKET ngay sau khi fill
         if (o.tp && o.qty && creds) {
           const { apiKey, apiSecret } = creds;
@@ -323,6 +385,7 @@ async function pollPumpOrders() {
         }
       } else if (status === 'CANCELED' || status === 'EXPIRED' || status === 'REJECTED') {
         console.log(`[PumpOrders] 🗑 ${status} ${o.symbol} orderId=${o.orderId}`);
+        await upsertPumpHistory({ ...o, status: 'CANCELED', outcome: 'CANCELED', canceledAt: Date.now() });
       } else {
         remaining.push(o); // PARTIALLY_FILLED hoặc NEW → giữ lại
       }
@@ -654,6 +717,50 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/check-missing-tp') {
+      try {
+        const { apiKey, apiSecret } = getApiCredentials(requestUrl.searchParams.get('token'));
+        const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+        const [positions, openOrders, algoRes] = await Promise.all([
+          client.getPositions({ apiKey, apiSecret }),
+          client.getOpenOrders({ apiKey, apiSecret }),
+          client.getOpenAlgoOrders({ apiKey, apiSecret }).catch(() => ({ orders: [] })),
+        ]);
+        const active = positions.filter(p => Number(p.positionAmt) !== 0);
+        const algoOrders = algoRes?.orders ?? [];
+        const tpTypes = new Set(['TAKE_PROFIT_MARKET', 'TAKE_PROFIT']);
+        const result = active.map(p => {
+          const sym = p.symbol;
+          const amt = Number(p.positionAmt);
+          const isLong = amt > 0;
+          const closeSide = isLong ? 'SELL' : 'BUY';
+          const hasRegularTp = openOrders.some(o => {
+            const t = String(o.origType ?? o.type ?? '').toUpperCase();
+            return o.symbol === sym && o.side === closeSide && tpTypes.has(t);
+          });
+          const hasAlgoTp = algoOrders.some(o => {
+            const t = String(o.type ?? '').toUpperCase();
+            return o.symbol === sym && tpTypes.has(t);
+          });
+          const margin = Number(p.isolatedMargin) || Number(p.initialMargin) || 1;
+          const roe = (Number(p.unRealizedProfit) / margin) * 100;
+          return {
+            symbol: sym,
+            side: isLong ? 'LONG' : 'SHORT',
+            entry: Number(p.entryPrice),
+            markPrice: Number(p.markPrice),
+            roe: +roe.toFixed(2),
+            hasTP: hasRegularTp || hasAlgoTp,
+          };
+        });
+        result.sort((a, b) => (a.hasTP ? 1 : -1) - (b.hasTP ? 1 : -1));
+        await sendJson(response, { total: active.length, missingTp: result.filter(r => !r.hasTP).length, positions: result });
+      } catch (e) {
+        await sendJson(response, { error: e.message }, 400);
+      }
+      return;
+    }
+
     if (requestUrl.pathname === '/api/paper-trades') {
       if (request.method === 'GET') {
         await sendJson(response, await getPaperTrades());
@@ -742,6 +849,14 @@ const server = createServer(async (request, response) => {
         console.error('[PumpAuto TEST] ❌', err.message);
         await sendJson(response, { ok: false, error: err.message }, 400);
       }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/pump-history' && request.method === 'GET') {
+      try {
+        const history = JSON.parse(await readFile(PUMP_HISTORY_FILE, 'utf8'));
+        await sendJson(response, history);
+      } catch { await sendJson(response, []); }
       return;
     }
 
@@ -966,6 +1081,9 @@ server.listen(port, '127.0.0.1', () => {
   loadPumpOrders().then(() => {
     setInterval(() => pollPumpOrders().catch(() => {}), 60_000);
   });
+  loadPumpWatching().then(() => {
+    setInterval(() => pollPumpWatching().catch(() => {}), 3 * 60_000);
+  });
   const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
   // Stagger service startup to avoid burst at t=0
   startAutoTrader();
@@ -981,9 +1099,8 @@ server.listen(port, '127.0.0.1', () => {
     // getMarketSnapshot() is cheap (cached for 15s) and gives us the top coins by volume.
     try {
       const snapshot = await getMarketSnapshot();
-      const volDumpMax = Number(process.env.VOL_DUMP_MAX_COINS ?? 150);
       const liqScanMax = Number(process.env.LIQ_SCAN_MAX_COINS ?? 200);
-      const seedMax = Math.max(volDumpMax, liqScanMax, 400); // 400 covers pump scan
+      const seedMax = Math.max(liqScanMax, 400); // 400 covers pump/cap/killshort scans
       const topSymbols = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
         .slice(0, seedMax)
@@ -1017,23 +1134,7 @@ server.listen(port, '127.0.0.1', () => {
       onHighProbAlert: getLiqHighProbHandler(),
       highProbThreshold: getLiqHighProbThreshold(),
     });
-    startVolumeDumpScanner({
-      client,
-      klineCache,
-      webhookUrl: process.env.VOL_DUMP_WEBHOOK_URL || process.env.LIQ_SCAN_WEBHOOK_URL || '',
-      bigCandleWebhookUrl: process.env.BIG_CANDLE_WEBHOOK_URL || '',
-      getSnapshot: getMarketSnapshot,
-      intervalMs: Number(process.env.VOL_DUMP_INTERVAL_MS ?? 60_000),
-      cooldownMs: Number(process.env.VOL_DUMP_COOLDOWN_MS ?? 2 * 3_600_000),
-      minVolumeUsdt: Number(process.env.VOL_DUMP_MIN_VOLUME ?? 5_000_000),
-      maxCoins: Number(process.env.VOL_DUMP_MAX_COINS ?? 150),
-      volMult: Number(process.env.VOL_DUMP_VOL_MULT ?? 1.8),
-      sustainedCandles: Number(process.env.VOL_DUMP_SUSTAINED ?? 3),
-      dumpPct: Number(process.env.VOL_DUMP_DROP_PCT ?? 1.5),
-      move4cPct: Number(process.env.VOL_DUMP_MOVE4C_PCT ?? 2.5),
-      bigCandlePct: Number(process.env.BIG_CANDLE_DROP_PCT ?? 8),
-      bigCandleCooldownMs: 3_600_000,
-    });
+    // startVolumeDumpScanner disabled — tắt để giảm tải API (150 REST calls/phút)
   }, 5000);
   setTimeout(() => {
     runStaleOrderCleaner(); // seed initial position set, no cancellations on first run
@@ -1503,6 +1604,19 @@ async function setTpSl(payload, token = null) {
 
 async function getMarketSnapshot() {
   if (snapshotCache.data && Date.now() < snapshotCache.expiresAt) return snapshotCache.data;
+  // Deduplicate concurrent calls — all callers await the same in-flight promise
+  if (snapshotCache.inflight) return snapshotCache.inflight;
+  snapshotCache.inflight = (async () => {
+    try {
+      return await _fetchMarketSnapshot();
+    } finally {
+      snapshotCache.inflight = null;
+    }
+  })();
+  return snapshotCache.inflight;
+}
+
+async function _fetchMarketSnapshot() {
   const [symbols, tickers, premiumRows] = await Promise.all([
     getSymbols(),
     client.getTicker24hr(),
