@@ -160,6 +160,15 @@ function fmtDate(ts) {
   return new Date(Number(ts)).toLocaleString('vi-VN', { hour12: false });
 }
 
+function orderSource(o) {
+  const id = String(o.clientOrderId ?? o.origClientOrderId ?? '');
+  if (id.startsWith('lp_manual_')) return '<span class="src-badge src-manual">Manual</span>';
+  if (id.startsWith('lp_auto_'))   return '<span class="src-badge src-auto">Auto</span>';
+  if (id.startsWith('lp_ptp_') || id.startsWith('tp_scan_') || id.startsWith('tp_retry_')) return '<span class="src-badge src-tp">TP</span>';
+  if (id.startsWith('lp_psl_') || id.startsWith('sl_retry_')) return '<span class="src-badge src-sl">SL</span>';
+  return '<span class="src-badge">—</span>';
+}
+
 function pnlClass(v) {
   const n = Number(v);
   return n > 0 ? 'pnl-positive' : n < 0 ? 'pnl-negative' : '';
@@ -435,7 +444,7 @@ async function loadOpenOrders() {
   try {
     const rows = await apiFetch('/api/open-orders');
     if (!rows.length) {
-      openOrdersBody.innerHTML = '<tr><td colspan="9" class="empty-cell">No open orders.</td></tr>';
+      openOrdersBody.innerHTML = '<tr><td colspan="10" class="empty-cell">No open orders.</td></tr>';
       return;
     }
     openOrdersBody.innerHTML = rows.map((o) => {
@@ -445,6 +454,7 @@ async function loadOpenOrders() {
           <td><strong>${o.symbol}</strong></td>
           <td>${o.type}</td>
           <td data-v="${o.side === 'BUY' ? 1 : 0}"><span class="${sideClass}">${o.side}</span></td>
+          <td>${orderSource(o)}</td>
           <td data-v="${o.price}">${fmt(o.price)}</td>
           <td data-v="${o.origQty}">${fmt(o.origQty, 6)}</td>
           <td data-v="${o.executedQty}">${fmt(o.executedQty, 6)}</td>

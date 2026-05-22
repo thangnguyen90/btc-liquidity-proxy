@@ -1,54 +1,41 @@
 [
   {
-    "orderId": 8131626003,
-    "symbol": "TURBOUSDT",
-    "side": "BUY",
-    "entry": 0.0012029,
-    "qty": 41566,
-    "margin": 5,
-    "score": 90,
-    "slPlaced": false,
-    "slPrice": 0.0011958,
-    "tp": 0.00122247,
-    "placedAt": 1779424417281
-  },
-  {
-    "orderId": 747553000,
-    "symbol": "SPACEUSDT",
+    "orderId": 180598899,
+    "symbol": "USUSDT",
     "side": "SELL",
-    "entry": 0.008273,
-    "qty": 6043,
+    "entry": 0.00612,
+    "qty": 8169,
     "margin": 5,
-    "score": 92,
-    "slPlaced": false,
-    "slPrice": 0.008317,
-    "tp": 0.00814992,
-    "placedAt": 1779424607402
-  },
-  {
-    "orderId": 8131649576,
-    "symbol": "TURBOUSDT",
-    "side": "BUY",
-    "entry": 0.0012029,
-    "qty": 41565,
-    "margin": 5,
-    "score": 90,
+    "score": 89,
     "slPlaced": true,
-    "slPrice": 0.0011958,
-    "tp": 0.00122259,
-    "placedAt": 1779424776735
+    "slPrice": 0.006253,
+    "tp": 0.00597112,
+    "placedAt": 1779428253603
   },
   {
-    "orderId": 760791307,
-    "symbol": "VELVETUSDT",
+    "orderId": 992455697,
+    "symbol": "KERNELUSDT",
     "side": "SELL",
-    "entry": 0.09991,
-    "qty": 500,
+    "entry": 0.06524,
+    "qty": 766,
     "margin": 5,
-    "score": 91,
+    "score": 89,
     "slPlaced": true,
-    "slPrice": 0.1004,
-    "tp": 0.09850288,
-    "placedAt": 1779425199507
+    "slPrice": 0.06545,
+    "tp": 0.06465224,
+    "placedAt": 1779428255258
+  },
+  {
+    "orderId": 3288358955,
+    "symbol": "DODOXUSDT",
+    "side": "SELL",
+    "entry": 0.023191,
+    "qty": 2156,
+    "margin": 5,
+    "score": 89,
+    "slPlaced": true,
+    "slPrice": 0.024528,
+    "tp": 0.02203381,
+    "placedAt": 1779428258218
   }
 ]

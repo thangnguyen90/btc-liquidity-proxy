@@ -1,14 +1,4 @@
 {
-  "NAORISUSDT": {
-    "expiresAt": 1779424223076,
-    "addedAt": "2026-05-22T02:30:23.076Z",
-    "reason": "SL hit pnl=-0.0618"
-  },
-  "UNIUSDT": {
-    "expiresAt": 1779425176081,
-    "addedAt": "2026-05-22T02:46:16.081Z",
-    "reason": "SL hit pnl=-0.2120"
-  },
   "SKYAIUSDT": {
     "expiresAt": 1779428325934,
     "addedAt": "2026-05-22T03:38:45.934Z",
@@ -28,5 +18,10 @@
     "expiresAt": 1779430402500,
     "addedAt": "2026-05-22T04:13:22.500Z",
     "reason": "SL hit pnl=-0.1428"
+  },
+  "SIGNUSDT": {
+    "expiresAt": 1779434707570,
+    "addedAt": "2026-05-22T05:25:07.570Z",
+    "reason": "SL hit pnl=-0.2985"
   }
 }

@@ -151,6 +151,15 @@
         .order-form-grid { grid-template-columns: 1fr 1fr; }
         .order-form-row2 { grid-template-columns: 1fr 1fr; }
       }
+      .src-badge {
+        font-size: 10px; font-weight: 800; padding: 1px 6px;
+        border-radius: 4px; letter-spacing: .03em; text-transform: uppercase;
+        background: var(--panel-2); color: var(--muted);
+      }
+      .src-manual { background: rgba(96,165,250,.18);  color: #60a5fa; }
+      .src-auto   { background: rgba(54,211,153,.18);  color: var(--green); }
+      .src-tp     { background: rgba(249,115,22,.18);  color: #f97316; }
+      .src-sl     { background: rgba(251,113,133,.18); color: var(--red); }
     </style>
   </head>
   <body>
@@ -400,6 +409,7 @@
                 <th data-sort>Symbol</th>
                 <th data-sort>Type</th>
                 <th data-sort>Side</th>
+                <th data-sort>Source</th>
                 <th data-sort>Price</th>
                 <th data-sort>Qty</th>
                 <th data-sort>Filled</th>
@@ -409,7 +419,7 @@
               </tr>
             </thead>
             <tbody id="openOrdersBody">
-              <tr><td colspan="9" class="empty-cell">Loading...</td></tr>
+              <tr><td colspan="10" class="empty-cell">Loading...</td></tr>
             </tbody>
           </table>
         </div>

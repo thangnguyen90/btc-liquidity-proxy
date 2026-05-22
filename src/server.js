@@ -908,7 +908,7 @@ const server = createServer(async (request, response) => {
           ? Number(entry).toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
           : Number(entry).toFixed(8);
         const order = await client.placeFuturesOrder({
-          params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow },
+          params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow, newClientOrderId: `lp_manual_${Date.now()}`.slice(0, 36) },
           apiKey, apiSecret,
         });
         invalidateOpenOrdersCache();
@@ -3392,7 +3392,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     const entryStr = tickSize > 0 ? entry.toFixed(Math.max(0, -Math.floor(Math.log10(tickSize)))) : entry.toFixed(8);
 
     const order = await client.placeFuturesOrder({
-      params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow },
+      params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow, newClientOrderId: `lp_auto_${Date.now()}`.slice(0, 36) },
       apiKey, apiSecret,
     });
 
@@ -3899,15 +3899,24 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
   const symbolInfo = symbols.find((s) => s.symbol === symbol);
   if (!symbolInfo) return;
 
-  const defaultTp = Number(process.env.AUTO_TRADE_TP_ROE ?? 20);
-  const tpRoe = (isLong
-    ? Number(process.env.AUTO_TRADE_LONG_TP_ROE ?? defaultTp)
-    : Number(process.env.AUTO_TRADE_SHORT_TP_ROE ?? defaultTp)) / 100;
-  if (!Number.isFinite(tpRoe) || tpRoe <= 0) return;
-
-  const rawTpPrice = isLong
-    ? entry * (1 + tpRoe / leverage)
-    : entry * (1 - tpRoe / leverage);
+  // Ưu tiên TP từ signal pump (manual hoặc auto) nếu có
+  const pumpRecord = [...pumpPendingOrders, ...pumpWatchingOrders].find(
+    (r) => r.symbol === symbol && r.tp && Math.abs((Number(r.fillPrice ?? r.entry) - entry) / entry) < 0.01,
+  );
+  let rawTpPrice;
+  if (pumpRecord?.tp) {
+    rawTpPrice = Number(pumpRecord.tp);
+    console.log(`[AutoTP] 📌 ${symbol} dùng signal TP=${rawTpPrice} thay vì ROE cố định`);
+  } else {
+    const defaultTp = Number(process.env.AUTO_TRADE_TP_ROE ?? 20);
+    const tpRoe = (isLong
+      ? Number(process.env.AUTO_TRADE_LONG_TP_ROE ?? defaultTp)
+      : Number(process.env.AUTO_TRADE_SHORT_TP_ROE ?? defaultTp)) / 100;
+    if (!Number.isFinite(tpRoe) || tpRoe <= 0) return;
+    rawTpPrice = isLong
+      ? entry * (1 + tpRoe / leverage)
+      : entry * (1 - tpRoe / leverage);
+  }
   if (!isFinite(rawTpPrice) || rawTpPrice <= 0) return;
   const triggerPrice = priceFromTick(symbolInfo, rawTpPrice);
   if (!triggerPrice || triggerPrice === 'NaN' || Number(triggerPrice) <= 0) return;
