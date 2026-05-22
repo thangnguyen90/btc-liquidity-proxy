@@ -180,28 +180,37 @@ function buildFactors(sig) {
 
 // ── Open orders tracking (để hiển thị "Đã có lệnh") ─────────────────────────
 
-let openLimitSymbols = new Set(); // symbols đang có LIMIT entry order trên Binance
+let openLimitSymbols = new Set(); // symbols đang có LIMIT pending hoặc position đang mở
 
 async function loadOpenLimitOrders() {
   const token = localStorage.getItem('orders_token') ?? '';
   if (!token) return;
   try {
-    const res = await fetch('/api/open-orders', { headers: { 'x-orders-token': token } });
-    if (!res.ok) return;
-    const orders = await res.json();
-    const arr = Array.isArray(orders) ? orders : (orders.orders ?? []);
-    openLimitSymbols = new Set(
-      arr
-        .filter((o) => String(o.type ?? '').toUpperCase() === 'LIMIT' && !o.reduceOnly)
-        .map((o) => o.symbol),
-    );
-    render(); // cập nhật badge trên các card
+    const [ordersRes, posRes] = await Promise.all([
+      fetch('/api/open-orders',  { headers: { 'x-orders-token': token } }),
+      fetch('/api/positions',    { headers: { 'x-orders-token': token } }),
+    ]);
+    const next = new Set();
+    if (ordersRes.ok) {
+      const orders = await ordersRes.json();
+      const arr = Array.isArray(orders) ? orders : (orders.orders ?? []);
+      arr.filter((o) => String(o.type ?? '').toUpperCase() === 'LIMIT' && !o.reduceOnly)
+         .forEach((o) => next.add(o.symbol));
+    }
+    if (posRes.ok) {
+      const positions = await posRes.json();
+      const arr = Array.isArray(positions) ? positions : (positions.positions ?? []);
+      arr.filter((p) => Number(p.positionAmt ?? 0) !== 0)
+         .forEach((p) => next.add(p.symbol));
+    }
+    openLimitSymbols = next;
+    render();
   } catch {}
 }
 
 // ── Manual order placement ────────────────────────────────────────────────────
 
-window.placePumpOrder = async function (btn, symbol, action, entry, sl, tp, score) {
+window.placePumpOrder = async function (btn, symbol, action, entry, sl, tp, score, type) {
   const row = btn.closest('.pump-order-row');
   const input = row?.querySelector('.pump-order-margin');
   const margin = Number(input?.value ?? 5);
@@ -223,13 +232,13 @@ window.placePumpOrder = async function (btn, symbol, action, entry, sl, tp, scor
     const res = await fetch('/api/pump-manual-order', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-orders-token': token },
-      body: JSON.stringify({ symbol, action, entry, sl, tp, score, margin }),
+      body: JSON.stringify({ symbol, action, entry, sl, tp, score, margin, type }),
     });
     const data = await res.json();
     if (data.ok) {
       btn.classList.remove('loading');
       btn.classList.add('success');
-      btn.textContent = `✅ #${data.orderId}`;
+      btn.textContent = data.marketFilled ? `⚡ MKT #${data.orderId}` : `✅ #${data.orderId}`;
       if (input) input.disabled = true;
       openLimitSymbols.add(symbol);
       // Thêm badge "Đã có lệnh" ngay bên cạnh nếu chưa có
@@ -326,7 +335,7 @@ function buildCard(sig) {
       <div class="pump-order-row">
         <input class="pump-order-margin" type="number" value="5" min="1" max="10000" step="1" title="Margin (USDT)">
         <span class="pump-order-label">$</span>
-        <button class="pump-order-btn ${dirClass}" onclick="placePumpOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score})">📥 LIMIT</button>
+        <button class="pump-order-btn ${dirClass}" onclick="placePumpOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score},'${sig.type ?? ''}')">📥 LIMIT</button>
         ${openLimitSymbols.has(sig.symbol) ? '<span class="pump-order-exists">✓ Đã có lệnh</span>' : ''}
       </div>
       <div class="pump-footer">

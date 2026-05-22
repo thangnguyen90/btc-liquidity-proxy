@@ -210,9 +210,7 @@ function buildCard(sig) {
           ${sig.blockShort ? '🔒 blocks short' : ''}
           ${sig.blockLong  ? '🔒 blocks long'  : ''}
         </span>
-        ${sig.score >= 80
-          ? `<button class="cap-paper-btn ${dirClass}" onclick="enterCapPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score})">+ Paper</button>`
-          : ''}
+        <button class="cap-paper-btn ${dirClass}" onclick="enterCapPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score})">+ Paper</button>
       </div>
     </article>
   `;

@@ -1,0 +1,22 @@
+{
+  "2026-05-22": {
+    "date": "2026-05-22",
+    "orders": 1,
+    "wins": 0,
+    "losses": 1,
+    "manualClose": 0,
+    "canceled": 0,
+    "totalPnl": -0.3358,
+    "totalRoe": -6.72,
+    "winRate": 0,
+    "avgPnl": -0.3358,
+    "byType": {
+      "early_dump": {
+        "orders": 1,
+        "wins": 0,
+        "losses": 1,
+        "totalPnl": -0.3358
+      }
+    }
+  }
+}

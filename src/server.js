@@ -80,6 +80,8 @@ async function schedulePumpScan() {
   }, 2_000);
 }
 
+const capPaperAutoFired = new Map(); // `${symbol}|${type}` → firedAt timestamp
+
 let _capScanDebounce = null;
 async function scheduleCapScan() {
   clearTimeout(_capScanDebounce);
@@ -97,6 +99,23 @@ async function scheduleCapScan() {
       capScanCache.data = result;
       capScanCache.expiresAt = Date.now() + 30_000;
       pushSse(capSseClients, result);
+
+      // Auto-tạo paper trade cho mỗi signal mới (dedup 4h theo symbol+type)
+      for (const sig of signals) {
+        const key = `${sig.symbol}|${sig.type}`;
+        const last = capPaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        capPaperAutoFired.set(key, Date.now());
+        createPaperTrade({
+          symbol: sig.symbol,
+          side: sig.action,
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          source: `cap-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch((e) => console.warn(`[CapPaper] auto create ${sig.symbol}:`, e.message));
+      }
     } catch (e) {
       console.error('[CapScan] error:', e.message);
     }
@@ -214,6 +233,7 @@ const PAPER_TRADES_FILE = join(rootDir, 'data', 'paper-trades.json');
 const FILLS_DIR = join(rootDir, 'data', 'fills');
 const PUMP_ORDERS_FILE = join(rootDir, 'data', 'pump-orders.json');
 const PUMP_HISTORY_FILE = join(rootDir, 'data', 'pump-order-history.json');
+const PUMP_DAILY_FILE   = join(rootDir, 'data', 'pump-daily-stats.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
 const paperFillLocks = new Set();
@@ -281,8 +301,55 @@ async function upsertPumpHistory(record) {
     if (idx >= 0) history[idx] = { ...history[idx], ...record };
     else history.push(record);
     await writeFile(PUMP_HISTORY_FILE, JSON.stringify(history, null, 2));
+    if (record.status === 'CLOSED') await updatePumpDailyStats(record);
   } catch (e) {
     console.warn('[PumpHistory] upsert failed:', e.message);
+  }
+}
+
+async function updatePumpDailyStats(record) {
+  try {
+    await mkdir(join(rootDir, 'data'), { recursive: true });
+    let stats = {};
+    try { stats = JSON.parse(await readFile(PUMP_DAILY_FILE, 'utf8')); } catch {}
+
+    const date = new Date(record.closedAt ?? Date.now()).toISOString().slice(0, 10);
+    const day = stats[date] ?? {
+      date,
+      orders: 0, wins: 0, losses: 0, manualClose: 0, canceled: 0,
+      totalPnl: 0, totalRoe: 0, winRate: 0, avgPnl: 0,
+      byType: {},
+    };
+
+    day.orders += 1;
+    if (record.outcome === 'WIN')    day.wins       += 1;
+    if (record.outcome === 'LOSS')   day.losses     += 1;
+    if (record.outcome === 'MANUAL') day.manualClose += 1;
+    if (record.outcome === 'CANCELED') day.canceled += 1;
+
+    const pnl = Number(record.pnlUsdt ?? 0);
+    const roe = Number(record.roe ?? 0);
+    day.totalPnl = +(day.totalPnl + pnl).toFixed(4);
+    day.totalRoe = +(day.totalRoe + roe).toFixed(2);
+
+    const settled = day.wins + day.losses + day.manualClose;
+    day.winRate = settled > 0 ? +((day.wins / settled) * 100).toFixed(1) : 0;
+    day.avgPnl  = settled > 0 ? +(day.totalPnl / settled).toFixed(4) : 0;
+
+    // Breakdown theo type (pump_breakout, early_dump, ...)
+    const type = record.type ?? 'unknown';
+    const t = day.byType[type] ?? { orders: 0, wins: 0, losses: 0, totalPnl: 0 };
+    t.orders += 1;
+    if (record.outcome === 'WIN')  t.wins   += 1;
+    if (record.outcome === 'LOSS') t.losses += 1;
+    t.totalPnl = +(t.totalPnl + pnl).toFixed(4);
+    day.byType[type] = t;
+
+    stats[date] = day;
+    await writeFile(PUMP_DAILY_FILE, JSON.stringify(stats, null, 2));
+    console.log(`[PumpDaily] ${date} ${record.symbol} ${record.outcome} pnl=${pnl >= 0 ? '+' : ''}${pnl}`);
+  } catch (e) {
+    console.warn('[PumpDaily] update failed:', e.message);
   }
 }
 
@@ -877,6 +944,15 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/pump-daily-stats' && request.method === 'GET') {
+      try {
+        const stats = JSON.parse(await readFile(PUMP_DAILY_FILE, 'utf8'));
+        // Trả về mảng sắp xếp theo ngày mới nhất trước
+        await sendJson(response, Object.values(stats).sort((a, b) => b.date.localeCompare(a.date)));
+      } catch { await sendJson(response, []); }
+      return;
+    }
+
     if (requestUrl.pathname === '/api/pump-manual-order' && request.method === 'POST') {
       const token = request.headers['x-orders-token'] ?? null;
       if (!token || !ordersTokens.has(token)) {
@@ -884,7 +960,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       const body = await readJsonBody(request);
-      const { symbol, action, entry, sl, tp, score, margin: bodyMargin } = body;
+      const { symbol, action, entry, sl, tp, score, margin: bodyMargin, type: bodyType } = body;
       if (!symbol || !action || !entry) { await sendJson(response, { error: 'Thiếu symbol/action/entry' }, 400); return; }
       try {
         const { apiKey, apiSecret } = getApiCredentials(token);
@@ -899,20 +975,32 @@ const server = createServer(async (request, response) => {
         await client.setLeverage({ symbol, leverage, apiKey, apiSecret, recvWindow });
         const premiumIndex = await client.getPremiumIndex(symbol);
         const markPrice = Number(premiumIndex.markPrice);
+
+        const entryNum = Number(entry);
+        const side = action === 'LONG' ? 'BUY' : 'SELL';
+
+        // Nếu entry quá gần/vượt mark price → dùng MARKET thay LIMIT
+        const gap = markPrice > 0 ? (entryNum - markPrice) / markPrice : -1;
+        const useMarket = markPrice > 0 && (
+          (side === 'BUY'  && gap >= -0.001) ||
+          (side === 'SELL' && gap <=  0.001)
+        );
+
         const notional = Math.max(margin * leverage, minNotional > 0 ? minNotional : 0);
-        const qtyRaw = notional / Number(entry);
+        const qtyRaw = notional / (useMarket ? markPrice : entryNum);
         const qty = stepSize > 0 ? Math.floor(qtyRaw / stepSize) * stepSize : qtyRaw;
         const qtyStr = stepSize > 0 ? qty.toFixed(Math.max(0, -Math.floor(Math.log10(stepSize)))) : qty.toFixed(6);
-        const side = action === 'LONG' ? 'BUY' : 'SELL';
         const entryStr = tickSize > 0
-          ? Number(entry).toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
-          : Number(entry).toFixed(8);
-        const order = await client.placeFuturesOrder({
-          params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow, newClientOrderId: `lp_manual_${Date.now()}`.slice(0, 36) },
-          apiKey, apiSecret,
-        });
+          ? entryNum.toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
+          : entryNum.toFixed(8);
+
+        const orderParams = useMarket
+          ? { symbol, side, type: 'MARKET', quantity: qtyStr, recvWindow, newClientOrderId: `lp_manual_${Date.now()}`.slice(0, 36) }
+          : { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow, newClientOrderId: `lp_manual_${Date.now()}`.slice(0, 36) };
+
+        const order = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret });
         invalidateOpenOrdersCache();
-        console.log(`[PumpManual] ✅ ${symbol} ${side} LIMIT @${entryStr} qty=${qtyStr} margin=$${margin} score=${score}`);
+        console.log(`[PumpManual] ✅ ${symbol} ${side} ${useMarket ? 'MARKET' : `LIMIT @${entryStr}`} qty=${qtyStr} margin=$${margin} score=${score}`);
         // Đặt SL nếu có
         let slPlaced = false;
         let slPriceStr = null;
@@ -944,10 +1032,10 @@ const server = createServer(async (request, response) => {
         }
         addPumpPendingOrder({
           orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr),
-          margin, score: score ?? 0, slPlaced, slPrice: slPriceStr ? Number(slPriceStr) : null,
-          tp: tp ?? null, placedAt: Date.now(),
+          margin, score: score ?? 0, type: bodyType ?? null, slPlaced,
+          slPrice: slPriceStr ? Number(slPriceStr) : null, tp: tp ?? null, placedAt: Date.now(),
         }).catch(() => {});
-        await sendJson(response, { ok: true, orderId: order.orderId, symbol, side, entry: entryStr, qty: qtyStr, markPrice, slPlaced, slPrice: slPriceStr });
+        await sendJson(response, { ok: true, orderId: order.orderId, symbol, side, entry: entryStr, qty: qtyStr, markPrice, slPlaced, slPrice: slPriceStr, marketFilled: useMarket });
       } catch (err) {
         console.error('[PumpManual] ❌', err.message);
         await sendJson(response, { ok: false, error: err.message }, 400);
@@ -3441,7 +3529,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
 
     // Lưu tp từ signal để pollPumpOrders đặt TP_MARKET khi order filled
     const tpFromSignal = signal.tp ?? null;
-    addPumpPendingOrder({ orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr), margin, score, slPlaced, slPrice: slPriceStr ? Number(slPriceStr) : null, tp: tpFromSignal, placedAt: Date.now() }).catch(() => {});
+    addPumpPendingOrder({ orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr), margin, score, type: signal.type ?? null, slPlaced, slPrice: slPriceStr ? Number(slPriceStr) : null, tp: tpFromSignal, placedAt: Date.now() }).catch(() => {});
 
     const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
     if (webhookUrl) {
@@ -4003,14 +4091,22 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
 
 // Xóa toàn bộ open orders (regular + algo) cho một symbol
 async function clearSymbolOrders(symbol, apiKey, apiSecret, recvWindow = 5000) {
+  // Chỉ cancel reduce-only orders (SL/TP), không cancel LIMIT entry
   try {
-    await client.cancelAllOpenOrders({ symbol, apiKey, apiSecret, recvWindow });
-    console.log(`[AutoTP] 🗑 ${symbol} đã hủy tất cả regular orders`);
-  } catch (e) {
-    if (!e.message?.includes('No open orders') && !e.message?.includes('-2011')) {
-      console.warn(`[AutoTP] cancelAllOpenOrders ${symbol}:`, e.message);
+    const openOrders = await client.getOpenOrders({ symbol, apiKey, apiSecret, recvWindow }).catch(() => []);
+    const stopTypes = new Set(['STOP_MARKET', 'TAKE_PROFIT_MARKET', 'STOP', 'TAKE_PROFIT']);
+    const toCancel = openOrders.filter((o) =>
+      o.reduceOnly || stopTypes.has(String(o.origType ?? o.type ?? '').toUpperCase()),
+    );
+    for (const o of toCancel) {
+      await client.cancelOrder({ symbol, orderId: o.orderId, apiKey, apiSecret, recvWindow }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 100));
     }
+    if (toCancel.length) console.log(`[AutoTP] 🗑 ${symbol} đã hủy ${toCancel.length} reduce-only order(s)`);
+  } catch (e) {
+    console.warn(`[AutoTP] clearSymbolOrders ${symbol}:`, e.message);
   }
+  // Algo orders đều là TP/SL — cancel hết
   try {
     const algoResult = await client.getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow }).catch(() => ({ orders: [] }));
     const algoRows = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];

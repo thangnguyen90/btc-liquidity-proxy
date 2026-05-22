@@ -1,27 +1,42 @@
 {
-  "SKYAIUSDT": {
-    "expiresAt": 1779428325934,
-    "addedAt": "2026-05-22T03:38:45.934Z",
-    "reason": "SL hit pnl=-0.3275"
-  },
-  "ESPORTSUSDT": {
-    "expiresAt": 1779426676057,
-    "addedAt": "2026-05-22T03:11:16.057Z",
-    "reason": "SL hit pnl=-0.0173"
-  },
-  "APTUSDT": {
-    "expiresAt": 1779428326118,
-    "addedAt": "2026-05-22T03:38:46.118Z",
-    "reason": "SL hit pnl=-0.0061"
-  },
-  "FIGHTUSDT": {
-    "expiresAt": 1779430402500,
-    "addedAt": "2026-05-22T04:13:22.500Z",
-    "reason": "SL hit pnl=-0.1428"
-  },
   "SIGNUSDT": {
     "expiresAt": 1779434707570,
     "addedAt": "2026-05-22T05:25:07.570Z",
     "reason": "SL hit pnl=-0.2985"
+  },
+  "ZEREBROUSDT": {
+    "expiresAt": 1779435551454,
+    "addedAt": "2026-05-22T05:39:11.454Z",
+    "reason": "SL hit pnl=-0.0176"
+  },
+  "EGLDUSDT": {
+    "expiresAt": 1779436580802,
+    "addedAt": "2026-05-22T05:56:20.802Z",
+    "reason": "SL hit pnl=-0.0097"
+  },
+  "VELVETUSDT": {
+    "expiresAt": 1779437180867,
+    "addedAt": "2026-05-22T06:06:20.867Z",
+    "reason": "SL hit pnl=-0.2850"
+  },
+  "HEMIUSDT": {
+    "expiresAt": 1779438340962,
+    "addedAt": "2026-05-22T06:25:40.962Z",
+    "reason": "SL hit pnl=-0.4942"
+  },
+  "VETUSDT": {
+    "expiresAt": 1779438341080,
+    "addedAt": "2026-05-22T06:25:41.080Z",
+    "reason": "SL hit pnl=-0.1908"
+  },
+  "MONUSDT": {
+    "expiresAt": 1779438670982,
+    "addedAt": "2026-05-22T06:31:10.982Z",
+    "reason": "SL hit pnl=-0.2702"
+  },
+  "QNTUSDT": {
+    "expiresAt": 1779439144681,
+    "addedAt": "2026-05-22T06:39:04.681Z",
+    "reason": "SL hit pnl=-0.1320"
   }
 }
