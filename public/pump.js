@@ -1,6 +1,10 @@
 const SSE_URL = '/api/pump-stream';
 
-const pumpAutoOrderChk = document.getElementById('pumpAutoOrderChk');
+const pumpAutoOrderChk     = document.getElementById('pumpAutoOrderChk');
+const maxLimitOrdersInput  = document.getElementById('maxLimitOrdersInput');
+const maxPositionsInput    = document.getElementById('maxPositionsInput');
+const saveMaxOrdersBtn     = document.getElementById('saveMaxOrdersBtn');
+const saveMaxOrdersStatus  = document.getElementById('saveMaxOrdersStatus');
 
 (async () => {
   try {
@@ -8,6 +12,42 @@ const pumpAutoOrderChk = document.getElementById('pumpAutoOrderChk');
     if (res.ok) { const { enabled } = await res.json(); pumpAutoOrderChk.checked = !!enabled; }
   } catch {}
 })();
+
+(async () => {
+  try {
+    const res = await fetch('/api/pump-max-orders');
+    if (res.ok) {
+      const { maxLimitOrders, maxPositions } = await res.json();
+      maxLimitOrdersInput.value = maxLimitOrders;
+      maxPositionsInput.value   = maxPositions;
+    }
+  } catch {}
+})();
+
+saveMaxOrdersBtn.addEventListener('click', async () => {
+  const maxLimitOrders = Number(maxLimitOrdersInput.value);
+  const maxPositions   = Number(maxPositionsInput.value);
+  if (!Number.isFinite(maxLimitOrders) || maxLimitOrders < 1) { maxLimitOrdersInput.focus(); return; }
+  if (!Number.isFinite(maxPositions)   || maxPositions < 0)   { maxPositionsInput.focus();   return; }
+  try {
+    saveMaxOrdersBtn.disabled = true;
+    const res = await fetch('/api/pump-max-orders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ maxLimitOrders, maxPositions }),
+    });
+    if (res.ok) {
+      saveMaxOrdersStatus.textContent = '✓ Đã lưu';
+      setTimeout(() => { saveMaxOrdersStatus.textContent = ''; }, 2500);
+    }
+  } catch {
+    saveMaxOrdersStatus.style.color = 'var(--red)';
+    saveMaxOrdersStatus.textContent = 'Lỗi';
+    setTimeout(() => { saveMaxOrdersStatus.textContent = ''; saveMaxOrdersStatus.style.color = 'var(--green)'; }, 2500);
+  } finally {
+    saveMaxOrdersBtn.disabled = false;
+  }
+});
 
 pumpAutoOrderChk.addEventListener('change', async () => {
   try {
@@ -138,6 +178,83 @@ function buildFactors(sig) {
   return chips.map((c) => `<span class="pump-factor ${c.ok}">${c.label}</span>`).join('');
 }
 
+// ── Open orders tracking (để hiển thị "Đã có lệnh") ─────────────────────────
+
+let openLimitSymbols = new Set(); // symbols đang có LIMIT entry order trên Binance
+
+async function loadOpenLimitOrders() {
+  const token = localStorage.getItem('orders_token') ?? '';
+  if (!token) return;
+  try {
+    const res = await fetch('/api/open-orders', { headers: { 'x-orders-token': token } });
+    if (!res.ok) return;
+    const orders = await res.json();
+    const arr = Array.isArray(orders) ? orders : (orders.orders ?? []);
+    openLimitSymbols = new Set(
+      arr
+        .filter((o) => String(o.type ?? '').toUpperCase() === 'LIMIT' && !o.reduceOnly)
+        .map((o) => o.symbol),
+    );
+    render(); // cập nhật badge trên các card
+  } catch {}
+}
+
+// ── Manual order placement ────────────────────────────────────────────────────
+
+window.placePumpOrder = async function (btn, symbol, action, entry, sl, tp, score) {
+  const row = btn.closest('.pump-order-row');
+  const input = row?.querySelector('.pump-order-margin');
+  const margin = Number(input?.value ?? 5);
+  if (!margin || margin <= 0) { btn.textContent = 'Nhập margin!'; return; }
+
+  const token = localStorage.getItem('orders_token') ?? '';
+  if (!token) {
+    btn.classList.add('error');
+    btn.textContent = 'Chưa đăng nhập';
+    setTimeout(() => { btn.classList.remove('error'); btn.textContent = `📥 ${margin}$ LIMIT`; }, 3000);
+    return;
+  }
+
+  btn.disabled = true;
+  btn.classList.add('loading');
+  btn.textContent = 'Đang đặt...';
+
+  try {
+    const res = await fetch('/api/pump-manual-order', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-orders-token': token },
+      body: JSON.stringify({ symbol, action, entry, sl, tp, score, margin }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      btn.classList.remove('loading');
+      btn.classList.add('success');
+      btn.textContent = `✅ #${data.orderId}`;
+      if (input) input.disabled = true;
+      openLimitSymbols.add(symbol);
+      // Thêm badge "Đã có lệnh" ngay bên cạnh nếu chưa có
+      const row = btn.closest('.pump-order-row');
+      if (row && !row.querySelector('.pump-order-exists')) {
+        const badge = document.createElement('span');
+        badge.className = 'pump-order-exists';
+        badge.textContent = '✓ Đã có lệnh';
+        row.appendChild(badge);
+      }
+    } else {
+      throw new Error(data.error ?? 'Lỗi không xác định');
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    btn.classList.add('error');
+    btn.textContent = e.message.length > 30 ? e.message.slice(0, 30) + '…' : e.message;
+    setTimeout(() => {
+      btn.classList.remove('error');
+      btn.textContent = `📥 ${margin}$ LIMIT`;
+    }, 4000);
+  }
+};
+
 // ── Card builder ──────────────────────────────────────────────────────────────
 
 function isAutoEligible(sig) {
@@ -206,6 +323,12 @@ function buildCard(sig) {
       <div class="pump-factors">${factors}</div>
       ${marketWarn}
       <div class="pump-note">${sig.note || ''}</div>
+      <div class="pump-order-row">
+        <input class="pump-order-margin" type="number" value="5" min="1" max="10000" step="1" title="Margin (USDT)">
+        <span class="pump-order-label">$</span>
+        <button class="pump-order-btn ${dirClass}" onclick="placePumpOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score})">📥 LIMIT</button>
+        ${openLimitSymbols.has(sig.symbol) ? '<span class="pump-order-exists">✓ Đã có lệnh</span>' : ''}
+      </div>
       <div class="pump-footer">
         <span>${timeAgo(sig.scannedAt)}</span>
         <span>${sig.blockShort ? '🔒 blocks short' : ''}</span>
@@ -369,4 +492,6 @@ async function fetchAndApply(attempt = 0) {
 (async () => {
   await fetchAndApply();
   connect();
+  await loadOpenLimitOrders();
+  setInterval(loadOpenLimitOrders, 30_000);
 })();

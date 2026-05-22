@@ -222,6 +222,112 @@
       .scan-meta strong { color: var(--text); }
       .scan-meta .scan-dot { color: var(--green); font-size: 10px; }
 
+      /* ── Auto settings bar ── */
+      .pump-auto-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 14px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        margin-top: 10px;
+        flex-wrap: wrap;
+      }
+      .pump-auto-bar-label {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        flex-shrink: 0;
+      }
+      .pump-auto-bar-field {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .pump-auto-bar-field small { font-size: 10px; }
+      .pump-auto-bar-field input {
+        width: 56px;
+        padding: 3px 7px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 700;
+        text-align: right;
+      }
+      .pump-auto-bar-field input:focus { outline: none; border-color: var(--blue); }
+      .pump-auto-bar-save {
+        padding: 4px 12px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: opacity .15s;
+      }
+      .pump-auto-bar-save:hover { opacity: .75; }
+      .pump-auto-bar-status { font-size: 11px; color: var(--green); }
+
+      /* ── Manual order row ── */
+      .pump-order-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding-top: 8px;
+        border-top: 1px solid var(--line);
+      }
+      .pump-order-margin {
+        width: 64px;
+        padding: 4px 8px;
+        border-radius: 5px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 700;
+        text-align: right;
+      }
+      .pump-order-margin:focus { outline: none; border-color: var(--blue); }
+      .pump-order-label {
+        font-size: 11px;
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+      .pump-order-btn {
+        flex: 1;
+        padding: 5px 10px;
+        border-radius: 5px;
+        border: none;
+        cursor: pointer;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: .03em;
+        text-transform: uppercase;
+        transition: opacity .15s;
+      }
+      .pump-order-btn:hover:not(:disabled) { opacity: .8; }
+      .pump-order-btn:disabled { opacity: .45; cursor: default; }
+      .pump-order-btn.long  { background: rgba(54,211,153,.2);  color: var(--green); border: 1px solid rgba(54,211,153,.4); }
+      .pump-order-btn.short { background: rgba(251,113,133,.2); color: var(--red);   border: 1px solid rgba(251,113,133,.4); }
+      .pump-order-btn.loading { opacity: .6; }
+      .pump-order-btn.success { background: rgba(54,211,153,.3); color: var(--green); }
+      .pump-order-btn.error   { background: rgba(251,113,133,.3); color: var(--red); }
+      .pump-order-exists {
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--amber);
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+
       @media (max-width: 640px) {
         .pump-controls { grid-template-columns: 1fr 1fr; }
         .pump-controls .search-field { grid-column: 1 / -1; }
@@ -318,6 +424,20 @@
           <span>signals</span>
         </div>
       </section>
+
+      <div class="pump-auto-bar">
+        <span class="pump-auto-bar-label">Auto limit:</span>
+        <label class="pump-auto-bar-field">
+          Max lệnh limit
+          <input id="maxLimitOrdersInput" type="number" min="1" max="200" step="1" value="30">
+        </label>
+        <label class="pump-auto-bar-field">
+          Max positions <small>(0 = vô hạn)</small>
+          <input id="maxPositionsInput" type="number" min="0" max="200" step="1" value="0">
+        </label>
+        <button id="saveMaxOrdersBtn" class="pump-auto-bar-save">Lưu</button>
+        <span id="saveMaxOrdersStatus" class="pump-auto-bar-status"></span>
+      </div>
 
       <div id="scanMeta" class="scan-meta" style="display:none">
         <span class="scan-dot">●</span>

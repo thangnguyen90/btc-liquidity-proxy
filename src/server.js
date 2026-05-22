@@ -193,6 +193,8 @@ const runtimeSettings = {
   autoProbeEnabled: process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION === 'true',
   autoProbeMargin: Number(process.env.AUTO_LIQ_PROBE_MARGIN ?? 1),
   pumpAutoOrderEnabled: process.env.PUMP_AUTO_ORDER_ENABLED === 'true',
+  pumpMaxLimitOrders: Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30),
+  pumpMaxPositions: Number(process.env.AUTO_TRADE_MAX_POSITIONS ?? 0),
 };
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
 let tslScanner = null;
@@ -806,6 +808,21 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (requestUrl.pathname === '/api/pump-max-orders') {
+      if (request.method === 'GET') {
+        await sendJson(response, { maxLimitOrders: runtimeSettings.pumpMaxLimitOrders, maxPositions: runtimeSettings.pumpMaxPositions });
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        if (typeof body.maxLimitOrders === 'number' && body.maxLimitOrders >= 1) runtimeSettings.pumpMaxLimitOrders = body.maxLimitOrders;
+        if (typeof body.maxPositions === 'number' && body.maxPositions >= 0) runtimeSettings.pumpMaxPositions = body.maxPositions;
+        console.log(`[PumpAuto] Cập nhật: maxLimitOrders=${runtimeSettings.pumpMaxLimitOrders} maxPositions=${runtimeSettings.pumpMaxPositions}`);
+        await sendJson(response, { maxLimitOrders: runtimeSettings.pumpMaxLimitOrders, maxPositions: runtimeSettings.pumpMaxPositions });
+        return;
+      }
+    }
+
     if (requestUrl.pathname === '/api/pump-auto-order-test' && request.method === 'POST') {
       const token = request.headers['x-orders-token'] ?? null;
       if (!token || !ordersTokens.has(token)) { await sendJson(response, { error: 'Unauthorized' }, 401); return; }
@@ -857,6 +874,84 @@ const server = createServer(async (request, response) => {
         const history = JSON.parse(await readFile(PUMP_HISTORY_FILE, 'utf8'));
         await sendJson(response, history);
       } catch { await sendJson(response, []); }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/pump-manual-order' && request.method === 'POST') {
+      const token = request.headers['x-orders-token'] ?? null;
+      if (!token || !ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Chưa đăng nhập. Vào /orders và nhập API key trước.' }, 401);
+        return;
+      }
+      const body = await readJsonBody(request);
+      const { symbol, action, entry, sl, tp, score, margin: bodyMargin } = body;
+      if (!symbol || !action || !entry) { await sendJson(response, { error: 'Thiếu symbol/action/entry' }, 400); return; }
+      try {
+        const { apiKey, apiSecret } = getApiCredentials(token);
+        const margin = Number(bodyMargin ?? 5);
+        const leverage = Number(process.env.PUMP_AUTO_ORDER_LEVERAGE ?? 10);
+        const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+        const symbols = await getSymbols();
+        const info = symbols.find((s) => s.symbol === symbol);
+        const tickSize = Number(info?.filters?.find((f) => f.filterType === 'PRICE_FILTER')?.tickSize ?? 0);
+        const stepSize = Number(info?.filters?.find((f) => f.filterType === 'LOT_SIZE')?.stepSize ?? 0);
+        const minNotional = Number(info?.filters?.find((f) => f.filterType === 'MIN_NOTIONAL')?.notional ?? 0);
+        await client.setLeverage({ symbol, leverage, apiKey, apiSecret, recvWindow });
+        const premiumIndex = await client.getPremiumIndex(symbol);
+        const markPrice = Number(premiumIndex.markPrice);
+        const notional = Math.max(margin * leverage, minNotional > 0 ? minNotional : 0);
+        const qtyRaw = notional / Number(entry);
+        const qty = stepSize > 0 ? Math.floor(qtyRaw / stepSize) * stepSize : qtyRaw;
+        const qtyStr = stepSize > 0 ? qty.toFixed(Math.max(0, -Math.floor(Math.log10(stepSize)))) : qty.toFixed(6);
+        const side = action === 'LONG' ? 'BUY' : 'SELL';
+        const entryStr = tickSize > 0
+          ? Number(entry).toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
+          : Number(entry).toFixed(8);
+        const order = await client.placeFuturesOrder({
+          params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow },
+          apiKey, apiSecret,
+        });
+        invalidateOpenOrdersCache();
+        console.log(`[PumpManual] ✅ ${symbol} ${side} LIMIT @${entryStr} qty=${qtyStr} margin=$${margin} score=${score}`);
+        // Đặt SL nếu có
+        let slPlaced = false;
+        let slPriceStr = null;
+        if (sl && info) {
+          slPriceStr = tickSize > 0
+            ? Number(sl).toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
+            : Number(sl).toFixed(8);
+          const slParams = {
+            symbol, side: side === 'BUY' ? 'SELL' : 'BUY',
+            type: 'STOP_MARKET', stopPrice: slPriceStr, quantity: qtyStr,
+            workingType: 'MARK_PRICE', reduceOnly: 'true', recvWindow,
+            newClientOrderId: `lp_psl_${order.orderId}`.slice(0, 36),
+          };
+          try {
+            await client.placeFuturesOrder({ params: slParams, apiKey, apiSecret })
+              .catch((e) => {
+                if (e.message?.includes('not supported') || e.message?.includes('Algo Order')) {
+                  const ap = { ...slParams, algoType: 'CONDITIONAL', triggerPrice: slPriceStr };
+                  delete ap.stopPrice;
+                  return client.placeAlgoOrder({ params: ap, apiKey, apiSecret });
+                }
+                throw e;
+              });
+            slPlaced = true;
+            console.log(`[PumpManual] 🛡 ${symbol} SL @${slPriceStr}`);
+          } catch (e) {
+            console.warn(`[PumpManual] ⚠ SL failed ${symbol}:`, e.message);
+          }
+        }
+        addPumpPendingOrder({
+          orderId: order.orderId, symbol, side, entry: Number(entryStr), qty: Number(qtyStr),
+          margin, score: score ?? 0, slPlaced, slPrice: slPriceStr ? Number(slPriceStr) : null,
+          tp: tp ?? null, placedAt: Date.now(),
+        }).catch(() => {});
+        await sendJson(response, { ok: true, orderId: order.orderId, symbol, side, entry: entryStr, qty: qtyStr, markPrice, slPlaced, slPrice: slPriceStr });
+      } catch (err) {
+        console.error('[PumpManual] ❌', err.message);
+        await sendJson(response, { ok: false, error: err.message }, 400);
+      }
       return;
     }
 
@@ -3254,7 +3349,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     const margin = Number(process.env.PUMP_AUTO_ORDER_MARGIN ?? 1);
     const leverage = Number(process.env.PUMP_AUTO_ORDER_LEVERAGE ?? 10);
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
-    const maxLimitOrders = Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30);
+    const maxLimitOrders = runtimeSettings.pumpMaxLimitOrders;
 
     if (!openOrders) openOrders = await client.getOpenOrders({ apiKey, apiSecret });
     const openLimitEntries = openOrders.filter((o) => o.type === 'LIMIT' && !o.reduceOnly);
@@ -3268,7 +3363,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     }
 
     // Max positions check: positions đang mở + LIMIT pending không vượt ngưỡng
-    const maxPositions = Number(process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+    const maxPositions = runtimeSettings.pumpMaxPositions;
     if (maxPositions > 0) {
       const positions = await client.getPositions({ apiKey, apiSecret });
       const openCount = positions.filter((p) => Number(p.positionAmt) !== 0).length;
@@ -3844,8 +3939,82 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
     tpConfirmedSet.add(tpKey);
     console.log(`[AutoTP] ✅ ${symbol} ${isLong ? 'LONG' : 'SHORT'} entry=${entry} lev=${leverage}x → TP @ ${triggerPrice} qty=${quantity} algoId=${result.algoId}`);
   } catch (err) {
-    console.error(`[AutoTP] ❌ ${symbol}:`, err.message);
+    const isMaxStop = err.message?.toLowerCase().includes('max stop') || err.message?.toLowerCase().includes('too many stop');
+    if (!isMaxStop) { console.error(`[AutoTP] ❌ ${symbol}:`, err.message); return; }
+
+    // Xóa hết lệnh stop cũ cho symbol này rồi đặt lại TP + SL
+    console.warn(`[AutoTP] ⚠ ${symbol} max stop orders — xóa hết và đặt lại...`);
+    await clearSymbolOrders(symbol, apiKey, apiSecret, recvWindow);
+
+    // Retry TP
+    try {
+      tpParams.newClientOrderId = `tp_retry_${Date.now()}`.slice(0, 36);
+      const result = await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
+      tpConfirmedSet.add(tpKey);
+      console.log(`[AutoTP] ✅ ${symbol} (retry) → TP @ ${triggerPrice} algoId=${result.algoId}`);
+    } catch (retryErr) {
+      console.error(`[AutoTP] ❌ ${symbol} retry TP:`, retryErr.message);
+      return;
+    }
+
+    // Đặt lại SL
+    const slRoeEnv = isLong ? process.env.AUTO_TRADE_LONG_SL_ROE : process.env.AUTO_TRADE_SHORT_SL_ROE;
+    const slRoePct = slRoeEnv ? Math.abs(Number(slRoeEnv)) : Number(process.env.AUTO_SL_ROE ?? 25);
+    if (slRoePct > 0) {
+      const rawSl = isLong
+        ? entry * (1 - slRoePct / 100 / leverage)
+        : entry * (1 + slRoePct / 100 / leverage);
+      const slPrice = priceFromTick(symbolInfo, rawSl);
+      if (slPrice && Number(slPrice) > 0) {
+        const slParams = {
+          symbol, side: closeSide === 'SELL' ? 'BUY' : 'SELL',
+          type: 'STOP_MARKET', stopPrice: String(slPrice), quantity,
+          workingType: 'MARK_PRICE', reduceOnly: 'true', recvWindow,
+          newClientOrderId: `sl_retry_${Date.now()}`.slice(0, 36),
+        };
+        if (isHedge) { delete slParams.reduceOnly; slParams.positionSide = positionSide; }
+        try {
+          await client.placeFuturesOrder({ params: slParams, apiKey, apiSecret })
+            .catch((e) => {
+              if (e.message?.includes('not supported') || e.message?.includes('Algo Order')) {
+                const ap = { ...slParams, algoType: 'CONDITIONAL', triggerPrice: String(slPrice) };
+                delete ap.stopPrice;
+                return client.placeAlgoOrder({ params: ap, apiKey, apiSecret });
+              }
+              throw e;
+            });
+          console.log(`[AutoTP] 🛡 ${symbol} SL @${slPrice} (${slRoePct}% ROE)`);
+        } catch (slErr) {
+          console.warn(`[AutoTP] ⚠ ${symbol} SL retry failed:`, slErr.message);
+        }
+      }
+    }
   }
+}
+
+// Xóa toàn bộ open orders (regular + algo) cho một symbol
+async function clearSymbolOrders(symbol, apiKey, apiSecret, recvWindow = 5000) {
+  try {
+    await client.cancelAllOpenOrders({ symbol, apiKey, apiSecret, recvWindow });
+    console.log(`[AutoTP] 🗑 ${symbol} đã hủy tất cả regular orders`);
+  } catch (e) {
+    if (!e.message?.includes('No open orders') && !e.message?.includes('-2011')) {
+      console.warn(`[AutoTP] cancelAllOpenOrders ${symbol}:`, e.message);
+    }
+  }
+  try {
+    const algoResult = await client.getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow }).catch(() => ({ orders: [] }));
+    const algoRows = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+    for (const o of algoRows) {
+      if (!o.algoId) continue;
+      await client.cancelAlgoOrder({ algoId: o.algoId, apiKey, apiSecret, recvWindow }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (algoRows.length) console.log(`[AutoTP] 🗑 ${symbol} đã hủy ${algoRows.length} algo order(s)`);
+  } catch (e) {
+    console.warn(`[AutoTP] clearAlgoOrders ${symbol}:`, e.message);
+  }
+  invalidateOpenOrdersCache();
 }
 
 async function handleNegativeTimeoutTp(symbol, pos) {
