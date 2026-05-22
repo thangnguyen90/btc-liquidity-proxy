@@ -1,1 +1,67 @@
-[]
+[
+  {
+    "orderId": 630600060,
+    "symbol": "GWEIUSDT",
+    "side": "SELL",
+    "entry": 0.11593,
+    "qty": 86,
+    "margin": 1,
+    "score": 85,
+    "slPlaced": true,
+    "slPrice": 0.11941,
+    "tp": 0.1143931,
+    "placedAt": 1779409021610
+  },
+  {
+    "orderId": 14828569844,
+    "symbol": "XMRUSDT",
+    "side": "SELL",
+    "entry": 391.04,
+    "qty": 0.025,
+    "margin": 1,
+    "score": 94,
+    "slPlaced": true,
+    "slPrice": 402.77,
+    "tp": 387.06353261,
+    "placedAt": 1779409021868
+  },
+  {
+    "orderId": 981780281,
+    "symbol": "SAFEUSDT",
+    "side": "BUY",
+    "entry": 0.1504,
+    "qty": 66,
+    "margin": 1,
+    "score": 85,
+    "slPlaced": true,
+    "slPrice": 0.1459,
+    "tp": 0.15223686,
+    "placedAt": 1779409381676
+  },
+  {
+    "orderId": 12230705877,
+    "symbol": "ENJUSDT",
+    "side": "SELL",
+    "entry": 0.0437,
+    "qty": 228,
+    "margin": 1,
+    "score": 92,
+    "slPlaced": true,
+    "slPrice": 0.04501,
+    "tp": 0.04338951,
+    "placedAt": 1779409381695
+  },
+  {
+    "orderId": 4060000784,
+    "symbol": "AEVOUSDT",
+    "side": "SELL",
+    "entry": 0.02592,
+    "qty": 385.8,
+    "margin": 1,
+    "score": 97,
+    "slPlaced": true,
+    "slPrice": 0.0267,
+    "tp": 0.02572904,
+    "placedAt": 1779409381728
+  }
+]

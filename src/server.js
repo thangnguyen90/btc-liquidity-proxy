@@ -2782,8 +2782,13 @@ async function runStaleOrderCleaner() {
     if (staleMs > 0) {
       const allOrders = await client.getOpenOrders({ apiKey, apiSecret });
       const now = Date.now();
+      const isReduceOnly = (o) => o.reduceOnly === true || o.reduceOnly === 'true';
+      const isLimitType  = (o) => {
+        const t = String(o.type ?? o.origType ?? '').toUpperCase();
+        return t === 'LIMIT' || t === 'LIMIT_MAKER';
+      };
       const stale = allOrders.filter(
-        (o) => o.type === 'LIMIT' && !o.reduceOnly && (now - Number(o.time)) > staleMs,
+        (o) => isLimitType(o) && !isReduceOnly(o) && (now - Number(o.time)) > staleMs,
       );
       for (const o of stale) {
         const ageMin = Math.round((now - Number(o.time)) / 60000);
