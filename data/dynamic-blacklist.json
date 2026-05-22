@@ -73,5 +73,30 @@
     "expiresAt": 1779444132725,
     "addedAt": "2026-05-22T08:02:12.725Z",
     "reason": "SL hit pnl=-0.2987"
+  },
+  "BIRBUSDT": {
+    "expiresAt": 1779445122734,
+    "addedAt": "2026-05-22T08:18:42.734Z",
+    "reason": "SL hit pnl=-0.0932"
+  },
+  "TRBUSDT": {
+    "expiresAt": 1779446142802,
+    "addedAt": "2026-05-22T08:35:42.802Z",
+    "reason": "SL hit pnl=-0.0460"
+  },
+  "CRVUSDT": {
+    "expiresAt": 1779446142908,
+    "addedAt": "2026-05-22T08:35:42.908Z",
+    "reason": "SL hit pnl=-0.2474"
+  },
+  "SNXUSDT": {
+    "expiresAt": 1779446143019,
+    "addedAt": "2026-05-22T08:35:43.019Z",
+    "reason": "SL hit pnl=-0.1865"
+  },
+  "GRASSUSDT": {
+    "expiresAt": 1779446143127,
+    "addedAt": "2026-05-22T08:35:43.127Z",
+    "reason": "SL hit pnl=-1.6987"
   }
 }

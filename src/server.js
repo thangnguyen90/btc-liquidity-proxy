@@ -63,7 +63,7 @@ async function schedulePumpScan() {
       pushSse(pumpSseClients, result);
       // Auto-order: đặt LIMIT $1 cho signal score≥90 + marketOk
       // Dùng cached open orders — chỉ gọi API 1 lần, tái sử dụng cho toàn bộ signals
-      if (runtimeSettings.pumpAutoOrderEnabled && signals.length > 0) {
+      if (runtimeSettings.pumpAutoOrderEnabled && signals.length > 0 && !isVnBlockHour()) {
         try {
           const { apiKey, apiSecret } = getApiCredentials(null);
           const openOrders = await getCachedOpenOrders(apiKey, apiSecret);
@@ -216,6 +216,16 @@ const runtimeSettings = {
   pumpMaxPositions: Number(process.env.AUTO_TRADE_MAX_POSITIONS ?? 0),
 };
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
+
+// Block auto orders 17:00–19:00 Vietnam time (UTC+7) every day
+const VN_BLOCK_HOURS = new Set(
+  (process.env.VN_BLOCK_HOURS ?? '17,18')
+    .split(',').map((h) => parseInt(h.trim(), 10)).filter((h) => !isNaN(h)),
+);
+function isVnBlockHour() {
+  const vnHour = new Date(Date.now() + 7 * 3600 * 1000).getUTCHours();
+  return VN_BLOCK_HOURS.has(vnHour);
+}
 let tslScanner = null;
 let posMonitor = null;
 const longShortCache = new Map();    // symbol → { longShortRatio, longAccount }
@@ -2098,6 +2108,7 @@ function appendPaperNote(note, part) {
 
 async function autoPlaceBinanceOnEntryReady(trade, reason, markPrice) {
   if (!runtimeSettings.autoProbeEnabled) return;
+  if (isVnBlockHour()) { console.log('[AutoProbe] ⏰ Block 17-19h VN'); return; }
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
     const marginUsdt = runtimeSettings.autoProbeMargin;
@@ -2575,6 +2586,7 @@ function startAutoTrader() {
 
 async function runAutoTradeScan() {
   if (!runtimeSettings.autoTradeEnabled) return;
+  if (isVnBlockHour()) { console.log('[AutoTrade] ⏰ Block 17-19h VN'); return; }
   try {
     const snapshot = await getMarketSnapshot();
     const threshold = Number(process.env.AUTO_TRADE_THRESHOLD ?? 0.7);
@@ -3566,6 +3578,7 @@ const pumpAutoOrderFired = new Map(); // symbol → timestamp
 
 async function handlePumpAutoOrder(signal, openOrders = null) {
   if (!runtimeSettings.pumpAutoOrderEnabled) return;
+  if (isVnBlockHour()) { console.log(`[PumpAuto] ⏰ Block 17-19h VN — ${signal.symbol}`); return; }
   const { symbol, action, score, marketOk, entry, sl, factors } = signal;
   if (score < 85) return;
   if (marketOk === false) return;
