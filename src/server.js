@@ -14,6 +14,7 @@ import { KlineCache } from './klineCache.js';
 import { runPumpScan } from './pumpDetector.js';
 import { runCapScan }  from './capDetector.js';
 import { runKillShortScan } from './killShortDetector.js';
+import { runDumpIgnitionScan } from './dumpIgnitionDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -30,12 +31,14 @@ const client = new BinanceClient({
 const klineCache = new KlineCache({ client, maxKlines: 500 });
 const pumpScanCache = { data: null, expiresAt: 0 };
 const capScanCache       = { data: null, expiresAt: 0 };
-const killShortScanCache = { data: null, expiresAt: 0 };
+const killShortScanCache    = { data: null, expiresAt: 0 };
+const dumpIgnitionScanCache = { data: null, expiresAt: 0 };
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 const pumpSseClients = new Set();
-const capSseClients       = new Set();
-const killShortSseClients = new Set();
+const capSseClients          = new Set();
+const killShortSseClients    = new Set();
+const dumpIgnitionSseClients = new Set();
 
 function pushSse(clients, data) {
   const payload = `data: ${JSON.stringify(data)}\n\n`;
@@ -100,14 +103,39 @@ async function schedulePumpScan() {
         }).catch(() => {});
         if (pumpPaperTicker) syncPumpPaperTicker().catch(() => {});
       }
+
+      // Edge paper auto-fire: chỉ những pump signal có action SHORT (xuất hiện trên edge-short board)
+      for (const sig of signals) {
+        const action = String(sig.action ?? '').toUpperCase();
+        if (action !== 'SHORT' && action !== 'SELL') continue;  // chỉ short signal trên edge
+        if (sig.score < 60) continue;
+        const key = `pump|${sig.symbol}|${sig.type}`;
+        const last = edgePaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        edgePaperAutoFired.set(key, Date.now());
+        createEdgePaperTrade({
+          symbol: sig.symbol,
+          side: 'SHORT',
+          status: 'OPEN',
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
+          source: `pump-short-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch((e) => console.warn(`[EdgePaper] pump-short ${sig.symbol}:`, e.message));
+      }
     } catch (e) {
       console.error('[PumpScan] error:', e.message);
     }
   }, 2_000);
 }
 
-const capPaperAutoFired = new Map(); // `${symbol}|${type}` → firedAt timestamp
+const capPaperAutoFired  = new Map(); // `${symbol}|${type}` → firedAt timestamp
 const pumpPaperAutoFired = new Map(); // `${symbol}|${type}` → firedAt timestamp
+// Edge paper auto-fire: key = `${source}|${symbol}|${type}` để phân biệt cross-scanner
+const edgePaperAutoFired = new Map();
 
 let _capScanDebounce = null;
 async function scheduleCapScan() {
@@ -147,6 +175,27 @@ async function scheduleCapScan() {
           note: sig.note ?? '',
         }).then(() => syncCapPaperTicker()).catch((e) => console.warn(`[CapPaper] auto create ${sig.symbol}:`, e.message));
       }
+
+      // Edge paper auto-fire: cap signals cũng xuất hiện trên edge-short board
+      for (const sig of signals) {
+        if (sig.score < 60) continue;
+        const key = `cap|${sig.symbol}|${sig.type}`;
+        const last = edgePaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        edgePaperAutoFired.set(key, Date.now());
+        createEdgePaperTrade({
+          symbol: sig.symbol,
+          side: String(sig.action ?? 'LONG').toUpperCase(),
+          status: 'OPEN',
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
+          source: `cap-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch((e) => console.warn(`[EdgePaper] cap ${sig.symbol}:`, e.message));
+      }
     } catch (e) {
       console.error('[CapScan] error:', e.message);
     }
@@ -170,10 +219,78 @@ async function scheduleKillShortScan() {
       killShortScanCache.data = result;
       killShortScanCache.expiresAt = Date.now() + 30_000;
       pushSse(killShortSseClients, result);
+      if (signals.length > 0)
+        console.log(`[KillShortScan] ${signals.length} signal(s): ${signals.map(s => `${s.symbol}(${s.type} ${s.score})`).join(', ')}`);
+
+      // Edge paper auto-fire: killshort signals chỉ xuất hiện trên edge-short
+      for (const sig of signals) {
+        if (sig.score < 60) continue;
+        const key = `killshort|${sig.symbol}|${sig.type}`;
+        const last = edgePaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        edgePaperAutoFired.set(key, Date.now());
+        createEdgePaperTrade({
+          symbol: sig.symbol,
+          side: String(sig.action ?? 'LONG').toUpperCase(),
+          status: 'OPEN',
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
+          source: `killshort-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch((e) => console.warn(`[EdgePaper] killshort ${sig.symbol}:`, e.message));
+      }
     } catch (e) {
       console.error('[KillShortScan] error:', e.message);
     }
   }, 2_000);
+}
+
+let _dumpIgnitionScanDebounce = null;
+async function scheduleDumpIgnitionScan() {
+  clearTimeout(_dumpIgnitionScanDebounce);
+  _dumpIgnitionScanDebounce = setTimeout(async () => {
+    try {
+      const snapshot    = await getMarketSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols  = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runDumpIgnitionScan(topSymbols, klineCache, snapshotMap);
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      dumpIgnitionScanCache.data = result;
+      dumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(dumpIgnitionSseClients, result);
+      if (signals.length) console.log(`[DumpIgnition] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.type} ${s.score})`).join(', ')}`);
+
+      // Edge paper auto-fire: dump_ignition signals chỉ xuất hiện trên edge-short
+      for (const sig of signals) {
+        if (sig.score < 60) continue;
+        const key = `ignition|${sig.symbol}|${sig.type}`;
+        const last = edgePaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        edgePaperAutoFired.set(key, Date.now());
+        createEdgePaperTrade({
+          symbol: sig.symbol,
+          side: 'SHORT',
+          status: 'OPEN',
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
+          source: `ignition-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch((e) => console.warn(`[EdgePaper] ignition ${sig.symbol}:`, e.message));
+      }
+    } catch (e) {
+      console.error('[DumpIgnitionScan] error:', e.message);
+    }
+  }, 3_000);
 }
 
 klineCache.on('candleClose', ({ interval }) => {
@@ -181,6 +298,7 @@ klineCache.on('candleClose', ({ interval }) => {
   schedulePumpScan();
   scheduleCapScan();
   scheduleKillShortScan();
+  scheduleDumpIgnitionScan();
 });
 
 // Scan theo tick (mỗi khi có cập nhật nến) với debounce 60s — bắt signal sớm hơn trong nến
@@ -192,11 +310,12 @@ klineCache.on('candleTick', ({ interval }) => {
     schedulePumpScan();
     scheduleCapScan();
     scheduleKillShortScan();
+    scheduleDumpIgnitionScan();
   }, 60_000);
 });
 
 // Chạy scan ngay sau 30s để có data ban đầu dù WebSocket chưa kết nối
-setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); }, 30_000);
+setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); scheduleDumpIgnitionScan(); }, 30_000);
 
 // Fallback: scan mỗi 2 phút kể cả khi WebSocket không có tick
 let _staleReseedLock = false;
@@ -282,6 +401,7 @@ const PUMP_HISTORY_FILE = join(rootDir, 'data', 'pump-order-history.json');
 const PUMP_DAILY_FILE   = join(rootDir, 'data', 'pump-daily-stats.json');
 const CAP_PAPER_FILE    = join(rootDir, 'data', 'cap-paper-trades.json');
 const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
+const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
 const paperFillLocks = new Set();
@@ -291,6 +411,9 @@ const capPaperFillLocks = new Set();
 const pumpMarkCache = new Map(); // symbol → markPrice (for pump paper trades)
 let pumpPaperTicker = null;
 const pumpPaperFillLocks = new Set();
+const edgeMarkCache = new Map(); // symbol -> markPrice (for edge paper trades)
+let edgePaperTicker = null;
+const edgePaperFillLocks = new Set();
 
 async function loadSlTracking() {
   try {
@@ -793,6 +916,46 @@ const server = createServer(async (request, response) => {
       return sendJson(response, result);
     }
 
+    if (requestUrl.pathname === '/api/dump-ignition-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (dumpIgnitionScanCache.data && (dumpIgnitionScanCache.data.signals?.length > 0 || dumpIgnitionScanCache.data.processed > 0)) {
+        response.write(`data: ${JSON.stringify(dumpIgnitionScanCache.data)}\n\n`);
+      }
+      dumpIgnitionSseClients.add(response);
+      request.on('close', () => dumpIgnitionSseClients.delete(response));
+      if (!dumpIgnitionScanCache.data || Date.now() > dumpIgnitionScanCache.expiresAt) {
+        scheduleDumpIgnitionScan();
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/dump-ignition-signals') {
+      if (dumpIgnitionScanCache.data && Date.now() < dumpIgnitionScanCache.expiresAt) {
+        return sendJson(response, dumpIgnitionScanCache.data);
+      }
+      const snapshot = await getMarketSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runDumpIgnitionScan(topSymbols, klineCache, snapshotMap);
+      if (processed === 0) {
+        klineCache.seed(topSymbols, '15m', 500).then(() => scheduleDumpIgnitionScan()).catch(() => {});
+      }
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      dumpIgnitionScanCache.data = result;
+      dumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
+      return sendJson(response, result);
+    }
+
     if (requestUrl.pathname === '/api/btc-health') {
       await sendJson(response, await getBtcHealth());
       return;
@@ -954,6 +1117,26 @@ const server = createServer(async (request, response) => {
     }
     if (requestUrl.pathname === '/api/pump-paper-trades/delete' && request.method === 'POST') {
       await sendJson(response, await deletePumpPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/edge-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getEdgePaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const payload = await readJsonBody(request);
+        await sendJson(response, await createEdgePaperTrade(payload));
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/edge-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closeEdgePaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/edge-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deleteEdgePaperTrade(await readJsonBody(request)));
       return;
     }
 
@@ -1200,7 +1383,8 @@ const server = createServer(async (request, response) => {
       const result = {};
       await Promise.allSettled(symbols.map(async (sym) => {
         try {
-          const rows = await client.getTopLongShortPositionRatio(sym, '5m', limit);
+          const t = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5_000));
+          const rows = await Promise.race([client.getTopLongShortPositionRatio(sym, '5m', limit), t]);
           const trend = summarizeTopTraderTrend(rows);
           result[sym] = trend ? { ...trend, label: formatTopTraderTrend(trend) } : null;
         } catch { result[sym] = null; }
@@ -1473,6 +1657,7 @@ server.listen(port, '127.0.0.1', () => {
     startPaperTradeTicker();
     startCapPaperTicker();
     startPumpPaperTicker();
+    startEdgePaperTicker();
   }, 29000);
   setTimeout(() => {
     startMissingTpScanner();
@@ -1553,6 +1738,7 @@ server.listen(port, '127.0.0.1', () => {
 
 // ── BTC Health ────────────────────────────────────────────────────────────────
 let btcHealthCache = { data: null, expiresAt: 0 };
+let _btcHealthInflight = null; // dedup concurrent calls — only one REST fetch at a time
 // L/S ratio: không có WS → REST cache 30 phút (thay đổi rất chậm)
 let btcLsRatioCache = { data: null, expiresAt: 0 };
 // Funding rate + mark price: từ WebSocket markPrice stream (field r + p)
@@ -1604,8 +1790,7 @@ function calcRsiSimple(closes, period = 14) {
   return 100 - 100 / (1 + avgGain / avgLoss);
 }
 
-async function getBtcHealth() {
-  if (btcHealthCache.data && Date.now() < btcHealthCache.expiresAt) return btcHealthCache.data;
+async function _fetchBtcHealth() {
 
   try {
     // Funding rate: từ WebSocket markPrice stream — 0 REST calls
@@ -1614,13 +1799,22 @@ async function getBtcHealth() {
 
     // L/S ratio: không có WS → REST cache 30 phút (thay đổi rất chậm, không cần real-time)
     if (!btcLsRatioCache.data || Date.now() >= btcLsRatioCache.expiresAt) {
-      btcLsRatioCache = { data: await client.getGlobalLongShortRatio('BTCUSDT', '5m', 1).catch(() => null), expiresAt: Date.now() + 30 * 60_000 };
+      const lsTimeout = new Promise((_, rej) => setTimeout(() => rej(new Error('L/S timeout')), 5_000));
+      const lsData = await Promise.race([
+        client.getGlobalLongShortRatio('BTCUSDT', '5m', 1),
+        lsTimeout,
+      ]).catch(() => null);
+      btcLsRatioCache = { data: lsData, expiresAt: Date.now() + 30 * 60_000 };
     }
-    const [klines4h, klines1d, klines1h] = await Promise.all([
-      klineCache.getKlines('BTCUSDT', '4h', 100), // từ WS cache — không tốn REST
-      klineCache.getKlines('BTCUSDT', '1d', 50),
-      klineCache.getKlines('BTCUSDT', '1h', 200), // từ WS cache — không tốn REST
-    ]);
+    // getIfCached = chỉ đọc WS cache, KHÔNG fallback REST → không bao giờ treo
+    const klines4h = klineCache.getIfCached('BTCUSDT', '4h', 100);
+    const klines1d = klineCache.getIfCached('BTCUSDT', '1d', 50);
+    const klines1h = klineCache.getIfCached('BTCUSDT', '1h', 200);
+    if (!klines4h || !klines1h) {
+      // Klines chưa seed xong — trả stale nếu có, không treo request
+      if (btcHealthCache.data) return btcHealthCache.data;
+      return { bias: 'neutral', bearPoints: 0, bullPoints: 0, bullBias: 'neutral', updatedAt: Date.now(), seeding: true };
+    }
     const lsRaw = btcLsRatioCache.data;
 
     // L/S ratio
@@ -1679,7 +1873,7 @@ async function getBtcHealth() {
     if (rsi4h != null && rsi4h > 70) bearPoints++;
     if (obvTrend === 'falling') bearPoints++;
     // --- Tín hiệu đang trong downtrend (active dump) ---
-    if (rsi4h != null && rsi4h < 35) bearPoints++;           // BTC dump mạnh trên 4h
+    if (rsi4h != null && rsi4h < 30) bearPoints++;           // BTC dump mạnh trên 4h (< 30 thay vì 35 để unblock LONG sớm hơn khi hồi phục)
     if (rsi1h != null && rsi1h < 40) bearPoints++;           // Momentum âm trên 1h
     if (emaTrend1h === 'below') bearPoints++;                // Price dưới EMA20 1h
 
@@ -1720,6 +1914,16 @@ async function getBtcHealth() {
     console.warn('[BtcHealth] error:', e.message);
     return btcHealthCache.data ?? { error: e.message };
   }
+}
+
+// Wrapper: cache check + in-flight dedup → chỉ 1 REST fetch tại một thời điểm
+function getBtcHealth() {
+  if (btcHealthCache.data && Date.now() < btcHealthCache.expiresAt) {
+    return Promise.resolve(btcHealthCache.data);
+  }
+  if (_btcHealthInflight) return _btcHealthInflight;
+  _btcHealthInflight = _fetchBtcHealth().finally(() => { _btcHealthInflight = null; });
+  return _btcHealthInflight;
 }
 
 // ── RSI update khi nến mới đóng (1h/4h/1d) — không dùng candleTick để tránh ban IP ──────
@@ -2109,9 +2313,12 @@ async function writePaperStore(store) {
 }
 
 async function getPaperMark(symbol) {
+  // WS ticker liên tục cập nhật paperMarkCache → luôn dùng cache nếu có, không check tuổi
   const cached = paperMarkCache.get(symbol);
-  if (cached && Date.now() - cached.at < 30_000) return cached.markPrice;
-  const price = await client.getPremiumIndex(symbol);
+  if (cached) return cached.markPrice;
+  // Cold start: WS chưa seed → REST với timeout 5s để tránh treo trang
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('mark timeout')), 5_000));
+  const price = await Promise.race([client.getPremiumIndex(symbol), timeout]);
   return Number(price.markPrice);
 }
 
@@ -2922,6 +3129,223 @@ function startPumpPaperTicker() {
 }
 
 // ── End pump paper trade system ───────────────────────────────────────────────
+
+// Edge paper trade system (private to /edge-short)
+async function readEdgePaperStore() {
+  try {
+    const raw = await readFile(EDGE_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    console.warn('[EdgePaper] Store read error, starting fresh:', e.message);
+    return { trades: [] };
+  }
+}
+
+let _edgePaperWriteLock = Promise.resolve();
+async function writeEdgePaperStore(store) {
+  _edgePaperWriteLock = _edgePaperWriteLock.then(() => atomicWriteJson(EDGE_PAPER_FILE, store));
+  return _edgePaperWriteLock;
+}
+
+function enrichEdgePaperTrade(t, markPrice) {
+  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
+  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
+  return { ...t, markPrice: mark, pnl, roe };
+}
+
+async function getEdgePaperTrades() {
+  const store = await readEdgePaperStore();
+  const trades = store.trades.map((t) => enrichEdgePaperTrade(t, edgeMarkCache.get(t.symbol)));
+  const open = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length > 0 ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length : null;
+  const summary = {
+    total: trades.length,
+    open: open.length,
+    closed: closed.length,
+    wins,
+    losses: closed.length - wins,
+    tpHits,
+    slHits,
+    avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null,
+  };
+  return { trades, summary };
+}
+
+async function createEdgePaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? '').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+
+  const store = await readEdgePaperStore();
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol && t.side === side && Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichEdgePaperTrade(dup, edgeMarkCache.get(symbol)) };
+
+  const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol,
+    side,
+    status,
+    marginUsdt,
+    leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    tp: payload.tp != null ? Number(payload.tp) : null,
+    sl: payload.sl != null ? Number(payload.sl) : null,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null,
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'edge').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+  };
+  store.trades.unshift(trade);
+  await writeEdgePaperStore(store);
+  await syncEdgePaperTicker();
+  console.log(`[EdgePaper] ${status} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
+  return { trade: enrichEdgePaperTrade(trade, entryPrice) };
+}
+
+async function closeEdgePaperTrade(payload) {
+  const store = await readEdgePaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('Edge paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichEdgePaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (edgeMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  await writeEdgePaperStore(store);
+  await syncEdgePaperTicker();
+  return { trade: enrichEdgePaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deleteEdgePaperTrade(payload) {
+  const store = await readEdgePaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writeEdgePaperStore(store);
+  await syncEdgePaperTicker();
+  return { ok: true };
+}
+
+async function fillEdgePendingTrade(trade, markPrice) {
+  if (edgePaperFillLocks.has(trade.id)) return;
+  edgePaperFillLocks.add(trade.id);
+  try {
+    const store = await readEdgePaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const entry = Number(store.trades[idx].entryPrice);
+    const touched = store.trades[idx].side === 'LONG' ? markPrice <= entry : markPrice >= entry;
+    if (!touched) return;
+    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    await writeEdgePaperStore(store);
+    console.log(`[EdgePaper] FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+  } finally {
+    edgePaperFillLocks.delete(trade.id);
+  }
+}
+
+async function processEdgePaperFills(symbol, markPrice) {
+  const store = await readEdgePaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillEdgePendingTrade(t, markPrice);
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) {
+    await checkEdgePaperTpSl(t, markPrice);
+    await checkEdgePaperTimeout(t, markPrice);
+  }
+}
+
+const edgePaperTimeoutLocks = new Set();
+async function checkEdgePaperTimeout(trade, markPrice) {
+  if (!trade.openedAt) return;
+  const timeoutH = Number(process.env.EDGE_PAPER_TIMEOUT_H ?? runtimeSettings.pumpPaperTimeoutH ?? 3);
+  const timeoutMs = timeoutH * 3600_000;
+  const openedMs = Date.parse(trade.openedAt);
+  if (Date.now() - openedMs < timeoutMs) return;
+
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (markPrice - Number(trade.entryPrice)) * Number(trade.quantity) * sideMult;
+  const roe = Number(trade.marginUsdt) > 0 ? (pnl / Number(trade.marginUsdt)) * 100 : 0;
+  if (roe <= 1) return;
+
+  if (edgePaperTimeoutLocks.has(trade.id)) return;
+  edgePaperTimeoutLocks.add(trade.id);
+  try {
+    await closeEdgePaperTrade({ id: trade.id, exitPrice: markPrice, outcome: 'TIMEOUT' });
+    console.log(`[EdgePaper] TIMEOUT ${trade.side} ${trade.symbol} roe=${roe.toFixed(1)}% after ${timeoutH}h`);
+  } finally {
+    edgePaperTimeoutLocks.delete(trade.id);
+  }
+}
+
+const edgePaperTpSlLocks = new Set();
+async function checkEdgePaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (edgePaperTpSlLocks.has(trade.id)) return;
+  const isLong = trade.side === 'LONG';
+  const tpHit = trade.tp != null && (isLong ? markPrice >= trade.tp : markPrice <= trade.tp);
+  const slHit = trade.sl != null && (isLong ? markPrice <= trade.sl : markPrice >= trade.sl);
+  if (!tpHit && !slHit) return;
+  edgePaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closeEdgePaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[EdgePaper] ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    edgePaperTpSlLocks.delete(trade.id);
+  }
+}
+
+async function syncEdgePaperTicker() {
+  if (!edgePaperTicker) return;
+  const store = await readEdgePaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  edgePaperTicker.setSymbols(symbols);
+}
+
+function startEdgePaperTicker() {
+  if (edgePaperTicker) return;
+  edgePaperTicker = createMarkPriceTicker({
+    onPrice: ({ symbol, markPrice }) => {
+      edgeMarkCache.set(symbol, markPrice);
+      processEdgePaperFills(symbol, markPrice).catch(() => {});
+    },
+  });
+  console.log('[EdgePaper] Mark ticker started.');
+  syncEdgePaperTicker().catch(() => {});
+  setInterval(() => syncEdgePaperTicker().catch(() => {}), 30_000);
+}
 
 function startPaperTradeTicker() {
   if (process.env.PAPER_TRADE_TICKER_ENABLED === 'false') return;
@@ -5201,6 +5625,8 @@ async function sendStatic(pathname, response) {
           ? '/cap.html'
         : pathname === '/killshort'
           ? '/killshort.html'
+        : pathname === '/edge-short'
+          ? '/edge-short.html'
         : pathname === '/orders'
           ? '/orders.html'
           : pathname === '/highvol'

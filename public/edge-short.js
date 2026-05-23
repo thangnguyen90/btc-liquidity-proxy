@@ -1,16 +1,17 @@
 const SOURCES = [
-  { id: 'pump', label: 'Pump', url: '/api/pump-signals' },
-  { id: 'cap', label: 'Cap', url: '/api/cap-signals' },
-  { id: 'killshort', label: 'Kill Short', url: '/api/killshort-signals' },
+  { id: 'pump',      label: 'Pump',       url: '/api/pump-signals',           stream: '/api/pump-stream' },
+  { id: 'cap',       label: 'Cap',        url: '/api/cap-signals',            stream: '/api/cap-stream' },
+  { id: 'killshort', label: 'Kill Short', url: '/api/killshort-signals',      stream: '/api/killshort-stream' },
+  { id: 'ignition',  label: 'Ignition',   url: '/api/dump-ignition-signals',  stream: '/api/dump-ignition-stream' },
 ];
 
 const state = {
+  signalsBySource: { pump: [], cap: [], killshort: [], ignition: [] },
   rawSignals: [],
   rows: [],
-  loading: false,
   lastLoadedAt: null,
   errors: [],
-  timer: null,
+  openStreams: 0, // how many SSE connections are currently open
 };
 
 let edgeOpenLimitSymbols = new Set();
@@ -21,6 +22,7 @@ const searchInput = document.getElementById('searchInput');
 const searchClear = document.getElementById('searchClear');
 const scoreFilter = document.getElementById('scoreFilter');
 const sourceFilter = document.getElementById('sourceFilter');
+const typeFilter = document.getElementById('typeFilter');
 const sideFilter = document.getElementById('sideFilter');
 const refreshButton = document.getElementById('refreshButton');
 const autoRefreshInput = document.getElementById('autoRefreshInput');
@@ -194,55 +196,90 @@ function dedupeBySymbol(signals) {
   );
 }
 
-async function fetchSource(source) {
-  const response = await fetch(source.url, { cache: 'no-store' });
-  if (!response.ok) throw new Error(`${source.label} HTTP ${response.status}`);
-  const data = await response.json();
-  return {
-    source,
-    signals: Array.isArray(data.signals) ? data.signals : [],
-    scannedAt: data.scannedAt,
-    processed: Number(data.processed ?? data.total ?? 0) || 0,
-  };
-}
-
-async function loadSignals() {
-  if (state.loading) return;
-  state.loading = true;
-  refreshButton.disabled = true;
-  statusEl.textContent = 'Loading...';
-  statusEl.style.color = 'var(--amber)';
-
-  const settled = await Promise.allSettled(SOURCES.map(fetchSource));
-  const nextRaw = [];
-  const errors = [];
-  let processed = 0;
-  const loadedSources = [];
-
-  for (const item of settled) {
-    if (item.status === 'rejected') {
-      errors.push(item.reason?.message || 'Fetch failed');
-      continue;
-    }
-
-    const { source, signals, scannedAt, processed: sourceProcessed } = item.value;
-    processed += sourceProcessed;
-    loadedSources.push(source.label);
-    for (const sig of signals) nextRaw.push(enrichSignal(sig, source.id, scannedAt));
-  }
-
-  state.rawSignals = nextRaw;
-  state.rows = dedupeBySymbol(nextRaw);
-  state.errors = errors;
+// Merge signals from all sources and re-render
+function rebuildSignals() {
+  const all = Object.values(state.signalsBySource).flat();
+  state.rawSignals = all;
+  state.rows = dedupeBySymbol(all);
   state.lastLoadedAt = Date.now();
-  state.loading = false;
-  refreshButton.disabled = false;
-
+  const processed = all.length;
+  const loadedSources = SOURCES
+    .filter((s) => state.signalsBySource[s.id].length > 0)
+    .map((s) => s.label);
   metaProcessed.textContent = processed || '-';
   metaSources.textContent = loadedSources.length ? loadedSources.join(', ') : '-';
   scanMeta.style.display = '';
+}
 
+// Apply data from one source (SSE push or REST response)
+function applySourceData(sourceId, data) {
+  const source = SOURCES.find((s) => s.id === sourceId);
+  if (!source) return;
+  const signals = Array.isArray(data.signals) ? data.signals : [];
+  // Don't overwrite good data with an empty result
+  if (signals.length === 0 && state.signalsBySource[sourceId].length > 0) return;
+  const scannedAt = data.scannedAt;
+  state.signalsBySource[sourceId] = signals.map((sig) => enrichSignal(sig, sourceId, scannedAt));
+  rebuildSignals();
   render();
+}
+
+// Initial REST fetch for one source; retries if cache isn't warm yet
+async function fetchSourceRest(source, attempt = 0) {
+  try {
+    if (attempt === 0) {
+      statusEl.textContent = 'Đang tải...';
+      statusEl.style.color = 'var(--amber)';
+    }
+    const res = await fetch(source.url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    applySourceData(source.id, data);
+    if ((data.processed ?? 0) === 0 && attempt < 8) {
+      const delay = Math.min(5000 + attempt * 3000, 20_000);
+      setTimeout(() => fetchSourceRest(source, attempt + 1), delay);
+    }
+  } catch (err) {
+    state.errors.push(`${source.label}: ${err.message}`);
+    render();
+  }
+}
+
+// Update status indicator based on open SSE streams
+function updateSseStatus() {
+  const allOpen = state.openStreams === SOURCES.length;
+  if (allOpen) {
+    statusEl.textContent = `${state.rows.length} signals · ● Live`;
+    statusEl.style.color = 'var(--green)';
+    nextRefresh.textContent = 'SSE live';
+  } else {
+    statusEl.textContent = state.openStreams > 0
+      ? `${state.rows.length} signals · ⚡ Partial (${state.openStreams}/${SOURCES.length})`
+      : 'Reconnecting...';
+    statusEl.style.color = 'var(--amber)';
+    nextRefresh.textContent = `${state.openStreams}/${SOURCES.length} streams`;
+  }
+}
+
+// Connect SSE for one source
+function connectSse(source) {
+  const es = new EventSource(source.stream);
+  es.onopen = () => {
+    state.openStreams = Math.min(state.openStreams + 1, SOURCES.length);
+    updateSseStatus();
+  };
+  es.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      applySourceData(source.id, data);
+    } catch {}
+  };
+  es.onerror = () => {
+    state.openStreams = Math.max(state.openStreams - 1, 0);
+    updateSseStatus();
+    // EventSource reconnects automatically
+  };
+  return es;
 }
 
 async function loadEdgeOpenLimitOrders() {
@@ -476,15 +513,15 @@ function renderEdgePaperTrades(trades, summary) {
           </div>
         </td>`;
 
-    return `<tr style="${rowStyle}">
+    return `<tr data-id="${trade.id}" style="${rowStyle}">
       <td><a href="/?symbol=${encodeURIComponent(trade.symbol)}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${escapeHtml(trade.symbol.replace(/USDT$/, ''))}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
       <td>${sideHtml}</td>
       <td>${fmtPrice(trade.entryPrice)}</td>
       <td style="font-size:11px;color:${slColor}">${trade.sl != null ? fmtPrice(trade.sl) : '<span style="color:var(--muted)">-</span>'}</td>
       <td style="font-size:11px;color:${tpColor}">${trade.tp != null ? fmtPrice(trade.tp) : '<span style="color:var(--muted)">-</span>'}</td>
-      <td>${fmtPrice(mark)}</td>
-      <td>${fmtPnlEdge(trade.pnl)}</td>
-      <td>${trade.roe != null ? `<span style="color:${Number(trade.roe)>=0?'var(--green)':'var(--red)'}">${Number(trade.roe)>=0?'+':''}${Number(trade.roe).toFixed(1)}%</span>` : '-'}</td>
+      <td data-cell-mark="${trade.id}">${fmtPrice(mark)}</td>
+      <td data-cell-pnl="${trade.id}">${fmtPnlEdge(trade.pnl)}</td>
+      <td data-cell-roe="${trade.id}">${trade.roe != null ? `<span style="color:${Number(trade.roe)>=0?'var(--green)':'var(--red)'}">${Number(trade.roe)>=0?'+':''}${Number(trade.roe).toFixed(1)}%</span>` : '-'}</td>
       <td style="font-size:11px">${outcomeHtml}</td>
       <td style="font-size:10px;color:var(--muted)">${escapeHtml(trade.source ?? '-')}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(trade.createdAt).toLocaleTimeString('vi')}</td>
@@ -495,15 +532,68 @@ function renderEdgePaperTrades(trades, summary) {
   updateEdgePaperSortHeaders();
 }
 
+// In-place PNL/MARK update — không re-render cả bảng để tránh flicker
+function refreshEdgePaperPnl(trades) {
+  const currentIds = new Set([...edgePaperBody.querySelectorAll('tr[data-id]')].map((r) => r.dataset.id));
+  const newIds = new Set(trades.map((t) => t.id));
+  let needFull = currentIds.size !== newIds.size;
+  if (!needFull) { for (const id of newIds) { if (!currentIds.has(id)) { needFull = true; break; } } }
+  if (needFull) { renderEdgePaperTrades(trades, edgePaperSummaryCache); return; }
+  for (const t of trades) {
+    if (t.status === 'CLOSED') continue;
+    const mark = t.markPrice ?? t.exitPrice ?? '-';
+    const markEl = edgePaperBody.querySelector(`[data-cell-mark="${t.id}"]`);
+    const pnlEl  = edgePaperBody.querySelector(`[data-cell-pnl="${t.id}"]`);
+    const roeEl  = edgePaperBody.querySelector(`[data-cell-roe="${t.id}"]`);
+    if (markEl) markEl.textContent = fmtPrice(mark);
+    if (pnlEl)  pnlEl.innerHTML    = fmtPnlEdge(t.pnl);
+    if (roeEl)  roeEl.innerHTML    = t.roe != null
+      ? `<span style="color:${Number(t.roe)>=0?'var(--green)':'var(--red)'}">${Number(t.roe)>=0?'+':''}${Number(t.roe).toFixed(1)}%</span>`
+      : '-';
+  }
+  const open = trades.filter((t) => t.status !== 'CLOSED').length;
+  const closed = trades.filter((t) => t.status === 'CLOSED').length;
+  const summary = edgePaperSummaryCache;
+  let countText = `${open} open - ${closed} closed`;
+  if (summary && summary.closed > 0) {
+    const wr = Math.round(summary.wins / summary.closed * 100);
+    countText += ` - TP ${summary.tpHits ?? 0} SL ${summary.slHits ?? 0} - WR ${wr}%`;
+    if (summary.avgRoe != null) countText += ` - AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+  }
+  edgePaperCount.textContent = countText;
+}
+
+let _edgePaperFetching = false;
 async function loadEdgePaperTrades() {
+  if (_edgePaperFetching) return;
+  _edgePaperFetching = true;
   try {
     const response = await fetch('/api/edge-paper-trades', { cache: 'no-store' });
     if (!response.ok) { console.warn('[EdgePaper] Load failed HTTP', response.status); return; }
     const data = await response.json();
-    renderEdgePaperTrades(data.trades ?? [], data.summary);
+    const trades = data.trades ?? [];
+    edgePaperSummaryCache = data.summary;
+    if (edgePaperTradesCache.length > 0) {
+      edgePaperTradesCache = trades;
+      refreshEdgePaperPnl(trades);
+    } else {
+      renderEdgePaperTrades(trades, data.summary);
+    }
   } catch (err) {
     console.warn('[EdgePaper] Load error:', err.message);
+  } finally {
+    _edgePaperFetching = false;
   }
+}
+
+let _edgePaperPollTimer = null;
+function scheduleEdgePaperPoll() {
+  clearTimeout(_edgePaperPollTimer);
+  const hasOpen = edgePaperTradesCache.some((t) => t.status === 'OPEN');
+  _edgePaperPollTimer = setTimeout(async () => {
+    await loadEdgePaperTrades();
+    scheduleEdgePaperPoll();
+  }, hasOpen ? 3_000 : 15_000);
 }
 
 async function enterEdgePaperTrade(btn) {
@@ -566,7 +656,7 @@ async function closeEdgePaperTrade(id) {
       body: JSON.stringify({ id }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    loadEdgePaperTrades();
+    await loadEdgePaperTrades(); scheduleEdgePaperPoll();
   } catch (err) {
     console.error('[EdgePaper] Close failed:', err.message);
     if (btn) { btn.disabled = false; btn.textContent = 'ERR'; setTimeout(() => { btn.textContent = 'Close'; }, 2000); }
@@ -583,7 +673,7 @@ async function deleteEdgePaperTrade(id) {
       body: JSON.stringify({ id }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    loadEdgePaperTrades();
+    await loadEdgePaperTrades(); scheduleEdgePaperPoll();
   } catch (err) {
     console.error('[EdgePaper] Delete failed:', err.message);
     if (btn) { btn.disabled = false; btn.textContent = 'ERR'; setTimeout(() => { btn.textContent = 'Del'; }, 2000); }
@@ -732,12 +822,14 @@ function filteredRows() {
   const search = searchInput.value.trim().toUpperCase();
   const minScore = Number(scoreFilter.value) || 0;
   const source = sourceFilter.value;
+  const type = typeFilter.value;
   const side = sideFilter.value;
 
   return state.rows.filter((sig) => {
     if (search && !String(sig.symbol ?? '').includes(search)) return false;
     if (sig.edgeScore < minScore) return false;
     if (source !== 'all' && sig.source !== source) return false;
+    if (type !== 'all' && normalizedType(sig) !== type) return false;
     if (side !== 'all' && sig.edgeBucket !== side) return false;
     return true;
   });
@@ -761,16 +853,9 @@ function render() {
 
   if (state.lastLoadedAt) {
     lastScan.textContent = timeLabel(state.lastLoadedAt);
-    nextRefresh.textContent = autoRefreshInput.checked ? 'Auto refresh on' : 'Auto refresh off';
   }
 
-  if (state.errors.length) {
-    statusEl.textContent = `${state.rows.length} signals - ${state.errors.length} source error`;
-    statusEl.style.color = 'var(--amber)';
-  } else {
-    statusEl.textContent = `${state.rows.length} signals - ${timeLabel(Date.now())}`;
-    statusEl.style.color = 'var(--green)';
-  }
+  updateSseStatus();
 
   if (rows.length === 0) {
     const title = state.rows.length === 0 ? 'No short edge yet' : 'No matching signals';
@@ -784,15 +869,10 @@ function render() {
   grid.innerHTML = rows.map(buildCard).join('');
 }
 
-function restartTimer() {
-  if (state.timer) clearInterval(state.timer);
-  state.timer = null;
-  if (!autoRefreshInput.checked) {
-    nextRefresh.textContent = 'Auto refresh off';
-    return;
-  }
-  state.timer = setInterval(loadSignals, 30_000);
-  nextRefresh.textContent = 'Auto refresh on';
+// Manual refresh: re-fetch all sources via REST
+function manualRefresh() {
+  state.errors = [];
+  SOURCES.forEach((s) => fetchSourceRest(s));
 }
 
 searchInput.addEventListener('input', () => {
@@ -808,9 +888,9 @@ searchClear.addEventListener('click', () => {
 
 scoreFilter.addEventListener('change', render);
 sourceFilter.addEventListener('change', render);
+typeFilter.addEventListener('change', render);
 sideFilter.addEventListener('change', render);
-refreshButton.addEventListener('click', () => { restartTimer(); loadSignals(); });
-autoRefreshInput.addEventListener('change', restartTimer);
+refreshButton.addEventListener('click', manualRefresh);
 document.addEventListener('click', (event) => {
   const btn = event.target.closest('.edge-order-btn');
   if (!btn) return;
@@ -844,9 +924,9 @@ document.addEventListener('click', (event) => {
   }
 });
 
-restartTimer();
-loadSignals();
+// Boot: initial REST fetch (handles cold cache) + SSE for live updates
+SOURCES.forEach((s) => fetchSourceRest(s));
+SOURCES.forEach((s) => connectSse(s));
 loadEdgeOpenLimitOrders();
-loadEdgePaperTrades();
+loadEdgePaperTrades().then(() => scheduleEdgePaperPoll());
 setInterval(loadEdgeOpenLimitOrders, 30_000);
-setInterval(loadEdgePaperTrades, 30_000);

@@ -113,13 +113,18 @@
 </div>`;
   }
 
+  let _loading = false;
   async function load() {
+    if (_loading) return; // skip if previous request still in-flight
+    _loading = true;
     try {
       const r = await fetch('/api/btc-health');
       const d = await r.json();
       render(d);
     } catch {
       render({ error: true });
+    } finally {
+      _loading = false;
     }
   }
 

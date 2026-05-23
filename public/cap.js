@@ -606,16 +606,16 @@ function renderCapPaperTrades(trades, summary) {
             </button>
           </div>
         </td>`;
-    return `<tr style="${rowStyle}">
+    return `<tr data-id="${t.id}" style="${rowStyle}">
       <td><a href="/?symbol=${t.symbol}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol.replace(/USDT$/, '')}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
       <td>${sideHtml}</td>
       <td>${capTypeHtml(t.note)}</td>
       <td>${fmtPrice(t.entryPrice)}</td>
       <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
       <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
-      <td>${fmtPrice(mark)}</td>
-      <td>${fmtPnl(t.pnl, t.roe)}</td>
-      <td>${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
+      <td data-cell-mark="${t.id}">${fmtPrice(mark)}</td>
+      <td data-cell-pnl="${t.id}">${fmtPnl(t.pnl, t.roe)}</td>
+      <td data-cell-roe="${t.id}">${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
       <td style="font-size:11px">${outcomeHtml}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
@@ -626,13 +626,64 @@ function renderCapPaperTrades(trades, summary) {
   updateCapPaperSortHeaders();
 }
 
+// In-place PNL/MARK update — không re-render cả bảng để tránh flicker
+function refreshCapPaperPnl(trades) {
+  const currentIds = new Set([...capPaperBody.querySelectorAll('tr[data-id]')].map((r) => r.dataset.id));
+  const newIds = new Set(trades.map((t) => t.id));
+  let needFull = currentIds.size !== newIds.size;
+  if (!needFull) { for (const id of newIds) { if (!currentIds.has(id)) { needFull = true; break; } } }
+  if (needFull) { renderCapPaperTrades(trades, capPaperSummaryCache); return; }
+  for (const t of trades) {
+    if (t.status === 'CLOSED') continue;
+    const mark = t.markPrice ?? t.exitPrice ?? '-';
+    const markEl = capPaperBody.querySelector(`[data-cell-mark="${t.id}"]`);
+    const pnlEl  = capPaperBody.querySelector(`[data-cell-pnl="${t.id}"]`);
+    const roeEl  = capPaperBody.querySelector(`[data-cell-roe="${t.id}"]`);
+    if (markEl) markEl.textContent = fmtPrice(mark);
+    if (pnlEl)  pnlEl.innerHTML    = fmtPnl(t.pnl, t.roe);
+    if (roeEl)  roeEl.textContent  = t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-';
+  }
+  const open = trades.filter((t) => t.status !== 'CLOSED').length;
+  const closed = trades.filter((t) => t.status === 'CLOSED').length;
+  const summary = capPaperSummaryCache;
+  let countTxt = `${open} đang mở · ${closed} đã đóng`;
+  if (summary && summary.closed > 0) {
+    const wr = Math.round(summary.wins / summary.closed * 100);
+    countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
+    if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+  }
+  capPaperCount.textContent = countTxt;
+}
+
+let _capPaperFetching = false;
 async function loadCapPaperTrades() {
+  if (_capPaperFetching) return;
+  _capPaperFetching = true;
   try {
     const res = await fetch('/api/cap-paper-trades');
     if (!res.ok) return;
     const data = await res.json();
-    renderCapPaperTrades(data.trades ?? [], data.summary);
-  } catch {}
+    const trades = data.trades ?? [];
+    capPaperSummaryCache = data.summary;
+    if (capPaperTradesCache.length > 0) {
+      capPaperTradesCache = trades;
+      refreshCapPaperPnl(trades);
+    } else {
+      renderCapPaperTrades(trades, data.summary);
+    }
+  } catch {} finally {
+    _capPaperFetching = false;
+  }
+}
+
+let _capPaperPollTimer = null;
+function scheduleCapPaperPoll() {
+  clearTimeout(_capPaperPollTimer);
+  const hasOpen = capPaperTradesCache.some((t) => t.status === 'OPEN');
+  _capPaperPollTimer = setTimeout(async () => {
+    await loadCapPaperTrades();
+    scheduleCapPaperPoll();
+  }, hasOpen ? 3_000 : 15_000);
 }
 
 window.enterCapPaperTrade = async function(btn, symbol, side, entry, score, sl, tp, noteEncoded) {
@@ -666,7 +717,7 @@ window.closeCapPaperTrade = async function(id) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id }),
     });
-    if (res.ok) loadCapPaperTrades();
+    if (res.ok) { await loadCapPaperTrades(); scheduleCapPaperPoll(); }
   } catch {}
 };
 
@@ -678,7 +729,7 @@ window.deleteCapPaperTrade = async function(id) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id }),
     });
-    if (res.ok) loadCapPaperTrades();
+    if (res.ok) { await loadCapPaperTrades(); scheduleCapPaperPoll(); }
   } catch {}
 };
 
@@ -715,8 +766,8 @@ async function fetchAndApply(attempt = 0) {
   await fetchAndApply();
   connect();
   connectPriceSocket();
-  loadCapPaperTrades();
-  setInterval(loadCapPaperTrades, 30_000);
+  await loadCapPaperTrades();
+  scheduleCapPaperPoll();
   loadCapOpenLimitOrders();
   setInterval(loadCapOpenLimitOrders, 30_000);
 })();

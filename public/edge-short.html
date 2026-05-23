@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/styles.css">
     <style>
       .edge-controls {
-        grid-template-columns: minmax(220px, 1fr) 130px 140px 130px auto auto;
+        grid-template-columns: minmax(220px, 1fr) 130px 140px 150px 130px auto auto;
       }
 
       .edge-grid {
@@ -428,6 +428,35 @@
             <option value="pump">Pump</option>
             <option value="cap">Cap</option>
             <option value="killshort">Kill Short</option>
+            <option value="ignition">Ignition</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Type</span>
+          <select id="typeFilter">
+            <option value="all">All types</option>
+            <optgroup label="── Short ──">
+              <option value="dump">Sustained Dump</option>
+              <option value="early_dump">Early Dump</option>
+              <option value="dump_ignition">Dump Ignition</option>
+              <option value="dump_ignition_early">Ignition Early</option>
+              <option value="dist_top">Dist Top</option>
+              <option value="vol_climax">Vol Climax</option>
+              <option value="fade_short">Fade Short</option>
+              <option value="climax_top">Climax Top</option>
+              <option value="bc_utad">BC / UTAD</option>
+              <option value="liq_top">Liq Top</option>
+              <option value="failed_bounce">Failed Bounce</option>
+            </optgroup>
+            <optgroup label="── Long ──">
+              <option value="ema_pullback">EMA Pullback</option>
+              <option value="pump_breakout">Pump Breakout</option>
+              <option value="early_pump">Early Pump</option>
+              <option value="sc_spring">SC Spring</option>
+              <option value="liq_flush">Liq Flush</option>
+              <option value="failed_top">Failed Top</option>
+              <option value="kill_short">Kill Short</option>
+            </optgroup>
           </select>
         </label>
         <label class="field short">
@@ -440,10 +469,7 @@
           </select>
         </label>
         <button id="refreshButton" class="primary" type="button">Refresh</button>
-        <label class="toggle">
-          <input id="autoRefreshInput" type="checkbox" checked>
-          <span>Auto 30s</span>
-        </label>
+        <span id="autoRefreshInput" style="display:none"></span>
       </section>
 
       <section class="summary-grid" style="margin-top:14px">

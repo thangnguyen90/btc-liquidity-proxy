@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(sleep 5 && tail -4 /tmp/btc-server.log)",
-      "Read(//private/tmp/**)"
+      "Read(//private/tmp/**)",
+      "Bash(wsl -d ubuntu -e bash -c \"cd /home/thangnguyen/project/btc-liquidity-proxy && grep -n 'capPaper\\\\|cap-paper\\\\|thead\\\\|Symbol\\\\|Entry\\\\|Mark\\\\|PnL\\\\|ROE\\\\|Status' public/cap.html | head -30\")",
+      "Bash(git add *)"
     ]
   }
 }

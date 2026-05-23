@@ -1,3 +1,15 @@
+// ── Global error handler — hiển thị lỗi JS trong status bar thay vì trang trắng ──
+window.addEventListener('error', (e) => {
+  const el = document.getElementById('status');
+  if (el) el.textContent = `JS Error: ${e.message} (${e.filename?.split('/').pop() ?? '?'}:${e.lineno})`;
+  console.error('[app] uncaught error:', e.message, e);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const el = document.getElementById('status');
+  if (el) el.textContent = `JS Error: ${e.reason?.message ?? String(e.reason)}`;
+  console.error('[app] unhandled rejection:', e.reason);
+});
+
 const elements = {
   symbolInput: document.querySelector('#symbolInput'),
   symbolClear: document.querySelector('#symbolClear'),

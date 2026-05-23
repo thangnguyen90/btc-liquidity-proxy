@@ -685,15 +685,15 @@ function renderPumpPaperTrades(trades, summary) {
             </button>
           </div>
         </td>`;
-    return `<tr style="${rowStyle}">
+    return `<tr data-id="${t.id}" style="${rowStyle}">
       <td><a href="/?symbol=${t.symbol}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol.replace(/USDT$/, '')}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
       <td>${sideHtml}</td>
       <td>${fmtPrice(t.entryPrice)}</td>
       <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
       <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
-      <td>${fmtPrice(mark)}</td>
-      <td>${fmtPnlPump(t.pnl, t.roe)}</td>
-      <td>${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
+      <td data-cell-mark="${t.id}">${fmtPrice(mark)}</td>
+      <td data-cell-pnl="${t.id}">${fmtPnlPump(t.pnl, t.roe)}</td>
+      <td data-cell-roe="${t.id}">${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
       <td style="font-size:11px">${outcomeHtml}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
@@ -704,13 +704,73 @@ function renderPumpPaperTrades(trades, summary) {
   updatePumpPaperSortHeaders();
 }
 
+// In-place PNL/MARK update — không re-render cả bảng để tránh flicker
+function refreshPumpPaperPnl(trades) {
+  let needFullRender = false;
+  const currentIds = new Set([...pumpPaperBody.querySelectorAll('tr[data-id]')].map((r) => r.dataset.id));
+  const newIds = new Set(trades.map((t) => t.id));
+  // Nếu số row thay đổi hoặc có id mới → full render
+  if (currentIds.size !== newIds.size) { needFullRender = true; }
+  else { for (const id of newIds) { if (!currentIds.has(id)) { needFullRender = true; break; } } }
+  if (needFullRender) {
+    renderPumpPaperTrades(trades, pumpPaperSummaryCache);
+    return;
+  }
+  // In-place: chỉ cập nhật MARK, PNL, ROE
+  for (const t of trades) {
+    if (t.status === 'CLOSED') continue; // closed không thay đổi PNL
+    const markEl = pumpPaperBody.querySelector(`[data-cell-mark="${t.id}"]`);
+    const pnlEl  = pumpPaperBody.querySelector(`[data-cell-pnl="${t.id}"]`);
+    const roeEl  = pumpPaperBody.querySelector(`[data-cell-roe="${t.id}"]`);
+    const mark   = t.markPrice ?? t.exitPrice ?? '-';
+    if (markEl) markEl.textContent = fmtPrice(mark);
+    if (pnlEl)  pnlEl.innerHTML    = fmtPnlPump(t.pnl, t.roe);
+    if (roeEl)  roeEl.textContent  = t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-';
+  }
+  // Cập nhật summary header
+  const open   = trades.filter((t) => t.status !== 'CLOSED').length;
+  const closed = trades.filter((t) => t.status === 'CLOSED').length;
+  const summary = pumpPaperSummaryCache;
+  let countTxt = `${open} đang mở · ${closed} đã đóng`;
+  if (summary && summary.closed > 0) {
+    const wr = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
+    countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
+    if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+  }
+  pumpPaperCount.textContent = countTxt;
+}
+
+let _pumpPaperFetching = false;
 async function loadPumpPaperTrades() {
+  if (_pumpPaperFetching) return;
+  _pumpPaperFetching = true;
   try {
     const res = await fetch('/api/pump-paper-trades');
     if (!res.ok) return;
     const data = await res.json();
-    renderPumpPaperTrades(data.trades ?? [], data.summary);
-  } catch {}
+    const trades = data.trades ?? [];
+    pumpPaperSummaryCache = data.summary;
+    // Nếu bảng đã có rows → in-place update, ngược lại full render
+    if (pumpPaperTradesCache.length > 0) {
+      pumpPaperTradesCache = trades;
+      refreshPumpPaperPnl(trades);
+    } else {
+      renderPumpPaperTrades(trades, data.summary);
+    }
+  } catch {} finally {
+    _pumpPaperFetching = false;
+  }
+}
+
+// Smart polling: 3s khi có OPEN trades, 15s khi không có
+let _pumpPaperPollTimer = null;
+function schedulePumpPaperPoll() {
+  clearTimeout(_pumpPaperPollTimer);
+  const hasOpen = pumpPaperTradesCache.some((t) => t.status === 'OPEN');
+  _pumpPaperPollTimer = setTimeout(async () => {
+    await loadPumpPaperTrades();
+    schedulePumpPaperPoll();
+  }, hasOpen ? 3_000 : 15_000);
 }
 
 window.enterPumpPaperTrade = async function(btn, symbol, side, entry, score, sl, tp) {
@@ -743,7 +803,8 @@ window.closePumpPaperTrade = async function(id) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id }),
     });
-    loadPumpPaperTrades();
+    await loadPumpPaperTrades();
+    schedulePumpPaperPoll();
   } catch {}
 };
 
@@ -754,7 +815,8 @@ window.deletePumpPaperTrade = async function(id) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id }),
     });
-    loadPumpPaperTrades();
+    await loadPumpPaperTrades();
+    schedulePumpPaperPoll();
   } catch {}
 };
 
@@ -763,6 +825,6 @@ window.deletePumpPaperTrade = async function(id) {
   connect();
   await loadOpenLimitOrders();
   setInterval(loadOpenLimitOrders, 30_000);
-  loadPumpPaperTrades();
-  setInterval(loadPumpPaperTrades, 30_000);
+  await loadPumpPaperTrades();
+  schedulePumpPaperPoll();
 })();
