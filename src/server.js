@@ -2,7 +2,7 @@
 
 import crypto from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -527,7 +527,7 @@ async function pollPumpOrders() {
 async function saveSlTracking() {
   try {
     await mkdir(join(rootDir, 'data'), { recursive: true });
-    await writeFile(SL_TRACKING_FILE, JSON.stringify(slTracking, null, 2));
+    await atomicWriteJson(SL_TRACKING_FILE, slTracking);
   } catch (err) {
     console.warn('[SlTracking] Save failed:', err.message);
   }
@@ -2522,6 +2522,14 @@ async function syncPaperTickerSymbols() {
   paperTicker.setSymbols(symbols);
 }
 
+// ── Atomic JSON write helper ──────────────────────────────────────────────────
+// Ghi ra .tmp trước, rename sau → nếu crash giữa chừng file gốc không bị corrupt
+async function atomicWriteJson(filePath, data) {
+  const tmp = filePath + '.tmp';
+  await writeFile(tmp, JSON.stringify(data, null, 2));
+  await rename(tmp, filePath);
+}
+
 // ── Cap paper trade system (separate from liquidation paper trades) ──────────
 
 async function readCapPaperStore() {
@@ -2538,10 +2546,8 @@ async function readCapPaperStore() {
 
 let _capPaperWriteLock = Promise.resolve();
 async function writeCapPaperStore(store) {
-  // Serialize writes để tránh race condition ghi file đồng thời
-  _capPaperWriteLock = _capPaperWriteLock.then(() =>
-    writeFile(CAP_PAPER_FILE, JSON.stringify(store, null, 2))
-  );
+  // Serialize writes + atomic (tmp → rename) để tránh corrupt khi crash giữa chừng
+  _capPaperWriteLock = _capPaperWriteLock.then(() => atomicWriteJson(CAP_PAPER_FILE, store));
   return _capPaperWriteLock;
 }
 
@@ -2724,9 +2730,7 @@ async function readPumpPaperStore() {
 
 let _pumpPaperWriteLock = Promise.resolve();
 async function writePumpPaperStore(store) {
-  _pumpPaperWriteLock = _pumpPaperWriteLock.then(() =>
-    writeFile(PUMP_PAPER_FILE, JSON.stringify(store, null, 2))
-  );
+  _pumpPaperWriteLock = _pumpPaperWriteLock.then(() => atomicWriteJson(PUMP_PAPER_FILE, store));
   return _pumpPaperWriteLock;
 }
 
