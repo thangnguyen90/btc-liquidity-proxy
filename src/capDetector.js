@@ -165,7 +165,8 @@ function detectCapitulationSpringAction(candles, state = {}, cfg = {}) {
   // ── Step 4: Score ─────────────────────────────────────────────────────────────
   const volX    = sc.v / avgVol;
   const rangeX  = (sc.h - sc.l) / A;
-  const wickFrac = Math.min(1, (Math.max(sc.o, sc.c) - sc.l) / Math.max(1e-9, Math.abs(sc.c - sc.o)));
+  const lowerWick = Math.min(sc.o, sc.c) - sc.l;
+  const wickFrac = Math.min(1, lowerWick / Math.max(1e-9, Math.abs(sc.c - sc.o)));
   let score = 0;
   // SC quality: volume + range + wick (max 40)
   score += Math.min(40,
@@ -299,7 +300,8 @@ function detectBuyingClimaxAction(candles, state = {}, cfg = {}) {
   // ── Step 4: Score (mirror of SC scorer) ──────────────────────────────────────
   const volX    = bc.v / avgVol;
   const rangeX  = (bc.h - bc.l) / A;
-  const wickFrac = Math.min(1, (bc.h - Math.min(bc.o, bc.c)) / Math.max(1e-9, Math.abs(bc.c - bc.o)));
+  const upperWick = bc.h - Math.max(bc.o, bc.c);
+  const wickFrac = Math.min(1, upperWick / Math.max(1e-9, Math.abs(bc.c - bc.o)));
   let score = 0;
   score += Math.min(40,
     20 * Math.log2(Math.max(1, volX)) +
@@ -646,32 +648,37 @@ export async function runCapScan(symbols, klineCache, snapshotMap) {
 
       const snap = snapshotMap.get(symbol);
 
-      let det = detectCapitulationSpringAction(klines, state);
-      if (!det.pass) det = detectBuyingClimaxAction(klines, state);
-      if (!det.pass) det = detectLiqFlush(klines, state);
-      if (!det.pass) det = detectLiqTop(klines, state);
-      if (!det.pass) continue;
+      const candidates = [
+        detectCapitulationSpringAction(klines, state),
+        detectBuyingClimaxAction(klines, state),
+        detectLiqFlush(klines, state),
+        detectLiqTop(klines, state),
+      ].filter((d) => d.pass);
+      if (candidates.length === 0) continue;
 
-      results.push({
-        symbol,
-        action:     det.action,
-        type:       det.type,
-        score:      det.score,
-        grade:      det.grade,
-        entry:      det.entry,
-        altEntry:   det.altEntry,
-        sl:         det.sl,
-        tp:         det.tp,
-        reason:     det.reason,
-        note:       det.note,
-        factors:    det.factors ?? {},
-        blockShort: det.blockShort ?? false,
-        blockLong:  det.blockLong  ?? false,
-        markPrice:  snap?.markPrice,
-        change24h:  snap?.change24hPct,
-        volume:     snap?.quoteVolume,
-        scannedAt:  Date.now(),
-      });
+      // Emit ALL passing detectors (not just winner) so rare types (Flush, Failed*) are visible
+      for (const det of candidates) {
+        results.push({
+          symbol,
+          action:     det.action,
+          type:       det.type,
+          score:      det.score,
+          grade:      det.grade,
+          entry:      det.entry,
+          altEntry:   det.altEntry,
+          sl:         det.sl,
+          tp:         det.tp,
+          reason:     det.reason,
+          note:       det.note,
+          factors:    det.factors ?? {},
+          blockShort: det.blockShort ?? false,
+          blockLong:  det.blockLong  ?? false,
+          markPrice:  snap?.markPrice,
+          change24h:  snap?.change24hPct,
+          volume:     snap?.quoteVolume,
+          scannedAt:  Date.now(),
+        });
+      }
     } catch { /* skip bad symbol */ }
   }
   return { signals: results.sort((a, b) => b.score - a.score), processed };
