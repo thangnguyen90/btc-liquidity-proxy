@@ -75,6 +75,26 @@ async function schedulePumpScan() {
           console.error('[PumpAuto] getOpenOrders failed:', e.message);
         }
       }
+
+      // Auto-tạo paper trade cho mỗi signal mới (dedup 4h theo symbol+type)
+      for (const sig of signals) {
+        const key = `${sig.symbol}|${sig.type}`;
+        const last = pumpPaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        pumpPaperAutoFired.set(key, Date.now());
+        createPumpPaperTrade({
+          symbol: sig.symbol,
+          side: sig.action,
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
+          source: `pump-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch(() => {});
+        if (pumpPaperTicker) syncPumpPaperTicker().catch(() => {});
+      }
     } catch (e) {
       console.error('[PumpScan] error:', e.message);
     }
@@ -82,6 +102,7 @@ async function schedulePumpScan() {
 }
 
 const capPaperAutoFired = new Map(); // `${symbol}|${type}` → firedAt timestamp
+const pumpPaperAutoFired = new Map(); // `${symbol}|${type}` → firedAt timestamp
 
 let _capScanDebounce = null;
 async function scheduleCapScan() {
@@ -250,12 +271,16 @@ const PUMP_ORDERS_FILE = join(rootDir, 'data', 'pump-orders.json');
 const PUMP_HISTORY_FILE = join(rootDir, 'data', 'pump-order-history.json');
 const PUMP_DAILY_FILE   = join(rootDir, 'data', 'pump-daily-stats.json');
 const CAP_PAPER_FILE    = join(rootDir, 'data', 'cap-paper-trades.json');
+const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
 const paperFillLocks = new Set();
 const capMarkCache = new Map();  // symbol → markPrice  (for cap paper trades)
 let capPaperTicker = null;
 const capPaperFillLocks = new Set();
+const pumpMarkCache = new Map(); // symbol → markPrice (for pump paper trades)
+let pumpPaperTicker = null;
+const pumpPaperFillLocks = new Set();
 
 async function loadSlTracking() {
   try {
@@ -902,6 +927,26 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/pump-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getPumpPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const payload = await readJsonBody(request);
+        await sendJson(response, await createPumpPaperTrade(payload));
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/pump-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closePumpPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/pump-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deletePumpPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/pump-auto-order-enabled') {
       if (request.method === 'GET') {
         await sendJson(response, { enabled: runtimeSettings.pumpAutoOrderEnabled });
@@ -1378,6 +1423,7 @@ server.listen(port, '127.0.0.1', () => {
   setTimeout(() => {
     startPaperTradeTicker();
     startCapPaperTicker();
+    startPumpPaperTicker();
   }, 29000);
   setTimeout(() => {
     startMissingTpScanner();
@@ -2608,6 +2654,189 @@ function startCapPaperTicker() {
 }
 
 // ── End cap paper trade system ───────────────────────────────────────────────
+
+// ── Pump paper trade system ───────────────────────────────────────────────────
+
+async function readPumpPaperStore() {
+  try {
+    const raw = await readFile(PUMP_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    console.warn('[PumpPaper] Store read error, starting fresh:', e.message);
+    return { trades: [] };
+  }
+}
+
+let _pumpPaperWriteLock = Promise.resolve();
+async function writePumpPaperStore(store) {
+  _pumpPaperWriteLock = _pumpPaperWriteLock.then(() =>
+    writeFile(PUMP_PAPER_FILE, JSON.stringify(store, null, 2))
+  );
+  return _pumpPaperWriteLock;
+}
+
+function enrichPumpPaperTrade(t, markPrice) {
+  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
+  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
+  return { ...t, markPrice: mark, pnl, roe };
+}
+
+async function getPumpPaperTrades() {
+  const store = await readPumpPaperStore();
+  const trades = store.trades.map((t) => enrichPumpPaperTrade(t, pumpMarkCache.get(t.symbol)));
+  const open = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length > 0
+    ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length
+    : null;
+  const summary = { total: trades.length, open: open.length, closed: closed.length, wins, losses: closed.length - wins, tpHits, slHits, avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null };
+  return { trades, summary };
+}
+
+async function createPumpPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? '').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+
+  const store = await readPumpPaperStore();
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol && t.side === side && Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichPumpPaperTrade(dup, pumpMarkCache.get(symbol)) };
+
+  const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol, side, status,
+    marginUsdt, leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    tp: payload.tp != null ? Number(payload.tp) : null,
+    sl: payload.sl != null ? Number(payload.sl) : null,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null,
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+  };
+  store.trades.unshift(trade);
+  await writePumpPaperStore(store);
+  console.log(`[PumpPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
+  return { trade: enrichPumpPaperTrade(trade, entryPrice) };
+}
+
+async function closePumpPaperTrade(payload) {
+  const store = await readPumpPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('Pump paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichPumpPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (pumpMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  await writePumpPaperStore(store);
+  return { trade: enrichPumpPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deletePumpPaperTrade(payload) {
+  const store = await readPumpPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writePumpPaperStore(store);
+  return { ok: true };
+}
+
+async function fillPumpPendingTrade(trade, markPrice) {
+  if (pumpPaperFillLocks.has(trade.id)) return;
+  pumpPaperFillLocks.add(trade.id);
+  try {
+    const store = await readPumpPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const entry = Number(store.trades[idx].entryPrice);
+    const touched = store.trades[idx].side === 'LONG' ? markPrice <= entry : markPrice >= entry;
+    if (!touched) return;
+    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    await writePumpPaperStore(store);
+    console.log(`[PumpPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+  } finally {
+    pumpPaperFillLocks.delete(trade.id);
+  }
+}
+
+async function processPumpPaperFills(symbol, markPrice) {
+  const store = await readPumpPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillPumpPendingTrade(t, markPrice);
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) await checkPumpPaperTpSl(t, markPrice);
+}
+
+const pumpPaperTpSlLocks = new Set();
+async function checkPumpPaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (pumpPaperTpSlLocks.has(trade.id)) return;
+  const isLong = trade.side === 'LONG';
+  const tpHit = trade.tp != null && (isLong ? markPrice >= trade.tp : markPrice <= trade.tp);
+  const slHit = trade.sl != null && (isLong ? markPrice <= trade.sl : markPrice >= trade.sl);
+  if (!tpHit && !slHit) return;
+  pumpPaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closePumpPaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[PumpPaper] 🎯 ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    pumpPaperTpSlLocks.delete(trade.id);
+  }
+}
+
+async function syncPumpPaperTicker() {
+  if (!pumpPaperTicker) return;
+  const store = await readPumpPaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  pumpPaperTicker.setSymbols(symbols);
+}
+
+function startPumpPaperTicker() {
+  if (pumpPaperTicker) return;
+  pumpPaperTicker = createMarkPriceTicker({
+    onPrice: ({ symbol, markPrice }) => {
+      pumpMarkCache.set(symbol, markPrice);
+      processPumpPaperFills(symbol, markPrice).catch(() => {});
+    },
+  });
+  console.log('[PumpPaper] Mark ticker started.');
+  syncPumpPaperTicker().catch(() => {});
+  setInterval(() => syncPumpPaperTicker().catch(() => {}), 30_000);
+}
+
+// ── End pump paper trade system ───────────────────────────────────────────────
 
 function startPaperTradeTicker() {
   if (process.env.PAPER_TRADE_TICKER_ENABLED === 'false') return;

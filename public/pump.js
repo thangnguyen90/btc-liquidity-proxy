@@ -217,7 +217,7 @@ async function loadOpenLimitOrders() {
 
 window.placePumpOrder = async function (btn, symbol, action, entry, sl, tp, score, type) {
   const row = btn.closest('.pump-order-row');
-  const input = row?.querySelector('.pump-order-margin');
+  const input = row?.querySelector('.pump-order-margin') ?? btn.closest('td')?.querySelector('input[type="number"]');
   const margin = Number(input?.value ?? 5);
   if (!margin || margin <= 0) { btn.textContent = 'Nhập margin!'; return; }
 
@@ -357,6 +357,7 @@ function buildCard(sig) {
         <span class="pump-order-label">$</span>
         <button class="pump-order-btn ${dirClass}" onclick="placePumpOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score},'${sig.type ?? ''}')">📥 LIMIT</button>
         ${openLimitSymbols.has(sig.symbol) ? '<span class="pump-order-exists">✓ Đã có lệnh</span>' : ''}
+        <button style="font-size:10px;font-weight:800;padding:3px 8px;border-radius:4px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);cursor:pointer;margin-left:4px" onclick="enterPumpPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'})">+ Paper</button>
       </div>
       <div class="pump-footer">
         <span>${timeAgo(sig.scannedAt)}</span>
@@ -518,9 +519,216 @@ async function fetchAndApply(attempt = 0) {
   } catch {}
 }
 
+// ── Pump paper trades ─────────────────────────────────────────────────────────
+
+const pumpPaperBody  = document.getElementById('pumpPaperBody');
+const pumpPaperCount = document.getElementById('pumpPaperCount');
+
+let pumpPaperTradesCache  = [];
+let pumpPaperSummaryCache = null;
+let pumpPaperSort = { key: 'status', dir: 'asc' };
+
+document.addEventListener('click', (e) => {
+  const th = e.target.closest('[data-paper-sort]');
+  if (!th || !th.classList.contains('pump-paper-sort')) return;
+  const key = th.dataset.paperSort;
+  if (pumpPaperSort.key === key) {
+    pumpPaperSort.dir = pumpPaperSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    pumpPaperSort = { key, dir: key === 'status' ? 'asc' : 'desc' };
+  }
+  renderPumpPaperTrades(pumpPaperTradesCache, pumpPaperSummaryCache);
+});
+
+function fmtPnlPump(pnl, roe) {
+  if (pnl == null) return '<span style="color:var(--muted)">–</span>';
+  const sign = pnl >= 0 ? '+' : '';
+  const cls  = pnl >= 0 ? 'positive' : 'negative';
+  return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)} (${sign}${Number(roe ?? 0).toFixed(1)}%)</span>`;
+}
+
+function pumpPaperSortValue(t, key) {
+  if (key === 'symbol') return t.symbol ?? '';
+  if (key === 'side') return t.side ?? '';
+  if (key === 'entry') return Number(t.entryPrice);
+  if (key === 'sl') return t.sl == null ? null : Number(t.sl);
+  if (key === 'tp') return t.tp == null ? null : Number(t.tp);
+  if (key === 'mark') return Number(t.markPrice ?? t.exitPrice);
+  if (key === 'pnl') return t.pnl == null ? null : Number(t.pnl);
+  if (key === 'roe') return t.roe == null ? null : Number(t.roe);
+  if (key === 'source') return t.source ?? '';
+  if (key === 'time') return Date.parse(t.createdAt ?? '') || 0;
+  if (key === 'status') {
+    const order = { OPEN: 0, PENDING: 1, ENTRY_READY: 2, CLOSED: 3 };
+    return order[t.status] ?? 9;
+  }
+  return '';
+}
+
+function comparePumpPaperValues(a, b, dir) {
+  const aMissing = a == null || Number.isNaN(a);
+  const bMissing = b == null || Number.isNaN(b);
+  if (aMissing && bMissing) return 0;
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+  const result = typeof a === 'string' || typeof b === 'string'
+    ? String(a).localeCompare(String(b), 'en')
+    : a - b;
+  return dir === 'asc' ? result : -result;
+}
+
+function sortPumpPaperTrades(trades) {
+  const { key, dir } = pumpPaperSort;
+  return trades.slice().sort((a, b) => {
+    const result = comparePumpPaperValues(pumpPaperSortValue(a, key), pumpPaperSortValue(b, key), dir);
+    if (result !== 0) return result;
+    return comparePumpPaperValues(pumpPaperSortValue(a, 'time'), pumpPaperSortValue(b, 'time'), 'desc');
+  });
+}
+
+function updatePumpPaperSortHeaders() {
+  document.querySelectorAll('[data-paper-sort]').forEach((th) => {
+    const active = th.dataset.paperSort === pumpPaperSort.key;
+    th.classList.toggle('active', active);
+    const mark = th.querySelector('.sort-mark');
+    if (mark) mark.textContent = active ? (pumpPaperSort.dir === 'asc' ? '^' : 'v') : '';
+  });
+}
+
+function renderPumpPaperTrades(trades, summary) {
+  pumpPaperTradesCache = trades;
+  pumpPaperSummaryCache = summary;
+  const open   = trades.filter((t) => t.status === 'OPEN' || t.status === 'PENDING' || t.status === 'ENTRY_READY');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const all    = sortPumpPaperTrades([...open, ...closed]);
+  let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
+  if (summary && summary.closed > 0) {
+    const wr = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
+    countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
+    if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+  }
+  pumpPaperCount.textContent = countTxt;
+
+  if (!all.length) {
+    pumpPaperBody.innerHTML = '<tr><td colspan="13" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
+    return;
+  }
+
+  pumpPaperBody.innerHTML = all.map((t) => {
+    const isLong   = t.side === 'LONG';
+    const sideHtml = isLong
+      ? `<span style="color:var(--green);font-weight:700">LONG</span>`
+      : `<span style="color:var(--red);font-weight:700">SHORT</span>`;
+    const isClosed = t.status === 'CLOSED';
+    const mark     = t.markPrice ?? t.exitPrice ?? '-';
+    const actionBtns = isClosed
+      ? `<button class="pump-paper-close-btn" style="opacity:.6;font-size:10px" onclick="deletePumpPaperTrade('${t.id}')">Del</button>`
+      : `<button class="pump-paper-close-btn" onclick="closePumpPaperTrade('${t.id}')">Close</button>`;
+    const rowStyle = isClosed ? 'opacity:.5' : '';
+    const slColor = isLong ? 'var(--red)' : 'var(--green)';
+    const tpColor = isLong ? 'var(--green)' : 'var(--red)';
+    const outcomeHtml = isClosed
+      ? t.outcome === 'TP' ? '<span style="color:var(--green);font-weight:700">✅ TP</span>'
+        : t.outcome === 'SL' ? '<span style="color:var(--red);font-weight:700">🔴 SL</span>'
+        : '<span style="color:var(--muted)">Manual</span>'
+      : t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>'
+      : '<span style="color:var(--green)">OPEN</span>';
+    const dirClass = isLong ? 'long' : 'short';
+    const scoreNum = Number((t.source ?? '').replace(/\D/g, '')) || 0;
+    const hasOrder = openLimitSymbols.has(t.symbol);
+    const orderCell = isClosed
+      ? '<td></td>'
+      : `<td>
+          <div style="display:flex;align-items:center;gap:4px">
+            <input type="number" value="5" min="1" max="10000" step="1"
+              style="width:46px;padding:3px 5px;border-radius:4px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font-size:12px;font-weight:700;text-align:right"
+              title="Margin (USDT)">
+            <button class="cap-order-btn ${dirClass}"
+              onclick="placePumpOrder(this,'${t.symbol}','${t.side}',${t.entryPrice},${t.sl ?? 'null'},${t.tp ?? 'null'},${scoreNum},'')"
+              style="padding:3px 8px;font-size:10px;white-space:nowrap"
+              ${hasOrder ? 'disabled' : ''}>
+              ${hasOrder ? '✓ Đã có' : '📥 LIMIT'}
+            </button>
+          </div>
+        </td>`;
+    return `<tr style="${rowStyle}">
+      <td><a href="/?symbol=${t.symbol}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol.replace(/USDT$/, '')}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
+      <td>${sideHtml}</td>
+      <td>${fmtPrice(t.entryPrice)}</td>
+      <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td>${fmtPrice(mark)}</td>
+      <td>${fmtPnlPump(t.pnl, t.roe)}</td>
+      <td>${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
+      <td style="font-size:11px">${outcomeHtml}</td>
+      <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
+      <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
+      <td>${actionBtns}</td>
+      ${orderCell}
+    </tr>`;
+  }).join('');
+  updatePumpPaperSortHeaders();
+}
+
+async function loadPumpPaperTrades() {
+  try {
+    const res = await fetch('/api/pump-paper-trades');
+    if (!res.ok) return;
+    const data = await res.json();
+    renderPumpPaperTrades(data.trades ?? [], data.summary);
+  } catch {}
+}
+
+window.enterPumpPaperTrade = async function(btn, symbol, side, entry, score, sl, tp) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const res = await fetch('/api/pump-paper-trades', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice: entry, tp: tp ?? null, sl: sl ?? null, source: `pump-${score}` }),
+    });
+    if (res.ok) {
+      btn.textContent = '⏳';
+      setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+      loadPumpPaperTrades();
+    } else {
+      btn.textContent = 'ERR';
+      setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+    }
+  } catch {
+    btn.textContent = 'ERR';
+    setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+  }
+};
+
+window.closePumpPaperTrade = async function(id) {
+  try {
+    await fetch('/api/pump-paper-trades/close', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    loadPumpPaperTrades();
+  } catch {}
+};
+
+window.deletePumpPaperTrade = async function(id) {
+  try {
+    await fetch('/api/pump-paper-trades/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    loadPumpPaperTrades();
+  } catch {}
+};
+
 (async () => {
   await fetchAndApply();
   connect();
   await loadOpenLimitOrders();
   setInterval(loadOpenLimitOrders, 30_000);
+  loadPumpPaperTrades();
+  setInterval(loadPumpPaperTrades, 30_000);
 })();
