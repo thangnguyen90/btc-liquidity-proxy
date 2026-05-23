@@ -515,7 +515,7 @@ function renderCapPaperTrades(trades, summary) {
       : t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>'
       : '<span style="color:var(--green)">OPEN</span>';
     return `<tr style="${rowStyle}">
-      <td><strong>${t.symbol.replace(/USDT$/, '')}</strong><span style="color:var(--muted);font-size:11px">USDT</span></td>
+      <td><a href="/?symbol=${t.symbol}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol.replace(/USDT$/, '')}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
       <td>${sideHtml}</td>
       <td>${fmtPrice(t.entryPrice)}</td>
       <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
