@@ -246,6 +246,10 @@ const runtimeSettings = {
   pumpMaxLimitOrders: Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30),
   pumpMaxPositions: Number(process.env.AUTO_TRADE_MAX_POSITIONS ?? 0),
   pumpPaperTimeoutH: Number(process.env.PUMP_PAPER_TIMEOUT_H ?? 3), // giờ — tự cắt nếu quá thời gian và pnl ≤ 1%
+  // Real Binance position timeout — đóng lệnh thật sau X giờ nếu pnl > minRoe% và chưa đạt TP
+  positionTimeoutEnabled: process.env.POSITION_TIMEOUT_ENABLED === 'true',
+  positionTimeoutH: Number(process.env.POSITION_TIMEOUT_H ?? 3),
+  positionTimeoutMinRoe: Number(process.env.POSITION_TIMEOUT_MIN_ROE ?? 1),
 };
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
 
@@ -982,6 +986,30 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (requestUrl.pathname === '/api/position-timeout') {
+      if (request.method === 'GET') {
+        await sendJson(response, {
+          enabled: runtimeSettings.positionTimeoutEnabled,
+          timeoutH: runtimeSettings.positionTimeoutH,
+          minRoe: runtimeSettings.positionTimeoutMinRoe,
+        });
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        if (typeof body.enabled === 'boolean') runtimeSettings.positionTimeoutEnabled = body.enabled;
+        if (Number.isFinite(Number(body.timeoutH)) && Number(body.timeoutH) >= 0.5) runtimeSettings.positionTimeoutH = Number(body.timeoutH);
+        if (Number.isFinite(Number(body.minRoe)) && Number(body.minRoe) >= 0) runtimeSettings.positionTimeoutMinRoe = Number(body.minRoe);
+        console.log(`[PosTimeout] ${runtimeSettings.positionTimeoutEnabled ? '✅ Bật' : '⏸ Tắt'} timeout=${runtimeSettings.positionTimeoutH}h minRoe=${runtimeSettings.positionTimeoutMinRoe}%`);
+        await sendJson(response, {
+          enabled: runtimeSettings.positionTimeoutEnabled,
+          timeoutH: runtimeSettings.positionTimeoutH,
+          minRoe: runtimeSettings.positionTimeoutMinRoe,
+        });
+        return;
+      }
+    }
+
     if (requestUrl.pathname === '/api/pump-max-orders') {
       if (request.method === 'GET') {
         await sendJson(response, { maxLimitOrders: runtimeSettings.pumpMaxLimitOrders, maxPositions: runtimeSettings.pumpMaxPositions });
@@ -1485,6 +1513,8 @@ server.listen(port, '127.0.0.1', () => {
         negTpLastRun.delete(symbol);
       },
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
+        // Ghi nhận thời điểm đầu tiên thấy position (fallback khi slTracking không có openedAt)
+        if (!positionFirstSeenAt.has(symbol)) positionFirstSeenAt.set(symbol, Date.now());
         // Đặt TP pending từ AutoLiq nếu position đã mở
         if (pendingLiqTp.has(symbol)) {
           placePendingLiqTp(symbol, pos).catch(() => {});
@@ -1501,6 +1531,8 @@ server.listen(port, '127.0.0.1', () => {
         }
         // SL trail: move SL up as profit grows (all positions with existing SL)
         handleSlTrailByProfit(symbol, pos, roe, markPrice).catch(() => {});
+        // Position timeout: đóng lệnh thật sau X giờ nếu ROE > minRoe%
+        handlePositionTimeout(symbol, pos, markPrice, roe).catch(() => {});
         // Time-based: âm liên tiếp quá NEG_TP_TIMEOUT_MS → đặt TP về entry
         if (roe < 0) {
           if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
@@ -3737,6 +3769,8 @@ async function runStaleOrderCleaner() {
         negTpLastRun.delete(sym);
         negativeSince.delete(sym);
         slTrailLockRoe.delete(sym);
+        positionFirstSeenAt.delete(sym);
+        positionTimeoutFired.delete(sym);
         if (slTracking.positions[sym]) {
           delete slTracking.positions[sym];
           saveSlTracking();
@@ -4583,11 +4617,84 @@ async function runLsRatioScan(period = '15m') {
 // ── End L/S Ratio Scanner ────────────────────────────────────────────────────
 
 const negativeSince = new Map(); // symbol → timestamp when position first went negative
+// Position timeout — real Binance positions
+const positionFirstSeenAt = new Map(); // symbol → timestamp (from onRoeUpdate first call or slTracking)
+const positionTimeoutFired = new Set(); // symbol — prevent double-fire per position lifecycle
 
 const tpMovedToEntry = new Map(); // symbol → entryPrice when TP was moved to entry
 
 async function handleTpEntryGuard(symbol, pos, markPrice, roe) {
   return handleNegativeTimeoutTp(symbol, pos);
+}
+
+// ── Real Binance Position Timeout ─────────────────────────────────────────────
+// Đóng lệnh thật sau X giờ nếu ROE > minRoe% (đang lời nhẹ) và chưa đạt TP
+async function handlePositionTimeout(symbol, pos, markPrice, roe) {
+  if (!runtimeSettings.positionTimeoutEnabled) return;
+  if (roe <= runtimeSettings.positionTimeoutMinRoe) return; // Chỉ cắt khi đang lời
+  if (positionTimeoutFired.has(symbol)) return;
+
+  // Xác định openedAt: ưu tiên slTracking (chính xác từ fill), fallback positionFirstSeenAt
+  const tracked = slTracking.positions[symbol];
+  const openedAt = tracked?.openedAt ?? positionFirstSeenAt.get(symbol);
+  if (!openedAt) return; // chưa biết thời gian mở
+
+  const timeoutMs = runtimeSettings.positionTimeoutH * 3_600_000;
+  const elapsed = Date.now() - openedAt;
+  if (elapsed < timeoutMs) return; // chưa đủ thời gian
+
+  positionTimeoutFired.add(symbol);
+
+  let apiKey, apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch {
+    positionTimeoutFired.delete(symbol);
+    return;
+  }
+
+  const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+  const amt = Number(pos.amt ?? pos.positionAmt ?? 0);
+  if (amt === 0) { positionTimeoutFired.delete(symbol); return; }
+
+  const isLong = amt > 0;
+  const closeSide = isLong ? 'SELL' : 'BUY';
+  const positionSide = pos.positionSide ?? 'BOTH';
+  const isHedge = positionSide !== 'BOTH';
+
+  // Tính quantity theo step size
+  const symbols = await getSymbols().catch(() => []);
+  const symbolInfo = symbols.find((s) => s.symbol === symbol);
+  let quantity;
+  if (symbolInfo) {
+    const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
+    const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
+    const steppedQty = Math.floor(Math.abs(amt) / stepSize) * stepSize;
+    quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
+  } else {
+    quantity = String(Math.abs(amt));
+  }
+
+  const orderParams = {
+    symbol,
+    side: closeSide,
+    type: 'MARKET',
+    quantity,
+    recvWindow,
+    newClientOrderId: `lp_ptout_${Date.now()}`.slice(0, 36),
+  };
+  if (isHedge) { orderParams.positionSide = positionSide; } else { orderParams.reduceOnly = 'true'; }
+
+  const elapsedH = (elapsed / 3_600_000).toFixed(1);
+  console.log(`[PosTimeout] ⏱ ${symbol} ${isLong ? 'LONG' : 'SHORT'} ROE=${roe.toFixed(2)}% elapsed=${elapsedH}h → market close`);
+
+  try {
+    const result = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret });
+    console.log(`[PosTimeout] ✅ ${symbol} market close OK orderId=${result?.orderId ?? '?'}`);
+  } catch (err) {
+    console.error(`[PosTimeout] ❌ ${symbol}: ${err.message}`);
+    positionTimeoutFired.delete(symbol); // retry nếu lỗi
+  }
 }
 
 function startNegTpScanner() {
