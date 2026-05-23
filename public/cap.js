@@ -490,6 +490,7 @@ function capPaperSortValue(t, key) {
   if (key === 'mark') return Number(t.markPrice ?? t.exitPrice);
   if (key === 'pnl') return t.pnl == null ? null : Number(t.pnl);
   if (key === 'roe') return t.roe == null ? null : Number(t.roe);
+  if (key === 'type') return capSignalType(t.note ?? '');
   if (key === 'source') return t.source ?? '';
   if (key === 'time') return Date.parse(t.createdAt ?? '') || 0;
   if (key === 'status') {
@@ -527,6 +528,26 @@ function updateCapPaperSortHeaders() {
     const mark = th.querySelector('.sort-mark');
     if (mark) mark.textContent = active ? (capPaperSort.dir === 'asc' ? '^' : 'v') : '';
   });
+}
+
+// Extract signal type từ note field: "BC vol=..." → "BC", "Spike vol=..." → "Spike"
+function capSignalType(note) {
+  if (!note) return '';
+  const m = note.match(/^([A-Za-z_]+)/);
+  return m ? m[1] : '';
+}
+
+const CAP_TYPE_COLOR = {
+  BC:    'var(--green)',
+  SC:    'var(--red)',
+  Spike: '#a78bfa',
+  EMA:   '#60a5fa',
+};
+function capTypeHtml(note) {
+  const type = capSignalType(note);
+  if (!type) return '<span style="color:var(--muted)">–</span>';
+  const color = CAP_TYPE_COLOR[type] ?? 'var(--muted)';
+  return `<span style="color:${color};font-weight:700;font-size:11px">${type}</span>`;
 }
 
 function renderCapPaperTrades(trades, summary) {
@@ -588,6 +609,7 @@ function renderCapPaperTrades(trades, summary) {
     return `<tr style="${rowStyle}">
       <td><a href="/?symbol=${t.symbol}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol.replace(/USDT$/, '')}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
       <td>${sideHtml}</td>
+      <td>${capTypeHtml(t.note)}</td>
       <td>${fmtPrice(t.entryPrice)}</td>
       <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
       <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
