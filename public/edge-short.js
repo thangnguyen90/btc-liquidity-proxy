@@ -1,0 +1,852 @@
+const SOURCES = [
+  { id: 'pump', label: 'Pump', url: '/api/pump-signals' },
+  { id: 'cap', label: 'Cap', url: '/api/cap-signals' },
+  { id: 'killshort', label: 'Kill Short', url: '/api/killshort-signals' },
+];
+
+const state = {
+  rawSignals: [],
+  rows: [],
+  loading: false,
+  lastLoadedAt: null,
+  errors: [],
+  timer: null,
+};
+
+let edgeOpenLimitSymbols = new Set();
+
+const grid = document.getElementById('edgeGrid');
+const statusEl = document.getElementById('edgeStatus');
+const searchInput = document.getElementById('searchInput');
+const searchClear = document.getElementById('searchClear');
+const scoreFilter = document.getElementById('scoreFilter');
+const sourceFilter = document.getElementById('sourceFilter');
+const sideFilter = document.getElementById('sideFilter');
+const refreshButton = document.getElementById('refreshButton');
+const autoRefreshInput = document.getElementById('autoRefreshInput');
+const totalSignals = document.getElementById('totalSignals');
+const rawSignals = document.getElementById('rawSignals');
+const shortCount = document.getElementById('shortCount');
+const avgEdge = document.getElementById('avgEdge');
+const bestEdge = document.getElementById('bestEdge');
+const lastScan = document.getElementById('lastScan');
+const nextRefresh = document.getElementById('nextRefresh');
+const scanMeta = document.getElementById('scanMeta');
+const metaProcessed = document.getElementById('metaProcessed');
+const visibleCount = document.getElementById('visibleCount');
+const metaSources = document.getElementById('metaSources');
+const edgePaperBody = document.getElementById('edgePaperBody');
+const edgePaperCount = document.getElementById('edgePaperCount');
+
+let edgePaperTradesCache = [];
+let edgePaperSummaryCache = null;
+let edgePaperSort = { key: 'status', dir: 'asc' };
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function fmtPrice(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  if (n >= 10000) return n.toLocaleString('en', { maximumFractionDigits: 1 });
+  if (n >= 1000) return n.toLocaleString('en', { maximumFractionDigits: 2 });
+  if (n >= 100) return n.toFixed(3);
+  if (n >= 1) return n.toFixed(4);
+  if (n >= 0.01) return n.toFixed(5);
+  return n.toFixed(6);
+}
+
+function fmtPct(value, digits = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  return `${n >= 0 ? '+' : ''}${n.toFixed(digits)}%`;
+}
+
+function timeLabel(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return '-';
+  return new Date(n).toLocaleTimeString('vi');
+}
+
+function timeAgo(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return '-';
+  const seconds = Math.max(0, Math.floor((Date.now() - n) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
+
+function gradeFromScore(score) {
+  if (score >= 85) return 'A';
+  if (score >= 70) return 'B';
+  if (score >= 55) return 'C';
+  return 'D';
+}
+
+function sideClassForAction(action) {
+  const a = String(action ?? '').toUpperCase();
+  if (a === 'LONG')  return 'long';
+  if (a === 'SHORT') return 'short';
+  return 'short'; // fallback
+}
+
+function normalizedType(sig) {
+  return String(sig.type ?? '').toLowerCase();
+}
+
+function sourceLabel(source) {
+  return SOURCES.find((s) => s.id === source)?.label ?? source;
+}
+
+function isShortType(type) {
+  return /liq_top|bc_utad|utad|upthrust|pump_climax|climax_top|blowoff|top|short|fade|reject|rejection/.test(type);
+}
+
+function isLongWatch(sig, type) {
+  if (sig.blockShort === true) return true;
+  return /kill_short|spring|liq_flush|capitulation|sweep/.test(type);
+}
+
+function classifySignal(sig) {
+  const action = String(sig.action ?? '').toUpperCase();
+  const type = normalizedType(sig);
+
+  if (action === 'SHORT' || isShortType(type) || sig.blockLong === true) return 'short';
+  if (action === 'LONG' && isLongWatch(sig, type)) return 'watch';
+  if (action === 'LONG') return 'long';
+  return 'watch';
+}
+
+function calculateEdgeScore(sig) {
+  const score = Number(sig.score);
+  const base = Number.isFinite(score) ? score : 0;
+  const type = normalizedType(sig);
+  const bucket = classifySignal(sig);
+  let edge = base;
+
+  if (bucket === 'short') edge += 22;
+  if (bucket === 'watch') edge -= 6;
+  if (bucket === 'long') edge -= 22;
+
+  if (/liq_top|liquidation_top/.test(type)) edge += 14;
+  if (/bc_utad|utad|upthrust/.test(type)) edge += 12;
+  if (/pump_climax|climax_top|blowoff/.test(type)) edge += 10;
+  if (/top|fade|reject|rejection/.test(type)) edge += 8;
+  if (/kill_short|spring|liq_flush/.test(type)) edge -= 10;
+
+  if (sig.blockLong === true) edge += 6;
+  if (sig.blockShort === true) edge -= 8;
+
+  const change24h = Number(sig.change24h);
+  if (Number.isFinite(change24h)) {
+    if (bucket === 'short' && change24h >= 10) edge += 5;
+    if (bucket === 'short' && change24h <= -8) edge -= 5;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(edge)));
+}
+
+function enrichSignal(sig, source, sourceScannedAt) {
+  const edgeBucket = classifySignal(sig);
+  const edgeScore = calculateEdgeScore(sig);
+  const scannedAt = Number(sig.scannedAt ?? sourceScannedAt ?? Date.now());
+  return {
+    ...sig,
+    source,
+    sourceLabel: sourceLabel(source),
+    edgeBucket,
+    edgeScore,
+    edgeGrade: gradeFromScore(edgeScore),
+    scannedAt,
+  };
+}
+
+function dedupeBySymbol(signals) {
+  const bySymbol = new Map();
+
+  for (const sig of signals) {
+    if (!sig.symbol) continue;
+    const current = bySymbol.get(sig.symbol);
+    if (!current) {
+      bySymbol.set(sig.symbol, sig);
+      continue;
+    }
+
+    const better =
+      sig.edgeScore > current.edgeScore ||
+      (sig.edgeScore === current.edgeScore && Number(sig.score ?? 0) > Number(current.score ?? 0)) ||
+      (sig.edgeScore === current.edgeScore && Number(sig.score ?? 0) === Number(current.score ?? 0) && sig.scannedAt > current.scannedAt);
+
+    if (better) bySymbol.set(sig.symbol, sig);
+  }
+
+  return [...bySymbol.values()].sort((a, b) =>
+    b.edgeScore - a.edgeScore ||
+    Number(b.score ?? 0) - Number(a.score ?? 0) ||
+    b.scannedAt - a.scannedAt
+  );
+}
+
+async function fetchSource(source) {
+  const response = await fetch(source.url, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`${source.label} HTTP ${response.status}`);
+  const data = await response.json();
+  return {
+    source,
+    signals: Array.isArray(data.signals) ? data.signals : [],
+    scannedAt: data.scannedAt,
+    processed: Number(data.processed ?? data.total ?? 0) || 0,
+  };
+}
+
+async function loadSignals() {
+  if (state.loading) return;
+  state.loading = true;
+  refreshButton.disabled = true;
+  statusEl.textContent = 'Loading...';
+  statusEl.style.color = 'var(--amber)';
+
+  const settled = await Promise.allSettled(SOURCES.map(fetchSource));
+  const nextRaw = [];
+  const errors = [];
+  let processed = 0;
+  const loadedSources = [];
+
+  for (const item of settled) {
+    if (item.status === 'rejected') {
+      errors.push(item.reason?.message || 'Fetch failed');
+      continue;
+    }
+
+    const { source, signals, scannedAt, processed: sourceProcessed } = item.value;
+    processed += sourceProcessed;
+    loadedSources.push(source.label);
+    for (const sig of signals) nextRaw.push(enrichSignal(sig, source.id, scannedAt));
+  }
+
+  state.rawSignals = nextRaw;
+  state.rows = dedupeBySymbol(nextRaw);
+  state.errors = errors;
+  state.lastLoadedAt = Date.now();
+  state.loading = false;
+  refreshButton.disabled = false;
+
+  metaProcessed.textContent = processed || '-';
+  metaSources.textContent = loadedSources.length ? loadedSources.join(', ') : '-';
+  scanMeta.style.display = '';
+
+  render();
+}
+
+async function loadEdgeOpenLimitOrders() {
+  const token = localStorage.getItem('orders_token') ?? '';
+  if (!token) return;
+
+  try {
+    const [ordersRes, posRes] = await Promise.all([
+      fetch('/api/open-orders', { headers: { 'x-orders-token': token } }),
+      fetch('/api/positions', { headers: { 'x-orders-token': token } }),
+    ]);
+    const next = new Set();
+
+    if (ordersRes.ok) {
+      const orders = await ordersRes.json();
+      const arr = Array.isArray(orders) ? orders : (orders.orders ?? []);
+      arr
+        .filter((order) => String(order.type ?? '').toUpperCase() === 'LIMIT' && !order.reduceOnly)
+        .forEach((order) => next.add(order.symbol));
+    }
+
+    if (posRes.ok) {
+      const positions = await posRes.json();
+      const arr = Array.isArray(positions) ? positions : (positions.positions ?? []);
+      arr
+        .filter((position) => Number(position.positionAmt ?? 0) !== 0)
+        .forEach((position) => next.add(position.symbol));
+    }
+
+    // Chỉ re-render nếu set thực sự thay đổi
+    const prevSize = edgeOpenLimitSymbols.size;
+    const prevKeys = [...edgeOpenLimitSymbols].join(',');
+    const nextKeys = [...next].sort().join(',');
+    edgeOpenLimitSymbols = next;
+    if (next.size !== prevSize || [...next].sort().join(',') !== prevKeys) render();
+  } catch {}
+}
+
+async function placeEdgeOrder(btn) {
+  const row = btn.closest('.edge-order-row');
+  const input = row?.querySelector('.edge-order-margin');
+  const margin = Number(input?.value ?? 5);
+  const symbol = btn.dataset.symbol;
+  const action = btn.dataset.action;
+  const entry = Number(btn.dataset.entry);
+  const sl = btn.dataset.sl === '' ? null : Number(btn.dataset.sl);
+  const tp = btn.dataset.tp === '' ? null : Number(btn.dataset.tp);
+  const score = Number(btn.dataset.score);
+  const type = btn.dataset.type ?? '';
+
+  if (!margin || margin <= 0) {
+    btn.textContent = 'Enter margin';
+    return;
+  }
+
+  if (!symbol || !action || !Number.isFinite(entry) || entry <= 0) {
+    btn.classList.add('error');
+    btn.textContent = 'No entry';
+    setTimeout(() => {
+      btn.classList.remove('error');
+      btn.textContent = 'LIMIT';
+    }, 3000);
+    return;
+  }
+
+  const token = localStorage.getItem('orders_token') ?? '';
+  if (!token) {
+    btn.classList.add('error');
+    btn.textContent = 'Login first';
+    setTimeout(() => {
+      btn.classList.remove('error');
+      btn.textContent = 'LIMIT';
+    }, 3000);
+    return;
+  }
+
+  btn.disabled = true;
+  btn.classList.add('loading');
+  btn.textContent = 'Placing...';
+
+  try {
+    const response = await fetch('/api/pump-manual-order', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-orders-token': token },
+      body: JSON.stringify({ symbol, action, entry, sl, tp, score, margin, type }),
+    });
+    const data = await response.json();
+    if (!data.ok) throw new Error(data.error ?? 'Order failed');
+
+    btn.classList.remove('loading');
+    btn.classList.add('success');
+    btn.textContent = data.marketFilled ? `MKT #${data.orderId}` : `#${data.orderId}`;
+    if (input) input.disabled = true;
+    edgeOpenLimitSymbols.add(symbol);
+
+    if (row && !row.querySelector('.edge-order-exists')) {
+      const badge = document.createElement('span');
+      badge.className = 'edge-order-exists';
+      badge.textContent = 'Has order';
+      row.appendChild(badge);
+    }
+  } catch (error) {
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    btn.classList.add('error');
+    const message = error?.message || 'Order failed';
+    btn.textContent = message.length > 30 ? `${message.slice(0, 30)}...` : message;
+    setTimeout(() => {
+      btn.classList.remove('error');
+      btn.textContent = 'LIMIT';
+    }, 4000);
+  }
+}
+
+function fmtPnlEdge(pnl) {
+  if (pnl == null) return '<span style="color:var(--muted)">-</span>';
+  const sign = pnl >= 0 ? '+' : '';
+  const cls = pnl >= 0 ? 'positive' : 'negative';
+  return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)}</span>`;
+}
+
+function edgePaperSortValue(trade, key) {
+  if (key === 'symbol') return trade.symbol ?? '';
+  if (key === 'side') return trade.side ?? '';
+  if (key === 'entry') return Number(trade.entryPrice);
+  if (key === 'sl') return trade.sl == null ? null : Number(trade.sl);
+  if (key === 'tp') return trade.tp == null ? null : Number(trade.tp);
+  if (key === 'mark') return Number(trade.markPrice ?? trade.exitPrice);
+  if (key === 'pnl') return trade.pnl == null ? null : Number(trade.pnl);
+  if (key === 'roe') return trade.roe == null ? null : Number(trade.roe);
+  if (key === 'source') return trade.source ?? '';
+  if (key === 'time') return Date.parse(trade.createdAt ?? '') || 0;
+  if (key === 'status') {
+    const order = { OPEN: 0, PENDING: 1, ENTRY_READY: 2, CLOSED: 3 };
+    return order[trade.status] ?? 9;
+  }
+  return '';
+}
+
+function compareEdgePaperValues(a, b, dir) {
+  const aMissing = a == null || Number.isNaN(a);
+  const bMissing = b == null || Number.isNaN(b);
+  if (aMissing && bMissing) return 0;
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+  const result = typeof a === 'string' || typeof b === 'string'
+    ? String(a).localeCompare(String(b), 'en')
+    : a - b;
+  return dir === 'asc' ? result : -result;
+}
+
+function sortEdgePaperTrades(trades) {
+  const { key, dir } = edgePaperSort;
+  return trades.slice().sort((a, b) => {
+    const result = compareEdgePaperValues(edgePaperSortValue(a, key), edgePaperSortValue(b, key), dir);
+    if (result !== 0) return result;
+    return compareEdgePaperValues(edgePaperSortValue(a, 'time'), edgePaperSortValue(b, 'time'), 'desc');
+  });
+}
+
+function updateEdgePaperSortHeaders() {
+  document.querySelectorAll('[data-edge-paper-sort]').forEach((th) => {
+    const active = th.dataset.edgePaperSort === edgePaperSort.key;
+    th.classList.toggle('active', active);
+    const mark = th.querySelector('.sort-mark');
+    if (mark) mark.textContent = active ? (edgePaperSort.dir === 'asc' ? '^' : 'v') : '';
+  });
+}
+
+function renderEdgePaperTrades(trades, summary) {
+  edgePaperTradesCache = trades;
+  edgePaperSummaryCache = summary;
+  const open = trades.filter((trade) => trade.status === 'OPEN' || trade.status === 'PENDING' || trade.status === 'ENTRY_READY');
+  const closed = trades.filter((trade) => trade.status === 'CLOSED');
+  const all = sortEdgePaperTrades([...open, ...closed]);
+  let countText = `${open.length} open - ${closed.length} closed`;
+  if (summary && summary.closed > 0) {
+    const winRate = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
+    countText += ` - TP ${summary.tpHits ?? 0} SL ${summary.slHits ?? 0} - WR ${winRate}%`;
+    if (summary.avgRoe != null) countText += ` - AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+  }
+  edgePaperCount.textContent = countText;
+
+  if (!all.length) {
+    edgePaperBody.innerHTML = '<tr><td colspan="13" class="empty-cell">No paper trades from Short Edge yet.</td></tr>';
+    updateEdgePaperSortHeaders();
+    return;
+  }
+
+  edgePaperBody.innerHTML = all.map((trade) => {
+    const isLong = trade.side === 'LONG';
+    const sideHtml = isLong
+      ? '<span style="color:var(--green);font-weight:700">LONG</span>'
+      : '<span style="color:var(--red);font-weight:700">SHORT</span>';
+    const isClosed = trade.status === 'CLOSED';
+    const mark = trade.markPrice ?? trade.exitPrice ?? '-';
+    const actionButtons = isClosed
+      ? `<button class="edge-paper-close-btn" style="opacity:.6" data-edge-paper-delete="${escapeHtml(trade.id)}">Del</button>`
+      : `<button class="edge-paper-close-btn" data-edge-paper-close="${escapeHtml(trade.id)}">Close</button>`;
+    const rowStyle = isClosed ? 'opacity:.5' : '';
+    const slColor = isLong ? 'var(--red)' : 'var(--green)';
+    const tpColor = isLong ? 'var(--green)' : 'var(--red)';
+    const outcomeHtml = isClosed
+      ? trade.outcome === 'TP' ? '<span style="color:var(--green);font-weight:700">TP</span>'
+        : trade.outcome === 'SL' ? '<span style="color:var(--red);font-weight:700">SL</span>'
+        : trade.outcome === 'TIMEOUT' ? '<span style="color:var(--amber);font-weight:700">Timeout</span>'
+        : '<span style="color:var(--muted)">Manual</span>'
+      : trade.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">PENDING</span>'
+      : '<span style="color:var(--green)">OPEN</span>';
+    const dirClass = isLong ? 'long' : 'short';
+    const scoreNum = Number((trade.source ?? '').match(/\d+/)?.[0]) || 0;
+    const hasOrder = edgeOpenLimitSymbols.has(trade.symbol);
+    const orderCell = isClosed
+      ? '<td></td>'
+      : `<td>
+          <div style="display:flex;align-items:center;gap:4px">
+            <input class="edge-order-margin" type="number" value="5" min="1" max="10000" step="1" style="width:46px;font-size:12px" title="Margin (USDT)" ${hasOrder ? 'disabled' : ''}>
+            <button class="edge-order-btn ${dirClass}"
+              type="button"
+              data-symbol="${escapeHtml(trade.symbol)}"
+              data-action="${escapeHtml(trade.side)}"
+              data-entry="${Number(trade.entryPrice)}"
+              data-sl="${trade.sl != null ? Number(trade.sl) : ''}"
+              data-tp="${trade.tp != null ? Number(trade.tp) : ''}"
+              data-score="${scoreNum}"
+              data-type="edge-paper"
+              style="padding:3px 8px;font-size:10px;white-space:nowrap"
+              ${hasOrder ? 'disabled' : ''}>
+              ${hasOrder ? 'Has order' : 'LIMIT'}
+            </button>
+          </div>
+        </td>`;
+
+    return `<tr style="${rowStyle}">
+      <td><a href="/?symbol=${encodeURIComponent(trade.symbol)}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${escapeHtml(trade.symbol.replace(/USDT$/, ''))}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
+      <td>${sideHtml}</td>
+      <td>${fmtPrice(trade.entryPrice)}</td>
+      <td style="font-size:11px;color:${slColor}">${trade.sl != null ? fmtPrice(trade.sl) : '<span style="color:var(--muted)">-</span>'}</td>
+      <td style="font-size:11px;color:${tpColor}">${trade.tp != null ? fmtPrice(trade.tp) : '<span style="color:var(--muted)">-</span>'}</td>
+      <td>${fmtPrice(mark)}</td>
+      <td>${fmtPnlEdge(trade.pnl)}</td>
+      <td>${trade.roe != null ? `<span style="color:${Number(trade.roe)>=0?'var(--green)':'var(--red)'}">${Number(trade.roe)>=0?'+':''}${Number(trade.roe).toFixed(1)}%</span>` : '-'}</td>
+      <td style="font-size:11px">${outcomeHtml}</td>
+      <td style="font-size:10px;color:var(--muted)">${escapeHtml(trade.source ?? '-')}</td>
+      <td style="font-size:11px;color:var(--muted)">${new Date(trade.createdAt).toLocaleTimeString('vi')}</td>
+      <td>${actionButtons}</td>
+      ${orderCell}
+    </tr>`;
+  }).join('');
+  updateEdgePaperSortHeaders();
+}
+
+async function loadEdgePaperTrades() {
+  try {
+    const response = await fetch('/api/edge-paper-trades', { cache: 'no-store' });
+    if (!response.ok) { console.warn('[EdgePaper] Load failed HTTP', response.status); return; }
+    const data = await response.json();
+    renderEdgePaperTrades(data.trades ?? [], data.summary);
+  } catch (err) {
+    console.warn('[EdgePaper] Load error:', err.message);
+  }
+}
+
+async function enterEdgePaperTrade(btn) {
+  const symbol = btn.dataset.symbol;
+  const side = btn.dataset.action;
+  const entry = Number(btn.dataset.entry);
+  const sl = btn.dataset.sl === '' ? null : Number(btn.dataset.sl);
+  const tp = btn.dataset.tp === '' ? null : Number(btn.dataset.tp);
+  const score = Number(btn.dataset.score);
+  const type = btn.dataset.type ?? '';
+
+  if (!symbol || !['LONG', 'SHORT'].includes(String(side).toUpperCase()) || !Number.isFinite(entry) || entry <= 0) {
+    btn.textContent = 'No entry';
+    setTimeout(() => { btn.textContent = '+ Paper'; }, 2000);
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  try {
+    const response = await fetch('/api/edge-paper-trades', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        side,
+        marginUsdt: 1,
+        leverage: 10,
+        entryPrice: entry,
+        tp,
+        sl,
+        source: `edge-${score}`,
+        note: type,
+      }),
+    });
+    if (!response.ok) throw new Error('paper failed');
+    btn.textContent = 'PENDING';
+    setTimeout(() => {
+      btn.textContent = '+ Paper';
+      btn.disabled = false;
+    }, 2000);
+    loadEdgePaperTrades();
+  } catch {
+    btn.textContent = 'ERR';
+    setTimeout(() => {
+      btn.textContent = '+ Paper';
+      btn.disabled = false;
+    }, 2000);
+  }
+}
+
+async function closeEdgePaperTrade(id) {
+  const btn = document.querySelector(`[data-edge-paper-close="${id}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  try {
+    const res = await fetch('/api/edge-paper-trades/close', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    loadEdgePaperTrades();
+  } catch (err) {
+    console.error('[EdgePaper] Close failed:', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'ERR'; setTimeout(() => { btn.textContent = 'Close'; }, 2000); }
+  }
+}
+
+async function deleteEdgePaperTrade(id) {
+  const btn = document.querySelector(`[data-edge-paper-delete="${id}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  try {
+    const res = await fetch('/api/edge-paper-trades/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    loadEdgePaperTrades();
+  } catch (err) {
+    console.error('[EdgePaper] Delete failed:', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'ERR'; setTimeout(() => { btn.textContent = 'Del'; }, 2000); }
+  }
+}
+
+function buildFactors(sig) {
+  const chips = [];
+  const type = normalizedType(sig);
+
+  chips.push({ label: `${sig.sourceLabel}`, ok: sig.edgeBucket === 'short' ? 'warn' : '' });
+  chips.push({ label: `Base ${Number(sig.score ?? 0) || 0}`, ok: '' });
+
+  if (sig.edgeBucket === 'short') chips.push({ label: 'Short bias', ok: 'warn' });
+  if (sig.edgeBucket === 'watch') chips.push({ label: 'Watch', ok: '' });
+  if (sig.edgeBucket === 'long') chips.push({ label: 'Long', ok: 'ok' });
+
+  if (sig.blockLong === true) chips.push({ label: 'Block long', ok: 'warn' });
+  if (sig.blockShort === true) chips.push({ label: 'Block short', ok: 'ok' });
+
+  const f = sig.factors || {};
+  if (f.volX != null) chips.push({ label: `Vol ${Number(f.volX).toFixed(1)}x`, ok: Number(f.volX) >= 2 ? 'warn' : '' });
+  if (f.sweepVolX != null) chips.push({ label: `Sweep ${Number(f.sweepVolX).toFixed(1)}x`, ok: Number(f.sweepVolX) >= 2 ? 'ok' : '' });
+  if (f.revVolX != null) chips.push({ label: `Rev ${Number(f.revVolX).toFixed(1)}x`, ok: Number(f.revVolX) >= 2 ? 'ok' : '' });
+  if (f.wickFrac != null) chips.push({ label: `Wick ${(Number(f.wickFrac) * 100).toFixed(0)}%`, ok: Number(f.wickFrac) >= 0.55 ? 'warn' : '' });
+  if (f.closePos != null) chips.push({ label: `Close ${(Number(f.closePos) * 100).toFixed(0)}%`, ok: '' });
+  if (/liq_top|bc_utad|upthrust|pump_climax|top|short/.test(type)) chips.push({ label: 'Edge type', ok: 'warn' });
+
+  return chips.slice(0, 8)
+    .map((chip) => `<span class="edge-factor ${chip.ok}">${escapeHtml(chip.label)}</span>`)
+    .join('');
+}
+
+function buildThesis(sig) {
+  if (sig.edgeBucket === 'short') {
+    return 'Short edge: exhaustion/top/rejection signal ranked above same-symbol alternatives';
+  }
+  if (sig.edgeBucket === 'watch') {
+    return 'Watch: reversal or short-squeeze signal kept as context, not primary short edge';
+  }
+  return 'Long signal: shown only when filters allow non-short context';
+}
+
+function buildCard(sig) {
+  const sideClass = sig.edgeBucket;
+  const action = String(sig.action ?? '-').toUpperCase();
+  const orderSideClass = sideClassForAction(action);
+  const type = normalizedType(sig) || '-';
+  const change = Number(sig.change24h);
+  const changeClass = Number.isFinite(change) && change >= 0 ? 'positive' : 'negative';
+  const gradeClass = `grade-${String(sig.edgeGrade || 'd').toLowerCase()}`;
+  const detailUrl = `/?symbol=${encodeURIComponent(sig.symbol)}`;
+  const markPrice = sig.markPrice ?? sig.price;
+  const footerLeft = `${timeAgo(sig.scannedAt)} - ${timeLabel(sig.scannedAt)}`;
+  const footerRight = sig.volume != null ? `Vol ${Number(sig.volume).toLocaleString('en', { maximumFractionDigits: 0 })}` : sig.sourceLabel;
+  const orderEntry = Number(sig.entry ?? sig.altEntry);
+  const canOrder = sig.symbol && ['LONG', 'SHORT'].includes(action) && Number.isFinite(orderEntry) && orderEntry > 0;
+  const orderSl = sig.sl == null ? null : Number(sig.sl);
+  const orderTp = sig.tp == null ? null : Number(sig.tp);
+
+  return `
+    <article class="edge-card ${sideClass}">
+      <div class="edge-card-top">
+        <div class="edge-symbol-wrap">
+          <a class="edge-symbol" href="${detailUrl}" target="_blank" rel="noopener">
+            ${escapeHtml(String(sig.symbol).replace(/USDT$/, ''))}<span class="sym-usdt">USDT</span>
+          </a>
+          <span class="edge-change ${changeClass}">${fmtPct(sig.change24h)} 24h - ${fmtPrice(markPrice)}</span>
+        </div>
+        <div class="edge-right">
+          <span class="edge-action-badge ${sideClass}">${escapeHtml(action)}</span>
+          <div class="edge-score-wrap">
+            <span class="edge-score-num">${sig.edgeScore}</span>
+            <span class="edge-grade ${gradeClass}">${sig.edgeGrade}</span>
+          </div>
+          <div class="edge-type-row">
+            <span class="edge-type-badge source-${sig.source}">${escapeHtml(sig.sourceLabel)}</span>
+            <span class="edge-type-badge short-type">${escapeHtml(type)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="edge-thesis">
+        <span class="edge-thesis-dot ${sideClass}"></span>
+        <span>${escapeHtml(buildThesis(sig))}</span>
+      </div>
+
+      <div class="edge-prices">
+        <div class="edge-price-cell">
+          <span>Entry</span>
+          <strong>${fmtPrice(sig.entry ?? sig.altEntry)}</strong>
+        </div>
+        <div class="edge-price-cell">
+          <span>SL</span>
+          <strong class="negative">${fmtPrice(sig.sl)}</strong>
+        </div>
+        <div class="edge-price-cell">
+          <span>TP</span>
+          <strong class="positive">${fmtPrice(sig.tp)}</strong>
+        </div>
+      </div>
+
+      <div class="edge-factors">${buildFactors(sig)}</div>
+      <div class="edge-reason">${escapeHtml(sig.reason || '-')}</div>
+      <div class="edge-note">${escapeHtml(sig.note || '')}</div>
+
+      <div class="edge-order-row">
+        <input class="edge-order-margin" type="number" value="5" min="1" max="10000" step="1" title="Margin (USDT)" ${edgeOpenLimitSymbols.has(sig.symbol) ? 'disabled' : ''}>
+        <span class="edge-order-label">USDT</span>
+        <button
+          class="edge-order-btn ${orderSideClass}"
+          type="button"
+          data-symbol="${escapeHtml(sig.symbol)}"
+          data-action="${escapeHtml(action)}"
+          data-entry="${canOrder ? orderEntry : ''}"
+          data-sl="${Number.isFinite(orderSl) ? orderSl : ''}"
+          data-tp="${Number.isFinite(orderTp) ? orderTp : ''}"
+          data-score="${Number(sig.score ?? sig.edgeScore) || 0}"
+          data-type="${escapeHtml(type)}"
+          ${canOrder ? '' : 'disabled'}
+        >LIMIT</button>
+        ${edgeOpenLimitSymbols.has(sig.symbol) ? '<span class="edge-order-exists">Has order</span>' : ''}
+        <button
+          class="edge-paper-btn"
+          type="button"
+          data-symbol="${escapeHtml(sig.symbol)}"
+          data-action="${escapeHtml(action)}"
+          data-entry="${canOrder ? orderEntry : ''}"
+          data-sl="${Number.isFinite(orderSl) ? orderSl : ''}"
+          data-tp="${Number.isFinite(orderTp) ? orderTp : ''}"
+          data-score="${Number(sig.edgeScore ?? sig.score) || 0}"
+          data-type="${escapeHtml(type)}"
+          ${canOrder ? '' : 'disabled'}
+        >+ Paper</button>
+      </div>
+
+      <div class="edge-footer">
+        <span>${escapeHtml(footerLeft)}</span>
+        <span>${escapeHtml(footerRight)}</span>
+      </div>
+    </article>
+  `;
+}
+
+function filteredRows() {
+  const search = searchInput.value.trim().toUpperCase();
+  const minScore = Number(scoreFilter.value) || 0;
+  const source = sourceFilter.value;
+  const side = sideFilter.value;
+
+  return state.rows.filter((sig) => {
+    if (search && !String(sig.symbol ?? '').includes(search)) return false;
+    if (sig.edgeScore < minScore) return false;
+    if (source !== 'all' && sig.source !== source) return false;
+    if (side !== 'all' && sig.edgeBucket !== side) return false;
+    return true;
+  });
+}
+
+function render() {
+  const rows = filteredRows();
+  const shortRows = state.rows.filter((sig) => sig.edgeBucket === 'short');
+  const edgeScores = state.rows.map((sig) => sig.edgeScore);
+  const visibleScores = rows.map((sig) => sig.edgeScore);
+  const avg = edgeScores.length ? edgeScores.reduce((sum, n) => sum + n, 0) / edgeScores.length : null;
+  const best = visibleScores.length ? Math.max(...visibleScores) : null;
+
+  totalSignals.textContent = state.rows.length || '-';
+  rawSignals.textContent = `Raw ${state.rawSignals.length}`;
+  shortCount.textContent = shortRows.length || '-';
+  shortCount.className = shortRows.length > 0 ? 'negative' : '';
+  avgEdge.textContent = avg == null ? '-' : avg.toFixed(0);
+  bestEdge.textContent = best == null ? 'Best -' : `Best ${best}`;
+  visibleCount.textContent = rows.length;
+
+  if (state.lastLoadedAt) {
+    lastScan.textContent = timeLabel(state.lastLoadedAt);
+    nextRefresh.textContent = autoRefreshInput.checked ? 'Auto refresh on' : 'Auto refresh off';
+  }
+
+  if (state.errors.length) {
+    statusEl.textContent = `${state.rows.length} signals - ${state.errors.length} source error`;
+    statusEl.style.color = 'var(--amber)';
+  } else {
+    statusEl.textContent = `${state.rows.length} signals - ${timeLabel(Date.now())}`;
+    statusEl.style.color = 'var(--green)';
+  }
+
+  if (rows.length === 0) {
+    const title = state.rows.length === 0 ? 'No short edge yet' : 'No matching signals';
+    const text = state.rows.length === 0
+      ? (state.errors.length ? state.errors.join(' | ') : 'Live boards returned no usable signal.')
+      : 'Try lowering filters.';
+    grid.innerHTML = `<div class="edge-empty"><strong>${escapeHtml(title)}</strong>${escapeHtml(text)}</div>`;
+    return;
+  }
+
+  grid.innerHTML = rows.map(buildCard).join('');
+}
+
+function restartTimer() {
+  if (state.timer) clearInterval(state.timer);
+  state.timer = null;
+  if (!autoRefreshInput.checked) {
+    nextRefresh.textContent = 'Auto refresh off';
+    return;
+  }
+  state.timer = setInterval(loadSignals, 30_000);
+  nextRefresh.textContent = 'Auto refresh on';
+}
+
+searchInput.addEventListener('input', () => {
+  searchClear.style.display = searchInput.value ? '' : 'none';
+  render();
+});
+
+searchClear.addEventListener('click', () => {
+  searchInput.value = '';
+  searchClear.style.display = 'none';
+  render();
+});
+
+scoreFilter.addEventListener('change', render);
+sourceFilter.addEventListener('change', render);
+sideFilter.addEventListener('change', render);
+refreshButton.addEventListener('click', () => { restartTimer(); loadSignals(); });
+autoRefreshInput.addEventListener('change', restartTimer);
+document.addEventListener('click', (event) => {
+  const btn = event.target.closest('.edge-order-btn');
+  if (!btn) return;
+  placeEdgeOrder(btn);
+});
+document.addEventListener('click', (event) => {
+  const th = event.target.closest('[data-edge-paper-sort]');
+  if (!th || !th.classList.contains('edge-paper-sort')) return;
+  const key = th.dataset.edgePaperSort;
+  if (edgePaperSort.key === key) {
+    edgePaperSort.dir = edgePaperSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    edgePaperSort = { key, dir: key === 'status' ? 'asc' : 'desc' };
+  }
+  renderEdgePaperTrades(edgePaperTradesCache, edgePaperSummaryCache);
+});
+document.addEventListener('click', (event) => {
+  const paperBtn = event.target.closest('.edge-paper-btn');
+  if (paperBtn) {
+    enterEdgePaperTrade(paperBtn);
+    return;
+  }
+  const closeBtn = event.target.closest('[data-edge-paper-close]');
+  if (closeBtn) {
+    closeEdgePaperTrade(closeBtn.dataset.edgePaperClose);
+    return;
+  }
+  const deleteBtn = event.target.closest('[data-edge-paper-delete]');
+  if (deleteBtn) {
+    deleteEdgePaperTrade(deleteBtn.dataset.edgePaperDelete);
+  }
+});
+
+restartTimer();
+loadSignals();
+loadEdgeOpenLimitOrders();
+loadEdgePaperTrades();
+setInterval(loadEdgeOpenLimitOrders, 30_000);
+setInterval(loadEdgePaperTrades, 30_000);
