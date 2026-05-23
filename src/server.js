@@ -79,7 +79,7 @@ async function schedulePumpScan() {
       // Auto-tạo paper trade — chỉ những signal đủ điều kiện real auto-order
       // để paper stats phản ánh đúng hiệu quả thực của hệ thống
       for (const sig of signals) {
-        if (sig.score < 80) continue;                              // dưới ngưỡng auto-order
+        if (sig.score < 75) continue;                              // paper: 75+ (real auto-order cần 80+)
         if ((sig.factors?.chasePct ?? 0) > 0.30) continue;        // chase quá cao
         if (sig.marketOk === false) continue;                      // too far from EMA
         if ((sig.factors?.emaRibbon ?? 1) === 0) continue;        // EMA không bullish
