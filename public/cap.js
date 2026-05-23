@@ -289,7 +289,7 @@ function buildCard(sig) {
           ${sig.blockShort ? '🔒 blocks short' : ''}
           ${sig.blockLong  ? '🔒 blocks long'  : ''}
         </span>
-        <button class="cap-paper-btn ${dirClass}" onclick="enterCapPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'})">+ Paper</button>
+        <button class="cap-paper-btn ${dirClass}" onclick="enterCapPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}')">+ Paper</button>
       </div>
 
       <div class="cap-order-row">
@@ -635,14 +635,15 @@ async function loadCapPaperTrades() {
   } catch {}
 }
 
-window.enterCapPaperTrade = async function(btn, symbol, side, entry, score, sl, tp) {
+window.enterCapPaperTrade = async function(btn, symbol, side, entry, score, sl, tp, noteEncoded) {
   btn.disabled = true;
   btn.textContent = '...';
+  const note = noteEncoded ? decodeURIComponent(noteEncoded) : '';
   try {
     const res = await fetch('/api/cap-paper-trades', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice: entry, tp: tp ?? null, sl: sl ?? null, source: `cap-${score}` }),
+      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice: entry, tp: tp ?? null, sl: sl ?? null, source: `cap-${score}`, note }),
     });
     if (res.ok) {
       btn.textContent = '⏳';
