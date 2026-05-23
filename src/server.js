@@ -18,6 +18,7 @@ import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
 import { createMarkPriceTicker } from './markPriceTicker.js';
+import WebSocket from 'ws';
 
 loadEnv();
 
@@ -1447,13 +1448,40 @@ server.listen(port, '127.0.0.1', () => {
       },
     });
   }, 25000);
+  // BTC mark price WebSocket — funding rate + mark price liên tục, không tốn REST
+  startBtcMarkPriceWs();
 });
 
 // ── BTC Health ────────────────────────────────────────────────────────────────
 let btcHealthCache = { data: null, expiresAt: 0 };
-// Funding rate và L/S ratio thay đổi chậm — cache 5 phút để tránh REST call liên tục
-let btcFundingCache  = { data: null, expiresAt: 0 };
-let btcLsRatioCache  = { data: null, expiresAt: 0 };
+// L/S ratio: không có WS → REST cache 30 phút (thay đổi rất chậm)
+let btcLsRatioCache = { data: null, expiresAt: 0 };
+// Funding rate + mark price: từ WebSocket markPrice stream (field r + p)
+// → 0 REST calls, Binance push mỗi 3 giây
+let btcMarkPriceWsData = { markPrice: null, fundingRate: null, nextFundingTime: null };
+
+function startBtcMarkPriceWs() {
+  const WS_URL = 'wss://fstream.binancefuture.com/ws/btcusdt@markPrice';
+  function connect() {
+    const ws = new WebSocket(WS_URL);
+    ws.on('open',    () => console.log('[BtcWS] markPrice stream connected'));
+    ws.on('message', (raw) => {
+      try {
+        const d = JSON.parse(raw);
+        if (d.e === 'markPriceUpdate') {
+          btcMarkPriceWsData = {
+            markPrice:       Number(d.p),
+            fundingRate:     Number(d.r) * 100, // % per 8h (như getPremiumIndex)
+            nextFundingTime: Number(d.T),
+          };
+        }
+      } catch {}
+    });
+    ws.on('close', () => { console.warn('[BtcWS] markPrice disconnected — reconnecting 5s'); setTimeout(connect, 5_000); });
+    ws.on('error', () => {});
+  }
+  connect();
+}
 
 // Wilder's Smoothed RSI — khớp với Binance (dùng RMA/SMMA, không phải SMA)
 // Cần ít nhất period*10 nến để warm-up đủ; 150+ nến cho kết quả chính xác
@@ -1481,23 +1509,20 @@ async function getBtcHealth() {
   if (btcHealthCache.data && Date.now() < btcHealthCache.expiresAt) return btcHealthCache.data;
 
   try {
-    // Funding rate và L/S ratio: cache 5 phút — không cần real-time, tránh ban IP
-    if (!btcFundingCache.data || Date.now() >= btcFundingCache.expiresAt) {
-      btcFundingCache = { data: await client.getPremiumIndex('BTCUSDT'), expiresAt: Date.now() + 5 * 60_000 };
-    }
+    // Funding rate: từ WebSocket markPrice stream — 0 REST calls
+    const fundingRate = btcMarkPriceWsData.fundingRate ?? 0;
+    const markPrice   = btcMarkPriceWsData.markPrice;
+
+    // L/S ratio: không có WS → REST cache 30 phút (thay đổi rất chậm, không cần real-time)
     if (!btcLsRatioCache.data || Date.now() >= btcLsRatioCache.expiresAt) {
-      btcLsRatioCache = { data: await client.getGlobalLongShortRatio('BTCUSDT', '5m', 1).catch(() => null), expiresAt: Date.now() + 5 * 60_000 };
+      btcLsRatioCache = { data: await client.getGlobalLongShortRatio('BTCUSDT', '5m', 1).catch(() => null), expiresAt: Date.now() + 30 * 60_000 };
     }
     const [klines4h, klines1d, klines1h] = await Promise.all([
       klineCache.getKlines('BTCUSDT', '4h', 100), // từ WS cache — không tốn REST
       klineCache.getKlines('BTCUSDT', '1d', 50),
       klineCache.getKlines('BTCUSDT', '1h', 200), // từ WS cache — không tốn REST
     ]);
-    const premiumRaw = btcFundingCache.data;
     const lsRaw = btcLsRatioCache.data;
-
-    // Funding rate
-    const fundingRate = Number(premiumRaw.lastFundingRate) * 100; // % per 8h
 
     // L/S ratio
     const lsData = Array.isArray(lsRaw) ? lsRaw[0] : lsRaw;
@@ -1572,7 +1597,7 @@ async function getBtcHealth() {
     const bullBias = bullPoints >= 3 ? 'bullish' : bullPoints >= 2 ? 'caution' : 'neutral';
 
     const data = {
-      price: Number(premiumRaw.markPrice),
+      price: markPrice,
       fundingRate: +fundingRate.toFixed(4),
       lsRatio,
       longPct: longPct != null ? +longPct.toFixed(1) : null,
