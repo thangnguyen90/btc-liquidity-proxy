@@ -3,7 +3,7 @@
 //   <script src="/btcHealth.js"></script>
 
 (function () {
-  const REFRESH_MS = 10_000; // 10s — server giữ data fresh qua WebSocket
+  const REFRESH_MS = 30_000; // 30s — khớp với server cache TTL, tránh burst requests
 
   function colorFunding(v) {
     if (v > 0.08) return '#f87171';

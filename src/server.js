@@ -1451,6 +1451,9 @@ server.listen(port, '127.0.0.1', () => {
 
 // ── BTC Health ────────────────────────────────────────────────────────────────
 let btcHealthCache = { data: null, expiresAt: 0 };
+// Funding rate và L/S ratio thay đổi chậm — cache 5 phút để tránh REST call liên tục
+let btcFundingCache  = { data: null, expiresAt: 0 };
+let btcLsRatioCache  = { data: null, expiresAt: 0 };
 
 // Wilder's Smoothed RSI — khớp với Binance (dùng RMA/SMMA, không phải SMA)
 // Cần ít nhất period*10 nến để warm-up đủ; 150+ nến cho kết quả chính xác
@@ -1478,13 +1481,20 @@ async function getBtcHealth() {
   if (btcHealthCache.data && Date.now() < btcHealthCache.expiresAt) return btcHealthCache.data;
 
   try {
-    const [klines4h, klines1d, klines1h, premiumRaw, lsRaw] = await Promise.all([
-      klineCache.getKlines('BTCUSDT', '4h', 100), // 100 nến — Wilder's RSI cần warm-up
+    // Funding rate và L/S ratio: cache 5 phút — không cần real-time, tránh ban IP
+    if (!btcFundingCache.data || Date.now() >= btcFundingCache.expiresAt) {
+      btcFundingCache = { data: await client.getPremiumIndex('BTCUSDT'), expiresAt: Date.now() + 5 * 60_000 };
+    }
+    if (!btcLsRatioCache.data || Date.now() >= btcLsRatioCache.expiresAt) {
+      btcLsRatioCache = { data: await client.getGlobalLongShortRatio('BTCUSDT', '5m', 1).catch(() => null), expiresAt: Date.now() + 5 * 60_000 };
+    }
+    const [klines4h, klines1d, klines1h] = await Promise.all([
+      klineCache.getKlines('BTCUSDT', '4h', 100), // từ WS cache — không tốn REST
       klineCache.getKlines('BTCUSDT', '1d', 50),
-      klineCache.getKlines('BTCUSDT', '1h', 200), // 200 nến — đủ để khớp Binance RSI
-      client.getPremiumIndex('BTCUSDT'),
-      client.getGlobalLongShortRatio('BTCUSDT', '5m', 1).catch(() => null),
+      klineCache.getKlines('BTCUSDT', '1h', 200), // từ WS cache — không tốn REST
     ]);
+    const premiumRaw = btcFundingCache.data;
+    const lsRaw = btcLsRatioCache.data;
 
     // Funding rate
     const fundingRate = Number(premiumRaw.lastFundingRate) * 100; // % per 8h
@@ -1580,7 +1590,7 @@ async function getBtcHealth() {
       updatedAt: Date.now(),
     };
 
-    btcHealthCache = { data, expiresAt: Date.now() + 5_000 }; // 5s — WS invalidates anyway
+    btcHealthCache = { data, expiresAt: Date.now() + 30_000 }; // 30s — klines từ WS, RSI đủ fresh
     return data;
   } catch (e) {
     console.warn('[BtcHealth] error:', e.message);
@@ -1588,19 +1598,14 @@ async function getBtcHealth() {
   }
 }
 
-// ── Real-time RSI: invalidate BTC health cache on every 1h/4h/1d WS tick ──────
-// klineCache._applyTick() keeps the last candle's close = current mark price,
-// so calcRsiSimple() will always use the live price for the in-progress candle.
-klineCache.on('candleTick', ({ symbol, interval }) => {
-  if (symbol !== 'BTCUSDT') return;
-  if (interval !== '1h' && interval !== '4h') return;
-  btcHealthCache.expiresAt = 0; // next /api/btc-health request recalculates immediately
-});
+// ── RSI update khi nến mới đóng (1h/4h/1d) — không dùng candleTick để tránh ban IP ──────
+// klineCache._applyTick() liên tục cập nhật close của nến hiện tại từ WS,
+// nên khi getBtcHealth() chạy (mỗi 30s) RSI đã dùng giá live rồi — không cần invalidate liên tục.
 klineCache.on('candleClose', ({ symbol, interval }) => {
   if (symbol !== 'BTCUSDT') return;
   if (interval !== '1h' && interval !== '4h' && interval !== '1d') return;
-  btcHealthCache.expiresAt = 0;
-  getBtcHealth().catch(() => {}); // eagerly pre-warm on candle close
+  btcHealthCache.expiresAt = 0; // force refresh ngay khi nến mới đóng
+  getBtcHealth().catch(() => {}); // pre-warm cache
 });
 
 async function getSymbols() {
