@@ -114,6 +114,8 @@ async function scheduleCapScan() {
           marginUsdt: 1,
           leverage: 10,
           entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
           source: `cap-${sig.score}`,
           note: sig.note ?? '',
         }).then(() => syncCapPaperTicker()).catch((e) => console.warn(`[CapPaper] auto create ${sig.symbol}:`, e.message));
@@ -2431,8 +2433,13 @@ async function getCapPaperTrades() {
   const trades = store.trades.map((t) => enrichCapPaperTrade(t, capMarkCache.get(t.symbol)));
   const open = trades.filter((t) => t.status !== 'CLOSED');
   const closed = trades.filter((t) => t.status === 'CLOSED');
-  const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
-  const summary = { total: trades.length, open: open.length, closed: closed.length, wins, losses: closed.length - wins };
+  const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length > 0
+    ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length
+    : null;
+  const summary = { total: trades.length, open: open.length, closed: closed.length, wins, losses: closed.length - wins, tpHits, slHits, avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null };
   return { trades, summary };
 }
 
@@ -2462,10 +2469,13 @@ async function createCapPaperTrade(payload) {
     marginUsdt, leverage,
     quantity: (marginUsdt * leverage) / entryPrice,
     entryPrice,
+    tp: payload.tp != null ? Number(payload.tp) : null,
+    sl: payload.sl != null ? Number(payload.sl) : null,
     fillPrice: status === 'OPEN' ? entryPrice : null,
     exitPrice: null,
     pnl: null,
     roe: null,
+    outcome: null, // 'TP' | 'SL' | 'MANUAL'
     createdAt: new Date().toISOString(),
     openedAt: status === 'OPEN' ? new Date().toISOString() : null,
     closedAt: null,
@@ -2488,7 +2498,8 @@ async function closeCapPaperTrade(payload) {
   const sideMult = trade.side === 'LONG' ? 1 : -1;
   const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
   const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
-  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, closedAt: new Date().toISOString() };
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
   await writeCapPaperStore(store);
   return { trade: enrichCapPaperTrade(store.trades[idx], exitPrice) };
 }
@@ -2522,6 +2533,28 @@ async function processCapPaperFills(symbol, markPrice) {
   const store = await readCapPaperStore();
   const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
   for (const t of pending) await fillCapPendingTrade(t, markPrice);
+  // Auto-close OPEN trades that hit TP or SL
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) await checkCapPaperTpSl(t, markPrice);
+}
+
+const capPaperTpSlLocks = new Set();
+async function checkCapPaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (capPaperTpSlLocks.has(trade.id)) return;
+  const isLong = trade.side === 'LONG';
+  const tpHit = trade.tp != null && (isLong ? markPrice >= trade.tp : markPrice <= trade.tp);
+  const slHit = trade.sl != null && (isLong ? markPrice <= trade.sl : markPrice >= trade.sl);
+  if (!tpHit && !slHit) return;
+  capPaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closeCapPaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[CapPaper] 🎯 ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    capPaperTpSlLocks.delete(trade.id);
+  }
 }
 
 async function syncCapPaperTicker() {

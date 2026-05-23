@@ -289,7 +289,7 @@ function buildCard(sig) {
           ${sig.blockShort ? '🔒 blocks short' : ''}
           ${sig.blockLong  ? '🔒 blocks long'  : ''}
         </span>
-        <button class="cap-paper-btn ${dirClass}" onclick="enterCapPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score})">+ Paper</button>
+        <button class="cap-paper-btn ${dirClass}" onclick="enterCapPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'})">+ Paper</button>
       </div>
 
       <div class="cap-order-row">
@@ -478,14 +478,20 @@ function fmtPnl(pnl, roe) {
   return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)} (${sign}${Number(roe ?? 0).toFixed(1)}%)</span>`;
 }
 
-function renderCapPaperTrades(trades) {
+function renderCapPaperTrades(trades, summary) {
   const open   = trades.filter((t) => t.status === 'OPEN' || t.status === 'PENDING' || t.status === 'ENTRY_READY');
   const closed = trades.filter((t) => t.status === 'CLOSED');
   const all    = [...open, ...closed];
-  capPaperCount.textContent = `${open.length} đang mở · ${closed.length} đã đóng`;
+  let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
+  if (summary && summary.closed > 0) {
+    const wr = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
+    countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
+    if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+  }
+  capPaperCount.textContent = countTxt;
 
   if (!all.length) {
-    capPaperBody.innerHTML = '<tr><td colspan="10" class="empty-cell">Chưa có paper trade nào từ cap signals.</td></tr>';
+    capPaperBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ cap signals.</td></tr>';
     return;
   }
 
@@ -500,14 +506,24 @@ function renderCapPaperTrades(trades) {
       ? `<button class="cap-paper-close-btn" style="opacity:.6;font-size:10px" onclick="deleteCapPaperTrade('${t.id}')">Del</button>`
       : `<button class="cap-paper-close-btn" onclick="closeCapPaperTrade('${t.id}')">Close</button>`;
     const rowStyle = isClosed ? 'opacity:.5' : '';
+    const slColor = isLong ? 'var(--red)' : 'var(--green)';
+    const tpColor = isLong ? 'var(--green)' : 'var(--red)';
+    const outcomeHtml = isClosed
+      ? t.outcome === 'TP' ? '<span style="color:var(--green);font-weight:700">✅ TP</span>'
+        : t.outcome === 'SL' ? '<span style="color:var(--red);font-weight:700">🔴 SL</span>'
+        : '<span style="color:var(--muted)">Manual</span>'
+      : t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>'
+      : '<span style="color:var(--green)">OPEN</span>';
     return `<tr style="${rowStyle}">
       <td><strong>${t.symbol.replace(/USDT$/, '')}</strong><span style="color:var(--muted);font-size:11px">USDT</span></td>
       <td>${sideHtml}</td>
       <td>${fmtPrice(t.entryPrice)}</td>
+      <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
       <td>${fmtPrice(mark)}</td>
       <td>${fmtPnl(t.pnl, t.roe)}</td>
       <td>${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
-      <td style="font-size:11px">${t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>' : t.status === 'OPEN' ? '<span style="color:var(--green)">OPEN</span>' : `<span style="color:var(--muted)">${t.status}</span>`}</td>
+      <td style="font-size:11px">${outcomeHtml}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
       <td>${actionBtns}</td>
@@ -520,18 +536,18 @@ async function loadCapPaperTrades() {
     const res = await fetch('/api/cap-paper-trades');
     if (!res.ok) return;
     const data = await res.json();
-    renderCapPaperTrades(data.trades ?? []);
+    renderCapPaperTrades(data.trades ?? [], data.summary);
   } catch {}
 }
 
-window.enterCapPaperTrade = async function(btn, symbol, side, entry, score) {
+window.enterCapPaperTrade = async function(btn, symbol, side, entry, score, sl, tp) {
   btn.disabled = true;
   btn.textContent = '...';
   try {
     const res = await fetch('/api/cap-paper-trades', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice: entry, source: `cap-${score}` }),
+      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice: entry, tp: tp ?? null, sl: sl ?? null, source: `cap-${score}` }),
     });
     if (res.ok) {
       btn.textContent = '⏳';
