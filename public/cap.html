@@ -222,6 +222,13 @@
         color: var(--muted); cursor: pointer;
       }
       .cap-paper-close-btn:hover { color: var(--red); border-color: var(--red); }
+      .cap-paper-sort {
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+      }
+      .cap-paper-sort.active { color: var(--text); }
+      .cap-paper-sort .sort-mark { color: var(--muted); font-size: 10px; margin-left: 3px; }
 
       /* ── Cap order row (Binance LIMIT) ── */
       .cap-order-row {
@@ -365,22 +372,23 @@
           <table class="signal-table">
             <thead>
               <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Entry</th>
-                <th>SL</th>
-                <th>TP</th>
-                <th>Mark</th>
-                <th>PnL</th>
-                <th>ROE</th>
-                <th>Status</th>
-                <th>Source</th>
-                <th>Time</th>
+                <th class="cap-paper-sort" data-paper-sort="symbol">Symbol <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="side">Side <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="sl">SL <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="tp">TP <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="pnl">PnL <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="roe">ROE <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort active" data-paper-sort="status">Status <span class="sort-mark">^</span></th>
+                <th class="cap-paper-sort" data-paper-sort="source">Source <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="time">Time <span class="sort-mark"></span></th>
                 <th></th>
+                <th>Order</th>
               </tr>
             </thead>
             <tbody id="capPaperBody">
-              <tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ cap signals.</td></tr>
+              <tr><td colspan="13" class="empty-cell">Chưa có paper trade nào từ cap signals.</td></tr>
             </tbody>
           </table>
         </div>

@@ -179,7 +179,7 @@ async function loadCapOpenLimitOrders() {
 
 window.placeCapOrder = async function(btn, symbol, action, entry, sl, tp, score, type) {
   const row = btn.closest('.cap-order-row');
-  const input = row?.querySelector('.cap-order-margin');
+  const input = row?.querySelector('.cap-order-margin') ?? btn.closest('td')?.querySelector('.cap-order-margin');
   const margin = Number(input?.value ?? 5);
   if (!margin || margin <= 0) { btn.textContent = 'Nhập margin!'; return; }
 
@@ -470,6 +470,9 @@ function connectPriceSocket() {
 
 const capPaperBody  = document.getElementById('capPaperBody');
 const capPaperCount = document.getElementById('capPaperCount');
+let capPaperTradesCache = [];
+let capPaperSummaryCache = null;
+let capPaperSort = { key: 'status', dir: 'asc' };
 
 function fmtPnl(pnl, roe) {
   if (pnl == null) return '-';
@@ -478,10 +481,60 @@ function fmtPnl(pnl, roe) {
   return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)} (${sign}${Number(roe ?? 0).toFixed(1)}%)</span>`;
 }
 
+function capPaperSortValue(t, key) {
+  if (key === 'symbol') return t.symbol ?? '';
+  if (key === 'side') return t.side ?? '';
+  if (key === 'entry') return Number(t.entryPrice);
+  if (key === 'sl') return t.sl == null ? null : Number(t.sl);
+  if (key === 'tp') return t.tp == null ? null : Number(t.tp);
+  if (key === 'mark') return Number(t.markPrice ?? t.exitPrice);
+  if (key === 'pnl') return t.pnl == null ? null : Number(t.pnl);
+  if (key === 'roe') return t.roe == null ? null : Number(t.roe);
+  if (key === 'source') return t.source ?? '';
+  if (key === 'time') return Date.parse(t.createdAt ?? '') || 0;
+  if (key === 'status') {
+    const order = { OPEN: 0, PENDING: 1, ENTRY_READY: 2, CLOSED: 3 };
+    return order[t.status] ?? 9;
+  }
+  return '';
+}
+
+function compareCapPaperValues(a, b, dir) {
+  const aMissing = a == null || Number.isNaN(a);
+  const bMissing = b == null || Number.isNaN(b);
+  if (aMissing && bMissing) return 0;
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+  const result = typeof a === 'string' || typeof b === 'string'
+    ? String(a).localeCompare(String(b), 'en')
+    : a - b;
+  return dir === 'asc' ? result : -result;
+}
+
+function sortCapPaperTrades(trades) {
+  const { key, dir } = capPaperSort;
+  return trades.slice().sort((a, b) => {
+    const result = compareCapPaperValues(capPaperSortValue(a, key), capPaperSortValue(b, key), dir);
+    if (result !== 0) return result;
+    return compareCapPaperValues(capPaperSortValue(a, 'time'), capPaperSortValue(b, 'time'), 'desc');
+  });
+}
+
+function updateCapPaperSortHeaders() {
+  document.querySelectorAll('[data-paper-sort]').forEach((th) => {
+    const active = th.dataset.paperSort === capPaperSort.key;
+    th.classList.toggle('active', active);
+    const mark = th.querySelector('.sort-mark');
+    if (mark) mark.textContent = active ? (capPaperSort.dir === 'asc' ? '^' : 'v') : '';
+  });
+}
+
 function renderCapPaperTrades(trades, summary) {
+  capPaperTradesCache = trades;
+  capPaperSummaryCache = summary;
   const open   = trades.filter((t) => t.status === 'OPEN' || t.status === 'PENDING' || t.status === 'ENTRY_READY');
   const closed = trades.filter((t) => t.status === 'CLOSED');
-  const all    = [...open, ...closed];
+  const all    = sortCapPaperTrades([...open, ...closed]);
   let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
   if (summary && summary.closed > 0) {
     const wr = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
@@ -514,6 +567,24 @@ function renderCapPaperTrades(trades, summary) {
         : '<span style="color:var(--muted)">Manual</span>'
       : t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>'
       : '<span style="color:var(--green)">OPEN</span>';
+    const dirClass = isLong ? 'long' : 'short';
+    const scoreNum = Number((t.source ?? '').replace(/\D/g, '')) || 0;
+    const hasOrder = capOpenLimitSymbols.has(t.symbol);
+    const orderCell = isClosed
+      ? '<td></td>'
+      : `<td>
+          <div style="display:flex;align-items:center;gap:4px">
+            <input class="cap-order-margin" type="number" value="5" min="1" max="10000" step="1"
+              style="width:46px;padding:3px 5px;border-radius:4px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font-size:12px;font-weight:700;text-align:right"
+              title="Margin (USDT)">
+            <button class="cap-order-btn ${dirClass}"
+              onclick="placeCapOrder(this,'${t.symbol}','${t.side}',${t.entryPrice},${t.sl ?? 'null'},${t.tp ?? 'null'},${scoreNum},'')"
+              style="padding:3px 8px;font-size:10px;white-space:nowrap"
+              ${hasOrder ? 'disabled' : ''}>
+              ${hasOrder ? '✓ Đã có' : '📥 LIMIT'}
+            </button>
+          </div>
+        </td>`;
     return `<tr style="${rowStyle}">
       <td><a href="/?symbol=${t.symbol}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol.replace(/USDT$/, '')}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
       <td>${sideHtml}</td>
@@ -527,8 +598,10 @@ function renderCapPaperTrades(trades, summary) {
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
       <td>${actionBtns}</td>
+      ${orderCell}
     </tr>`;
   }).join('');
+  updateCapPaperSortHeaders();
 }
 
 async function loadCapPaperTrades() {
@@ -587,6 +660,18 @@ window.deleteCapPaperTrade = async function(id) {
 };
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
+
+document.querySelectorAll('[data-paper-sort]').forEach((th) => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.paperSort;
+    if (!key) return;
+    capPaperSort = {
+      key,
+      dir: capPaperSort.key === key && capPaperSort.dir === 'asc' ? 'desc' : 'asc',
+    };
+    renderCapPaperTrades(capPaperTradesCache, capPaperSummaryCache);
+  });
+});
 
 async function fetchAndApply(attempt = 0) {
   try {
