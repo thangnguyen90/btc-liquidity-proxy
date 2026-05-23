@@ -76,8 +76,13 @@ async function schedulePumpScan() {
         }
       }
 
-      // Auto-tạo paper trade cho mỗi signal mới (dedup 4h theo symbol+type)
+      // Auto-tạo paper trade — chỉ những signal đủ điều kiện real auto-order
+      // để paper stats phản ánh đúng hiệu quả thực của hệ thống
       for (const sig of signals) {
+        if (sig.score < 80) continue;                              // dưới ngưỡng auto-order
+        if ((sig.factors?.chasePct ?? 0) > 0.30) continue;        // chase quá cao
+        if (sig.marketOk === false) continue;                      // too far from EMA
+        if ((sig.factors?.emaRibbon ?? 1) === 0) continue;        // EMA không bullish
         const key = `${sig.symbol}|${sig.type}`;
         const last = pumpPaperAutoFired.get(key) ?? 0;
         if (Date.now() - last < 4 * 3600 * 1000) continue;
