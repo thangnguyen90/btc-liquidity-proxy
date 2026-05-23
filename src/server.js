@@ -245,6 +245,7 @@ const runtimeSettings = {
   pumpAutoOrderEnabled: process.env.PUMP_AUTO_ORDER_ENABLED === 'true',
   pumpMaxLimitOrders: Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30),
   pumpMaxPositions: Number(process.env.AUTO_TRADE_MAX_POSITIONS ?? 0),
+  pumpPaperTimeoutH: Number(process.env.PUMP_PAPER_TIMEOUT_H ?? 3), // giờ — tự cắt nếu quá thời gian và pnl ≤ 1%
 };
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
 
@@ -962,6 +963,21 @@ const server = createServer(async (request, response) => {
         if (typeof body.enabled === 'boolean') runtimeSettings.pumpAutoOrderEnabled = body.enabled;
         console.log(`[PumpAuto] ${runtimeSettings.pumpAutoOrderEnabled ? '✅ Bật' : '⏸ Tắt'} pump auto order`);
         await sendJson(response, { enabled: runtimeSettings.pumpAutoOrderEnabled });
+        return;
+      }
+    }
+
+    if (requestUrl.pathname === '/api/pump-paper-timeout') {
+      if (request.method === 'GET') {
+        await sendJson(response, { timeoutH: runtimeSettings.pumpPaperTimeoutH });
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const h = Number(body.timeoutH);
+        if (Number.isFinite(h) && h >= 0.5) runtimeSettings.pumpPaperTimeoutH = h;
+        console.log(`[PumpPaper] Timeout cập nhật: ${runtimeSettings.pumpPaperTimeoutH}h`);
+        await sendJson(response, { timeoutH: runtimeSettings.pumpPaperTimeoutH });
         return;
       }
     }
@@ -2799,7 +2815,35 @@ async function processPumpPaperFills(symbol, markPrice) {
   const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
   for (const t of pending) await fillPumpPendingTrade(t, markPrice);
   const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
-  for (const t of open) await checkPumpPaperTpSl(t, markPrice);
+  for (const t of open) {
+    await checkPumpPaperTpSl(t, markPrice);
+    await checkPumpPaperTimeout(t, markPrice);
+  }
+}
+
+const pumpPaperTimeoutLocks = new Set();
+async function checkPumpPaperTimeout(trade, markPrice) {
+  if (!trade.openedAt) return;
+  const timeoutMs = runtimeSettings.pumpPaperTimeoutH * 3600_000;
+  const openedMs  = Date.parse(trade.openedAt);
+  if (Date.now() - openedMs < timeoutMs) return;
+
+  // Tính ROE theo mark price hiện tại
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (markPrice - Number(trade.entryPrice)) * Number(trade.quantity) * sideMult;
+  const roe = Number(trade.marginUsdt) > 0 ? (pnl / Number(trade.marginUsdt)) * 100 : 0;
+
+  // Giữ lại nếu đang lời > 1% — để TP tiếp
+  if (roe > 1) return;
+
+  if (pumpPaperTimeoutLocks.has(trade.id)) return;
+  pumpPaperTimeoutLocks.add(trade.id);
+  try {
+    await closePumpPaperTrade({ id: trade.id, exitPrice: markPrice, outcome: 'TIMEOUT' });
+    console.log(`[PumpPaper] ⏱ TIMEOUT ${trade.side} ${trade.symbol} roe=${roe.toFixed(1)}% after ${runtimeSettings.pumpPaperTimeoutH}h`);
+  } finally {
+    pumpPaperTimeoutLocks.delete(trade.id);
+  }
 }
 
 const pumpPaperTpSlLocks = new Set();

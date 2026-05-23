@@ -1,10 +1,13 @@
 const SSE_URL = '/api/pump-stream';
 
-const pumpAutoOrderChk     = document.getElementById('pumpAutoOrderChk');
-const maxLimitOrdersInput  = document.getElementById('maxLimitOrdersInput');
-const maxPositionsInput    = document.getElementById('maxPositionsInput');
-const saveMaxOrdersBtn     = document.getElementById('saveMaxOrdersBtn');
-const saveMaxOrdersStatus  = document.getElementById('saveMaxOrdersStatus');
+const pumpAutoOrderChk      = document.getElementById('pumpAutoOrderChk');
+const maxLimitOrdersInput   = document.getElementById('maxLimitOrdersInput');
+const maxPositionsInput     = document.getElementById('maxPositionsInput');
+const saveMaxOrdersBtn      = document.getElementById('saveMaxOrdersBtn');
+const saveMaxOrdersStatus   = document.getElementById('saveMaxOrdersStatus');
+const pumpPaperTimeoutInput = document.getElementById('pumpPaperTimeoutInput');
+const savePaperTimeoutBtn   = document.getElementById('savePaperTimeoutBtn');
+const savePaperTimeoutStatus= document.getElementById('savePaperTimeoutStatus');
 
 (async () => {
   try {
@@ -23,6 +26,36 @@ const saveMaxOrdersStatus  = document.getElementById('saveMaxOrdersStatus');
     }
   } catch {}
 })();
+
+(async () => {
+  try {
+    const res = await fetch('/api/pump-paper-timeout');
+    if (res.ok) { const { timeoutH } = await res.json(); pumpPaperTimeoutInput.value = timeoutH; }
+  } catch {}
+})();
+
+savePaperTimeoutBtn.addEventListener('click', async () => {
+  const h = Number(pumpPaperTimeoutInput.value);
+  if (!Number.isFinite(h) || h < 0.5) { pumpPaperTimeoutInput.focus(); return; }
+  try {
+    savePaperTimeoutBtn.disabled = true;
+    const res = await fetch('/api/pump-paper-timeout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ timeoutH: h }),
+    });
+    if (res.ok) {
+      savePaperTimeoutStatus.textContent = '✓ Đã lưu';
+      setTimeout(() => { savePaperTimeoutStatus.textContent = ''; }, 2500);
+    }
+  } catch {
+    savePaperTimeoutStatus.style.color = 'var(--red)';
+    savePaperTimeoutStatus.textContent = 'Lỗi';
+    setTimeout(() => { savePaperTimeoutStatus.textContent = ''; savePaperTimeoutStatus.style.color = 'var(--green)'; }, 2500);
+  } finally {
+    savePaperTimeoutBtn.disabled = false;
+  }
+});
 
 saveMaxOrdersBtn.addEventListener('click', async () => {
   const maxLimitOrders = Number(maxLimitOrdersInput.value);
@@ -628,8 +661,9 @@ function renderPumpPaperTrades(trades, summary) {
     const slColor = isLong ? 'var(--red)' : 'var(--green)';
     const tpColor = isLong ? 'var(--green)' : 'var(--red)';
     const outcomeHtml = isClosed
-      ? t.outcome === 'TP' ? '<span style="color:var(--green);font-weight:700">✅ TP</span>'
-        : t.outcome === 'SL' ? '<span style="color:var(--red);font-weight:700">🔴 SL</span>'
+      ? t.outcome === 'TP'      ? '<span style="color:var(--green);font-weight:700">✅ TP</span>'
+        : t.outcome === 'SL'    ? '<span style="color:var(--red);font-weight:700">🔴 SL</span>'
+        : t.outcome === 'TIMEOUT' ? '<span style="color:var(--amber);font-weight:700">⏱ Timeout</span>'
         : '<span style="color:var(--muted)">Manual</span>'
       : t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>'
       : '<span style="color:var(--green)">OPEN</span>';
