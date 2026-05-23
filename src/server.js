@@ -2833,8 +2833,8 @@ async function checkPumpPaperTimeout(trade, markPrice) {
   const pnl = (markPrice - Number(trade.entryPrice)) * Number(trade.quantity) * sideMult;
   const roe = Number(trade.marginUsdt) > 0 ? (pnl / Number(trade.marginUsdt)) * 100 : 0;
 
-  // Giữ lại nếu đang lời > 1% — để TP tiếp
-  if (roe > 1) return;
+  // Chỉ chốt khi đang lời > 1% — âm/flat thì để SL tự xử lý
+  if (roe <= 1) return;
 
   if (pumpPaperTimeoutLocks.has(trade.id)) return;
   pumpPaperTimeoutLocks.add(trade.id);
