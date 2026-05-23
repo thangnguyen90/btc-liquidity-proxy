@@ -1386,6 +1386,16 @@ server.listen(port, '127.0.0.1', () => {
     posMonitor = startPositionMonitor({
       client,
       getCredentials: () => getApiCredentials(null),
+      onPositionClose: (symbol) => {
+        // Triggered ngay khi ACCOUNT_UPDATE báo pa=0 — không cần đợi StaleOrder poll 30s
+        console.log(`[PosMonitor] 🔴 ${symbol} closed → cancelling open orders immediately`);
+        let creds;
+        try { creds = getApiCredentials(null); } catch { return; }
+        const { apiKey, apiSecret } = creds;
+        cancelAllOrdersForSymbol(symbol, apiKey, apiSecret)
+          .then(() => invalidateOpenOrdersCache())
+          .catch((err) => console.warn(`[PosMonitor] Cancel orders ${symbol}:`, err.message));
+      },
       onOrderFill: (symbol, { side, filledQty, avgPrice, positionSide, fillTime }) => {
         console.log(`[SlGuard] onOrderFill ${symbol} fillTime=${fillTime} createdAt=${slTracking.createdAt}`);
         // Only track fills that happened after sl-tracking.json was created

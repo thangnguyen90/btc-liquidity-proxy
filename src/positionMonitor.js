@@ -15,7 +15,7 @@ import WebSocket from 'ws';
 
 const WS_BASE = 'wss://fstream.binancefuture.com';
 
-export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, getCredentials = null }) {
+export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, onPositionClose = null, getCredentials = null }) {
   // symbol → { amt, entry, leverage, isolatedMargin, initialMargin }
   const posCache = new Map();
   const stats = {
@@ -124,8 +124,12 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
         for (const p of msg.a?.P ?? []) {
           const amt = Number(p.pa);
           if (amt === 0) {
-            posCache.delete(p.s);
-            updateMarkPriceSubscriptions();
+            if (posCache.has(p.s)) {
+              // Position vừa đóng (SL/TP/manual) → trigger cleanup ngay
+              posCache.delete(p.s);
+              updateMarkPriceSubscriptions();
+              if (onPositionClose) onPositionClose(p.s);
+            }
           } else {
             upsert(p.s, {
               amt,
