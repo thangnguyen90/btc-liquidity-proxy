@@ -99,12 +99,14 @@ async function scheduleCapScan() {
       capScanCache.data = result;
       capScanCache.expiresAt = Date.now() + 30_000;
       pushSse(capSseClients, result);
+      if (signals.length > 0)
+        console.log(`[CapScan] ${signals.length} signal(s): ${signals.map(s => `${s.symbol}(${s.type} ${s.score})`).join(', ')}`);
 
       // Auto-tạo paper trade cho mỗi signal mới (dedup 4h theo symbol+type)
       for (const sig of signals) {
         const key = `${sig.symbol}|${sig.type}`;
         const last = capPaperAutoFired.get(key) ?? 0;
-        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        if (Date.now() - last < 4 * 3600 * 1000) { console.log(`[CapPaper] skip ${key} — cooldown ${Math.round((Date.now()-last)/60000)}m ago`); continue; }
         capPaperAutoFired.set(key, Date.now());
         createCapPaperTrade({
           symbol: sig.symbol,
@@ -2383,14 +2385,23 @@ async function syncPaperTickerSymbols() {
 
 async function readCapPaperStore() {
   try {
-    return JSON.parse(await readFile(CAP_PAPER_FILE, 'utf8'));
-  } catch {
+    const raw = await readFile(CAP_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    console.warn('[CapPaper] Store read error, starting fresh:', e.message);
     return { trades: [] };
   }
 }
 
+let _capPaperWriteLock = Promise.resolve();
 async function writeCapPaperStore(store) {
-  await writeFile(CAP_PAPER_FILE, JSON.stringify(store, null, 2));
+  // Serialize writes để tránh race condition ghi file đồng thời
+  _capPaperWriteLock = _capPaperWriteLock.then(() =>
+    writeFile(CAP_PAPER_FILE, JSON.stringify(store, null, 2))
+  );
+  return _capPaperWriteLock;
 }
 
 function enrichCapPaperTrade(t, markPrice) {

@@ -1,24 +1,42 @@
 {
   "trades": [
     {
-      "id": "ce5894b1-7eaa-41b7-9ed6-7476bd25ff07",
-      "symbol": "SOONUSDT",
+      "id": "f31d560c-af70-48bb-aa06-67d49dcac789",
+      "symbol": "WIFUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "OPEN",
       "marginUsdt": 1,
       "leverage": 10,
-      "quantity": 61.52201149907917,
-      "entryPrice": 0.16254345,
-      "fillPrice": null,
+      "quantity": 52.16835144357654,
+      "entryPrice": 0.1916871,
+      "fillPrice": 0.1916871,
       "exitPrice": null,
       "pnl": null,
       "roe": null,
-      "createdAt": "2026-05-22T08:38:15.418Z",
-      "openedAt": null,
+      "createdAt": "2026-05-23T01:06:48.547Z",
+      "openedAt": "2026-05-23T01:06:49.580Z",
       "closedAt": null,
-      "source": "cap-82",
-      "note": "SC vol=2.73x · range=2.10× ATR | ATR=0.00123900"
+      "source": "cap-86",
+      "note": "SC vol=3.29x · range=1.33× ATR | ATR=0.00142361"
+    },
+    {
+      "id": "82f2bdfa-825f-4deb-99c1-f95c6b07002d",
+      "symbol": "TIAUSDT",
+      "side": "LONG",
+      "status": "OPEN",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 23.933419142618764,
+      "entryPrice": 0.4178258,
+      "fillPrice": 0.4178258,
+      "exitPrice": null,
+      "pnl": null,
+      "roe": null,
+      "createdAt": "2026-05-23T01:04:48.538Z",
+      "openedAt": "2026-05-23T01:04:48.853Z",
+      "closedAt": null,
+      "source": "cap-87",
+      "note": "SC vol=8.26x · range=1.27× ATR | ATR=0.00466402"
     }
   ]
-}
 }
