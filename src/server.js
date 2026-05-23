@@ -1327,6 +1327,10 @@ server.listen(port, '127.0.0.1', () => {
       // Fire-and-forget: seeding runs in background while scanners start
       // LiqScan needs 500 candles; VolDump only needs 42 but 500 covers both
       klineCache.seed(topSymbols, '15m', 500).catch(() => {});
+      // Seed BTC klines — Wilder's RSI cần nhiều nến để warm-up và khớp Binance
+      klineCache.seed(['BTCUSDT'], '1h', 250).catch(() => {});  // 250 nến 1h ~10 ngày
+      klineCache.seed(['BTCUSDT'], '4h', 150).catch(() => {});  // 150 nến 4h ~25 ngày
+      klineCache.seed(['BTCUSDT'], '1d', 60).catch(() => {});   // 60 nến 1d ~2 tháng
     } catch (err) {
       console.warn('[KlineCache] Seed failed:', err.message);
     }
@@ -1359,6 +1363,10 @@ server.listen(port, '127.0.0.1', () => {
     runStaleOrderCleaner(); // seed initial position set, no cancellations on first run
     setInterval(runStaleOrderCleaner, 30000);
   }, 22000);
+  setTimeout(() => {
+    runBtcHealthMonitor(); // initial read — seed _prevBtcBias, no cancellations
+    setInterval(runBtcHealthMonitor, 2 * 60_000); // check every 2 minutes
+  }, 40000);
   setTimeout(() => {
     startNegTpScanner();
   }, 28000);
@@ -1430,15 +1438,24 @@ server.listen(port, '127.0.0.1', () => {
 // ── BTC Health ────────────────────────────────────────────────────────────────
 let btcHealthCache = { data: null, expiresAt: 0 };
 
+// Wilder's Smoothed RSI — khớp với Binance (dùng RMA/SMMA, không phải SMA)
+// Cần ít nhất period*10 nến để warm-up đủ; 150+ nến cho kết quả chính xác
 function calcRsiSimple(closes, period = 14) {
   if (closes.length < period + 1) return null;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
+  // Seed: SMA của period nến đầu tiên
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
     const diff = closes[i] - closes[i - 1];
-    if (diff > 0) gains += diff; else losses -= diff;
+    if (diff > 0) avgGain += diff; else avgLoss -= diff;
   }
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
+  avgGain /= period;
+  avgLoss /= period;
+  // Wilder's smoothing cho phần còn lại
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period;
+  }
   if (avgLoss === 0) return 100;
   return 100 - 100 / (1 + avgGain / avgLoss);
 }
@@ -1447,9 +1464,10 @@ async function getBtcHealth() {
   if (btcHealthCache.data && Date.now() < btcHealthCache.expiresAt) return btcHealthCache.data;
 
   try {
-    const [klines4h, klines1d, premiumRaw, lsRaw] = await Promise.all([
-      client.getKlines('BTCUSDT', '4h', 60),
-      client.getKlines('BTCUSDT', '1d', 30),
+    const [klines4h, klines1d, klines1h, premiumRaw, lsRaw] = await Promise.all([
+      klineCache.getKlines('BTCUSDT', '4h', 100), // 100 nến — Wilder's RSI cần warm-up
+      klineCache.getKlines('BTCUSDT', '1d', 50),
+      klineCache.getKlines('BTCUSDT', '1h', 200), // 200 nến — đủ để khớp Binance RSI
       client.getPremiumIndex('BTCUSDT'),
       client.getGlobalLongShortRatio('BTCUSDT', '5m', 1).catch(() => null),
     ]);
@@ -1477,6 +1495,21 @@ async function getBtcHealth() {
     const closes1d = klines1d.map((k) => Number(k[4] ?? k.close));
     const rsi1d    = calcRsiSimple(closes1d, 14);
 
+    // RSI 1h + EMA20 1h + momentum 6h — detect active downtrend
+    const closes1h  = klines1h.map((k) => Number(k[4] ?? k.close));
+    const rsi1h     = calcRsiSimple(closes1h, 14);
+    const ema20_1h  = closes1h.length >= 20
+      ? closes1h.slice(-20).reduce((s, v) => s + v, 0) / 20
+      : null;
+    const lastClose1h = closes1h[closes1h.length - 1];
+    const emaTrend1h  = ema20_1h != null
+      ? (lastClose1h < ema20_1h ? 'below' : 'above')
+      : null;
+    // % thay đổi trong 6 nến 1h gần nhất
+    const pct6h = closes1h.length >= 7
+      ? ((closes1h[closes1h.length - 1] - closes1h[closes1h.length - 7]) / closes1h[closes1h.length - 7]) * 100
+      : null;
+
     // OBV trend 4h (last 20 candles) — rising/falling/flat
     const vols4h   = klines4h.map((k) => Number(k[5] ?? k.volume));
     let obv = 0;
@@ -1491,12 +1524,28 @@ async function getBtcHealth() {
 
     // Overall bias
     let bearPoints = 0;
+    // --- Tín hiệu đỉnh quá nóng (pre-drop) ---
     if (fundingRate > 0.05) bearPoints++;
     if (bearishDiv) bearPoints++;
     if (longPct != null && longPct > 62) bearPoints++;
     if (rsi4h != null && rsi4h > 70) bearPoints++;
     if (obvTrend === 'falling') bearPoints++;
+    // --- Tín hiệu đang trong downtrend (active dump) ---
+    if (rsi4h != null && rsi4h < 35) bearPoints++;           // BTC dump mạnh trên 4h
+    if (rsi1h != null && rsi1h < 40) bearPoints++;           // Momentum âm trên 1h
+    if (emaTrend1h === 'below') bearPoints++;                // Price dưới EMA20 1h
+
     const bias = bearPoints >= 3 ? 'bearish' : bearPoints >= 2 ? 'caution' : 'neutral';
+
+    // --- Bull points — đối xứng, dùng để block SHORT ---
+    let bullPoints = 0;
+    if (rsi1h != null && rsi1h > 60) bullPoints++;          // Momentum dương trên 1h
+    if (emaTrend1h === 'above') bullPoints++;               // Price trên EMA20 1h
+    if (pct6h != null && pct6h > 1.5) bullPoints++;        // BTC tăng >1.5% trong 6h
+    if (obvTrend === 'rising') bullPoints++;                // OBV đang tăng
+    if (rsi4h != null && rsi4h > 55 && rsi4h < 70) bullPoints++; // 4h bullish nhưng chưa overbought
+    if (longPct != null && longPct < 42) bullPoints++;     // Short nhiều → short squeeze risk
+    const bullBias = bullPoints >= 3 ? 'bullish' : bullPoints >= 2 ? 'caution' : 'neutral';
 
     const data = {
       price: Number(premiumRaw.markPrice),
@@ -1505,20 +1554,40 @@ async function getBtcHealth() {
       longPct: longPct != null ? +longPct.toFixed(1) : null,
       rsi4h: rsi4h != null ? +rsi4h.toFixed(1) : null,
       rsi1d: rsi1d != null ? +rsi1d.toFixed(1) : null,
+      rsi1h: rsi1h != null ? +rsi1h.toFixed(1) : null,
+      emaTrend1h,
+      pct6h: pct6h != null ? +pct6h.toFixed(2) : null,
       bearishDiv,
       obvTrend,
       bias,
       bearPoints,
+      bullBias,
+      bullPoints,
       updatedAt: Date.now(),
     };
 
-    btcHealthCache = { data, expiresAt: Date.now() + 60_000 };
+    btcHealthCache = { data, expiresAt: Date.now() + 5_000 }; // 5s — WS invalidates anyway
     return data;
   } catch (e) {
     console.warn('[BtcHealth] error:', e.message);
     return btcHealthCache.data ?? { error: e.message };
   }
 }
+
+// ── Real-time RSI: invalidate BTC health cache on every 1h/4h/1d WS tick ──────
+// klineCache._applyTick() keeps the last candle's close = current mark price,
+// so calcRsiSimple() will always use the live price for the in-progress candle.
+klineCache.on('candleTick', ({ symbol, interval }) => {
+  if (symbol !== 'BTCUSDT') return;
+  if (interval !== '1h' && interval !== '4h') return;
+  btcHealthCache.expiresAt = 0; // next /api/btc-health request recalculates immediately
+});
+klineCache.on('candleClose', ({ symbol, interval }) => {
+  if (symbol !== 'BTCUSDT') return;
+  if (interval !== '1h' && interval !== '4h' && interval !== '1d') return;
+  btcHealthCache.expiresAt = 0;
+  getBtcHealth().catch(() => {}); // eagerly pre-warm on candle close
+});
 
 async function getSymbols() {
   if (symbolCache.data && Date.now() < symbolCache.expiresAt) {
@@ -3210,6 +3279,80 @@ async function cancelAllOrdersForSymbol(symbol, apiKey, apiSecret) {
   return { symbol, regularCount, algoCount };
 }
 
+// ── BTC Trend Monitor — cancel contra-trend LIMIT orders on bias shift ──────────
+
+let _prevBtcBias = { bear: 'neutral', bull: 'neutral' };
+
+async function cancelContraTrendLimitOrders(direction, health, webhookUrl) {
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const allOrders = await client.getOpenOrders({ apiKey, apiSecret });
+    const isReduceOnly = (o) => o.reduceOnly === true || o.reduceOnly === 'true';
+    const isLimit = (o) => ['LIMIT', 'LIMIT_MAKER'].includes(String(o.type ?? o.origType ?? '').toUpperCase());
+    const side = direction === 'LONG' ? 'BUY' : 'SELL';
+    const targets = allOrders.filter((o) => isLimit(o) && !isReduceOnly(o) && o.side === side);
+    if (!targets.length) return;
+
+    const cancelled = [];
+    for (const o of targets) {
+      try {
+        await client.cancelOrder({ symbol: o.symbol, orderId: o.orderId, apiKey, apiSecret });
+        cancelled.push(o.symbol);
+        console.log(`[BtcTrend] 🗑 Cancelled ${o.symbol} ${direction} LIMIT #${o.orderId}`);
+      } catch (e) {
+        console.warn(`[BtcTrend] ⚠ Cancel ${o.symbol} #${o.orderId}: ${e.message}`);
+      }
+    }
+
+    if (cancelled.length && webhookUrl) {
+      const btcSide = direction === 'LONG' ? `bearish (${health.bearPoints}/8)` : `bullish (${health.bullPoints}/6)`;
+      const msg = `🗑 **Contra-trend LIMIT xoá** | BTC ${btcSide}\n` +
+        `Đã cancel **${cancelled.length}** lệnh ${direction} LIMIT: ${cancelled.join(', ')}\n` +
+        `RSI 1h: ${health.rsi1h} · RSI 4h: ${health.rsi4h} · EMA20 1h: ${health.emaTrend1h} · 6h: ${health.pct6h != null ? (health.pct6h > 0 ? '+' : '') + health.pct6h + '%' : '–'}`;
+      fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: msg }),
+      }).catch(() => {});
+    }
+  } catch (e) {
+    if (e.message?.includes('Missing Binance API')) return;
+    console.error('[BtcTrend] cancel error:', e.message);
+  }
+}
+
+async function runBtcHealthMonitor() {
+  try {
+    // Force refresh để luôn đọc data mới nhất
+    btcHealthCache.expiresAt = 0;
+    const health = await getBtcHealth();
+    if (!health || health.error) return;
+
+    const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+    const prevBear = _prevBtcBias.bear;
+    const currBear = health.bias;
+    const prevBull = _prevBtcBias.bull;
+    const currBull = health.bullBias;
+
+    // Chuyển sang xấu → cancel LONG LIMIT
+    if (prevBear === 'neutral' && (currBear === 'caution' || currBear === 'bearish')) {
+      console.log(`[BtcTrend] 🔴 Bear shift: ${prevBear} → ${currBear} — cancelling LONG LIMITs`);
+      await cancelContraTrendLimitOrders('LONG', health, webhookUrl);
+    }
+
+    // Chuyển sang tốt → cancel SHORT LIMIT
+    if (prevBull === 'neutral' && (currBull === 'caution' || currBull === 'bullish')) {
+      console.log(`[BtcTrend] 🟢 Bull shift: ${prevBull} → ${currBull} — cancelling SHORT LIMITs`);
+      await cancelContraTrendLimitOrders('SHORT', health, webhookUrl);
+    }
+
+    _prevBtcBias = { bear: currBear, bull: currBull };
+  } catch (e) {
+    if (e.message?.includes('Missing Binance API')) return;
+    console.warn('[BtcTrend] monitor error:', e.message);
+  }
+}
+
 const lastKnownPositions = new Map(); // symbol → { unRealizedProfit, positionAmt }
 
 async function runStaleOrderCleaner() {
@@ -3580,29 +3723,103 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
   if (!runtimeSettings.pumpAutoOrderEnabled) return;
   if (isVnBlockHour()) { console.log(`[PumpAuto] ⏰ Block 17-19h VN — ${signal.symbol}`); return; }
   const { symbol, action, score, marketOk, entry, sl, factors } = signal;
-  if (score < 85) return;
+  if (score < 80) return;
   if (marketOk === false) return;
   if (factors?.emaRibbon === 0) return; // EMA ribbon không bullish → không đặt lệnh
+  // Chase guard — bỏ qua nếu giá đã chạy > 30% vào TP range
+  const chasePct = factors?.chasePct ?? 0;
+  if (chasePct > 0.30) {
+    console.log(`[PumpAuto] ⏭ ${symbol} chase=${(chasePct * 100).toFixed(0)}% > 30% — skip`);
+    return;
+  }
+  // Adjusted score guard (score đã trừ chase penalty từ detector)
+  if (score < 70) {
+    console.log(`[PumpAuto] ⏭ ${symbol} adj.score=${score} < 70 — skip`);
+    return;
+  }
   if (!entry || !sl) return;
 
-  // Block khi BTC health = bearish (chỉ block LONG — SHORT vẫn cho qua)
+  // ── Danger zone — block TẤT CẢ auto order khi RSI cực đoan ──────────────────
+  // RSI 1h < 20 hoặc RSI 4h < 25: oversold cực đoan → bounce bất ngờ, short nguy hiểm
+  // RSI 1h > 80 hoặc RSI 4h > 75: overbought cực đoan → dump bất ngờ, long nguy hiểm
+  {
+    const health = btcHealthCache.data;
+    const r1h = health?.rsi1h;
+    const r4h = health?.rsi4h;
+    const isDangerLow  = (r1h != null && r1h < 25) || (r4h != null && r4h < 32); // oversold — short đáy nguy hiểm
+    const isDangerHigh = (r1h != null && r1h > 80) || (r4h != null && r4h > 72); // overbought — long đỉnh nguy hiểm
+    if (isDangerLow || isDangerHigh) {
+      const zone = isDangerLow ? `oversold cực đoan` : `overbought cực đoan`;
+      console.log(`[PumpAuto] 🚫 ${symbol} block ALL — danger zone: ${zone} (RSI1h=${r1h} RSI4h=${r4h})`);
+      const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+      if (webhookUrl) {
+        const dirEmoji = action === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
+        const msg = `🚫 **Pump Auto BLOCKED** | **${symbol}** ${dirEmoji}\n` +
+          `Score: **${score}** | Entry: \`${entry}\`\n` +
+          `BTC Danger Zone: **${zone}**\n` +
+          `RSI 1h: **${r1h ?? '–'}** · RSI 4h: **${r4h ?? '–'}** · ${isDangerLow ? 'Bounce risk cao' : 'Dump risk cao'}`;
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: msg }),
+        }).catch(() => {});
+      }
+      return;
+    }
+  }
+
+  // Block khi BTC health = bearish hoặc caution (chỉ block LONG — SHORT vẫn cho qua)
   if (action === 'LONG' || action == null) {
     const health = btcHealthCache.data;
-    if (health?.bias === 'bearish') {
-      console.log(`[PumpAuto] ⛔ ${symbol} block — BTC bias=bearish (funding=${health.fundingRate}% RSI4h=${health.rsi4h})`);
+    if (health?.bias === 'bearish' || health?.bias === 'caution') {
+      console.log(`[PumpAuto] ⛔ ${symbol} block — BTC bias=${health.bias} (RSI1h=${health.rsi1h} RSI4h=${health.rsi4h} EMA1h=${health.emaTrend1h})`);
       const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
       if (webhookUrl) {
         const reasons = [
           health.fundingRate > 0.05 ? `Funding **${health.fundingRate}%** (cao)` : null,
-          health.bearishDiv ? `RSI Divergence ⚠` : null,
-          health.longPct > 62 ? `Long ratio **${health.longPct}%** (overleveraged)` : null,
+          health.bearishDiv ? `RSI Div ⚠` : null,
+          health.longPct > 62 ? `L/S **${health.longPct}%** long` : null,
           health.rsi4h > 70 ? `RSI 4h **${health.rsi4h}** (overbought)` : null,
-          health.obvTrend === 'falling' ? `OBV 4h ↓ (lực mua yếu)` : null,
+          health.rsi4h != null && health.rsi4h < 35 ? `RSI 4h **${health.rsi4h}** (dump)` : null,
+          health.rsi1h != null && health.rsi1h < 40 ? `RSI 1h **${health.rsi1h}** (bearish)` : null,
+          health.emaTrend1h === 'below' ? `Price dưới EMA20 1h` : null,
+          health.obvTrend === 'falling' ? `OBV 4h ↓` : null,
         ].filter(Boolean);
-        const msg = `⛔ **Pump Auto BLOCKED** | **${symbol}** 🟢 LONG\n` +
+        const biasEmoji = health.bias === 'bearish' ? '⛔' : '⚡';
+        const msg = `${biasEmoji} **Pump Auto BLOCKED** | **${symbol}** 🟢 LONG\n` +
           `Score: **${score}** | Entry: \`${entry}\`\n` +
-          `BTC Health: **bearish** (${health.bearPoints}/5)\n` +
+          `BTC Health: **${health.bias}** (${health.bearPoints}/8)\n` +
           `Lý do: ${reasons.join(' · ') || 'tổng hợp nhiều yếu tố'}`;
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: msg }),
+        }).catch(() => {});
+      }
+      return;
+    }
+  }
+
+  // Block SHORT khi BTC đang bullish — đối xứng với block LONG khi bearish
+  if (action === 'SHORT') {
+    const health = btcHealthCache.data;
+    if (health?.bullBias === 'bullish' || health?.bullBias === 'caution') {
+      console.log(`[PumpAuto] ⛔ ${symbol} block SHORT — BTC bullBias=${health.bullBias} (RSI1h=${health.rsi1h} EMA1h=${health.emaTrend1h} pct6h=${health.pct6h}%)`);
+      const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+      if (webhookUrl) {
+        const reasons = [
+          health.rsi1h != null && health.rsi1h > 60 ? `RSI 1h **${health.rsi1h}** (bullish)` : null,
+          health.emaTrend1h === 'above' ? `Price trên EMA20 1h` : null,
+          health.pct6h != null && health.pct6h > 1.5 ? `BTC +${health.pct6h}% trong 6h` : null,
+          health.obvTrend === 'rising' ? `OBV 4h ↑` : null,
+          health.rsi4h != null && health.rsi4h > 55 ? `RSI 4h **${health.rsi4h}** (bullish)` : null,
+          health.longPct != null && health.longPct < 42 ? `L/S **${health.longPct}%** long (short squeeze risk)` : null,
+        ].filter(Boolean);
+        const biasEmoji = health.bullBias === 'bullish' ? '⛔' : '⚡';
+        const msg = `${biasEmoji} **Pump Auto BLOCKED** | **${symbol}** 🔴 SHORT\n` +
+          `Score: **${score}** | Entry: \`${entry}\`\n` +
+          `BTC Bull Trend: **${health.bullBias}** (${health.bullPoints}/6)\n` +
+          `Lý do: ${reasons.join(' · ') || 'BTC đang trong uptrend'}`;
         fetch(webhookUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -3721,10 +3938,18 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
     if (webhookUrl) {
       const slStatus = slPlaced ? `🛡 SL: \`${slPriceStr}\` (−${slRoePct}% ROE)` : `⚠ **SL không đặt được**`;
+      const entryQuality = chasePct > 0.45 || score < 55
+        ? '🚫 Đã trễ — chờ pullback'
+        : chasePct > 0.30 || score < 70
+          ? '⚠ Cân nhắc — chase cao'
+          : '✅ Có thể vào';
+      const chaseStr = chasePct > 0.01 ? ` · Chase ${(chasePct * 100).toFixed(0)}%TP` : '';
+      const tpStr = tpFromSignal ? ` · TP: \`${tpFromSignal}\`` : '';
       const msg = `🎯 **Pump Auto LIMIT** | **${symbol}** ${action === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}\n` +
-        `Score: **${score}** | Entry: \`${entryStr}\` | ${slStatus}\n` +
+        `Score: **${score}** | ${entryQuality}${chaseStr}\n` +
+        `Entry: \`${entryStr}\`${tpStr} | ${slStatus}\n` +
         `Margin: $${margin} × ${leverage}x | RSI: ${factors?.rsi14val ?? '-'} | Vol: ${factors?.volRatio ?? '-'}×\n` +
-        `OrderId: ${order.orderId}`;
+        `Type: ${signal.type ?? '-'} | OrderId: ${order.orderId}`;
       fetch(webhookUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

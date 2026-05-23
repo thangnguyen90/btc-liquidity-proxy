@@ -171,6 +171,11 @@ function buildFactors(sig) {
     chips.push({ label: `Penalty −${(f.qPenalty * 100).toFixed(0)}pt`, ok: 'warn' });
   }
 
+  if (f.chasePct != null && f.chasePct > 0.1) {
+    const pct = Math.round(f.chasePct * 100);
+    chips.push({ label: `Chase ${pct}%`, ok: pct >= 40 ? 'warn' : '' });
+  }
+
   if (sig.marketOk === false) {
     chips.push({ label: 'Too far EMA', ok: 'warn' });
   }
@@ -267,10 +272,21 @@ window.placePumpOrder = async function (btn, symbol, action, entry, sl, tp, scor
 // ── Card builder ──────────────────────────────────────────────────────────────
 
 function isAutoEligible(sig) {
-  if (sig.score < 85) return false;
+  if (sig.score < 80) return false;
   if (sig.marketOk === false) return false;
   if ((sig.factors?.emaRibbon ?? 1) === 0) return false;
+  if ((sig.factors?.chasePct ?? 0) > 0.30) return false;
   return true;
+}
+
+function entryBadge(sig) {
+  const chase = sig.factors?.chasePct ?? 0;
+  const score = sig.score;
+  if (chase > 0.45 || score < 55)
+    return { label: '🚫 Đã trễ — chờ pullback', cls: 'entry-badge bad' };
+  if (chase > 0.30 || score < 70)
+    return { label: '⚠ Cân nhắc — chase cao', cls: 'entry-badge warn' };
+  return { label: '✅ Có thể vào', cls: 'entry-badge good' };
 }
 
 function buildCard(sig) {
@@ -293,6 +309,9 @@ function buildCard(sig) {
   const autoDot = isAutoEligible(sig)
     ? `<span class="auto-dot ${dirClass}" title="Đủ điều kiện Auto LIMIT ≥85"></span>`
     : '';
+
+  const badge = entryBadge(sig);
+  const badgeHtml = badge ? `<div class="${badge.cls}">${badge.label}</div>` : '';
 
   return `
     <article class="pump-card ${dirClass}">
@@ -331,6 +350,7 @@ function buildCard(sig) {
 
       <div class="pump-factors">${factors}</div>
       ${marketWarn}
+      ${badgeHtml}
       <div class="pump-note">${sig.note || ''}</div>
       <div class="pump-order-row">
         <input class="pump-order-margin" type="number" value="5" min="1" max="10000" step="1" title="Margin (USDT)">

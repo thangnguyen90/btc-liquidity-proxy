@@ -3,7 +3,7 @@
 //   <script src="/btcHealth.js"></script>
 
 (function () {
-  const REFRESH_MS = 60_000;
+  const REFRESH_MS = 10_000; // 10s — server giữ data fresh qua WebSocket
 
   function colorFunding(v) {
     if (v > 0.08) return '#f87171';
@@ -14,7 +14,8 @@
   function colorRsi(v) {
     if (v >= 70) return '#f87171';
     if (v >= 60) return '#fbbf24';
-    if (v <= 30) return '#34d399';
+    if (v <= 30) return '#f87171'; // oversold = dump đang diễn ra
+    if (v <= 40) return '#fbbf24';
     return '#94a3b8';
   }
   function colorLong(v) {
@@ -29,6 +30,12 @@
   function biasLabel(b) {
     return b === 'bearish' ? '⚠ Bearish' : b === 'caution' ? '⚡ Caution' : '✓ Neutral';
   }
+  function bullBiasLabel(b) {
+    return b === 'bullish' ? '🚀 Bullish' : b === 'caution' ? '⚡ Caution' : null;
+  }
+  function colorBullBias(b) {
+    return b === 'bullish' ? '#34d399' : '#fbbf24';
+  }
   function obvIcon(t) {
     return t === 'rising' ? '↑' : t === 'falling' ? '↓' : '→';
   }
@@ -41,10 +48,30 @@
       return;
     }
     const age = d.updatedAt ? Math.floor((Date.now() - d.updatedAt) / 1000) : null;
+    const isDangerLow  = (d.rsi1h != null && d.rsi1h < 25) || (d.rsi4h != null && d.rsi4h < 32); // short đáy nguy hiểm
+    const isDangerHigh = (d.rsi1h != null && d.rsi1h > 80) || (d.rsi4h != null && d.rsi4h > 72); // long đỉnh nguy hiểm
+    // Auto order status — mirrors server-side handlePumpAutoOrder checks
+    const autoLongBlocked  = isDangerLow || isDangerHigh || d.bias === 'bearish' || d.bias === 'caution';
+    const autoShortBlocked = isDangerLow || isDangerHigh || d.bullBias === 'bullish' || d.bullBias === 'caution';
+    let autoChip;
+    if (isDangerLow || isDangerHigh) {
+      const reason = isDangerLow ? 'RSI oversold cực đoan' : 'RSI overbought cực đoan';
+      autoChip = `<span class="btch-chip" style="background:rgba(251,113,133,.2);color:#f87171;border:1px solid rgba(251,113,133,.4);border-radius:4px;padding:2px 8px;font-weight:800">🚫 Auto OFF — ${reason}</span>`;
+    } else if (autoLongBlocked && autoShortBlocked) {
+      autoChip = `<span class="btch-chip" style="background:rgba(251,113,133,.12);color:#f87171;border:1px solid rgba(251,113,133,.3);border-radius:4px;padding:2px 8px;font-weight:700">⛔ Chặn LONG + SHORT tự động</span>`;
+    } else if (autoLongBlocked) {
+      autoChip = `<span class="btch-chip" style="background:rgba(251,191,36,.12);color:#fbbf24;border:1px solid rgba(251,191,36,.3);border-radius:4px;padding:2px 8px;font-weight:700">⛔ Chặn LONG tự động</span>`;
+    } else if (autoShortBlocked) {
+      autoChip = `<span class="btch-chip" style="background:rgba(251,191,36,.12);color:#fbbf24;border:1px solid rgba(251,191,36,.3);border-radius:4px;padding:2px 8px;font-weight:700">⛔ Chặn SHORT tự động</span>`;
+    } else {
+      autoChip = `<span class="btch-chip" style="color:#34d399;font-weight:600">✅ Auto ON</span>`;
+    }
     el.innerHTML = `
 <div class="btch-bar">
   <span class="btch-label">BTC Health</span>
   <span class="btch-chip" style="color:${colorBias(d.bias)};font-weight:700">${biasLabel(d.bias)}</span>
+  ${d.bullBias && d.bullBias !== 'neutral' ? `<span class="btch-chip" style="color:${colorBullBias(d.bullBias)};font-weight:700">${bullBiasLabel(d.bullBias)}</span>` : ''}
+  ${autoChip}
   <span class="btch-sep">|</span>
   <span class="btch-item">
     <span class="btch-key">Funding</span>
@@ -57,13 +84,25 @@
   </span>
   <span class="btch-sep">|</span>
   <span class="btch-item">
-    <span class="btch-key">RSI 4h</span>
+    <span class="btch-key">RSI 1h</span>
+    <span style="color:${colorRsi(d.rsi1h)}">${d.rsi1h ?? '–'}</span>
+  </span>
+  <span class="btch-item">
+    <span class="btch-key">4h</span>
     <span style="color:${colorRsi(d.rsi4h)}">${d.rsi4h ?? '–'}</span>
   </span>
   <span class="btch-item">
     <span class="btch-key">1D</span>
     <span style="color:${colorRsi(d.rsi1d)}">${d.rsi1d ?? '–'}</span>
   </span>
+  <span class="btch-sep">|</span>
+  <span class="btch-item">
+    <span class="btch-key">EMA20 1h</span>
+    <span style="color:${d.emaTrend1h === 'below' ? '#f87171' : d.emaTrend1h === 'above' ? '#34d399' : '#94a3b8'}">
+      ${d.emaTrend1h === 'below' ? '↓ Below' : d.emaTrend1h === 'above' ? '↑ Above' : '–'}
+    </span>
+  </span>
+  ${d.pct6h != null ? `<span class="btch-item"><span class="btch-key">6h</span><span style="color:${d.pct6h < -1.5 ? '#f87171' : d.pct6h > 1.5 ? '#34d399' : '#94a3b8'}">${d.pct6h > 0 ? '+' : ''}${d.pct6h}%</span></span>` : ''}
   <span class="btch-sep">|</span>
   <span class="btch-item">
     <span class="btch-key">OBV 4h</span>

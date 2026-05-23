@@ -168,6 +168,46 @@
       .src-auto   { background: rgba(54,211,153,.18);  color: var(--green); }
       .src-tp     { background: rgba(249,115,22,.18);  color: #f97316; }
       .src-sl     { background: rgba(251,113,133,.18); color: var(--red); }
+
+      /* ── DCA inline row ── */
+      .dca-toggle-btn {
+        height: 28px; padding: 0 10px;
+        border: 1px solid var(--line); border-radius: 5px;
+        background: var(--panel-2); color: var(--muted);
+        font-size: 12px; font-weight: 700; cursor: pointer;
+        transition: background .15s, color .15s;
+      }
+      .dca-toggle-btn:hover,
+      .dca-toggle-btn.active { background: rgba(96,165,250,.18); color: #60a5fa; border-color: #60a5fa; }
+      .dca-row td { padding: 0 !important; border-bottom: none !important; }
+      .dca-form {
+        display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;
+        padding: 10px 12px 12px;
+        background: rgba(96,165,250,.06);
+        border-bottom: 1px solid var(--line);
+      }
+      .dca-form .dca-field { display:flex; flex-direction:column; gap:3px; }
+      .dca-form .dca-field span { font-size:10px; color:var(--muted); text-transform:uppercase; font-weight:700; }
+      .dca-form input[type=number], .dca-form select {
+        height: 34px; padding: 0 8px; border-radius: 4px;
+        border: 1px solid var(--line); background: var(--panel-2);
+        color: var(--text); font-size: 13px;
+      }
+      .dca-form .dca-margin-input { width: 80px; }
+      .dca-form .dca-lev-input    { width: 60px; }
+      .dca-form .dca-price-input  { width: 120px; }
+      .dca-form .dca-type-select  { width: 110px; }
+      .dca-form .dca-long-btn  { height:34px; padding:0 14px; background:var(--green); color:#0d1a12; border:0; border-radius:5px; font-size:12px; font-weight:800; cursor:pointer; }
+      .dca-form .dca-short-btn { height:34px; padding:0 14px; background:var(--red);   color:#1a040a; border:0; border-radius:5px; font-size:12px; font-weight:800; cursor:pointer; }
+      .dca-form .dca-long-btn:disabled,
+      .dca-form .dca-short-btn:disabled { opacity:.45; cursor:not-allowed; }
+      .dca-form .dca-result {
+        font-size:12px; color:var(--muted);
+        align-self:center; max-width:320px;
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+      }
+      .dca-form .dca-result.ok  { color:var(--green); }
+      .dca-form .dca-result.err { color:var(--red); }
     </style>
   </head>
   <body>

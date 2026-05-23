@@ -139,16 +139,34 @@ function applySort(theadEl, tbodyEl) {
     const icon = th.querySelector('.sort-icon');
     if (icon) icon.textContent = i === state.colIdx ? (state.asc ? '▲' : '▼') : '';
   });
-  const rows = [...tbodyEl.querySelectorAll('tr')];
-  if (!rows[0] || rows[0].cells.length < 2) return;
-  rows.sort((a, b) => {
+
+  // Group rows: each group = [primaryRow, ...followerRows (e.g. dca-row)]
+  // Follower rows (class "dca-row") are kept attached to the preceding primary row.
+  const allRows = [...tbodyEl.querySelectorAll('tr')];
+  if (!allRows[0] || allRows[0].cells.length < 2) return;
+
+  const groups = [];
+  for (const row of allRows) {
+    if (row.classList.contains('dca-row')) {
+      // Attach to previous group so it stays paired with its position row
+      if (groups.length) groups[groups.length - 1].push(row);
+    } else {
+      groups.push([row]);
+    }
+  }
+
+  groups.sort((ga, gb) => {
+    const a = ga[0], b = gb[0];
     const av = a.cells[state.colIdx]?.dataset.v ?? a.cells[state.colIdx]?.textContent?.trim() ?? '';
     const bv = b.cells[state.colIdx]?.dataset.v ?? b.cells[state.colIdx]?.textContent?.trim() ?? '';
     const an = parseFloat(av), bn = parseFloat(bv);
     if (!isNaN(an) && !isNaN(bn)) return state.asc ? an - bn : bn - an;
     return state.asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
   });
-  rows.forEach((r) => tbodyEl.appendChild(r));
+
+  for (const group of groups) {
+    for (const row of group) tbodyEl.appendChild(row);
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -365,7 +383,8 @@ function startMarkPriceWs(symbols) {
 function _buildPositionRows(rows) {
   positionsBody.innerHTML = rows.map((p) => {
     const amt = Number(p.positionAmt);
-    const side = amt > 0 ? '<span class="positive">LONG</span>' : '<span class="negative">SHORT</span>';
+    const isLong = amt > 0;
+    const side = isLong ? '<span class="positive">LONG</span>' : '<span class="negative">SHORT</span>';
     const upnl = Number(p.unRealizedProfit);
     const entry = Number(p.entryPrice);
     const mark = Number(p.markPrice);
@@ -373,10 +392,11 @@ function _buildPositionRows(rows) {
     const lev = Number(p.leverage);
     const margin = Number(p.isolatedMargin) || Number(p.initialMargin) || null;
     const roe = entry > 0 ? ((upnl / (Math.abs(amt) * entry / lev)) * 100) : 0;
+    const sym = p.symbol;
     return `
-      <tr data-sym="${p.symbol}">
-        <td><strong>${symLink(p.symbol)}</strong></td>
-        <td data-v="${amt > 0 ? 1 : 0}">${side}</td>
+      <tr data-sym="${sym}">
+        <td><strong>${symLink(sym)}</strong></td>
+        <td data-v="${isLong ? 1 : 0}">${side}</td>
         <td data-v="${Math.abs(amt)}">${fmt(Math.abs(amt), 6)}</td>
         <td data-v="${entry}">${fmt(entry)}</td>
         <td data-v="${mark}">${fmt(mark)}</td>
@@ -385,10 +405,42 @@ function _buildPositionRows(rows) {
         <td data-v="${margin ?? 0}">${margin != null ? fmt(margin, 4) : '-'}</td>
         <td data-v="${upnl}" class="${pnlClass(upnl)}">${upnl >= 0 ? '+' : ''}${fmt(upnl, 4)}</td>
         <td data-v="${roe}" class="${pnlClass(roe)}">${roe >= 0 ? '+' : ''}${fmt(roe, 2)}%</td>
-        <td><button class="action-btn close-btn" data-symbol="${p.symbol}" data-amt="${p.positionAmt}">Close</button></td>
+        <td style="display:flex;gap:6px;align-items:center">
+          <button class="action-btn close-btn" data-symbol="${sym}" data-amt="${p.positionAmt}">Close</button>
+          <button class="dca-toggle-btn" data-sym="${sym}">DCA</button>
+        </td>
+      </tr>
+      <tr class="dca-row" id="dca-row-${sym}" style="display:none">
+        <td colspan="11">
+          <div class="dca-form">
+            <div class="dca-field">
+              <span>Margin $</span>
+              <input type="number" class="dca-margin-input" min="1" step="0.5" value="5">
+            </div>
+            <div class="dca-field">
+              <span>Leverage</span>
+              <input type="number" class="dca-lev-input" min="1" max="125" step="1" value="${lev}">
+            </div>
+            <div class="dca-field">
+              <span>Type</span>
+              <select class="dca-type-select">
+                <option value="MARKET">Market</option>
+                <option value="LIMIT">Limit</option>
+              </select>
+            </div>
+            <div class="dca-field">
+              <span>Limit Price</span>
+              <input type="number" class="dca-price-input" min="0" step="any" placeholder="Market nếu để trống" disabled>
+            </div>
+            <button class="dca-long-btn" data-sym="${sym}" data-side="BUY">▲ LONG</button>
+            <button class="dca-short-btn" data-sym="${sym}" data-side="SELL">▼ SHORT</button>
+            <span class="dca-result"></span>
+          </div>
+        </td>
       </tr>`;
   }).join('');
 
+  // ── Close buttons ──
   positionsBody.querySelectorAll('.close-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const sym = btn.dataset.symbol;
@@ -409,6 +461,92 @@ function _buildPositionRows(rows) {
       }
     });
   });
+
+  // ── DCA toggle ──
+  positionsBody.querySelectorAll('.dca-toggle-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const sym = btn.dataset.sym;
+      const dcaRow = document.getElementById(`dca-row-${sym}`);
+      if (!dcaRow) return;
+      const isOpen = dcaRow.style.display !== 'none';
+      dcaRow.style.display = isOpen ? 'none' : '';
+      btn.classList.toggle('active', !isOpen);
+      if (!isOpen) {
+        dcaRow.querySelector('.dca-margin-input')?.focus();
+      }
+    });
+  });
+
+  // ── DCA type change: enable/disable limit price ──
+  positionsBody.querySelectorAll('.dca-type-select').forEach((sel) => {
+    const row = sel.closest('.dca-form');
+    sel.addEventListener('change', () => {
+      const priceInput = row.querySelector('.dca-price-input');
+      priceInput.disabled = sel.value !== 'LIMIT';
+      if (priceInput.disabled) priceInput.value = '';
+    });
+  });
+
+  // ── DCA submit ──
+  positionsBody.querySelectorAll('.dca-long-btn, .dca-short-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const sym = btn.dataset.sym;
+      const side = btn.dataset.side;
+      const form = btn.closest('.dca-form');
+      const margin = Number(form.querySelector('.dca-margin-input').value);
+      const lev = Number(form.querySelector('.dca-lev-input').value);
+      const orderType = form.querySelector('.dca-type-select').value;
+      const limitPrice = form.querySelector('.dca-price-input').value;
+      const resultEl = form.querySelector('.dca-result');
+
+      if (!margin || margin <= 0) {
+        resultEl.textContent = 'Nhập margin hợp lệ.';
+        resultEl.className = 'dca-result err';
+        return;
+      }
+      if (orderType === 'LIMIT' && !limitPrice) {
+        resultEl.textContent = 'Nhập limit price.';
+        resultEl.className = 'dca-result err';
+        return;
+      }
+
+      const label = side === 'BUY' ? 'LONG' : 'SHORT';
+      if (!confirm(`DCA ${label} ${sym} · $${margin} × ${lev}x?`)) return;
+
+      form.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      resultEl.textContent = 'Sending...';
+      resultEl.className = 'dca-result';
+
+      try {
+        const payload = {
+          symbol: sym,
+          side,
+          notionalUsdt: margin * lev,
+          leverage: lev,
+          orderType,
+          dryRun: false,
+        };
+        if (orderType === 'LIMIT' && limitPrice) payload.limitPrice = Number(limitPrice);
+
+        const result = await apiFetch('/api/order', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        const ok = result.status === 'submitted' || result.orderId;
+        resultEl.textContent = ok ? `✓ ${result.status ?? 'OK'} · #${result.orderId ?? ''}` : JSON.stringify(result);
+        resultEl.className = `dca-result ${ok ? 'ok' : 'err'}`;
+        if (ok) await loadPositions(true);
+      } catch (err) {
+        resultEl.textContent = `✗ ${err.message}`;
+        resultEl.className = 'dca-result err';
+      } finally {
+        form.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+      }
+    });
+  });
+
   applySort(document.getElementById('positionsHead'), positionsBody);
 }
 

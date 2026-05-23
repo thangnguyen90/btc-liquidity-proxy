@@ -79,22 +79,52 @@ export async function runPumpScan(symbols, klineCache, snapshotMap) {
         else                                                     type = 'climax_top';
       }
 
+      // ── Chase penalty ─────────────────────────────────────────────────────────
+      // Nếu giá hiện tại đã vượt entry và chạy vào TP range → trừ điểm
+      // chasePct = phần trăm TP range đã bị consume bởi giá
+      const rawScore   = setup?.score ?? 0;
+      const entryPrice = setup?.entry;
+      const tpPrice    = setup?.tp;
+      const markNow    = snap?.markPrice;
+      let chasePct  = 0;
+      let chaseScore = rawScore;
+
+      if (markNow && entryPrice && tpPrice && tpPrice !== entryPrice) {
+        if (det.action === 'LONG' && markNow > entryPrice) {
+          chasePct = (markNow - entryPrice) / (tpPrice - entryPrice); // >0 = đã chạy vào TP
+        } else if (det.action === 'SHORT' && markNow < entryPrice) {
+          chasePct = (entryPrice - markNow) / (entryPrice - tpPrice);
+        }
+        chasePct = Math.max(0, chasePct);
+
+        // Penalty: bắt đầu trừ khi đã chạy >25% TP range
+        // 50% consumed → -15pts; 75% → -28pts; 100% → -40pts (cap)
+        if (chasePct > 0.25) {
+          const penaltyPts = Math.min(40, Math.round((chasePct - 0.25) * 53));
+          chaseScore = Math.max(0, rawScore - penaltyPts);
+        }
+      }
+
+      const chaseNote = chasePct > 0.1
+        ? ` | chase=${(chasePct * 100).toFixed(0)}%TP`
+        : '';
+
       results.push({
         symbol,
         action:    det.action,
         type,
-        score:     setup?.score   ?? 0,
-        grade:     setup?.grade   ?? '-',
-        entry:     setup?.entry,
+        score:     chaseScore,
+        grade:     chaseScore >= 85 ? 'A' : chaseScore >= 70 ? 'B' : chaseScore >= 55 ? 'C' : 'D',
+        entry:     entryPrice,
         altEntry:  setup?.altEntry,
         sl:        setup?.sl,
-        tp:        setup?.tp,
+        tp:        tpPrice,
         reason:    det.reason,
-        note:      det.note,
-        factors:   setup?.factors ?? {},
+        note:      (det.note ?? '') + chaseNote,
+        factors:   { ...(setup?.factors ?? {}), chasePct: chasePct > 0.01 ? +chasePct.toFixed(2) : undefined },
         marketOk:  det.longSetup?.marketOk ?? null,
         blockShort: det.blockShort,
-        markPrice: snap?.markPrice,
+        markPrice: markNow,
         change24h: snap?.change24hPct,
         volume:    snap?.quoteVolume,
         scannedAt: Date.now(),
