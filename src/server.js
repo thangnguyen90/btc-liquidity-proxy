@@ -15,6 +15,8 @@ import { runPumpScan } from './pumpDetector.js';
 import { runCapScan }  from './capDetector.js';
 import { runKillShortScan } from './killShortDetector.js';
 import { runDumpIgnitionScan } from './dumpIgnitionDetector.js';
+import { runSpikeReversalScan } from './spikeReversalDetector.js';
+import { runPumpIgnitionScan } from './pumpIgnitionDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -33,12 +35,38 @@ const pumpScanCache = { data: null, expiresAt: 0 };
 const capScanCache       = { data: null, expiresAt: 0 };
 const killShortScanCache    = { data: null, expiresAt: 0 };
 const dumpIgnitionScanCache = { data: null, expiresAt: 0 };
+const spikeReversalScanCache  = { data: null, expiresAt: 0 };
+const pumpIgnitionScanCache   = { data: null, expiresAt: 0 };
+
+// ── Shared market snapshot cache — tất cả scan dùng chung, tránh spam REST ───
+let _snapshotCache = null;
+let _snapshotCacheAt = 0;
+let _snapshotInflight = null;
+const SNAPSHOT_TTL_MS = 25_000; // 25s — đủ cho 1 chu kỳ scan, không stale quá lâu
+
+async function getSharedSnapshot() {
+  const now = Date.now();
+  if (_snapshotCache && now - _snapshotCacheAt < SNAPSHOT_TTL_MS) return _snapshotCache;
+  if (_snapshotInflight) return _snapshotInflight; // dedupe concurrent calls
+  _snapshotInflight = getMarketSnapshot().then((snap) => {
+    _snapshotCache   = snap;
+    _snapshotCacheAt = Date.now();
+    _snapshotInflight = null;
+    return snap;
+  }).catch((e) => {
+    _snapshotInflight = null;
+    throw e;
+  });
+  return _snapshotInflight;
+}
 
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 const pumpSseClients = new Set();
 const capSseClients          = new Set();
 const killShortSseClients    = new Set();
 const dumpIgnitionSseClients = new Set();
+const spikeReversalSseClients  = new Set();
+const pumpIgnitionSseClients   = new Set();
 
 function pushSse(clients, data) {
   const payload = `data: ${JSON.stringify(data)}\n\n`;
@@ -53,7 +81,7 @@ async function schedulePumpScan() {
   clearTimeout(_pumpScanDebounce);
   _pumpScanDebounce = setTimeout(async () => {
     try {
-      const snapshot    = await getMarketSnapshot();
+      const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols  = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
@@ -142,7 +170,7 @@ async function scheduleCapScan() {
   clearTimeout(_capScanDebounce);
   _capScanDebounce = setTimeout(async () => {
     try {
-      const snapshot    = await getMarketSnapshot();
+      const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols  = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
@@ -207,7 +235,7 @@ async function scheduleKillShortScan() {
   clearTimeout(_killShortScanDebounce);
   _killShortScanDebounce = setTimeout(async () => {
     try {
-      const snapshot    = await getMarketSnapshot();
+      const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols  = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
@@ -253,7 +281,7 @@ async function scheduleDumpIgnitionScan() {
   clearTimeout(_dumpIgnitionScanDebounce);
   _dumpIgnitionScanDebounce = setTimeout(async () => {
     try {
-      const snapshot    = await getMarketSnapshot();
+      const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols  = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
@@ -287,10 +315,209 @@ async function scheduleDumpIgnitionScan() {
           note: sig.note ?? '',
         }).catch((e) => console.warn(`[EdgePaper] ignition ${sig.symbol}:`, e.message));
       }
+
+      // Discord notifications — dump ignition signals
+      const diWebhook = process.env.DUMP_IGNITION_WEBHOOK_URL || '';
+      const diMinScore = Number(process.env.DUMP_IGNITION_MIN_DISCORD_SCORE ?? 60);
+      if (diWebhook) {
+        const DEDUP_MS = 4 * 3600 * 1000;
+        for (const sig of signals) {
+          if (sig.score < diMinScore) continue;
+          const lastFired = dumpIgnDiscordFired.get(sig.symbol) ?? 0;
+          if (Date.now() - lastFired < DEDUP_MS) continue;
+          dumpIgnDiscordFired.set(sig.symbol, Date.now());
+
+          const isIgnition = sig.type === 'dump_ignition';
+          const stageBadge = isIgnition ? '🔥 IGNITION' : '⚠️ EARLY';
+          const sym = sig.symbol.replace(/USDT$/, '');
+          const gradeEmoji = sig.grade === 'A' ? '🔥' : sig.grade === 'B' ? '⚡' : '📌';
+          const fmtP = (v) => v == null ? '—' : Number(v) >= 1000 ? Number(v).toLocaleString('en', { maximumFractionDigits: 2 }) : Number(v) >= 1 ? Number(v).toFixed(4) : Number(v).toFixed(6);
+          // Parse note: "volX=2.31 | ema50Slope=-0.012%/bar" hoặc "liveEMA=Y | bias=full | volX=1.95 | ..."
+          const noteKV = Object.fromEntries((sig.note ?? '').split('|').map((s) => s.trim().split('=')).filter((a) => a.length === 2).map(([k, v]) => [k.trim(), v.trim()]));
+          const volX = noteKV['volX'] ?? '—';
+          const slope = noteKV['ema50Slope'] ?? noteKV['liveEMA'] ? `liveEMA=${noteKV['liveEMA']} bias=${noteKV['bias']}` : '';
+          const msg = [
+            `${gradeEmoji} **[Dump Ignition · ${stageBadge}] ${sym}USDT** · Score **${sig.score}** (${sig.grade})`,
+            `📉 ${sig.reason ?? 'BB lower break + vol spike + EMA bearish'}`,
+            `🎯 Entry: \`${fmtP(sig.entry)}\` | SL: \`${fmtP(sig.sl)}\` | TP: \`${fmtP(sig.tp)}\``,
+            `📊 Vol: **${volX}×**${slope ? ` | ${slope}` : ''}`,
+            sig.markPrice ? `💰 Mark: \`${fmtP(sig.markPrice)}\`` : '',
+          ].filter(Boolean).join('\n');
+
+          fetch(diWebhook, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ content: msg }),
+          }).catch(() => {});
+
+          console.log(`[DumpIgnition] 📨 Discord: ${sig.symbol} ${sig.type} score=${sig.score}`);
+        }
+      }
     } catch (e) {
       console.error('[DumpIgnitionScan] error:', e.message);
     }
   }, 3_000);
+}
+
+let _spikeRevDebounce = null;
+async function scheduleSpikeReversalScan() {
+  clearTimeout(_spikeRevDebounce);
+  _spikeRevDebounce = setTimeout(async () => {
+    try {
+      const snapshot    = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols  = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runSpikeReversalScan(topSymbols, klineCache, snapshotMap);
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      spikeReversalScanCache.data = result;
+      spikeReversalScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(spikeReversalSseClients, result);
+      if (signals.length) console.log(`[SpikeReversal] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.score})`).join(', ')}`);
+
+      // Edge paper auto-fire: spike_reversal SHORT signals
+      for (const sig of signals) {
+        if (sig.score < 60) continue;
+        const key = `spikerev|${sig.symbol}|${sig.type}`;
+        const last = edgePaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        edgePaperAutoFired.set(key, Date.now());
+        createEdgePaperTrade({
+          symbol:      sig.symbol,
+          side:        'SHORT',
+          status:      'OPEN',
+          marginUsdt:  1,
+          leverage:    10,
+          entryPrice:  sig.entry,
+          tp:          sig.tp ?? null,
+          sl:          sig.sl ?? null,
+          source:      `spikerev-${sig.score}`,
+          note:        sig.note ?? '',
+        }).catch((e) => console.warn(`[EdgePaper] spikerev ${sig.symbol}:`, e.message));
+      }
+
+      // Discord notifications — spike reversal signals
+      const srWebhook = process.env.SPIKE_REVERSAL_WEBHOOK_URL || '';
+      const srMinScore = Number(process.env.SPIKE_REVERSAL_MIN_DISCORD_SCORE ?? 60);
+      if (srWebhook) {
+        const DEDUP_MS = 4 * 3600 * 1000; // 4h per symbol
+        for (const sig of signals) {
+          if (sig.score < srMinScore) continue;
+          const lastFired = spikeRevDiscordFired.get(sig.symbol) ?? 0;
+          if (Date.now() - lastFired < DEDUP_MS) continue;
+          spikeRevDiscordFired.set(sig.symbol, Date.now());
+
+          const f = sig.factors ?? {};
+          const sym = sig.symbol.replace(/USDT$/, '');
+          const gradeEmoji = sig.grade === 'A' ? '🔥' : sig.grade === 'B' ? '⚡' : '📌';
+          const fmtP = (v) => v == null ? '—' : Number(v) >= 1000 ? Number(v).toLocaleString('en', { maximumFractionDigits: 2 }) : Number(v) >= 1 ? Number(v).toFixed(4) : Number(v).toFixed(6);
+          const msg = [
+            `${gradeEmoji} **[Spike Reversal] ${sym}USDT** · Score **${sig.score}** (${sig.grade})`,
+            `📈 Spike +${Math.max(f.spikeBodyPct ?? 0, f.spikeMovePct ?? 0).toFixed(1)}% vol **${(f.spikeVolRatio ?? 0).toFixed(1)}×** → reversal ${f.barsSinceSpike ?? '?'}bar`,
+            `🎯 Entry: \`${fmtP(sig.entry)}\` | SL: \`${fmtP(sig.sl)}\` | TP: \`${fmtP(sig.tp)}\``,
+            `📊 RSI14: ${f.rsi14 != null ? f.rsi14.toFixed(0) : '—'} | Overext: ${(f.overextPct ?? 0).toFixed(1)}% | Reject: ${((f.rejectFrac ?? 0) * 100).toFixed(0)}%`,
+            sig.markPrice ? `💰 Mark: \`${fmtP(sig.markPrice)}\`` : '',
+          ].filter(Boolean).join('\n');
+
+          fetch(srWebhook, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ content: msg }),
+          }).catch(() => {});
+
+          console.log(`[SpikeReversal] 📨 Discord: ${sig.symbol} score=${sig.score}`);
+        }
+      }
+    } catch (e) {
+      console.error('[SpikeReversalScan] error:', e.message);
+    }
+  }, 2_500);
+}
+
+let _pumpIgnitionDebounce = null;
+async function schedulePumpIgnitionScan() {
+  clearTimeout(_pumpIgnitionDebounce);
+  _pumpIgnitionDebounce = setTimeout(async () => {
+    try {
+      const snapshot    = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols  = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const btcBias = btcHealthCache.data?.bias ?? 'neutral';
+      const { signals, processed } = await runPumpIgnitionScan(topSymbols, klineCache, snapshotMap, { btcBias });
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      pumpIgnitionScanCache.data = result;
+      pumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(pumpIgnitionSseClients, result);
+      if (signals.length) console.log(`[PumpIgnition] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.type} ${s.score})`).join(', ')}`);
+
+      // Edge paper auto-fire: pump_ignition LONG signals
+      for (const sig of signals) {
+        if (sig.score < 60) continue;
+        const key = `pumpign|${sig.symbol}|${sig.type}`;
+        const last = edgePaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        edgePaperAutoFired.set(key, Date.now());
+        createEdgePaperTrade({
+          symbol:     sig.symbol,
+          side:       'LONG',
+          status:     'OPEN',
+          marginUsdt: 1,
+          leverage:   10,
+          entryPrice: sig.entry,
+          tp:         sig.tp ?? null,
+          sl:         sig.sl ?? null,
+          source:     `pumpign-${sig.score}`,
+          note:       sig.note ?? '',
+        }).catch((e) => console.warn(`[EdgePaper] pumpign ${sig.symbol}:`, e.message));
+      }
+
+      // Discord notifications — pump ignition signals
+      const piWebhook = process.env.PUMP_IGNITION_WEBHOOK_URL || '';
+      const piMinScore = Number(process.env.PUMP_IGNITION_MIN_DISCORD_SCORE ?? 60);
+      if (piWebhook) {
+        const DEDUP_MS = 4 * 3600 * 1000;
+        for (const sig of signals) {
+          if (sig.score < piMinScore) continue;
+          const lastFired = pumpIgnDiscordFired.get(sig.symbol) ?? 0;
+          if (Date.now() - lastFired < DEDUP_MS) continue;
+          pumpIgnDiscordFired.set(sig.symbol, Date.now());
+
+          const isIgnition = sig.type === 'pump_ignition';
+          const stageBadge = isIgnition ? '🔥 IGNITION' : '⚠️ EARLY';
+          const sym = sig.symbol.replace(/USDT$/, '');
+          const gradeEmoji = sig.grade === 'A' ? '🔥' : sig.grade === 'B' ? '⚡' : '📌';
+          const fmtP = (v) => v == null ? '—' : Number(v) >= 1000 ? Number(v).toLocaleString('en', { maximumFractionDigits: 2 }) : Number(v) >= 1 ? Number(v).toFixed(4) : Number(v).toFixed(6);
+          const noteKV = Object.fromEntries((sig.note ?? '').split('|').map((s) => s.trim().split('=')).filter((a) => a.length === 2).map(([k, v]) => [k.trim(), v.trim()]));
+          const volX = noteKV['volX'] ?? '—';
+          const slope = noteKV['ema50Slope'] ?? noteKV['liveEMA'] ? `liveEMA=${noteKV['liveEMA']} bias=${noteKV['bias']}` : '';
+          const msg = [
+            `${gradeEmoji} **[Pump Ignition · ${stageBadge}] ${sym}USDT** · Score **${sig.score}** (${sig.grade})`,
+            `📈 ${sig.reason ?? 'BB upper break + vol spike + EMA bullish'}`,
+            `🎯 Entry: \`${fmtP(sig.entry)}\` | SL: \`${fmtP(sig.sl)}\` | TP: \`${fmtP(sig.tp)}\``,
+            `📊 Vol: **${volX}×**${slope ? ` | ${slope}` : ''}`,
+            sig.markPrice ? `💰 Mark: \`${fmtP(sig.markPrice)}\`` : '',
+          ].filter(Boolean).join('\n');
+
+          fetch(piWebhook, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ content: msg }),
+          }).catch(() => {});
+
+          console.log(`[PumpIgnition] 📨 Discord: ${sig.symbol} ${sig.type} score=${sig.score}`);
+        }
+      }
+    } catch (e) {
+      console.error('[PumpIgnitionScan] error:', e.message);
+    }
+  }, 3_500);
 }
 
 klineCache.on('candleClose', ({ interval }) => {
@@ -299,6 +526,8 @@ klineCache.on('candleClose', ({ interval }) => {
   scheduleCapScan();
   scheduleKillShortScan();
   scheduleDumpIgnitionScan();
+  scheduleSpikeReversalScan();
+  schedulePumpIgnitionScan();
 });
 
 // Scan theo tick (mỗi khi có cập nhật nến) với debounce 60s — bắt signal sớm hơn trong nến
@@ -311,11 +540,13 @@ klineCache.on('candleTick', ({ interval }) => {
     scheduleCapScan();
     scheduleKillShortScan();
     scheduleDumpIgnitionScan();
+    scheduleSpikeReversalScan();
+    schedulePumpIgnitionScan();
   }, 60_000);
 });
 
 // Chạy scan ngay sau 30s để có data ban đầu dù WebSocket chưa kết nối
-setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); scheduleDumpIgnitionScan(); }, 30_000);
+setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); scheduleDumpIgnitionScan(); scheduleSpikeReversalScan(); schedulePumpIgnitionScan(); }, 30_000);
 
 // Fallback: scan mỗi 2 phút kể cả khi WebSocket không có tick
 let _staleReseedLock = false;
@@ -328,7 +559,7 @@ setInterval(async () => {
   if (stats.isStale && !_staleReseedLock) {
     _staleReseedLock = true;
     try {
-      const snapshot = await getMarketSnapshot();
+      const snapshot = await getSharedSnapshot();
       const topSymbols = snapshot.sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, 400).map((r) => r.symbol);
       await klineCache.seed(topSymbols, '15m', 500);
       console.log('[KlineCache] Re-seed triggered (WebSocket stale)');
@@ -383,6 +614,12 @@ function isVnBlockHour() {
 }
 let tslScanner = null;
 let posMonitor = null;
+// Symbols bị loại khỏi mọi auto position management (trailing stop, timeout, neg-TP, SL trail, avg-down)
+const tslExcludedSymbols = new Set();
+// Discord dedup: symbol → lastFiredAt (ms) — tránh spam cùng 1 signal
+const spikeRevDiscordFired  = new Map();
+const dumpIgnDiscordFired   = new Map();
+const pumpIgnDiscordFired   = new Map();
 const longShortCache = new Map();    // symbol → { longShortRatio, longAccount }
 const hedgeModeCache = new Map();    // apiKey → bool
 const topPositionCache = new Map(); // symbol → { longShortRatio, longPosition, shortPosition }
@@ -818,7 +1055,7 @@ const server = createServer(async (request, response) => {
       if (pumpScanCache.data && Date.now() < pumpScanCache.expiresAt) {
         return sendJson(response, pumpScanCache.data);
       }
-      const snapshot    = await getMarketSnapshot();
+      const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols  = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
@@ -827,7 +1064,7 @@ const server = createServer(async (request, response) => {
       const { signals, processed } = await runPumpScan(topSymbols, klineCache, snapshotMap);
       // Cache trống → seed ngay, scan lại sau 15s
       if (processed === 0) {
-        klineCache.seed(topSymbols, '15m', 500).then(() => schedulePumpScan()).catch(() => {});
+        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; schedulePumpScan(); }).catch(() => { _staleReseedLock = false; }); }
       }
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
@@ -859,7 +1096,7 @@ const server = createServer(async (request, response) => {
       if (capScanCache.data && Date.now() < capScanCache.expiresAt) {
         return sendJson(response, capScanCache.data);
       }
-      const snapshot = await getMarketSnapshot();
+      const snapshot = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
@@ -867,7 +1104,7 @@ const server = createServer(async (request, response) => {
         .map((r) => r.symbol);
       const { signals, processed } = await runCapScan(topSymbols, klineCache, snapshotMap);
       if (processed === 0) {
-        klineCache.seed(topSymbols, '15m', 500).then(() => scheduleCapScan()).catch(() => {});
+        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleCapScan(); }).catch(() => { _staleReseedLock = false; }); }
       }
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
@@ -899,7 +1136,7 @@ const server = createServer(async (request, response) => {
       if (killShortScanCache.data && Date.now() < killShortScanCache.expiresAt) {
         return sendJson(response, killShortScanCache.data);
       }
-      const snapshot = await getMarketSnapshot();
+      const snapshot = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
@@ -907,7 +1144,7 @@ const server = createServer(async (request, response) => {
         .map((r) => r.symbol);
       const { signals, processed } = await runKillShortScan(topSymbols, klineCache, snapshotMap);
       if (processed === 0) {
-        klineCache.seed(topSymbols, '15m', 500).then(() => scheduleKillShortScan()).catch(() => {});
+        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleKillShortScan(); }).catch(() => { _staleReseedLock = false; }); }
       }
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
@@ -939,7 +1176,7 @@ const server = createServer(async (request, response) => {
       if (dumpIgnitionScanCache.data && Date.now() < dumpIgnitionScanCache.expiresAt) {
         return sendJson(response, dumpIgnitionScanCache.data);
       }
-      const snapshot = await getMarketSnapshot();
+      const snapshot = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
@@ -947,12 +1184,93 @@ const server = createServer(async (request, response) => {
         .map((r) => r.symbol);
       const { signals, processed } = await runDumpIgnitionScan(topSymbols, klineCache, snapshotMap);
       if (processed === 0) {
-        klineCache.seed(topSymbols, '15m', 500).then(() => scheduleDumpIgnitionScan()).catch(() => {});
+        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleDumpIgnitionScan(); }).catch(() => { _staleReseedLock = false; }); }
       }
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       dumpIgnitionScanCache.data = result;
       dumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/spike-reversal-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (spikeReversalScanCache.data && (spikeReversalScanCache.data.signals?.length > 0 || spikeReversalScanCache.data.processed > 0)) {
+        response.write(`data: ${JSON.stringify(spikeReversalScanCache.data)}\n\n`);
+      }
+      spikeReversalSseClients.add(response);
+      request.on('close', () => spikeReversalSseClients.delete(response));
+      if (!spikeReversalScanCache.data || Date.now() > spikeReversalScanCache.expiresAt) {
+        scheduleSpikeReversalScan();
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/spike-reversal-signals') {
+      if (spikeReversalScanCache.data && Date.now() < spikeReversalScanCache.expiresAt) {
+        return sendJson(response, spikeReversalScanCache.data);
+      }
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runSpikeReversalScan(topSymbols, klineCache, snapshotMap);
+      if (processed === 0) {
+        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleSpikeReversalScan(); }).catch(() => { _staleReseedLock = false; }); }
+      }
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      spikeReversalScanCache.data = result;
+      spikeReversalScanCache.expiresAt = Date.now() + 30_000;
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/pump-ignition-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (pumpIgnitionScanCache.data && (pumpIgnitionScanCache.data.signals?.length > 0 || pumpIgnitionScanCache.data.processed > 0)) {
+        response.write(`data: ${JSON.stringify(pumpIgnitionScanCache.data)}\n\n`);
+      }
+      pumpIgnitionSseClients.add(response);
+      request.on('close', () => pumpIgnitionSseClients.delete(response));
+      if (!pumpIgnitionScanCache.data || Date.now() > pumpIgnitionScanCache.expiresAt) {
+        schedulePumpIgnitionScan();
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/pump-ignition-signals') {
+      if (pumpIgnitionScanCache.data && Date.now() < pumpIgnitionScanCache.expiresAt) {
+        return sendJson(response, pumpIgnitionScanCache.data);
+      }
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const btcBias = btcHealthCache.data?.bias ?? 'neutral';
+      const { signals, processed } = await runPumpIgnitionScan(topSymbols, klineCache, snapshotMap, { btcBias });
+      if (processed === 0) {
+        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; schedulePumpIgnitionScan(); }).catch(() => { _staleReseedLock = false; }); }
+      }
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      pumpIgnitionScanCache.data = result;
+      pumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
       return sendJson(response, result);
     }
 
@@ -1546,6 +1864,32 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/tsl-exclude') {
+      const token = request.headers['x-orders-token'] ?? '';
+      if (!ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Unauthorized.' }, 401);
+        return;
+      }
+      if (request.method === 'GET') {
+        await sendJson(response, { excluded: [...tslExcludedSymbols] });
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const sym = String(body.symbol ?? '').toUpperCase().trim();
+        if (!sym) { await sendJson(response, { error: 'symbol required' }, 400); return; }
+        if (body.excluded) {
+          tslExcludedSymbols.add(sym);
+          console.log(`[TSL-Exclude] ⛔ ${sym} excluded from position management`);
+        } else {
+          tslExcludedSymbols.delete(sym);
+          console.log(`[TSL-Exclude] ✅ ${sym} re-enabled`);
+        }
+        await sendJson(response, { excluded: [...tslExcludedSymbols] });
+        return;
+      }
+    }
+
     if (requestUrl.pathname === '/api/position-monitor/status') {
       const token = request.headers['x-orders-token'] ?? '';
       if (!ordersTokens.has(token)) {
@@ -1587,20 +1931,30 @@ server.listen(port, '127.0.0.1', () => {
     setInterval(() => pollPumpWatching().catch(() => {}), 3 * 60_000);
   });
   const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
+  const brgIntervalMs = Math.max(Number(process.env.BTC_REVERSAL_GUARD_INTERVAL_MS ?? 41000), 15000);
   // Stagger service startup to avoid burst at t=0
   startAutoTrader();
-  setTimeout(() => startLongShortRefresh(), 3000);
+  setTimeout(() => startLongShortRefresh(), 65_000); // sau khi seed 400 symbols xong (~53s)
   setTimeout(() => {
-    tslScanner = startTrailingStopScanner({ client, getSymbols, intervalMs: tslIntervalMs, webhookUrl: process.env.TSL_WEBHOOK_URL });
+    tslScanner = startTrailingStopScanner({ client, getSymbols, intervalMs: tslIntervalMs, webhookUrl: process.env.TSL_WEBHOOK_URL, isExcluded: (sym) => tslExcludedSymbols.has(sym), getPositionData: getSharedPositionData });
   }, 7000);
   setTimeout(() => {
-    startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: tslIntervalMs });
+    startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: brgIntervalMs, getPositionData: getSharedPositionData });
   }, 12000);
+  // Proactive position store refresh — chủ động làm mới trước khi scanner cần,
+  // tránh scanner là người trigger REST call. Bắt đầu sau 55s (sau khi tất cả đã warm-up).
+  setTimeout(() => {
+    setInterval(async () => {
+      if (_posStoreInflight) return;
+      _posStore.fetchedAt = 0; // invalidate để force fresh fetch
+      getSharedPositionData().catch(() => {});
+    }, POS_STORE_TTL_MS);
+  }, 55_000);
   setTimeout(async () => {
     // Seed kline cache sớm để pump/cap scan có data ngay khi browser mở trang.
     // getMarketSnapshot() is cheap (cached for 15s) and gives us the top coins by volume.
     try {
-      const snapshot = await getMarketSnapshot();
+      const snapshot = await getSharedSnapshot();
       const liqScanMax = Number(process.env.LIQ_SCAN_MAX_COINS ?? 200);
       const seedMax = Math.max(liqScanMax, 400); // 400 covers pump/cap/killshort scans
       const topSymbols = snapshot
@@ -1609,7 +1963,14 @@ server.listen(port, '127.0.0.1', () => {
         .map((r) => r.symbol);
       // Fire-and-forget: seeding runs in background while scanners start
       // LiqScan needs 500 candles; VolDump only needs 42 but 500 covers both
-      klineCache.seed(topSymbols, '15m', 500).catch(() => {});
+      // Seed chậm hơn (batchSize=3, 1s delay) → 3 req/s thay vì 8.3 req/s → tránh vượt rate limit
+      // Lock để SSE endpoint không trigger seed song song
+      if (!_staleReseedLock) {
+        _staleReseedLock = true;
+        klineCache.seed(topSymbols, '15m', 500, { batchSize: 3, batchDelayMs: 1000 })
+          .then(() => { _staleReseedLock = false; })
+          .catch(() => { _staleReseedLock = false; });
+      }
       // Seed BTC klines — Wilder's RSI cần nhiều nến để warm-up và khớp Binance
       klineCache.seed(['BTCUSDT'], '1h', 250).catch(() => {});  // 250 nến 1h ~10 ngày
       klineCache.seed(['BTCUSDT'], '4h', 150).catch(() => {});  // 150 nến 4h ~25 ngày
@@ -1644,7 +2005,7 @@ server.listen(port, '127.0.0.1', () => {
   }, 5000);
   setTimeout(() => {
     runStaleOrderCleaner(); // seed initial position set, no cancellations on first run
-    setInterval(runStaleOrderCleaner, 30000);
+    setInterval(runStaleOrderCleaner, 35_000); // 35s — lệch nhịp TSL(30s) tránh cùng lúc
   }, 22000);
   setTimeout(() => {
     runBtcHealthMonitor(); // initial read — seed _prevBtcBias, no cancellations
@@ -1700,6 +2061,8 @@ server.listen(port, '127.0.0.1', () => {
       onRoeUpdate: (symbol, pos, markPrice, roe) => {
         // Ghi nhận thời điểm đầu tiên thấy position (fallback khi slTracking không có openedAt)
         if (!positionFirstSeenAt.has(symbol)) positionFirstSeenAt.set(symbol, Date.now());
+        // Bỏ qua toàn bộ auto position management nếu symbol bị exclude
+        if (tslExcludedSymbols.has(symbol)) return;
         // Đặt TP pending từ AutoLiq nếu position đã mở
         if (pendingLiqTp.has(symbol)) {
           placePendingLiqTp(symbol, pos).catch(() => {});
@@ -1852,6 +2215,37 @@ async function _fetchBtcHealth() {
       ? ((closes1h[closes1h.length - 1] - closes1h[closes1h.length - 7]) / closes1h[closes1h.length - 7]) * 100
       : null;
 
+    // Last CLOSED 1h candle direction — dùng để detect BTC correction phase
+    // index -1 = nến đang chạy (bỏ qua), index -2 = nến vừa đóng
+    const k1hLast = klines1h[klines1h.length - 2];
+    const btcCandle1hPct = k1hLast
+      ? ((Number(k1hLast[4]) - Number(k1hLast[1])) / Number(k1hLast[1])) * 100
+      : null;
+
+    // BTC spike candle detection — vol > 2.5x avg + move > 1% trên 1h
+    // Sau nến spike, correction thường xảy ra → EMA_PB LONG trên alt bị block 2 nến tiếp
+    let btcSpikeAlert = false;
+    if (klines1h && klines1h.length >= 15) {
+      const vols1h = klines1h.map((k) => Number(k[5] ?? k.volume));
+      // Baseline: dùng candles 5-25 periods ago (tránh đưa spike vào avg của chính nó)
+      const baselineVols = vols1h.slice(Math.max(0, vols1h.length - 25), vols1h.length - 5);
+      const avgVol1h = baselineVols.length > 0
+        ? baselineVols.reduce((s, v) => s + v, 0) / baselineVols.length : 0;
+      // Kiểm tra 3 nến closed gần nhất (bỏ nến đang chạy = index cuối)
+      for (let i = 2; i <= 4; i++) {
+        const k = klines1h[klines1h.length - i];
+        if (!k) continue;
+        const vol     = Number(k[5] ?? k.volume);
+        const open    = Number(k[1] ?? k.open);
+        const close   = Number(k[4] ?? k.close);
+        const movePct = Math.abs((close - open) / open) * 100;
+        if (avgVol1h > 0 && vol > avgVol1h * 2.5 && movePct > 1.0) {
+          btcSpikeAlert = true;
+          break;
+        }
+      }
+    }
+
     // OBV trend 4h (last 20 candles) — rising/falling/flat
     const vols4h   = klines4h.map((k) => Number(k[5] ?? k.volume));
     let obv = 0;
@@ -1884,7 +2278,7 @@ async function _fetchBtcHealth() {
     if (rsi1h != null && rsi1h > 60) bullPoints++;          // Momentum dương trên 1h
     if (emaTrend1h === 'above') bullPoints++;               // Price trên EMA20 1h
     if (pct6h != null && pct6h > 1.5) bullPoints++;        // BTC tăng >1.5% trong 6h
-    if (obvTrend === 'rising') bullPoints++;                // OBV đang tăng
+    if (obvTrend === 'rising' && pct6h != null && pct6h > 0.5) bullPoints++; // OBV rising chỉ tính khi momentum 6h xác nhận (> 0.5%) — tránh lagging sau pump
     if (rsi4h != null && rsi4h > 55 && rsi4h < 70) bullPoints++; // 4h bullish nhưng chưa overbought
     if (longPct != null && longPct < 42) bullPoints++;     // Short nhiều → short squeeze risk
     const bullBias = bullPoints >= 3 ? 'bullish' : bullPoints >= 2 ? 'caution' : 'neutral';
@@ -1905,6 +2299,8 @@ async function _fetchBtcHealth() {
       bearPoints,
       bullBias,
       bullPoints,
+      btcSpikeAlert,
+      btcCandle1hPct: btcCandle1hPct != null ? +btcCandle1hPct.toFixed(3) : null,
       updatedAt: Date.now(),
     };
 
@@ -4007,6 +4403,47 @@ async function getPositions(token = null) {
   return rows.filter((p) => Number(p.positionAmt) !== 0);
 }
 
+// ── Shared position data store ─────────────────────────────────────────────
+// Tất cả scanners dùng chung — tối đa 1 REST burst per TTL window.
+// Fetches getPositions + getOpenOrders(all) + getOpenAlgoOrders(all) in parallel.
+let _posStore = { positions: [], openOrders: [], algoOrders: [], fetchedAt: 0 };
+let _posStoreInflight = null;
+const POS_STORE_TTL_MS = 20_000; // 20s — refresh tối đa 3 lần/phút
+
+async function getSharedPositionData() {
+  if (Date.now() - _posStore.fetchedAt < POS_STORE_TTL_MS) return _posStore;
+  if (_posStoreInflight) return _posStoreInflight;
+  let creds;
+  try { creds = getApiCredentials(null); } catch { return _posStore; }
+  const { apiKey, apiSecret } = creds;
+  _posStoreInflight = (async () => {
+    try {
+      const [positions, openOrders, algoResult] = await Promise.all([
+        client.getPositions({ apiKey, apiSecret }),
+        client.getOpenOrders({ apiKey, apiSecret }),
+        client.getOpenAlgoOrders({ apiKey, apiSecret }).catch(() => ({ orders: [] })),
+      ]);
+      const algoOrders = Array.isArray(algoResult?.orders) ? algoResult.orders
+        : Array.isArray(algoResult) ? algoResult : [];
+      _posStore = {
+        positions: positions.filter((p) => Number(p.positionAmt) !== 0),
+        openOrders: Array.isArray(openOrders) ? openOrders : [],
+        algoOrders,
+        fetchedAt: Date.now(),
+      };
+      // Sync openOrders cache so getCachedOpenOrders() gets fresh data too
+      _openOrdersCache = _posStore.openOrders;
+      _openOrdersCacheAt = _posStore.fetchedAt;
+    } catch (err) {
+      if (!err.message?.includes('Missing Binance API')) console.error('[PosStore] fetch error:', err.message);
+    }
+    return _posStore;
+  })();
+  try { return await _posStoreInflight; } finally { _posStoreInflight = null; }
+}
+
+function invalidatePosStore() { _posStore = { ..._posStore, fetchedAt: 0 }; }
+
 // ── Open orders cache — tránh gọi REST liên tục ───────────────────────────────
 // Invalidate bằng invalidateOpenOrdersCache() sau mỗi lần đặt/hủy lệnh hoặc fill
 let _openOrdersCache = null;      // cached array (all symbols, no-token)
@@ -4016,6 +4453,7 @@ const OPEN_ORDERS_TTL = 30_000;   // 30s TTL fallback nếu không invalidate
 function invalidateOpenOrdersCache() {
   _openOrdersCache = null;
   _openOrdersCacheAt = 0;
+  invalidatePosStore();
 }
 
 async function getCachedOpenOrders(apiKey, apiSecret) {
@@ -4180,10 +4618,9 @@ const lastKnownPositions = new Map(); // symbol → { unRealizedProfit, position
 async function runStaleOrderCleaner() {
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
-    const positions = await client.getPositions({ apiKey, apiSecret });
+    const { positions } = await getSharedPositionData();
     const activeMap = new Map(
       positions
-        .filter((p) => Number(p.positionAmt) !== 0)
         .map((p) => [p.symbol, { unRealizedProfit: Number(p.unRealizedProfit), positionAmt: Number(p.positionAmt) }]),
     );
 
@@ -4543,11 +4980,21 @@ function getLiqHighProbHandler() {
 
 const pumpAutoOrderFired = new Map(); // symbol → timestamp
 
+// Signal flood guard — khi quá nhiều LONG bắn cùng lúc (dấu hiệu BTC spike)
+const recentLongOrderTimes = [];          // rolling timestamps của LONG orders vừa đặt
+let signalFloodBlockedUntil = 0;          // timestamp hết hạn block
+const SIGNAL_FLOOD_WINDOW_MS = 5 * 60 * 1000;  // window 5 phút
+const SIGNAL_FLOOD_THRESHOLD = 8;               // ≥ 8 lệnh/5 phút → flood
+const SIGNAL_FLOOD_PAUSE_MS  = 30 * 60 * 1000; // dừng 30 phút sau khi detect
+
 async function handlePumpAutoOrder(signal, openOrders = null) {
   if (!runtimeSettings.pumpAutoOrderEnabled) return;
   if (isVnBlockHour()) { console.log(`[PumpAuto] ⏰ Block 17-19h VN — ${signal.symbol}`); return; }
-  const { symbol, action, score, marketOk, entry, sl, factors } = signal;
-  if (score < 80) return;
+  const { symbol, action, score, marketOk, entry, sl, factors, type: signalType } = signal;
+  const pumpAutoMinScore = Number(process.env.PUMP_AUTO_MIN_SCORE ?? 80);
+  const pumpAutoMaxScore = Number(process.env.PUMP_AUTO_MAX_SCORE ?? 999);
+  if (score < pumpAutoMinScore) return;
+  if (score > pumpAutoMaxScore) return;
   if (marketOk === false) return;
   if (factors?.emaRibbon === 0) return; // EMA ribbon không bullish → không đặt lệnh
   // Chase guard — bỏ qua nếu giá đã chạy > 30% vào TP range
@@ -4592,6 +5039,76 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     }
   }
 
+  // EMA_PB vol filter: vol < 1.8x → skip (không đủ buying pressure để confirm pullback)
+  if (signalType === 'ema_pullback' && action === 'LONG') {
+    const volRatio = factors?.volRatio ?? 0;
+    if (volRatio < 1.8) {
+      console.log(`[PumpAuto] ⏭ ${symbol} skip EMA_PB — vol=${volRatio}x < 1.8x`);
+      return;
+    }
+  }
+
+  // Case 1: Signal Flood — ≥8 LONG đặt trong 5 phút → BTC spike pattern → dừng 30 phút
+  if (action === 'LONG') {
+    const now = Date.now();
+    // Prune entries cũ ngoài window
+    while (recentLongOrderTimes.length > 0 && recentLongOrderTimes[0] < now - SIGNAL_FLOOD_WINDOW_MS) {
+      recentLongOrderTimes.shift();
+    }
+    if (now < signalFloodBlockedUntil) {
+      const remainMin = Math.ceil((signalFloodBlockedUntil - now) / 60_000);
+      console.log(`[PumpAuto] 🌊 ${symbol} block — signal flood pause (còn ${remainMin} phút)`);
+      return;
+    }
+    if (recentLongOrderTimes.length >= SIGNAL_FLOOD_THRESHOLD) {
+      signalFloodBlockedUntil = now + SIGNAL_FLOOD_PAUSE_MS;
+      console.log(`[PumpAuto] 🌊 FLOOD DETECTED — ${recentLongOrderTimes.length} LONG/${SIGNAL_FLOOD_WINDOW_MS / 60_000} phút → dừng 30 phút`);
+      const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+      if (webhookUrl) {
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: `🌊 **Signal Flood DETECTED** — **${recentLongOrderTimes.length}** LONG trong 5 phút\nDừng tất cả LONG auto order **30 phút**. Nghi ngờ BTC spike candle.` }),
+        }).catch(() => {});
+      }
+      return;
+    }
+  }
+
+  // Case 2: BTC 1h candle đỏ > 0.5% → block EMA_PB LONG (đang trong correction phase)
+  if (action === 'LONG' && signalType === 'ema_pullback') {
+    const health = btcHealthCache.data;
+    const c1h = health?.btcCandle1hPct ?? 0;
+    if (c1h < -0.5) {
+      console.log(`[PumpAuto] 📉 ${symbol} block EMA_PB LONG — BTC 1h candle ${c1h.toFixed(2)}% (correction phase)`);
+      const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+      if (webhookUrl) {
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: `📉 **Pump Auto BLOCKED** | **${symbol}** 🟢 LONG [EMA_PB]\nScore: **${score}** | Entry: \`${entry}\`\nBTC 1h candle: **${c1h.toFixed(2)}%** — correction phase, EMA_PB blocked.` }),
+        }).catch(() => {});
+      }
+      return;
+    }
+  }
+
+  // Block EMA_PB LONG sau BTC spike candle (vol > 2.5x avg + move > 1% trên 1h)
+  // Lý do: sau spike BTC thường correction ngay → alt EMA_PB vào đúng lúc BTC kéo xuống
+  if (action === 'LONG' && signalType === 'ema_pullback' && btcHealthCache.data?.btcSpikeAlert) {
+    const health = btcHealthCache.data;
+    console.log(`[PumpAuto] ⚡ ${symbol} block EMA_PB LONG — BTC spike candle detected (RSI1h=${health.rsi1h} pct6h=${health.pct6h}%)`);
+    const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
+    if (webhookUrl) {
+      fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: `⚡ **Pump Auto BLOCKED** | **${symbol}** 🟢 LONG [EMA_PB]\nScore: **${score}** | Entry: \`${entry}\`\nBTC spike candle detected — correction risk cao. Block EMA_PB 2 nến.` }),
+      }).catch(() => {});
+    }
+    return;
+  }
+
   // Block khi BTC health = bearish hoặc caution (chỉ block LONG — SHORT vẫn cho qua)
   if (action === 'LONG' || action == null) {
     const health = btcHealthCache.data;
@@ -4627,7 +5144,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
   // Block SHORT khi BTC đang bullish — đối xứng với block LONG khi bearish
   if (action === 'SHORT') {
     const health = btcHealthCache.data;
-    if (health?.bullBias === 'bullish' || health?.bullBias === 'caution') {
+    if (health?.bullBias === 'bullish') { // caution = cảnh báo thôi, không hard-block SHORT
       console.log(`[PumpAuto] ⛔ ${symbol} block SHORT — BTC bullBias=${health.bullBias} (RSI1h=${health.rsi1h} EMA1h=${health.emaTrend1h} pct6h=${health.pct6h}%)`);
       const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
       if (webhookUrl) {
@@ -4713,6 +5230,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     });
 
     pumpAutoOrderFired.set(symbol, Date.now());
+    if (side === 'BUY') recentLongOrderTimes.push(Date.now()); // track cho signal flood guard
     invalidateOpenOrdersCache();
     console.log(`[PumpAuto] ✅ ${symbol} ${side} LIMIT @${entryStr} qty=${qtyStr} margin=$${margin} score=${score}`);
 
@@ -5133,11 +5651,9 @@ function startNegTpScanner() {
   console.log(`[NegTp] Scanner started. ROE threshold=${negTpRoe}% timeout=${timeoutMs / 3_600_000}h interval=${intervalMs / 1000}s`);
 
   const run = async () => {
-    let apiKey, apiSecret;
-    try { ({ apiKey, apiSecret } = getApiCredentials(null)); } catch { return; }
     try {
-      const positions = await client.getPositions({ apiKey, apiSecret });
-      const active = positions.filter((p) => Number(p.positionAmt) !== 0);
+      const { positions: active } = await getSharedPositionData();
+      if (!active.length) return;
       const activeSymbols = new Set(active.map((p) => p.symbol));
       for (const sym of negativeSince.keys()) {
         if (!activeSymbols.has(sym)) negativeSince.delete(sym);
@@ -5207,12 +5723,11 @@ function startSlTrailSafetyScanner() {
 
 async function runSlTrailSafetyScan() {
   if (process.env.AUTO_SL_ENABLED === 'false') return;
-  const { apiKey, apiSecret } = getApiCredentials(null);
-  const positions = await client.getPositions({ apiKey, apiSecret });
-  const active = positions.filter((p) => Number(p.positionAmt) !== 0);
+  const { positions: active } = await getSharedPositionData();
   if (!active.length) return;
 
   for (const p of active) {
+    if (tslExcludedSymbols.has(p.symbol)) continue;
     const amt = Number(p.positionAmt);
     const entry = Number(p.entryPrice);
     const mark = Number(p.markPrice);
@@ -5248,18 +5763,17 @@ async function runSlTrailSafetyScan() {
 
 async function runMissingTpScan() {
   const { apiKey, apiSecret } = getApiCredentials(null);
-  const positions = await client.getPositions({ apiKey, apiSecret });
-  const active = positions.filter((p) => Number(p.positionAmt) !== 0);
+  const { positions: active, openOrders: sharedOpenOrders, algoOrders: sharedAlgoOrders } = await getSharedPositionData();
   if (!active.length) return;
 
   const symbols = await getSymbols();
   for (const pos of active) {
-    await ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret);
+    await ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, sharedOpenOrders, sharedAlgoOrders);
     await new Promise((r) => setTimeout(r, 80));
   }
 }
 
-async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
+async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, sharedOpenOrders = null, sharedAlgoOrders = null) {
   const symbol = pos.symbol;
   const amt = Number(pos.positionAmt);
   const entry = Number(pos.entryPrice);
@@ -5274,12 +5788,19 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret) {
   const closeSide = isLong ? 'SELL' : 'BUY';
   const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
 
-  const [openOrders, algoResult] = await Promise.all([
-    client.getOpenOrders({ symbol, apiKey, apiSecret, recvWindow }).catch(() => []),
-    client.getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow }).catch(() => ({ orders: [] })),
-  ]);
+  let openOrders, algoRows;
+  if (sharedOpenOrders && sharedAlgoOrders) {
+    openOrders = sharedOpenOrders.filter((o) => o.symbol === symbol);
+    algoRows = sharedAlgoOrders.filter((o) => o.symbol === symbol);
+  } else {
+    const [openOrdersRes, algoResult] = await Promise.all([
+      client.getOpenOrders({ symbol, apiKey, apiSecret, recvWindow }).catch(() => []),
+      client.getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow }).catch(() => ({ orders: [] })),
+    ]);
+    openOrders = openOrdersRes;
+    algoRows = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+  }
 
-  const algoRows = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
   const hasAlgoTp = algoRows.some((o) => {
     const t = String(o.orderType ?? o.type ?? '').toUpperCase();
     return o.symbol === symbol && (t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT');
@@ -5625,6 +6146,12 @@ async function sendStatic(pathname, response) {
           ? '/cap.html'
         : pathname === '/killshort'
           ? '/killshort.html'
+        : pathname === '/spike-reversal'
+          ? '/spike-reversal.html'
+        : pathname === '/dump-ignition'
+          ? '/dump-ignition.html'
+        : pathname === '/pump-ignition'
+          ? '/pump-ignition.html'
         : pathname === '/edge-short'
           ? '/edge-short.html'
         : pathname === '/orders'

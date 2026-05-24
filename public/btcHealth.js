@@ -52,7 +52,7 @@
     const isDangerHigh = (d.rsi1h != null && d.rsi1h > 80) || (d.rsi4h != null && d.rsi4h > 72); // long đỉnh nguy hiểm
     // Auto order status — mirrors server-side handlePumpAutoOrder checks
     const autoLongBlocked  = isDangerLow || isDangerHigh || d.bias === 'bearish' || d.bias === 'caution';
-    const autoShortBlocked = isDangerLow || isDangerHigh || d.bullBias === 'bullish' || d.bullBias === 'caution';
+    const autoShortBlocked = isDangerLow || isDangerHigh || d.bullBias === 'bullish'; // caution không hard-block SHORT
     let autoChip;
     if (isDangerLow || isDangerHigh) {
       const reason = isDangerLow ? 'RSI oversold cực đoan' : 'RSI overbought cực đoan';
@@ -108,6 +108,9 @@
     <span class="btch-key">OBV 4h</span>
     <span style="color:${d.obvTrend === 'falling' ? '#f87171' : d.obvTrend === 'rising' ? '#34d399' : '#94a3b8'}">${obvIcon(d.obvTrend)}</span>
   </span>
+  ${d.btcCandle1hPct != null ? `<span class="btch-item"><span class="btch-key">1h▸</span><span style="color:${d.btcCandle1hPct < -0.5 ? '#f87171' : d.btcCandle1hPct > 0.5 ? '#34d399' : '#94a3b8'}">${d.btcCandle1hPct > 0 ? '+' : ''}${d.btcCandle1hPct}%</span></span>` : ''}
+  ${d.btcSpikeAlert ? '<span class="btch-chip" style="background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;color:#fbbf24">⚡ Spike — EMA_PB blocked</span>' : ''}
+  ${d.btcCandle1hPct != null && d.btcCandle1hPct < -0.5 ? '<span class="btch-chip" style="background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3);border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;color:#f87171">📉 Correction — EMA_PB blocked</span>' : ''}
   ${d.bearishDiv ? '<span class="btch-chip btch-div">RSI Div ⚠</span>' : ''}
   <span class="btch-age">${age != null ? age + 's ago' : ''}</span>
 </div>`;

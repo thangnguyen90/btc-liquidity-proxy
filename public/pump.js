@@ -590,6 +590,7 @@ function pumpPaperSortValue(t, key) {
   if (key === 'pnl') return t.pnl == null ? null : Number(t.pnl);
   if (key === 'roe') return t.roe == null ? null : Number(t.roe);
   if (key === 'source') return t.source ?? '';
+  if (key === 'score') return Number((t.source ?? '').replace(/\D/g, '')) || 0;
   if (key === 'time') return Date.parse(t.createdAt ?? '') || 0;
   if (key === 'status') {
     const order = { OPEN: 0, PENDING: 1, ENTRY_READY: 2, CLOSED: 3 };
@@ -643,7 +644,7 @@ function renderPumpPaperTrades(trades, summary) {
   pumpPaperCount.textContent = countTxt;
 
   if (!all.length) {
-    pumpPaperBody.innerHTML = '<tr><td colspan="13" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
+    pumpPaperBody.innerHTML = '<tr><td colspan="14" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
     return;
   }
 
@@ -695,6 +696,7 @@ function renderPumpPaperTrades(trades, summary) {
       <td data-cell-pnl="${t.id}">${fmtPnlPump(t.pnl, t.roe)}</td>
       <td data-cell-roe="${t.id}">${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
       <td style="font-size:11px">${outcomeHtml}</td>
+      <td style="font-size:11px;color:var(--text);font-weight:700">${scoreNum || '-'}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
       <td>${actionBtns}</td>

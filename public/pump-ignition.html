@@ -3,22 +3,22 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Kill Short · Stop Hunt Signals</title>
+    <title>Pump Ignition · Squeeze → Breakout Signals</title>
     <link rel="stylesheet" href="/styles.css">
     <style>
-      .ks-controls {
-        grid-template-columns: minmax(220px, 1fr) 110px auto;
+      .pi-controls {
+        grid-template-columns: minmax(220px, 1fr) 110px 130px auto;
       }
 
-      .ks-grid {
+      .pi-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
         gap: 12px;
         margin-top: 14px;
       }
 
       /* ── Card ── */
-      .ks-card {
+      .pi-card {
         border: 1px solid var(--line);
         border-radius: 10px;
         background: var(--panel);
@@ -28,34 +28,41 @@
         position: relative;
         overflow: hidden;
       }
-      .ks-card::before {
+      .pi-card.stage-ignition::before {
         content: '';
         position: absolute;
         top: 0; left: 0; right: 0;
         height: 3px;
         background: var(--green);
       }
+      .pi-card.stage-early::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+        background: var(--blue);
+      }
 
-      /* ── Header row ── */
-      .ks-card-top {
+      /* ── Header ── */
+      .pi-card-top {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 8px;
       }
-      .ks-symbol-wrap { display: flex; flex-direction: column; gap: 3px; }
-      .ks-symbol {
+      .pi-symbol-wrap { display: flex; flex-direction: column; gap: 3px; }
+      .pi-symbol {
         font-size: 18px;
         font-weight: 900;
         color: var(--text);
         text-decoration: none;
         line-height: 1;
       }
-      .ks-symbol:hover { color: var(--blue); }
-      .ks-symbol .sym-usdt { color: var(--muted); font-weight: 400; font-size: 13px; }
-      .ks-change { font-size: 12px; font-weight: 600; }
+      .pi-symbol:hover { color: var(--blue); }
+      .pi-symbol .sym-usdt { color: var(--muted); font-weight: 400; font-size: 13px; }
+      .pi-change { font-size: 12px; font-weight: 600; }
 
-      .ks-right {
+      .pi-right {
         display: flex;
         flex-direction: column;
         align-items: flex-end;
@@ -64,7 +71,7 @@
       }
 
       /* ── Badges ── */
-      .ks-action-badge {
+      .pi-action-badge {
         display: inline-flex;
         align-items: center;
         gap: 4px;
@@ -79,28 +86,47 @@
         border: 1px solid rgba(54,211,153,.3);
       }
 
-      .ks-score-wrap { display: flex; align-items: baseline; gap: 5px; }
-      .ks-score-num  { font-size: 22px; font-weight: 900; line-height: 1; }
-      .ks-grade {
+      .pi-score-wrap { display: flex; align-items: baseline; gap: 5px; }
+      .pi-score-num  { font-size: 22px; font-weight: 900; line-height: 1; }
+      .pi-grade {
         font-size: 12px; font-weight: 800;
         padding: 1px 6px; border-radius: 4px;
       }
-      .grade-a { background: rgba(54,211,153,.2); color: var(--green); }
-      .grade-b { background: rgba(96,165,250,.2); color: var(--blue); }
+      .grade-a { background: rgba(54,211,153,.2);  color: var(--green); }
+      .grade-b { background: rgba(96,165,250,.2);  color: var(--blue); }
       .grade-c { background: rgba(251,191,36,.2);  color: var(--amber); }
       .grade-d { background: rgba(157,170,165,.15); color: var(--muted); }
 
-      .ks-type-badge {
-        font-size: 10px; font-weight: 700;
-        padding: 1px 6px; border-radius: 3px;
-        background: rgba(54,211,153,.12);
-        color: var(--green);
+      .pi-stage-badge {
+        font-size: 10px; font-weight: 800;
+        padding: 2px 8px; border-radius: 3px;
         text-transform: uppercase;
-        letter-spacing: .04em;
+        letter-spacing: .05em;
+      }
+      .pi-stage-badge.ignition {
+        background: rgba(54,211,153,.15);
+        color: var(--green);
+        border: 1px solid rgba(54,211,153,.3);
+      }
+      .pi-stage-badge.early {
+        background: rgba(96,165,250,.15);
+        color: var(--blue);
+        border: 1px solid rgba(96,165,250,.3);
       }
 
-      /* ── Pattern description row ── */
-      .ks-pattern {
+      /* ── Kill-trap warning ── */
+      .pi-killtrap {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--amber);
+        background: rgba(251,191,36,.1);
+        border: 1px solid rgba(251,191,36,.3);
+        padding: 4px 8px;
+        border-radius: 5px;
+      }
+
+      /* ── Pattern desc ── */
+      .pi-pattern {
         display: flex;
         align-items: center;
         gap: 6px;
@@ -110,37 +136,37 @@
         background: var(--panel-2);
         border-radius: 6px;
       }
-      .ks-pattern-dot {
+      .pi-pattern-dot {
         width: 8px; height: 8px;
         border-radius: 50%;
         flex-shrink: 0;
-        background: var(--green);
-        box-shadow: 0 0 6px rgba(54,211,153,.5);
       }
+      .pi-pattern-dot.ignition { background: var(--green); box-shadow: 0 0 6px rgba(54,211,153,.5); }
+      .pi-pattern-dot.early    { background: var(--blue);  box-shadow: 0 0 6px rgba(96,165,250,.5); }
 
-      /* ── Prices grid ── */
-      .ks-prices {
+      /* ── Prices ── */
+      .pi-prices {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 6px;
       }
-      .ks-price-cell {
+      .pi-price-cell {
         background: var(--panel-2);
         border-radius: 6px;
         padding: 8px 10px;
         display: grid;
         gap: 3px;
       }
-      .ks-price-cell span   { font-size: 10px; color: var(--muted); text-transform: uppercase; font-weight: 700; }
-      .ks-price-cell strong { font-size: 13px; font-weight: 700; }
+      .pi-price-cell span   { font-size: 10px; color: var(--muted); text-transform: uppercase; font-weight: 700; }
+      .pi-price-cell strong { font-size: 13px; font-weight: 700; }
 
-      /* ── Factor chips ── */
-      .ks-factors {
+      /* ── Chips ── */
+      .pi-factors {
         display: flex;
         flex-wrap: wrap;
         gap: 5px;
       }
-      .ks-factor {
+      .pi-chip {
         display: inline-flex;
         align-items: center;
         gap: 3px;
@@ -151,18 +177,19 @@
         color: var(--muted);
         white-space: nowrap;
       }
-      .ks-factor.ok   { background: rgba(54,211,153,.1); color: var(--green); }
-      .ks-factor.warn { background: rgba(251,113,133,.1); color: var(--red); }
+      .pi-chip.ok   { background: rgba(54,211,153,.1);  color: var(--green); }
+      .pi-chip.warn { background: rgba(251,191,36,.1);  color: var(--amber); }
+      .pi-chip.bad  { background: rgba(251,113,133,.1); color: var(--red); }
 
-      /* ── Note / footer ── */
-      .ks-note {
+      /* ── Note ── */
+      .pi-note {
         font-size: 11px;
         color: var(--muted);
         font-family: 'SF Mono', 'Fira Code', monospace;
         line-height: 1.5;
         overflow-wrap: anywhere;
       }
-      .ks-footer {
+      .pi-footer {
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -172,16 +199,16 @@
         color: var(--muted);
       }
 
-      /* ── Empty state ── */
-      .ks-empty {
+      /* ── Empty ── */
+      .pi-empty {
         grid-column: 1 / -1;
         text-align: center;
         padding: 48px 0;
         color: var(--muted);
       }
-      .ks-empty strong { display: block; font-size: 18px; margin-bottom: 6px; color: var(--text); }
+      .pi-empty strong { display: block; font-size: 18px; margin-bottom: 6px; color: var(--text); }
 
-      /* ── Scan meta bar ── */
+      /* ── Scan meta ── */
       .scan-meta {
         display: flex;
         align-items: center;
@@ -198,8 +225,8 @@
       .scan-meta .scan-dot { color: var(--green); font-size: 10px; }
 
       @media (max-width: 640px) {
-        .ks-controls { grid-template-columns: 1fr 1fr; }
-        .ks-controls .search-field { grid-column: 1 / -1; }
+        .pi-controls { grid-template-columns: 1fr 1fr; }
+        .pi-controls .search-field { grid-column: 1 / -1; }
       }
     </style>
   </head>
@@ -207,41 +234,39 @@
     <main class="shell wide-shell">
       <section class="topbar">
         <div>
-          <p class="eyebrow">Stop Hunt · Short Squeeze · Reversal</p>
-          <h1>Kill Short Signal Board</h1>
+          <p class="eyebrow">Squeeze → Ribbon Nén → BB Upper Break</p>
+          <h1>Pump Ignition Signal Board</h1>
         </div>
         <div class="top-actions">
-          <a class="nav-link" href="/">Detail Dashboard</a>
+          <a class="nav-link" href="/">Dashboard</a>
           <a class="nav-link" href="/pump">Pump</a>
-          <a class="nav-link" href="/pump-ignition">Pump Ign</a>
           <a class="nav-link" href="/cap">Capitulation</a>
+          <a class="nav-link" href="/killshort">Kill Short</a>
           <a class="nav-link" href="/spike-reversal">Spike Rev</a>
           <a class="nav-link" href="/dump-ignition">Dump Ign</a>
           <a class="nav-link" href="/edge-short">Short Edge</a>
-          <a class="nav-link" href="/highvol">High Vol</a>
-          <a class="nav-link" href="/lsratio">L/S Ratio</a>
-          <a class="nav-link" href="/paper">Paper</a>
           <a class="nav-link" href="/orders">Orders</a>
           <div class="status" id="scanStatus">Loading...</div>
         </div>
       </section>
 
       <div id="btcHealth"></div>
+
       <section class="summary-grid signal-summary">
         <article class="metric">
-          <span>Kill Short (LONG)</span>
-          <strong id="longCount">-</strong>
-          <small>Stop hunt + reversal</small>
+          <span>🟢 IGNITION</span>
+          <strong id="ignitionCount">-</strong>
+          <small>BB upper break + vol spike</small>
+        </article>
+        <article class="metric">
+          <span>⚡ EARLY</span>
+          <strong id="earlyCount">-</strong>
+          <small>Pre-ignition squeeze</small>
         </article>
         <article class="metric">
           <span>Avg Score</span>
           <strong id="avgScore">-</strong>
-          <small>Sweep + reversal quality</small>
-        </article>
-        <article class="metric">
-          <span>Cached / Scanned</span>
-          <strong id="totalScanned">-</strong>
-          <small>Top 400 by volume · 15m</small>
+          <small>Squeeze + breakout quality</small>
         </article>
         <article class="metric">
           <span>Last Scan</span>
@@ -250,7 +275,7 @@
         </article>
       </section>
 
-      <section class="controls ks-controls">
+      <section class="controls pi-controls">
         <label class="field search-field">
           <span>Search</span>
           <input id="searchInput" placeholder="BTC, ETH, SOL..." autocomplete="off">
@@ -263,6 +288,14 @@
             <option value="55">≥ 55 (C+)</option>
             <option value="70">≥ 70 (B+)</option>
             <option value="85">≥ 85 (A)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Stage</span>
+          <select id="stageFilter">
+            <option value="">Tất cả</option>
+            <option value="pump_ignition">IGNITION only</option>
+            <option value="pump_ignition_early">EARLY only</option>
           </select>
         </label>
         <div class="socket-note">
@@ -280,15 +313,15 @@
         <span>Updated <strong id="metaTime">-</strong></span>
       </div>
 
-      <div class="ks-grid" id="ksGrid">
-        <div class="ks-empty">
+      <div class="pi-grid" id="piGrid">
+        <div class="pi-empty">
           <strong>Đang tải...</strong>
-          Đang quét kill short pattern
+          Đang quét pump ignition pattern
         </div>
       </div>
     </main>
 
     <script src="/btcHealth.js"></script>
-    <script src="/killshort.js" type="module"></script>
+    <script src="/pump-ignition.js" type="module"></script>
   </body>
 </html>

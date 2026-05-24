@@ -1,12 +1,62 @@
 {
-  "2ZUSDT": {
-    "expiresAt": 1779544491684,
-    "addedAt": "2026-05-23T11:54:51.684Z",
-    "reason": "SL hit pnl=-0.0149"
+  "GENIUSUSDT": {
+    "expiresAt": 1779633544618,
+    "addedAt": "2026-05-24T12:39:04.618Z",
+    "reason": "SL hit pnl=-0.0049"
   },
-  "LAUSDT": {
-    "expiresAt": 1779549655390,
-    "addedAt": "2026-05-23T13:20:55.390Z",
-    "reason": "SL hit pnl=-0.2154"
+  "CHILLGUYUSDT": {
+    "expiresAt": 1779628049847,
+    "addedAt": "2026-05-24T11:07:29.847Z",
+    "reason": "SL hit pnl=-0.0845"
+  },
+  "PLAYUSDT": {
+    "expiresAt": 1779628829851,
+    "addedAt": "2026-05-24T11:20:29.851Z",
+    "reason": "SL hit pnl=-1.7743"
+  },
+  "BREVUSDT": {
+    "expiresAt": 1779629339286,
+    "addedAt": "2026-05-24T11:28:59.286Z",
+    "reason": "SL hit pnl=-0.0324"
+  },
+  "TOWNSUSDT": {
+    "expiresAt": 1779629339442,
+    "addedAt": "2026-05-24T11:28:59.442Z",
+    "reason": "SL hit pnl=-0.1279"
+  },
+  "APRUSDT": {
+    "expiresAt": 1779630690029,
+    "addedAt": "2026-05-24T11:51:30.029Z",
+    "reason": "SL hit pnl=-0.1263"
+  },
+  "SPKUSDT": {
+    "expiresAt": 1779632489919,
+    "addedAt": "2026-05-24T12:21:29.919Z",
+    "reason": "SL hit pnl=-0.3071"
+  },
+  "PLUMEUSDT": {
+    "expiresAt": 1779632909926,
+    "addedAt": "2026-05-24T12:28:29.926Z",
+    "reason": "SL hit pnl=-0.3744"
+  },
+  "SIGNUSDT": {
+    "expiresAt": 1779633694057,
+    "addedAt": "2026-05-24T12:41:34.057Z",
+    "reason": "SL hit pnl=-0.1534"
+  },
+  "AXSUSDT": {
+    "expiresAt": 1779633964311,
+    "addedAt": "2026-05-24T12:46:04.311Z",
+    "reason": "SL hit pnl=-0.1260"
+  },
+  "OPUSDT": {
+    "expiresAt": 1779634887387,
+    "addedAt": "2026-05-24T13:01:27.387Z",
+    "reason": "SL hit pnl=-0.0631"
+  },
+  "KITEUSDT": {
+    "expiresAt": 1779634887718,
+    "addedAt": "2026-05-24T13:01:27.718Z",
+    "reason": "SL hit pnl=-0.0195"
   }
 }

@@ -3,7 +3,7 @@ import { createMarkPriceTicker } from './markPriceTicker.js';
 const protectedPositions = new Map(); // symbol → { orderId, stopPrice, roe, at }
 const positionDataCache = new Map();  // symbol → { amt, entry, margin } — updated each REST scan
 
-export function startTrailingStopScanner({ client, getSymbols, intervalMs = 30000, webhookUrl }) {
+export function startTrailingStopScanner({ client, getSymbols, intervalMs = 30000, webhookUrl, isExcluded = null, getPositionData = null }) {
   if (process.env.TRAILING_STOP_ENABLED !== 'true') {
     console.log('[TSL] Disabled. Set TRAILING_STOP_ENABLED=true to enable.');
     return { protectedPositions };
@@ -44,13 +44,15 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
 
     try {
-      const [positions, openOrders, symbols] = await Promise.all([
-        client.getPositions({ apiKey, apiSecret }),
-        client.getOpenOrders({ apiKey, apiSecret }),
+      const [posData, symbols] = await Promise.all([
+        getPositionData ? getPositionData() : client.getPositions({ apiKey, apiSecret }).then((p) => ({ positions: p.filter((x) => Number(x.positionAmt) !== 0), openOrders: [], algoOrders: [] })),
         getSymbols(),
       ]);
+      const positions = posData.positions ?? posData.filter?.((p) => Number(p.positionAmt) !== 0) ?? posData;
+      const openOrders = posData.openOrders ?? [];
+      const sharedAlgoOrders = posData.algoOrders ?? null; // pre-fetched algo orders for all symbols
 
-      const active = positions.filter((p) => Number(p.positionAmt) !== 0);
+      const active = positions;
 
       // Update position cache + ticker subscription
       const activeSymbolSet = new Set(active.map((p) => p.symbol));
@@ -73,6 +75,10 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
       console.log(`[TSL] Scanning ${active.length} position(s): ${active.map(p => p.symbol).join(', ')}`);
 
       for (const pos of active) {
+        if (isExcluded?.(pos.symbol)) {
+          console.log(`[TSL] ${pos.symbol} skipped — excluded from position management`);
+          continue;
+        }
         const amt = Number(pos.positionAmt);
         const entry = Number(pos.entryPrice);
         const mark = Number(pos.markPrice);
@@ -98,9 +104,14 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
 
         if (roe < triggerRoe) continue;
 
-        const openAlgoOrders = await client.getOpenAlgoOrders({ symbol: pos.symbol, apiKey, apiSecret }).catch(() => ({ orders: [] }));
-        const algoList = Array.isArray(openAlgoOrders?.orders) ? openAlgoOrders.orders
-          : Array.isArray(openAlgoOrders) ? openAlgoOrders : [];
+        let algoList;
+        if (sharedAlgoOrders) {
+          algoList = sharedAlgoOrders.filter((o) => o.symbol === pos.symbol);
+        } else {
+          const openAlgoOrders = await client.getOpenAlgoOrders({ symbol: pos.symbol, apiKey, apiSecret }).catch(() => ({ orders: [] }));
+          algoList = Array.isArray(openAlgoOrders?.orders) ? openAlgoOrders.orders
+            : Array.isArray(openAlgoOrders) ? openAlgoOrders : [];
+        }
 
         // Kiểm tra bằng algoId đã lưu — algo order type là 'CONDITIONAL' không phải 'STOP_MARKET'
         const myAlgoOpen = existingProtected?.algoId &&
@@ -213,6 +224,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
       }
       const cached = positionDataCache.get(symbol);
       if (!cached) return;
+      if (isExcluded?.(symbol)) return;
 
       const { amt, entry, margin } = cached;
       const upnl = (markPrice - entry) * amt;

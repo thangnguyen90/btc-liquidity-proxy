@@ -3,7 +3,7 @@ const priceBuffer = []; // { price, at }[]
 const BUFFER_SIZE = 4;
 const MIN_REVERSAL_PCT = 0.1; // BTC must bounce at least 0.1% to count as reversal
 
-export function startBtcReversalGuard({ client, getSymbols, getRuntimeSettings, intervalMs = 30000 }) {
+export function startBtcReversalGuard({ client, getSymbols, getRuntimeSettings, intervalMs = 30000, getPositionData = null }) {
   console.log('[BRG] BTC reversal short-exit guard loaded.');
 
   const run = async () => {
@@ -39,10 +39,11 @@ export function startBtcReversalGuard({ client, getSymbols, getRuntimeSettings, 
       console.log(`[BRG] BTC reversal: ${p0.toFixed(1)} → ${p1.toFixed(1)} → ${p2.toFixed(1)} (+${bouncePct.toFixed(2)}%) — scanning shorts.`);
 
       const minRoe = settings.btcReversalGuardRoe ?? 1;
-      const [positions, symbols] = await Promise.all([
-        client.getPositions({ apiKey, apiSecret }),
+      const [posData, symbols] = await Promise.all([
+        getPositionData ? getPositionData() : client.getPositions({ apiKey, apiSecret }),
         getSymbols(),
       ]);
+      const positions = Array.isArray(posData) ? posData : (posData.positions ?? []);
 
       const shorts = positions.filter((p) => Number(p.positionAmt) < 0);
       if (!shorts.length) {

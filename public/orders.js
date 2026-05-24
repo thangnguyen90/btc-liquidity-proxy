@@ -1,6 +1,22 @@
 // ── Auth ────────────────────────────────────────────────────
 const TOKEN_KEY = 'orders_token';
 const CREDS_KEY = 'orders_creds'; // { apiKey, apiSecret } persisted in localStorage
+const TSL_EXCLUDED_KEY = 'tsl_excluded'; // Set<symbol> — persisted locally
+
+// TSL exclude state (localStorage + server)
+const tslExcluded = new Set(JSON.parse(localStorage.getItem(TSL_EXCLUDED_KEY) ?? '[]'));
+function saveTslExcluded() {
+  localStorage.setItem(TSL_EXCLUDED_KEY, JSON.stringify([...tslExcluded]));
+}
+async function setTslExclude(symbol, excluded) {
+  try {
+    await apiFetch('/api/tsl-exclude', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol, excluded }),
+    });
+  } catch { /* non-critical */ }
+}
 
 const authOverlay = document.getElementById('authOverlay');
 const authApiKeyInput = document.getElementById('authApiKeyInput');
@@ -63,6 +79,16 @@ function showApp() {
   authOverlay.style.display = 'none';
   mainContent.style.display = '';
   loadSettings();
+  // Sync TSL exclude list từ server về (đồng bộ sau server restart)
+  apiFetch('/api/tsl-exclude').then((d) => {
+    const serverExcluded = new Set(d.excluded ?? []);
+    // Merge: push localStorage lên server, pull server về localStorage
+    for (const sym of tslExcluded) {
+      if (!serverExcluded.has(sym)) setTslExclude(sym, true);
+    }
+    for (const sym of serverExcluded) tslExcluded.add(sym);
+    saveTslExcluded();
+  }).catch(() => {});
   refresh();
   setInterval(refresh, 15000);
   setInterval(() => loadPositions(), 3000);
@@ -409,9 +435,14 @@ function _buildPositionRows(rows) {
           <button class="action-btn close-btn" data-symbol="${sym}" data-amt="${p.positionAmt}">Close</button>
           <button class="dca-toggle-btn" data-sym="${sym}">DCA</button>
         </td>
+        <td style="text-align:center">
+          <input type="checkbox" class="tsl-exclude-cb" data-sym="${sym}" title="Skip trailing stop & auto management"
+            ${tslExcluded.has(sym) ? 'checked' : ''}
+            style="width:16px;height:16px;cursor:pointer;accent-color:var(--red)">
+        </td>
       </tr>
       <tr class="dca-row" id="dca-row-${sym}" style="display:none">
-        <td colspan="11">
+        <td colspan="12">
           <div class="dca-form">
             <div class="dca-field">
               <span>Margin $</span>
@@ -547,6 +578,20 @@ function _buildPositionRows(rows) {
     });
   });
 
+  // ── TSL exclude checkboxes ──
+  positionsBody.querySelectorAll('.tsl-exclude-cb').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const sym = cb.dataset.sym;
+      if (cb.checked) {
+        tslExcluded.add(sym);
+      } else {
+        tslExcluded.delete(sym);
+      }
+      saveTslExcluded();
+      setTslExclude(sym, cb.checked);
+    });
+  });
+
   applySort(document.getElementById('positionsHead'), positionsBody);
 }
 
@@ -562,7 +607,7 @@ async function loadPositions(forceRebuild = false) {
     const symbolsChanged = forceRebuild || newSymbols.size !== oldSymbols.size || [...newSymbols].some((s) => !oldSymbols.has(s));
 
     if (!rows.length) {
-      positionsBody.innerHTML = '<tr><td colspan="11" class="empty-cell">No open positions.</td></tr>';
+      positionsBody.innerHTML = '<tr><td colspan="12" class="empty-cell">No open positions.</td></tr>';
       posStatic.clear();
       startMarkPriceWs([]);
       updateTpSlSymbolSelect([]);
@@ -605,7 +650,7 @@ async function loadPositions(forceRebuild = false) {
       return { ...p, roe: margin > 0 ? (upnl / margin) * 100 : 0 };
     }));
   } catch (err) {
-    positionsBody.innerHTML = `<tr><td colspan="11" class="empty-cell" style="color:var(--red)">${err.message}</td></tr>`;
+    positionsBody.innerHTML = `<tr><td colspan="12" class="empty-cell" style="color:var(--red)">${err.message}</td></tr>`;
   }
 }
 
