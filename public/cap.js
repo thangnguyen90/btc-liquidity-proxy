@@ -177,7 +177,7 @@ async function loadCapOpenLimitOrders() {
   } catch {}
 }
 
-window.placeCapOrder = async function(btn, symbol, action, entry, sl, tp, score, type) {
+window.placeCapOrder = async function(btn, symbol, action, entry, sl, tp, score, type, forceMarket = false) {
   const row = btn.closest('.cap-order-row');
   const input = row?.querySelector('.cap-order-margin') ?? btn.closest('td')?.querySelector('.cap-order-margin');
   const margin = Number(input?.value ?? 5);
@@ -187,7 +187,8 @@ window.placeCapOrder = async function(btn, symbol, action, entry, sl, tp, score,
   if (!token) {
     btn.classList.add('error');
     btn.textContent = 'Chưa đăng nhập';
-    setTimeout(() => { btn.classList.remove('error'); btn.textContent = '📥 LIMIT'; }, 3000);
+    const label = forceMarket ? '⚡ MKT' : '📥 LIMIT';
+    setTimeout(() => { btn.classList.remove('error'); btn.textContent = label; }, 3000);
     return;
   }
 
@@ -199,7 +200,7 @@ window.placeCapOrder = async function(btn, symbol, action, entry, sl, tp, score,
     const res = await fetch('/api/pump-manual-order', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-orders-token': token },
-      body: JSON.stringify({ symbol, action, entry, sl, tp, score, margin, type }),
+      body: JSON.stringify({ symbol, action, entry, sl, tp, score, margin, type, forceMarket }),
     });
     const data = await res.json();
     if (data.ok) {
@@ -221,8 +222,9 @@ window.placeCapOrder = async function(btn, symbol, action, entry, sl, tp, score,
     btn.disabled = false;
     btn.classList.remove('loading');
     btn.classList.add('error');
+    const label = forceMarket ? '⚡ MKT' : '📥 LIMIT';
     btn.textContent = e.message.length > 30 ? e.message.slice(0, 30) + '…' : e.message;
-    setTimeout(() => { btn.classList.remove('error'); btn.textContent = '📥 LIMIT'; }, 4000);
+    setTimeout(() => { btn.classList.remove('error'); btn.textContent = label; }, 4000);
   }
 };
 
@@ -295,7 +297,8 @@ function buildCard(sig) {
       <div class="cap-order-row">
         <input class="cap-order-margin" type="number" value="5" min="1" max="10000" step="1" title="Margin (USDT)">
         <span class="cap-order-label" style="font-size:11px;color:var(--muted);flex-shrink:0">USDT</span>
-        <button class="cap-order-btn ${dirClass}" onclick="placeCapOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score},'${sig.type ?? ''}')">📥 LIMIT</button>
+        <button class="cap-order-btn ${dirClass}" onclick="placeCapOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score},'${sig.type ?? ''}',false)">📥 LIMIT</button>
+        <button class="cap-order-btn ${dirClass}" onclick="placeCapOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score},'${sig.type ?? ''}',true)" style="opacity:.8">⚡ MKT</button>
         ${capOpenLimitSymbols.has(sig.symbol) ? '<span class="cap-order-exists">✓ Đã có lệnh</span>' : ''}
       </div>
     </article>
@@ -599,11 +602,14 @@ function renderCapPaperTrades(trades, summary) {
               style="width:46px;padding:3px 5px;border-radius:4px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font-size:12px;font-weight:700;text-align:right"
               title="Margin (USDT)">
             <button class="cap-order-btn ${dirClass}"
-              onclick="placeCapOrder(this,'${t.symbol}','${t.side}',${t.entryPrice},${t.sl ?? 'null'},${t.tp ?? 'null'},${scoreNum},'')"
+              onclick="placeCapOrder(this,'${t.symbol}','${t.side}',${t.entryPrice},${t.sl ?? 'null'},${t.tp ?? 'null'},${scoreNum},'',false)"
               style="padding:3px 8px;font-size:10px;white-space:nowrap"
               ${hasOrder ? 'disabled' : ''}>
               ${hasOrder ? '✓ Đã có' : '📥 LIMIT'}
             </button>
+            ${hasOrder ? '' : `<button class="cap-order-btn ${dirClass}"
+              onclick="placeCapOrder(this,'${t.symbol}','${t.side}',${t.entryPrice},${t.sl ?? 'null'},${t.tp ?? 'null'},${scoreNum},'',true)"
+              style="padding:3px 8px;font-size:10px;white-space:nowrap;opacity:.8">⚡ MKT</button>`}
           </div>
         </td>`;
     return `<tr data-id="${t.id}" style="${rowStyle}">

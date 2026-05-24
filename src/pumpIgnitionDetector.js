@@ -356,6 +356,17 @@ export function detectPumpIgnition(candles, state = {}, cfg = {}) {
 
 // ── Scanner ─────────────────────────────────────────────────────────────────────
 
+function normalizeKline(k) {
+  const candle = {
+    open:   Number(k?.open   ?? k?.[1]),
+    high:   Number(k?.high   ?? k?.[2]),
+    low:    Number(k?.low    ?? k?.[3]),
+    close:  Number(k?.close  ?? k?.[4]),
+    volume: Number(k?.volume ?? k?.[5]),
+  };
+  return Object.values(candle).every(Number.isFinite) ? candle : null;
+}
+
 export async function runPumpIgnitionScan(symbols, klineCache, snapshotMap, opts = {}) {
   const { btcBias = 'neutral' } = opts;
   const results  = [];
@@ -365,15 +376,10 @@ export async function runPumpIgnitionScan(symbols, klineCache, snapshotMap, opts
     try {
       const raw = klineCache.getIfCached(symbol, '15m', 200);
       if (!raw || raw.length < 140) continue;
-      processed++;
 
-      const candles = raw.map((k) => ({
-        open:   +k[1],
-        high:   +k[2],
-        low:    +k[3],
-        close:  +k[4],
-        volume: +k[5],
-      }));
+      const candles = raw.map(normalizeKline);
+      if (candles.some((c) => !c)) continue;
+      processed++;
 
       const snap = snapshotMap.get(symbol);
       const state = {};

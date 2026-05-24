@@ -4,6 +4,9 @@ let allSignals  = [];
 let scannedAt   = null;
 let total       = 0;
 
+let piPaperTrades = [];
+let piPaperOpenSymbols = new Set();
+
 const grid          = document.getElementById('piGrid');
 const ignitionCount = document.getElementById('ignitionCount');
 const earlyCount    = document.getElementById('earlyCount');
@@ -36,6 +39,12 @@ function fmtPrice(p) {
 function fmtPct(v, digits = 2) {
   if (v == null || isNaN(v)) return '-';
   return (v >= 0 ? '+' : '') + Number(v).toFixed(digits) + '%';
+}
+
+function fmtPnl(pnl, roe) {
+  if (pnl == null || isNaN(pnl)) return '-';
+  const sign = pnl >= 0 ? '+' : '';
+  return `${sign}${pnl.toFixed(3)} (${sign}${Number(roe ?? 0).toFixed(1)}%)`;
 }
 
 function timeAgo(ts) {
@@ -193,7 +202,7 @@ function buildCard(sig) {
 
       <div class="pi-footer">
         <span>${timeAgo(sig.scannedAt)}</span>
-        <span></span>
+        <button class="pi-paper-btn long" onclick="enterPiPaperTrade(this,'${sig.symbol}','LONG',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}')">+ Paper</button>
       </div>
     </article>
   `;
@@ -368,23 +377,167 @@ function connectPriceSocket() {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
+function showFetchError(err) {
+  const status = err?.status ? `${err.status} ${err.statusText || ''}`.trim() : '';
+  const msg = err?.status === 429
+    ? 'API error 429: Binance rate limit'
+    : `API error${status ? ` ${status}` : ''}`;
+  scanStatus.textContent = msg;
+  console.warn('[PumpIgnition] fetch failed:', err);
+}
+
 async function fetchAndApply(attempt = 0) {
   try {
     scanStatus.textContent = attempt === 0 ? 'Đang tải...' : `Warming cache... (${attempt})`;
     const res = await fetch('/api/pump-ignition-signals');
-    if (res.ok) {
-      const data = await res.json();
-      applyData(data);
-      if ((data.processed ?? 0) === 0 && attempt < 12) {
-        const delay = Math.min(5000 + attempt * 3000, 20000);
-        setTimeout(() => fetchAndApply(attempt + 1), delay);
-      }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      showFetchError({ status: res.status, statusText: res.statusText, body });
+      return;
     }
-  } catch {}
+    const data = await res.json();
+    applyData(data);
+    if ((data.processed ?? 0) === 0 && attempt < 12) {
+      const delay = Math.min(5000 + attempt * 3000, 20000);
+      setTimeout(() => fetchAndApply(attempt + 1), delay);
+    }
+  } catch (err) {
+    showFetchError(err);
+  }
 }
+
+// ── PI Paper Trades ───────────────────────────────────────────────────────────
+
+function renderPiPaperTable() {
+  const tbody = document.getElementById('piPaperBody');
+  if (!tbody) return;
+
+  const open   = piPaperTrades.filter((t) => t.status !== 'CLOSED');
+  const closed = piPaperTrades.filter((t) => t.status === 'CLOSED');
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const wr     = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(0) : '-';
+  const avgRoe = closed.length > 0
+    ? (closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length).toFixed(1)
+    : '-';
+
+  const summary = document.getElementById('piPaperSummary');
+  if (summary) {
+    summary.textContent = `${open.length} đang mở · ${closed.length} đã đóng · TP ${tpHits} · SL ${slHits} · WR ${wr}% · AvgROE ${avgRoe}%`;
+  }
+
+  if (piPaperTrades.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:16px">Chưa có paper trade nào</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = piPaperTrades.map((t) => {
+    const pnlVal = t.pnl ?? null;
+    const roeVal = t.roe ?? null;
+    const pnlColor = pnlVal == null ? '' : pnlVal >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    const statusBadge = t.status === 'OPEN' ? '<span style="color:var(--green)">OPEN</span>'
+      : t.status === 'PENDING' ? '<span style="color:var(--amber)">PENDING</span>'
+      : `<span style="color:var(--muted)">${t.outcome ?? 'CLOSED'}</span>`;
+    const canClose = t.status === 'OPEN' || t.status === 'PENDING';
+    const actions = `
+      ${canClose ? `<button class="pi-paper-close-btn" onclick="closePiPaperTrade('${t.id}')">Close</button>` : ''}
+      <button class="pi-paper-close-btn del" onclick="deletePiPaperTrade('${t.id}')">Del</button>
+    `;
+    return `<tr>
+      <td>${t.symbol.replace(/USDT$/, '')}</td>
+      <td><span style="color:var(--green)">${t.side}</span></td>
+      <td>${fmtPrice(t.entryPrice)}</td>
+      <td>${fmtPrice(t.sl)}</td>
+      <td>${fmtPrice(t.tp)}</td>
+      <td>${fmtPrice(t.markPrice)}</td>
+      <td style="${pnlColor}">${fmtPnl(pnlVal, roeVal)}</td>
+      <td style="${pnlColor}">${roeVal != null ? fmtPct(roeVal) : '-'}</td>
+      <td>${statusBadge}</td>
+      <td style="color:var(--muted);font-size:11px">${t.source ?? '-'}</td>
+      <td style="color:var(--muted);font-size:11px">${t.createdAt ? new Date(t.createdAt).toLocaleTimeString('vi') : '-'}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadPiPaperTrades() {
+  try {
+    const res = await fetch('/api/pi-paper-trades');
+    if (!res.ok) return;
+    const data = await res.json();
+    piPaperTrades = data.trades ?? [];
+    piPaperOpenSymbols = new Set(piPaperTrades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol));
+    renderPiPaperTable();
+  } catch (e) {
+    console.warn('[PiPaper] loadPiPaperTrades error:', e);
+  }
+}
+
+window.enterPiPaperTrade = async function(btn, symbol, side, entryPrice, score, sl, tp, noteEncoded) {
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const res = await fetch('/api/pi-paper-trades', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        side,
+        entryPrice,
+        sl: sl ?? null,
+        tp: tp ?? null,
+        marginUsdt: 1,
+        leverage: 10,
+        source: `pi-${score}`,
+        note: decodeURIComponent(noteEncoded),
+        status: 'PENDING',
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    btn.textContent = '✓ OK';
+    await loadPiPaperTrades();
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+  } catch (e) {
+    btn.textContent = '✗ Err';
+    console.error('[PiPaper] enterPiPaperTrade error:', e);
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2000);
+  }
+};
+
+window.closePiPaperTrade = async function(id) {
+  try {
+    await fetch('/api/pi-paper-trades/close', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    await loadPiPaperTrades();
+  } catch (e) {
+    console.error('[PiPaper] closePiPaperTrade error:', e);
+  }
+};
+
+window.deletePiPaperTrade = async function(id) {
+  try {
+    await fetch('/api/pi-paper-trades/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    await loadPiPaperTrades();
+  } catch (e) {
+    console.error('[PiPaper] deletePiPaperTrade error:', e);
+  }
+};
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
 
 (async () => {
   await fetchAndApply();
   connect();
   connectPriceSocket();
+  loadPiPaperTrades();
+  setInterval(loadPiPaperTrades, 30000);
 })();

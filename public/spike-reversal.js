@@ -326,19 +326,33 @@ function connectPriceSocket() {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
+function showFetchError(err) {
+  const status = err?.status ? `${err.status} ${err.statusText || ''}`.trim() : '';
+  const msg = err?.status === 429
+    ? 'API error 429: Binance rate limit'
+    : `API error${status ? ` ${status}` : ''}`;
+  scanStatus.textContent = msg;
+  console.warn('[SpikeReversal] fetch failed:', err);
+}
+
 async function fetchAndApply(attempt = 0) {
   try {
     scanStatus.textContent = attempt === 0 ? 'Đang tải...' : `Warming cache... (${attempt})`;
     const res = await fetch('/api/spike-reversal-signals');
-    if (res.ok) {
-      const data = await res.json();
-      applyData(data);
-      if ((data.processed ?? 0) === 0 && attempt < 12) {
-        const delay = Math.min(5000 + attempt * 3000, 20000);
-        setTimeout(() => fetchAndApply(attempt + 1), delay);
-      }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      showFetchError({ status: res.status, statusText: res.statusText, body });
+      return;
     }
-  } catch {}
+    const data = await res.json();
+    applyData(data);
+    if ((data.processed ?? 0) === 0 && attempt < 12) {
+      const delay = Math.min(5000 + attempt * 3000, 20000);
+      setTimeout(() => fetchAndApply(attempt + 1), delay);
+    }
+  } catch (err) {
+    showFetchError(err);
+  }
 }
 
 (async () => {

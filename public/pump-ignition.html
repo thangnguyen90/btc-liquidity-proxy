@@ -228,6 +228,82 @@
         .pi-controls { grid-template-columns: 1fr 1fr; }
         .pi-controls .search-field { grid-column: 1 / -1; }
       }
+
+      /* ── PI Paper Trades section ── */
+      .pi-paper-section {
+        margin-top: 28px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--panel);
+        overflow: hidden;
+      }
+      .pi-paper-section h2 {
+        font-size: 14px;
+        font-weight: 800;
+        padding: 12px 16px;
+        margin: 0;
+        border-bottom: 1px solid var(--line);
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .pi-paper-section h2 span { color: var(--green); }
+      #piPaperSummary {
+        font-size: 12px;
+        color: var(--muted);
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+      .pi-paper-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      .pi-paper-table th {
+        text-align: left;
+        padding: 7px 10px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: var(--muted);
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+      }
+      .pi-paper-table td {
+        padding: 7px 10px;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+      }
+      .pi-paper-table tr:last-child td { border-bottom: none; }
+      .pi-paper-table tr:hover td { background: var(--panel-2); }
+      .pi-paper-btn.long {
+        font-size: 11px;
+        font-weight: 700;
+        padding: 3px 9px;
+        border-radius: 5px;
+        border: 1px solid rgba(54,211,153,.4);
+        background: rgba(54,211,153,.12);
+        color: var(--green);
+        cursor: pointer;
+        transition: opacity .15s;
+      }
+      .pi-paper-btn.long:hover { opacity: .75; }
+      .pi-paper-btn.long:disabled { opacity: .5; cursor: not-allowed; }
+      .pi-paper-close-btn {
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 7px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--muted);
+        cursor: pointer;
+        margin-right: 4px;
+      }
+      .pi-paper-close-btn:hover { color: var(--text); }
+      .pi-paper-close-btn.del { color: var(--red); border-color: rgba(251,113,133,.3); }
+      .pi-paper-close-btn.del:hover { background: rgba(251,113,133,.1); }
     </style>
   </head>
   <body>
@@ -319,6 +395,34 @@
           Đang quét pump ignition pattern
         </div>
       </div>
+
+      <section class="pi-paper-section">
+        <h2>📋 Paper Trades <span>LONG · Pump Ignition</span></h2>
+        <div id="piPaperSummary">Đang tải...</div>
+        <div style="overflow-x:auto">
+          <table class="pi-paper-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Entry</th>
+                <th>SL</th>
+                <th>TP</th>
+                <th>Mark</th>
+                <th>PnL</th>
+                <th>ROE</th>
+                <th>Status</th>
+                <th>Source</th>
+                <th>Time</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="piPaperBody">
+              <tr><td colspan="12" style="text-align:center;color:var(--muted);padding:16px">Đang tải...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script src="/btcHealth.js"></script>

@@ -4,6 +4,10 @@ let allSignals  = [];
 let scannedAt   = null;
 let total       = 0;
 
+let diPaperTrades = [];
+let diPaperOpenSymbols = new Set();
+let diPaperSummaryCache = null;
+
 const grid          = document.getElementById('diGrid');
 const ignitionCount = document.getElementById('ignitionCount');
 const earlyCount    = document.getElementById('earlyCount');
@@ -188,7 +192,7 @@ function buildCard(sig) {
 
       <div class="di-footer">
         <span>${timeAgo(sig.scannedAt)}</span>
-        <span></span>
+        <button class="di-paper-btn short" onclick="enterDiPaperTrade(this,'${sig.symbol}','SHORT',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}')">+ Paper</button>
       </div>
     </article>
   `;
@@ -360,25 +364,185 @@ function connectPriceSocket() {
   };
 }
 
+// ── Paper trades ──────────────────────────────────────────────────────────────
+
+function fmtPnl(pnl, roe) {
+  if (pnl == null) return '-';
+  const sign = pnl >= 0 ? '+' : '';
+  const cls  = pnl >= 0 ? 'positive' : 'negative';
+  return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)} (${sign}${Number(roe ?? 0).toFixed(1)}%)</span>`;
+}
+
+function renderDiPaperTable() {
+  const tbody = document.getElementById('diPaperBody');
+  const countEl = document.getElementById('diPaperCount');
+  if (!tbody) return;
+
+  const trades = diPaperTrades;
+  const summary = diPaperSummaryCache;
+  const open   = trades.filter((t) => t.status === 'OPEN' || t.status === 'PENDING');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+
+  let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
+  if (summary && summary.closed > 0) {
+    const wr = Math.round(summary.wins / summary.closed * 100);
+    countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
+    if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+  }
+  if (countEl) countEl.textContent = countTxt;
+
+  if (!trades.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ dump ignition signals.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = trades.map((t) => {
+    const isShort  = t.side === 'SHORT';
+    const sideHtml = isShort
+      ? `<span style="color:var(--red);font-weight:700">SHORT</span>`
+      : `<span style="color:var(--green);font-weight:700">LONG</span>`;
+    const isClosed = t.status === 'CLOSED';
+    const mark     = t.markPrice ?? t.exitPrice ?? '-';
+    const actionBtns = isClosed
+      ? `<button class="di-paper-close-btn" style="opacity:.6;font-size:10px" onclick="deleteDiPaperTrade('${t.id}')">Del</button>`
+      : `<button class="di-paper-close-btn" onclick="closeDiPaperTrade('${t.id}')">Close</button>`;
+    const rowStyle = isClosed ? 'opacity:.5' : '';
+    const slColor = isShort ? 'var(--green)' : 'var(--red)';
+    const tpColor = isShort ? 'var(--red)' : 'var(--green)';
+    const outcomeHtml = isClosed
+      ? t.outcome === 'TP' ? '<span style="color:var(--green);font-weight:700">✅ TP</span>'
+        : t.outcome === 'SL' ? '<span style="color:var(--red);font-weight:700">🔴 SL</span>'
+        : '<span style="color:var(--muted)">Manual</span>'
+      : t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>'
+      : '<span style="color:var(--green)">OPEN</span>';
+    return `<tr data-id="${t.id}" style="${rowStyle}">
+      <td><a href="/?symbol=${t.symbol}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol.replace(/USDT$/, '')}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
+      <td>${sideHtml}</td>
+      <td>${fmtPrice(t.entryPrice)}</td>
+      <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td data-di-mark="${t.id}">${fmtPrice(mark)}</td>
+      <td data-di-pnl="${t.id}">${fmtPnl(t.pnl, t.roe)}</td>
+      <td data-di-roe="${t.id}">${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
+      <td style="font-size:11px">${outcomeHtml}</td>
+      <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
+      <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
+      <td>${actionBtns}</td>
+    </tr>`;
+  }).join('');
+}
+
+let _diPaperFetching = false;
+async function loadDiPaperTrades() {
+  if (_diPaperFetching) return;
+  _diPaperFetching = true;
+  try {
+    const res = await fetch('/api/di-paper-trades');
+    if (!res.ok) return;
+    const data = await res.json();
+    diPaperTrades = data.trades ?? [];
+    diPaperSummaryCache = data.summary;
+    diPaperOpenSymbols = new Set(
+      diPaperTrades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol),
+    );
+    renderDiPaperTable();
+  } catch {} finally {
+    _diPaperFetching = false;
+  }
+}
+
+let _diPaperPollTimer = null;
+function scheduleDiPaperPoll() {
+  clearTimeout(_diPaperPollTimer);
+  const hasOpen = diPaperTrades.some((t) => t.status === 'OPEN');
+  _diPaperPollTimer = setTimeout(async () => {
+    await loadDiPaperTrades();
+    scheduleDiPaperPoll();
+  }, hasOpen ? 3_000 : 15_000);
+}
+
+window.enterDiPaperTrade = async function(btn, symbol, side, entryPrice, score, sl, tp, noteEncoded) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  const note = noteEncoded ? decodeURIComponent(noteEncoded) : '';
+  try {
+    const res = await fetch('/api/di-paper-trades', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice, tp: tp ?? null, sl: sl ?? null, source: `di-${score}`, note }),
+    });
+    if (res.ok) {
+      btn.textContent = '⏳';
+      setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+      loadDiPaperTrades();
+    } else {
+      btn.textContent = 'ERR';
+      setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+    }
+  } catch {
+    btn.textContent = 'ERR';
+    setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+  }
+};
+
+window.closeDiPaperTrade = async function(id) {
+  try {
+    const res = await fetch('/api/di-paper-trades/close', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) { await loadDiPaperTrades(); scheduleDiPaperPoll(); }
+  } catch {}
+};
+
+window.deleteDiPaperTrade = async function(id) {
+  if (!confirm('Xóa paper trade này?')) return;
+  try {
+    const res = await fetch('/api/di-paper-trades/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) { await loadDiPaperTrades(); scheduleDiPaperPoll(); }
+  } catch {}
+};
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
+
+function showFetchError(err) {
+  const status = err?.status ? `${err.status} ${err.statusText || ''}`.trim() : '';
+  const msg = err?.status === 429
+    ? 'API error 429: Binance rate limit'
+    : `API error${status ? ` ${status}` : ''}`;
+  scanStatus.textContent = msg;
+  console.warn('[DumpIgnition] fetch failed:', err);
+}
 
 async function fetchAndApply(attempt = 0) {
   try {
     scanStatus.textContent = attempt === 0 ? 'Đang tải...' : `Warming cache... (${attempt})`;
     const res = await fetch('/api/dump-ignition-signals');
-    if (res.ok) {
-      const data = await res.json();
-      applyData(data);
-      if ((data.processed ?? 0) === 0 && attempt < 12) {
-        const delay = Math.min(5000 + attempt * 3000, 20000);
-        setTimeout(() => fetchAndApply(attempt + 1), delay);
-      }
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      showFetchError({ status: res.status, statusText: res.statusText, body });
+      return;
     }
-  } catch {}
+    const data = await res.json();
+    applyData(data);
+    if ((data.processed ?? 0) === 0 && attempt < 12) {
+      const delay = Math.min(5000 + attempt * 3000, 20000);
+      setTimeout(() => fetchAndApply(attempt + 1), delay);
+    }
+  } catch (err) {
+    showFetchError(err);
+  }
 }
 
 (async () => {
   await fetchAndApply();
   connect();
   connectPriceSocket();
+  await loadDiPaperTrades();
+  scheduleDiPaperPoll();
 })();

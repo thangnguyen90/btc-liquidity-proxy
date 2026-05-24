@@ -233,6 +233,10 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
       const margin = calcMargin(pos);
       if (margin <= 0) return;
 
+      // Keep markPrice + upnl fresh in posCache so callers don't need extra REST calls
+      pos.markPrice = markPrice;
+      pos.unRealizedProfit = upnl;
+
       const roe = (upnl / margin) * 100;
       stats.lastRoeUpdateAt = Date.now();
       stats.lastRoeSymbol = symbol;
@@ -264,6 +268,20 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
     // Call after placing an order to immediately track the position
     trackPosition(symbol, { amt, entry, leverage, isolatedMargin = 0, initialMargin = 0, positionSide = 'BOTH' }) {
       upsert(symbol, { amt, entry, leverage, isolatedMargin, initialMargin, positionSide });
+    },
+    // Returns position-like objects compatible with client.getPositions() shape
+    getActivePositions() {
+      return [...posCache.entries()].map(([symbol, pos]) => ({
+        symbol,
+        positionAmt: String(pos.amt),
+        entryPrice: String(pos.entry),
+        leverage: String(pos.leverage ?? 10),
+        isolatedMargin: String(pos.isolatedMargin ?? 0),
+        initialMargin: String(pos.initialMargin ?? 0),
+        positionSide: pos.positionSide ?? 'BOTH',
+        markPrice: String(pos.markPrice ?? 0),
+        unRealizedProfit: String(pos.unRealizedProfit ?? 0),
+      }));
     },
     getStatus() {
       return {

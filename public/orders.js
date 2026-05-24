@@ -90,8 +90,7 @@ function showApp() {
     saveTslExcluded();
   }).catch(() => {});
   refresh();
-  setInterval(refresh, 15000);
-  setInterval(() => loadPositions(), 3000);
+  setInterval(refresh, 30000);
   fetch('/api/account-uid', { headers: { 'x-orders-token': getToken() } })
     .then((r) => r.json())
     .then((d) => {

@@ -217,6 +217,25 @@
         .di-controls { grid-template-columns: 1fr 1fr; }
         .di-controls .search-field { grid-column: 1 / -1; }
       }
+
+      /* ── DI Paper trades ── */
+      .di-paper-section { margin-top: 20px; }
+      .di-paper-btn {
+        font-size: 10px; font-weight: 800;
+        padding: 3px 10px; border-radius: 4px;
+        border: none; cursor: pointer;
+        letter-spacing: .04em; text-transform: uppercase;
+        transition: opacity .15s;
+      }
+      .di-paper-btn:hover { opacity: .75; }
+      .di-paper-btn.short { background: rgba(251,113,133,.2); color: var(--red); border: 1px solid rgba(251,113,133,.4); }
+      .di-paper-btn:disabled { opacity: .4; cursor: default; }
+      .di-paper-close-btn {
+        font-size: 10px; padding: 2px 8px; border-radius: 4px;
+        border: 1px solid var(--line); background: var(--panel-2);
+        color: var(--muted); cursor: pointer;
+      }
+      .di-paper-close-btn:hover { color: var(--red); border-color: var(--red); }
     </style>
   </head>
   <body>
@@ -308,6 +327,36 @@
           Đang quét dump ignition pattern
         </div>
       </div>
+
+      <section class="panel di-paper-section">
+        <div class="panel-head">
+          <h2>Paper Trades — Dump Ignition</h2>
+          <span id="diPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+        </div>
+        <div class="table-wrap">
+          <table class="signal-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Entry</th>
+                <th>SL</th>
+                <th>TP</th>
+                <th>Mark</th>
+                <th>PnL</th>
+                <th>ROE</th>
+                <th>Status</th>
+                <th>Source</th>
+                <th>Time</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="diPaperBody">
+              <tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ dump ignition signals.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script src="/btcHealth.js"></script>

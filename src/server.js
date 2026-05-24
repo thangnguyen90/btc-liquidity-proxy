@@ -637,6 +637,8 @@ const PUMP_ORDERS_FILE = join(rootDir, 'data', 'pump-orders.json');
 const PUMP_HISTORY_FILE = join(rootDir, 'data', 'pump-order-history.json');
 const PUMP_DAILY_FILE   = join(rootDir, 'data', 'pump-daily-stats.json');
 const CAP_PAPER_FILE    = join(rootDir, 'data', 'cap-paper-trades.json');
+const DI_PAPER_FILE     = join(rootDir, 'data', 'di-paper-trades.json');
+const PI_PAPER_FILE     = join(rootDir, 'data', 'pi-paper-trades.json');
 const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
 const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
@@ -645,6 +647,12 @@ const paperFillLocks = new Set();
 const capMarkCache = new Map();  // symbol → markPrice  (for cap paper trades)
 let capPaperTicker = null;
 const capPaperFillLocks = new Set();
+const diMarkCache = new Map();   // symbol → markPrice  (for di paper trades)
+let diPaperTicker = null;
+const diPaperFillLocks = new Set();
+const piMarkCache = new Map();   // symbol → markPrice  (for pi paper trades)
+let piPaperTicker = null;
+const piPaperFillLocks = new Set();
 const pumpMarkCache = new Map(); // symbol → markPrice (for pump paper trades)
 let pumpPaperTicker = null;
 const pumpPaperFillLocks = new Set();
@@ -1418,6 +1426,50 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/di-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getDiPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const trade = await createDiPaperTrade({ ...body, status: 'PENDING' });
+        syncDiPaperTicker().catch(() => {});
+        await sendJson(response, trade);
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/di-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closeDiPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/di-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deleteDiPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/pi-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getPiPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const trade = await createPiPaperTrade({ ...body, status: 'PENDING' });
+        syncPiPaperTicker().catch(() => {});
+        await sendJson(response, trade);
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/pi-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closePiPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/pi-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deletePiPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/pump-paper-trades') {
       if (request.method === 'GET') {
         await sendJson(response, await getPumpPaperTrades());
@@ -1596,7 +1648,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       const body = await readJsonBody(request);
-      const { symbol, action, entry, sl, tp, score, margin: bodyMargin, type: bodyType } = body;
+      const { symbol, action, entry, sl, tp, score, margin: bodyMargin, type: bodyType, forceMarket } = body;
       if (!symbol || !action || !entry) { await sendJson(response, { error: 'Thiếu symbol/action/entry' }, 400); return; }
       try {
         const { apiKey, apiSecret } = getApiCredentials(token);
@@ -1615,12 +1667,13 @@ const server = createServer(async (request, response) => {
         const entryNum = Number(entry);
         const side = action === 'LONG' ? 'BUY' : 'SELL';
 
-        // Nếu entry quá gần/vượt mark price → dùng MARKET thay LIMIT
+        // forceMarket=true → luôn dùng MARKET (test signal direction)
+        // Nếu entry quá gần/vượt mark price → cũng dùng MARKET thay LIMIT
         const gap = markPrice > 0 ? (entryNum - markPrice) / markPrice : -1;
-        const useMarket = markPrice > 0 && (
+        const useMarket = forceMarket || (markPrice > 0 && (
           (side === 'BUY'  && gap >= -0.001) ||
           (side === 'SELL' && gap <=  0.001)
-        );
+        ));
 
         const notional = Math.max(margin * leverage, minNotional > 0 ? minNotional : 0);
         const qtyRaw = notional / (useMarket ? markPrice : entryNum);
@@ -1941,12 +1994,12 @@ server.listen(port, '127.0.0.1', () => {
   setTimeout(() => {
     startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: brgIntervalMs, getPositionData: getSharedPositionData });
   }, 12000);
-  // Proactive position store refresh — chủ động làm mới trước khi scanner cần,
+  // Proactive orders refresh — chủ động làm mới orders trước khi scanner cần,
   // tránh scanner là người trigger REST call. Bắt đầu sau 55s (sau khi tất cả đã warm-up).
   setTimeout(() => {
     setInterval(async () => {
-      if (_posStoreInflight) return;
-      _posStore.fetchedAt = 0; // invalidate để force fresh fetch
+      if (_ordersStoreInflight) return;
+      _ordersStore.fetchedAt = 0; // invalidate để force fresh fetch
       getSharedPositionData().catch(() => {});
     }, POS_STORE_TTL_MS);
   }, 55_000);
@@ -2017,6 +2070,8 @@ server.listen(port, '127.0.0.1', () => {
   setTimeout(() => {
     startPaperTradeTicker();
     startCapPaperTicker();
+    startDiPaperTicker();
+    startPiPaperTicker();
     startPumpPaperTicker();
     startEdgePaperTicker();
   }, 29000);
@@ -3142,7 +3197,7 @@ async function readCapPaperStore() {
     if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
     return parsed;
   } catch (e) {
-    console.warn('[CapPaper] Store read error, starting fresh:', e.message);
+    if (e.code !== 'ENOENT') console.warn('[CapPaper] Store read error, starting fresh:', e.message);
     return { trades: [] };
   }
 }
@@ -3316,6 +3371,373 @@ function startCapPaperTicker() {
 }
 
 // ── End cap paper trade system ───────────────────────────────────────────────
+
+// ── DI paper trade system (dump ignition, always SHORT) ──────────────────────
+
+async function readDiPaperStore() {
+  try {
+    const raw = await readFile(DI_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[DiPaper] Store read error, starting fresh:', e.message);
+    return { trades: [] };
+  }
+}
+
+let _diPaperWriteLock = Promise.resolve();
+async function writeDiPaperStore(store) {
+  _diPaperWriteLock = _diPaperWriteLock.then(() => atomicWriteJson(DI_PAPER_FILE, store));
+  return _diPaperWriteLock;
+}
+
+function enrichDiPaperTrade(t, markPrice) {
+  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
+  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
+  return { ...t, markPrice: mark, pnl, roe };
+}
+
+async function getDiPaperTrades() {
+  const store = await readDiPaperStore();
+  const trades = store.trades.map((t) => enrichDiPaperTrade(t, diMarkCache.get(t.symbol)));
+  const open = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length > 0
+    ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length
+    : null;
+  const summary = { total: trades.length, open: open.length, closed: closed.length, wins, losses: closed.length - wins, tpHits, slHits, avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null };
+  return { trades, summary };
+}
+
+async function createDiPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? 'SHORT').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+
+  const store = await readDiPaperStore();
+  // Dedup: skip if same symbol+side+entry already PENDING or OPEN
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol && t.side === side && Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichDiPaperTrade(dup, diMarkCache.get(symbol)) };
+
+  const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol, side, status,
+    marginUsdt, leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    tp: payload.tp != null ? Number(payload.tp) : null,
+    sl: payload.sl != null ? Number(payload.sl) : null,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null, // 'TP' | 'SL' | 'MANUAL'
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+  };
+  store.trades.unshift(trade);
+  await writeDiPaperStore(store);
+  console.log(`[DiPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
+  return { trade: enrichDiPaperTrade(trade, entryPrice) };
+}
+
+async function closeDiPaperTrade(payload) {
+  const store = await readDiPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('DI paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichDiPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (diMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  await writeDiPaperStore(store);
+  return { trade: enrichDiPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deleteDiPaperTrade(payload) {
+  const store = await readDiPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writeDiPaperStore(store);
+  return { ok: true };
+}
+
+async function fillDiPendingTrade(trade, markPrice) {
+  if (diPaperFillLocks.has(trade.id)) return;
+  diPaperFillLocks.add(trade.id);
+  try {
+    const store = await readDiPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const entry = Number(store.trades[idx].entryPrice);
+    const touched = store.trades[idx].side === 'LONG' ? markPrice <= entry : markPrice >= entry;
+    if (!touched) return;
+    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    await writeDiPaperStore(store);
+    console.log(`[DiPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+  } finally {
+    diPaperFillLocks.delete(trade.id);
+  }
+}
+
+async function processDiPaperFills(symbol, markPrice) {
+  const store = await readDiPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillDiPendingTrade(t, markPrice);
+  // Auto-close OPEN trades that hit TP or SL
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) await checkDiPaperTpSl(t, markPrice);
+}
+
+const diPaperTpSlLocks = new Set();
+async function checkDiPaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (diPaperTpSlLocks.has(trade.id)) return;
+  const isLong = trade.side === 'LONG';
+  const tpHit = trade.tp != null && (isLong ? markPrice >= trade.tp : markPrice <= trade.tp);
+  const slHit = trade.sl != null && (isLong ? markPrice <= trade.sl : markPrice >= trade.sl);
+  if (!tpHit && !slHit) return;
+  diPaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closeDiPaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[DiPaper] 🎯 ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    diPaperTpSlLocks.delete(trade.id);
+  }
+}
+
+async function syncDiPaperTicker() {
+  if (!diPaperTicker) return;
+  const store = await readDiPaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  diPaperTicker.setSymbols(symbols);
+}
+
+function startDiPaperTicker() {
+  if (diPaperTicker) return;
+  diPaperTicker = createMarkPriceTicker({
+    onPrice: ({ symbol, markPrice }) => {
+      diMarkCache.set(symbol, markPrice);
+      processDiPaperFills(symbol, markPrice).catch(() => {});
+    },
+  });
+  console.log('[DiPaper] Mark ticker started.');
+  syncDiPaperTicker().catch(() => {});
+  setInterval(() => syncDiPaperTicker().catch(() => {}), 30_000);
+}
+
+// ── End DI paper trade system ─────────────────────────────────────────────────
+
+// ── PI paper trade system (pump ignition, always LONG) ───────────────────────
+
+async function readPiPaperStore() {
+  try {
+    const raw = await readFile(PI_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[PiPaper] Store read error, starting fresh:', e.message);
+    return { trades: [] };
+  }
+}
+
+let _piPaperWriteLock = Promise.resolve();
+async function writePiPaperStore(store) {
+  _piPaperWriteLock = _piPaperWriteLock.then(() => atomicWriteJson(PI_PAPER_FILE, store));
+  return _piPaperWriteLock;
+}
+
+function enrichPiPaperTrade(t, markPrice) {
+  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
+  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
+  return { ...t, markPrice: mark, pnl, roe };
+}
+
+async function getPiPaperTrades() {
+  const store = await readPiPaperStore();
+  const trades = store.trades.map((t) => enrichPiPaperTrade(t, piMarkCache.get(t.symbol)));
+  const open = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length > 0
+    ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length
+    : null;
+  const summary = { total: trades.length, open: open.length, closed: closed.length, wins, losses: closed.length - wins, tpHits, slHits, avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null };
+  return { trades, summary };
+}
+
+async function createPiPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? 'LONG').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+
+  const store = await readPiPaperStore();
+  // Dedup: skip if same symbol+side+entry already PENDING or OPEN
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol && t.side === side && Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichPiPaperTrade(dup, piMarkCache.get(symbol)) };
+
+  const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol, side, status,
+    marginUsdt, leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    tp: payload.tp != null ? Number(payload.tp) : null,
+    sl: payload.sl != null ? Number(payload.sl) : null,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null, // 'TP' | 'SL' | 'MANUAL'
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+  };
+  store.trades.unshift(trade);
+  await writePiPaperStore(store);
+  console.log(`[PiPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
+  return { trade: enrichPiPaperTrade(trade, entryPrice) };
+}
+
+async function closePiPaperTrade(payload) {
+  const store = await readPiPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('PI paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichPiPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (piMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  await writePiPaperStore(store);
+  return { trade: enrichPiPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deletePiPaperTrade(payload) {
+  const store = await readPiPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writePiPaperStore(store);
+  return { ok: true };
+}
+
+async function fillPiPendingTrade(trade, markPrice) {
+  if (piPaperFillLocks.has(trade.id)) return;
+  piPaperFillLocks.add(trade.id);
+  try {
+    const store = await readPiPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const entry = Number(store.trades[idx].entryPrice);
+    // LONG fill: price dips to entry (markPrice <= entry)
+    const touched = markPrice <= entry;
+    if (!touched) return;
+    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    await writePiPaperStore(store);
+    console.log(`[PiPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+  } finally {
+    piPaperFillLocks.delete(trade.id);
+  }
+}
+
+async function processPiPaperFills(symbol, markPrice) {
+  const store = await readPiPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillPiPendingTrade(t, markPrice);
+  // Auto-close OPEN trades that hit TP or SL
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) await checkPiPaperTpSl(t, markPrice);
+}
+
+const piPaperTpSlLocks = new Set();
+async function checkPiPaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (piPaperTpSlLocks.has(trade.id)) return;
+  // LONG TP: markPrice >= tp, LONG SL: markPrice <= sl
+  const tpHit = trade.tp != null && markPrice >= trade.tp;
+  const slHit = trade.sl != null && markPrice <= trade.sl;
+  if (!tpHit && !slHit) return;
+  piPaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closePiPaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[PiPaper] 🎯 ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    piPaperTpSlLocks.delete(trade.id);
+  }
+}
+
+async function syncPiPaperTicker() {
+  if (!piPaperTicker) return;
+  const store = await readPiPaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  piPaperTicker.setSymbols(symbols);
+}
+
+function startPiPaperTicker() {
+  if (piPaperTicker) return;
+  piPaperTicker = createMarkPriceTicker({
+    onPrice: ({ symbol, markPrice }) => {
+      piMarkCache.set(symbol, markPrice);
+      processPiPaperFills(symbol, markPrice).catch(() => {});
+    },
+  });
+  console.log('[PiPaper] Mark ticker started.');
+  syncPiPaperTicker().catch(() => {});
+  setInterval(() => syncPiPaperTicker().catch(() => {}), 30_000);
+}
+
+// ── End PI paper trade system ─────────────────────────────────────────────────
 
 // ── Pump paper trade system ───────────────────────────────────────────────────
 
@@ -4376,13 +4798,25 @@ function getApiCredentials(token = null) {
   throw new Error('Chưa đăng nhập. Vào /orders và nhập API key để sử dụng.');
 }
 
+let _balanceCache = null;
+let _balanceCacheAt = 0;
+const BALANCE_TTL_MS = 60_000; // 1 phút — balance không cần real-time
+
 async function getAccountBalance(token = null) {
+  if (_balanceCache && Date.now() - _balanceCacheAt < BALANCE_TTL_MS) return _balanceCache;
   const { apiKey, apiSecret } = getApiCredentials(token);
   const rows = await client.getBalance({ apiKey, apiSecret });
-  return rows.filter((b) => Number(b.balance) > 0 || Number(b.crossUnPnl) !== 0);
+  _balanceCache = rows.filter((b) => Number(b.balance) > 0 || Number(b.crossUnPnl) !== 0);
+  _balanceCacheAt = Date.now();
+  return _balanceCache;
 }
 
+let _dailyPnlCache = null;
+let _dailyPnlCacheAt = 0;
+const DAILY_PNL_TTL_MS = 120_000; // 2 phút — income API weight cao (30)
+
 async function getDailyPnl(token = null) {
+  if (_dailyPnlCache && Date.now() - _dailyPnlCacheAt < DAILY_PNL_TTL_MS) return _dailyPnlCache;
   const { apiKey, apiSecret } = getApiCredentials(token);
   const startOfDay = new Date();
   startOfDay.setUTCHours(0, 0, 0, 0);
@@ -4394,55 +4828,65 @@ async function getDailyPnl(token = null) {
     else if (r.incomeType === 'COMMISSION') commission += v;
     else if (r.incomeType === 'FUNDING_FEE') funding += v;
   }
-  return { realized, commission, funding, net: realized + commission + funding, since: startOfDay.toISOString() };
+  _dailyPnlCache = { realized, commission, funding, net: realized + commission + funding, since: startOfDay.toISOString() };
+  _dailyPnlCacheAt = Date.now();
+  return _dailyPnlCache;
 }
 
 async function getPositions(token = null) {
-  const { apiKey, apiSecret } = getApiCredentials(token);
-  const rows = await client.getPositions({ apiKey, apiSecret });
-  return rows.filter((p) => Number(p.positionAmt) !== 0);
+  const { positions } = await getSharedPositionData();
+  return positions;
 }
 
 // ── Shared position data store ─────────────────────────────────────────────
-// Tất cả scanners dùng chung — tối đa 1 REST burst per TTL window.
-// Fetches getPositions + getOpenOrders(all) + getOpenAlgoOrders(all) in parallel.
-let _posStore = { positions: [], openOrders: [], algoOrders: [], fetchedAt: 0 };
-let _posStoreInflight = null;
-const POS_STORE_TTL_MS = 20_000; // 20s — refresh tối đa 3 lần/phút
+// Positions: từ positionMonitor.posCache (WebSocket-driven, 0 REST call).
+// Orders:    REST fetch openOrders + algoOrders mỗi 20s, tất cả scanners dùng chung.
+let _ordersStore = { openOrders: [], algoOrders: [], fetchedAt: 0 };
+let _ordersStoreInflight = null;
+const POS_STORE_TTL_MS = 20_000; // 20s
 
 async function getSharedPositionData() {
-  if (Date.now() - _posStore.fetchedAt < POS_STORE_TTL_MS) return _posStore;
-  if (_posStoreInflight) return _posStoreInflight;
-  let creds;
-  try { creds = getApiCredentials(null); } catch { return _posStore; }
-  const { apiKey, apiSecret } = creds;
-  _posStoreInflight = (async () => {
-    try {
-      const [positions, openOrders, algoResult] = await Promise.all([
-        client.getPositions({ apiKey, apiSecret }),
-        client.getOpenOrders({ apiKey, apiSecret }),
-        client.getOpenAlgoOrders({ apiKey, apiSecret }).catch(() => ({ orders: [] })),
-      ]);
-      const algoOrders = Array.isArray(algoResult?.orders) ? algoResult.orders
-        : Array.isArray(algoResult) ? algoResult : [];
-      _posStore = {
-        positions: positions.filter((p) => Number(p.positionAmt) !== 0),
-        openOrders: Array.isArray(openOrders) ? openOrders : [],
-        algoOrders,
-        fetchedAt: Date.now(),
-      };
-      // Sync openOrders cache so getCachedOpenOrders() gets fresh data too
-      _openOrdersCache = _posStore.openOrders;
-      _openOrdersCacheAt = _posStore.fetchedAt;
-    } catch (err) {
-      if (!err.message?.includes('Missing Binance API')) console.error('[PosStore] fetch error:', err.message);
+  // Positions luôn đến từ posMonitor.posCache (real-time WS, không tốn REST weight)
+  const positions = posMonitor ? posMonitor.getActivePositions() : [];
+
+  // Orders: TTL cache, tối đa 1 REST burst per 20s
+  if (Date.now() - _ordersStore.fetchedAt >= POS_STORE_TTL_MS) {
+    if (!_ordersStoreInflight) {
+      let creds;
+      try { creds = getApiCredentials(null); } catch { /* no creds yet */ }
+      if (creds) {
+        const { apiKey, apiSecret } = creds;
+        _ordersStoreInflight = (async () => {
+          try {
+            const [openOrders, algoResult] = await Promise.all([
+              client.getOpenOrders({ apiKey, apiSecret }),
+              client.getOpenAlgoOrders({ apiKey, apiSecret }).catch(() => ({ orders: [] })),
+            ]);
+            const algoOrders = Array.isArray(algoResult?.orders) ? algoResult.orders
+              : Array.isArray(algoResult) ? algoResult : [];
+            _ordersStore = {
+              openOrders: Array.isArray(openOrders) ? openOrders : [],
+              algoOrders,
+              fetchedAt: Date.now(),
+            };
+            _openOrdersCache = _ordersStore.openOrders;
+            _openOrdersCacheAt = _ordersStore.fetchedAt;
+          } catch (err) {
+            if (!err.message?.includes('Missing Binance API')) console.error('[PosStore] orders fetch error:', err.message);
+          }
+          return _ordersStore;
+        })();
+        try { await _ordersStoreInflight; } finally { _ordersStoreInflight = null; }
+      }
+    } else {
+      await _ordersStoreInflight;
     }
-    return _posStore;
-  })();
-  try { return await _posStoreInflight; } finally { _posStoreInflight = null; }
+  }
+
+  return { positions, openOrders: _ordersStore.openOrders, algoOrders: _ordersStore.algoOrders };
 }
 
-function invalidatePosStore() { _posStore = { ..._posStore, fetchedAt: 0 }; }
+function invalidatePosStore() { _ordersStore = { ..._ordersStore, fetchedAt: 0 }; }
 
 // ── Open orders cache — tránh gọi REST liên tục ───────────────────────────────
 // Invalidate bằng invalidateOpenOrdersCache() sau mỗi lần đặt/hủy lệnh hoặc fill
@@ -4466,26 +4910,14 @@ async function getCachedOpenOrders(apiKey, apiSecret) {
 }
 
 async function getOpenOrders(symbol, token = null) {
-  const { apiKey, apiSecret } = getApiCredentials(token);
-  return client.getOpenOrders({ symbol, apiKey, apiSecret });
+  const { openOrders } = await getSharedPositionData();
+  return symbol ? openOrders.filter((o) => o.symbol === symbol) : openOrders;
 }
 
 async function getOpenAlgoOrdersList(token = null) {
-  const { apiKey, apiSecret } = getApiCredentials(token);
-  const positions = await client.getPositions({ apiKey, apiSecret });
-  const activeSymbols = [...new Set(positions.filter((p) => Number(p.positionAmt) !== 0).map((p) => p.symbol))];
-  const collected = [];
-  for (const symbol of activeSymbols) {
-    try {
-      const result = await client.getOpenAlgoOrders({ symbol, apiKey, apiSecret });
-      const rows = Array.isArray(result?.orders) ? result.orders : Array.isArray(result) ? result : [];
-      collected.push(...rows);
-    } catch (err) {
-      console.warn(`[OpenAlgo] ${symbol}: ${err.message}`);
-    }
-  }
+  const { algoOrders } = await getSharedPositionData();
   const byId = new Map();
-  for (const row of collected) byId.set(row.algoId ?? row.clientAlgoId ?? `${row.symbol}:${row.triggerPrice}:${row.side}`, row);
+  for (const row of algoOrders) byId.set(row.algoId ?? row.clientAlgoId ?? `${row.symbol}:${row.triggerPrice}:${row.side}`, row);
   return [...byId.values()];
 }
 
