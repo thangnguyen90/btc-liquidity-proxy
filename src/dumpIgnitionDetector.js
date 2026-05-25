@@ -41,8 +41,8 @@ export function detectDumpIgnition(candles, state = {}, cfg = {}) {
     // follow-through
     confirmBars:     2,
     // scoring
-    passScore:      65,  // was 70
-    passScoreEarly: 50,  // was 55
+    passScore:      80,
+    passScoreEarly: 75,
     W:    { squeeze: 20, ribbon: 15, bbBreak: 15, bodyQ: 15, vol: 15, alignment: 10, follow: 10 },
     Wpre: { squeeze: 25, ribbon: 20, midBreak: 15, bodyQ: 15, vol: 15, structure: 10, live: 10 },
     // execution
@@ -209,18 +209,18 @@ export function detectDumpIgnition(candles, state = {}, cfg = {}) {
 
         // Bug fix: only return if pass; otherwise continue to check next bar for STRICT
         if (s >= passScoreEarlyAdj) {
-          const lowPiv  = pivotLow(i, C.microPivotLB);
           const highPiv = pivotHigh(i, C.microPivotLB);
-          const entry   = +((lowPiv  - C.entryAtrK * A).toFixed(C.priceDecimals));
           const stop    = +((highPiv + C.slAtrK     * A).toFixed(C.priceDecimals));
+          const retestRaw = Math.min(stop - A * 0.15, Math.max(Cc[i] + A * 0.25, bbPrev.mid));
+          const entry   = +(retestRaw.toFixed(C.priceDecimals));
           const risk    = Math.max(1e-9, stop - entry);
           const tp      = +((entry - C.rMultipleTP * risk).toFixed(C.priceDecimals));
           return {
             pass: true, stage: 'EARLY', score: s,
             action: 'SHORT',
             entryPrice: entry, stopLoss: stop, takeProfit: tp,
-            reason: 'Squeeze + ribbon nén → close dưới ribbon/BB mid, vol/range uptick',
-            note: `liveEMA=${hasLiveEMA ? 'Y' : 'N'} | bias=${liveFullBearish ? 'full' : liveBearish ? 'soft' : 'none'} | volX=${volX.toFixed(2)} | rangeATR=${(range / Math.max(1e-9, A)).toFixed(2)} | ribbonPct=${(ribbonLivePct * 100).toFixed(2)}%`,
+            reason: 'Squeeze + ribbon nén → breakdown sớm, chờ hồi retest fail để SHORT',
+            note: `liveEMA=${hasLiveEMA ? 'Y' : 'N'} | bias=${liveFullBearish ? 'full' : liveBearish ? 'soft' : 'none'} | volX=${volX.toFixed(2)} | rangeATR=${(range / Math.max(1e-9, A)).toFixed(2)} | ribbonPct=${(ribbonLivePct * 100).toFixed(2)}% | entryMode=retest`,
             meta: { idx: i, usedLiveEma: hasLiveEMA },
           };
         }
@@ -284,8 +284,10 @@ export function detectDumpIgnition(candles, state = {}, cfg = {}) {
 
   // ── Execution for STRICT ─────────────────────────────────────────────────────
   const { idx: i, A, score: sc } = found;
-  const entry = +((L[i] - C.entryAtrK * A).toFixed(C.priceDecimals));
   const stop  = +((Math.max(H[i], H[Math.max(0, i - 1)]) + C.slAtrK * A).toFixed(C.priceDecimals));
+  const bb = bbAt(i, C.bbLen, C.bbK);
+  const retestRaw = Math.min(stop - A * 0.15, Math.max(Cc[i] + A * 0.25, bb.lower));
+  const entry = +(retestRaw.toFixed(C.priceDecimals));
   const risk  = Math.max(1e-9, stop - entry);
   const tp    = +((entry - C.rMultipleTP * risk).toFixed(C.priceDecimals));
   const pass  = sc >= C.passScore;
@@ -299,9 +301,9 @@ export function detectDumpIgnition(candles, state = {}, cfg = {}) {
     stopLoss:   pass ? stop  : undefined,
     takeProfit: pass ? tp    : undefined,
     reason: pass
-      ? 'Squeeze → ribbon nén → BB lower break + vol spike + pivot break'
+      ? 'Squeeze → ribbon nén → BB lower break, chờ hồi retest fail để SHORT'
       : 'IGNITION score below threshold',
-    note: `volX=${found.volX.toFixed(2)} | ema50Slope=${slopePctPerBar(ema50, 10).toFixed(3)}%/bar`,
+    note: `volX=${found.volX.toFixed(2)} | ema50Slope=${slopePctPerBar(ema50, 10).toFixed(3)}%/bar | entryMode=retest`,
     meta: { idx: i },
   };
 }

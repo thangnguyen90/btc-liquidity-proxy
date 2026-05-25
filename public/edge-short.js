@@ -103,6 +103,62 @@ function normalizedType(sig) {
   return String(sig.type ?? '').toLowerCase();
 }
 
+function noteNumber(sig, pattern) {
+  const m = String(sig.note ?? '').match(pattern);
+  return m ? Number(m[1]) : null;
+}
+
+function earlyDumpMetrics(sig) {
+  return {
+    rangePct: noteNumber(sig, /range=([0-9.]+)%/i),
+    bbwPct: noteNumber(sig, /BBW=([0-9.]+)%/i),
+    atrPct: noteNumber(sig, /ATR%=([0-9.]+)%/i),
+    chasePct: noteNumber(sig, /chase=([0-9.]+)%TP/i),
+  };
+}
+
+function isEarlyDump(sig) {
+  return String(sig.note ?? '').startsWith('EARLY_DUMP');
+}
+
+function isPrimeEarlyDump(sig) {
+  if (!isEarlyDump(sig)) return false;
+  const m = earlyDumpMetrics(sig);
+  return Number(m.chasePct) >= 25 &&
+    Number(m.rangePct) < 2 &&
+    Number(m.atrPct) < 1;
+}
+
+function isStrongEarlyDump(sig) {
+  const m = earlyDumpMetrics(sig);
+  return isPrimeEarlyDump(sig) && Number(m.bbwPct) >= 2;
+}
+
+function signalHourVn(sig) {
+  const ts = Number(sig.scannedAt);
+  if (!Number.isFinite(ts) || ts <= 0) return null;
+  const hour = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    hour: '2-digit',
+    hour12: false,
+  }).format(new Date(ts));
+  return Number(hour);
+}
+
+function isGoodEarlyDumpHour(sig) {
+  const hour = signalHourVn(sig);
+  return hour != null && ((hour >= 1 && hour <= 4) || (hour >= 19 && hour <= 22));
+}
+
+function earlyDumpHourNote(sig) {
+  const hour = signalHourVn(sig);
+  const stable = 'Giờ ổn: 01-04, 19-22 VN';
+  if (hour == null) return stable;
+  return isGoodEarlyDumpHour(sig)
+    ? `Giờ tốt ${String(hour).padStart(2, '0')}:00 VN`
+    : stable;
+}
+
 function sourceLabel(source) {
   return SOURCES.find((s) => s.id === source)?.label ?? source;
 }
@@ -683,9 +739,13 @@ async function deleteEdgePaperTrade(id) {
 function buildFactors(sig) {
   const chips = [];
   const type = normalizedType(sig);
+  const primeEarlyDump = isPrimeEarlyDump(sig);
+  const strongEarlyDump = isStrongEarlyDump(sig);
 
   chips.push({ label: `${sig.sourceLabel}`, ok: sig.edgeBucket === 'short' ? 'warn' : '' });
   chips.push({ label: `Base ${Number(sig.score ?? 0) || 0}`, ok: '' });
+  if (primeEarlyDump) chips.push({ label: strongEarlyDump ? 'EARLY_DUMP PRIME' : 'EARLY_DUMP OK', ok: 'gold' });
+  if (primeEarlyDump) chips.push({ label: earlyDumpHourNote(sig), ok: isGoodEarlyDumpHour(sig) ? 'gold' : '' });
 
   if (sig.edgeBucket === 'short') chips.push({ label: 'Short bias', ok: 'warn' });
   if (sig.edgeBucket === 'watch') chips.push({ label: 'Watch', ok: '' });
@@ -708,6 +768,11 @@ function buildFactors(sig) {
 }
 
 function buildThesis(sig) {
+  if (isPrimeEarlyDump(sig)) {
+    const m = earlyDumpMetrics(sig);
+    const bbwText = Number(m.bbwPct) >= 2 ? ' · BBW ưu tiên' : '';
+    return `EARLY_DUMP edge: chase ${Number(m.chasePct).toFixed(0)}%TP, range ${Number(m.rangePct).toFixed(2)}%, ATR ${Number(m.atrPct).toFixed(2)}%${bbwText}`;
+  }
   if (sig.edgeBucket === 'short') {
     return 'Short edge: exhaustion/top/rejection signal ranked above same-symbol alternatives';
   }
@@ -719,6 +784,7 @@ function buildThesis(sig) {
 
 function buildCard(sig) {
   const sideClass = sig.edgeBucket;
+  const highlightClass = isPrimeEarlyDump(sig) ? 'early-dump-edge' : '';
   const action = String(sig.action ?? '-').toUpperCase();
   const orderSideClass = sideClassForAction(action);
   const type = normalizedType(sig) || '-';
@@ -735,7 +801,7 @@ function buildCard(sig) {
   const orderTp = sig.tp == null ? null : Number(sig.tp);
 
   return `
-    <article class="edge-card ${sideClass}">
+    <article class="edge-card ${sideClass} ${highlightClass}">
       <div class="edge-card-top">
         <div class="edge-symbol-wrap">
           <a class="edge-symbol" href="${detailUrl}" target="_blank" rel="noopener">

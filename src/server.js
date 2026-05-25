@@ -153,7 +153,11 @@ async function schedulePumpScan() {
       for (const sig of signals) {
         const action = String(sig.action ?? '').toUpperCase();
         if (action !== 'SHORT' && action !== 'SELL') continue;  // chỉ short signal trên edge
-        if (sig.score < 60) continue;
+        const quality = evaluateShortEdgeAutoQuality(sig, 'pump-short', btcHealthCache.data ?? {});
+        if (!quality.ok) {
+          console.log(`[EdgePaper] ⏭ ${sig.symbol} skip pump-short auto — ${quality.reason}`);
+          continue;
+        }
         const key = `pump|${sig.symbol}|${sig.type}`;
         const last = edgePaperAutoFired.get(key) ?? 0;
         if (Date.now() - last < 4 * 3600 * 1000) continue;
@@ -183,6 +187,77 @@ const pumpPaperAutoFired = new Map(); // `${symbol}|${type}` → firedAt timesta
 const diPaperAutoFired   = new Map(); // `${symbol}|${type}` -> firedAt timestamp
 const piPaperAutoFired   = new Map(); // `${symbol}|${type}` -> firedAt timestamp
 const edgePaperAutoFired = new Map();
+
+function scoreFromSignal(sig) {
+  const direct = Number(sig?.score);
+  if (Number.isFinite(direct)) return direct;
+  const txt = `${sig?.source ?? ''} ${sig?.note ?? ''}`;
+  const m = txt.match(/(?:score=|[-])(\d{2,3})(?:\b|\()/i);
+  return m ? Number(m[1]) : null;
+}
+
+function chasePctFromSignal(sig) {
+  const factorChase = Number(sig?.factors?.chasePct);
+  if (Number.isFinite(factorChase)) return factorChase;
+  const m = String(sig?.note ?? '').match(/chase=([0-9.]+)%TP/i);
+  return m ? Number(m[1]) / 100 : 0;
+}
+
+function isPumpEarlyDumpSignal(sig) {
+  return String(sig?.note ?? '').startsWith('EARLY_DUMP');
+}
+
+function isPumpDumpSignal(sig) {
+  return String(sig?.note ?? '').startsWith('DUMP');
+}
+
+function isCapBcSignal(sig) {
+  return String(sig?.note ?? '').startsWith('BC ');
+}
+
+function evaluateShortEdgeAutoQuality(sig, sourceKind, health = {}) {
+  const score = scoreFromSignal(sig) ?? 0;
+  const chasePct = chasePctFromSignal(sig);
+
+  if (health?.bullBias === 'bullish') {
+    return { ok: false, reason: `BTC bull trend ${health.bullBias}` };
+  }
+
+  if (sourceKind === 'dump-ignition') {
+    return { ok: false, reason: 'dump ignition blocked from Edge Short' };
+  }
+
+  if (sourceKind === 'pump-short') {
+    if (isPumpEarlyDumpSignal(sig)) {
+      const minEarlyDumpScore = Number(process.env.EDGE_SHORT_EARLY_DUMP_MIN_SCORE ?? 65);
+      if (score < minEarlyDumpScore) return { ok: false, reason: `EARLY_DUMP score ${score} < ${minEarlyDumpScore}` };
+      return { ok: true, reason: 'EARLY_DUMP edge kept' };
+    }
+
+    const minDumpScore = Number(process.env.EDGE_SHORT_DUMP_MIN_SCORE ?? 80);
+    if (!isPumpDumpSignal(sig)) return { ok: false, reason: 'unknown pump short type' };
+    if (score < minDumpScore && chasePct < 0.25) {
+      return { ok: false, reason: `DUMP score ${score} < ${minDumpScore} and chase ${(chasePct * 100).toFixed(0)}%TP < 25%` };
+    }
+    return { ok: true, reason: 'DUMP edge passed' };
+  }
+
+  if (sourceKind === 'cap') {
+    if (isCapBcSignal(sig)) {
+      const minCapBcScore = Number(process.env.EDGE_SHORT_CAP_BC_MIN_SCORE ?? 90);
+      if (score < minCapBcScore) return { ok: false, reason: `cap BC score ${score} < ${minCapBcScore}` };
+      return { ok: true, reason: 'cap BC high-score only' };
+    }
+
+    const minCapScore = Number(process.env.EDGE_SHORT_CAP_MIN_SCORE ?? 85);
+    if (score < minCapScore) return { ok: false, reason: `cap score ${score} < ${minCapScore}` };
+    return { ok: true, reason: 'cap edge passed' };
+  }
+
+  const minGenericScore = Number(process.env.EDGE_SHORT_MIN_SCORE ?? 80);
+  if (score < minGenericScore) return { ok: false, reason: `score ${score} < ${minGenericScore}` };
+  return { ok: true, reason: 'generic edge passed' };
+}
 
 let _capScanDebounce = null;
 async function scheduleCapScan() {
@@ -225,14 +300,22 @@ async function scheduleCapScan() {
 
       // Edge paper auto-fire: cap signals cũng xuất hiện trên edge-short board
       for (const sig of signals) {
-        if (sig.score < 60) continue;
+        const action = String(sig.action ?? 'LONG').toUpperCase();
+        if (action !== 'SHORT' && sig.score < 60) continue;
+        if (action === 'SHORT') {
+          const quality = evaluateShortEdgeAutoQuality(sig, 'cap', btcHealthCache.data ?? {});
+          if (!quality.ok) {
+            console.log(`[EdgePaper] ⏭ ${sig.symbol} skip cap short auto — ${quality.reason}`);
+            continue;
+          }
+        }
         const key = `cap|${sig.symbol}|${sig.type}`;
         const last = edgePaperAutoFired.get(key) ?? 0;
         if (Date.now() - last < 4 * 3600 * 1000) continue;
         edgePaperAutoFired.set(key, Date.now());
         createEdgePaperTrade({
           symbol: sig.symbol,
-          side: String(sig.action ?? 'LONG').toUpperCase(),
+          side: action,
           status: 'OPEN',
           marginUsdt: 1,
           leverage: 10,
@@ -297,9 +380,62 @@ async function scheduleKillShortScan() {
 
 let _dumpIgnitionScanDebounce = null;
 
+function parseIgnitionNote(note) {
+  const kv = {};
+  for (const part of String(note ?? '').split('|')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    kv[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
+  }
+  return kv;
+}
+
+function numberFromNoteValue(value) {
+  if (value == null) return null;
+  const m = String(value).match(/-?\d+(?:\.\d+)?/);
+  return m ? Number(m[0]) : null;
+}
+
+function evaluateDumpIgnitionAutoQuality(sig, health = {}) {
+  const minScore = Number(process.env.DUMP_IGNITION_AUTO_MIN_SCORE ?? 90);
+  if (sig.score < minScore) return { ok: false, reason: `score ${sig.score} < ${minScore}` };
+
+  if (health?.bullBias === 'bullish') {
+    return { ok: false, reason: `BTC bull trend ${health.bullBias}` };
+  }
+  if (health?.bias !== 'bearish') {
+    return { ok: false, reason: `BTC bias ${health?.bias ?? 'unknown'} is not bearish` };
+  }
+
+  const noteKV = parseIgnitionNote(sig.note);
+  const isEarly = sig.type === 'dump_ignition_early';
+  const liveEMA = noteKV.liveEMA;
+  const bias = noteKV.bias;
+  const volX = numberFromNoteValue(noteKV.volX);
+  const ema50Slope = numberFromNoteValue(noteKV.ema50Slope);
+
+  if (isEarly) {
+    if (liveEMA !== 'Y') return { ok: false, reason: 'EARLY liveEMA=N' };
+    if (bias !== 'full') return { ok: false, reason: `EARLY bias=${bias || 'unknown'}` };
+  } else if (ema50Slope != null && ema50Slope > -0.05) {
+    return { ok: false, reason: `ema50Slope ${ema50Slope.toFixed(3)}%/bar not bearish enough` };
+  }
+
+  if (volX != null && volX >= 1.5 && volX < 10) {
+    return { ok: false, reason: `volX ${volX.toFixed(2)} in weak 1.5-10x zone` };
+  }
+
+  return { ok: true, reason: 'quality gate passed' };
+}
+
 async function autoCreateDiPaperTrades(signals) {
+  const health = btcHealthCache.data ?? {};
   for (const sig of signals) {
-    if (sig.score < 60) continue;
+    const quality = evaluateDumpIgnitionAutoQuality(sig, health);
+    if (!quality.ok) {
+      console.log(`[DiPaper] ⏭ ${sig.symbol} skip auto ${sig.type} — ${quality.reason}`);
+      continue;
+    }
     const key = `${sig.symbol}|${sig.type}`;
     const last = diPaperAutoFired.get(key) ?? 0;
     if (Date.now() - last < 4 * 3600 * 1000) continue;
@@ -344,23 +480,7 @@ async function scheduleDumpIgnitionScan() {
 
       // Edge paper auto-fire: dump_ignition signals chỉ xuất hiện trên edge-short
       for (const sig of signals) {
-        if (sig.score < 60) continue;
-        const key = `ignition|${sig.symbol}|${sig.type}`;
-        const last = edgePaperAutoFired.get(key) ?? 0;
-        if (Date.now() - last < 4 * 3600 * 1000) continue;
-        edgePaperAutoFired.set(key, Date.now());
-        createEdgePaperTrade({
-          symbol: sig.symbol,
-          side: 'SHORT',
-          status: 'OPEN',
-          marginUsdt: 1,
-          leverage: 10,
-          entryPrice: sig.entry,
-          tp: sig.tp ?? null,
-          sl: sig.sl ?? null,
-          source: `ignition-${sig.score}`,
-          note: sig.note ?? '',
-        }).catch((e) => console.warn(`[EdgePaper] ignition ${sig.symbol}:`, e.message));
+        console.log(`[EdgePaper] ⏭ ${sig.symbol} skip dump ignition auto — blocked from Edge Short`);
       }
 
       // Discord notifications — dump ignition signals
@@ -486,9 +606,60 @@ async function scheduleSpikeReversalScan() {
 
 let _pumpIgnitionDebounce = null;
 
+function parsePumpIgnitionNote(note) {
+  const kv = {};
+  for (const part of String(note ?? '').split('|')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    kv[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
+  }
+  return kv;
+}
+
+function numFromNoteValue(value) {
+  if (value == null) return null;
+  const m = String(value).match(/-?\d+(?:\.\d+)?/);
+  return m ? Number(m[0]) : null;
+}
+
+function evaluatePumpIgnitionAutoQuality(sig, health = {}) {
+  const minScore = Number(process.env.PUMP_IGNITION_AUTO_MIN_SCORE ?? 85);
+  if (sig.score < minScore) return { ok: false, reason: `score ${sig.score} < ${minScore}` };
+
+  if (health?.bias === 'bearish' || health?.bias === 'caution') {
+    return { ok: false, reason: `BTC health ${health.bias}` };
+  }
+  if (health?.btcSpikeAlert) return { ok: false, reason: 'BTC spike correction risk' };
+  if (Number.isFinite(Number(health?.btcCandle1hPct)) && Number(health.btcCandle1hPct) < -0.5) {
+    return { ok: false, reason: `BTC 1h candle ${Number(health.btcCandle1hPct).toFixed(2)}%` };
+  }
+
+  const noteKV = parsePumpIgnitionNote(sig.note);
+  const isEarly = sig.type === 'pump_ignition_early';
+  const liveEMA = noteKV.liveEMA;
+  const bias = noteKV.bias;
+  const volX = numFromNoteValue(noteKV.volX);
+
+  if (isEarly) {
+    if (liveEMA !== 'Y') return { ok: false, reason: 'EARLY liveEMA=N' };
+    if (bias !== 'full') return { ok: false, reason: `EARLY bias=${bias || 'unknown'}` };
+  }
+
+  if (volX != null && volX >= 1.5 && volX < 10) {
+    return { ok: false, reason: `volX ${volX.toFixed(2)} in weak 1.5-10x zone` };
+  }
+
+  return { ok: true, reason: 'quality gate passed' };
+}
+
 async function autoCreatePiPaperTrades(signals) {
+  const health = btcHealthCache.data ?? {};
   for (const sig of signals) {
-    if (sig.score < 60) continue;
+    const quality = evaluatePumpIgnitionAutoQuality(sig, health);
+    if (!quality.ok) {
+      console.log(`[PiPaper] ⏭ ${sig.symbol} skip auto ${sig.type} — ${quality.reason}`);
+      continue;
+    }
     const key = `${sig.symbol}|${sig.type}`;
     const last = piPaperAutoFired.get(key) ?? 0;
     if (Date.now() - last < 4 * 3600 * 1000) continue;
@@ -534,7 +705,11 @@ async function schedulePumpIgnitionScan() {
 
       // Edge paper auto-fire: pump_ignition LONG signals
       for (const sig of signals) {
-        if (sig.score < 60) continue;
+        const quality = evaluatePumpIgnitionAutoQuality(sig, btcHealthCache.data ?? {});
+        if (!quality.ok) {
+          console.log(`[EdgePaper] ⏭ ${sig.symbol} skip pumpign auto — ${quality.reason}`);
+          continue;
+        }
         const key = `pumpign|${sig.symbol}|${sig.type}`;
         const last = edgePaperAutoFired.get(key) ?? 0;
         if (Date.now() - last < 4 * 3600 * 1000) continue;
@@ -3196,6 +3371,28 @@ async function createPaperTrade(payload) {
   if (!Number.isFinite(marginUsdt) || marginUsdt <= 0) throw new Error('marginUsdt must be greater than 0.');
   const entryPrice = payload.entryPrice ? Number(payload.entryPrice) : await getPaperMark(symbol);
   if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice must be greater than 0.');
+  const entryPlan = payload.entryPlan && typeof payload.entryPlan === 'object' ? payload.entryPlan : null;
+  const markAtSignal = payload.signalMarkPrice != null
+    ? Number(payload.signalMarkPrice)
+    : Number(entryPlan?.signalMarkPrice ?? entryPlan?.markPrice ?? entryPrice);
+  const sweepDistancePct = payload.sweepDistancePct != null
+    ? Number(payload.sweepDistancePct)
+    : (entryPlan?.targetDistancePct != null ? Number(entryPlan.targetDistancePct) : null);
+  const feasibleLeverage = payload.feasibleLeverage != null
+    ? Number(payload.feasibleLeverage)
+    : (entryPlan?.feasibleLeverage != null ? Number(entryPlan.feasibleLeverage) : null);
+  const feasibilityScore = payload.feasibilityScore != null
+    ? Number(payload.feasibilityScore)
+    : (entryPlan?.feasibilityScore != null ? Number(entryPlan.feasibilityScore) : null);
+  const rewardPct = payload.rewardPct != null
+    ? Number(payload.rewardPct)
+    : (entryPlan?.rewardPct != null ? Number(entryPlan.rewardPct) : null);
+  const riskPct = payload.riskPct != null
+    ? Number(payload.riskPct)
+    : (entryPlan?.riskPct != null ? Number(entryPlan.riskPct) : null);
+  const rr = payload.rr != null
+    ? Number(payload.rr)
+    : (entryPlan?.rr != null ? Number(entryPlan.rr) : null);
 
   const trade = {
     id: crypto.randomUUID(),
@@ -3214,16 +3411,16 @@ async function createPaperTrade(payload) {
     stopLossPrice: payload.stopLossPrice ?? payload.sl ?? null,
     signalType: payload.signalType ? String(payload.signalType).slice(0, 80) : null,
     signalPoint: payload.signalPoint != null ? Number(payload.signalPoint) : null,
-    signalMarkPrice: payload.signalMarkPrice != null ? Number(payload.signalMarkPrice) : null,
+    signalMarkPrice: Number.isFinite(markAtSignal) ? markAtSignal : entryPrice,
     sweepTargetPrice: payload.sweepTargetPrice != null ? Number(payload.sweepTargetPrice) : null,
-    sweepDistancePct: payload.sweepDistancePct != null ? Number(payload.sweepDistancePct) : null,
-    feasibleLeverage: payload.feasibleLeverage != null ? Number(payload.feasibleLeverage) : null,
-    feasibilityScore: payload.feasibilityScore != null ? Number(payload.feasibilityScore) : null,
-    rewardPct: payload.rewardPct != null ? Number(payload.rewardPct) : null,
-    riskPct: payload.riskPct != null ? Number(payload.riskPct) : null,
-    rr: payload.rr != null ? Number(payload.rr) : null,
+    sweepDistancePct: Number.isFinite(sweepDistancePct) ? sweepDistancePct : null,
+    feasibleLeverage: Number.isFinite(feasibleLeverage) ? feasibleLeverage : null,
+    feasibilityScore: Number.isFinite(feasibilityScore) ? feasibilityScore : null,
+    rewardPct: Number.isFinite(rewardPct) ? rewardPct : null,
+    riskPct: Number.isFinite(riskPct) ? riskPct : null,
+    rr: Number.isFinite(rr) ? rr : null,
     heavySide: payload.heavySide ? String(payload.heavySide).slice(0, 20) : null,
-    entryPlan: payload.entryPlan && typeof payload.entryPlan === 'object' ? payload.entryPlan : null,
+    entryPlan,
   };
 
   const store = await readPaperStore();
@@ -3264,6 +3461,28 @@ async function createLiquidPaperTrade(payload) {
   if (!Number.isFinite(marginUsdt) || marginUsdt <= 0) throw new Error('marginUsdt must be greater than 0.');
   const entryPrice = payload.entryPrice ? Number(payload.entryPrice) : await getPaperMark(symbol);
   if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice must be greater than 0.');
+  const entryPlan = payload.entryPlan && typeof payload.entryPlan === 'object' ? payload.entryPlan : null;
+  const markAtSignal = payload.signalMarkPrice != null
+    ? Number(payload.signalMarkPrice)
+    : Number(entryPlan?.signalMarkPrice ?? entryPlan?.markPrice ?? entryPrice);
+  const sweepDistancePct = payload.sweepDistancePct != null
+    ? Number(payload.sweepDistancePct)
+    : (entryPlan?.targetDistancePct != null ? Number(entryPlan.targetDistancePct) : null);
+  const feasibleLeverage = payload.feasibleLeverage != null
+    ? Number(payload.feasibleLeverage)
+    : (entryPlan?.feasibleLeverage != null ? Number(entryPlan.feasibleLeverage) : null);
+  const feasibilityScore = payload.feasibilityScore != null
+    ? Number(payload.feasibilityScore)
+    : (entryPlan?.feasibilityScore != null ? Number(entryPlan.feasibilityScore) : null);
+  const rewardPct = payload.rewardPct != null
+    ? Number(payload.rewardPct)
+    : (entryPlan?.rewardPct != null ? Number(entryPlan.rewardPct) : null);
+  const riskPct = payload.riskPct != null
+    ? Number(payload.riskPct)
+    : (entryPlan?.riskPct != null ? Number(entryPlan.riskPct) : null);
+  const rr = payload.rr != null
+    ? Number(payload.rr)
+    : (entryPlan?.rr != null ? Number(entryPlan.rr) : null);
 
   const trade = {
     id: crypto.randomUUID(),
@@ -3282,9 +3501,16 @@ async function createLiquidPaperTrade(payload) {
     stopLossPrice: payload.stopLossPrice ?? payload.sl ?? null,
     signalType: payload.signalType ? String(payload.signalType).slice(0, 80) : 'LIQUID_SCAN',
     signalPoint: payload.signalPoint != null ? Number(payload.signalPoint) : null,
+    signalMarkPrice: Number.isFinite(markAtSignal) ? markAtSignal : entryPrice,
     sweepTargetPrice: payload.sweepTargetPrice != null ? Number(payload.sweepTargetPrice) : null,
+    sweepDistancePct: Number.isFinite(sweepDistancePct) ? sweepDistancePct : null,
+    feasibleLeverage: Number.isFinite(feasibleLeverage) ? feasibleLeverage : null,
+    feasibilityScore: Number.isFinite(feasibilityScore) ? feasibilityScore : null,
+    rewardPct: Number.isFinite(rewardPct) ? rewardPct : null,
+    riskPct: Number.isFinite(riskPct) ? riskPct : null,
+    rr: Number.isFinite(rr) ? rr : null,
     heavySide: payload.heavySide ? String(payload.heavySide).slice(0, 20) : null,
-    entryPlan: payload.entryPlan && typeof payload.entryPlan === 'object' ? payload.entryPlan : null,
+    entryPlan,
   };
 
   const store = await readLiquidPaperStore();
@@ -3612,7 +3838,14 @@ async function fillPendingLiquidPaperTrade(trade, markPrice) {
       entryPrice: Number(current.entryPrice),
       signalPoint: current.signalPoint ?? null,
       signalType: current.signalType ?? null,
+      signalMarkPrice: current.signalMarkPrice ?? null,
       sweepTargetPrice: current.sweepTargetPrice ?? null,
+      sweepDistancePct: current.sweepDistancePct ?? null,
+      feasibleLeverage: current.feasibleLeverage ?? null,
+      feasibilityScore: current.feasibilityScore ?? null,
+      rewardPct: current.rewardPct ?? null,
+      riskPct: current.riskPct ?? null,
+      rr: current.rr ?? null,
       heavySide: current.heavySide ?? null,
     },
     note: updatePaperFillNote(current.note, markPrice),
@@ -4592,6 +4825,19 @@ async function createEdgePaperTrade(payload) {
   if (dup) return { trade: enrichEdgePaperTrade(dup, edgeMarkCache.get(symbol)) };
 
   const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const maxShortSlRoe = Number(process.env.EDGE_SHORT_MAX_SL_ROE ?? 25);
+  const rawTp = payload.tp != null ? Number(payload.tp) : null;
+  let rawSl = payload.sl != null ? Number(payload.sl) : null;
+  let riskNote = '';
+  if (side === 'SHORT' && Number.isFinite(rawSl) && rawSl > entryPrice && maxShortSlRoe > 0) {
+    const slRoe = ((rawSl - entryPrice) / entryPrice) * leverage * 100;
+    if (slRoe > maxShortSlRoe) {
+      const cappedSl = entryPrice * (1 + (maxShortSlRoe / 100) / leverage);
+      rawSl = +cappedSl.toFixed(10);
+      riskNote = ` | slClamp=${maxShortSlRoe}%ROE`;
+      console.log(`[EdgePaper] clamp SHORT SL ${symbol}: ${slRoe.toFixed(1)}%ROE → ${maxShortSlRoe}%ROE`);
+    }
+  }
   const trade = {
     id: crypto.randomUUID(),
     symbol,
@@ -4601,8 +4847,8 @@ async function createEdgePaperTrade(payload) {
     leverage,
     quantity: (marginUsdt * leverage) / entryPrice,
     entryPrice,
-    tp: payload.tp != null ? Number(payload.tp) : null,
-    sl: payload.sl != null ? Number(payload.sl) : null,
+    tp: Number.isFinite(rawTp) ? rawTp : null,
+    sl: Number.isFinite(rawSl) ? rawSl : null,
     fillPrice: status === 'OPEN' ? entryPrice : null,
     exitPrice: null,
     pnl: null,
@@ -4612,7 +4858,7 @@ async function createEdgePaperTrade(payload) {
     openedAt: status === 'OPEN' ? new Date().toISOString() : null,
     closedAt: null,
     source: String(payload.source ?? 'edge').slice(0, 80),
-    note: String(payload.note ?? '').slice(0, 500),
+    note: `${String(payload.note ?? '').slice(0, 460)}${riskNote}`,
   };
   store.trades.unshift(trade);
   await writeEdgePaperStore(store);

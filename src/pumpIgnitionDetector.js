@@ -47,8 +47,8 @@ export function detectPumpIgnition(candles, state = {}, cfg = {}) {
     // follow-through
     confirmBars:     2,
     // scoring
-    passScore:      65,
-    passScoreEarly: 50,
+    passScore:      70,
+    passScoreEarly: 65,
     W:    { squeeze: 20, ribbon: 15, bbBreak: 15, bodyQ: 15, vol: 15, alignment: 10, follow: 10 },
     Wpre: { squeeze: 25, ribbon: 20, midBreak: 15, bodyQ: 15, vol: 15, structure: 10, live: 10 },
     // execution

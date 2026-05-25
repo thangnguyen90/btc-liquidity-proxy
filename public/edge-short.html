@@ -41,6 +41,16 @@
       .edge-card.long::before  { background: var(--green); }
       .edge-card.watch::before { background: var(--amber); }
 
+      .edge-card.early-dump-edge {
+        border-color: rgba(250, 204, 21, .75);
+        background:
+          linear-gradient(180deg, rgba(250, 204, 21, .18), rgba(250, 204, 21, .07)),
+          var(--panel);
+        box-shadow: 0 0 0 1px rgba(250, 204, 21, .12), 0 14px 34px rgba(250, 204, 21, .08);
+      }
+
+      .edge-card.early-dump-edge::before { background: #facc15; height: 4px; }
+
       .edge-card-top {
         display: flex;
         align-items: flex-start;
@@ -213,6 +223,11 @@
 
       .edge-factor.ok { background: rgba(54,211,153,.1); color: var(--green); }
       .edge-factor.warn { background: rgba(251,113,133,.1); color: var(--red); }
+      .edge-factor.gold {
+        background: rgba(250,204,21,.18);
+        color: #facc15;
+        border: 1px solid rgba(250,204,21,.32);
+      }
 
       .edge-reason {
         font-size: 12px;
