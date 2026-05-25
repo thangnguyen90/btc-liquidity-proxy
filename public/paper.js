@@ -239,6 +239,7 @@ function signalTypeFromTrade(t) {
   const note = String(t.note ?? '').trim();
   if (note.startsWith('EMA_PB')) return 'EMA_PB';
   if (note.startsWith('EARLY_DUMP')) return 'EARLY_DUMP';
+  if (note.startsWith('EARLY_PUMP')) return 'EARLY_PUMP';
   if (note.startsWith('EARLY')) return 'EARLY';
   if (note.startsWith('DUMP')) return 'DUMP';
   if (note.startsWith('BC ')) return 'BC';

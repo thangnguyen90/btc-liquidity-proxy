@@ -510,7 +510,7 @@ function detectPumpClimaxSimpleActionNew(candles, state, opts) {
       },
     };
     result.reason = isPumpEarly ? 'Early pump breakout – block SHORT' : 'Pump breakout – block SHORT';
-    result.note = (isPumpEarly ? 'EARLY | ' : '') +
+    result.note = (isPumpEarly ? 'EARLY_PUMP | ' : '') +
       'range=' + (rangePct * 100).toFixed(2) + '% | BBW=' + (bbNow.bw * 100).toFixed(2) + '% | ATR%=' + (offInfo.atrPct * 100).toFixed(2) + '% | score=' + scoreLong + '(' + gradeLong + ')' +
       (CFG.enableLongQualityPenalty ? (' | qPenalty=' + (qPenalty01 * 100).toFixed(1) + 'pts') : '');
     return result;
