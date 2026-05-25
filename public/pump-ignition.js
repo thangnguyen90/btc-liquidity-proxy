@@ -408,6 +408,65 @@ async function fetchAndApply(attempt = 0) {
 
 // ── PI Paper Trades ───────────────────────────────────────────────────────────
 
+let piPaperSort = { key: 'status', dir: 'asc' };
+
+document.addEventListener('click', (e) => {
+  const th = e.target.closest('[data-pi-sort]');
+  if (!th || !th.classList.contains('pi-paper-sort')) return;
+  const key = th.dataset.piSort;
+  if (piPaperSort.key === key) {
+    piPaperSort.dir = piPaperSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    piPaperSort = { key, dir: key === 'status' ? 'asc' : 'desc' };
+  }
+  renderPiPaperTable();
+});
+
+function piPaperSortValue(t, key) {
+  if (key === 'symbol') return t.symbol ?? '';
+  if (key === 'side')   return t.side ?? '';
+  if (key === 'entry')  return Number(t.entryPrice);
+  if (key === 'sl')     return t.sl == null ? null : Number(t.sl);
+  if (key === 'tp')     return t.tp == null ? null : Number(t.tp);
+  if (key === 'mark')   return Number(t.markPrice ?? t.exitPrice);
+  if (key === 'pnl')    return t.pnl == null ? null : Number(t.pnl);
+  if (key === 'roe')    return t.roe == null ? null : Number(t.roe);
+  if (key === 'source') return t.source ?? '';
+  if (key === 'time')   return Date.parse(t.createdAt ?? '') || 0;
+  if (key === 'status') {
+    const order = { OPEN: 0, PENDING: 1, CLOSED: 2 };
+    return order[t.status] ?? 9;
+  }
+  return '';
+}
+
+function comparePiValues(a, b, dir) {
+  const aMiss = a == null || (typeof a === 'number' && isNaN(a));
+  const bMiss = b == null || (typeof b === 'number' && isNaN(b));
+  if (aMiss && bMiss) return 0;
+  if (aMiss) return 1;
+  if (bMiss) return -1;
+  const r = typeof a === 'string' ? String(a).localeCompare(String(b), 'en') : a - b;
+  return dir === 'asc' ? r : -r;
+}
+
+function sortPiPaperTrades(trades) {
+  const { key, dir } = piPaperSort;
+  return trades.slice().sort((a, b) => {
+    const r = comparePiValues(piPaperSortValue(a, key), piPaperSortValue(b, key), dir);
+    return r !== 0 ? r : comparePiValues(piPaperSortValue(a, 'time'), piPaperSortValue(b, 'time'), 'desc');
+  });
+}
+
+function updatePiSortHeaders() {
+  document.querySelectorAll('[data-pi-sort]').forEach((th) => {
+    const active = th.dataset.piSort === piPaperSort.key;
+    th.classList.toggle('active', active);
+    const mark = th.querySelector('.sort-mark');
+    if (mark) mark.textContent = active ? (piPaperSort.dir === 'asc' ? '^' : 'v') : '';
+  });
+}
+
 function renderPiPaperTable() {
   const tbody = document.getElementById('piPaperBody');
   if (!tbody) return;
@@ -429,10 +488,12 @@ function renderPiPaperTable() {
 
   if (piPaperTrades.length === 0) {
     tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--muted);padding:16px">Chưa có paper trade nào</td></tr>';
+    updatePiSortHeaders();
     return;
   }
 
-  tbody.innerHTML = piPaperTrades.map((t) => {
+  const sorted = sortPiPaperTrades([...open, ...closed]);
+  tbody.innerHTML = sorted.map((t) => {
     const pnlVal = t.pnl ?? null;
     const roeVal = t.roe ?? null;
     const pnlColor = pnlVal == null ? '' : pnlVal >= 0 ? 'color:var(--green)' : 'color:var(--red)';
@@ -459,6 +520,7 @@ function renderPiPaperTable() {
       <td>${actions}</td>
     </tr>`;
   }).join('');
+  updatePiSortHeaders();
 }
 
 async function loadPiPaperTrades() {

@@ -236,6 +236,11 @@
         color: var(--muted); cursor: pointer;
       }
       .di-paper-close-btn:hover { color: var(--red); border-color: var(--red); }
+
+      .di-paper-sort { cursor: pointer; user-select: none; white-space: nowrap; }
+      .di-paper-sort:hover { color: var(--text); }
+      .di-paper-sort.active { color: var(--blue); }
+      .di-paper-sort .sort-mark { font-size: 9px; margin-left: 3px; opacity: .7; }
     </style>
   </head>
   <body>
@@ -251,6 +256,7 @@
           <a class="nav-link" href="/pump-ignition">Pump Ign</a>
           <a class="nav-link" href="/cap">Capitulation</a>
           <a class="nav-link" href="/edge-short">Short Edge</a>
+          <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
           <a class="nav-link" href="/killshort">Kill Short</a>
           <a class="nav-link" href="/spike-reversal">Spike Rev</a>
           <a class="nav-link" href="/orders">Orders</a>
@@ -337,17 +343,17 @@
           <table class="signal-table">
             <thead>
               <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Entry</th>
-                <th>SL</th>
-                <th>TP</th>
-                <th>Mark</th>
-                <th>PnL</th>
-                <th>ROE</th>
-                <th>Status</th>
-                <th>Source</th>
-                <th>Time</th>
+                <th class="di-paper-sort" data-di-sort="symbol">Symbol <span class="sort-mark"></span></th>
+                <th class="di-paper-sort" data-di-sort="side">Side <span class="sort-mark"></span></th>
+                <th class="di-paper-sort" data-di-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th class="di-paper-sort" data-di-sort="sl">SL <span class="sort-mark"></span></th>
+                <th class="di-paper-sort" data-di-sort="tp">TP <span class="sort-mark"></span></th>
+                <th class="di-paper-sort" data-di-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="di-paper-sort" data-di-sort="pnl">PnL <span class="sort-mark"></span></th>
+                <th class="di-paper-sort" data-di-sort="roe">ROE <span class="sort-mark"></span></th>
+                <th class="di-paper-sort active" data-di-sort="status">Status <span class="sort-mark">^</span></th>
+                <th class="di-paper-sort" data-di-sort="source">Source <span class="sort-mark"></span></th>
+                <th class="di-paper-sort" data-di-sort="time">Time <span class="sort-mark"></span></th>
                 <th></th>
               </tr>
             </thead>

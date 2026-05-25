@@ -270,6 +270,10 @@
         border-bottom: 1px solid var(--line);
         white-space: nowrap;
       }
+      .pi-paper-sort { cursor: pointer; user-select: none; }
+      .pi-paper-sort:hover { color: var(--text); }
+      .pi-paper-sort.active { color: var(--blue); }
+      .pi-paper-sort .sort-mark { font-size: 9px; margin-left: 3px; opacity: .7; }
       .pi-paper-table td {
         padding: 7px 10px;
         border-bottom: 1px solid var(--line);
@@ -321,6 +325,7 @@
           <a class="nav-link" href="/spike-reversal">Spike Rev</a>
           <a class="nav-link" href="/dump-ignition">Dump Ign</a>
           <a class="nav-link" href="/edge-short">Short Edge</a>
+          <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
           <a class="nav-link" href="/orders">Orders</a>
           <div class="status" id="scanStatus">Loading...</div>
         </div>
@@ -403,17 +408,17 @@
           <table class="pi-paper-table">
             <thead>
               <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Entry</th>
-                <th>SL</th>
-                <th>TP</th>
-                <th>Mark</th>
-                <th>PnL</th>
-                <th>ROE</th>
-                <th>Status</th>
-                <th>Source</th>
-                <th>Time</th>
+                <th class="pi-paper-sort" data-pi-sort="symbol">Symbol <span class="sort-mark"></span></th>
+                <th class="pi-paper-sort" data-pi-sort="side">Side <span class="sort-mark"></span></th>
+                <th class="pi-paper-sort" data-pi-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th class="pi-paper-sort" data-pi-sort="sl">SL <span class="sort-mark"></span></th>
+                <th class="pi-paper-sort" data-pi-sort="tp">TP <span class="sort-mark"></span></th>
+                <th class="pi-paper-sort" data-pi-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="pi-paper-sort" data-pi-sort="pnl">PnL <span class="sort-mark"></span></th>
+                <th class="pi-paper-sort" data-pi-sort="roe">ROE <span class="sort-mark"></span></th>
+                <th class="pi-paper-sort active" data-pi-sort="status">Status <span class="sort-mark">^</span></th>
+                <th class="pi-paper-sort" data-pi-sort="source">Source <span class="sort-mark"></span></th>
+                <th class="pi-paper-sort" data-pi-sort="time">Time <span class="sort-mark"></span></th>
                 <th>Action</th>
               </tr>
             </thead>

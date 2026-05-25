@@ -235,6 +235,29 @@ function renderTrendCell(symbol) {
   </td>`;
 }
 
+function signalTypeFromTrade(t) {
+  const note = String(t.note ?? '').trim();
+  if (note.startsWith('EMA_PB')) return 'EMA_PB';
+  if (note.startsWith('EARLY_DUMP')) return 'EARLY_DUMP';
+  if (note.startsWith('EARLY')) return 'EARLY';
+  if (note.startsWith('DUMP')) return 'DUMP';
+  if (note.startsWith('BC ')) return 'BC';
+  if (note.startsWith('SC ')) return 'SC';
+  if (note.startsWith('Flush ')) return 'FLUSH_REV';
+  if (note.startsWith('sweepProb=')) return 'LIQ_SWEEP';
+  if (note.startsWith('Spike ')) return 'SPIKE';
+  return '';
+}
+
+function renderNoteCell(t) {
+  const type = signalTypeFromTrade(t);
+  const note = escapeHtml(t.note ?? '');
+  const badge = type
+    ? `<span class="signal-badge signal-${type.toLowerCase().replaceAll('_', '-')}">${escapeHtml(type)}</span>`
+    : '';
+  return `<td class="note-cell">${badge}<span>${note}</span></td>`;
+}
+
 function renderOpen(trades) {
   const open = sortTrades(trades.filter((t) => ['OPEN', 'ENTRY_READY', 'PENDING'].includes(t.status)), 'open');
   if (!open.length) {
@@ -267,7 +290,7 @@ function renderOpen(trades) {
       <td class="${clsPnl(t.roe)}">${fmt(t.roe, 2)}%</td>
       <td>${fmtTime(t.openedAt ?? t.createdAt)}</td>
       ${renderTrendCell(t.symbol)}
-      <td>${escapeHtml(t.note ?? '')}</td>
+      ${renderNoteCell(t)}
     </tr>
   `).join('');
   // Restore giá trị đã nhập
@@ -294,7 +317,7 @@ function renderClosed(trades) {
       <td class="${clsPnl(t.roe)}">${fmt(t.roe, 2)}%</td>
       <td>${fmtTime(t.openedAt)}</td>
       <td>${fmtTime(t.closedAt)}</td>
-      <td>${escapeHtml(t.note ?? '')}</td>
+      ${renderNoteCell(t)}
       <td><button class="action-btn cancel-btn" data-delete="${t.id}">Delete</button></td>
     </tr>
   `).join('');

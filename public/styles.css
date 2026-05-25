@@ -1101,6 +1101,142 @@ pre {
 .muted-text { color: var(--muted); font-size: 12px; }
 .table-empty { color: var(--muted); text-align: center !important; padding: 28px !important; }
 
+/* Liquid Sweep page */
+.liquid-summary {
+  margin-bottom: 14px;
+}
+
+.liquid-table td:last-child {
+  min-width: 280px;
+}
+
+.liq-side {
+  display: inline-flex;
+  min-width: 82px;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.liquid-above {
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.13);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+}
+
+.liquid-below {
+  color: var(--red);
+  background: rgba(251, 113, 133, 0.12);
+  border: 1px solid rgba(251, 113, 133, 0.35);
+}
+
+.liquid-long {
+  color: var(--green);
+  background: rgba(54, 211, 153, 0.13);
+  border: 1px solid rgba(54, 211, 153, 0.35);
+}
+
+.liquid-short {
+  color: var(--red);
+  background: rgba(251, 113, 133, 0.12);
+  border: 1px solid rgba(251, 113, 133, 0.35);
+}
+
+.near-target {
+  color: var(--amber) !important;
+}
+
+.muted-link {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.muted-link:hover {
+  color: var(--blue);
+}
+
+.liquid-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.liquid-action-btn {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  color: var(--text);
+  background: var(--panel-2);
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.liquid-action-btn.paper {
+  color: var(--green);
+  border-color: rgba(54, 211, 153, 0.35);
+  background: rgba(54, 211, 153, 0.10);
+}
+
+.liquid-action-btn.binance {
+  color: #f0b90b;
+  border-color: rgba(240, 185, 11, 0.35);
+  background: rgba(240, 185, 11, 0.10);
+}
+
+.liquid-action-btn:hover {
+  opacity: 0.78;
+}
+
+.liquid-action-btn:disabled {
+  opacity: 0.45;
+  cursor: wait;
+}
+
+.liquid-paper-sort {
+  cursor: pointer;
+  user-select: none;
+}
+
+.liquid-paper-sort.active {
+  color: var(--text);
+}
+
+.liquid-paper-sort .sort-mark {
+  color: var(--muted);
+  font-size: 10px;
+  margin-left: 3px;
+}
+
+/* ── Liquid Paper stats bar ── */
+.lp-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  background: var(--panel-2);
+  border-radius: 6px;
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.lp-stats .lp-stat { display: flex; align-items: baseline; gap: 5px; }
+.lp-stats .lp-stat strong { font-size: 15px; font-weight: 800; color: var(--text); }
+.lp-stats .lp-stat strong.positive { color: var(--green); }
+.lp-stats .lp-stat strong.negative { color: var(--red); }
+.lp-stats .lp-divider { width: 1px; background: var(--line); align-self: stretch; }
+
+.lp-closed-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 0 6px;
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+}
+.lp-closed-head h3 { font-size: 13px; font-weight: 700; color: var(--muted); margin: 0; text-transform: uppercase; letter-spacing: .04em; }
+
 @media (max-width: 920px) {
   .controls,
   .summary-grid,
@@ -1153,4 +1289,3 @@ pre {
     justify-items: start;
   }
 }
-

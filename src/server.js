@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
+import { computeHeatmapData } from './liquidityProxy.js';
 import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked, summarizeTopTraderTrend, formatTopTraderTrend } from './discordNotifier.js';
 import { KlineCache } from './klineCache.js';
 import { runPumpScan } from './pumpDetector.js';
@@ -37,6 +38,7 @@ const killShortScanCache    = { data: null, expiresAt: 0 };
 const dumpIgnitionScanCache = { data: null, expiresAt: 0 };
 const spikeReversalScanCache  = { data: null, expiresAt: 0 };
 const pumpIgnitionScanCache   = { data: null, expiresAt: 0 };
+const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 
 // ── Shared market snapshot cache — tất cả scan dùng chung, tránh spam REST ───
 let _snapshotCache = null;
@@ -67,12 +69,27 @@ const killShortSseClients    = new Set();
 const dumpIgnitionSseClients = new Set();
 const spikeReversalSseClients  = new Set();
 const pumpIgnitionSseClients   = new Set();
+const liquidPaperSseClients    = new Set();
 
 function pushSse(clients, data) {
   const payload = `data: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) {
     try { res.write(payload); } catch { clients.delete(res); }
   }
+}
+
+let liquidPaperBroadcastTimer = null;
+function scheduleLiquidPaperBroadcast(delayMs = 700) {
+  if (liquidPaperSseClients.size === 0 || liquidPaperBroadcastTimer) return;
+  liquidPaperBroadcastTimer = setTimeout(async () => {
+    liquidPaperBroadcastTimer = null;
+    if (liquidPaperSseClients.size === 0) return;
+    try {
+      pushSse(liquidPaperSseClients, await getLiquidPaperTrades());
+    } catch (err) {
+      pushSse(liquidPaperSseClients, { error: err.message, updatedAt: new Date().toISOString() });
+    }
+  }, delayMs);
 }
 
 // ── Debounced scans triggered by 15m candle close ────────────────────────────
@@ -690,6 +707,7 @@ const SL_TRACKING_FILE = join(rootDir, 'data', 'sl-tracking.json');
 // { createdAt, positions: { [symbol]: { openedAt, entry, slPlaced, slPrice? } } }
 let slTracking = { createdAt: Date.now(), positions: {} };
 const PAPER_TRADES_FILE = join(rootDir, 'data', 'paper-trades.json');
+const LIQUID_PAPER_FILE = join(rootDir, 'data', 'liquid-paper-trades.json');
 const FILLS_DIR = join(rootDir, 'data', 'fills');
 const PUMP_ORDERS_FILE = join(rootDir, 'data', 'pump-orders.json');
 const PUMP_HISTORY_FILE = join(rootDir, 'data', 'pump-order-history.json');
@@ -701,7 +719,9 @@ const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
 const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
+let liquidPaperRestPoller = null;
 const paperFillLocks = new Set();
+const liquidPaperFillLocks = new Set();
 const capMarkCache = new Map();  // symbol → markPrice  (for cap paper trades)
 let capPaperTicker = null;
 const capPaperFillLocks = new Set();
@@ -1087,6 +1107,26 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/liquid-scan') {
+      const interval = ['5m', '15m', '30m', '1h', '4h'].includes(requestUrl.searchParams.get('interval'))
+        ? requestUrl.searchParams.get('interval')
+        : '15m';
+      const limit = Math.max(10, Math.min(200, Number(requestUrl.searchParams.get('limit') ?? 200)));
+      const minVolumeUsdt = Math.max(0, Number(requestUrl.searchParams.get('minVolumeUsdt') ?? 0));
+      const key = `${interval}|${limit}|${minVolumeUsdt}`;
+      if (liquidScanCache.data && liquidScanCache.key === key && Date.now() < liquidScanCache.expiresAt) {
+        await sendJson(response, liquidScanCache.data);
+        return;
+      }
+
+      const result = await runLiquidScan({ interval, limit, minVolumeUsdt });
+      liquidScanCache.data = result;
+      liquidScanCache.key = key;
+      liquidScanCache.expiresAt = Date.now() + 30_000;
+      await sendJson(response, result);
+      return;
+    }
+
     if (requestUrl.pathname === '/api/vol-dump-flags') {
       await sendJson(response, getVolDumpFlags());
       return;
@@ -1444,6 +1484,37 @@ const server = createServer(async (request, response) => {
         await sendJson(response, await createPaperTrade(await readJsonBody(request)));
         return;
       }
+    }
+
+    if (requestUrl.pathname === '/api/liquid-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getLiquidPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        await sendJson(response, await createLiquidPaperTrade(await readJsonBody(request)));
+        return;
+      }
+    }
+
+    if (requestUrl.pathname === '/api/liquid-paper-trades-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      liquidPaperSseClients.add(response);
+      request.on('close', () => liquidPaperSseClients.delete(response));
+      getLiquidPaperTrades()
+        .then((data) => {
+          if (!response.destroyed) response.write(`data: ${JSON.stringify(data)}\n\n`);
+        })
+        .catch((err) => {
+          if (!response.destroyed) response.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+        });
+      return;
     }
 
     if (requestUrl.pathname === '/api/paper-trades/close' && request.method === 'POST') {
@@ -2765,6 +2836,182 @@ async function getMarketSnapshot() {
   return snapshotCache.inflight;
 }
 
+function liquidSweepProb(heatmap, target = null) {
+  const above = Number(heatmap?.liquidityAbove ?? 0);
+  const below = Number(heatmap?.liquidityBelow ?? 0);
+  const total = above + below;
+  if (total <= 0) return 0;
+  const bias = Number(heatmap?.bias ?? 0);
+  const dominant = bias >= 0 ? above : below;
+  const dominantPct = dominant / total;
+  const imbalanceScore = clamp(Math.abs(bias), 0, 1);
+  const dominanceScore = clamp((dominantPct - 0.5) / 0.5, 0, 1);
+  const distanceAbs = Math.abs(Number(target?.distancePct ?? 8));
+  const distanceScore = clamp((6 - distanceAbs) / 6, 0, 1);
+  const targetShare = target?.score && dominant > 0 ? clamp(Number(target.score) / dominant, 0, 1) : 0;
+
+  const probability = (
+    imbalanceScore * 0.45
+    + dominanceScore * 0.20
+    + distanceScore * 0.25
+    + targetShare * 0.10
+  ) * 100;
+
+  return Math.min(99, Math.max(0, Math.round(probability)));
+}
+
+function liquidSweepLabel(prob) {
+  if (prob >= 80) return 'CAO';
+  if (prob >= 55) return 'TRUNG BINH';
+  return 'THAP';
+}
+
+function buildLiquidEntryPlan({ heavySide, markPrice, target, heatmap }) {
+  const side = heavySide === 'above' ? 'LONG' : 'SHORT';
+  const sweepDirection = heavySide === 'above' ? 'UP' : 'DOWN';
+  const targetPrice = Number(target?.price ?? markPrice);
+  const distancePct = Number(target?.distancePct ?? 0);
+  const nearestOpposite = side === 'LONG'
+    ? (heatmap.heatmapBelow?.[0] ?? null)
+    : (heatmap.heatmapAbove?.[0] ?? null);
+  const tp = targetPrice;
+  const entryOffsetPct = Math.max(0.12, Math.min(0.55, Math.abs(distancePct) * 0.28));
+  const entryPrice = side === 'LONG'
+    ? markPrice * (1 - entryOffsetPct / 100)
+    : markPrice * (1 + entryOffsetPct / 100);
+  const stopPct = Math.max(0.45, Math.min(1.8, Math.abs(distancePct) * 0.45));
+  const fallbackSl = side === 'LONG'
+    ? entryPrice * (1 - stopPct / 100)
+    : entryPrice * (1 + stopPct / 100);
+  const sl = nearestOpposite?.price ?? fallbackSl;
+  const rewardPct = Math.abs((tp - entryPrice) / entryPrice * 100);
+  const riskPct = Math.abs((entryPrice - sl) / entryPrice * 100);
+  const rr = riskPct > 0 ? rewardPct / riskPct : null;
+  const feasibleLeverage = Math.max(1, Math.min(10, Math.floor(10 / Math.max(stopPct, 0.5))));
+  const feasibilityScore = Math.round(clamp(
+    (rewardPct / 3) * 45
+    + (Math.min(rr ?? 0, 3) / 3) * 35
+    + (Math.min(Math.abs(distancePct), 6) / 6) * 20,
+    0,
+    100,
+  ));
+
+  return {
+    side,
+    sweepDirection,
+    entryPrice,
+    entryDistancePct: side === 'LONG' ? -entryOffsetPct : entryOffsetPct,
+    entryType: 'LIMIT_PULLBACK',
+    takeProfitPrice: tp,
+    stopLossPrice: sl,
+    targetPrice,
+    targetDistancePct: distancePct,
+    rewardPct,
+    riskPct,
+    rr,
+    feasibleLeverage,
+    feasibilityScore,
+    status: 'ENTER_NOW',
+    note: heavySide === 'above'
+      ? 'Thanh khoản trên dày: vào LONG theo hướng hút lên target.'
+      : 'Thanh khoản dưới dày: vào SHORT theo hướng kéo xuống target.',
+  };
+}
+
+async function mapConcurrent(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 } = {}) {
+  const snapshot = await getSharedSnapshot();
+  const candidates = snapshot
+    .filter((row) => row.quoteVolume >= minVolumeUsdt)
+    .sort((a, b) => b.quoteVolume - a.quoteVolume)
+    .slice(0, limit);
+
+  const rows = await mapConcurrent(candidates, 8, async (row) => {
+    try {
+      const klines = await klineCache.getKlines(row.symbol, interval, 500);
+      const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice });
+      const above = Number(heatmap.liquidityAbove ?? 0);
+      const below = Number(heatmap.liquidityBelow ?? 0);
+      const total = above + below;
+      const bias = Number(heatmap.bias ?? 0);
+      const heavySide = bias >= 0 ? 'above' : 'below';
+      const heavyLiquidity = heavySide === 'above' ? above : below;
+      const heavyPct = total > 0 ? heavyLiquidity / total * 100 : 0;
+      const target = heatmap.sweepTarget ?? (
+        heavySide === 'above'
+          ? (heatmap.heatmapAbove?.[0] ?? null)
+          : (heatmap.heatmapBelow?.[0] ?? null)
+      );
+      const targetDistancePct = target?.distancePct ?? null;
+      const sweepProb = liquidSweepProb(heatmap, target);
+      const isNearTarget = targetDistancePct != null && Math.abs(targetDistancePct) <= 0.35;
+      const entryPlan = buildLiquidEntryPlan({ heavySide, markPrice: row.markPrice, target, heatmap });
+
+      return {
+        symbol: row.symbol,
+        markPrice: row.markPrice,
+        quoteVolume: row.quoteVolume,
+        change24hPct: row.change24hPct,
+        fundingRate: row.fundingRate,
+        interval,
+        liquidityAbove: above,
+        liquidityBelow: below,
+        totalLiquidity: total,
+        bias,
+        heavySide,
+        heavyPct,
+        sweepProb,
+        sweepLabel: liquidSweepLabel(sweepProb),
+        sweepTarget: target ? {
+          direction: target.direction ?? heavySide,
+          price: target.price,
+          distancePct: target.distancePct,
+          score: target.score,
+        } : null,
+        entryPlan,
+        isNearTarget,
+        strongestAbove: (heatmap.strongestAbove ?? heatmap.heatmapAbove ?? []).slice(0, 3),
+        strongestBelow: (heatmap.strongestBelow ?? heatmap.heatmapBelow ?? []).slice(0, 3),
+      };
+    } catch (err) {
+      return {
+        symbol: row.symbol,
+        markPrice: row.markPrice,
+        quoteVolume: row.quoteVolume,
+        change24hPct: row.change24hPct,
+        interval,
+        error: err.message,
+      };
+    }
+  });
+
+  const successful = rows.filter((row) => !row.error);
+  successful.sort((a, b) => b.sweepProb - a.sweepProb || Math.abs(b.bias) - Math.abs(a.bias) || b.quoteVolume - a.quoteVolume);
+
+  return {
+    scannedAt: Date.now(),
+    interval,
+    requested: limit,
+    processed: successful.length,
+    failed: rows.length - successful.length,
+    rows: successful,
+    errors: rows.filter((row) => row.error).slice(0, 10),
+    cacheStats: klineCache.stats(interval),
+  };
+}
+
 async function _fetchMarketSnapshot() {
   const [symbols, tickers, premiumRows] = await Promise.all([
     getSymbols(),
@@ -2825,6 +3072,42 @@ async function writePaperStore(store) {
   return payload;
 }
 
+async function readLiquidPaperStore() {
+  try {
+    const text = await readFile(LIQUID_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(text);
+    return {
+      createdAt: parsed.createdAt ?? new Date().toISOString(),
+      updatedAt: parsed.updatedAt ?? null,
+      trades: Array.isArray(parsed.trades) ? parsed.trades : [],
+    };
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      // File chưa tồn tại — tạo mới
+      const fresh = { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
+      await writeLiquidPaperStore(fresh);
+      return fresh;
+    }
+    // File bị corrupt (JSON parse lỗi) — KHÔNG ghi đè, trả về rỗng tạm để tránh mất data
+    console.error('[LiquidPaper] ⚠️ Store parse error, serving empty to avoid overwrite:', e.message);
+    return { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
+  }
+}
+
+let _liquidPaperWriteLock = Promise.resolve();
+async function writeLiquidPaperStore(store) {
+  const payload = { ...store, updatedAt: new Date().toISOString() };
+  // Serialize writes + atomic tmp→rename để tránh race condition và corrupt khi crash
+  _liquidPaperWriteLock = _liquidPaperWriteLock.then(async () => {
+    await mkdir(join(rootDir, 'data'), { recursive: true });
+    const tmp = LIQUID_PAPER_FILE + '.tmp';
+    await writeFile(tmp, JSON.stringify(payload, null, 2));
+    await rename(tmp, LIQUID_PAPER_FILE);
+  });
+  await _liquidPaperWriteLock;
+  return payload;
+}
+
 async function getPaperMark(symbol) {
   // WS ticker liên tục cập nhật paperMarkCache → luôn dùng cache nếu có, không check tuổi
   const cached = paperMarkCache.get(symbol);
@@ -2846,11 +3129,19 @@ function enrichPaperTrade(trade, markPrice = null) {
   const isLivePaper = trade.status === 'OPEN' || trade.status === 'CLOSED';
   const pnl = isLivePaper ? (currentPrice - entry) * qty * sideMult : 0;
   const roe = isLivePaper && margin > 0 ? (pnl / margin) * 100 : 0;
+  const signalMark = Number(trade.signalMarkPrice ?? trade.openedSnapshot?.signalMarkPrice ?? 0);
+  const signalQty = signalMark > 0 ? (margin * Number(trade.leverage)) / signalMark : 0;
+  const signalPnl = signalMark > 0 ? (currentPrice - signalMark) * signalQty * sideMult : null;
+  const signalRoe = signalPnl != null && margin > 0 ? (signalPnl / margin) * 100 : null;
   return {
     ...trade,
     markPrice: currentPrice,
+    markSource: markPrice != null ? (paperMarkCache.get(trade.symbol)?.source ?? 'cache') : null,
+    markUpdatedAt: paperMarkCache.get(trade.symbol)?.at ?? null,
     pnl,
     roe,
+    signalPnl,
+    signalRoe,
     notionalUsdt: margin * Number(trade.leverage),
   };
 }
@@ -2917,12 +3208,94 @@ async function createPaperTrade(payload) {
     openedAt: ['PENDING', 'ENTRY_READY'].includes(payload.status) ? null : new Date().toISOString(),
     source: String(payload.source ?? 'manual').slice(0, 80),
     note,
+    takeProfitPrice: payload.takeProfitPrice ?? payload.tp ?? null,
+    stopLossPrice: payload.stopLossPrice ?? payload.sl ?? null,
+    signalType: payload.signalType ? String(payload.signalType).slice(0, 80) : null,
+    signalPoint: payload.signalPoint != null ? Number(payload.signalPoint) : null,
+    signalMarkPrice: payload.signalMarkPrice != null ? Number(payload.signalMarkPrice) : null,
+    sweepTargetPrice: payload.sweepTargetPrice != null ? Number(payload.sweepTargetPrice) : null,
+    sweepDistancePct: payload.sweepDistancePct != null ? Number(payload.sweepDistancePct) : null,
+    feasibleLeverage: payload.feasibleLeverage != null ? Number(payload.feasibleLeverage) : null,
+    feasibilityScore: payload.feasibilityScore != null ? Number(payload.feasibilityScore) : null,
+    rewardPct: payload.rewardPct != null ? Number(payload.rewardPct) : null,
+    riskPct: payload.riskPct != null ? Number(payload.riskPct) : null,
+    rr: payload.rr != null ? Number(payload.rr) : null,
+    heavySide: payload.heavySide ? String(payload.heavySide).slice(0, 20) : null,
+    entryPlan: payload.entryPlan && typeof payload.entryPlan === 'object' ? payload.entryPlan : null,
   };
 
   const store = await readPaperStore();
   store.trades.unshift(trade);
   await writePaperStore(store);
+  syncPaperTickerSymbols().catch(() => {});
+  const markPrice = await getPaperMark(symbol).catch(() => null);
+  if (markPrice && paperEntryTouched(trade, markPrice)) {
+    const filled = await fillPendingPaperTrade(trade, markPrice);
+    if (filled) return { trade: enrichPaperTrade(filled, markPrice) };
+  }
   return { trade: enrichPaperTrade(trade, entryPrice) };
+}
+
+async function getLiquidPaperTrades() {
+  const store = await readLiquidPaperStore();
+  const activeSymbols = [...new Set(store.trades.filter((t) => ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status)).map((t) => t.symbol))];
+  const marks = new Map();
+  await Promise.all(activeSymbols.map(async (symbol) => {
+    try { marks.set(symbol, await getPaperMark(symbol)); }
+    catch { /* keep stored price */ }
+  }));
+  const trades = store.trades
+    .map((t) => enrichPaperTrade(t, marks.get(t.symbol)))
+    .sort((a, b) => new Date(b.openedAt ?? b.entryReadyAt ?? b.createdAt ?? 0) - new Date(a.openedAt ?? a.entryReadyAt ?? a.createdAt ?? 0));
+  return { ...store, trades, summary: paperSummary(trades), file: 'data/liquid-paper-trades.json' };
+}
+
+async function createLiquidPaperTrade(payload) {
+  const symbol = normalizeSymbol(payload.symbol ?? '');
+  const side = String(payload.side ?? '').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 1)));
+  const note = String(payload.note ?? '').slice(0, 700);
+
+  if (!symbol) throw new Error('symbol is required.');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT.');
+  if (!Number.isFinite(marginUsdt) || marginUsdt <= 0) throw new Error('marginUsdt must be greater than 0.');
+  const entryPrice = payload.entryPrice ? Number(payload.entryPrice) : await getPaperMark(symbol);
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice must be greater than 0.');
+
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol,
+    side,
+    status: ['PENDING', 'ENTRY_READY'].includes(payload.status) ? payload.status : 'OPEN',
+    marginUsdt,
+    leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    createdAt: new Date().toISOString(),
+    openedAt: ['PENDING', 'ENTRY_READY'].includes(payload.status) ? null : new Date().toISOString(),
+    source: String(payload.source ?? 'liquid-scan').slice(0, 80),
+    note,
+    takeProfitPrice: payload.takeProfitPrice ?? payload.tp ?? null,
+    stopLossPrice: payload.stopLossPrice ?? payload.sl ?? null,
+    signalType: payload.signalType ? String(payload.signalType).slice(0, 80) : 'LIQUID_SCAN',
+    signalPoint: payload.signalPoint != null ? Number(payload.signalPoint) : null,
+    sweepTargetPrice: payload.sweepTargetPrice != null ? Number(payload.sweepTargetPrice) : null,
+    heavySide: payload.heavySide ? String(payload.heavySide).slice(0, 20) : null,
+    entryPlan: payload.entryPlan && typeof payload.entryPlan === 'object' ? payload.entryPlan : null,
+  };
+
+  const store = await readLiquidPaperStore();
+  store.trades.unshift(trade);
+  await writeLiquidPaperStore(store);
+  syncPaperTickerSymbols().catch(() => {});
+  scheduleLiquidPaperBroadcast(100);
+  const markPrice = await getPaperMark(symbol).catch(() => null);
+  if (markPrice && paperEntryTouched(trade, markPrice)) {
+    const filled = await fillPendingLiquidPaperTrade(trade, markPrice);
+    if (filled) return { trade: enrichPaperTrade(filled, markPrice), file: 'data/liquid-paper-trades.json' };
+  }
+  return { trade: enrichPaperTrade(trade, entryPrice), file: 'data/liquid-paper-trades.json' };
 }
 
 async function closePaperTrade(payload) {
@@ -3202,10 +3575,49 @@ async function fillPendingPaperTrade(trade, markPrice) {
     filledAt: new Date().toISOString(),
     fillPrice: Number(current.entryPrice),
     fillMarkPrice: markPrice,
+    openedSnapshot: {
+      markPrice,
+      entryPrice: Number(current.entryPrice),
+      signalPoint: current.signalPoint ?? null,
+      signalType: current.signalType ?? null,
+      signalMarkPrice: current.signalMarkPrice ?? null,
+      sweepTargetPrice: current.sweepTargetPrice ?? null,
+      heavySide: current.heavySide ?? null,
+    },
     note: updatePaperFillNote(current.note, markPrice),
   };
   await writePaperStore(store);
   console.log(`[PaperLiq] ✅ FILLED ${current.symbol} ${current.side} entry=${current.entryPrice} mark=${markPrice}`);
+  return store.trades[idx];
+}
+
+async function fillPendingLiquidPaperTrade(trade, markPrice) {
+  const store = await readLiquidPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+  if (idx < 0) return null;
+  const current = store.trades[idx];
+  if (!paperEntryTouched(current, markPrice)) return null;
+
+  store.trades[idx] = {
+    ...current,
+    status: 'OPEN',
+    openedAt: new Date().toISOString(),
+    filledAt: new Date().toISOString(),
+    fillPrice: Number(current.entryPrice),
+    fillMarkPrice: markPrice,
+    openedSnapshot: {
+      markPrice,
+      entryPrice: Number(current.entryPrice),
+      signalPoint: current.signalPoint ?? null,
+      signalType: current.signalType ?? null,
+      sweepTargetPrice: current.sweepTargetPrice ?? null,
+      heavySide: current.heavySide ?? null,
+    },
+    note: updatePaperFillNote(current.note, markPrice),
+  };
+  await writeLiquidPaperStore(store);
+  scheduleLiquidPaperBroadcast(100);
+  console.log(`[LiquidPaper] ✅ FILLED ${current.symbol} ${current.side} entry=${current.entryPrice} mark=${markPrice}`);
   return store.trades[idx];
 }
 
@@ -3223,6 +3635,47 @@ async function processPaperPendingFillsForSymbol(symbol, markPrice) {
   }
 }
 
+async function processLiquidPaperPendingFillsForSymbol(symbol, markPrice) {
+  if (liquidPaperFillLocks.has(symbol)) return;
+  liquidPaperFillLocks.add(symbol);
+  try {
+    const store = await readLiquidPaperStore();
+    let dirty = false;
+    for (let i = 0; i < store.trades.length; i++) {
+      const t = store.trades[i];
+      if (t.symbol !== symbol) continue;
+      if (t.status === 'PENDING' && paperEntryTouched(t, markPrice)) {
+        await fillPendingLiquidPaperTrade(t, markPrice);
+        continue;
+      }
+      if (t.status !== 'OPEN') continue;
+      const isLong = t.side === 'LONG';
+      const tp = Number(t.takeProfitPrice ?? 0);
+      const sl = Number(t.stopLossPrice ?? 0);
+      const tpHit = tp > 0 && (isLong ? markPrice >= tp : markPrice <= tp);
+      const slHit = sl > 0 && (isLong ? markPrice <= sl : markPrice >= sl);
+      if (!tpHit && !slHit) continue;
+      const outcome = tpHit ? 'TP' : 'SL';
+      store.trades[i] = {
+        ...t,
+        status: 'CLOSED',
+        exitPrice: markPrice,
+        closedAt: new Date().toISOString(),
+        outcome,
+        closeNote: `Auto-closed: ${outcome} hit @ ${markPrice}`,
+      };
+      dirty = true;
+      console.log(`[LiquidPaper] 🎯 ${outcome} hit ${symbol} ${t.side} exit=${markPrice} (${outcome === 'TP' ? 'tp' : 'sl'}=${outcome === 'TP' ? tp : sl})`);
+    }
+    if (dirty) {
+      await writeLiquidPaperStore(store);
+      scheduleLiquidPaperBroadcast(100);
+    }
+  } finally {
+    liquidPaperFillLocks.delete(symbol);
+  }
+}
+
 async function processAllPaperPendingFills() {
   const store = await readPaperStore();
   const pending = store.trades.filter((t) => t.status === 'PENDING');
@@ -3234,12 +3687,67 @@ async function processAllPaperPendingFills() {
 
 async function syncPaperTickerSymbols() {
   if (!paperTicker) return;
-  const store = await readPaperStore();
-  const symbols = [...new Set(store.trades
+  const [store, liquidStore] = await Promise.all([
+    readPaperStore(),
+    readLiquidPaperStore(),
+  ]);
+  const symbols = [...new Set([...store.trades, ...liquidStore.trades]
     .filter((t) => ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status))
     .map((t) => t.symbol)
     .filter(Boolean))];
   paperTicker.setSymbols(symbols);
+}
+
+async function pollLiquidPaperMarksOnce() {
+  const store = await readLiquidPaperStore();
+  const symbols = [...new Set(store.trades
+    .filter((t) => ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status))
+    .map((t) => t.symbol)
+    .filter(Boolean))];
+  if (symbols.length === 0) return;
+
+  const rows = await client.getPremiumIndex();
+  const bySymbol = new Map(rows.map((row) => [row.symbol, Number(row.markPrice)]));
+  for (const symbol of symbols) {
+    const markPrice = bySymbol.get(symbol);
+    if (!Number.isFinite(markPrice) || markPrice <= 0) continue;
+    paperMarkCache.set(symbol, { markPrice, at: Date.now(), source: 'rest' });
+    await processLiquidPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
+  }
+  scheduleLiquidPaperBroadcast(50);
+}
+
+let _liquidPaperRestBannedUntil = 0;
+
+function stopLiquidPaperRestPoller() {
+  if (liquidPaperRestPoller) { clearInterval(liquidPaperRestPoller); liquidPaperRestPoller = null; }
+}
+
+function startLiquidPaperRestPoller() {
+  if (liquidPaperRestPoller || process.env.LIQUID_PAPER_REST_POLL_ENABLED === 'false') return;
+  const intervalMs = Math.max(5000, Number(process.env.LIQUID_PAPER_REST_POLL_MS ?? 10000));
+  liquidPaperRestPoller = setInterval(() => {
+    if (Date.now() < _liquidPaperRestBannedUntil) return;
+    pollLiquidPaperMarksOnce().catch((err) => {
+      const msg = err.message ?? '';
+      const m = msg.match(/banned until (\d+)/);
+      if (m) {
+        const bannedUntil = Number(m[1]);
+        _liquidPaperRestBannedUntil = bannedUntil;
+        const waitSec = Math.ceil((bannedUntil - Date.now()) / 1000);
+        console.warn(`[LiquidPaper] ⛔ IP banned. REST poll suspended for ${Math.ceil(waitSec/60)}min (until ${new Date(bannedUntil).toISOString()}).`);
+        stopLiquidPaperRestPoller();
+        setTimeout(() => {
+          _liquidPaperRestBannedUntil = 0;
+          console.log('[LiquidPaper] 🔄 IP ban expired, resuming REST poll.');
+          startLiquidPaperRestPoller();
+        }, Math.max(waitSec * 1000, 60_000));
+      } else {
+        console.warn('[LiquidPaper] REST poll failed:', msg);
+      }
+    });
+  }, intervalMs);
+  console.log(`[LiquidPaper] REST mark fallback started (${intervalMs}ms).`);
 }
 
 // ── Atomic JSON write helper ──────────────────────────────────────────────────
@@ -4232,13 +4740,16 @@ function startPaperTradeTicker() {
   if (paperTicker) return;
   paperTicker = createMarkPriceTicker({
     onPrice: ({ symbol, markPrice }) => {
-      paperMarkCache.set(symbol, { markPrice, at: Date.now() });
+      paperMarkCache.set(symbol, { markPrice, at: Date.now(), source: 'ws' });
       processPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
+      processLiquidPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
+      scheduleLiquidPaperBroadcast();
     },
   });
   console.log('[PaperLiq] Mark ticker started for paper trades.');
   syncPaperTickerSymbols().catch(() => {});
   setInterval(() => syncPaperTickerSymbols().catch(() => {}), 10_000);
+  startLiquidPaperRestPoller();
 }
 
 async function callOpenAI(messages) {
@@ -6653,6 +7164,8 @@ async function sendStatic(pathname, response) {
               ? '/lsratio.html'
               : pathname === '/paper'
                 ? '/paper.html'
+                : pathname === '/liquid-scan'
+                  ? '/liquid-scan.html'
               : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);

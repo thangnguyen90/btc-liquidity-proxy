@@ -366,6 +366,65 @@ function connectPriceSocket() {
 
 // ── Paper trades ──────────────────────────────────────────────────────────────
 
+let diPaperSort = { key: 'status', dir: 'asc' };
+
+document.addEventListener('click', (e) => {
+  const th = e.target.closest('[data-di-sort]');
+  if (!th || !th.classList.contains('di-paper-sort')) return;
+  const key = th.dataset.diSort;
+  if (diPaperSort.key === key) {
+    diPaperSort.dir = diPaperSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    diPaperSort = { key, dir: key === 'status' ? 'asc' : 'desc' };
+  }
+  renderDiPaperTable();
+});
+
+function diPaperSortValue(t, key) {
+  if (key === 'symbol') return t.symbol ?? '';
+  if (key === 'side')   return t.side ?? '';
+  if (key === 'entry')  return Number(t.entryPrice);
+  if (key === 'sl')     return t.sl == null ? null : Number(t.sl);
+  if (key === 'tp')     return t.tp == null ? null : Number(t.tp);
+  if (key === 'mark')   return Number(t.markPrice ?? t.exitPrice);
+  if (key === 'pnl')    return t.pnl == null ? null : Number(t.pnl);
+  if (key === 'roe')    return t.roe == null ? null : Number(t.roe);
+  if (key === 'source') return t.source ?? '';
+  if (key === 'time')   return Date.parse(t.createdAt ?? '') || 0;
+  if (key === 'status') {
+    const order = { OPEN: 0, PENDING: 1, CLOSED: 2 };
+    return order[t.status] ?? 9;
+  }
+  return '';
+}
+
+function compareDiValues(a, b, dir) {
+  const aMiss = a == null || (typeof a === 'number' && isNaN(a));
+  const bMiss = b == null || (typeof b === 'number' && isNaN(b));
+  if (aMiss && bMiss) return 0;
+  if (aMiss) return 1;
+  if (bMiss) return -1;
+  const r = typeof a === 'string' ? String(a).localeCompare(String(b), 'en') : a - b;
+  return dir === 'asc' ? r : -r;
+}
+
+function sortDiPaperTrades(trades) {
+  const { key, dir } = diPaperSort;
+  return trades.slice().sort((a, b) => {
+    const r = compareDiValues(diPaperSortValue(a, key), diPaperSortValue(b, key), dir);
+    return r !== 0 ? r : compareDiValues(diPaperSortValue(a, 'time'), diPaperSortValue(b, 'time'), 'desc');
+  });
+}
+
+function updateDiSortHeaders() {
+  document.querySelectorAll('[data-di-sort]').forEach((th) => {
+    const active = th.dataset.diSort === diPaperSort.key;
+    th.classList.toggle('active', active);
+    const mark = th.querySelector('.sort-mark');
+    if (mark) mark.textContent = active ? (diPaperSort.dir === 'asc' ? '^' : 'v') : '';
+  });
+}
+
 function fmtPnl(pnl, roe) {
   if (pnl == null) return '-';
   const sign = pnl >= 0 ? '+' : '';
@@ -380,7 +439,7 @@ function renderDiPaperTable() {
 
   const trades = diPaperTrades;
   const summary = diPaperSummaryCache;
-  const open   = trades.filter((t) => t.status === 'OPEN' || t.status === 'PENDING');
+  const open   = trades.filter((t) => t.status !== 'CLOSED');
   const closed = trades.filter((t) => t.status === 'CLOSED');
 
   let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
@@ -393,10 +452,12 @@ function renderDiPaperTable() {
 
   if (!trades.length) {
     tbody.innerHTML = '<tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ dump ignition signals.</td></tr>';
+    updateDiSortHeaders();
     return;
   }
 
-  tbody.innerHTML = trades.map((t) => {
+  const sorted = sortDiPaperTrades([...open, ...closed]);
+  tbody.innerHTML = sorted.map((t) => {
     const isShort  = t.side === 'SHORT';
     const sideHtml = isShort
       ? `<span style="color:var(--red);font-weight:700">SHORT</span>`
@@ -430,6 +491,7 @@ function renderDiPaperTable() {
       <td>${actionBtns}</td>
     </tr>`;
   }).join('');
+  updateDiSortHeaders();
 }
 
 let _diPaperFetching = false;

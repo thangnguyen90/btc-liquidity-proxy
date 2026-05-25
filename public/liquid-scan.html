@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Liquid Sweep Scanner</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell wide-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Liquidation Heatmap · Top 100</p>
+          <h1>Liquid Sweep Scanner</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Detail Dashboard</a>
+          <a class="nav-link" href="/pump">Pump</a>
+          <a class="nav-link" href="/cap">Capitulation</a>
+          <a class="nav-link" href="/edge-short">Short Edge</a>
+          <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
+          <a class="nav-link" href="/highvol">High Vol</a>
+          <a class="nav-link" href="/lsratio">L/S Ratio</a>
+          <a class="nav-link" href="/paper">Paper</a>
+          <a class="nav-link" href="/orders">Orders</a>
+          <div class="status" id="scanStatus">Ready</div>
+        </div>
+      </section>
+
+      <section class="controls signal-controls">
+        <label class="field search-field">
+          <span>Search</span>
+          <input id="searchInput" placeholder="BTC, ETH, GENIUS..." autocomplete="off">
+          <button id="searchClear" class="search-clear" type="button" style="display:none">✕</button>
+        </label>
+        <label class="field short">
+          <span>Interval</span>
+          <select id="intervalInput">
+            <option value="5m">5m</option>
+            <option value="15m" selected>15m</option>
+            <option value="30m">30m</option>
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Symbols</span>
+          <select id="limitInput">
+            <option value="30">30</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200" selected>200</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Side</span>
+          <select id="sideFilter">
+            <option value="all">All</option>
+            <option value="above">Trên dày</option>
+            <option value="below">Dưới dày</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Min Prob</span>
+          <select id="probFilter">
+            <option value="0">All</option>
+            <option value="55">55%+</option>
+            <option value="70">70%+</option>
+            <option value="80" selected>80%+</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Sort</span>
+          <select id="sortInput">
+            <option value="sweepProb" selected>Sweep Prob</option>
+            <option value="bias">Bias</option>
+            <option value="heavyPct">Heavy %</option>
+            <option value="distance">Target Near</option>
+            <option value="quoteVolume">Volume</option>
+          </select>
+        </label>
+        <label class="field short">
+          <span>Margin</span>
+          <input id="marginInput" type="number" min="0.5" step="0.5" value="1">
+        </label>
+        <label class="field short">
+          <span>Lev</span>
+          <input id="leverageInput" type="number" min="1" max="125" step="1" value="10">
+        </label>
+        <button id="refreshButton" class="primary" type="button">Scan</button>
+        <div class="socket-note">
+          <strong id="visibleCount">0</strong>
+          <span>symbols · top 200 · cache 30s</span>
+        </div>
+      </section>
+
+      <section class="summary-grid liquid-summary">
+        <div class="metric">
+          <span>Processed</span>
+          <strong id="processedMetric">-</strong>
+          <small id="timeMetric">-</small>
+        </div>
+        <div class="metric">
+          <span>High Prob</span>
+          <strong id="highProbMetric">-</strong>
+          <small>prob >= 80%, đã tính cả khoảng cách target</small>
+        </div>
+        <div class="metric">
+          <span>Trên Dày</span>
+          <strong id="aboveMetric">-</strong>
+          <small>hút lên quét short</small>
+        </div>
+        <div class="metric">
+          <span>Dưới Dày</span>
+          <strong id="belowMetric">-</strong>
+          <small>kéo xuống quét long</small>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="table-wrap">
+          <table class="signal-table liquid-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Mark</th>
+                <th>24h</th>
+                <th>Heavy Side</th>
+                <th>Sweep Prob</th>
+                <th>Target</th>
+                <th>Hướng quét</th>
+                <th>Entry dự đoán</th>
+                <th>Sau quét</th>
+                <th>Above Liq</th>
+                <th>Below Liq</th>
+                <th>Bias</th>
+                <th>Zones Trên</th>
+                <th>Zones Dưới</th>
+                <th>Ý nghĩa</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="scanBody">
+              <tr><td colspan="16" class="table-empty">Bấm Scan để tải dữ liệu.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Auto Paper Test</h2>
+            <span>Tự tạo paper trade cho tín hiệu liquidation có point cao hơn ngưỡng. <strong id="liquidPaperLiveStatus">Live: connecting...</strong></span>
+          </div>
+          <div class="liquid-auto-controls">
+            <label class="toggle">
+              <input id="autoPaperEnabledInput" type="checkbox" checked>
+              <span>Auto</span>
+            </label>
+            <label class="field short">
+              <span>Min Point</span>
+              <input id="autoPaperPointInput" type="number" min="1" max="99" step="1" value="75">
+            </label>
+            <button id="autoPaperButton" class="primary" type="button">Run now</button>
+          </div>
+        </div>
+
+        <div id="liquidPaperStats" class="lp-stats" style="display:none"></div>
+
+        <div class="table-wrap">
+          <table class="signal-table liquid-paper-table">
+            <thead>
+              <tr>
+                <th class="liquid-paper-sort" data-paper-sort="symbol">Symbol <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="side">Side <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="status">Status <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="toEntry">To Entry <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="sweepDistance">Sweep Dist <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="feasibleLeverage">Lev khả thi <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="margin">Margin <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="pnl">P&amp;L <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="roe">ROE <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="signalRoe">Signal ROE <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="note">Note <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort active" data-paper-sort="opened">Opened <span class="sort-mark">v</span></th>
+              </tr>
+            </thead>
+            <tbody id="openPaperBody">
+              <tr><td colspan="14" class="table-empty">Chưa có paper test từ Liquid Scan.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="lp-closed-head">
+          <h3>Closed Trades</h3>
+          <span id="closedPaperCount" style="font-size:12px;color:var(--muted)">0 closed</span>
+        </div>
+        <div class="table-wrap">
+          <table class="signal-table liquid-paper-table">
+            <thead>
+              <tr>
+                <th class="liquid-paper-sort" data-paper-sort="symbol">Symbol <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="side">Side <span class="sort-mark"></span></th>
+                <th>Outcome</th>
+                <th class="liquid-paper-sort" data-paper-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th>Exit</th>
+                <th class="liquid-paper-sort" data-paper-sort="margin">Margin <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="pnl">P&amp;L <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="roe">ROE <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="signalRoe">Signal ROE <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="note">Note <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="opened">Opened <span class="sort-mark"></span></th>
+                <th>Closed</th>
+              </tr>
+            </thead>
+            <tbody id="closedPaperBody">
+              <tr><td colspan="12" class="table-empty">Chưa có closed trade.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <pre id="actionResult" class="paper-result" style="display:none"></pre>
+    </main>
+    <script src="/liquid-scan.js" type="module"></script>
+  </body>
+</html>
