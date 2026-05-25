@@ -20202,7 +20202,11 @@
     "placedAt": 1779660324671,
     "fillPrice": 0.06063,
     "filledAt": 1779660336768,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.58233,
+    "roe": -29.12,
+    "closedAt": 1779689350099
   },
   {
     "orderId": 831532812,
@@ -20257,7 +20261,11 @@
     "placedAt": 1779660324884,
     "fillPrice": 0.06517,
     "filledAt": 1779660324546,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.60429,
+    "roe": -30.21,
+    "closedAt": 1779684605099
   },
   {
     "orderId": 1873209045,
@@ -20312,7 +20320,11 @@
     "placedAt": 1779660324915,
     "fillPrice": 0.01421,
     "filledAt": 1779660341686,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.60501,
+    "roe": -30.25,
+    "closedAt": 1779691091086
   },
   {
     "orderId": 4454204405,
@@ -20329,7 +20341,11 @@
     "placedAt": 1779660324968,
     "fillPrice": 0.1003,
     "filledAt": 1779660324603,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.001997,
+    "roe": -0.1,
+    "closedAt": 1779688327169
   },
   {
     "orderId": 2003911347,
@@ -20363,7 +20379,11 @@
     "placedAt": 1779660324733,
     "fillPrice": 0.009762,
     "filledAt": 1779660562053,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.60416,
+    "roe": -30.21,
+    "closedAt": 1779689862089
   },
   {
     "orderId": 764526943,
@@ -20519,7 +20539,11 @@
     "placedAt": 1779677796327,
     "fillPrice": 0.018965,
     "filledAt": 1779677812732,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.061755,
+    "roe": 1.24,
+    "closedAt": 1779679227068
   },
   {
     "orderId": 265402780,
@@ -20536,7 +20560,11 @@
     "placedAt": 1779677802210,
     "fillPrice": 0.05943,
     "filledAt": 1779677801872,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -2.18554,
+    "roe": -43.71,
+    "closedAt": 1779688133093
   },
   {
     "orderId": 1101036691,
@@ -20553,7 +20581,11 @@
     "placedAt": 1779677818766,
     "fillPrice": 0.0189396,
     "filledAt": 1779677818591,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.061755,
+    "roe": 3.09,
+    "closedAt": 1779679227068
   },
   {
     "orderId": 90628570726,
@@ -20570,7 +20602,11 @@
     "placedAt": 1779677818942,
     "fillPrice": 657.37,
     "filledAt": 1779677818727,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.0759,
+    "roe": 3.79,
+    "closedAt": 1779684681743
   },
   {
     "orderId": 5457892721,
@@ -20587,7 +20623,11 @@
     "placedAt": 1779677818943,
     "fillPrice": 0.0414,
     "filledAt": 1779677818727,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.0482,
+    "roe": 2.41,
+    "closedAt": 1779681534711
   },
   {
     "orderId": 4626070458,
@@ -20604,7 +20644,11 @@
     "placedAt": 1779677818943,
     "fillPrice": 0.03368,
     "filledAt": 1779677818732,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.07104,
+    "roe": 3.55,
+    "closedAt": 1779681522612
   },
   {
     "orderId": 265404305,
@@ -20621,7 +20665,11 @@
     "placedAt": 1779677818998,
     "fillPrice": 0.05952,
     "filledAt": 1779677820539,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -2.18554,
+    "roe": -109.28,
+    "closedAt": 1779688133093
   },
   {
     "orderId": 1223467639,
@@ -20638,7 +20686,11 @@
     "placedAt": 1779677818943,
     "fillPrice": 0.03977,
     "filledAt": 1779678031132,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.13052,
+    "roe": 6.53,
+    "closedAt": 1779678919588
   },
   {
     "orderId": 1793876506,
@@ -20655,7 +20707,11 @@
     "placedAt": 1779677818980,
     "fillPrice": 0.017601,
     "filledAt": 1779678106242,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.059099,
+    "roe": 2.95,
+    "closedAt": 1779681528690
   },
   {
     "orderId": 2892331458,
@@ -20672,7 +20728,11 @@
     "placedAt": 1779678058667,
     "fillPrice": 0.3532,
     "filledAt": 1779678084942,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 1.7085,
+    "roe": 85.42,
+    "closedAt": 1779686957771
   },
   {
     "orderId": 1420180925,
@@ -20689,7 +20749,11 @@
     "placedAt": 1779678178602,
     "fillPrice": 0.01616,
     "filledAt": 1779678178399,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.28451,
+    "roe": 14.23,
+    "closedAt": 1779680300095
   },
   {
     "orderId": 5685564988,
@@ -20706,7 +20770,11 @@
     "placedAt": 1779678178657,
     "fillPrice": 0.13384,
     "filledAt": 1779678178385,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.08288,
+    "roe": 4.14,
+    "closedAt": 1779684678716
   },
   {
     "orderId": 1497702044,
@@ -20723,7 +20791,11 @@
     "placedAt": 1779678298639,
     "fillPrice": 0.0347,
     "filledAt": 1779678298388,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.02069,
+    "roe": -1.03,
+    "closedAt": 1779694465335
   },
   {
     "orderId": 2698095199,
@@ -20774,7 +20846,11 @@
     "placedAt": 1779678759046,
     "fillPrice": 0.04182,
     "filledAt": 1779678758772,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.08928,
+    "roe": 4.46,
+    "closedAt": 1779681519823
   },
   {
     "orderId": 572554489,
@@ -20791,7 +20867,11 @@
     "placedAt": 1779678759126,
     "fillPrice": 0.06047,
     "filledAt": 1779678758880,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.5709,
+    "roe": -28.54,
+    "closedAt": 1779679412095
   },
   {
     "orderId": 265474419,
@@ -20808,7 +20888,11 @@
     "placedAt": 1779678759137,
     "fillPrice": 0.06046,
     "filledAt": 1779678758878,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -2.18554,
+    "roe": -109.28,
+    "closedAt": 1779688133093
   },
   {
     "orderId": 2892339444,
@@ -20825,6 +20909,264 @@
     "placedAt": 1779678759140,
     "fillPrice": 0.353,
     "filledAt": 1779678758882,
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 1.7085,
+    "roe": 85.42,
+    "closedAt": 1779686957771
+  },
+  {
+    "orderId": 1991994901,
+    "symbol": "STOUSDT",
+    "side": "BUY",
+    "entry": 0.06706,
+    "qty": 298,
+    "margin": 2,
+    "score": 76,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.06505,
+    "tp": 0.06759596,
+    "placedAt": 1779678178609,
+    "fillPrice": 0.06706,
+    "filledAt": 1779679947091,
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.10931,
+    "roe": -5.47,
+    "closedAt": 1779681799941
+  },
+  {
+    "orderId": 2323342861,
+    "symbol": "HUMAUSDT",
+    "side": "BUY",
+    "entry": 0.025515,
+    "qty": 783,
+    "margin": 2,
+    "score": 78,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.02475,
+    "tp": 0.02601265,
+    "placedAt": 1779678298639,
+    "fillPrice": 0.025515,
+    "filledAt": 1779679907010,
+    "status": "FILLED"
+  },
+  {
+    "orderId": 1703819131,
+    "symbol": "币安人生USDT",
+    "side": "SELL",
+    "entry": 0.43675,
+    "qty": 45,
+    "margin": 2,
+    "score": 91,
+    "type": "dump",
+    "slPlaced": true,
+    "slPrice": 0.44985,
+    "tp": 0.4277333,
+    "placedAt": 1779678759008,
+    "status": "CANCELED",
+    "outcome": "CANCELED",
+    "canceledAt": 1779695727143
+  },
+  {
+    "orderId": 1453448329,
+    "symbol": "PHAUSDT",
+    "side": "SELL",
+    "entry": 0.03654,
+    "qty": 547,
+    "margin": 2,
+    "score": 88,
+    "type": "dump",
+    "slPlaced": true,
+    "slPrice": 0.03764,
+    "tp": 0.03577837,
+    "placedAt": 1779678759029,
+    "fillPrice": 0.03654,
+    "filledAt": 1779679038473,
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.10377,
+    "roe": -5.19,
+    "closedAt": 1779680729153
+  },
+  {
+    "orderId": 4558357138,
+    "symbol": "HIGHUSDT",
+    "side": "SELL",
+    "entry": 0.1666,
+    "qty": 120,
+    "margin": 2,
+    "score": 79,
+    "type": "dump",
+    "slPlaced": true,
+    "slPrice": 0.1716,
+    "tp": 0.16395501,
+    "placedAt": 1779678759125,
+    "status": "CANCELED",
+    "outcome": "CANCELED",
+    "canceledAt": 1779695728218
+  },
+  {
+    "orderId": 1420194790,
+    "symbol": "BABYUSDT",
+    "side": "BUY",
+    "entry": 0.01617,
+    "qty": 1236,
+    "margin": 2,
+    "score": 76,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.01568,
+    "tp": 0.01641388,
+    "placedAt": 1779678759126,
+    "status": "CANCELED",
+    "outcome": "CANCELED",
+    "canceledAt": 1779695728636
+  },
+  {
+    "orderId": 3425584150,
+    "symbol": "EDUUSDT",
+    "side": "SELL",
+    "entry": 0.04737,
+    "qty": 422,
+    "margin": 2,
+    "score": 71,
+    "type": "dump",
+    "slPlaced": true,
+    "slPrice": 0.04879,
+    "tp": 0.04635514,
+    "placedAt": 1779678759126,
+    "fillPrice": 0.04737,
+    "filledAt": 1779678921045,
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.01266,
+    "roe": 0.63,
+    "closedAt": 1779685594458
+  },
+  {
+    "orderId": 1057409273,
+    "symbol": "PLAYUSDT",
+    "side": "BUY",
+    "entry": 0.06719,
+    "qty": 297,
+    "margin": 2,
+    "score": 83,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.06517,
+    "tp": 0.07065113,
+    "placedAt": 1779678759131,
+    "fillPrice": 0.06719,
+    "filledAt": 1779678883152,
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -1.32071,
+    "roe": -66.04,
+    "closedAt": 1779696009069
+  },
+  {
+    "orderId": 17725168880,
+    "symbol": "TIAUSDT",
+    "side": "BUY",
+    "entry": 0.4331,
+    "qty": 46,
+    "margin": 2,
+    "score": 89,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.4201,
+    "tp": 0.44072482,
+    "placedAt": 1779696030318,
+    "fillPrice": 0.4331,
+    "filledAt": 1779696035892,
+    "status": "FILLED"
+  },
+  {
+    "orderId": 9019514069,
+    "symbol": "1000LUNCUSDT",
+    "side": "BUY",
+    "entry": 0.08311,
+    "qty": 240,
+    "margin": 2,
+    "score": 89,
+    "type": "pump_breakout",
+    "slPlaced": true,
+    "slPrice": 0.08062,
+    "tp": 0.08446053,
+    "placedAt": 1779696030335,
+    "fillPrice": 0.0830997,
+    "filledAt": 1779696030078,
+    "status": "FILLED"
+  },
+  {
+    "orderId": 12252246916,
+    "symbol": "LDOUSDT",
+    "side": "BUY",
+    "entry": 0.3464,
+    "qty": 57,
+    "margin": 2,
+    "score": 84,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.336,
+    "tp": 0.34930998,
+    "placedAt": 1779696030428,
+    "fillPrice": 0.3464,
+    "filledAt": 1779696062492,
+    "status": "FILLED"
+  },
+  {
+    "orderId": 8156366014,
+    "symbol": "JTOUSDT",
+    "side": "BUY",
+    "entry": 0.5099,
+    "qty": 39,
+    "margin": 2,
+    "score": 86,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.4946,
+    "tp": 0.5184988,
+    "placedAt": 1779696030433,
+    "fillPrice": 0.5099,
+    "filledAt": 1779696061763,
+    "status": "FILLED"
+  },
+  {
+    "orderId": 3133657266,
+    "symbol": "QNTUSDT",
+    "side": "BUY",
+    "entry": 81.2,
+    "qty": 0.2,
+    "margin": 2,
+    "score": 75,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 78.76,
+    "tp": 82.15918562,
+    "placedAt": 1779696030433,
+    "fillPrice": 80.93,
+    "filledAt": 1779696030174,
+    "status": "FILLED"
+  },
+  {
+    "orderId": 1161601753,
+    "symbol": "NILUSDT",
+    "side": "BUY",
+    "entry": 0.07819,
+    "qty": 255.7,
+    "margin": 2,
+    "score": 81,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.07584,
+    "tp": 0.08207053,
+    "placedAt": 1779696508691,
+    "fillPrice": 0.07819,
+    "filledAt": 1779696528878,
     "status": "FILLED"
   }
 ]

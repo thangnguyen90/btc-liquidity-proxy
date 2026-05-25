@@ -229,27 +229,27 @@
   },
   "2026-05-25": {
     "date": "2026-05-25",
-    "orders": 32,
-    "wins": 3,
-    "losses": 5,
+    "orders": 58,
+    "wins": 16,
+    "losses": 18,
     "manualClose": 24,
     "canceled": 0,
-    "totalPnl": -2.1651,
-    "totalRoe": -108.25,
-    "winRate": 9.4,
-    "avgPnl": -0.0677,
+    "totalPnl": -8.8501,
+    "totalRoe": -378.82,
+    "winRate": 27.6,
+    "avgPnl": -0.1526,
     "byType": {
       "dump": {
-        "orders": 9,
-        "wins": 1,
-        "losses": 2,
-        "totalPnl": -0.8382
+        "orders": 15,
+        "wins": 4,
+        "losses": 5,
+        "totalPnl": -5.1767
       },
       "early_dump": {
-        "orders": 19,
+        "orders": 24,
         "wins": 0,
-        "losses": 2,
-        "totalPnl": -1.1638
+        "losses": 7,
+        "totalPnl": -3.5616
       },
       "early_pump": {
         "orders": 1,
@@ -270,10 +270,10 @@
         "totalPnl": 0.3352
       },
       "ema_pullback": {
-        "orders": 1,
-        "wins": 1,
-        "losses": 0,
-        "totalPnl": 0.1047
+        "orders": 16,
+        "wins": 11,
+        "losses": 5,
+        "totalPnl": 0.156
       }
     }
   }
