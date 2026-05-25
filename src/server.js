@@ -163,6 +163,8 @@ async function schedulePumpScan() {
 const capPaperAutoFired  = new Map(); // `${symbol}|${type}` → firedAt timestamp
 const pumpPaperAutoFired = new Map(); // `${symbol}|${type}` → firedAt timestamp
 // Edge paper auto-fire: key = `${source}|${symbol}|${type}` để phân biệt cross-scanner
+const diPaperAutoFired   = new Map(); // `${symbol}|${type}` -> firedAt timestamp
+const piPaperAutoFired   = new Map(); // `${symbol}|${type}` -> firedAt timestamp
 const edgePaperAutoFired = new Map();
 
 let _capScanDebounce = null;
@@ -277,6 +279,33 @@ async function scheduleKillShortScan() {
 }
 
 let _dumpIgnitionScanDebounce = null;
+
+async function autoCreateDiPaperTrades(signals) {
+  for (const sig of signals) {
+    if (sig.score < 60) continue;
+    const key = `${sig.symbol}|${sig.type}`;
+    const last = diPaperAutoFired.get(key) ?? 0;
+    if (Date.now() - last < 4 * 3600 * 1000) continue;
+    try {
+      await createDiPaperTrade({
+        symbol: sig.symbol,
+        side: 'SHORT',
+        marginUsdt: 1,
+        leverage: 10,
+        entryPrice: sig.entry,
+        tp: sig.tp ?? null,
+        sl: sig.sl ?? null,
+        source: `di-${sig.score}`,
+        note: sig.note ?? '',
+      });
+      diPaperAutoFired.set(key, Date.now());
+    } catch (e) {
+      console.warn(`[DiPaper] auto create ${sig.symbol}:`, e.message);
+    }
+  }
+  await syncDiPaperTicker();
+}
+
 async function scheduleDumpIgnitionScan() {
   clearTimeout(_dumpIgnitionScanDebounce);
   _dumpIgnitionScanDebounce = setTimeout(async () => {
@@ -294,6 +323,7 @@ async function scheduleDumpIgnitionScan() {
       dumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
       pushSse(dumpIgnitionSseClients, result);
       if (signals.length) console.log(`[DumpIgnition] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.type} ${s.score})`).join(', ')}`);
+      await autoCreateDiPaperTrades(signals);
 
       // Edge paper auto-fire: dump_ignition signals chỉ xuất hiện trên edge-short
       for (const sig of signals) {
@@ -438,6 +468,33 @@ async function scheduleSpikeReversalScan() {
 }
 
 let _pumpIgnitionDebounce = null;
+
+async function autoCreatePiPaperTrades(signals) {
+  for (const sig of signals) {
+    if (sig.score < 60) continue;
+    const key = `${sig.symbol}|${sig.type}`;
+    const last = piPaperAutoFired.get(key) ?? 0;
+    if (Date.now() - last < 4 * 3600 * 1000) continue;
+    try {
+      await createPiPaperTrade({
+        symbol: sig.symbol,
+        side: 'LONG',
+        marginUsdt: 1,
+        leverage: 10,
+        entryPrice: sig.entry,
+        tp: sig.tp ?? null,
+        sl: sig.sl ?? null,
+        source: `pi-${sig.score}`,
+        note: sig.note ?? '',
+      });
+      piPaperAutoFired.set(key, Date.now());
+    } catch (e) {
+      console.warn(`[PiPaper] auto create ${sig.symbol}:`, e.message);
+    }
+  }
+  await syncPiPaperTicker();
+}
+
 async function schedulePumpIgnitionScan() {
   clearTimeout(_pumpIgnitionDebounce);
   _pumpIgnitionDebounce = setTimeout(async () => {
@@ -456,6 +513,7 @@ async function schedulePumpIgnitionScan() {
       pumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
       pushSse(pumpIgnitionSseClients, result);
       if (signals.length) console.log(`[PumpIgnition] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.type} ${s.score})`).join(', ')}`);
+      await autoCreatePiPaperTrades(signals);
 
       // Edge paper auto-fire: pump_ignition LONG signals
       for (const sig of signals) {
@@ -1182,6 +1240,7 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/dump-ignition-signals') {
       if (dumpIgnitionScanCache.data && Date.now() < dumpIgnitionScanCache.expiresAt) {
+        await autoCreateDiPaperTrades(dumpIgnitionScanCache.data.signals ?? []);
         return sendJson(response, dumpIgnitionScanCache.data);
       }
       const snapshot = await getSharedSnapshot();
@@ -1198,6 +1257,7 @@ const server = createServer(async (request, response) => {
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       dumpIgnitionScanCache.data = result;
       dumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
+      await autoCreateDiPaperTrades(signals);
       return sendJson(response, result);
     }
 
@@ -1262,6 +1322,7 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/pump-ignition-signals') {
       if (pumpIgnitionScanCache.data && Date.now() < pumpIgnitionScanCache.expiresAt) {
+        await autoCreatePiPaperTrades(pumpIgnitionScanCache.data.signals ?? []);
         return sendJson(response, pumpIgnitionScanCache.data);
       }
       const snapshot = await getSharedSnapshot();
@@ -1279,6 +1340,7 @@ const server = createServer(async (request, response) => {
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       pumpIgnitionScanCache.data = result;
       pumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
+      await autoCreatePiPaperTrades(signals);
       return sendJson(response, result);
     }
 
@@ -1994,12 +2056,12 @@ server.listen(port, '127.0.0.1', () => {
   setTimeout(() => {
     startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: brgIntervalMs, getPositionData: getSharedPositionData });
   }, 12000);
-  // Proactive orders refresh — chủ động làm mới orders trước khi scanner cần,
+  // Proactive position store refresh — chủ động làm mới trước khi scanner cần,
   // tránh scanner là người trigger REST call. Bắt đầu sau 55s (sau khi tất cả đã warm-up).
   setTimeout(() => {
     setInterval(async () => {
-      if (_ordersStoreInflight) return;
-      _ordersStore.fetchedAt = 0; // invalidate để force fresh fetch
+      if (_posStoreInflight) return;
+      _posStore.fetchedAt = 0; // invalidate để force fresh fetch
       getSharedPositionData().catch(() => {});
     }, POS_STORE_TTL_MS);
   }, 55_000);
@@ -4839,54 +4901,44 @@ async function getPositions(token = null) {
 }
 
 // ── Shared position data store ─────────────────────────────────────────────
-// Positions: từ positionMonitor.posCache (WebSocket-driven, 0 REST call).
-// Orders:    REST fetch openOrders + algoOrders mỗi 20s, tất cả scanners dùng chung.
-let _ordersStore = { openOrders: [], algoOrders: [], fetchedAt: 0 };
-let _ordersStoreInflight = null;
-const POS_STORE_TTL_MS = 20_000; // 20s
+// Gom positions + openOrders + algoOrders vào 1 cache TTL 30s.
+// Tất cả scanners dùng chung — tối đa 1 REST burst per TTL window.
+let _posStore = { positions: [], openOrders: [], algoOrders: [], fetchedAt: 0 };
+let _posStoreInflight = null;
+const POS_STORE_TTL_MS = 30_000; // 30s — đủ để tránh IP ban, scanners cách nhau 30-41s
 
 async function getSharedPositionData() {
-  // Positions luôn đến từ posMonitor.posCache (real-time WS, không tốn REST weight)
-  const positions = posMonitor ? posMonitor.getActivePositions() : [];
-
-  // Orders: TTL cache, tối đa 1 REST burst per 20s
-  if (Date.now() - _ordersStore.fetchedAt >= POS_STORE_TTL_MS) {
-    if (!_ordersStoreInflight) {
-      let creds;
-      try { creds = getApiCredentials(null); } catch { /* no creds yet */ }
-      if (creds) {
-        const { apiKey, apiSecret } = creds;
-        _ordersStoreInflight = (async () => {
-          try {
-            const [openOrders, algoResult] = await Promise.all([
-              client.getOpenOrders({ apiKey, apiSecret }),
-              client.getOpenAlgoOrders({ apiKey, apiSecret }).catch(() => ({ orders: [] })),
-            ]);
-            const algoOrders = Array.isArray(algoResult?.orders) ? algoResult.orders
-              : Array.isArray(algoResult) ? algoResult : [];
-            _ordersStore = {
-              openOrders: Array.isArray(openOrders) ? openOrders : [],
-              algoOrders,
-              fetchedAt: Date.now(),
-            };
-            _openOrdersCache = _ordersStore.openOrders;
-            _openOrdersCacheAt = _ordersStore.fetchedAt;
-          } catch (err) {
-            if (!err.message?.includes('Missing Binance API')) console.error('[PosStore] orders fetch error:', err.message);
-          }
-          return _ordersStore;
-        })();
-        try { await _ordersStoreInflight; } finally { _ordersStoreInflight = null; }
-      }
-    } else {
-      await _ordersStoreInflight;
+  if (Date.now() - _posStore.fetchedAt < POS_STORE_TTL_MS) return _posStore;
+  if (_posStoreInflight) return _posStoreInflight;
+  let creds;
+  try { creds = getApiCredentials(null); } catch { return _posStore; }
+  const { apiKey, apiSecret } = creds;
+  _posStoreInflight = (async () => {
+    try {
+      const [positions, openOrders, algoResult] = await Promise.all([
+        client.getPositions({ apiKey, apiSecret }),
+        client.getOpenOrders({ apiKey, apiSecret }),
+        client.getOpenAlgoOrders({ apiKey, apiSecret }).catch(() => ({ orders: [] })),
+      ]);
+      const algoOrders = Array.isArray(algoResult?.orders) ? algoResult.orders
+        : Array.isArray(algoResult) ? algoResult : [];
+      _posStore = {
+        positions: positions.filter((p) => Number(p.positionAmt) !== 0),
+        openOrders: Array.isArray(openOrders) ? openOrders : [],
+        algoOrders,
+        fetchedAt: Date.now(),
+      };
+      _openOrdersCache = _posStore.openOrders;
+      _openOrdersCacheAt = _posStore.fetchedAt;
+    } catch (err) {
+      if (!err.message?.includes('Missing Binance API')) console.error('[PosStore] fetch error:', err.message);
     }
-  }
-
-  return { positions, openOrders: _ordersStore.openOrders, algoOrders: _ordersStore.algoOrders };
+    return _posStore;
+  })();
+  try { return await _posStoreInflight; } finally { _posStoreInflight = null; }
 }
 
-function invalidatePosStore() { _ordersStore = { ..._ordersStore, fetchedAt: 0 }; }
+function invalidatePosStore() { _posStore = { ..._posStore, fetchedAt: 0 }; }
 
 // ── Open orders cache — tránh gọi REST liên tục ───────────────────────────────
 // Invalidate bằng invalidateOpenOrdersCache() sau mỗi lần đặt/hủy lệnh hoặc fill
@@ -6009,7 +6061,8 @@ async function handleTpEntryGuard(symbol, pos, markPrice, roe) {
 // Đóng lệnh thật sau X giờ nếu ROE > minRoe% (đang lời nhẹ) và chưa đạt TP
 async function handlePositionTimeout(symbol, pos, markPrice, roe) {
   if (!runtimeSettings.positionTimeoutEnabled) return;
-  if (roe <= runtimeSettings.positionTimeoutMinRoe) return; // Chỉ cắt khi đang lời
+  if (roe < 0) return;                                      // Tuyệt đối không cắt lệnh âm
+  if (roe <= runtimeSettings.positionTimeoutMinRoe) return; // Chỉ cắt khi ROE > minRoe%
   if (positionTimeoutFired.has(symbol)) return;
 
   // Xác định openedAt: ưu tiên slTracking (chính xác từ fill), fallback positionFirstSeenAt
@@ -6092,10 +6145,15 @@ function startNegTpScanner() {
       }
       for (const p of active) {
         const symbol = p.symbol;
+        if (tslExcludedSymbols.has(symbol)) continue; // Skip TSL excluded
         const amt = Number(p.positionAmt);
         const entry = Number(p.entryPrice);
         const lev = Number(p.leverage) || 1;
-        const upnl = Number(p.unRealizedProfit);
+        const mark = Number(p.markPrice);
+        // unRealizedProfit = 0 khi chưa có WS tick → tính lại từ mark price
+        const rawUpnl = Number(p.unRealizedProfit);
+        const upnl = rawUpnl !== 0 ? rawUpnl : (mark > 0 ? (mark - entry) * amt : null);
+        if (upnl === null) continue; // chưa có mark price, bỏ qua
         const isolated = Number(p.isolatedMargin);
         const initial = Number(p.initialMargin);
         const margin = isolated > 0 ? isolated : initial > 0 ? initial : Math.abs(amt) * entry / lev;
@@ -6200,6 +6258,7 @@ async function runMissingTpScan() {
 
   const symbols = await getSymbols();
   for (const pos of active) {
+    if (tslExcludedSymbols.has(pos.symbol)) continue; // Skip TSL excluded
     await ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, sharedOpenOrders, sharedAlgoOrders);
     await new Promise((r) => setTimeout(r, 80));
   }
