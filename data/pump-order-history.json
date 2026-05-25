@@ -20951,7 +20951,11 @@
     "placedAt": 1779678298639,
     "fillPrice": 0.025515,
     "filledAt": 1779679907010,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.750876,
+    "roe": 37.54,
+    "closedAt": 1779701839182
   },
   {
     "orderId": 1703819131,
@@ -21103,7 +21107,11 @@
     "placedAt": 1779696030335,
     "fillPrice": 0.0830997,
     "filledAt": 1779696030078,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.00728,
+    "roe": 0.36,
+    "closedAt": 1779702392116
   },
   {
     "orderId": 12252246916,
@@ -21162,7 +21170,11 @@
     "placedAt": 1779696030433,
     "fillPrice": 80.93,
     "filledAt": 1779696030174,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.038,
+    "roe": 1.9,
+    "closedAt": 1779701635391
   },
   {
     "orderId": 1161601753,
@@ -21318,7 +21330,11 @@
     "placedAt": 1779700698971,
     "fillPrice": 0.01972,
     "filledAt": 1779700698679,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "MANUAL",
+    "pnlUsdt": 0,
+    "roe": 0,
+    "closedAt": 1779701220180
   },
   {
     "orderId": 2174888539,
@@ -21411,7 +21427,11 @@
     "placedAt": 1779700699075,
     "fillPrice": 0.005245,
     "filledAt": 1779700736693,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "WIN",
+    "pnlUsdt": 0.03812,
+    "roe": 1.91,
+    "closedAt": 1779701198879
   },
   {
     "orderId": 1136192608,
@@ -21449,7 +21469,11 @@
     "placedAt": 1779700699035,
     "fillPrice": 0.003253,
     "filledAt": 1779700787579,
-    "status": "FILLED"
+    "status": "CLOSED",
+    "outcome": "LOSS",
+    "pnlUsdt": -0.006148,
+    "roe": -0.31,
+    "closedAt": 1779701210096
   },
   {
     "orderId": 1635631192,
@@ -21518,5 +21542,73 @@
     "status": "CANCELED",
     "outcome": "CANCELED",
     "canceledAt": 1779700920836
+  },
+  {
+    "orderId": 733792432,
+    "symbol": "NIGHTUSDT",
+    "side": "SELL",
+    "entry": 0.03305,
+    "qty": 1512,
+    "margin": 5,
+    "score": 87,
+    "type": "early_dump",
+    "slPlaced": true,
+    "slPrice": 0.03313,
+    "tp": 0.03283791,
+    "placedAt": 1779700970485,
+    "fillPrice": 0.03305,
+    "filledAt": 1779701277450,
+    "status": "FILLED"
+  },
+  {
+    "orderId": 733793450,
+    "symbol": "NIGHTUSDT",
+    "side": "SELL",
+    "entry": 0.03305,
+    "qty": 1512,
+    "margin": 5,
+    "score": 87,
+    "type": "early_dump",
+    "slPlaced": true,
+    "slPrice": 0.03313,
+    "tp": 0.03283791,
+    "placedAt": 1779701032934,
+    "fillPrice": 0.03305,
+    "filledAt": 1779701277450,
+    "status": "FILLED"
+  },
+  {
+    "orderId": 1881320482,
+    "symbol": "CATIUSDT",
+    "side": "BUY",
+    "entry": 0.058,
+    "qty": 344,
+    "margin": 2,
+    "score": 84,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.05626,
+    "tp": 0.05910083,
+    "placedAt": 1779700699016,
+    "status": "CANCELED",
+    "outcome": "CANCELED",
+    "canceledAt": 1779702539129
+  },
+  {
+    "orderId": 1652596896,
+    "symbol": "COOKIEUSDT",
+    "side": "BUY",
+    "entry": 0.0138,
+    "qty": 1449,
+    "margin": 2,
+    "score": 81,
+    "type": "ema_pullback",
+    "slPlaced": true,
+    "slPrice": 0.01339,
+    "tp": 0.01397231,
+    "placedAt": 1779700699036,
+    "status": "CANCELED",
+    "outcome": "CANCELED",
+    "canceledAt": 1779702539529
   }
 ]

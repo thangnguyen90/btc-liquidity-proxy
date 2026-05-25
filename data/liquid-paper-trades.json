@@ -1,6 +1,6 @@
 {
   "createdAt": "2026-05-25T04:20:33.080Z",
-  "updatedAt": "2026-05-25T09:25:08.825Z",
+  "updatedAt": "2026-05-25T10:14:29.198Z",
   "trades": [
     {
       "id": "9e59f450-911b-40f4-90bb-1fffa91d86ea",
@@ -763,7 +763,7 @@
       "id": "d4d26302-a4a2-4a87-82ca-e42380fd98f9",
       "symbol": "MEUSDT",
       "side": "SHORT",
-      "status": "OPEN",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 98.96614516084891,
@@ -806,7 +806,11 @@
         "signalType": "LIQUID_SCAN",
         "sweepTargetPrice": 0.099755,
         "heavySide": "below"
-      }
+      },
+      "exitPrice": 0.09975,
+      "closedAt": "2026-05-25T09:51:45.859Z",
+      "outcome": "TP",
+      "closeNote": "Auto-closed: TP hit @ 0.09975"
     },
     {
       "id": "15aebde4-0c8e-449d-ba44-ec6f6c28de84",
@@ -959,7 +963,7 @@
       "id": "3bd03768-b2ea-44e9-803a-770caa3d97f4",
       "symbol": "DASHUSDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 0.21991394275973553,
@@ -1002,7 +1006,11 @@
         "signalType": "LIQUID_SCAN",
         "sweepTargetPrice": 46.056,
         "heavySide": "above"
-      }
+      },
+      "exitPrice": 45.19803728,
+      "closedAt": "2026-05-25T09:55:58.089Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 45.19803728"
     },
     {
       "id": "7857fb4b-8f57-4077-adf0-7a53b34528d8",
@@ -1205,7 +1213,7 @@
       "id": "e54c21d7-81a5-45c5-ad11-539be72bcdc5",
       "symbol": "TAOUSDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 0.03627164869608624,
@@ -1248,7 +1256,11 @@
         "signalType": "LIQUID_SCAN",
         "sweepTargetPrice": 279.236,
         "heavySide": "above"
-      }
+      },
+      "exitPrice": 279.27613232,
+      "closedAt": "2026-05-25T10:09:18.224Z",
+      "outcome": "TP",
+      "closeNote": "Auto-closed: TP hit @ 279.27613232"
     },
     {
       "id": "78b8f8f3-f317-4a60-a62f-b1436f1a6a95",
@@ -2451,7 +2463,7 @@
       "id": "50ce01ad-07cd-4bb3-8193-1ae140174b1c",
       "symbol": "RENDERUSDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 5.001542462285232,
@@ -2494,7 +2506,11 @@
         "signalType": "LIQUID_SCAN",
         "sweepTargetPrice": 2.02247,
         "heavySide": "above"
-      }
+      },
+      "exitPrice": 2.02344783,
+      "closedAt": "2026-05-25T10:13:58.392Z",
+      "outcome": "TP",
+      "closeNote": "Auto-closed: TP hit @ 2.02344783"
     },
     {
       "id": "a080bb09-73cf-4618-9a2f-74b3c5d39498",
@@ -6039,7 +6055,7 @@
       "id": "c5709827-7385-47c8-805d-09adb58fac68",
       "symbol": "SIRENUSDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 19.790958397743005,
@@ -6082,7 +6098,11 @@
         "signalType": "LIQUID_SCAN",
         "sweepTargetPrice": 0.511767,
         "heavySide": "above"
-      }
+      },
+      "exitPrice": 0.50296251,
+      "closedAt": "2026-05-25T10:14:08.717Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.50296251"
     },
     {
       "id": "27b60f81-d59e-4c0e-b4d8-9add1400cd90",
@@ -11491,7 +11511,7 @@
       "id": "bfe5b89b-19b0-4bfc-ba7f-cdc7bd32c3bf",
       "symbol": "ZENUSDT",
       "side": "LONG",
-      "status": "OPEN",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 1.619486869178313,
@@ -11534,7 +11554,11 @@
         "signalType": "LIQUID_SCAN",
         "sweepTargetPrice": 6.25405,
         "heavySide": "above"
-      }
+      },
+      "exitPrice": 6.25844062,
+      "closedAt": "2026-05-25T10:14:29.198Z",
+      "outcome": "TP",
+      "closeNote": "Auto-closed: TP hit @ 6.25844062"
     },
     {
       "id": "3878c72d-32e0-4e5e-94a7-59ec9239cfa7",
