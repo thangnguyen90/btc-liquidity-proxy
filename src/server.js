@@ -2879,11 +2879,13 @@ function buildLiquidEntryPlan({ heavySide, markPrice, target, heatmap }) {
   const entryPrice = side === 'LONG'
     ? markPrice * (1 - entryOffsetPct / 100)
     : markPrice * (1 + entryOffsetPct / 100);
-  const stopPct = Math.max(0.45, Math.min(1.8, Math.abs(distancePct) * 0.45));
+  const stopPct = Math.max(0.8, Math.min(2.5, Math.abs(distancePct) * 0.75));
   const fallbackSl = side === 'LONG'
     ? entryPrice * (1 - stopPct / 100)
     : entryPrice * (1 + stopPct / 100);
-  const sl = nearestOpposite?.price ?? fallbackSl;
+  // Never tighter than fallbackSl — if nearestOpposite is too close it causes instant SL hit
+  const rawSl = nearestOpposite?.price ?? fallbackSl;
+  const sl = side === 'LONG' ? Math.min(rawSl, fallbackSl) : Math.max(rawSl, fallbackSl);
   const rewardPct = Math.abs((tp - entryPrice) / entryPrice * 100);
   const riskPct = Math.abs((entryPrice - sl) / entryPrice * 100);
   const rr = riskPct > 0 ? rewardPct / riskPct : null;
@@ -6304,6 +6306,16 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
   if (Date.now() - last < 2 * 3600 * 1000) {
     console.log(`[AutoLiq] ⏭ ${symbol} skip — 2h dedup (đã đặt lệnh trong 2h qua)`);
     return;
+  }
+
+  // Filter sweep distance quá nhỏ — signal gần target dễ bị SL ngay
+  const minSweepDistPct = Number(process.env.LIQ_MIN_SWEEP_DIST_PCT ?? 2.0);
+  if (minSweepDistPct > 0 && sweepTargetPrice > 0 && markPrice > 0) {
+    const distPct = Math.abs((sweepTargetPrice - markPrice) / markPrice * 100);
+    if (distPct < minSweepDistPct) {
+      console.log(`[AutoLiq] ⏭ ${symbol} skip — sweepDist ${distPct.toFixed(2)}% < min ${minSweepDistPct}%`);
+      return;
+    }
   }
 
   try {

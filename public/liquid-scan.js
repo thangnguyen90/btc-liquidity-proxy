@@ -10,6 +10,7 @@ const els = {
   leverageInput: document.getElementById('leverageInput'),
   autoPaperEnabledInput: document.getElementById('autoPaperEnabledInput'),
   autoPaperPointInput: document.getElementById('autoPaperPointInput'),
+  autoPaperMinDistInput: document.getElementById('autoPaperMinDistInput'),
   autoPaperButton: document.getElementById('autoPaperButton'),
   refreshButton: document.getElementById('refreshButton'),
   scanStatus: document.getElementById('scanStatus'),
@@ -415,9 +416,16 @@ async function autoCreatePaperTests({ silent = false } = {}) {
   if (autoPaperRunning) return;
   if (silent && !els.autoPaperEnabledInput.checked) return;
   const minPoint = Number(els.autoPaperPointInput.value || 75);
-  const candidates = renderedRows.filter((row) => Number(row.sweepProb) > minPoint && row.entryPlan?.entryPrice && row.entryPlan?.side);
+  const minDist = Number(els.autoPaperMinDistInput?.value ?? 2);
+  const candidates = renderedRows.filter((row) => {
+    if (Number(row.sweepProb) <= minPoint) return false;
+    if (!row.entryPlan?.entryPrice || !row.entryPlan?.side) return false;
+    const dist = Math.abs(Number(row.sweepTarget?.distancePct ?? row.entryPlan?.targetDistancePct ?? 0));
+    if (minDist > 0 && dist < minDist) return false;
+    return true;
+  });
   if (candidates.length === 0) {
-    if (!silent) showActionResult(`Không có dòng visible nào có point > ${minPoint}.`);
+    if (!silent) showActionResult(`Không có dòng visible nào có point > ${minPoint} và dist ≥ ${minDist}%.`);
     return;
   }
 
