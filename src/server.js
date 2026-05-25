@@ -3235,17 +3235,27 @@ async function readPaperStore() {
       updatedAt: parsed.updatedAt ?? null,
       trades: Array.isArray(parsed.trades) ? parsed.trades : [],
     };
-  } catch {
-    const fresh = { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
-    await writePaperStore(fresh);
-    return fresh;
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      const fresh = { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
+      await writePaperStore(fresh);
+      return fresh;
+    }
+    console.error('[Paper] ⚠️ Store parse error, serving empty to avoid overwrite:', e.message);
+    return { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
   }
 }
 
+let _paperWriteLock = Promise.resolve();
 async function writePaperStore(store) {
-  await mkdir(join(rootDir, 'data'), { recursive: true });
   const payload = { ...store, updatedAt: new Date().toISOString() };
-  await writeFile(PAPER_TRADES_FILE, JSON.stringify(payload, null, 2));
+  _paperWriteLock = _paperWriteLock.then(async () => {
+    await mkdir(join(rootDir, 'data'), { recursive: true });
+    const tmp = PAPER_TRADES_FILE + '.tmp';
+    await writeFile(tmp, JSON.stringify(payload, null, 2));
+    await rename(tmp, PAPER_TRADES_FILE);
+  });
+  await _paperWriteLock;
   return payload;
 }
 
