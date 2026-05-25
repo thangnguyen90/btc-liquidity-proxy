@@ -1,62 +1,67 @@
 {
-  "GENIUSUSDT": {
-    "expiresAt": 1779633544618,
-    "addedAt": "2026-05-24T12:39:04.618Z",
-    "reason": "SL hit pnl=-0.0049"
+  "DASHUSDT": {
+    "expiresAt": 1779674928538,
+    "addedAt": "2026-05-25T00:08:48.538Z",
+    "reason": "SL hit pnl=-0.3752"
   },
-  "CHILLGUYUSDT": {
-    "expiresAt": 1779628049847,
-    "addedAt": "2026-05-24T11:07:29.847Z",
-    "reason": "SL hit pnl=-0.0845"
+  "NAORISUSDT": {
+    "expiresAt": 1779670623653,
+    "addedAt": "2026-05-24T22:57:03.653Z",
+    "reason": "SL hit pnl=-0.4496"
+  },
+  "QUSDT": {
+    "expiresAt": 1779670658648,
+    "addedAt": "2026-05-24T22:57:38.648Z",
+    "reason": "SL hit pnl=-0.5993"
   },
   "PLAYUSDT": {
-    "expiresAt": 1779628829851,
-    "addedAt": "2026-05-24T11:20:29.851Z",
-    "reason": "SL hit pnl=-1.7743"
+    "expiresAt": 1779671183689,
+    "addedAt": "2026-05-24T23:06:23.689Z",
+    "reason": "SL hit pnl=-0.3120"
   },
-  "BREVUSDT": {
-    "expiresAt": 1779629339286,
-    "addedAt": "2026-05-24T11:28:59.286Z",
-    "reason": "SL hit pnl=-0.0324"
+  "DOGSUSDT": {
+    "expiresAt": 1779672478507,
+    "addedAt": "2026-05-24T23:27:58.507Z",
+    "reason": "SL hit pnl=-0.5331"
   },
-  "TOWNSUSDT": {
-    "expiresAt": 1779629339442,
-    "addedAt": "2026-05-24T11:28:59.442Z",
-    "reason": "SL hit pnl=-0.1279"
+  "BICOUSDT": {
+    "expiresAt": 1779673038532,
+    "addedAt": "2026-05-24T23:37:18.532Z",
+    "reason": "SL hit pnl=-0.7366"
   },
-  "APRUSDT": {
-    "expiresAt": 1779630690029,
-    "addedAt": "2026-05-24T11:51:30.029Z",
-    "reason": "SL hit pnl=-0.1263"
+  "BANUSDT": {
+    "expiresAt": 1779673843778,
+    "addedAt": "2026-05-24T23:50:43.778Z",
+    "reason": "SL hit pnl=-0.6531"
   },
-  "SPKUSDT": {
-    "expiresAt": 1779632489919,
-    "addedAt": "2026-05-24T12:21:29.919Z",
-    "reason": "SL hit pnl=-0.3071"
+  "EULUSDT": {
+    "expiresAt": 1779675068866,
+    "addedAt": "2026-05-25T00:11:08.866Z",
+    "reason": "SL hit pnl=-0.1539"
   },
-  "PLUMEUSDT": {
-    "expiresAt": 1779632909926,
-    "addedAt": "2026-05-24T12:28:29.926Z",
-    "reason": "SL hit pnl=-0.3744"
+  "PARTIUSDT": {
+    "expiresAt": 1779675348611,
+    "addedAt": "2026-05-25T00:15:48.611Z",
+    "reason": "SL hit pnl=-0.6092"
   },
-  "SIGNUSDT": {
-    "expiresAt": 1779633694057,
-    "addedAt": "2026-05-24T12:41:34.057Z",
-    "reason": "SL hit pnl=-0.1534"
+  "LIGHTUSDT": {
+    "expiresAt": 1779676538863,
+    "addedAt": "2026-05-25T00:35:38.863Z",
+    "reason": "SL hit pnl=-0.0021"
   },
-  "AXSUSDT": {
-    "expiresAt": 1779633964311,
-    "addedAt": "2026-05-24T12:46:04.311Z",
-    "reason": "SL hit pnl=-0.1260"
+  "币安人生USDT": {
+    "expiresAt": 1779676783900,
+    "addedAt": "2026-05-25T00:39:43.900Z",
+    "reason": "SL hit pnl=-0.6029"
   },
-  "OPUSDT": {
-    "expiresAt": 1779634887387,
-    "addedAt": "2026-05-24T13:01:27.387Z",
-    "reason": "SL hit pnl=-0.0631"
+  "BANANAS31USDT": {
+    "expiresAt": 1779676853889,
+    "addedAt": "2026-05-25T00:40:53.889Z",
+    "reason": "SL hit pnl=-0.6019"
   },
-  "KITEUSDT": {
-    "expiresAt": 1779634887718,
-    "addedAt": "2026-05-24T13:01:27.718Z",
-    "reason": "SL hit pnl=-0.0195"
+  "KNCUSDT": {
+    "expiresAt": 1779680821274,
+    "addedAt": "2026-05-25T01:47:01.274Z",
+    "reason": "SL hit pnl=-0.5699"
   }
 }

@@ -74,19 +74,19 @@ function makeHelpers(closes, highs, lows) {
 
 export function detectSpikeReversal(candles, state, opts = {}) {
   const CFG = {
-    spikeLookback:    4,      // tìm spike trong N nến gần nhất (trừ nến hiện tại)
-    spikeMinBodyPct:  0.035,  // body spike ≥ 3.5% của giá (bullish body)
-    spikeMinMovePct:  0.050,  // hoặc high-open ≥ 5% (wick spike)
-    spikeVolMult:     2.0,    // vol spike ≥ 2.0x average
-    spikeEmaAtrMult:  2.0,    // spike high phải > EMA13 + N×ATR (overextended)
-    rsiOBAfterSpike:  65,     // RSI14 ≥ 65 (soft check — chỉ trừ score nếu fail)
-    revMinBodyPct:    0.005,  // reversal body ≥ 0.5%
-    revVolMult:       1.2,    // reversal vol ≥ 1.2x avg
-    revMaxAge:        3,      // reversal phải trong N nến sau spike
-    revRejectFrac:    0.30,   // close ≤ spikeH − 30% spikeRange (rejection rõ)
+    spikeLookback:    6,      // tìm spike trong N nến gần nhất (trừ nến hiện tại)
+    spikeMinBodyPct:  0.025,  // body spike ≥ 2.5% của giá (bullish body)
+    spikeMinMovePct:  0.035,  // hoặc high-open ≥ 3.5% (wick spike)
+    spikeVolMult:     1.5,    // vol spike ≥ 1.5x average
+    spikeEmaAtrMult:  1.3,    // spike high phải > EMA13 + N×ATR (overextended)
+    rsiOBAfterSpike:  60,     // RSI14 ≥ 60 (soft check — chỉ trừ score nếu fail)
+    revMinBodyPct:    0.003,  // reversal body ≥ 0.3%
+    revVolMult:       1.0,    // reversal vol ≥ avg
+    revMaxAge:        5,      // reversal phải trong N nến sau spike
+    revRejectFrac:    0.20,   // close ≤ spikeH − 20% spikeRange
     slAtrMult:        0.8,    // SL = spikeHigh + N×ATR
     tpAtrMult:        2.0,    // TP fallback = entry − N×ATR
-    minScore:         55,
+    minScore:         48,
     atrPeriod:        14,
     volLookback:      20,
     ...opts,

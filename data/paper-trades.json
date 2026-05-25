@@ -1,34 +1,40 @@
 {
   "createdAt": "2026-05-24T10:00:09.042Z",
-  "updatedAt": "2026-05-24T12:52:34.552Z",
+  "updatedAt": "2026-05-24T14:14:05.766Z",
   "trades": [
     {
       "id": "a915830d-e212-4084-b1c0-2bd29c1b79c3",
       "symbol": "BCHUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "OPEN",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 0.028606164628477437,
       "entryPrice": 349.575,
       "createdAt": "2026-05-24T10:01:32.063Z",
-      "openedAt": null,
+      "openedAt": "2026-05-24T14:14:05.765Z",
       "source": "liq-sweep-83",
-      "note": "sweepProb=83% | target=349.575 | confirmation=waiting for below sweep + bullish rejection"
+      "note": "sweepProb=83% | target=349.575 | confirmation=entry touched by mark price (349.55)",
+      "filledAt": "2026-05-24T14:14:05.765Z",
+      "fillPrice": 349.575,
+      "fillMarkPrice": 349.55
     },
     {
       "id": "8965840a-55fc-4560-bf79-12970f7b5b70",
       "symbol": "DUSKUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "OPEN",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 75.30744263455558,
       "entryPrice": 0.132789,
       "createdAt": "2026-05-24T10:00:37.476Z",
-      "openedAt": null,
+      "openedAt": "2026-05-24T13:57:44.318Z",
       "source": "liq-sweep-82",
-      "note": "sweepProb=82% | target=0.132789 | confirmation=waiting for below sweep + bullish rejection"
+      "note": "sweepProb=82% | target=0.132789 | confirmation=entry touched by mark price (0.132785)",
+      "filledAt": "2026-05-24T13:57:44.318Z",
+      "fillPrice": 0.132789,
+      "fillMarkPrice": 0.132785
     },
     {
       "id": "165a3cb7-e4f3-40b6-8a61-876d6525eba3",
