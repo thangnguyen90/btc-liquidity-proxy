@@ -7,6 +7,7 @@ import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
+import { binanceRateGate } from './binanceRateGate.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
 import { computeHeatmapData } from './liquidityProxy.js';
@@ -17,11 +18,12 @@ import { runCapScan }  from './capDetector.js';
 import { runKillShortScan } from './killShortDetector.js';
 import { runDumpIgnitionScan } from './dumpIgnitionDetector.js';
 import { runSpikeReversalScan } from './spikeReversalDetector.js';
+import { detectPostDumpKillLong, detectPostPumpKillShort, runPostPumpKillShortScan } from './postPumpKillShortDetector.js';
 import { runPumpIgnitionScan } from './pumpIgnitionDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
-import { createMarkPriceTicker } from './markPriceTicker.js';
+import { sharedMarkTicker } from './sharedMarkTicker.js';
 import WebSocket from 'ws';
 
 loadEnv();
@@ -37,6 +39,7 @@ const capScanCache       = { data: null, expiresAt: 0 };
 const killShortScanCache    = { data: null, expiresAt: 0 };
 const dumpIgnitionScanCache = { data: null, expiresAt: 0 };
 const spikeReversalScanCache  = { data: null, expiresAt: 0 };
+const postPumpKillShortScanCache = { data: null, expiresAt: 0 };
 const pumpIgnitionScanCache   = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 
@@ -44,7 +47,7 @@ const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 let _snapshotCache = null;
 let _snapshotCacheAt = 0;
 let _snapshotInflight = null;
-const SNAPSHOT_TTL_MS = 25_000; // 25s — đủ cho 1 chu kỳ scan, không stale quá lâu
+const SNAPSHOT_TTL_MS = 60_000; // 60s — giảm getTicker24hr(w=40)+getPremiumIndex(w=10) frequency
 
 async function getSharedSnapshot() {
   const now = Date.now();
@@ -68,6 +71,7 @@ const capSseClients          = new Set();
 const killShortSseClients    = new Set();
 const dumpIgnitionSseClients = new Set();
 const spikeReversalSseClients  = new Set();
+const postPumpKillShortSseClients = new Set();
 const pumpIgnitionSseClients   = new Set();
 const liquidPaperSseClients    = new Set();
 
@@ -604,6 +608,213 @@ async function scheduleSpikeReversalScan() {
   }, 2_500);
 }
 
+let _postPumpKillShortDebounce = null;
+async function schedulePostPumpKillShortScan() {
+  clearTimeout(_postPumpKillShortDebounce);
+  _postPumpKillShortDebounce = setTimeout(async () => {
+    try {
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runPostPumpKillShortScan(topSymbols, klineCache, snapshotMap);
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      postPumpKillShortScanCache.data = result;
+      postPumpKillShortScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(postPumpKillShortSseClients, result);
+      if (signals.length) console.log(`[PostPumpKillShort] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.stage} ${s.score})`).join(', ')}`);
+
+      for (const sig of signals) {
+        if (sig.stage !== 'confirmed_short' || sig.score < 60) continue;
+        const key = `ppks|${sig.symbol}|${sig.type}`;
+        const last = edgePaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        edgePaperAutoFired.set(key, Date.now());
+        createEdgePaperTrade({
+          symbol: sig.symbol,
+          side: 'SHORT',
+          status: 'OPEN',
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
+          source: `ppks-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch((e) => console.warn(`[EdgePaper] ppks ${sig.symbol}:`, e.message));
+      }
+
+      for (const sig of signals) {
+        handlePostPumpKillShortRealOrder(sig).catch((e) => {
+          console.warn(`[PostPumpKillShortOrder] ${sig.symbol}:`, e.message);
+        });
+      }
+
+      const ppksWebhook = process.env.POST_PUMP_KILL_SHORT_WEBHOOK_URL || '';
+      const ppksMinScore = Number(process.env.POST_PUMP_KILL_SHORT_MIN_DISCORD_SCORE ?? 60);
+      const ppksSendWatch = process.env.POST_PUMP_KILL_SHORT_SEND_WATCH === 'true';
+      if (ppksWebhook) {
+        const DEDUP_MS = 4 * 3600 * 1000;
+        const fmtP = (v) => {
+          if (v == null || !Number.isFinite(Number(v))) return '-';
+          const n = Number(v);
+          if (Math.abs(n) >= 1000) return n.toLocaleString('en', { maximumFractionDigits: 2 });
+          if (Math.abs(n) >= 1) return n.toFixed(4);
+          return n.toFixed(6);
+        };
+        const fmtPct = (v, d = 1) => v == null || !Number.isFinite(Number(v)) ? '-' : `${Number(v).toFixed(d)}%`;
+        const fmtX = (v, d = 1) => v == null || !Number.isFinite(Number(v)) ? '-' : `${Number(v).toFixed(d)}x`;
+
+        for (const sig of signals) {
+          const isConfirmed = sig.stage === 'confirmed_short' || sig.stage === 'confirmed_long';
+          if (!isConfirmed && !ppksSendWatch) continue;
+          if (sig.score < ppksMinScore) continue;
+          const dedupKey = `${sig.symbol}|${sig.stage}|${sig.type}`;
+          const lastFired = postPumpKillShortDiscordFired.get(dedupKey) ?? 0;
+          if (Date.now() - lastFired < DEDUP_MS) continue;
+          postPumpKillShortDiscordFired.set(dedupKey, Date.now());
+
+          const isLong = sig.stage === 'confirmed_long' || sig.type === 'post_dump_kill_long';
+          const sym = sig.symbol.replace(/USDT$/, '');
+          const f = sig.factors ?? {};
+          const title = isLong ? 'Post Dump Kill Long' : 'Post Pump Kill Short';
+          const side = isLong ? 'LONG' : 'SHORT';
+          const pattern = isLong
+            ? `Dump ${fmtPct(f.dumpPct)} -> bounce ${fmtPct(f.postDumpBouncePct)} -> lower sweep ${fmtPct(f.sweepMovePct)}`
+            : `Pump ${fmtPct(f.pumpPct)} -> drop ${fmtPct(f.postPumpDropPct)} -> upper spike ${fmtPct(f.spikeMovePct)}`;
+          const wickLine = isLong
+            ? `Lower wick ${fmtPct((f.lowerWickFrac ?? 0) * 100, 0)} | closePos ${fmtPct((f.closePos ?? 0) * 100, 0)} | RSI6 ${f.rsi6 != null ? Number(f.rsi6).toFixed(0) : '-'}`
+            : `Upper wick ${fmtPct((f.upperWickFrac ?? 0) * 100, 0)} | closePos ${fmtPct((f.closePos ?? 0) * 100, 0)} | RSI6 ${f.rsi6 != null ? Number(f.rsi6).toFixed(0) : '-'}`;
+          const volLine = isLong
+            ? `Sweep vol ${fmtX(f.sweepVolRatio)} | move ${fmtX(f.sweepAtrMove)} ATR`
+            : `Spike vol ${fmtX(f.spikeVolRatio)} | move ${fmtX(f.spikeAtrMove)} ATR`;
+          const msg = [
+            `**[${title}] ${sym}USDT - ${side} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+            sig.reason ? `Reason: ${sig.reason}` : '',
+            `Entry: \`${fmtP(sig.entry)}\` | SL: \`${fmtP(sig.sl)}\` | TP: \`${fmtP(sig.tp)}\``,
+            `Pattern: ${pattern}`,
+            `Reject: ${wickLine}`,
+            `Volume: ${volLine}`,
+            sig.markPrice ? `Mark: \`${fmtP(sig.markPrice)}\`` : '',
+            sig.change24hPct != null ? `24h: ${fmtPct(sig.change24hPct, 2)}` : '',
+          ].filter(Boolean).join('\n');
+
+          fetch(ppksWebhook, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ content: msg }),
+          }).catch((err) => console.warn(`[PostPumpKillShort] Discord ${sig.symbol}:`, err.message));
+
+          console.log(`[PostPumpKillShort] Discord: ${sig.symbol} ${sig.stage} score=${sig.score}`);
+        }
+      }
+    } catch (e) {
+      console.error('[PostPumpKillShortScan] error:', e.message);
+    }
+  }, 2_800);
+}
+
+async function handlePostPumpKillShortRealOrder(sig) {
+  if (process.env.POST_PUMP_KILL_SHORT_AUTO_ORDER_ENABLED !== 'true') return;
+  const isShort = sig.stage === 'confirmed_short';
+  const isLong = sig.stage === 'confirmed_long';
+  if (!isShort && !isLong) return;
+
+  const minScore = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MIN_SCORE ?? 60);
+  if (sig.score < minScore) return;
+  if (!sig.entry || !sig.sl) return;
+
+  const cooldownMs = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|${sig.stage}|${sig.type}`;
+  const last = postPumpKillShortOrderFired.get(dedupKey) ?? 0;
+  if (Date.now() - last < cooldownMs) {
+    console.log(`[PostPumpKillShortOrder] skip ${sig.symbol} - cooldown`);
+    return;
+  }
+
+  if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
+    console.log(`[PostPumpKillShortOrder] skip ${sig.symbol} - real Binance order disabled/dry-run`);
+    return;
+  }
+
+  let apiKey;
+  let apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch (err) {
+    apiKey = process.env.BINANCE_API_KEY;
+    apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw err;
+  }
+  const [positions, openOrders] = await Promise.all([
+    client.getPositions({ apiKey, apiSecret }),
+    getCachedOpenOrders(apiKey, apiSecret),
+  ]);
+
+  const hasPosition = positions.some((p) => p.symbol === sig.symbol && Math.abs(Number(p.positionAmt ?? 0)) > 0);
+  if (hasPosition) {
+    console.log(`[PostPumpKillShortOrder] skip ${sig.symbol} - already has position`);
+    return;
+  }
+
+  const hasEntryOrder = openOrders.some((o) => {
+    if (o.symbol !== sig.symbol) return false;
+    if (String(o.reduceOnly ?? '').toLowerCase() === 'true') return false;
+    const type = String(o.type ?? o.origType ?? '').toUpperCase();
+    return ['MARKET', 'LIMIT', 'LIMIT_MAKER'].includes(type);
+  });
+  if (hasEntryOrder) {
+    console.log(`[PostPumpKillShortOrder] skip ${sig.symbol} - already has entry order`);
+    return;
+  }
+
+  const marginUsdt = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MARGIN_USDT ?? 1);
+  const leverage = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_LEVERAGE ?? 10);
+  const notionalUsdt = marginUsdt * leverage;
+  const orderType = String(process.env.POST_PUMP_KILL_SHORT_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const maxOpenPositions = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+  const side = isLong ? 'BUY' : 'SELL';
+  const result = await placeOrder({
+    symbol: sig.symbol,
+    side,
+    orderType,
+    notionalUsdt,
+    leverage,
+    limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
+    takeProfitPrice: sig.tp ?? undefined,
+    stopLossPrice: sig.sl ?? undefined,
+    maxOpenPositions,
+    dryRun: false,
+  }, null, { apiKey, apiSecret });
+
+  postPumpKillShortOrderFired.set(dedupKey, Date.now());
+  invalidateOpenOrdersCache();
+
+  const orderId = result?.orderResult?.orderId ?? '-';
+  const avgPrice = result?.orderResult?.avgPrice ?? result?.order?.markPrice ?? sig.entry;
+  console.log(`[PostPumpKillShortOrder] REAL ${sig.symbol} ${side} ${orderType} orderId=${orderId} score=${sig.score}`);
+
+  const webhookUrl = process.env.POST_PUMP_KILL_SHORT_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '';
+  if (webhookUrl) {
+    const fmt = (v) => v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toPrecision(8).replace(/\.?0+$/, '');
+    const msg = [
+      `**[REAL ORDER] ${sig.symbol} ${isLong ? 'LONG' : 'SHORT'} - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+      `OrderId: \`${orderId}\` | Avg/Mark: \`${fmt(avgPrice)}\``,
+      `Margin: $${marginUsdt} x ${leverage}x | Notional: $${notionalUsdt}`,
+      `Entry signal: \`${fmt(sig.entry)}\` | SL: \`${fmt(sig.sl)}\` | TP: \`${fmt(sig.tp)}\``,
+      `Type: ${sig.type ?? '-'} | Stage: ${sig.stage}`,
+    ].join('\n');
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: msg }),
+    }).catch(() => {});
+  }
+}
+
 let _pumpIgnitionDebounce = null;
 
 function parsePumpIgnitionNote(note) {
@@ -777,6 +988,7 @@ klineCache.on('candleClose', ({ interval }) => {
   scheduleKillShortScan();
   scheduleDumpIgnitionScan();
   scheduleSpikeReversalScan();
+  schedulePostPumpKillShortScan();
   schedulePumpIgnitionScan();
 });
 
@@ -791,15 +1003,59 @@ klineCache.on('candleTick', ({ interval }) => {
     scheduleKillShortScan();
     scheduleDumpIgnitionScan();
     scheduleSpikeReversalScan();
+    schedulePostPumpKillShortScan();
     schedulePumpIgnitionScan();
   }, 60_000);
 });
 
 // Chạy scan ngay sau 30s để có data ban đầu dù WebSocket chưa kết nối
-setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); scheduleDumpIgnitionScan(); scheduleSpikeReversalScan(); schedulePumpIgnitionScan(); }, 30_000);
+setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); scheduleDumpIgnitionScan(); scheduleSpikeReversalScan(); schedulePostPumpKillShortScan(); schedulePumpIgnitionScan(); }, 30_000);
 
 // Fallback: scan mỗi 2 phút kể cả khi WebSocket không có tick
 let _staleReseedLock = false;
+let _tieredWarmupPromise = null;
+const KLINE_WARMUP_TIERS = [
+  { max: 50,  batchSize: 1, batchDelayMs: 1400, afterMs: 0 },
+  { max: 100, batchSize: 1, batchDelayMs: 1600, afterMs: 60_000 },
+  { max: 200, batchSize: 1, batchDelayMs: 1800, afterMs: 90_000 },
+  { max: 400, batchSize: 1, batchDelayMs: 2200, afterMs: 120_000 },
+];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function startTieredKlineWarmup(snapshot, reason = 'startup') {
+  if (_tieredWarmupPromise) return _tieredWarmupPromise;
+  _tieredWarmupPromise = (async () => {
+    const sorted = [...snapshot].sort((a, b) => b.quoteVolume - a.quoteVolume);
+    console.log(`[KlineWarmup] Tiered warm-up started (${reason}).`);
+    try {
+      for (const tier of KLINE_WARMUP_TIERS) {
+        if (binanceRateGate.isBlocked?.()) {
+          console.warn(`[KlineWarmup] Skip tier top ${tier.max}: Binance REST blocked.`);
+          break;
+        }
+        if (tier.afterMs > 0) await sleep(tier.afterMs);
+        const symbols = sorted.slice(0, tier.max).map((r) => r.symbol);
+        console.log(`[KlineWarmup] Seeding top ${tier.max} symbols @15m (${tier.batchSize} req/batch, ${tier.batchDelayMs}ms delay).`);
+        await klineCache.seed(symbols, '15m', 500, {
+          batchSize: tier.batchSize,
+          batchDelayMs: tier.batchDelayMs,
+        });
+      }
+    } finally {
+      _tieredWarmupPromise = null;
+      _staleReseedLock = false;
+    }
+  })();
+  return _tieredWarmupPromise;
+}
+
+function noteApiNoLargeReseed(board, processed) {
+  if (processed !== 0) return;
+  console.warn(`[KlineWarmup] ${board} processed=0; API will not trigger 400-symbol REST reseed. Waiting for tiered warm-up/WS cache.`);
+}
 setInterval(async () => {
   schedulePumpScan();
   scheduleCapScan();
@@ -810,9 +1066,9 @@ setInterval(async () => {
     _staleReseedLock = true;
     try {
       const snapshot = await getSharedSnapshot();
-      const topSymbols = snapshot.sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, 400).map((r) => r.symbol);
-      await klineCache.seed(topSymbols, '15m', 500);
-      console.log('[KlineCache] Re-seed triggered (WebSocket stale)');
+      const topSymbols = [...snapshot].sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, 50).map((r) => r.symbol);
+      await klineCache.seed(topSymbols, '15m', 500, { batchSize: 1, batchDelayMs: 2000 });
+      console.log('[KlineCache] Small re-seed triggered (WebSocket stale, top 50 only)');
       schedulePumpScan();
       scheduleCapScan();
       scheduleKillShortScan();
@@ -870,6 +1126,8 @@ const tslExcludedSymbols = new Set();
 const spikeRevDiscordFired  = new Map();
 const dumpIgnDiscordFired   = new Map();
 const pumpIgnDiscordFired   = new Map();
+const postPumpKillShortDiscordFired = new Map();
+const postPumpKillShortOrderFired = new Map();
 const longShortCache = new Map();    // symbol → { longShortRatio, longAccount }
 const hedgeModeCache = new Map();    // apiKey → bool
 const topPositionCache = new Map(); // symbol → { longShortRatio, longPosition, shortPosition }
@@ -1344,9 +1602,7 @@ const server = createServer(async (request, response) => {
         .map((r) => r.symbol);
       const { signals, processed } = await runPumpScan(topSymbols, klineCache, snapshotMap);
       // Cache trống → seed ngay, scan lại sau 15s
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; schedulePumpScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('pump', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       pumpScanCache.data = result;
@@ -1384,9 +1640,7 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runCapScan(topSymbols, klineCache, snapshotMap);
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleCapScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('cap', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       capScanCache.data = result;
@@ -1424,9 +1678,7 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runKillShortScan(topSymbols, klineCache, snapshotMap);
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleKillShortScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('killshort', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       killShortScanCache.data = result;
@@ -1465,9 +1717,7 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runDumpIgnitionScan(topSymbols, klineCache, snapshotMap);
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleDumpIgnitionScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('dump-ignition', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       dumpIgnitionScanCache.data = result;
@@ -1506,13 +1756,90 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runSpikeReversalScan(topSymbols, klineCache, snapshotMap);
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleSpikeReversalScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('spike-reversal', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       spikeReversalScanCache.data = result;
       spikeReversalScanCache.expiresAt = Date.now() + 30_000;
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/post-pump-kill-short-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (postPumpKillShortScanCache.data && (postPumpKillShortScanCache.data.signals?.length > 0 || postPumpKillShortScanCache.data.processed > 0)) {
+        response.write(`data: ${JSON.stringify(postPumpKillShortScanCache.data)}\n\n`);
+      }
+      postPumpKillShortSseClients.add(response);
+      request.on('close', () => postPumpKillShortSseClients.delete(response));
+      if (!postPumpKillShortScanCache.data || Date.now() > postPumpKillShortScanCache.expiresAt) {
+        schedulePostPumpKillShortScan();
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/post-pump-kill-short-signals') {
+      const testSymbol = requestUrl.searchParams.get('symbol');
+      if (testSymbol) {
+        const symbol = normalizeSymbol(testSymbol);
+        const klines = await client.getKlines(symbol, '15m', 220);
+        const detections = [
+          detectPostPumpKillShort(klines),
+          detectPostDumpKillLong(klines),
+        ].filter((det) => det.pass);
+        const snapshot = await getSharedSnapshot().catch(() => []);
+        const snap = snapshot.find((r) => r.symbol === symbol);
+        const signals = detections.map((det) => ({
+          symbol,
+          action: det.action,
+          type: det.type,
+          stage: det.stage,
+          score: det.score,
+          grade: det.grade,
+          entry: det.entry,
+          altEntry: det.altEntry,
+          sl: det.sl,
+          tp: det.tp,
+          reason: det.reason,
+          note: det.note,
+          factors: det.factors,
+          blockLong: det.stage === 'confirmed_short',
+          blockShort: det.stage === 'confirmed_long',
+          markPrice: snap?.markPrice,
+          change24h: snap?.change24hPct,
+          volume: snap?.quoteVolume,
+          scannedAt: Date.now(),
+        }));
+        return sendJson(response, {
+          signals,
+          scannedAt: Date.now(),
+          total: 1,
+          processed: 1,
+          testSymbol: symbol,
+          noSignalReason: signals.length ? null : 'no post-pump short or post-dump long pattern',
+          cacheStats: klineCache.stats('15m'),
+        });
+      }
+      if (postPumpKillShortScanCache.data && Date.now() < postPumpKillShortScanCache.expiresAt) {
+        return sendJson(response, postPumpKillShortScanCache.data);
+      }
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runPostPumpKillShortScan(topSymbols, klineCache, snapshotMap);
+      if (processed === 0) noteApiNoLargeReseed('post-pump-kill-short', processed);
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      postPumpKillShortScanCache.data = result;
+      postPumpKillShortScanCache.expiresAt = Date.now() + 30_000;
       return sendJson(response, result);
     }
 
@@ -1548,9 +1875,7 @@ const server = createServer(async (request, response) => {
         .map((r) => r.symbol);
       const btcBias = btcHealthCache.data?.bias ?? 'neutral';
       const { signals, processed } = await runPumpIgnitionScan(topSymbols, klineCache, snapshotMap, { btcBias });
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; schedulePumpIgnitionScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('pump-ignition', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       pumpIgnitionScanCache.data = result;
@@ -1561,6 +1886,11 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/btc-health') {
       await sendJson(response, await getBtcHealth());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/binance-rate-gate') {
+      await sendJson(response, { gate: binanceRateGate.snapshot(), kline15m: klineCache.stats('15m'), scannedAt: Date.now() });
       return;
     }
 
@@ -2316,26 +2646,22 @@ server.listen(port, '127.0.0.1', () => {
     // getMarketSnapshot() is cheap (cached for 15s) and gives us the top coins by volume.
     try {
       const snapshot = await getSharedSnapshot();
-      const liqScanMax = Number(process.env.LIQ_SCAN_MAX_COINS ?? 200);
-      const seedMax = Math.max(liqScanMax, 400); // 400 covers pump/cap/killshort scans
-      const topSymbols = snapshot
-        .sort((a, b) => b.quoteVolume - a.quoteVolume)
-        .slice(0, seedMax)
-        .map((r) => r.symbol);
+      // Tiered warm-up: seed top 50 first, then gradually fill 100/200/400.
       // Fire-and-forget: seeding runs in background while scanners start
       // LiqScan needs 500 candles; VolDump only needs 42 but 500 covers both
       // Seed chậm hơn (batchSize=3, 1s delay) → 3 req/s thay vì 8.3 req/s → tránh vượt rate limit
       // Lock để SSE endpoint không trigger seed song song
       if (!_staleReseedLock) {
         _staleReseedLock = true;
-        klineCache.seed(topSymbols, '15m', 500, { batchSize: 3, batchDelayMs: 1000 })
-          .then(() => { _staleReseedLock = false; })
-          .catch(() => { _staleReseedLock = false; });
+        startTieredKlineWarmup(snapshot, 'startup').catch((err) => {
+          _staleReseedLock = false;
+          console.warn('[KlineWarmup] Tiered warm-up failed:', err.message);
+        });
       }
       // Seed BTC klines — Wilder's RSI cần nhiều nến để warm-up và khớp Binance
-      klineCache.seed(['BTCUSDT'], '1h', 250).catch(() => {});  // 250 nến 1h ~10 ngày
-      klineCache.seed(['BTCUSDT'], '4h', 150).catch(() => {});  // 150 nến 4h ~25 ngày
-      klineCache.seed(['BTCUSDT'], '1d', 60).catch(() => {});   // 60 nến 1d ~2 tháng
+      setTimeout(() => klineCache.seed(['BTCUSDT'], '1h', 250, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 15_000);
+      setTimeout(() => klineCache.seed(['BTCUSDT'], '4h', 150, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 25_000);
+      setTimeout(() => klineCache.seed(['BTCUSDT'], '1d', 60, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 35_000);
     } catch (err) {
       console.warn('[KlineCache] Seed failed:', err.message);
     }
@@ -2361,6 +2687,7 @@ server.listen(port, '127.0.0.1', () => {
       maxCoins: Number(process.env.LIQ_SCAN_MAX_COINS ?? 200),
       onHighProbAlert: getLiqHighProbHandler(),
       highProbThreshold: getLiqHighProbThreshold(),
+      topTraderCache: topPositionCache, // tái dùng cache từ startLongShortRefresh, tránh 51 REST calls
     });
     // startVolumeDumpScanner disabled — tắt để giảm tải API (150 REST calls/phút)
   }, 5000);
@@ -2719,7 +3046,7 @@ async function getSymbols() {
   return symbols;
 }
 
-async function placeOrder(payload, token = null) {
+async function placeOrder(payload, token = null, credentialsOverride = null) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   const side = String(payload.side ?? '').toUpperCase();
   const orderType = String(payload.orderType ?? payload.type ?? 'MARKET').toUpperCase();
@@ -2803,7 +3130,7 @@ async function placeOrder(payload, token = null) {
     };
   }
 
-  const { apiKey, apiSecret } = getApiCredentials(token);
+  const { apiKey, apiSecret } = credentialsOverride ?? getApiCredentials(token);
 
   if (maxOpenPositions > 0) {
     const positions = await client.getPositions({ apiKey, apiSecret });
@@ -2831,7 +3158,7 @@ async function placeOrder(payload, token = null) {
     orderParams.price = roundedLimitPrice;
     orderParams.timeInForce = 'IOC';
   }
-  const isHedge = await getHedgeMode(token);
+  const isHedge = await getHedgeMode(token, credentialsOverride);
   const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
   const positionSide = isHedge ? (side === 'BUY' ? 'LONG' : 'SHORT') : undefined;
 
@@ -3940,7 +4267,7 @@ async function syncPaperTickerSymbols() {
     .filter((t) => ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status))
     .map((t) => t.symbol)
     .filter(Boolean))];
-  paperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('paperTrade', symbols);
 }
 
 async function pollLiquidPaperMarksOnce() {
@@ -4169,18 +4496,17 @@ async function syncCapPaperTicker() {
   if (!capPaperTicker) return;
   const store = await readCapPaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  capPaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('capPaper', symbols);
 }
 
 function startCapPaperTicker() {
   if (capPaperTicker) return;
-  capPaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      capMarkCache.set(symbol, markPrice);
-      processCapPaperFills(symbol, markPrice).catch(() => {});
-    },
+  capPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('capPaper', ({ symbol, markPrice }) => {
+    capMarkCache.set(symbol, markPrice);
+    processCapPaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[CapPaper] Mark ticker started.');
+  console.log('[CapPaper] Mark ticker started (shared).');
   syncCapPaperTicker().catch(() => {});
   setInterval(() => syncCapPaperTicker().catch(() => {}), 30_000);
 }
@@ -4352,18 +4678,17 @@ async function syncDiPaperTicker() {
   if (!diPaperTicker) return;
   const store = await readDiPaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  diPaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('diPaper', symbols);
 }
 
 function startDiPaperTicker() {
   if (diPaperTicker) return;
-  diPaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      diMarkCache.set(symbol, markPrice);
-      processDiPaperFills(symbol, markPrice).catch(() => {});
-    },
+  diPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('diPaper', ({ symbol, markPrice }) => {
+    diMarkCache.set(symbol, markPrice);
+    processDiPaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[DiPaper] Mark ticker started.');
+  console.log('[DiPaper] Mark ticker started (shared).');
   syncDiPaperTicker().catch(() => {});
   setInterval(() => syncDiPaperTicker().catch(() => {}), 30_000);
 }
@@ -4536,18 +4861,17 @@ async function syncPiPaperTicker() {
   if (!piPaperTicker) return;
   const store = await readPiPaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  piPaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('piPaper', symbols);
 }
 
 function startPiPaperTicker() {
   if (piPaperTicker) return;
-  piPaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      piMarkCache.set(symbol, markPrice);
-      processPiPaperFills(symbol, markPrice).catch(() => {});
-    },
+  piPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('piPaper', ({ symbol, markPrice }) => {
+    piMarkCache.set(symbol, markPrice);
+    processPiPaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[PiPaper] Mark ticker started.');
+  console.log('[PiPaper] Mark ticker started (shared).');
   syncPiPaperTicker().catch(() => {});
   setInterval(() => syncPiPaperTicker().catch(() => {}), 30_000);
 }
@@ -4745,18 +5069,17 @@ async function syncPumpPaperTicker() {
   if (!pumpPaperTicker) return;
   const store = await readPumpPaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  pumpPaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('pumpPaper', symbols);
 }
 
 function startPumpPaperTicker() {
   if (pumpPaperTicker) return;
-  pumpPaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      pumpMarkCache.set(symbol, markPrice);
-      processPumpPaperFills(symbol, markPrice).catch(() => {});
-    },
+  pumpPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('pumpPaper', ({ symbol, markPrice }) => {
+    pumpMarkCache.set(symbol, markPrice);
+    processPumpPaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[PumpPaper] Mark ticker started.');
+  console.log('[PumpPaper] Mark ticker started (shared).');
   syncPumpPaperTicker().catch(() => {});
   setInterval(() => syncPumpPaperTicker().catch(() => {}), 30_000);
 }
@@ -4977,18 +5300,17 @@ async function syncEdgePaperTicker() {
   if (!edgePaperTicker) return;
   const store = await readEdgePaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  edgePaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('edgePaper', symbols);
 }
 
 function startEdgePaperTicker() {
   if (edgePaperTicker) return;
-  edgePaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      edgeMarkCache.set(symbol, markPrice);
-      processEdgePaperFills(symbol, markPrice).catch(() => {});
-    },
+  edgePaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('edgePaper', ({ symbol, markPrice }) => {
+    edgeMarkCache.set(symbol, markPrice);
+    processEdgePaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[EdgePaper] Mark ticker started.');
+  console.log('[EdgePaper] Mark ticker started (shared).');
   syncEdgePaperTicker().catch(() => {});
   setInterval(() => syncEdgePaperTicker().catch(() => {}), 30_000);
 }
@@ -4996,18 +5318,18 @@ function startEdgePaperTicker() {
 function startPaperTradeTicker() {
   if (process.env.PAPER_TRADE_TICKER_ENABLED === 'false') return;
   if (paperTicker) return;
-  paperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      paperMarkCache.set(symbol, { markPrice, at: Date.now(), source: 'ws' });
-      processPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
-      processLiquidPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
-      scheduleLiquidPaperBroadcast();
-    },
+  paperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('paperTrade', ({ symbol, markPrice }) => {
+    paperMarkCache.set(symbol, { markPrice, at: Date.now(), source: 'ws' });
+    processPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
+    processLiquidPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
+    scheduleLiquidPaperBroadcast();
   });
-  console.log('[PaperLiq] Mark ticker started for paper trades.');
+  console.log('[PaperLiq] Mark ticker started for paper trades (shared).');
   syncPaperTickerSymbols().catch(() => {});
   setInterval(() => syncPaperTickerSymbols().catch(() => {}), 10_000);
-  startLiquidPaperRestPoller();
+  // REST poller disabled — sharedMarkTicker WS handles mark price updates
+  // startLiquidPaperRestPoller();
 }
 
 async function callOpenAI(messages) {
@@ -5558,11 +5880,10 @@ async function batchedAllSettled(items, fn, batchSize = 5, delayMs = 300) {
 function startLongShortRefresh() {
   const run = async () => {
     try {
-      const [symbols, tickers] = await Promise.all([getSymbols(), client.getTicker24hr()]);
-      const allowed = new Set(symbols.map((s) => s.symbol));
-      const top = tickers
-        .filter((t) => allowed.has(t.symbol))
-        .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+      // Dùng getSharedSnapshot() thay vì gọi getTicker24hr() riêng (tránh tốn w=40)
+      const snapshot = await getSharedSnapshot();
+      const top = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
         .slice(0, 40)
         .map((t) => t.symbol);
 
@@ -5598,8 +5919,8 @@ function startLongShortRefresh() {
   setInterval(run, 5 * 60 * 1000);
 }
 
-async function getHedgeMode(token = null) {
-  const { apiKey, apiSecret } = getApiCredentials(token);
+async function getHedgeMode(token = null, credentialsOverride = null) {
+  const { apiKey, apiSecret } = credentialsOverride ?? getApiCredentials(token);
   if (hedgeModeCache.has(apiKey)) return hedgeModeCache.get(apiKey);
   try {
     const mode = await client.getPositionMode({ apiKey, apiSecret });
@@ -5644,7 +5965,7 @@ async function getAccountBalance(token = null) {
 
 let _dailyPnlCache = null;
 let _dailyPnlCacheAt = 0;
-const DAILY_PNL_TTL_MS = 120_000; // 2 phút — income API weight cao (30)
+const DAILY_PNL_TTL_MS = 300_000; // 5 phút — income API weight=30, không cần real-time
 
 async function getDailyPnl(token = null) {
   if (_dailyPnlCache && Date.now() - _dailyPnlCacheAt < DAILY_PNL_TTL_MS) return _dailyPnlCache;
@@ -5674,7 +5995,7 @@ async function getPositions(token = null) {
 // Tất cả scanners dùng chung — tối đa 1 REST burst per TTL window.
 let _posStore = { positions: [], openOrders: [], algoOrders: [], fetchedAt: 0 };
 let _posStoreInflight = null;
-const POS_STORE_TTL_MS = 30_000; // 30s — đủ để tránh IP ban, scanners cách nhau 30-41s
+const POS_STORE_TTL_MS = 60_000; // 60s — positions/openOrders không cần <30s; giảm getOpenOrders(w=40) frequency
 
 async function getSharedPositionData() {
   if (Date.now() - _posStore.fetchedAt < POS_STORE_TTL_MS) return _posStore;
@@ -7418,6 +7739,8 @@ async function sendStatic(pathname, response) {
           ? '/killshort.html'
         : pathname === '/spike-reversal'
           ? '/spike-reversal.html'
+        : pathname === '/post-pump-kill-short'
+          ? '/post-pump-kill-short.html'
         : pathname === '/dump-ignition'
           ? '/dump-ignition.html'
         : pathname === '/pump-ignition'

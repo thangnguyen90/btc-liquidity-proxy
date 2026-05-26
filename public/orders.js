@@ -91,6 +91,11 @@ function showApp() {
   }).catch(() => {});
   refresh();
   setInterval(refresh, 30000);
+  // Daily PnL — weight=30, server TTL 5min → load riêng 4s sau page load, rồi mỗi 5 phút
+  setTimeout(() => {
+    loadDailyPnl();
+    setInterval(loadDailyPnl, 5 * 60_000);
+  }, 4000);
   fetch('/api/account-uid', { headers: { 'x-orders-token': getToken() } })
     .then((r) => r.json())
     .then((d) => {
@@ -814,7 +819,8 @@ async function loadSlTp() {
 async function refresh() {
   status.textContent = 'Refreshing...';
   try {
-    await Promise.all([loadDailyPnl(), loadBalance(), loadPositions(), loadOpenOrders(), loadTsl(), loadSlTp()]);
+    // loadDailyPnl bị tách riêng (weight=30, TTL 5min) — không gọi cùng lúc với positions/openOrders
+    await Promise.all([loadBalance(), loadPositions(), loadOpenOrders(), loadTsl(), loadSlTp()]);
     lastRefresh.textContent = `Last: ${new Date().toLocaleTimeString('vi-VN', { hour12: false })}`;
     status.textContent = 'Live';
   } catch {

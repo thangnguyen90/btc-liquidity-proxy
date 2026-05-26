@@ -6,6 +6,13 @@ const MAX_STREAMS_PER_CONN = 200;
 const STALE_MS   = 3 * 60 * 1000;  // force reconnect if no tick for 3 min
 const PING_MS    = 2 * 60 * 1000;  // send ping every 2 min to keep alive
 
+// Exponential backoff config
+const BACKOFF_BASE_MS  = 5_000;
+const BACKOFF_MAX_MS   = 5 * 60_000; // max 5 min between retries
+const BACKOFF_MULT     = 2;
+// Ban-like HTTP status codes → wait long before retry
+const BAN_WAIT_MS      = 3 * 60_000;
+
 export class KlineCache extends EventEmitter {
   constructor({ client, maxKlines = 500 }) {
     super();
@@ -13,7 +20,7 @@ export class KlineCache extends EventEmitter {
     this.maxKlines = maxKlines;
     this._cache    = new Map();   // `${SYMBOL}|${interval}` → Kline[]
     this._seeding  = new Set();   // keys currently being seeded via REST
-    this._conns    = new Map();   // streamUrl → { ws, lastTickAt, pingTimer, staleTimer }
+    this._conns    = new Map();   // streamUrl → { ws, lastTickAt, pingTimer, staleTimer, backoffMs }
     this.lastTickAt = 0;          // timestamp of most recent tick across all streams
   }
 
@@ -65,11 +72,20 @@ export class KlineCache extends EventEmitter {
   }
 
   _connect(url) {
-    const ws = new WebSocket(url);
-    const entry = { ws, lastTickAt: Date.now(), pingTimer: null, staleTimer: null };
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      console.warn(`[KlineCache] WS create failed: ${e.message}. Retrying in ${BACKOFF_BASE_MS / 1000}s`);
+      setTimeout(() => this._connect(url), BACKOFF_BASE_MS);
+      return;
+    }
+
+    const entry = { ws, lastTickAt: Date.now(), pingTimer: null, staleTimer: null, backoffMs: BACKOFF_BASE_MS };
     this._conns.set(url, entry);
 
     ws.on('open', () => {
+      entry.backoffMs = BACKOFF_BASE_MS; // reset backoff on successful connect
       // Ping every 2 min so Binance doesn't treat connection as idle
       entry.pingTimer = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) ws.ping();
@@ -92,6 +108,7 @@ export class KlineCache extends EventEmitter {
         if (!k) return;
         entry.lastTickAt = Date.now();
         this.lastTickAt  = entry.lastTickAt;
+        entry.backoffMs  = BACKOFF_BASE_MS; // data received → reset backoff
         this._resetStaleTimer(url, entry);
         const closed = k.x === true;
         this._applyTick(k.s, k.i, k);
@@ -100,19 +117,37 @@ export class KlineCache extends EventEmitter {
       } catch {}
     });
 
-    ws.on('error', () => {});
+    ws.on('error', (err) => {
+      // Detect IP ban / rate limit via HTTP status in error message
+      const msg = err?.message ?? '';
+      const isBan = /Unexpected server response: (418|429|403)/.test(msg)
+                 || msg.includes('ECONNREFUSED')
+                 || msg.includes('ECONNRESET');
+      if (isBan) {
+        entry.backoffMs = BAN_WAIT_MS;
+        console.warn(`[KlineCache] ⛔ Ban/rate-limit detected (${msg.slice(0, 60)}). Waiting ${BAN_WAIT_MS / 60000}min before retry.`);
+      }
+    });
+
     ws.on('close', () => {
       this._clearTimers(entry);
       this._conns.delete(url);
-      setTimeout(() => this._connect(url), 5_000);
+      const delay = entry.backoffMs ?? BACKOFF_BASE_MS;
+      // Increase backoff for next attempt (exponential, capped)
+      entry.backoffMs = Math.min((entry.backoffMs ?? BACKOFF_BASE_MS) * BACKOFF_MULT, BACKOFF_MAX_MS);
+      if (delay > BACKOFF_BASE_MS) {
+        console.log(`[KlineCache] Reconnecting in ${Math.round(delay / 1000)}s (backoff)…`);
+      }
+      setTimeout(() => this._connect(url), delay);
     });
   }
 
   _resetStaleTimer(url, entry) {
     clearTimeout(entry.staleTimer);
     entry.staleTimer = setTimeout(() => {
-      console.warn(`[KlineCache] Stale WS detected (no tick for ${STALE_MS / 1000}s), reconnecting: ${url.slice(0, 80)}...`);
-      entry.ws.terminate(); // triggers 'close' → reconnect
+      const staleSec = Math.round(STALE_MS / 1000);
+      console.warn(`[KlineCache] Stale WS detected (no tick for ${staleSec}s), reconnecting: ${url.slice(0, 80)}...`);
+      entry.ws.terminate(); // triggers 'close' → reconnect with backoff
     }, STALE_MS);
   }
 

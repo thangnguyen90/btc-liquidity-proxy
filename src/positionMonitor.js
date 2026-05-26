@@ -195,11 +195,15 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
     }
   }
 
+  let _markStreamBackoffMs = 5_000;
+  const _markStreamBackoffMax = 5 * 60_000;
+
   function startMarkPriceStream() {
     markWs = new WebSocket(`${WS_BASE}/stream`);
     wsReady = false;
 
     markWs.addEventListener('open', () => {
+      _markStreamBackoffMs = 5_000; // reset backoff on successful connect
       wsReady = true;
       stats.lastMarkConnectedAt = Date.now();
       const all = new Set([...posCache.keys()].map((s) => s.toLowerCase()));
@@ -246,12 +250,21 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
     markWs.addEventListener('close', () => {
       wsReady = false;
       subscribedSymbols.clear();
-      console.warn('[PosMonitor] Mark price stream closed — reconnecting in 5s');
-      setTimeout(startMarkPriceStream, 5_000);
+      const delay = _markStreamBackoffMs;
+      _markStreamBackoffMs = Math.min(_markStreamBackoffMs * 2, _markStreamBackoffMax);
+      const delaySec = Math.round(delay / 1000);
+      console.warn(`[PosMonitor] Mark price stream closed — reconnecting in ${delaySec}s`);
+      setTimeout(startMarkPriceStream, delay);
     });
 
     markWs.addEventListener('error', (e) => {
-      console.error('[PosMonitor] Mark price stream error:', e.message ?? e.type);
+      const msg = e.message ?? e.type ?? '';
+      if (/418|429|403/.test(msg) || msg.includes('ECONNREFUSED')) {
+        _markStreamBackoffMs = 3 * 60_000; // 3min wait on ban
+        console.warn('[PosMonitor] ⛔ Ban/rate-limit on mark price stream — waiting 3min.');
+      } else {
+        console.error('[PosMonitor] Mark price stream error:', msg);
+      }
     });
   }
 
