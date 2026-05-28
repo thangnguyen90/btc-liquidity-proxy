@@ -321,6 +321,308 @@ function normalizeKline(k) {
   return Object.values(candle).every(Number.isFinite) ? candle : null;
 }
 
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+
+function avg(values) {
+  return values.length ? values.reduce((a, b) => a + b, 0) / values.length : NaN;
+}
+
+function detectPostPumpDumpRisk(candles, cfg = {}) {
+  const C = Object.assign({
+    lookback: 96,
+    tail: 24,
+    minRunupPct: 0.35,
+    maxDrawdownFromPeakPct: 0.28,
+    minRedVolShare: 0.52,
+    minVolRecentX: 1.15,
+    minCloseBelowEma: 0.001,
+    minSupportBreakPct: 0.0015,
+    minScore: 62,
+    atrPeriod: 14,
+    priceDecimals: 6,
+  }, cfg || {});
+
+  const n = candles.length;
+  if (n < Math.max(120, C.lookback + 20)) return { pass: false, reason: 'Not enough candles' };
+
+  const O = candles.map((c) => +c.open);
+  const H = candles.map((c) => +c.high);
+  const L = candles.map((c) => +c.low);
+  const Cc = candles.map((c) => +c.close);
+  const V = candles.map((c) => +c.volume);
+
+  const ema = (arr, p) => {
+    const out = new Array(arr.length);
+    let e = arr[0];
+    const a = 2 / (p + 1);
+    out[0] = e;
+    for (let i = 1; i < arr.length; i++) {
+      e = a * arr[i] + (1 - a) * e;
+      out[i] = e;
+    }
+    return out;
+  };
+  const rsi = (arr, period, endIdx) => {
+    if (endIdx < period + 1) return NaN;
+    let gains = 0, losses = 0;
+    const start = Math.max(1, endIdx - period + 1);
+    for (let i = start; i <= endIdx; i++) {
+      const d = arr[i] - arr[i - 1];
+      if (d > 0) gains += d; else losses -= d;
+    }
+    const ag = gains / period;
+    const al = losses / period;
+    return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+  };
+  const atr = (endIdx, period) => {
+    let sum = 0, count = 0;
+    for (let i = Math.max(1, endIdx - period + 1); i <= endIdx; i++) {
+      sum += Math.max(H[i] - L[i], Math.abs(H[i] - Cc[i - 1]), Math.abs(L[i] - Cc[i - 1]));
+      count++;
+    }
+    return count ? sum / count : NaN;
+  };
+
+  const start = n - C.lookback;
+  const last = n - 1;
+  let lowIdx = start;
+  for (let i = start + 1; i < last; i++) {
+    if (L[i] < L[lowIdx]) lowIdx = i;
+  }
+  let peakIdx = lowIdx;
+  for (let i = lowIdx + 1; i < last; i++) {
+    if (H[i] > H[peakIdx]) peakIdx = i;
+  }
+  if (peakIdx <= lowIdx + 4) return { pass: false, reason: 'no mature pump leg' };
+
+  const runupPct = (H[peakIdx] - L[lowIdx]) / Math.max(L[lowIdx], 1e-9);
+  if (runupPct < C.minRunupPct) return { pass: false, reason: 'runup too small' };
+
+  const barsAfterPeak = last - peakIdx;
+  if (barsAfterPeak < 4 || barsAfterPeak > C.tail) return { pass: false, reason: 'peak not in distribution window' };
+
+  const peakHigh = H[peakIdx];
+  const drawdownFromPeak = (peakHigh - Cc[last]) / Math.max(peakHigh, 1e-9);
+  if (drawdownFromPeak > C.maxDrawdownFromPeakPct) return { pass: false, reason: 'already dumped too far' };
+
+  const distStart = Math.max(peakIdx, last - C.tail + 1);
+  const priorStart = Math.max(start, distStart - 40);
+  const priorVol = avg(V.slice(priorStart, distStart));
+  const recentVol = avg(V.slice(distStart, last + 1));
+  const volRecentX = recentVol / Math.max(priorVol, 1e-9);
+
+  let redVol = 0, totalVol = 0, lowerHighs = 0;
+  for (let i = distStart; i <= last; i++) {
+    totalVol += V[i];
+    if (Cc[i] < O[i]) redVol += V[i];
+    if (i > distStart && H[i] < H[i - 1]) lowerHighs++;
+  }
+  const redVolShare = redVol / Math.max(totalVol, 1e-9);
+
+  const ema13 = ema(Cc, 13);
+  const ema25 = ema(Cc, 25);
+  const closeBelowEma13 = (ema13[last] - Cc[last]) / Math.max(ema13[last], 1e-9);
+  const emaBearTurn = ema13[last] < ema25[last] || closeBelowEma13 >= C.minCloseBelowEma;
+
+  const supportStart = Math.max(distStart, last - 12);
+  const microSupport = Math.min(...L.slice(supportStart, last));
+  const supportBreakPct = (microSupport - Cc[last]) / Math.max(microSupport, 1e-9);
+  const supportBreak = supportBreakPct >= C.minSupportBreakPct;
+
+  const rsiNow = rsi(Cc, 14, last);
+  let rsiHigh = -Infinity;
+  for (let i = Math.max(start + 20, peakIdx - 12); i <= Math.min(last, peakIdx + 8); i++) {
+    const v = rsi(Cc, 14, i);
+    if (Number.isFinite(v)) rsiHigh = Math.max(rsiHigh, v);
+  }
+  const rsiFade = Number.isFinite(rsiNow) && Number.isFinite(rsiHigh) ? Math.max(0, rsiHigh - rsiNow) : 0;
+
+  const A = atr(last, C.atrPeriod);
+  const lastRange = H[last] - L[last];
+  const lastBody = Math.abs(Cc[last] - O[last]);
+  const redTrigger = Cc[last] < O[last] && lastBody / Math.max(lastRange, 1e-9) >= 0.35;
+
+  const score = Math.round(100 * (
+    clamp01((runupPct - C.minRunupPct) / 1.2) * 0.20 +
+    clamp01(volRecentX / 2.5) * 0.16 +
+    clamp01((redVolShare - 0.45) / 0.35) * 0.18 +
+    clamp01(rsiFade / 35) * 0.14 +
+    (emaBearTurn ? 0.14 : 0) +
+    (supportBreak ? 0.12 : 0) +
+    (redTrigger ? 0.06 : 0)
+  ));
+
+  if (score < C.minScore) return { pass: false, reason: `score too low (${score})` };
+
+  const entry = Cc[last];
+  const distHigh = Math.max(...H.slice(distStart, last + 1));
+  const stop = +(Math.max(distHigh, entry + (Number.isFinite(A) ? A * 1.2 : entry * 0.04)).toFixed(C.priceDecimals));
+  const risk = Math.max(stop - entry, entry * 0.01);
+  const tp = +(Math.max(entry - risk * 2.2, entry * 0.55).toFixed(C.priceDecimals));
+
+  return {
+    pass: true,
+    stage: 'RISK',
+    score,
+    action: 'SHORT',
+    entryPrice: +entry.toFixed(C.priceDecimals),
+    stopLoss: stop,
+    takeProfit: tp,
+    reason: 'Post-pump distribution risk: tăng mạnh xong yếu dần, red volume chiếm ưu thế, bắt đầu gãy hỗ trợ/EMA',
+    note: `POST_PUMP_RISK | runup=${(runupPct * 100).toFixed(1)}% | drawdown=${(drawdownFromPeak * 100).toFixed(1)}% | redVolShare=${(redVolShare * 100).toFixed(0)}% | volRecent=${volRecentX.toFixed(2)}x | rsiFade=${rsiFade.toFixed(1)} | supportBreak=${(supportBreakPct * 100).toFixed(2)}% | lowerHighs=${lowerHighs}`,
+    meta: { idx: last },
+  };
+}
+
+function detectPostDumpBounceRisk(candles, cfg = {}) {
+  const C = Object.assign({
+    lookback: 96,
+    tail: 24,
+    minDumpPct: 0.30,
+    maxBounceFromLowPct: 0.30,
+    minGreenVolShare: 0.52,
+    minVolRecentX: 1.10,
+    minCloseAboveEma: 0.001,
+    minResistanceBreakPct: 0.0015,
+    minScore: 66,
+    atrPeriod: 14,
+    priceDecimals: 6,
+  }, cfg || {});
+
+  const n = candles.length;
+  if (n < Math.max(120, C.lookback + 20)) return { pass: false, reason: 'Not enough candles' };
+
+  const O = candles.map((c) => +c.open);
+  const H = candles.map((c) => +c.high);
+  const L = candles.map((c) => +c.low);
+  const Cc = candles.map((c) => +c.close);
+  const V = candles.map((c) => +c.volume);
+
+  const ema = (arr, p) => {
+    const out = new Array(arr.length);
+    let e = arr[0];
+    const a = 2 / (p + 1);
+    out[0] = e;
+    for (let i = 1; i < arr.length; i++) {
+      e = a * arr[i] + (1 - a) * e;
+      out[i] = e;
+    }
+    return out;
+  };
+  const rsi = (arr, period, endIdx) => {
+    if (endIdx < period + 1) return NaN;
+    let gains = 0, losses = 0;
+    const start = Math.max(1, endIdx - period + 1);
+    for (let i = start; i <= endIdx; i++) {
+      const d = arr[i] - arr[i - 1];
+      if (d > 0) gains += d; else losses -= d;
+    }
+    const ag = gains / period;
+    const al = losses / period;
+    return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+  };
+  const atr = (endIdx, period) => {
+    let sum = 0, count = 0;
+    for (let i = Math.max(1, endIdx - period + 1); i <= endIdx; i++) {
+      sum += Math.max(H[i] - L[i], Math.abs(H[i] - Cc[i - 1]), Math.abs(L[i] - Cc[i - 1]));
+      count++;
+    }
+    return count ? sum / count : NaN;
+  };
+
+  const start = n - C.lookback;
+  const last = n - 1;
+  let highIdx = start;
+  for (let i = start + 1; i < last; i++) {
+    if (H[i] > H[highIdx]) highIdx = i;
+  }
+  let lowIdx = highIdx;
+  for (let i = highIdx + 1; i < last; i++) {
+    if (L[i] < L[lowIdx]) lowIdx = i;
+  }
+  if (lowIdx <= highIdx + 4) return { pass: false, reason: 'no mature dump leg' };
+
+  const dumpPct = (H[highIdx] - L[lowIdx]) / Math.max(H[highIdx], 1e-9);
+  if (dumpPct < C.minDumpPct) return { pass: false, reason: 'dump too small' };
+
+  const barsAfterLow = last - lowIdx;
+  if (barsAfterLow < 4 || barsAfterLow > C.tail) return { pass: false, reason: 'low not in accumulation window' };
+
+  const lowPrice = L[lowIdx];
+  const bounceFromLow = (Cc[last] - lowPrice) / Math.max(lowPrice, 1e-9);
+  if (bounceFromLow > C.maxBounceFromLowPct) return { pass: false, reason: 'already bounced too far' };
+
+  const accStart = Math.max(lowIdx, last - C.tail + 1);
+  const priorStart = Math.max(start, accStart - 40);
+  const priorVol = avg(V.slice(priorStart, accStart));
+  const recentVol = avg(V.slice(accStart, last + 1));
+  const volRecentX = recentVol / Math.max(priorVol, 1e-9);
+
+  let greenVol = 0, totalVol = 0, higherLows = 0;
+  for (let i = accStart; i <= last; i++) {
+    totalVol += V[i];
+    if (Cc[i] > O[i]) greenVol += V[i];
+    if (i > accStart && L[i] > L[i - 1]) higherLows++;
+  }
+  const greenVolShare = greenVol / Math.max(totalVol, 1e-9);
+
+  const ema13 = ema(Cc, 13);
+  const ema25 = ema(Cc, 25);
+  const closeAboveEma13 = (Cc[last] - ema13[last]) / Math.max(ema13[last], 1e-9);
+  const emaBullTurn = ema13[last] > ema25[last] || closeAboveEma13 >= C.minCloseAboveEma;
+
+  const resistanceStart = Math.max(accStart, last - 12);
+  const microResistance = Math.max(...H.slice(resistanceStart, last));
+  const resistanceBreakPct = (Cc[last] - microResistance) / Math.max(microResistance, 1e-9);
+  const resistanceBreak = resistanceBreakPct >= C.minResistanceBreakPct;
+
+  const rsiNow = rsi(Cc, 14, last);
+  let rsiLow = Infinity;
+  for (let i = Math.max(start + 20, lowIdx - 12); i <= Math.min(last, lowIdx + 8); i++) {
+    const v = rsi(Cc, 14, i);
+    if (Number.isFinite(v)) rsiLow = Math.min(rsiLow, v);
+  }
+  const rsiRecover = Number.isFinite(rsiNow) && Number.isFinite(rsiLow) ? Math.max(0, rsiNow - rsiLow) : 0;
+
+  const A = atr(last, C.atrPeriod);
+  const lastRange = H[last] - L[last];
+  const lastBody = Math.abs(Cc[last] - O[last]);
+  const greenTrigger = Cc[last] > O[last] && lastBody / Math.max(lastRange, 1e-9) >= 0.35;
+
+  const score = Math.round(100 * (
+    clamp01((dumpPct - C.minDumpPct) / 0.75) * 0.20 +
+    clamp01(volRecentX / 2.2) * 0.14 +
+    clamp01((greenVolShare - 0.45) / 0.35) * 0.18 +
+    clamp01(rsiRecover / 35) * 0.16 +
+    (emaBullTurn ? 0.14 : 0) +
+    (resistanceBreak ? 0.12 : 0) +
+    (greenTrigger ? 0.06 : 0)
+  ));
+
+  if (score < C.minScore) return { pass: false, reason: `score too low (${score})` };
+
+  const entry = Cc[last];
+  const accLow = Math.min(...L.slice(accStart, last + 1));
+  const stop = +(Math.min(accLow, entry - (Number.isFinite(A) ? A * 1.2 : entry * 0.04)).toFixed(C.priceDecimals));
+  const risk = Math.max(entry - stop, entry * 0.01);
+  const tp = +(Math.min(entry + risk * 2.2, entry * 1.8).toFixed(C.priceDecimals));
+
+  return {
+    pass: true,
+    stage: 'BOUNCE_RISK',
+    score,
+    action: 'LONG',
+    entryPrice: +entry.toFixed(C.priceDecimals),
+    stopLoss: stop,
+    takeProfit: tp,
+    reason: 'Post-dump bounce risk: dump mạnh xong bán yếu dần, green volume hồi, bắt đầu reclaim kháng cự/EMA',
+    note: `POST_DUMP_BOUNCE | dump=${(dumpPct * 100).toFixed(1)}% | bounce=${(bounceFromLow * 100).toFixed(1)}% | greenVolShare=${(greenVolShare * 100).toFixed(0)}% | volRecent=${volRecentX.toFixed(2)}x | rsiRecover=${rsiRecover.toFixed(1)} | resistanceBreak=${(resistanceBreakPct * 100).toFixed(2)}% | higherLows=${higherLows}`,
+    meta: { idx: last },
+  };
+}
+
 export async function runDumpIgnitionScan(symbols, klineCache, snapshotMap) {
   const results  = [];
   let processed = 0;
@@ -344,7 +646,10 @@ export async function runDumpIgnitionScan(symbols, klineCache, snapshotMap) {
         if (snap.markPrice) state.markPrice = snap.markPrice;
       }
 
-      const det = detectDumpIgnition(candles, state);
+      const ignition = detectDumpIgnition(candles, state);
+      const risk = detectPostPumpDumpRisk(candles);
+      const bounce = detectPostDumpBounceRisk(candles);
+      const det = ignition.pass ? ignition : risk.pass ? risk : bounce;
       if (!det.pass || !det.action) continue;
 
       // Chase penalty — same logic as pumpDetector
@@ -352,9 +657,10 @@ export async function runDumpIgnitionScan(symbols, klineCache, snapshotMap) {
       let chasePct   = 0;
       let chaseScore = det.score;
       if (markNow && det.entryPrice && det.takeProfit && det.takeProfit !== det.entryPrice) {
-        // SHORT: entry > tp, mark going down is good
-        if (markNow < det.entryPrice) {
+        if (det.action === 'SHORT' && markNow < det.entryPrice) {
           chasePct = (det.entryPrice - markNow) / Math.max(1e-9, det.entryPrice - det.takeProfit);
+        } else if (det.action === 'LONG' && markNow > det.entryPrice) {
+          chasePct = (markNow - det.entryPrice) / Math.max(1e-9, det.takeProfit - det.entryPrice);
         }
         chasePct = Math.max(0, chasePct);
         if (chasePct > 0.25) {
@@ -366,7 +672,7 @@ export async function runDumpIgnitionScan(symbols, klineCache, snapshotMap) {
       results.push({
         symbol,
         action:    det.action,
-        type:      det.stage === 'EARLY' ? 'dump_ignition_early' : 'dump_ignition',
+        type:      det.stage === 'BOUNCE_RISK' ? 'post_dump_bounce_risk' : det.stage === 'RISK' ? 'post_pump_dump_risk' : det.stage === 'EARLY' ? 'dump_ignition_early' : 'dump_ignition',
         score:     chaseScore,
         grade:     chaseScore >= 85 ? 'A' : chaseScore >= 70 ? 'B' : chaseScore >= 55 ? 'C' : 'D',
         entry:     det.entryPrice,

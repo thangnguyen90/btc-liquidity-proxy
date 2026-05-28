@@ -419,7 +419,7 @@ export function startVolumeDumpScanner({
       for (const row of candidates) {
         try {
           const klines = await getKlines(row.symbol, '15m', 42);
-          if (klines.length < 22) continue;
+          if (!klines || klines.length < 22) continue;
 
           const closed = klines.slice(0, -1);
           const baseline = closed.slice(-36, -13); // candles 14-36 from end → clean baseline
@@ -715,6 +715,7 @@ export function startLiqImbalanceScanner({
       for (const row of candidates) {
         try {
           const klines = await getKlines(row.symbol, '15m', 500);
+          if (!klines || klines.length < 60) continue;
           const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice });
           const total = heatmap.liquidityAbove + heatmap.liquidityBelow;
 

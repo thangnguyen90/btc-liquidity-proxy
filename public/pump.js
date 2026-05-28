@@ -144,6 +144,8 @@ const TYPE_LABELS = {
   pump_breakout: 'Pump Breakout',
   early_pump:    'Early Pump',
   ema_pullback:  'EMA Pullback',
+  ma60_volume_cluster: 'MA60 Vol Cluster',
+  ma60_volume_cluster_5m: 'MA60 5m Cluster',
   dist_top:      'Distribution Top',
   vol_climax:    'Vol Climax',
   climax_top:    'Climax Top',
@@ -158,6 +160,17 @@ const TYPE_LABELS = {
 function buildFactors(sig) {
   const f = sig.factors || {};
   const chips = [];
+
+  if (sig.type === 'ma60_volume_cluster' || sig.type === 'ma60_volume_cluster_5m') {
+    chips.push({ label: `${f.timeframe ?? '15m'} MA60 ${fmtPrice(f.ma60)}`, ok: 'orange' });
+    if (f.clusterGainPct != null) chips.push({ label: `Cluster +${Number(f.clusterGainPct).toFixed(1)}%`, ok: 'orange' });
+    if (f.breakoutPct != null) chips.push({ label: `Break +${Number(f.breakoutPct).toFixed(1)}%`, ok: 'ok' });
+    if (f.volNowX != null) chips.push({ label: `Vol ${Number(f.volNowX).toFixed(1)}×`, ok: 'orange' });
+    if (f.volRamp != null) chips.push({ label: `Ramp ${Number(f.volRamp).toFixed(2)}`, ok: Number(f.volRamp) >= 1.15 ? 'ok' : 'orange' });
+    if (f.greenCandles != null && f.clusterBars != null) chips.push({ label: `${f.greenCandles}/${f.clusterBars} green`, ok: 'ok' });
+    if (f.rsi14val != null) chips.push({ label: `RSI ${f.rsi14val}`, ok: f.rsi14val >= 55 && f.rsi14val <= 75 ? 'ok' : 'warn' });
+    return chips.map((c) => `<span class="pump-factor ${c.ok}">${c.label}</span>`).join('');
+  }
 
   if (sig.action === 'LONG') {
     const ribbonOk = f.emaRibbon >= 0.8;
@@ -305,6 +318,7 @@ window.placePumpOrder = async function (btn, symbol, action, entry, sl, tp, scor
 // ── Card builder ──────────────────────────────────────────────────────────────
 
 function isAutoEligible(sig) {
+  if (sig.type === 'ma60_volume_cluster' || sig.type === 'ma60_volume_cluster_5m') return false;
   if (sig.score < 80) return false;
   if (sig.marketOk === false) return false;
   if ((sig.factors?.emaRibbon ?? 1) === 0) return false;
@@ -324,13 +338,15 @@ function entryBadge(sig) {
 
 function buildCard(sig) {
   const isLong      = sig.action === 'LONG';
+  const isMa60      = sig.type === 'ma60_volume_cluster' || sig.type === 'ma60_volume_cluster_5m';
   const dirClass    = isLong ? 'long' : 'short';
+  const cardClass   = isMa60 ? `${dirClass} ma60-cluster` : dirClass;
   const dirIcon     = isLong ? '🟢' : '🔴';
-  const dirLabel    = isLong ? 'LONG' : 'SHORT';
+  const dirLabel    = isMa60 ? (sig.type === 'ma60_volume_cluster_5m' ? 'MA60 5M LONG' : 'MA60 LONG') : (isLong ? 'LONG' : 'SHORT');
   const changeClass = (sig.change24h ?? 0) >= 0 ? 'positive' : 'negative';
   const gradeClass  = `grade-${(sig.grade || 'd').toLowerCase()}`;
   const typeLabel   = TYPE_LABELS[sig.type] ?? sig.type;
-  const typeExtra   = (sig.type === 'dist_top' || sig.type === 'vol_climax') ? ' type-danger' : '';
+  const typeExtra   = isMa60 ? ' type-ma60' : ((sig.type === 'dist_top' || sig.type === 'vol_climax') ? ' type-danger' : '');
   const detailUrl   = `/?symbol=${sig.symbol}`;
   const slColor     = isLong ? 'negative' : 'positive';
   const tpColor     = isLong ? 'positive' : 'negative';
@@ -347,7 +363,7 @@ function buildCard(sig) {
   const badgeHtml = badge ? `<div class="${badge.cls}">${badge.label}</div>` : '';
 
   return `
-    <article class="pump-card ${dirClass}">
+    <article class="pump-card ${cardClass}">
       ${autoDot}
       <div class="pump-card-top">
         <div class="pump-symbol-wrap">
@@ -357,7 +373,7 @@ function buildCard(sig) {
           <span class="pump-change ${changeClass}">${fmtPct(sig.change24h)} 24h · ${fmtPrice(sig.markPrice)}</span>
         </div>
         <div class="pump-right">
-          <span class="pump-action-badge ${dirClass}">${dirIcon} ${dirLabel}</span>
+          <span class="pump-action-badge ${dirClass}${isMa60 ? ' ma60-cluster' : ''}">${dirIcon} ${dirLabel}</span>
           <div class="pump-score-wrap">
             <span class="pump-score-num">${sig.score}</span>
             <span class="pump-grade ${gradeClass}">${sig.grade}</span>

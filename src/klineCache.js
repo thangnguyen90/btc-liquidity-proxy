@@ -21,6 +21,7 @@ export class KlineCache extends EventEmitter {
     this._cache    = new Map();   // `${SYMBOL}|${interval}` → Kline[]
     this._seeding  = new Set();   // keys currently being seeded via REST
     this._conns    = new Map();   // streamUrl → { ws, lastTickAt, pingTimer, staleTimer, backoffMs }
+    this._subscribed = new Set(); // `${SYMBOL}|${interval}` streams already opened
     this.lastTickAt = 0;          // timestamp of most recent tick across all streams
   }
 
@@ -31,7 +32,9 @@ export class KlineCache extends EventEmitter {
   async seed(symbols, interval, limit, { batchSize = 5, batchDelayMs = 600 } = {}) {
     const toSeed = symbols.filter((s) => {
       const k = this._key(s, interval);
-      return !this._cache.has(k) && !this._seeding.has(k);
+      const existing = this._cache.get(k);
+      const targetLength = Math.min(limit, this.maxKlines);
+      return (!existing || existing.length < targetLength) && !this._seeding.has(k);
     });
 
     this._subscribe(symbols, interval);
@@ -48,7 +51,7 @@ export class KlineCache extends EventEmitter {
             this._cache.set(k, klines.slice(-this.maxKlines));
           }
         } catch {
-          // leave unseeded — getKlines() will fall back to REST on access
+          // leave unseeded — readers stay cache-only to avoid periodic REST storms
         } finally {
           this._seeding.delete(k);
         }
@@ -58,12 +61,24 @@ export class KlineCache extends EventEmitter {
       }
     }
 
-    const seeded = symbols.filter((s) => this._cache.has(this._key(s, interval))).length;
-    console.log(`[KlineCache] Seeded ${seeded}/${symbols.length} symbols @ ${interval}`);
+    const targetLength = Math.min(limit, this.maxKlines);
+    const seeded = symbols.filter((s) => (this._cache.get(this._key(s, interval))?.length ?? 0) >= targetLength).length;
+    console.log(`[KlineCache] Seeded ${seeded}/${symbols.length} symbols @ ${interval} (${targetLength} bars)`);
+  }
+
+  subscribe(symbols, interval) {
+    this._subscribe(symbols, interval);
   }
 
   _subscribe(symbols, interval) {
-    const streams = symbols.map((s) => `${s.toLowerCase()}@kline_${interval}`);
+    const streams = [];
+    for (const symbol of symbols) {
+      const key = this._key(symbol, interval);
+      if (this._subscribed.has(key)) continue;
+      this._subscribed.add(key);
+      streams.push(`${symbol.toLowerCase()}@kline_${interval}`);
+    }
+    if (streams.length === 0) return;
     for (let i = 0; i < streams.length; i += MAX_STREAMS_PER_CONN) {
       const chunk = streams.slice(i, i + MAX_STREAMS_PER_CONN);
       const url   = `${FSTREAM_WS}/stream?streams=${chunk.join('/')}`;
@@ -187,17 +202,22 @@ export class KlineCache extends EventEmitter {
     }
   }
 
-  async getKlines(symbol, interval, limit) {
+  async getKlines(symbol, interval, limit, { fallbackRest = false } = {}) {
     const key = this._key(symbol, interval);
     const arr = this._cache.get(key);
     if (arr && arr.length > 0) return arr.slice(-limit);
-    return this.client.getKlines(symbol, interval, limit);
+    if (fallbackRest) return this.client.getKlines(symbol, interval, limit);
+    return null;
   }
 
   getIfCached(symbol, interval, limit) {
     const arr = this._cache.get(this._key(symbol, interval));
     if (!arr || arr.length === 0) return null;
     return arr.slice(-limit);
+  }
+
+  countReady(symbols, interval, minBars) {
+    return symbols.filter((symbol) => (this._cache.get(this._key(symbol, interval))?.length ?? 0) >= minBars).length;
   }
 
   stats(interval) {

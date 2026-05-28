@@ -24,6 +24,7 @@ import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
 import { sharedMarkTicker } from './sharedMarkTicker.js';
+import { getEtfProxy } from './etfProxy.js';
 import WebSocket from 'ws';
 
 loadEnv();
@@ -101,6 +102,7 @@ let _pumpScanDebounce = null;
 async function schedulePumpScan() {
   clearTimeout(_pumpScanDebounce);
   _pumpScanDebounce = setTimeout(async () => {
+    if (!strategyScansReady('PumpScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -267,6 +269,7 @@ let _capScanDebounce = null;
 async function scheduleCapScan() {
   clearTimeout(_capScanDebounce);
   _capScanDebounce = setTimeout(async () => {
+    if (!strategyScansReady('CapScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -340,6 +343,7 @@ let _killShortScanDebounce = null;
 async function scheduleKillShortScan() {
   clearTimeout(_killShortScanDebounce);
   _killShortScanDebounce = setTimeout(async () => {
+    if (!strategyScansReady('KillShortScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -401,6 +405,8 @@ function numberFromNoteValue(value) {
 }
 
 function evaluateDumpIgnitionAutoQuality(sig, health = {}) {
+  if (sig.type === 'post_pump_dump_risk') return { ok: false, reason: 'post-pump risk is watch-only' };
+  if (sig.type === 'post_dump_bounce_risk') return { ok: false, reason: 'post-dump bounce is handled by real-order module' };
   const minScore = Number(process.env.DUMP_IGNITION_AUTO_MIN_SCORE ?? 90);
   if (sig.score < minScore) return { ok: false, reason: `score ${sig.score} < ${minScore}` };
 
@@ -430,6 +436,335 @@ function evaluateDumpIgnitionAutoQuality(sig, health = {}) {
   }
 
   return { ok: true, reason: 'quality gate passed' };
+}
+
+function applyPostPumpDumpRiskTslExcludes(signals) {
+  for (const sig of signals ?? []) {
+    if (sig?.type !== 'post_pump_dump_risk' || !sig.symbol) continue;
+    const symbol = String(sig.symbol).toUpperCase();
+    if (tslExcludedSymbols.has(symbol)) continue;
+    tslExcludedSymbols.add(symbol);
+    console.log(`[TSL-Exclude] ⛔ ${symbol} excluded by Post-pump Dump Risk signal`);
+  }
+}
+
+function applyPostDumpBounceRiskTslExcludes(signals) {
+  for (const sig of signals ?? []) {
+    if (sig?.type !== 'post_dump_bounce_risk' || !sig.symbol) continue;
+    const symbol = String(sig.symbol).toUpperCase();
+    if (tslExcludedSymbols.has(symbol)) continue;
+    tslExcludedSymbols.add(symbol);
+    console.log(`[TSL-Exclude] ⛔ ${symbol} excluded by Post-dump Bounce Risk signal`);
+  }
+}
+
+async function handlePostPumpDumpRiskRealOrder(sig) {
+  if (sig?.type !== 'post_pump_dump_risk') return;
+  if (process.env.POST_PUMP_DUMP_RISK_AUTO_ORDER_ENABLED !== 'true') return;
+  if (sig.action !== 'SHORT') return;
+
+  applyPostPumpDumpRiskTslExcludes([sig]);
+
+  const minScore = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_MIN_SCORE ?? 62);
+  if (sig.score < minScore) return;
+  if (!sig.entry || !sig.sl) return;
+
+  const cooldownMs = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|${sig.type}`;
+  const last = postPumpDumpRiskOrderFired.get(dedupKey) ?? 0;
+  if (Date.now() - last < cooldownMs) {
+    console.log(`[PostPumpDumpRiskOrder] skip ${sig.symbol} - cooldown`);
+    return;
+  }
+
+  if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
+    console.log(`[PostPumpDumpRiskOrder] skip ${sig.symbol} - real Binance order disabled/dry-run`);
+    return;
+  }
+
+  let apiKey;
+  let apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch (err) {
+    apiKey = process.env.BINANCE_API_KEY;
+    apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw err;
+  }
+
+  const [positions, openOrders] = await Promise.all([
+    client.getPositions({ apiKey, apiSecret }),
+    getCachedOpenOrders(apiKey, apiSecret),
+  ]);
+  const hasPosition = positions.some((p) => p.symbol === sig.symbol && Math.abs(Number(p.positionAmt ?? 0)) > 0);
+  if (hasPosition) {
+    console.log(`[PostPumpDumpRiskOrder] skip ${sig.symbol} - already has position`);
+    return;
+  }
+  const hasEntryOrder = openOrders.some((o) => {
+    if (o.symbol !== sig.symbol) return false;
+    if (String(o.reduceOnly ?? '').toLowerCase() === 'true') return false;
+    const type = String(o.type ?? o.origType ?? '').toUpperCase();
+    return ['MARKET', 'LIMIT', 'LIMIT_MAKER'].includes(type);
+  });
+  if (hasEntryOrder) {
+    console.log(`[PostPumpDumpRiskOrder] skip ${sig.symbol} - already has entry order`);
+    return;
+  }
+
+  const marginUsdt = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_MARGIN_USDT ?? 1);
+  const leverage = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_LEVERAGE ?? 10);
+  const notionalUsdt = marginUsdt * leverage;
+  const orderType = String(process.env.POST_PUMP_DUMP_RISK_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const maxOpenPositions = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+  const result = await placeOrder({
+    symbol: sig.symbol,
+    side: 'SELL',
+    orderType,
+    notionalUsdt,
+    leverage,
+    limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
+    takeProfitPrice: sig.tp ?? undefined,
+    stopLossPrice: sig.sl ?? undefined,
+    maxOpenPositions,
+    dryRun: false,
+  }, null, { apiKey, apiSecret });
+
+  postPumpDumpRiskOrderFired.set(dedupKey, Date.now());
+  invalidateOpenOrdersCache();
+
+  const orderId = result?.orderResult?.orderId ?? '-';
+  const avgPrice = result?.orderResult?.avgPrice ?? result?.order?.markPrice ?? sig.entry;
+  console.log(`[PostPumpDumpRiskOrder] REAL ${sig.symbol} SHORT ${orderType} orderId=${orderId} score=${sig.score}`);
+
+  const webhookUrl = process.env.DUMP_IGNITION_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '';
+  if (webhookUrl) {
+    const fmt = (v) => v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toPrecision(8).replace(/\.?0+$/, '');
+    const msg = [
+      `**[REAL ORDER] Post-pump Dump Risk ${sig.symbol} SHORT - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+      `OrderId: \`${orderId}\` | Avg/Mark: \`${fmt(avgPrice)}\``,
+      `Margin: $${marginUsdt} x ${leverage}x | Notional: $${notionalUsdt}`,
+      `Entry signal: \`${fmt(sig.entry)}\` | SL: \`${fmt(sig.sl)}\` | TP: \`${fmt(sig.tp)}\``,
+      `Skip TSL: true`,
+    ].join('\n');
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: msg }),
+    }).catch(() => {});
+  }
+}
+
+function sendPostPumpDumpRiskDiscord(sig) {
+  if (sig?.type !== 'post_pump_dump_risk') return;
+  const webhookUrl = process.env.POST_PUMP_DUMP_RISK_WEBHOOK_URL || '';
+  if (!webhookUrl) return;
+
+  const minScore = Number(process.env.POST_PUMP_DUMP_RISK_MIN_DISCORD_SCORE ?? 0);
+  if (sig.score < minScore) return;
+
+  const dedupMs = Number(process.env.POST_PUMP_DUMP_RISK_DISCORD_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|post_pump_dump_risk`;
+  const lastFired = dumpIgnDiscordFired.get(dedupKey) ?? 0;
+  if (Date.now() - lastFired < dedupMs) return;
+  dumpIgnDiscordFired.set(dedupKey, Date.now());
+
+  const fmt = (v) => {
+    if (v == null || !Number.isFinite(Number(v))) return '-';
+    const n = Number(v);
+    if (Math.abs(n) >= 1000) return n.toLocaleString('en', { maximumFractionDigits: 2 });
+    if (Math.abs(n) >= 1) return n.toFixed(4);
+    return n.toFixed(6);
+  };
+  const noteKV = Object.fromEntries((sig.note ?? '')
+    .split('|')
+    .map((s) => s.trim().split('='))
+    .filter((a) => a.length === 2)
+    .map(([k, v]) => [k.trim(), v.trim()]));
+  const fields = [
+    { name: 'Entry / SL / TP', value: `\`${fmt(sig.entry)}\` / \`${fmt(sig.sl)}\` / \`${fmt(sig.tp)}\``, inline: false },
+    { name: 'Runup', value: noteKV.runup ? `${noteKV.runup}%` : '-', inline: true },
+    { name: 'Red volume', value: noteKV.redVolShare ? `${noteKV.redVolShare}%` : '-', inline: true },
+    { name: 'Vol recent', value: noteKV.volRecent ? `${noteKV.volRecent}x` : '-', inline: true },
+    { name: 'RSI fade', value: noteKV.rsiFade ?? '-', inline: true },
+    { name: 'Support break', value: noteKV.supportBreak ? `${noteKV.supportBreak}%` : '-', inline: true },
+    { name: 'Mark', value: fmt(sig.markPrice), inline: true },
+  ];
+
+  fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      content: `🔴 **[POST_PUMP_DUMP_RISK] ${sig.symbol} SHORT** · Score ${sig.score} (${sig.grade ?? '-'})`,
+      embeds: [{
+        title: `[POST_PUMP_DUMP_RISK] ${sig.symbol} · SHORT`,
+        description: sig.reason ?? 'Post-pump distribution risk',
+        color: 0xEF4444,
+        fields,
+        footer: { text: 'Dump Ignition Board' },
+        timestamp: new Date().toISOString(),
+      }],
+    }),
+  }).catch((err) => console.warn(`[PostPumpDumpRisk] Discord ${sig.symbol}:`, err.message));
+
+  console.log(`[PostPumpDumpRisk] 📨 Discord: ${sig.symbol} score=${sig.score}`);
+}
+
+function sendPostDumpBounceRiskDiscord(sig) {
+  if (sig?.type !== 'post_dump_bounce_risk') return;
+  const webhookUrl = process.env.POST_DUMP_BOUNCE_RISK_WEBHOOK_URL
+    || process.env.POST_PUMP_DUMP_RISK_WEBHOOK_URL
+    || process.env.DUMP_IGNITION_WEBHOOK_URL
+    || '';
+  if (!webhookUrl) return;
+
+  const minScore = Number(process.env.POST_DUMP_BOUNCE_RISK_MIN_DISCORD_SCORE ?? 0);
+  if (sig.score < minScore) return;
+
+  const dedupMs = Number(process.env.POST_DUMP_BOUNCE_RISK_DISCORD_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|post_dump_bounce_risk`;
+  const lastFired = dumpIgnDiscordFired.get(dedupKey) ?? 0;
+  if (Date.now() - lastFired < dedupMs) return;
+  dumpIgnDiscordFired.set(dedupKey, Date.now());
+
+  const fmt = (v) => {
+    if (v == null || !Number.isFinite(Number(v))) return '-';
+    const n = Number(v);
+    if (Math.abs(n) >= 1000) return n.toLocaleString('en', { maximumFractionDigits: 2 });
+    if (Math.abs(n) >= 1) return n.toFixed(4);
+    return n.toFixed(6);
+  };
+  const noteKV = Object.fromEntries((sig.note ?? '')
+    .split('|')
+    .map((s) => s.trim().split('='))
+    .filter((a) => a.length === 2)
+    .map(([k, v]) => [k.trim(), v.trim()]));
+  const fields = [
+    { name: 'Entry / SL / TP', value: `\`${fmt(sig.entry)}\` / \`${fmt(sig.sl)}\` / \`${fmt(sig.tp)}\``, inline: false },
+    { name: 'Dump', value: noteKV.dump ? `${noteKV.dump}%` : '-', inline: true },
+    { name: 'Bounce', value: noteKV.bounce ? `${noteKV.bounce}%` : '-', inline: true },
+    { name: 'Green volume', value: noteKV.greenVolShare ? `${noteKV.greenVolShare}%` : '-', inline: true },
+    { name: 'Vol recent', value: noteKV.volRecent ? `${noteKV.volRecent}x` : '-', inline: true },
+    { name: 'RSI recover', value: noteKV.rsiRecover ?? '-', inline: true },
+    { name: 'Resistance break', value: noteKV.resistanceBreak ? `${noteKV.resistanceBreak}%` : '-', inline: true },
+    { name: 'Higher lows', value: noteKV.higherLows ?? '-', inline: true },
+    { name: 'Mark', value: fmt(sig.markPrice), inline: true },
+  ];
+
+  fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      content: `🟢 **[POST_DUMP_BOUNCE_RISK] ${sig.symbol} LONG** · Score ${sig.score} (${sig.grade ?? '-'})`,
+      embeds: [{
+        title: `[POST_DUMP_BOUNCE_RISK] ${sig.symbol} · LONG`,
+        description: sig.reason ?? 'Post-dump bounce risk: sell pressure fading, green volume recovery, reclaim resistance/EMA',
+        color: 0x22C55E,
+        fields,
+        footer: { text: 'Dump Ignition Board' },
+        timestamp: new Date().toISOString(),
+      }],
+    }),
+  }).catch((err) => console.warn(`[PostDumpBounceRisk] Discord ${sig.symbol}:`, err.message));
+
+  console.log(`[PostDumpBounceRisk] Discord: ${sig.symbol} score=${sig.score}`);
+}
+
+async function handlePostDumpBounceRiskRealOrder(sig) {
+  if (sig?.type !== 'post_dump_bounce_risk') return;
+  if (process.env.POST_DUMP_BOUNCE_RISK_AUTO_ORDER_ENABLED !== 'true') return;
+  if (sig.action !== 'LONG') return;
+
+  applyPostDumpBounceRiskTslExcludes([sig]);
+
+  const minScore = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_MIN_SCORE ?? 66);
+  if (sig.score < minScore) return;
+  if (!sig.entry || !sig.sl) return;
+
+  const cooldownMs = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|${sig.type}`;
+  const last = postDumpBounceRiskOrderFired.get(dedupKey) ?? 0;
+  if (Date.now() - last < cooldownMs) {
+    console.log(`[PostDumpBounceRiskOrder] skip ${sig.symbol} - cooldown`);
+    return;
+  }
+
+  if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
+    console.log(`[PostDumpBounceRiskOrder] skip ${sig.symbol} - real Binance order disabled/dry-run`);
+    return;
+  }
+
+  let apiKey;
+  let apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch (err) {
+    apiKey = process.env.BINANCE_API_KEY;
+    apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw err;
+  }
+
+  const [positions, openOrders] = await Promise.all([
+    client.getPositions({ apiKey, apiSecret }),
+    getCachedOpenOrders(apiKey, apiSecret),
+  ]);
+  const hasPosition = positions.some((p) => p.symbol === sig.symbol && Math.abs(Number(p.positionAmt ?? 0)) > 0);
+  if (hasPosition) {
+    console.log(`[PostDumpBounceRiskOrder] skip ${sig.symbol} - already has position`);
+    return;
+  }
+  const hasEntryOrder = openOrders.some((o) => {
+    if (o.symbol !== sig.symbol) return false;
+    if (String(o.reduceOnly ?? '').toLowerCase() === 'true') return false;
+    const type = String(o.type ?? o.origType ?? '').toUpperCase();
+    return ['MARKET', 'LIMIT', 'LIMIT_MAKER'].includes(type);
+  });
+  if (hasEntryOrder) {
+    console.log(`[PostDumpBounceRiskOrder] skip ${sig.symbol} - already has entry order`);
+    return;
+  }
+
+  const marginUsdt = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_MARGIN_USDT ?? 1);
+  const leverage = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_LEVERAGE ?? 10);
+  const notionalUsdt = marginUsdt * leverage;
+  const orderType = String(process.env.POST_DUMP_BOUNCE_RISK_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const maxOpenPositions = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+  const result = await placeOrder({
+    symbol: sig.symbol,
+    side: 'BUY',
+    orderType,
+    notionalUsdt,
+    leverage,
+    limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
+    takeProfitPrice: sig.tp ?? undefined,
+    stopLossPrice: sig.sl ?? undefined,
+    maxOpenPositions,
+    dryRun: false,
+  }, null, { apiKey, apiSecret });
+
+  postDumpBounceRiskOrderFired.set(dedupKey, Date.now());
+  invalidateOpenOrdersCache();
+
+  const orderId = result?.orderResult?.orderId ?? '-';
+  const avgPrice = result?.orderResult?.avgPrice ?? result?.order?.markPrice ?? sig.entry;
+  console.log(`[PostDumpBounceRiskOrder] REAL ${sig.symbol} LONG ${orderType} orderId=${orderId} score=${sig.score}`);
+
+  const webhookUrl = process.env.DUMP_IGNITION_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '';
+  if (webhookUrl) {
+    const fmt = (v) => v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toPrecision(8).replace(/\.?0+$/, '');
+    const msg = [
+      `**[REAL ORDER] Post-dump Bounce Risk ${sig.symbol} LONG - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+      `OrderId: \`${orderId}\` | Avg/Mark: \`${fmt(avgPrice)}\``,
+      `Margin: $${marginUsdt} x ${leverage}x | Notional: $${notionalUsdt}`,
+      `Entry signal: \`${fmt(sig.entry)}\` | SL: \`${fmt(sig.sl)}\` | TP: \`${fmt(sig.tp)}\``,
+      `Skip TSL: true`,
+    ].join('\n');
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: msg }),
+    }).catch(() => {});
+  }
 }
 
 async function autoCreateDiPaperTrades(signals) {
@@ -466,6 +801,7 @@ async function autoCreateDiPaperTrades(signals) {
 async function scheduleDumpIgnitionScan() {
   clearTimeout(_dumpIgnitionScanDebounce);
   _dumpIgnitionScanDebounce = setTimeout(async () => {
+    if (!strategyScansReady('DumpIgnitionScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -480,6 +816,18 @@ async function scheduleDumpIgnitionScan() {
       dumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
       pushSse(dumpIgnitionSseClients, result);
       if (signals.length) console.log(`[DumpIgnition] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.type} ${s.score})`).join(', ')}`);
+      applyPostPumpDumpRiskTslExcludes(signals);
+      applyPostDumpBounceRiskTslExcludes(signals);
+      for (const sig of signals) {
+        sendPostPumpDumpRiskDiscord(sig);
+        sendPostDumpBounceRiskDiscord(sig);
+        handlePostPumpDumpRiskRealOrder(sig).catch((e) => {
+          console.warn(`[PostPumpDumpRiskOrder] ${sig.symbol}:`, e.message);
+        });
+        handlePostDumpBounceRiskRealOrder(sig).catch((e) => {
+          console.warn(`[PostDumpBounceRiskOrder] ${sig.symbol}:`, e.message);
+        });
+      }
       await autoCreateDiPaperTrades(signals);
 
       // Edge paper auto-fire: dump_ignition signals chỉ xuất hiện trên edge-short
@@ -499,7 +847,8 @@ async function scheduleDumpIgnitionScan() {
           dumpIgnDiscordFired.set(sig.symbol, Date.now());
 
           const isIgnition = sig.type === 'dump_ignition';
-          const stageBadge = isIgnition ? '🔥 IGNITION' : '⚠️ EARLY';
+          const isRisk = sig.type === 'post_pump_dump_risk';
+          const stageBadge = isIgnition ? '🔥 IGNITION' : isRisk ? '🟠 POST-PUMP RISK' : '⚠️ EARLY';
           const sym = sig.symbol.replace(/USDT$/, '');
           const gradeEmoji = sig.grade === 'A' ? '🔥' : sig.grade === 'B' ? '⚡' : '📌';
           const fmtP = (v) => v == null ? '—' : Number(v) >= 1000 ? Number(v).toLocaleString('en', { maximumFractionDigits: 2 }) : Number(v) >= 1 ? Number(v).toFixed(4) : Number(v).toFixed(6);
@@ -534,6 +883,7 @@ let _spikeRevDebounce = null;
 async function scheduleSpikeReversalScan() {
   clearTimeout(_spikeRevDebounce);
   _spikeRevDebounce = setTimeout(async () => {
+    if (!strategyScansReady('SpikeReversalScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -542,6 +892,7 @@ async function scheduleSpikeReversalScan() {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runSpikeReversalScan(topSymbols, klineCache, snapshotMap);
+      applySpikeReversalTslExcludes(signals);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       spikeReversalScanCache.data = result;
@@ -612,6 +963,7 @@ let _postPumpKillShortDebounce = null;
 async function schedulePostPumpKillShortScan() {
   clearTimeout(_postPumpKillShortDebounce);
   _postPumpKillShortDebounce = setTimeout(async () => {
+    if (!strategyScansReady('PostPumpKillShortScan')) return;
     try {
       const snapshot = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -719,11 +1071,11 @@ async function schedulePostPumpKillShortScan() {
 
 async function handlePostPumpKillShortRealOrder(sig) {
   if (process.env.POST_PUMP_KILL_SHORT_AUTO_ORDER_ENABLED !== 'true') return;
-  const isShort = sig.stage === 'confirmed_short';
-  const isLong = sig.stage === 'confirmed_long';
+  const isShort = sig.stage === 'confirmed_short' || sig.stage === 'watch_spike';
+  const isLong = sig.stage === 'confirmed_long' || sig.stage === 'watch_long_sweep';
   if (!isShort && !isLong) return;
 
-  const minScore = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MIN_SCORE ?? 60);
+  const minScore = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MIN_SCORE ?? 0);
   if (sig.score < minScore) return;
   if (!sig.entry || !sig.sl) return;
 
@@ -897,6 +1249,7 @@ async function autoCreatePiPaperTrades(signals) {
 async function schedulePumpIgnitionScan() {
   clearTimeout(_pumpIgnitionDebounce);
   _pumpIgnitionDebounce = setTimeout(async () => {
+    if (!strategyScansReady('PumpIgnitionScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -983,13 +1336,7 @@ async function schedulePumpIgnitionScan() {
 
 klineCache.on('candleClose', ({ interval }) => {
   if (interval !== '15m') return;
-  schedulePumpScan();
-  scheduleCapScan();
-  scheduleKillShortScan();
-  scheduleDumpIgnitionScan();
-  scheduleSpikeReversalScan();
-  schedulePostPumpKillShortScan();
-  schedulePumpIgnitionScan();
+  scheduleStrategyScans('candleClose');
 });
 
 // Scan theo tick (mỗi khi có cập nhật nến) với debounce 60s — bắt signal sớm hơn trong nến
@@ -998,39 +1345,102 @@ klineCache.on('candleTick', ({ interval }) => {
   if (interval !== '15m') return;
   clearTimeout(_tickScanDebounce);
   _tickScanDebounce = setTimeout(() => {
-    schedulePumpScan();
-    scheduleCapScan();
-    scheduleKillShortScan();
-    scheduleDumpIgnitionScan();
-    scheduleSpikeReversalScan();
-    schedulePostPumpKillShortScan();
-    schedulePumpIgnitionScan();
+    scheduleStrategyScans('candleTick');
   }, 60_000);
 });
 
 // Chạy scan ngay sau 30s để có data ban đầu dù WebSocket chưa kết nối
-setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); scheduleDumpIgnitionScan(); scheduleSpikeReversalScan(); schedulePostPumpKillShortScan(); schedulePumpIgnitionScan(); }, 30_000);
+setTimeout(() => scheduleStrategyScans('initial'), 30_000);
 
 // Fallback: scan mỗi 2 phút kể cả khi WebSocket không có tick
 let _staleReseedLock = false;
 let _tieredWarmupPromise = null;
+let _klineWarmupSymbols = [];
+let _allowLogicBeforeKlineReady = false;
 const KLINE_WARMUP_TIERS = [
   { max: 50,  batchSize: 1, batchDelayMs: 1400, afterMs: 0 },
-  { max: 100, batchSize: 1, batchDelayMs: 1600, afterMs: 60_000 },
-  { max: 200, batchSize: 1, batchDelayMs: 1800, afterMs: 90_000 },
-  { max: 400, batchSize: 1, batchDelayMs: 2200, afterMs: 120_000 },
+  { max: 100, batchSize: 1, batchDelayMs: 1600, afterMs: 0 },
+  { max: 200, batchSize: 1, batchDelayMs: 1800, afterMs: 0 },
+  { max: 400, batchSize: 1, batchDelayMs: 2200, afterMs: 0 },
 ];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function klineWarmupReady() {
+  if (_allowLogicBeforeKlineReady) return true;
+  if (_klineWarmupSymbols.length === 0) return false;
+  const minReady = Number(process.env.KLINE_START_LOGIC_MIN_READY ?? _klineWarmupSymbols.length);
+  const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
+  return klineCache.countReady(_klineWarmupSymbols, '15m', minBars) >= Math.min(minReady, _klineWarmupSymbols.length);
+}
+
+function scheduleStrategyScans(reason = 'manual') {
+  if (!klineWarmupReady()) {
+    const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
+    const ready = _klineWarmupSymbols.length ? klineCache.countReady(_klineWarmupSymbols, '15m', minBars) : 0;
+    console.log(`[StrategyScans] Waiting for kline warm-up (${ready}/${_klineWarmupSymbols.length}) before ${reason}.`);
+    return;
+  }
+  schedulePumpScan();
+  scheduleCapScan();
+  scheduleKillShortScan();
+  scheduleDumpIgnitionScan();
+  scheduleSpikeReversalScan();
+  schedulePostPumpKillShortScan();
+  schedulePumpIgnitionScan();
+}
+
+function strategyScansReady(label) {
+  if (klineWarmupReady()) return true;
+  const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
+  const ready = _klineWarmupSymbols.length ? klineCache.countReady(_klineWarmupSymbols, '15m', minBars) : 0;
+  console.log(`[${label}] Skip until kline warm-up ready (${ready}/${_klineWarmupSymbols.length}).`);
+  return false;
+}
+
+function shouldDeferAlgoRest() {
+  return _klineWarmupSymbols.length > 0 && !klineWarmupReady();
+}
+
+function runAfterKlineWarmup(label, fn, { checkMs = 15_000, timeoutMs = Number(process.env.KLINE_START_LOGIC_TIMEOUT_MS ?? 20 * 60_000) } = {}) {
+  const startedAt = Date.now();
+  const tick = () => {
+    if (klineWarmupReady()) {
+      console.log(`[Startup] ${label}: kline warm-up ready, starting.`);
+      fn();
+      return;
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
+      const ready = _klineWarmupSymbols.length ? klineCache.countReady(_klineWarmupSymbols, '15m', minBars) : 0;
+      console.warn(`[Startup] ${label}: kline warm-up timeout (${ready}/${_klineWarmupSymbols.length}); starting anyway.`);
+      _allowLogicBeforeKlineReady = true;
+      fn();
+      return;
+    }
+    setTimeout(tick, checkMs);
+  };
+  tick();
+}
+
 async function startTieredKlineWarmup(snapshot, reason = 'startup') {
   if (_tieredWarmupPromise) return _tieredWarmupPromise;
   _tieredWarmupPromise = (async () => {
     const sorted = [...snapshot].sort((a, b) => b.quoteVolume - a.quoteVolume);
+    const maxSocketSymbols = Math.max(...KLINE_WARMUP_TIERS.map((t) => t.max));
+    const socketSymbols15m = sorted.slice(0, maxSocketSymbols).map((r) => r.symbol);
+    _klineWarmupSymbols = socketSymbols15m;
     console.log(`[KlineWarmup] Tiered warm-up started (${reason}).`);
     try {
+      let ma60Seeded5m = false;
+      klineCache.subscribe(socketSymbols15m, '15m');
+      const ma60Max5mInitial = Number(process.env.MA60_5M_WARMUP_MAX_SYMBOLS ?? 20);
+      if (ma60Max5mInitial > 0) {
+        klineCache.subscribe(sorted.slice(0, ma60Max5mInitial).map((r) => r.symbol), '5m');
+      }
+      console.log(`[KlineWarmup] WS subscribed ${socketSymbols15m.length} symbols @15m before REST seed.`);
       for (const tier of KLINE_WARMUP_TIERS) {
         if (binanceRateGate.isBlocked?.()) {
           console.warn(`[KlineWarmup] Skip tier top ${tier.max}: Binance REST blocked.`);
@@ -1043,10 +1453,33 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
           batchSize: tier.batchSize,
           batchDelayMs: tier.batchDelayMs,
         });
+        const ma60Max5m = Number(process.env.MA60_5M_WARMUP_MAX_SYMBOLS ?? 20);
+        if (!ma60Seeded5m && ma60Max5m > 0 && tier.max >= ma60Max5m && !binanceRateGate.isBlocked?.()) {
+          const symbols5m = sorted.slice(0, ma60Max5m).map((r) => r.symbol);
+          ma60Seeded5m = true;
+          console.log(`[KlineWarmup] Seeding top ${symbols5m.length} symbols @5m for MA60 cluster.`);
+          await klineCache.seed(symbols5m, '5m', 220, {
+            batchSize: tier.batchSize,
+            batchDelayMs: Math.max(tier.batchDelayMs, 3000),
+          });
+        }
       }
     } finally {
       _tieredWarmupPromise = null;
       _staleReseedLock = false;
+      const minCached = Number(process.env.KLINE_WARMUP_RETRY_MIN_CACHED ?? 20);
+      const minReadyBars = Number(process.env.KLINE_WARMUP_RETRY_MIN_READY_BARS ?? 40);
+      const retryMs = Number(process.env.KLINE_WARMUP_RETRY_MS ?? 90_000);
+      const readyForScan = klineCache.countReady(socketSymbols15m, '15m', minReadyBars);
+      if (klineCache.stats('15m').cached < minCached || readyForScan < socketSymbols15m.length) {
+        console.warn(`[KlineWarmup] Ready ${readyForScan}/${socketSymbols15m.length} symbols (${minReadyBars}+ bars); retrying seed in ${Math.round(retryMs / 1000)}s.`);
+        setTimeout(async () => {
+          if (_tieredWarmupPromise) return;
+          startTieredKlineWarmup(snapshot, 'retry').catch((err) => {
+            console.warn('[KlineWarmup] Retry failed:', err.message);
+          });
+        }, retryMs);
+      }
     }
   })();
   return _tieredWarmupPromise;
@@ -1061,6 +1494,7 @@ setInterval(async () => {
   scheduleCapScan();
   scheduleKillShortScan();
   // Re-seed nếu WebSocket stale (không có tick trong 3 phút)
+  if (process.env.KLINE_AUTO_RESEED_ENABLED !== 'true') return;
   const stats = klineCache.stats('15m');
   if (stats.isStale && !_staleReseedLock) {
     _staleReseedLock = true;
@@ -1068,6 +1502,10 @@ setInterval(async () => {
       const snapshot = await getSharedSnapshot();
       const topSymbols = [...snapshot].sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, 50).map((r) => r.symbol);
       await klineCache.seed(topSymbols, '15m', 500, { batchSize: 1, batchDelayMs: 2000 });
+      const ma60Max5m = Number(process.env.MA60_5M_WARMUP_MAX_SYMBOLS ?? 20);
+      if (ma60Max5m > 0 && !binanceRateGate.isBlocked?.()) {
+        await klineCache.seed(topSymbols.slice(0, ma60Max5m), '5m', 220, { batchSize: 1, batchDelayMs: 3000 });
+      }
       console.log('[KlineCache] Small re-seed triggered (WebSocket stale, top 50 only)');
       schedulePumpScan();
       scheduleCapScan();
@@ -1122,12 +1560,32 @@ let tslScanner = null;
 let posMonitor = null;
 // Symbols bị loại khỏi mọi auto position management (trailing stop, timeout, neg-TP, SL trail, avg-down)
 const tslExcludedSymbols = new Set();
+
+function isConfirmedSpikeReversalSignal(sig) {
+  const status = String(sig?.stage ?? sig?.status ?? '').toLowerCase();
+  return sig?.confirmed === true
+    || status.includes('confirmed')
+    || sig?.type === 'spike_reversal';
+}
+
+function applySpikeReversalTslExcludes(signals) {
+  for (const sig of signals ?? []) {
+    if (!sig?.symbol || !isConfirmedSpikeReversalSignal(sig)) continue;
+    const symbol = String(sig.symbol).toUpperCase();
+    if (tslExcludedSymbols.has(symbol)) continue;
+    tslExcludedSymbols.add(symbol);
+    console.log(`[TSL-Exclude] ⛔ ${symbol} excluded by confirmed Spike Reversal signal`);
+  }
+}
+
 // Discord dedup: symbol → lastFiredAt (ms) — tránh spam cùng 1 signal
 const spikeRevDiscordFired  = new Map();
 const dumpIgnDiscordFired   = new Map();
 const pumpIgnDiscordFired   = new Map();
 const postPumpKillShortDiscordFired = new Map();
 const postPumpKillShortOrderFired = new Map();
+const postPumpDumpRiskOrderFired = new Map();
+const postDumpBounceRiskOrderFired = new Map();
 const longShortCache = new Map();    // symbol → { longShortRatio, longAccount }
 const hedgeModeCache = new Map();    // apiKey → bool
 const topPositionCache = new Map(); // symbol → { longShortRatio, longPosition, shortPosition }
@@ -1707,6 +2165,18 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/dump-ignition-signals') {
       if (dumpIgnitionScanCache.data && Date.now() < dumpIgnitionScanCache.expiresAt) {
+        applyPostPumpDumpRiskTslExcludes(dumpIgnitionScanCache.data.signals ?? []);
+        applyPostDumpBounceRiskTslExcludes(dumpIgnitionScanCache.data.signals ?? []);
+        for (const sig of dumpIgnitionScanCache.data.signals ?? []) {
+          sendPostPumpDumpRiskDiscord(sig);
+          sendPostDumpBounceRiskDiscord(sig);
+          handlePostPumpDumpRiskRealOrder(sig).catch((e) => {
+            console.warn(`[PostPumpDumpRiskOrder] ${sig.symbol}:`, e.message);
+          });
+          handlePostDumpBounceRiskRealOrder(sig).catch((e) => {
+            console.warn(`[PostDumpBounceRiskOrder] ${sig.symbol}:`, e.message);
+          });
+        }
         await autoCreateDiPaperTrades(dumpIgnitionScanCache.data.signals ?? []);
         return sendJson(response, dumpIgnitionScanCache.data);
       }
@@ -1722,7 +2192,24 @@ const server = createServer(async (request, response) => {
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       dumpIgnitionScanCache.data = result;
       dumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
+      applyPostPumpDumpRiskTslExcludes(signals);
+      applyPostDumpBounceRiskTslExcludes(signals);
+      for (const sig of signals) {
+        sendPostPumpDumpRiskDiscord(sig);
+        sendPostDumpBounceRiskDiscord(sig);
+        handlePostPumpDumpRiskRealOrder(sig).catch((e) => {
+          console.warn(`[PostPumpDumpRiskOrder] ${sig.symbol}:`, e.message);
+        });
+        handlePostDumpBounceRiskRealOrder(sig).catch((e) => {
+          console.warn(`[PostDumpBounceRiskOrder] ${sig.symbol}:`, e.message);
+        });
+      }
       await autoCreateDiPaperTrades(signals);
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/etf-proxy') {
+      const result = await getEtfProxy({ client });
       return sendJson(response, result);
     }
 
@@ -1756,6 +2243,7 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runSpikeReversalScan(topSymbols, klineCache, snapshotMap);
+      applySpikeReversalTslExcludes(signals);
       if (processed === 0) noteApiNoLargeReseed('spike-reversal', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
@@ -2612,45 +3100,17 @@ const server = createServer(async (request, response) => {
 server.listen(port, '127.0.0.1', () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
   loadDynamicBlacklist();
-  loadSlTracking().then(() =>
-    adoptExistingSlPositions().catch((err) => console.warn('[SlTracking] Adopt failed:', err.message)),
-  );
-  loadPumpOrders().then(() => {
-    setInterval(() => pollPumpOrders().catch(() => {}), 60_000);
-  });
-  loadPumpWatching().then(() => {
-    setInterval(() => pollPumpWatching().catch(() => {}), 3 * 60_000);
-  });
-  const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
-  const brgIntervalMs = Math.max(Number(process.env.BTC_REVERSAL_GUARD_INTERVAL_MS ?? 41000), 15000);
-  // Stagger service startup to avoid burst at t=0
-  startAutoTrader();
-  setTimeout(() => startLongShortRefresh(), 65_000); // sau khi seed 400 symbols xong (~53s)
-  setTimeout(() => {
-    tslScanner = startTrailingStopScanner({ client, getSymbols, intervalMs: tslIntervalMs, webhookUrl: process.env.TSL_WEBHOOK_URL, isExcluded: (sym) => tslExcludedSymbols.has(sym), getPositionData: getSharedPositionData });
-  }, 7000);
-  setTimeout(() => {
-    startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: brgIntervalMs, getPositionData: getSharedPositionData });
-  }, 12000);
-  // Proactive position store refresh — chủ động làm mới trước khi scanner cần,
-  // tránh scanner là người trigger REST call. Bắt đầu sau 55s (sau khi tất cả đã warm-up).
-  setTimeout(() => {
-    setInterval(async () => {
-      if (_posStoreInflight) return;
-      _posStore.fetchedAt = 0; // invalidate để force fresh fetch
-      getSharedPositionData().catch(() => {});
-    }, POS_STORE_TTL_MS);
-  }, 55_000);
-  setTimeout(async () => {
-    // Seed kline cache sớm để pump/cap scan có data ngay khi browser mở trang.
-    // getMarketSnapshot() is cheap (cached for 15s) and gives us the top coins by volume.
+  loadSlTracking();
+  loadPumpOrders();
+  loadPumpWatching();
+  // BTC mark price WebSocket — funding rate + mark price liên tục, không tốn REST
+  startBtcMarkPriceWs();
+
+  // Pha 1: ưu tiên kline cache trước. Các logic dùng REST/account sẽ được bật sau
+  // khi top symbols đã có đủ nến tối thiểu, tránh chen request làm Binance 429.
+  (async () => {
     try {
       const snapshot = await getSharedSnapshot();
-      // Tiered warm-up: seed top 50 first, then gradually fill 100/200/400.
-      // Fire-and-forget: seeding runs in background while scanners start
-      // LiqScan needs 500 candles; VolDump only needs 42 but 500 covers both
-      // Seed chậm hơn (batchSize=3, 1s delay) → 3 req/s thay vì 8.3 req/s → tránh vượt rate limit
-      // Lock để SSE endpoint không trigger seed song song
       if (!_staleReseedLock) {
         _staleReseedLock = true;
         startTieredKlineWarmup(snapshot, 'startup').catch((err) => {
@@ -2658,13 +3118,54 @@ server.listen(port, '127.0.0.1', () => {
           console.warn('[KlineWarmup] Tiered warm-up failed:', err.message);
         });
       }
-      // Seed BTC klines — Wilder's RSI cần nhiều nến để warm-up và khớp Binance
       setTimeout(() => klineCache.seed(['BTCUSDT'], '1h', 250, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 15_000);
       setTimeout(() => klineCache.seed(['BTCUSDT'], '4h', 150, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 25_000);
       setTimeout(() => klineCache.seed(['BTCUSDT'], '1d', 60, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 35_000);
     } catch (err) {
       console.warn('[KlineCache] Seed failed:', err.message);
+      const retryMs = Number(process.env.KLINE_WARMUP_RETRY_MS ?? 90_000);
+      setTimeout(async () => {
+        if (_tieredWarmupPromise || _staleReseedLock || binanceRateGate.isBlocked?.()) return;
+        try {
+          const snapshot = await getSharedSnapshot();
+          _staleReseedLock = true;
+          startTieredKlineWarmup(snapshot, 'startup-retry').catch((retryErr) => {
+            _staleReseedLock = false;
+            console.warn('[KlineWarmup] Startup retry failed:', retryErr.message);
+          });
+        } catch (retryErr) {
+          console.warn('[KlineWarmup] Startup retry snapshot failed:', retryErr.message);
+        }
+      }, retryMs);
     }
+  })();
+
+  const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
+  const brgIntervalMs = Math.max(Number(process.env.BTC_REVERSAL_GUARD_INTERVAL_MS ?? 41000), 15000);
+
+  runAfterKlineWarmup('algo APIs', () => {
+    loadSlTracking().then(() =>
+      adoptExistingSlPositions().catch((err) => console.warn('[SlTracking] Adopt failed:', err.message)),
+    );
+    loadPumpOrders().then(() => {
+      pollPumpOrders().catch(() => {});
+      setInterval(() => pollPumpOrders().catch(() => {}), 60_000);
+    });
+    loadPumpWatching().then(() => {
+      setInterval(() => pollPumpWatching().catch(() => {}), 3 * 60_000);
+    });
+    startAutoTrader();
+    if (process.env.LONG_SHORT_REFRESH_ENABLED !== 'false') {
+      startLongShortRefresh();
+    }
+    tslScanner = startTrailingStopScanner({ client, getSymbols, intervalMs: tslIntervalMs, webhookUrl: process.env.TSL_WEBHOOK_URL, isExcluded: (sym) => tslExcludedSymbols.has(sym), getPositionData: getSharedPositionData });
+    startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: brgIntervalMs, getPositionData: getSharedPositionData });
+    // Proactive position store refresh — chủ động làm mới trước khi scanner cần.
+    setInterval(async () => {
+      if (_posStoreInflight) return;
+      _posStore.fetchedAt = 0; // invalidate để force fresh fetch
+      getSharedPositionData().catch(() => {});
+    }, POS_STORE_TTL_MS);
 
     startDiscordScanner({
       client,
@@ -2690,33 +3191,19 @@ server.listen(port, '127.0.0.1', () => {
       topTraderCache: topPositionCache, // tái dùng cache từ startLongShortRefresh, tránh 51 REST calls
     });
     // startVolumeDumpScanner disabled — tắt để giảm tải API (150 REST calls/phút)
-  }, 5000);
-  setTimeout(() => {
     runStaleOrderCleaner(); // seed initial position set, no cancellations on first run
     setInterval(runStaleOrderCleaner, 35_000); // 35s — lệch nhịp TSL(30s) tránh cùng lúc
-  }, 22000);
-  setTimeout(() => {
     runBtcHealthMonitor(); // initial read — seed _prevBtcBias, no cancellations
     setInterval(runBtcHealthMonitor, 2 * 60_000); // check every 2 minutes
-  }, 40000);
-  setTimeout(() => {
     startNegTpScanner();
-  }, 28000);
-  setTimeout(() => {
     startPaperTradeTicker();
     startCapPaperTicker();
     startDiPaperTicker();
     startPiPaperTicker();
     startPumpPaperTicker();
     startEdgePaperTicker();
-  }, 29000);
-  setTimeout(() => {
     startMissingTpScanner();
-  }, 31000);
-  setTimeout(() => {
     startSlTrailSafetyScanner();
-  }, 34000);
-  setTimeout(() => {
     posMonitor = startPositionMonitor({
       client,
       getCredentials: () => getApiCredentials(null),
@@ -2784,9 +3271,7 @@ server.listen(port, '127.0.0.1', () => {
         }
       },
     });
-  }, 25000);
-  // BTC mark price WebSocket — funding rate + mark price liên tục, không tốn REST
-  startBtcMarkPriceWs();
+  });
 });
 
 // ── BTC Health ────────────────────────────────────────────────────────────────
@@ -3445,6 +3930,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
   const rows = await mapConcurrent(candidates, 8, async (row) => {
     try {
       const klines = await klineCache.getKlines(row.symbol, interval, 500);
+      if (!klines || klines.length < 60) return null;
       const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice });
       const above = Number(heatmap.liquidityAbove ?? 0);
       const below = Number(heatmap.liquidityBelow ?? 0);
@@ -3501,7 +3987,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
     }
   });
 
-  const successful = rows.filter((row) => !row.error);
+  const successful = rows.filter((row) => row && !row.error);
   successful.sort((a, b) => b.sweepProb - a.sweepProb || Math.abs(b.bias) - Math.abs(a.bias) || b.quoteVolume - a.quoteVolume);
 
   return {
@@ -3511,7 +3997,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
     processed: successful.length,
     failed: rows.length - successful.length,
     rows: successful,
-    errors: rows.filter((row) => row.error).slice(0, 10),
+    errors: rows.filter((row) => row?.error).slice(0, 10),
     cacheStats: klineCache.stats(interval),
   };
 }
@@ -5757,8 +6243,8 @@ function computeATR(klines, period = 14) {
 
 async function calculateEntryLevel(symbol, direction, markPrice, symbolInfo, score = 0) {
   try {
-    const klines = await client.getKlines(symbol, '15m', 110);
-    if (klines.length < 100) return null;
+    const klines = klineCache.getIfCached(symbol, '15m', 110);
+    if (!klines || klines.length < 100) return null;
     const closes = klines.map((k) => k.close);
     const ema99 = computeEMA(closes, 99);
     const atr = computeATR(klines, 14);
@@ -5882,15 +6368,17 @@ function startLongShortRefresh() {
     try {
       // Dùng getSharedSnapshot() thay vì gọi getTicker24hr() riêng (tránh tốn w=40)
       const snapshot = await getSharedSnapshot();
+      const maxSymbols = Number(process.env.LONG_SHORT_REFRESH_MAX_SYMBOLS ?? 15);
+      if (maxSymbols <= 0) return;
       const top = snapshot
         .sort((a, b) => b.quoteVolume - a.quoteVolume)
-        .slice(0, 40)
+        .slice(0, maxSymbols)
         .map((t) => t.symbol);
 
       // Stagger calls: 5 per batch, 300ms between batches → ~2.4s total instead of burst
       const [globalResults, topResults] = await Promise.all([
-        batchedAllSettled(top, (sym) => client.getGlobalLongShortRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] }))),
-        batchedAllSettled(top, (sym) => client.getTopLongShortPositionRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] }))),
+        batchedAllSettled(top, (sym) => client.getGlobalLongShortRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] })), 1, 1200),
+        batchedAllSettled(top, (sym) => client.getTopLongShortPositionRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] })), 1, 1200),
       ]);
 
       for (const r of globalResults) {
@@ -5916,7 +6404,7 @@ function startLongShortRefresh() {
     }
   };
   setTimeout(run, 8000);
-  setInterval(run, 5 * 60 * 1000);
+  setInterval(run, Number(process.env.LONG_SHORT_REFRESH_INTERVAL_MS ?? 15 * 60 * 1000));
 }
 
 async function getHedgeMode(token = null, credentialsOverride = null) {
@@ -5956,6 +6444,7 @@ const BALANCE_TTL_MS = 60_000; // 1 phút — balance không cần real-time
 
 async function getAccountBalance(token = null) {
   if (_balanceCache && Date.now() - _balanceCacheAt < BALANCE_TTL_MS) return _balanceCache;
+  if (shouldDeferAlgoRest()) return _balanceCache ?? [];
   const { apiKey, apiSecret } = getApiCredentials(token);
   const rows = await client.getBalance({ apiKey, apiSecret });
   _balanceCache = rows.filter((b) => Number(b.balance) > 0 || Number(b.crossUnPnl) !== 0);
@@ -5969,6 +6458,7 @@ const DAILY_PNL_TTL_MS = 300_000; // 5 phút — income API weight=30, không c�
 
 async function getDailyPnl(token = null) {
   if (_dailyPnlCache && Date.now() - _dailyPnlCacheAt < DAILY_PNL_TTL_MS) return _dailyPnlCache;
+  if (shouldDeferAlgoRest()) return _dailyPnlCache ?? { realized: 0, commission: 0, funding: 0, net: 0, since: new Date().toISOString() };
   const { apiKey, apiSecret } = getApiCredentials(token);
   const startOfDay = new Date();
   startOfDay.setUTCHours(0, 0, 0, 0);
@@ -6000,6 +6490,7 @@ const POS_STORE_TTL_MS = 60_000; // 60s — positions/openOrders không cần <3
 async function getSharedPositionData() {
   if (Date.now() - _posStore.fetchedAt < POS_STORE_TTL_MS) return _posStore;
   if (_posStoreInflight) return _posStoreInflight;
+  if (shouldDeferAlgoRest()) return _posStore;
   let creds;
   try { creds = getApiCredentials(null); } catch { return _posStore; }
   const { apiKey, apiSecret } = creds;
@@ -6565,6 +7056,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
   if (!runtimeSettings.pumpAutoOrderEnabled) return;
   if (isVnBlockHour()) { console.log(`[PumpAuto] ⏰ Block 17-19h VN — ${signal.symbol}`); return; }
   const { symbol, action, score, marketOk, entry, sl, factors, type: signalType } = signal;
+  if (String(signalType ?? '').startsWith('ma60_volume_cluster')) return;
   const pumpAutoMinScore = Number(process.env.PUMP_AUTO_MIN_SCORE ?? 80);
   const pumpAutoMaxScore = Number(process.env.PUMP_AUTO_MAX_SCORE ?? 999);
   if (score < pumpAutoMinScore) return;
@@ -7743,6 +8235,8 @@ async function sendStatic(pathname, response) {
           ? '/post-pump-kill-short.html'
         : pathname === '/dump-ignition'
           ? '/dump-ignition.html'
+        : pathname === '/etf-proxy'
+          ? '/etf-proxy.html'
         : pathname === '/pump-ignition'
           ? '/pump-ignition.html'
         : pathname === '/edge-short'

@@ -73,7 +73,37 @@ function parseNote(note) {
 function buildFactors(sig) {
   const parsed  = parseNote(sig.note);
   const isIgn   = sig.type === 'dump_ignition';
+  const isRisk  = sig.type === 'post_pump_dump_risk';
+  const isBounce = sig.type === 'post_dump_bounce_risk';
   const chips   = [];
+
+  if (isBounce) {
+    const dump = parseFloat(parsed.dump ?? 0);
+    const greenVolShare = parseFloat(parsed.greenVolShare ?? 0);
+    const volRecent = parseFloat(parsed.volRecent ?? 0);
+    const rsiRecover = parseFloat(parsed.rsiRecover ?? 0);
+    const resistanceBreak = parseFloat(parsed.resistanceBreak ?? 0);
+    if (dump > 0) chips.push({ label: `Dump ${dump.toFixed(1)}%`, cls: dump >= 45 ? 'ok' : 'warn' });
+    if (greenVolShare > 0) chips.push({ label: `Green vol ${greenVolShare.toFixed(0)}%`, cls: greenVolShare >= 58 ? 'ok' : 'warn' });
+    if (volRecent > 0) chips.push({ label: `Vol ${volRecent.toFixed(2)}×`, cls: volRecent >= 1.35 ? 'ok' : 'warn' });
+    if (rsiRecover > 0) chips.push({ label: `RSI recover ${rsiRecover.toFixed(0)}`, cls: rsiRecover >= 18 ? 'ok' : 'warn' });
+    if (resistanceBreak > 0) chips.push({ label: `Resistance +${resistanceBreak.toFixed(2)}%`, cls: 'ok' });
+    return chips.map((c) => `<span class="di-chip ${c.cls}">${c.label}</span>`).join('');
+  }
+
+  if (isRisk) {
+    const runup = parseFloat(parsed.runup ?? 0);
+    const redVolShare = parseFloat(parsed.redVolShare ?? 0);
+    const volRecent = parseFloat(parsed.volRecent ?? 0);
+    const rsiFade = parseFloat(parsed.rsiFade ?? 0);
+    const supportBreak = parseFloat(parsed.supportBreak ?? 0);
+    if (runup > 0) chips.push({ label: `Runup ${runup.toFixed(1)}%`, cls: runup >= 60 ? 'bad' : 'warn' });
+    if (redVolShare > 0) chips.push({ label: `Red vol ${redVolShare.toFixed(0)}%`, cls: redVolShare >= 58 ? 'bad' : 'warn' });
+    if (volRecent > 0) chips.push({ label: `Vol ${volRecent.toFixed(2)}×`, cls: volRecent >= 1.4 ? 'ok' : 'warn' });
+    if (rsiFade > 0) chips.push({ label: `RSI fade ${rsiFade.toFixed(0)}`, cls: rsiFade >= 18 ? 'bad' : 'warn' });
+    if (supportBreak > 0) chips.push({ label: `Support -${supportBreak.toFixed(2)}%`, cls: 'bad' });
+    return chips.map((c) => `<span class="di-chip ${c.cls}">${c.label}</span>`).join('');
+  }
 
   // Vol spike
   const volX = parseFloat(parsed['volX'] ?? parsed['vol'] ?? 0);
@@ -134,18 +164,24 @@ function buildFactors(sig) {
 
 function buildCard(sig) {
   const isIgnition  = sig.type === 'dump_ignition';
-  const stageClass  = isIgnition ? 'stage-ignition' : 'stage-early';
-  const stageBadge  = isIgnition ? 'ignition' : 'early';
-  const stageName   = isIgnition ? 'IGNITION' : 'EARLY';
+  const isRisk      = sig.type === 'post_pump_dump_risk';
+  const isBounce    = sig.type === 'post_dump_bounce_risk';
+  const stageClass  = isBounce ? 'stage-bounce' : isRisk ? 'stage-risk' : isIgnition ? 'stage-ignition' : 'stage-early';
+  const stageBadge  = isBounce ? 'bounce' : isRisk ? 'risk' : isIgnition ? 'ignition' : 'early';
+  const stageName   = isIgnition ? 'IGNITION' : isBounce ? 'BOUNCE' : isRisk ? 'RISK' : 'EARLY';
   const changeClass = (sig.change24h ?? 0) >= 0 ? 'positive' : 'negative';
   const gradeClass  = `grade-${(sig.grade || 'd').toLowerCase()}`;
   const detailUrl   = `/?symbol=${sig.symbol}`;
   const factors     = buildFactors(sig);
-  const dotCls      = isIgnition ? 'ignition' : 'early';
+  const dotCls      = isBounce ? 'bounce' : isRisk ? 'risk' : isIgnition ? 'ignition' : 'early';
 
   // Pattern description from reason
   const patternDesc = sig.reason || (isIgnition
     ? 'BB lower break + vol spike + EMA stack bearish'
+    : isBounce
+      ? 'Post-dump bounce risk'
+    : isRisk
+      ? 'Post-pump distribution risk'
     : 'Squeeze + ribbon compression + pre-ignition setup');
 
   return `
@@ -158,7 +194,7 @@ function buildCard(sig) {
           <span class="di-change ${changeClass}" data-price="${sig.symbol}">${fmtPct(sig.change24h)} 24h · ${fmtPrice(sig.markPrice)}</span>
         </div>
         <div class="di-right">
-          <span class="di-action-badge">🔴 SHORT</span>
+          <span class="di-action-badge ${sig.action === 'LONG' ? 'long' : ''}">${sig.action === 'LONG' ? '🟢 LONG' : '🔴 SHORT'}</span>
           <div class="di-score-wrap">
             <span class="di-score-num">${sig.score}</span>
             <span class="di-grade ${gradeClass}">${sig.grade}</span>
@@ -192,7 +228,7 @@ function buildCard(sig) {
 
       <div class="di-footer">
         <span>${timeAgo(sig.scannedAt)}</span>
-        <button class="di-paper-btn short" onclick="enterDiPaperTrade(this,'${sig.symbol}','SHORT',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}')">+ Paper</button>
+          <button class="di-paper-btn ${sig.action === 'LONG' ? 'long' : 'short'}" onclick="enterDiPaperTrade(this,'${sig.symbol}','${sig.action === 'LONG' ? 'LONG' : 'SHORT'}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}')">+ Paper</button>
       </div>
     </article>
   `;
@@ -213,7 +249,7 @@ function render() {
   visibleCount.textContent = rows.length;
 
   const igns  = allSignals.filter((s) => s.type === 'dump_ignition');
-  const earls = allSignals.filter((s) => s.type === 'dump_ignition_early');
+  const earls = allSignals.filter((s) => s.type === 'dump_ignition_early' || s.type === 'post_pump_dump_risk' || s.type === 'post_dump_bounce_risk');
   ignitionCount.textContent = igns.length;
   ignitionCount.className   = igns.length > 0 ? 'negative' : '';
   earlyCount.textContent    = earls.length;
