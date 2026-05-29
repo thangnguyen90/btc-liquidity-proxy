@@ -3945,20 +3945,25 @@ function liquidSweepLabel(prob) {
   return 'THAP';
 }
 
-function buildLiquidEntryPlan({ heavySide, markPrice, target, heatmap }) {
+function buildLiquidEntryPlan({ heavySide, markPrice, target, heatmap, killZoneCluster = null }) {
   const side = heavySide === 'above' ? 'LONG' : 'SHORT';
   const sweepDirection = heavySide === 'above' ? 'UP' : 'DOWN';
   const targetPrice = Number(target?.price ?? markPrice);
   const distancePct = Number(target?.distancePct ?? 0);
+  const killZoneTarget = Number(killZoneCluster?.mainKillZone?.mid ?? 0);
+  const hasKillZoneTarget = killZoneTarget > 0
+    && ((side === 'LONG' && killZoneTarget > targetPrice) || (side === 'SHORT' && killZoneTarget < targetPrice));
+  const planTargetPrice = hasKillZoneTarget ? killZoneTarget : targetPrice;
+  const planTargetDistancePct = markPrice > 0 ? ((planTargetPrice - markPrice) / markPrice) * 100 : distancePct;
   const nearestOpposite = side === 'LONG'
     ? (heatmap.heatmapBelow?.[0] ?? null)
     : (heatmap.heatmapAbove?.[0] ?? null);
-  const tp = targetPrice;
-  const entryOffsetPct = Math.max(0.12, Math.min(0.55, Math.abs(distancePct) * 0.28));
+  const tp = planTargetPrice;
+  const entryOffsetPct = Math.max(0.12, Math.min(0.55, Math.abs(planTargetDistancePct) * 0.28));
   const entryPrice = side === 'LONG'
     ? markPrice * (1 - entryOffsetPct / 100)
     : markPrice * (1 + entryOffsetPct / 100);
-  const stopPct = Math.max(0.8, Math.min(2.5, Math.abs(distancePct) * 0.75));
+  const stopPct = Math.max(0.8, Math.min(2.5, Math.abs(planTargetDistancePct) * 0.75));
   const fallbackSl = side === 'LONG'
     ? entryPrice * (1 - stopPct / 100)
     : entryPrice * (1 + stopPct / 100);
@@ -3972,7 +3977,7 @@ function buildLiquidEntryPlan({ heavySide, markPrice, target, heatmap }) {
   const feasibilityScore = Math.round(clamp(
     (rewardPct / 3) * 45
     + (Math.min(rr ?? 0, 3) / 3) * 35
-    + (Math.min(Math.abs(distancePct), 6) / 6) * 20,
+    + (Math.min(Math.abs(planTargetDistancePct), 6) / 6) * 20,
     0,
     100,
   ));
@@ -3986,7 +3991,11 @@ function buildLiquidEntryPlan({ heavySide, markPrice, target, heatmap }) {
     takeProfitPrice: tp,
     stopLossPrice: sl,
     targetPrice,
-    targetDistancePct: distancePct,
+    targetDistancePct: planTargetDistancePct,
+    sweepTargetPrice: targetPrice,
+    sweepTargetDistancePct: distancePct,
+    killZoneCluster,
+    killZoneTakeProfitPrice: hasKillZoneTarget ? tp : null,
     rewardPct,
     riskPct,
     rr,
@@ -3994,8 +4003,8 @@ function buildLiquidEntryPlan({ heavySide, markPrice, target, heatmap }) {
     feasibilityScore,
     status: 'ENTER_NOW',
     note: heavySide === 'above'
-      ? 'Thanh khoản trên dày: vào LONG theo hướng hút lên target.'
-      : 'Thanh khoản dưới dày: vào SHORT theo hướng kéo xuống target.',
+      ? (hasKillZoneTarget ? 'Thanh khoản trên một chiều: LONG theo lực hút, TP ưu tiên main kill zone.' : 'Thanh khoản trên dày: vào LONG theo hướng hút lên target.')
+      : (hasKillZoneTarget ? 'Thanh khoản dưới một chiều: SHORT theo lực kéo, TP ưu tiên main kill zone.' : 'Thanh khoản dưới dày: vào SHORT theo hướng kéo xuống target.'),
   };
 }
 
@@ -4141,7 +4150,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
     try {
       const klines = await klineCache.getKlines(row.symbol, interval, 500);
       if (!klines || klines.length < 60) return null;
-      const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice });
+      const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice, momentumPct: row.change24hPct });
       const above = Number(heatmap.liquidityAbove ?? 0);
       const below = Number(heatmap.liquidityBelow ?? 0);
       const total = above + below;
@@ -4157,7 +4166,8 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
       const targetDistancePct = target?.distancePct ?? null;
       const sweepProb = liquidSweepProb(heatmap, target);
       const isNearTarget = targetDistancePct != null && Math.abs(targetDistancePct) <= 0.35;
-      const entryPlan = buildLiquidEntryPlan({ heavySide, markPrice: row.markPrice, target, heatmap });
+      const killZoneCluster = heatmap.killZoneCluster ?? null;
+      const entryPlan = buildLiquidEntryPlan({ heavySide, markPrice: row.markPrice, target, heatmap, killZoneCluster });
       const huntSignal = detectLiquidationHuntPattern({ row, klines, heatmap, target, heavySide, interval });
 
       return {
@@ -4176,6 +4186,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
         sweepProb,
         sweepLabel: liquidSweepLabel(sweepProb),
         huntSignal,
+        killZoneCluster,
         sweepTarget: target ? {
           direction: target.direction ?? heavySide,
           price: target.price,

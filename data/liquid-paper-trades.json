@@ -1,12 +1,1969 @@
 {
   "createdAt": "2026-05-25T04:20:33.080Z",
-  "updatedAt": "2026-05-26T14:30:37.971Z",
+  "updatedAt": "2026-05-29T07:07:05.117Z",
   "trades": [
+    {
+      "id": "7c32273f-3012-4f22-9c62-dc69e8233594",
+      "symbol": "LABUSDT",
+      "side": "LONG",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 2.0425926436186845,
+      "entryPrice": 4.895738771625,
+      "createdAt": "2026-05-29T07:00:25.963Z",
+      "openedAt": null,
+      "source": "liquid-scan-auto-75",
+      "note": "autoPaper point>75 | type=LIQUID_KILL_ZONE | sweepProb=75% | heavySide=above | target=4.99666 | killZone=5.09511-5.14434 | farKill=5.16895-6.2569 | tp=5.11973 | sl=4.773345302334375",
+      "takeProfitPrice": 5.11973,
+      "stopLossPrice": 4.773345302334375,
+      "signalType": "LIQUID_KILL_ZONE",
+      "signalPoint": 75,
+      "signalMarkPrice": 4.92281425,
+      "sweepTargetPrice": 4.99666,
+      "sweepDistancePct": 4.000064597196606,
+      "feasibleLeverage": 4,
+      "feasibilityScore": 100,
+      "rewardPct": 4.57522835313887,
+      "riskPct": 2.4999999999999956,
+      "rr": 1.8300913412555513,
+      "heavySide": "above",
+      "entryPlan": {
+        "side": "LONG",
+        "sweepDirection": "UP",
+        "entryPrice": 4.895738771625,
+        "entryDistancePct": -0.55,
+        "entryType": "LIMIT_PULLBACK",
+        "takeProfitPrice": 5.11973,
+        "stopLossPrice": 4.773345302334375,
+        "targetPrice": 4.99666,
+        "targetDistancePct": 4.000064597196606,
+        "sweepTargetPrice": 4.99666,
+        "sweepTargetDistancePct": 1.5,
+        "killZoneCluster": {
+          "direction": "above",
+          "side": "UP",
+          "oneSidedPct": 91.4,
+          "isOneSided": true,
+          "nearSweep": {
+            "low": 4.92774,
+            "high": 4.99666,
+            "mid": 4.9622,
+            "distancePctLow": 0.1,
+            "distancePctHigh": 1.5,
+            "score": 1335465404.91,
+            "zones": [
+              {
+                "price": 4.92774,
+                "distancePct": 0.1,
+                "score": 18466085.19,
+                "intensity": 0.024
+              },
+              {
+                "price": 4.94743,
+                "distancePct": 0.5,
+                "score": 295092532.58,
+                "intensity": 0.384
+              },
+              {
+                "price": 4.9622,
+                "distancePct": 0.8,
+                "score": 253268491.19,
+                "intensity": 0.33
+              },
+              {
+                "price": 4.99666,
+                "distancePct": 1.5,
+                "score": 768638295.95,
+                "intensity": 1
+              }
+            ]
+          },
+          "mainKillZone": {
+            "low": 5.09511,
+            "high": 5.14434,
+            "mid": 5.11973,
+            "distancePctLow": 3.5,
+            "distancePctHigh": 4.5,
+            "score": 437954222.93,
+            "zones": [
+              {
+                "price": 5.00158,
+                "distancePct": 1.6,
+                "score": 36157986.47,
+                "intensity": 0.047
+              },
+              {
+                "price": 5.04588,
+                "distancePct": 2.5,
+                "score": 510901987.59,
+                "intensity": 0.665
+              },
+              {
+                "price": 5.05081,
+                "distancePct": 2.6,
+                "score": 52412042.14,
+                "intensity": 0.068
+              },
+              {
+                "price": 5.09511,
+                "distancePct": 3.5,
+                "score": 145557747.55,
+                "intensity": 0.189
+              },
+              {
+                "price": 5.14434,
+                "distancePct": 4.5,
+                "score": 130878682.11,
+                "intensity": 0.17
+              }
+            ],
+            "bridge": true
+          },
+          "exhaustionZone": {
+            "low": 5.14434,
+            "high": 5.14434,
+            "mid": 5.14434,
+            "distancePctLow": 4.5,
+            "distancePctHigh": 4.5,
+            "score": 130878682.11,
+            "zones": [
+              {
+                "price": 5.14434,
+                "distancePct": 4.5,
+                "score": 130878682.11,
+                "intensity": 0.17
+              }
+            ]
+          },
+          "farKillZone": {
+            "direction": "above",
+            "side": "UP",
+            "low": 5.16895,
+            "high": 6.2569,
+            "mid": 5.71293,
+            "distancePctLow": 5,
+            "distancePctHigh": 27.1,
+            "minDistancePct": 5,
+            "maxDistancePct": 27.1,
+            "score": 1145333078.06,
+            "zones": [
+              {
+                "price": 5.16895,
+                "distancePct": 5,
+                "score": 2017455.91,
+                "intensity": 0.003
+              },
+              {
+                "price": 5.17388,
+                "distancePct": 5.1,
+                "score": 89222.36,
+                "intensity": 0
+              },
+              {
+                "price": 5.1788,
+                "distancePct": 5.2,
+                "score": 41741,
+                "intensity": 0
+              },
+              {
+                "price": 5.18372,
+                "distancePct": 5.3,
+                "score": 1656190,
+                "intensity": 0.002
+              },
+              {
+                "price": 5.18865,
+                "distancePct": 5.4,
+                "score": 1596266.66,
+                "intensity": 0.002
+              },
+              {
+                "price": 5.19357,
+                "distancePct": 5.5,
+                "score": 1196255.25,
+                "intensity": 0.002
+              },
+              {
+                "price": 5.19849,
+                "distancePct": 5.6,
+                "score": 612242.09,
+                "intensity": 0.001
+              },
+              {
+                "price": 5.20341,
+                "distancePct": 5.7,
+                "score": 58996.89,
+                "intensity": 0
+              }
+            ],
+            "peaks": [
+              {
+                "price": 5.2871,
+                "distancePct": 7.4,
+                "score": 357235329.12,
+                "intensity": 0.465
+              },
+              {
+                "price": 5.76462,
+                "distancePct": 17.1,
+                "score": 251901352.75,
+                "intensity": 0.328
+              },
+              {
+                "price": 6.40458,
+                "distancePct": 30.1,
+                "score": 194173288.24,
+                "intensity": 0.253
+              },
+              {
+                "price": 5.38556,
+                "distancePct": 9.4,
+                "score": 94679847.6,
+                "intensity": 0.123
+              },
+              {
+                "price": 5.87784,
+                "distancePct": 19.4,
+                "score": 66969429.19,
+                "intensity": 0.087
+              },
+              {
+                "price": 6.53257,
+                "distancePct": 32.7,
+                "score": 49969580.39,
+                "intensity": 0.065
+              },
+              {
+                "price": 5.29203,
+                "distancePct": 7.5,
+                "score": 22976725,
+                "intensity": 0.03
+              },
+              {
+                "price": 5.77446,
+                "distancePct": 17.3,
+                "score": 16243998.15,
+                "intensity": 0.021
+              }
+            ],
+            "note": "Far kill zone tren: vung thanh ly xa co the bi quet neu momentum expansion tiep dien."
+          },
+          "note": "Liquidity tren mot chieu: target gan co the chi la lan quet dau, main kill zone nam xa hon."
+        },
+        "killZoneTakeProfitPrice": 5.11973,
+        "rewardPct": 4.57522835313887,
+        "riskPct": 2.4999999999999956,
+        "rr": 1.8300913412555513,
+        "feasibleLeverage": 4,
+        "feasibilityScore": 100,
+        "status": "ENTER_NOW",
+        "note": "Thanh khoản trên một chiều: LONG theo lực hút, TP ưu tiên main kill zone."
+      }
+    },
+    {
+      "id": "26d92bfb-7d16-472e-9cc3-ba23ef976f1e",
+      "symbol": "ZEREBROUSDT",
+      "side": "SHORT",
+      "status": "OPEN",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 408.9904610336793,
+      "entryPrice": 0.024450447999999996,
+      "createdAt": "2026-05-29T06:59:26.486Z",
+      "openedAt": "2026-05-29T07:00:58.681Z",
+      "source": "liquid-scan-auto-80",
+      "note": "autoPaper point>75 | type=LIQUID_KILL_ZONE | sweepProb=80% | heavySide=below | target=0.0240946 | killZone=0.0238026-0.0240703 | farKill=0.0255549-0.0323939 | tp=0.0239364 | sl=0.0268935 | confirmation=entry touched by mark price (0.024454999999999998)",
+      "takeProfitPrice": 0.0239364,
+      "stopLossPrice": 0.0268935,
+      "signalType": "LIQUID_KILL_ZONE",
+      "signalPoint": 80,
+      "signalMarkPrice": 0.024338,
+      "sweepTargetPrice": 0.0240946,
+      "sweepDistancePct": -1.6500945024241864,
+      "feasibleLeverage": 8,
+      "feasibilityScore": 39,
+      "rewardPct": 2.1024072851343916,
+      "riskPct": 9.99184963809254,
+      "rr": 0.2104122220894173,
+      "heavySide": "below",
+      "entryPlan": {
+        "side": "SHORT",
+        "sweepDirection": "DOWN",
+        "entryPrice": 0.024450447999999996,
+        "entryDistancePct": 0.46202646067877223,
+        "entryType": "LIMIT_PULLBACK",
+        "takeProfitPrice": 0.0239364,
+        "stopLossPrice": 0.0268935,
+        "targetPrice": 0.0240946,
+        "targetDistancePct": -1.6500945024241864,
+        "sweepTargetPrice": 0.0240946,
+        "sweepTargetDistancePct": -1,
+        "killZoneCluster": {
+          "direction": "below",
+          "side": "DOWN",
+          "oneSidedPct": 93.7,
+          "isOneSided": true,
+          "nearSweep": {
+            "low": 0.0242406,
+            "high": 0.0243137,
+            "mid": 0.0242772,
+            "distancePctLow": -0.4,
+            "distancePctHigh": -0.1,
+            "score": 4240669.84,
+            "zones": [
+              {
+                "price": 0.0243137,
+                "distancePct": -0.1,
+                "score": 1625226.84,
+                "intensity": 0.012
+              },
+              {
+                "price": 0.0242893,
+                "distancePct": -0.2,
+                "score": 997043.1,
+                "intensity": 0.007
+              },
+              {
+                "price": 0.024265,
+                "distancePct": -0.3,
+                "score": 931778.9,
+                "intensity": 0.007
+              },
+              {
+                "price": 0.0242406,
+                "distancePct": -0.4,
+                "score": 686621,
+                "intensity": 0.005
+              }
+            ]
+          },
+          "mainKillZone": {
+            "low": 0.0238026,
+            "high": 0.0240703,
+            "mid": 0.0239364,
+            "distancePctLow": -2.2,
+            "distancePctHigh": -1.1,
+            "score": 180437147.16,
+            "zones": [
+              {
+                "price": 0.0242163,
+                "distancePct": -0.5,
+                "score": 877534.19,
+                "intensity": 0.006
+              },
+              {
+                "price": 0.0241433,
+                "distancePct": -0.8,
+                "score": 676263.84,
+                "intensity": 0.005
+              },
+              {
+                "price": 0.0240946,
+                "distancePct": -1,
+                "score": 139661904.5,
+                "intensity": 1
+              },
+              {
+                "price": 0.0240703,
+                "distancePct": -1.1,
+                "score": 665573.26,
+                "intensity": 0.005
+              },
+              {
+                "price": 0.0240216,
+                "distancePct": -1.3,
+                "score": 119680115.43,
+                "intensity": 0.857
+              }
+            ],
+            "bridge": true
+          },
+          "exhaustionZone": {
+            "low": 0.0238026,
+            "high": 0.0240216,
+            "mid": 0.0239121,
+            "distancePctLow": -2.2,
+            "distancePctHigh": -1.3,
+            "score": 218993018.52,
+            "zones": [
+              {
+                "price": 0.0240216,
+                "distancePct": -1.3,
+                "score": 119680115.43,
+                "intensity": 0.857
+              },
+              {
+                "price": 0.0238512,
+                "distancePct": -2,
+                "score": 97674792.25,
+                "intensity": 0.699
+              },
+              {
+                "price": 0.0238269,
+                "distancePct": -2.1,
+                "score": 765237.79,
+                "intensity": 0.005
+              },
+              {
+                "price": 0.0238026,
+                "distancePct": -2.2,
+                "score": 872873.05,
+                "intensity": 0.006
+              }
+            ]
+          },
+          "farKillZone": {
+            "direction": "above",
+            "side": "UP",
+            "low": 0.0255549,
+            "high": 0.0323939,
+            "mid": 0.0289744,
+            "distancePctLow": 5,
+            "distancePctHigh": 33.1,
+            "minDistancePct": 5,
+            "maxDistancePct": 33.1,
+            "score": 20749937.27,
+            "zones": [
+              {
+                "price": 0.0255549,
+                "distancePct": 5,
+                "score": 73264.87,
+                "intensity": 0.001
+              },
+              {
+                "price": 0.0255792,
+                "distancePct": 5.1,
+                "score": 79123.68,
+                "intensity": 0.001
+              },
+              {
+                "price": 0.0256036,
+                "distancePct": 5.2,
+                "score": 81058.77,
+                "intensity": 0.001
+              },
+              {
+                "price": 0.0256279,
+                "distancePct": 5.3,
+                "score": 18643.57,
+                "intensity": 0
+              },
+              {
+                "price": 0.0256523,
+                "distancePct": 5.4,
+                "score": 252986.78,
+                "intensity": 0.002
+              },
+              {
+                "price": 0.0256766,
+                "distancePct": 5.5,
+                "score": 19838.56,
+                "intensity": 0
+              },
+              {
+                "price": 0.0257009,
+                "distancePct": 5.6,
+                "score": 1.79,
+                "intensity": 0
+              },
+              {
+                "price": 0.0257253,
+                "distancePct": 5.7,
+                "score": 44852.79,
+                "intensity": 0
+              }
+            ],
+            "peaks": [
+              {
+                "price": 0.0268935,
+                "distancePct": 10.5,
+                "score": 699337.46,
+                "intensity": 0.005
+              },
+              {
+                "price": 0.0267475,
+                "distancePct": 9.9,
+                "score": 646207.93,
+                "intensity": 0.005
+              },
+              {
+                "price": 0.0261147,
+                "distancePct": 7.3,
+                "score": 551565.32,
+                "intensity": 0.004
+              },
+              {
+                "price": 0.0268692,
+                "distancePct": 10.4,
+                "score": 448428.49,
+                "intensity": 0.003
+              },
+              {
+                "price": 0.0298871,
+                "distancePct": 22.8,
+                "score": 443439.46,
+                "intensity": 0.003
+              },
+              {
+                "price": 0.0297167,
+                "distancePct": 22.1,
+                "score": 436723.66,
+                "intensity": 0.003
+              },
+              {
+                "price": 0.0284755,
+                "distancePct": 17,
+                "score": 396062.75,
+                "intensity": 0.003
+              },
+              {
+                "price": 0.0266258,
+                "distancePct": 9.4,
+                "score": 360664.95,
+                "intensity": 0.003
+              }
+            ],
+            "note": "Far kill zone tren: vung thanh ly xa co the bi quet neu momentum expansion tiep dien."
+          },
+          "note": "Liquidity duoi mot chieu: target gan co the chi la lan quet dau, main kill zone nam xa hon."
+        },
+        "killZoneTakeProfitPrice": 0.0239364,
+        "rewardPct": 2.1024072851343916,
+        "riskPct": 9.99184963809254,
+        "rr": 0.2104122220894173,
+        "feasibleLeverage": 8,
+        "feasibilityScore": 39,
+        "status": "ENTER_NOW",
+        "note": "Thanh khoản dưới một chiều: SHORT theo lực kéo, TP ưu tiên main kill zone."
+      },
+      "filledAt": "2026-05-29T07:00:58.681Z",
+      "fillPrice": 0.024450447999999996,
+      "fillMarkPrice": 0.024454999999999998,
+      "openedSnapshot": {
+        "markPrice": 0.024454999999999998,
+        "entryPrice": 0.024450447999999996,
+        "signalPoint": 80,
+        "signalType": "LIQUID_KILL_ZONE",
+        "signalMarkPrice": 0.024338,
+        "sweepTargetPrice": 0.0240946,
+        "sweepDistancePct": -1.6500945024241864,
+        "feasibleLeverage": 8,
+        "feasibilityScore": 39,
+        "rewardPct": 2.1024072851343916,
+        "riskPct": 9.99184963809254,
+        "rr": 0.2104122220894173,
+        "heavySide": "below"
+      }
+    },
+    {
+      "id": "fbac4f4c-a878-42fa-8db9-f9a1994227cb",
+      "symbol": "1000LUNCUSDT",
+      "side": "SHORT",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 125.46145098055,
+      "entryPrice": 0.0797057576,
+      "createdAt": "2026-05-29T06:59:26.357Z",
+      "openedAt": null,
+      "source": "liquid-scan-auto-82",
+      "note": "autoPaper point>75 | type=LIQUID_KILL_ZONE | sweepProb=82% | heavySide=below | target=0.0786774 | killZone=0.078439-0.0788363 | farKill=0.0530079-0.0754985 | tp=0.0786377 | sl=0.1056979",
+      "takeProfitPrice": 0.0786377,
+      "stopLossPrice": 0.1056979,
+      "signalType": "LIQUID_KILL_ZONE",
+      "signalPoint": 82,
+      "signalMarkPrice": 0.07947212,
+      "sweepTargetPrice": 0.0786774,
+      "sweepDistancePct": -1.0499531156334934,
+      "feasibleLeverage": 10,
+      "feasibilityScore": 24,
+      "rewardPct": 1.340000562268028,
+      "riskPct": 32.61011899597076,
+      "rr": 0.04109155696222991,
+      "heavySide": "below",
+      "entryPlan": {
+        "side": "SHORT",
+        "sweepDirection": "DOWN",
+        "entryPrice": 0.0797057576,
+        "entryDistancePct": 0.2939868723773782,
+        "entryType": "LIMIT_PULLBACK",
+        "takeProfitPrice": 0.0786377,
+        "stopLossPrice": 0.1056979,
+        "targetPrice": 0.0786774,
+        "targetDistancePct": -1.0499531156334934,
+        "sweepTargetPrice": 0.0786774,
+        "sweepTargetDistancePct": -1,
+        "killZoneCluster": {
+          "direction": "below",
+          "side": "DOWN",
+          "oneSidedPct": 96.8,
+          "isOneSided": true,
+          "nearSweep": {
+            "low": 0.0791542,
+            "high": 0.0793926,
+            "mid": 0.0792734,
+            "distancePctLow": -0.4,
+            "distancePctHigh": -0.1,
+            "score": 25470120.48,
+            "zones": [
+              {
+                "price": 0.0793926,
+                "distancePct": -0.1,
+                "score": 4473842.73,
+                "intensity": 0.176
+              },
+              {
+                "price": 0.0793132,
+                "distancePct": -0.2,
+                "score": 8192616.1,
+                "intensity": 0.323
+              },
+              {
+                "price": 0.0792337,
+                "distancePct": -0.3,
+                "score": 5479782.64,
+                "intensity": 0.216
+              },
+              {
+                "price": 0.0791542,
+                "distancePct": -0.4,
+                "score": 7323879.01,
+                "intensity": 0.288
+              }
+            ]
+          },
+          "mainKillZone": {
+            "low": 0.078439,
+            "high": 0.0788363,
+            "mid": 0.0786377,
+            "distancePctLow": -1.3,
+            "distancePctHigh": -0.8,
+            "score": 39338052.51,
+            "zones": [
+              {
+                "price": 0.0790748,
+                "distancePct": -0.5,
+                "score": 8049570.37,
+                "intensity": 0.317
+              },
+              {
+                "price": 0.0789953,
+                "distancePct": -0.6,
+                "score": 4634604.11,
+                "intensity": 0.182
+              },
+              {
+                "price": 0.0789158,
+                "distancePct": -0.7,
+                "score": 5442451.61,
+                "intensity": 0.214
+              },
+              {
+                "price": 0.0788363,
+                "distancePct": -0.8,
+                "score": 4293450.1,
+                "intensity": 0.169
+              },
+              {
+                "price": 0.0786774,
+                "distancePct": -1,
+                "score": 25400429.98,
+                "intensity": 1
+              }
+            ],
+            "bridge": true
+          },
+          "exhaustionZone": {
+            "low": 0.078439,
+            "high": 0.0786774,
+            "mid": 0.0785582,
+            "distancePctLow": -1.3,
+            "distancePctHigh": -1,
+            "score": 56256028.82,
+            "zones": [
+              {
+                "price": 0.0786774,
+                "distancePct": -1,
+                "score": 25400429.98,
+                "intensity": 1
+              },
+              {
+                "price": 0.0785979,
+                "distancePct": -1.1,
+                "score": 5952937.01,
+                "intensity": 0.234
+              },
+              {
+                "price": 0.0785185,
+                "distancePct": -1.2,
+                "score": 5334823.16,
+                "intensity": 0.21
+              },
+              {
+                "price": 0.078439,
+                "distancePct": -1.3,
+                "score": 19567838.67,
+                "intensity": 0.77
+              }
+            ]
+          },
+          "farKillZone": {
+            "direction": "below",
+            "side": "DOWN",
+            "low": 0.0530079,
+            "high": 0.0754985,
+            "mid": 0.0642532,
+            "distancePctLow": -33.3,
+            "distancePctHigh": -5,
+            "minDistancePct": 5,
+            "maxDistancePct": 33.3,
+            "score": 178607725.35,
+            "zones": [
+              {
+                "price": 0.0754985,
+                "distancePct": -5,
+                "score": 9547759.41,
+                "intensity": 0.376
+              },
+              {
+                "price": 0.0753396,
+                "distancePct": -5.2,
+                "score": 1313155.9,
+                "intensity": 0.052
+              },
+              {
+                "price": 0.0752601,
+                "distancePct": -5.3,
+                "score": 995491.38,
+                "intensity": 0.039
+              },
+              {
+                "price": 0.0751806,
+                "distancePct": -5.4,
+                "score": 246591.47,
+                "intensity": 0.01
+              },
+              {
+                "price": 0.0748627,
+                "distancePct": -5.8,
+                "score": 125053.55,
+                "intensity": 0.005
+              },
+              {
+                "price": 0.0747833,
+                "distancePct": -5.9,
+                "score": 116525.77,
+                "intensity": 0.005
+              },
+              {
+                "price": 0.0747038,
+                "distancePct": -6,
+                "score": 390064.93,
+                "intensity": 0.015
+              },
+              {
+                "price": 0.0746243,
+                "distancePct": -6.1,
+                "score": 255998.47,
+                "intensity": 0.01
+              }
+            ],
+            "peaks": [
+              {
+                "price": 0.0754985,
+                "distancePct": -5,
+                "score": 9547759.41,
+                "intensity": 0.376
+              },
+              {
+                "price": 0.0715249,
+                "distancePct": -10,
+                "score": 6146670.83,
+                "intensity": 0.242
+              },
+              {
+                "price": 0.0635777,
+                "distancePct": -20,
+                "score": 4158537.91,
+                "intensity": 0.164
+              },
+              {
+                "price": 0.0727965,
+                "distancePct": -8.4,
+                "score": 3843971.75,
+                "intensity": 0.151
+              },
+              {
+                "price": 0.074068,
+                "distancePct": -6.8,
+                "score": 3486077.37,
+                "intensity": 0.137
+              },
+              {
+                "price": 0.0736707,
+                "distancePct": -7.3,
+                "score": 3256556.03,
+                "intensity": 0.128
+              },
+              {
+                "price": 0.0530079,
+                "distancePct": -33.3,
+                "score": 3235672.36,
+                "intensity": 0.127
+              },
+              {
+                "price": 0.0735117,
+                "distancePct": -7.5,
+                "score": 2821227.99,
+                "intensity": 0.111
+              }
+            ],
+            "note": "Far kill zone duoi: vung thanh ly xa co the bi quet neu momentum dump tiep dien."
+          },
+          "note": "Liquidity duoi mot chieu: target gan co the chi la lan quet dau, main kill zone nam xa hon."
+        },
+        "killZoneTakeProfitPrice": 0.0786377,
+        "rewardPct": 1.340000562268028,
+        "riskPct": 32.61011899597076,
+        "rr": 0.04109155696222991,
+        "feasibleLeverage": 10,
+        "feasibilityScore": 24,
+        "status": "ENTER_NOW",
+        "note": "Thanh khoản dưới một chiều: SHORT theo lực kéo, TP ưu tiên main kill zone."
+      }
+    },
+    {
+      "id": "972ebd55-2917-4553-8b98-b5cc06b5fd0a",
+      "symbol": "AIGENSYNUSDT",
+      "side": "LONG",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 306.1907482628268,
+      "entryPrice": 0.03265938,
+      "createdAt": "2026-05-29T06:59:26.138Z",
+      "openedAt": null,
+      "source": "liquid-scan-auto-83",
+      "note": "autoPaper point>75 | type=LIQUID_KILL_ZONE | sweepProb=83% | heavySide=above | target=0.0330042 | killZone=0.0338252-0.0341864 | farKill=0.034482-0.0437757 | tp=0.0340058 | sl=0.0318428955",
+      "takeProfitPrice": 0.0340058,
+      "stopLossPrice": 0.0318428955,
+      "signalType": "LIQUID_KILL_ZONE",
+      "signalPoint": 83,
+      "signalMarkPrice": 0.03284,
+      "sweepTargetPrice": 0.0330042,
+      "sweepDistancePct": 3.549939098660175,
+      "feasibleLeverage": 4,
+      "feasibilityScore": 93,
+      "rewardPct": 4.122613472760355,
+      "riskPct": 2.4999999999999964,
+      "rr": 1.6490453891041443,
+      "heavySide": "above",
+      "entryPlan": {
+        "side": "LONG",
+        "sweepDirection": "UP",
+        "entryPrice": 0.03265938,
+        "entryDistancePct": -0.55,
+        "entryType": "LIMIT_PULLBACK",
+        "takeProfitPrice": 0.0340058,
+        "stopLossPrice": 0.0318428955,
+        "targetPrice": 0.0330042,
+        "targetDistancePct": 3.549939098660175,
+        "sweepTargetPrice": 0.0330042,
+        "sweepTargetDistancePct": 0.5,
+        "killZoneCluster": {
+          "direction": "above",
+          "side": "UP",
+          "oneSidedPct": 95.6,
+          "isOneSided": true,
+          "nearSweep": {
+            "low": 0.0330042,
+            "high": 0.0333326,
+            "mid": 0.0331684,
+            "distancePctLow": 0.5,
+            "distancePctHigh": 1.5,
+            "score": 30296622.12,
+            "zones": [
+              {
+                "price": 0.0330042,
+                "distancePct": 0.5,
+                "score": 12693777.91,
+                "intensity": 1
+              },
+              {
+                "price": 0.0330699,
+                "distancePct": 0.7,
+                "score": 4376788.58,
+                "intensity": 0.345
+              },
+              {
+                "price": 0.0332998,
+                "distancePct": 1.4,
+                "score": 7296570.65,
+                "intensity": 0.575
+              },
+              {
+                "price": 0.0333326,
+                "distancePct": 1.5,
+                "score": 5929484.98,
+                "intensity": 0.467
+              }
+            ]
+          },
+          "mainKillZone": {
+            "low": 0.0338252,
+            "high": 0.0341864,
+            "mid": 0.0340058,
+            "distancePctLow": 3,
+            "distancePctHigh": 4.1,
+            "score": 14433112.36,
+            "zones": [
+              {
+                "price": 0.0335296,
+                "distancePct": 2.1,
+                "score": 2410745.29,
+                "intensity": 0.19
+              },
+              {
+                "price": 0.033661,
+                "distancePct": 2.5,
+                "score": 5014901.36,
+                "intensity": 0.395
+              },
+              {
+                "price": 0.0338252,
+                "distancePct": 3,
+                "score": 6164505.82,
+                "intensity": 0.486
+              },
+              {
+                "price": 0.0341864,
+                "distancePct": 4.1,
+                "score": 5324814.55,
+                "intensity": 0.419
+              },
+              {
+                "price": 0.0342521,
+                "distancePct": 4.3,
+                "score": 3993125.2,
+                "intensity": 0.315
+              }
+            ],
+            "bridge": true
+          },
+          "exhaustionZone": {
+            "low": 0.0341864,
+            "high": 0.0346462,
+            "mid": 0.0344163,
+            "distancePctLow": 4.1,
+            "distancePctHigh": 5.5,
+            "score": 15276072.24,
+            "zones": [
+              {
+                "price": 0.0341864,
+                "distancePct": 4.1,
+                "score": 5324814.55,
+                "intensity": 0.419
+              },
+              {
+                "price": 0.0342521,
+                "distancePct": 4.3,
+                "score": 3993125.2,
+                "intensity": 0.315
+              },
+              {
+                "price": 0.0345805,
+                "distancePct": 5.3,
+                "score": 3242229.53,
+                "intensity": 0.255
+              },
+              {
+                "price": 0.0346462,
+                "distancePct": 5.5,
+                "score": 2715902.96,
+                "intensity": 0.214
+              }
+            ]
+          },
+          "farKillZone": {
+            "direction": "above",
+            "side": "UP",
+            "low": 0.034482,
+            "high": 0.0437757,
+            "mid": 0.0391289,
+            "distancePctLow": 5,
+            "distancePctHigh": 33.3,
+            "minDistancePct": 5,
+            "maxDistancePct": 33.3,
+            "score": 97766352.11,
+            "zones": [
+              {
+                "price": 0.034482,
+                "distancePct": 5,
+                "score": 650020.82,
+                "intensity": 0.051
+              },
+              {
+                "price": 0.0345148,
+                "distancePct": 5.1,
+                "score": 572344.91,
+                "intensity": 0.045
+              },
+              {
+                "price": 0.0345477,
+                "distancePct": 5.2,
+                "score": 741577,
+                "intensity": 0.058
+              },
+              {
+                "price": 0.0345805,
+                "distancePct": 5.3,
+                "score": 3242229.53,
+                "intensity": 0.255
+              },
+              {
+                "price": 0.0346134,
+                "distancePct": 5.4,
+                "score": 336635.53,
+                "intensity": 0.027
+              },
+              {
+                "price": 0.0346462,
+                "distancePct": 5.5,
+                "score": 2715902.96,
+                "intensity": 0.214
+              },
+              {
+                "price": 0.034679,
+                "distancePct": 5.6,
+                "score": 596816.37,
+                "intensity": 0.047
+              },
+              {
+                "price": 0.0347119,
+                "distancePct": 5.7,
+                "score": 310472.53,
+                "intensity": 0.024
+              }
+            ],
+            "peaks": [
+              {
+                "price": 0.0348761,
+                "distancePct": 6.2,
+                "score": 5760793.52,
+                "intensity": 0.454
+              },
+              {
+                "price": 0.0380616,
+                "distancePct": 15.9,
+                "score": 3769447.49,
+                "intensity": 0.297
+              },
+              {
+                "price": 0.0352702,
+                "distancePct": 7.4,
+                "score": 3641687.33,
+                "intensity": 0.287
+              },
+              {
+                "price": 0.0373062,
+                "distancePct": 13.6,
+                "score": 3628583.54,
+                "intensity": 0.286
+              },
+              {
+                "price": 0.0369122,
+                "distancePct": 12.4,
+                "score": 3595500.56,
+                "intensity": 0.283
+              },
+              {
+                "price": 0.0345805,
+                "distancePct": 5.3,
+                "score": 3242229.53,
+                "intensity": 0.255
+              },
+              {
+                "price": 0.0410172,
+                "distancePct": 24.9,
+                "score": 2772537.21,
+                "intensity": 0.218
+              },
+              {
+                "price": 0.0422979,
+                "distancePct": 28.8,
+                "score": 2726665.66,
+                "intensity": 0.215
+              }
+            ],
+            "note": "Far kill zone tren: vung thanh ly xa co the bi quet neu momentum expansion tiep dien."
+          },
+          "note": "Liquidity tren mot chieu: target gan co the chi la lan quet dau, main kill zone nam xa hon."
+        },
+        "killZoneTakeProfitPrice": 0.0340058,
+        "rewardPct": 4.122613472760355,
+        "riskPct": 2.4999999999999964,
+        "rr": 1.6490453891041443,
+        "feasibleLeverage": 4,
+        "feasibilityScore": 93,
+        "status": "ENTER_NOW",
+        "note": "Thanh khoản trên một chiều: LONG theo lực hút, TP ưu tiên main kill zone."
+      }
+    },
+    {
+      "id": "60730f26-2803-4817-bd16-6d36a60cfb52",
+      "symbol": "INJUSDT",
+      "side": "LONG",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 1.6300123613617434,
+      "entryPrice": 6.134922800000001,
+      "createdAt": "2026-05-29T06:59:26.111Z",
+      "openedAt": null,
+      "source": "liquid-scan-auto-86",
+      "note": "autoPaper point>75 | type=LIQUID_KILL_ZONE | sweepProb=86% | heavySide=above | target=6.22766 | killZone=6.25849-6.29549 | farKill=6.4743-8.13912 | tp=6.27699 | sl=6.052099849760138",
+      "takeProfitPrice": 6.27699,
+      "stopLossPrice": 6.052099849760138,
+      "signalType": "LIQUID_KILL_ZONE",
+      "signalPoint": 86,
+      "signalMarkPrice": 6.166,
+      "sweepTargetPrice": 6.22766,
+      "sweepDistancePct": 1.800032435939008,
+      "feasibleLeverage": 7,
+      "feasibilityScore": 61,
+      "rewardPct": 2.3157129214404897,
+      "riskPct": 1.350024326954252,
+      "rr": 1.7153119949067124,
+      "heavySide": "above",
+      "entryPlan": {
+        "side": "LONG",
+        "sweepDirection": "UP",
+        "entryPrice": 6.134922800000001,
+        "entryDistancePct": -0.5040090820629223,
+        "entryType": "LIMIT_PULLBACK",
+        "takeProfitPrice": 6.27699,
+        "stopLossPrice": 6.052099849760138,
+        "targetPrice": 6.22766,
+        "targetDistancePct": 1.800032435939008,
+        "sweepTargetPrice": 6.22766,
+        "sweepTargetDistancePct": 1,
+        "killZoneCluster": {
+          "direction": "above",
+          "side": "UP",
+          "oneSidedPct": 99.8,
+          "isOneSided": true,
+          "nearSweep": {
+            "low": 6.17833,
+            "high": 6.20916,
+            "mid": 6.19375,
+            "distancePctLow": 0.2,
+            "distancePctHigh": 0.7,
+            "score": 40102475.28,
+            "zones": [
+              {
+                "price": 6.17833,
+                "distancePct": 0.2,
+                "score": 5201049.23,
+                "intensity": 0.324
+              },
+              {
+                "price": 6.1845,
+                "distancePct": 0.3,
+                "score": 15741871.02,
+                "intensity": 0.98
+              },
+              {
+                "price": 6.203,
+                "distancePct": 0.6,
+                "score": 11187178.9,
+                "intensity": 0.696
+              },
+              {
+                "price": 6.20916,
+                "distancePct": 0.7,
+                "score": 7972376.13,
+                "intensity": 0.496
+              }
+            ]
+          },
+          "mainKillZone": {
+            "low": 6.25849,
+            "high": 6.29549,
+            "mid": 6.27699,
+            "distancePctLow": 1.5,
+            "distancePctHigh": 2.1,
+            "score": 37435940.85,
+            "zones": [
+              {
+                "price": 6.22149,
+                "distancePct": 0.9,
+                "score": 5703171.62,
+                "intensity": 0.355
+              },
+              {
+                "price": 6.22766,
+                "distancePct": 1,
+                "score": 16062171.2,
+                "intensity": 1
+              },
+              {
+                "price": 6.23383,
+                "distancePct": 1.1,
+                "score": 9467470.97,
+                "intensity": 0.589
+              },
+              {
+                "price": 6.25849,
+                "distancePct": 1.5,
+                "score": 7579981.77,
+                "intensity": 0.472
+              },
+              {
+                "price": 6.29549,
+                "distancePct": 2.1,
+                "score": 10217794.17,
+                "intensity": 0.636
+              }
+            ],
+            "bridge": true
+          },
+          "exhaustionZone": {
+            "low": 6.29549,
+            "high": 6.34481,
+            "mid": 6.32015,
+            "distancePctLow": 2.1,
+            "distancePctHigh": 2.9,
+            "score": 36059086.13,
+            "zones": [
+              {
+                "price": 6.29549,
+                "distancePct": 2.1,
+                "score": 10217794.17,
+                "intensity": 0.636
+              },
+              {
+                "price": 6.30165,
+                "distancePct": 2.2,
+                "score": 5532240.2,
+                "intensity": 0.344
+              },
+              {
+                "price": 6.32015,
+                "distancePct": 2.5,
+                "score": 10211720.8,
+                "intensity": 0.636
+              },
+              {
+                "price": 6.34481,
+                "distancePct": 2.9,
+                "score": 10097330.96,
+                "intensity": 0.629
+              }
+            ]
+          },
+          "farKillZone": {
+            "direction": "above",
+            "side": "UP",
+            "low": 6.4743,
+            "high": 8.13912,
+            "mid": 7.30671,
+            "distancePctLow": 5,
+            "distancePctHigh": 32,
+            "minDistancePct": 5,
+            "maxDistancePct": 32,
+            "score": 326681466,
+            "zones": [
+              {
+                "price": 6.4743,
+                "distancePct": 5,
+                "score": 511256.61,
+                "intensity": 0.032
+              },
+              {
+                "price": 6.48047,
+                "distancePct": 5.1,
+                "score": 2483443.13,
+                "intensity": 0.155
+              },
+              {
+                "price": 6.48663,
+                "distancePct": 5.2,
+                "score": 541051.13,
+                "intensity": 0.034
+              },
+              {
+                "price": 6.4928,
+                "distancePct": 5.3,
+                "score": 483447.2,
+                "intensity": 0.03
+              },
+              {
+                "price": 6.49896,
+                "distancePct": 5.4,
+                "score": 687434.54,
+                "intensity": 0.043
+              },
+              {
+                "price": 6.50513,
+                "distancePct": 5.5,
+                "score": 5156736.52,
+                "intensity": 0.321
+              },
+              {
+                "price": 6.5113,
+                "distancePct": 5.6,
+                "score": 1170573.38,
+                "intensity": 0.073
+              },
+              {
+                "price": 6.51746,
+                "distancePct": 5.7,
+                "score": 804439.17,
+                "intensity": 0.05
+              }
+            ],
+            "peaks": [
+              {
+                "price": 6.71477,
+                "distancePct": 8.9,
+                "score": 7047586.8,
+                "intensity": 0.439
+              },
+              {
+                "price": 7.29438,
+                "distancePct": 18.3,
+                "score": 5799917.78,
+                "intensity": 0.361
+              },
+              {
+                "price": 6.69011,
+                "distancePct": 8.5,
+                "score": 5671282.01,
+                "intensity": 0.353
+              },
+              {
+                "price": 6.50513,
+                "distancePct": 5.5,
+                "score": 5156736.52,
+                "intensity": 0.321
+              },
+              {
+                "price": 7.18956,
+                "distancePct": 16.6,
+                "score": 5110946.97,
+                "intensity": 0.318
+              },
+              {
+                "price": 6.59145,
+                "distancePct": 6.9,
+                "score": 4606896.5,
+                "intensity": 0.287
+              },
+              {
+                "price": 7.09707,
+                "distancePct": 15.1,
+                "score": 4600166.4,
+                "intensity": 0.286
+              },
+              {
+                "price": 7.32521,
+                "distancePct": 18.8,
+                "score": 4266866.53,
+                "intensity": 0.266
+              }
+            ],
+            "note": "Far kill zone tren: vung thanh ly xa co the bi quet neu momentum expansion tiep dien."
+          },
+          "note": "Liquidity tren mot chieu: target gan co the chi la lan quet dau, main kill zone nam xa hon."
+        },
+        "killZoneTakeProfitPrice": 6.27699,
+        "rewardPct": 2.3157129214404897,
+        "riskPct": 1.350024326954252,
+        "rr": 1.7153119949067124,
+        "feasibleLeverage": 7,
+        "feasibilityScore": 61,
+        "status": "ENTER_NOW",
+        "note": "Thanh khoản trên một chiều: LONG theo lực hút, TP ưu tiên main kill zone."
+      }
+    },
+    {
+      "id": "6d9ac665-9731-40f3-ad4a-73bcfcc81ce7",
+      "symbol": "DYDXUSDT",
+      "side": "LONG",
+      "status": "PENDING",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 57.434585453243876,
+      "entryPrice": 0.17411112,
+      "createdAt": "2026-05-29T06:59:26.102Z",
+      "openedAt": null,
+      "source": "liquid-scan-auto-88",
+      "note": "autoPaper point>75 | type=LIQUID_KILL_ZONE | sweepProb=88% | heavySide=above | target=0.175473 | killZone=0.176171-0.176521 | farKill=0.18333-0.231694 | tp=0.176346 | sl=0.17271823104",
+      "takeProfitPrice": 0.176346,
+      "stopLossPrice": 0.17271823104,
+      "signalType": "LIQUID_KILL_ZONE",
+      "signalPoint": 88,
+      "signalMarkPrice": 0.1746,
+      "sweepTargetPrice": 0.175473,
+      "sweepDistancePct": 0.9999999999999987,
+      "feasibleLeverage": 10,
+      "feasibilityScore": 41,
+      "rewardPct": 1.2835940633774536,
+      "riskPct": 0.8000000000000028,
+      "rr": 1.6044925792218114,
+      "heavySide": "above",
+      "entryPlan": {
+        "side": "LONG",
+        "sweepDirection": "UP",
+        "entryPrice": 0.17411112,
+        "entryDistancePct": -0.27999999999999964,
+        "entryType": "LIMIT_PULLBACK",
+        "takeProfitPrice": 0.176346,
+        "stopLossPrice": 0.17271823104,
+        "targetPrice": 0.175473,
+        "targetDistancePct": 0.9999999999999987,
+        "sweepTargetPrice": 0.175473,
+        "sweepTargetDistancePct": 0.5,
+        "killZoneCluster": {
+          "direction": "above",
+          "side": "UP",
+          "oneSidedPct": 99.9,
+          "isOneSided": true,
+          "nearSweep": {
+            "low": 0.174775,
+            "high": 0.175298,
+            "mid": 0.175037,
+            "distancePctLow": 0.1,
+            "distancePctHigh": 0.4,
+            "score": 18989843.43,
+            "zones": [
+              {
+                "price": 0.174775,
+                "distancePct": 0.1,
+                "score": 5961813,
+                "intensity": 0.54
+              },
+              {
+                "price": 0.174949,
+                "distancePct": 0.2,
+                "score": 7354879.83,
+                "intensity": 0.667
+              },
+              {
+                "price": 0.175124,
+                "distancePct": 0.3,
+                "score": 2610536.93,
+                "intensity": 0.237
+              },
+              {
+                "price": 0.175298,
+                "distancePct": 0.4,
+                "score": 3062613.67,
+                "intensity": 0.278
+              }
+            ]
+          },
+          "mainKillZone": {
+            "low": 0.176171,
+            "high": 0.176521,
+            "mid": 0.176346,
+            "distancePctLow": 0.9,
+            "distancePctHigh": 1.1,
+            "score": 15421863.2,
+            "zones": [
+              {
+                "price": 0.175473,
+                "distancePct": 0.5,
+                "score": 11033660.42,
+                "intensity": 1
+              },
+              {
+                "price": 0.175648,
+                "distancePct": 0.6,
+                "score": 2867209.17,
+                "intensity": 0.26
+              },
+              {
+                "price": 0.175822,
+                "distancePct": 0.7,
+                "score": 2285943.93,
+                "intensity": 0.207
+              },
+              {
+                "price": 0.176171,
+                "distancePct": 0.9,
+                "score": 2834878.62,
+                "intensity": 0.257
+              },
+              {
+                "price": 0.176521,
+                "distancePct": 1.1,
+                "score": 3502915.35,
+                "intensity": 0.317
+              }
+            ],
+            "bridge": true
+          },
+          "exhaustionZone": {
+            "low": 0.176521,
+            "high": 0.177219,
+            "mid": 0.17687,
+            "distancePctLow": 1.1,
+            "distancePctHigh": 1.5,
+            "score": 11822034.25,
+            "zones": [
+              {
+                "price": 0.176521,
+                "distancePct": 1.1,
+                "score": 3502915.35,
+                "intensity": 0.317
+              },
+              {
+                "price": 0.176695,
+                "distancePct": 1.2,
+                "score": 4488829.96,
+                "intensity": 0.407
+              },
+              {
+                "price": 0.17687,
+                "distancePct": 1.3,
+                "score": 2010189.27,
+                "intensity": 0.182
+              },
+              {
+                "price": 0.177219,
+                "distancePct": 1.5,
+                "score": 1820099.67,
+                "intensity": 0.165
+              }
+            ]
+          },
+          "farKillZone": {
+            "direction": "above",
+            "side": "UP",
+            "low": 0.18333,
+            "high": 0.231694,
+            "mid": 0.207512,
+            "distancePctLow": 5,
+            "distancePctHigh": 32.7,
+            "minDistancePct": 5,
+            "maxDistancePct": 32.7,
+            "score": 71811016.68,
+            "zones": [
+              {
+                "price": 0.18333,
+                "distancePct": 5,
+                "score": 1140519.04,
+                "intensity": 0.103
+              },
+              {
+                "price": 0.183505,
+                "distancePct": 5.1,
+                "score": 812668.67,
+                "intensity": 0.074
+              },
+              {
+                "price": 0.183679,
+                "distancePct": 5.2,
+                "score": 637380.98,
+                "intensity": 0.058
+              },
+              {
+                "price": 0.183854,
+                "distancePct": 5.3,
+                "score": 876002.8,
+                "intensity": 0.079
+              },
+              {
+                "price": 0.184028,
+                "distancePct": 5.4,
+                "score": 1623080.8,
+                "intensity": 0.147
+              },
+              {
+                "price": 0.184203,
+                "distancePct": 5.5,
+                "score": 1016055.22,
+                "intensity": 0.092
+              },
+              {
+                "price": 0.184378,
+                "distancePct": 5.6,
+                "score": 110870.33,
+                "intensity": 0.01
+              },
+              {
+                "price": 0.184552,
+                "distancePct": 5.7,
+                "score": 1582333.22,
+                "intensity": 0.143
+              }
+            ],
+            "peaks": [
+              {
+                "price": 0.190489,
+                "distancePct": 9.1,
+                "score": 2178865.11,
+                "intensity": 0.197
+              },
+              {
+                "price": 0.184028,
+                "distancePct": 5.4,
+                "score": 1623080.8,
+                "intensity": 0.147
+              },
+              {
+                "price": 0.184552,
+                "distancePct": 5.7,
+                "score": 1582333.22,
+                "intensity": 0.143
+              },
+              {
+                "price": 0.207774,
+                "distancePct": 19,
+                "score": 1535279.78,
+                "intensity": 0.139
+              },
+              {
+                "price": 0.188917,
+                "distancePct": 8.2,
+                "score": 1503694.48,
+                "intensity": 0.136
+              },
+              {
+                "price": 0.18333,
+                "distancePct": 5,
+                "score": 1140519.04,
+                "intensity": 0.103
+              },
+              {
+                "price": 0.186822,
+                "distancePct": 7,
+                "score": 1034678.65,
+                "intensity": 0.094
+              },
+              {
+                "price": 0.184203,
+                "distancePct": 5.5,
+                "score": 1016055.22,
+                "intensity": 0.092
+              }
+            ],
+            "note": "Far kill zone tren: vung thanh ly xa co the bi quet neu momentum expansion tiep dien."
+          },
+          "note": "Liquidity tren mot chieu: target gan co the chi la lan quet dau, main kill zone nam xa hon."
+        },
+        "killZoneTakeProfitPrice": 0.176346,
+        "rewardPct": 1.2835940633774536,
+        "riskPct": 0.8000000000000028,
+        "rr": 1.6044925792218114,
+        "feasibleLeverage": 10,
+        "feasibilityScore": 41,
+        "status": "ENTER_NOW",
+        "note": "Thanh khoản trên một chiều: LONG theo lực hút, TP ưu tiên main kill zone."
+      }
+    },
+    {
+      "id": "4df895d9-999c-43f2-8494-60b4afc52a56",
+      "symbol": "BASUSDT",
+      "side": "LONG",
+      "status": "OPEN",
+      "marginUsdt": 1,
+      "leverage": 10,
+      "quantity": 330.16781637703684,
+      "entryPrice": 0.030287628,
+      "createdAt": "2026-05-29T06:59:25.940Z",
+      "openedAt": "2026-05-29T07:07:05.117Z",
+      "source": "liquid-scan-auto-88",
+      "note": "autoPaper point>75 | type=LIQUID_KILL_ZONE | sweepProb=88% | heavySide=above | target=0.0306675 | killZone=0.0307587-0.0307891 | farKill=0.0319137-0.0404848 | tp=0.0307739 | sl=0.03000370017187932 | confirmation=entry touched by mark price (0.030287500000000002)",
+      "takeProfitPrice": 0.0307739,
+      "stopLossPrice": 0.03000370017187932,
+      "signalType": "LIQUID_KILL_ZONE",
+      "signalPoint": 88,
+      "signalMarkPrice": 0.030394,
+      "sweepTargetPrice": 0.0306675,
+      "sweepDistancePct": 1.2499177469237317,
+      "feasibleLeverage": 10,
+      "feasibilityScore": 48,
+      "rewardPct": 1.6055136440529427,
+      "riskPct": 0.9374383101927939,
+      "rr": 1.7126605842711422,
+      "heavySide": "above",
+      "entryPlan": {
+        "side": "LONG",
+        "sweepDirection": "UP",
+        "entryPrice": 0.030287628,
+        "entryDistancePct": -0.3499769691386449,
+        "entryType": "LIMIT_PULLBACK",
+        "takeProfitPrice": 0.0307739,
+        "stopLossPrice": 0.03000370017187932,
+        "targetPrice": 0.0306675,
+        "targetDistancePct": 1.2499177469237317,
+        "sweepTargetPrice": 0.0306675,
+        "sweepTargetDistancePct": 0.9,
+        "killZoneCluster": {
+          "direction": "above",
+          "side": "UP",
+          "oneSidedPct": 100,
+          "isOneSided": true,
+          "nearSweep": {
+            "low": 0.0304244,
+            "high": 0.0305764,
+            "mid": 0.0305004,
+            "distancePctLow": 0.1,
+            "distancePctHigh": 0.6,
+            "score": 18272459.48,
+            "zones": [
+              {
+                "price": 0.0304244,
+                "distancePct": 0.1,
+                "score": 2732309.95,
+                "intensity": 0.012
+              },
+              {
+                "price": 0.0304548,
+                "distancePct": 0.2,
+                "score": 6810943.39,
+                "intensity": 0.03
+              },
+              {
+                "price": 0.0304852,
+                "distancePct": 0.3,
+                "score": 6149367.65,
+                "intensity": 0.027
+              },
+              {
+                "price": 0.0305764,
+                "distancePct": 0.6,
+                "score": 2579838.49,
+                "intensity": 0.012
+              }
+            ]
+          },
+          "mainKillZone": {
+            "low": 0.0307587,
+            "high": 0.0307891,
+            "mid": 0.0307739,
+            "distancePctLow": 1.2,
+            "distancePctHigh": 1.3,
+            "score": 298810303.42,
+            "zones": [
+              {
+                "price": 0.0306068,
+                "distancePct": 0.7,
+                "score": 3965469.26,
+                "intensity": 0.018
+              },
+              {
+                "price": 0.0306675,
+                "distancePct": 0.9,
+                "score": 223938922.37,
+                "intensity": 1
+              },
+              {
+                "price": 0.0307283,
+                "distancePct": 1.1,
+                "score": 2631250.53,
+                "intensity": 0.012
+              },
+              {
+                "price": 0.0307587,
+                "distancePct": 1.2,
+                "score": 4792809.62,
+                "intensity": 0.021
+              },
+              {
+                "price": 0.0307891,
+                "distancePct": 1.3,
+                "score": 194463798.86,
+                "intensity": 0.868
+              }
+            ],
+            "bridge": true
+          },
+          "exhaustionZone": {
+            "low": 0.0307891,
+            "high": 0.0310627,
+            "mid": 0.0309259,
+            "distancePctLow": 1.3,
+            "distancePctHigh": 2.2,
+            "score": 362292155.06,
+            "zones": [
+              {
+                "price": 0.0307891,
+                "distancePct": 1.3,
+                "score": 194463798.86,
+                "intensity": 0.868
+              },
+              {
+                "price": 0.0308803,
+                "distancePct": 1.6,
+                "score": 4198330.15,
+                "intensity": 0.019
+              },
+              {
+                "price": 0.0309715,
+                "distancePct": 1.9,
+                "score": 158182416.66,
+                "intensity": 0.706
+              },
+              {
+                "price": 0.0310627,
+                "distancePct": 2.2,
+                "score": 5447609.39,
+                "intensity": 0.024
+              }
+            ]
+          },
+          "farKillZone": {
+            "direction": "above",
+            "side": "UP",
+            "low": 0.0319137,
+            "high": 0.0404848,
+            "mid": 0.0361993,
+            "distancePctLow": 5,
+            "distancePctHigh": 33.2,
+            "minDistancePct": 5,
+            "maxDistancePct": 33.2,
+            "score": 255127439.23,
+            "zones": [
+              {
+                "price": 0.0319137,
+                "distancePct": 5,
+                "score": 117241.21,
+                "intensity": 0.001
+              },
+              {
+                "price": 0.0319441,
+                "distancePct": 5.1,
+                "score": 1034964.68,
+                "intensity": 0.005
+              },
+              {
+                "price": 0.0319745,
+                "distancePct": 5.2,
+                "score": 243540.67,
+                "intensity": 0.001
+              },
+              {
+                "price": 0.0320049,
+                "distancePct": 5.3,
+                "score": 172713.51,
+                "intensity": 0.001
+              },
+              {
+                "price": 0.0320353,
+                "distancePct": 5.4,
+                "score": 1290575.08,
+                "intensity": 0.006
+              },
+              {
+                "price": 0.0320657,
+                "distancePct": 5.5,
+                "score": 1877142.67,
+                "intensity": 0.008
+              },
+              {
+                "price": 0.0320961,
+                "distancePct": 5.6,
+                "score": 528529.54,
+                "intensity": 0.002
+              },
+              {
+                "price": 0.0321265,
+                "distancePct": 5.7,
+                "score": 1384417.08,
+                "intensity": 0.006
+              }
+            ],
+            "peaks": [
+              {
+                "price": 0.033403,
+                "distancePct": 9.9,
+                "score": 69937518.86,
+                "intensity": 0.312
+              },
+              {
+                "price": 0.0364424,
+                "distancePct": 19.9,
+                "score": 49564159.64,
+                "intensity": 0.221
+              },
+              {
+                "price": 0.0404848,
+                "distancePct": 33.2,
+                "score": 38306356.7,
+                "intensity": 0.171
+              },
+              {
+                "price": 0.033555,
+                "distancePct": 10.4,
+                "score": 2621389.07,
+                "intensity": 0.012
+              },
+              {
+                "price": 0.0328559,
+                "distancePct": 8.1,
+                "score": 2359767.71,
+                "intensity": 0.011
+              },
+              {
+                "price": 0.0336766,
+                "distancePct": 10.8,
+                "score": 2086573.47,
+                "intensity": 0.009
+              },
+              {
+                "price": 0.0320657,
+                "distancePct": 5.5,
+                "score": 1877142.67,
+                "intensity": 0.008
+              },
+              {
+                "price": 0.0358345,
+                "distancePct": 17.9,
+                "score": 1832003.95,
+                "intensity": 0.008
+              }
+            ],
+            "note": "Far kill zone tren: vung thanh ly xa co the bi quet neu momentum expansion tiep dien."
+          },
+          "note": "Liquidity tren mot chieu: target gan co the chi la lan quet dau, main kill zone nam xa hon."
+        },
+        "killZoneTakeProfitPrice": 0.0307739,
+        "rewardPct": 1.6055136440529427,
+        "riskPct": 0.9374383101927939,
+        "rr": 1.7126605842711422,
+        "feasibleLeverage": 10,
+        "feasibilityScore": 48,
+        "status": "ENTER_NOW",
+        "note": "Thanh khoản trên một chiều: LONG theo lực hút, TP ưu tiên main kill zone."
+      },
+      "filledAt": "2026-05-29T07:07:05.117Z",
+      "fillPrice": 0.030287628,
+      "fillMarkPrice": 0.030287500000000002,
+      "openedSnapshot": {
+        "markPrice": 0.030287500000000002,
+        "entryPrice": 0.030287628,
+        "signalPoint": 88,
+        "signalType": "LIQUID_KILL_ZONE",
+        "signalMarkPrice": 0.030394,
+        "sweepTargetPrice": 0.0306675,
+        "sweepDistancePct": 1.2499177469237317,
+        "feasibleLeverage": 10,
+        "feasibilityScore": 48,
+        "rewardPct": 1.6055136440529427,
+        "riskPct": 0.9374383101927939,
+        "rr": 1.7126605842711422,
+        "heavySide": "above"
+      }
+    },
     {
       "id": "0b577a28-0660-4ee5-8d7c-f14356efc247",
       "symbol": "GUAUSDT",
       "side": "SHORT",
-      "status": "OPEN",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 7.8446807917263435,
@@ -63,7 +2020,11 @@
         "riskPct": 9.20266342930574,
         "rr": 0.18019751994390826,
         "heavySide": "below"
-      }
+      },
+      "exitPrice": 0.70743,
+      "closedAt": "2026-05-29T06:59:09.386Z",
+      "outcome": "TP",
+      "closeNote": "Auto-closed: TP hit @ 0.70743"
     },
     {
       "id": "5393be54-85ac-438b-af39-b2f9e0d60cd9",
@@ -2705,15 +4666,15 @@
       "id": "4c31ef1e-f250-4be3-adfc-92caa3248435",
       "symbol": "HOMEUSDT",
       "side": "SHORT",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 412.7312512791357,
       "entryPrice": 0.024228841331999998,
       "createdAt": "2026-05-25T13:27:32.929Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:10.998Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=below | target=0.0239196 | tp=0.0239196 | sl=0.024422672062655998",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=below | target=0.0239196 | tp=0.0239196 | sl=0.024422672062655998 | confirmation=entry touched by mark price (0.0277595)",
       "takeProfitPrice": 0.0239196,
       "stopLossPrice": 0.024422672062655998,
       "signalType": "LIQUID_SCAN",
@@ -2744,7 +4705,29 @@
         "feasibilityScore": 41,
         "status": "ENTER_NOW",
         "note": "Thanh khoản dưới dày: vào SHORT theo hướng kéo xuống target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:10.998Z",
+      "fillPrice": 0.024228841331999998,
+      "fillMarkPrice": 0.0277595,
+      "openedSnapshot": {
+        "markPrice": 0.0277595,
+        "entryPrice": 0.024228841331999998,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": 0.02416119,
+        "sweepTargetPrice": 0.0239196,
+        "sweepDistancePct": -1,
+        "feasibleLeverage": 10,
+        "feasibilityScore": 41,
+        "rewardPct": 1.276335619035861,
+        "riskPct": 0.8,
+        "rr": 1.595419523794826,
+        "heavySide": "below"
+      },
+      "exitPrice": 0.0277565,
+      "closedAt": "2026-05-29T06:59:11.349Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.0277565"
     },
     {
       "id": "a760f777-66c6-4d3e-8166-47499cba04f1",
@@ -5026,15 +7009,15 @@
       "id": "78b8f8f3-f317-4a60-a62f-b1436f1a6a95",
       "symbol": "AIXBTUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 346.65503680616786,
       "entryPrice": 0.0288471216,
       "createdAt": "2026-05-25T06:31:40.768Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:11.386Z",
       "source": "liquid-scan-auto-89",
-      "note": "autoPaper point>75 | sweepProb=89% | heavySide=above | target=0.0291803 | tp=0.0291803 | sl=0.028717309552800004",
+      "note": "autoPaper point>75 | sweepProb=89% | heavySide=above | target=0.0291803 | tp=0.0291803 | sl=0.028717309552800004 | confirmation=entry touched by mark price (0.027764999999999998)",
       "takeProfitPrice": 0.0291803,
       "stopLossPrice": 0.028717309552800004,
       "signalType": "LIQUID_SCAN",
@@ -5058,7 +7041,29 @@
         "feasibilityScore": 50,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:11.386Z",
+      "fillPrice": 0.0288471216,
+      "fillMarkPrice": 0.027764999999999998,
+      "openedSnapshot": {
+        "markPrice": 0.027764999999999998,
+        "entryPrice": 0.0288471216,
+        "signalPoint": 89,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.0291803,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.027764999999999998,
+      "closedAt": "2026-05-29T06:59:11.426Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.027764999999999998"
     },
     {
       "id": "4e0f3ac1-64cc-4ca2-99db-3ca6625dba20",
@@ -5594,15 +7599,15 @@
       "id": "b4053318-cb78-4a67-aea3-36cdfe6d33f7",
       "symbol": "AKTUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 11.540536047466759,
       "entryPrice": 0.8665108760000001,
       "createdAt": "2026-05-25T06:31:38.921Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:09.917Z",
       "source": "liquid-scan-auto-89",
-      "note": "autoPaper point>75 | sweepProb=89% | heavySide=above | target=0.876518 | tp=0.876518 | sl=0.8626115770580002",
+      "note": "autoPaper point>75 | sweepProb=89% | heavySide=above | target=0.876518 | tp=0.876518 | sl=0.8626115770580002 | confirmation=entry touched by mark price (0.81105)",
       "takeProfitPrice": 0.876518,
       "stopLossPrice": 0.8626115770580002,
       "signalType": "LIQUID_SCAN",
@@ -5626,7 +7631,29 @@
         "feasibilityScore": 50,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:09.917Z",
+      "fillPrice": 0.8665108760000001,
+      "fillMarkPrice": 0.81105,
+      "openedSnapshot": {
+        "markPrice": 0.81105,
+        "entryPrice": 0.8665108760000001,
+        "signalPoint": 89,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.876518,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.81105,
+      "closedAt": "2026-05-29T06:59:10.160Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.81105"
     },
     {
       "id": "9e497f40-31b9-49d4-8649-2590b4c321a6",
@@ -10262,15 +12289,15 @@
       "id": "02cec893-10a6-40c5-8c69-7fe93e4a650f",
       "symbol": "SANDUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 141.83996763981278,
       "entryPrice": 0.07050199014,
       "createdAt": "2026-05-25T04:46:37.710Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:10.256Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0714069 | tp=0.0714069 | sl=0.07018473118437",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0714069 | tp=0.0714069 | sl=0.07018473118437 | confirmation=entry touched by mark price (0.06859)",
       "takeProfitPrice": 0.0714069,
       "stopLossPrice": 0.07018473118437,
       "signalType": "LIQUID_SCAN",
@@ -10294,7 +12321,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:10.256Z",
+      "fillPrice": 0.07050199014,
+      "fillMarkPrice": 0.06859,
+      "openedSnapshot": {
+        "markPrice": 0.06859,
+        "entryPrice": 0.07050199014,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.0714069,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.06859,
+      "closedAt": "2026-05-29T06:59:10.466Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.06859"
     },
     {
       "id": "b4fb27c1-a86b-4ec8-83ef-8d522bb22213",
@@ -10406,15 +12455,15 @@
       "id": "6c4675f6-1b18-4f33-ada6-c78e52f3d62d",
       "symbol": "POLUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 110.52188802413458,
       "entryPrice": 0.09047981516399999,
       "createdAt": "2026-05-25T04:46:37.325Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:10.815Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0916412 | tp=0.0916412 | sl=0.09007265599576199",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0916412 | tp=0.0916412 | sl=0.09007265599576199 | confirmation=entry touched by mark price (0.088055)",
       "takeProfitPrice": 0.0916412,
       "stopLossPrice": 0.09007265599576199,
       "signalType": "LIQUID_SCAN",
@@ -10438,7 +12487,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:10.815Z",
+      "fillPrice": 0.09047981516399999,
+      "fillMarkPrice": 0.088055,
+      "openedSnapshot": {
+        "markPrice": 0.088055,
+        "entryPrice": 0.09047981516399999,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.0916412,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.088055,
+      "closedAt": "2026-05-29T06:59:10.852Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.088055"
     },
     {
       "id": "e9cddeff-a9d6-46d8-b85c-7e047d1eb9f2",
@@ -10497,15 +12568,15 @@
       "id": "2902deb3-c580-40e1-90f1-5d716af18df6",
       "symbol": "MONUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 391.5688645113776,
       "entryPrice": 0.025538292,
       "createdAt": "2026-05-25T04:46:37.080Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:09.761Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0258661 | tp=0.0258661 | sl=0.025423369686",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0258661 | tp=0.0258661 | sl=0.025423369686 | confirmation=entry touched by mark price (0.023765)",
       "takeProfitPrice": 0.0258661,
       "stopLossPrice": 0.025423369686,
       "signalType": "LIQUID_SCAN",
@@ -10529,7 +12600,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:09.761Z",
+      "fillPrice": 0.025538292,
+      "fillMarkPrice": 0.023765,
+      "openedSnapshot": {
+        "markPrice": 0.023765,
+        "entryPrice": 0.025538292,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.0258661,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.023765,
+      "closedAt": "2026-05-29T06:59:10.766Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.023765"
     },
     {
       "id": "89f83e4e-8748-42ae-83bf-2d6f1c9b100d",
@@ -10973,15 +13066,15 @@
       "id": "483204ca-c6c1-4ae9-9497-096228c63595",
       "symbol": "WIFUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 53.44033370709502,
       "entryPrice": 0.18712458,
       "createdAt": "2026-05-25T04:46:35.953Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:10.338Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.189527 | tp=0.189527 | sl=0.18628251939",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.189527 | tp=0.189527 | sl=0.18628251939 | confirmation=entry touched by mark price (0.18585000000000002)",
       "takeProfitPrice": 0.189527,
       "stopLossPrice": 0.18628251939,
       "signalType": "LIQUID_SCAN",
@@ -11005,21 +13098,43 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:10.338Z",
+      "fillPrice": 0.18712458,
+      "fillMarkPrice": 0.18585000000000002,
+      "openedSnapshot": {
+        "markPrice": 0.18585000000000002,
+        "entryPrice": 0.18712458,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.189527,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.18580000000000002,
+      "closedAt": "2026-05-29T06:59:10.501Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.18580000000000002"
     },
     {
       "id": "ca242d50-721a-410a-9e46-2317554374c3",
       "symbol": "OPUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 79.68709804746989,
       "entryPrice": 0.125490829068,
       "createdAt": "2026-05-25T04:46:35.839Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:10.957Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.127102 | tp=0.127102 | sl=0.124926120337194",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.127102 | tp=0.127102 | sl=0.124926120337194 | confirmation=entry touched by mark price (0.119)",
       "takeProfitPrice": 0.127102,
       "stopLossPrice": 0.124926120337194,
       "signalType": "LIQUID_SCAN",
@@ -11043,7 +13158,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:10.957Z",
+      "fillPrice": 0.125490829068,
+      "fillMarkPrice": 0.119,
+      "openedSnapshot": {
+        "markPrice": 0.119,
+        "entryPrice": 0.125490829068,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.127102,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.119,
+      "closedAt": "2026-05-29T06:59:11.159Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.119"
     },
     {
       "id": "0cea424f-1f97-4062-9478-c7b96ac6a9c7",
@@ -11434,15 +13571,15 @@
       "id": "a0335656-bd50-45f3-9f67-ae3855d157c5",
       "symbol": "VIRTUALUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 13.451480375769796,
       "entryPrice": 0.7434126,
       "createdAt": "2026-05-25T04:46:34.869Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:10.114Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.752955 | tp=0.752955 | sl=0.7400672433000001",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.752955 | tp=0.752955 | sl=0.7400672433000001 | confirmation=entry touched by mark price (0.72995)",
       "takeProfitPrice": 0.752955,
       "stopLossPrice": 0.7400672433000001,
       "signalType": "LIQUID_SCAN",
@@ -11466,7 +13603,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:10.114Z",
+      "fillPrice": 0.7434126,
+      "fillMarkPrice": 0.72995,
+      "openedSnapshot": {
+        "markPrice": 0.72995,
+        "entryPrice": 0.7434126,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.752955,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.73005,
+      "closedAt": "2026-05-29T06:59:10.707Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.73005"
     },
     {
       "id": "cf21f739-99e6-47fd-8296-5f881319e4b8",
@@ -11797,15 +13956,15 @@
       "id": "66e95857-ec21-4e31-844c-b1e28d6320d6",
       "symbol": "TRXUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 27.47561071007891,
       "entryPrice": 0.36395915292,
       "createdAt": "2026-05-25T04:46:34.025Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:10.045Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.368631 | tp=0.368631 | sl=0.36232133673186",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.368631 | tp=0.368631 | sl=0.36232133673186 | confirmation=entry touched by mark price (0.350235)",
       "takeProfitPrice": 0.368631,
       "stopLossPrice": 0.36232133673186,
       "signalType": "LIQUID_SCAN",
@@ -11829,7 +13988,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:10.045Z",
+      "fillPrice": 0.36395915292,
+      "fillMarkPrice": 0.350235,
+      "openedSnapshot": {
+        "markPrice": 0.350235,
+        "entryPrice": 0.36395915292,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.368631,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.350235,
+      "closedAt": "2026-05-29T06:59:10.564Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.350235"
     },
     {
       "id": "030f4f3f-04a1-4285-a321-7c33a23f5857",
@@ -12160,15 +14341,15 @@
       "id": "98a8631f-7b7f-47f2-b4af-6f9f5b258d28",
       "symbol": "LINKUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 1.061582989139578,
       "entryPrice": 9.419894725428,
       "createdAt": "2026-05-25T04:46:32.992Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:09.992Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=9.54081 | tp=9.54081 | sl=9.377505199163574",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=9.54081 | tp=9.54081 | sl=9.377505199163574 | confirmation=entry touched by mark price (9.028)",
       "takeProfitPrice": 9.54081,
       "stopLossPrice": 9.377505199163574,
       "signalType": "LIQUID_SCAN",
@@ -12192,7 +14373,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:09.992Z",
+      "fillPrice": 9.419894725428,
+      "fillMarkPrice": 9.028,
+      "openedSnapshot": {
+        "markPrice": 9.028,
+        "entryPrice": 9.419894725428,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 9.54081,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 9.028,
+      "closedAt": "2026-05-29T06:59:13.720Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 9.028"
     },
     {
       "id": "7cb9db7c-f045-4545-aa5a-1a16ac436fdc",
@@ -13081,15 +15284,15 @@
       "id": "d4a8429b-8485-4fb0-b147-afc9e2eff2ed",
       "symbol": "STRKUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 250.50633844163855,
       "entryPrice": 0.0399191496,
       "createdAt": "2026-05-25T04:46:30.542Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:09.508Z",
       "source": "liquid-scan-auto-89",
-      "note": "autoPaper point>75 | sweepProb=89% | heavySide=above | target=0.0403802 | tp=0.0403802 | sl=0.0397395134268",
+      "note": "autoPaper point>75 | sweepProb=89% | heavySide=above | target=0.0403802 | tp=0.0403802 | sl=0.0397395134268 | confirmation=entry touched by mark price (0.03695)",
       "takeProfitPrice": 0.0403802,
       "stopLossPrice": 0.0397395134268,
       "signalType": "LIQUID_SCAN",
@@ -13113,7 +15316,29 @@
         "feasibilityScore": 50,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:09.508Z",
+      "fillPrice": 0.0399191496,
+      "fillMarkPrice": 0.03695,
+      "openedSnapshot": {
+        "markPrice": 0.03695,
+        "entryPrice": 0.0399191496,
+        "signalPoint": 89,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.0403802,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.03695,
+      "closedAt": "2026-05-29T06:59:09.850Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.03695"
     },
     {
       "id": "d26f2bc9-bcde-4fbe-bdfe-297b10e7b793",
@@ -14534,15 +16759,15 @@
       "id": "a336c30a-85c3-4342-850a-9372fde6cac9",
       "symbol": "ZROUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 7.694092566954409,
       "entryPrice": 1.29969842616,
       "createdAt": "2026-05-25T04:38:35.383Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:11.544Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=1.31638 | tp=1.31638 | sl=1.29384978324228",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=1.31638 | tp=1.31638 | sl=1.29384978324228 | confirmation=entry touched by mark price (1.14805)",
       "takeProfitPrice": 1.31638,
       "stopLossPrice": 1.29384978324228,
       "signalType": "LIQUID_SCAN",
@@ -14566,7 +16791,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:11.544Z",
+      "fillPrice": 1.29969842616,
+      "fillMarkPrice": 1.14805,
+      "openedSnapshot": {
+        "markPrice": 1.14805,
+        "entryPrice": 1.29969842616,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 1.31638,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 1.1479,
+      "closedAt": "2026-05-29T06:59:11.587Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 1.1479"
     },
     {
       "id": "aaca5fc1-dd34-4f65-bbf8-af1b446334ca",
@@ -15250,15 +17497,15 @@
       "id": "5255f2a6-5772-476d-bbc4-9f57840c0fa3",
       "symbol": "USELESSUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 135.45965986946348,
       "entryPrice": 0.073822716,
       "createdAt": "2026-05-25T04:38:33.564Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:09.553Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0747703 | tp=0.0747703 | sl=0.073490513778",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0747703 | tp=0.0747703 | sl=0.073490513778 | confirmation=entry touched by mark price (0.06845)",
       "takeProfitPrice": 0.0747703,
       "stopLossPrice": 0.073490513778,
       "signalType": "LIQUID_SCAN",
@@ -15282,7 +17529,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:09.553Z",
+      "fillPrice": 0.073822716,
+      "fillMarkPrice": 0.06845,
+      "openedSnapshot": {
+        "markPrice": 0.06845,
+        "entryPrice": 0.073822716,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.0747703,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.06845,
+      "closedAt": "2026-05-29T06:59:11.218Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.06845"
     },
     {
       "id": "e21943ae-fd6e-4159-a2b7-ba15a5aff700",
@@ -15394,15 +17663,15 @@
       "id": "d2d0b57a-6379-4524-ba70-fe1b31f82760",
       "symbol": "POLYXUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 180.88164899235898,
       "entryPrice": 0.055284768000000005,
       "createdAt": "2026-05-25T04:38:33.012Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:12.695Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0559944 | tp=0.0559944 | sl=0.05503598654400001",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.0559944 | tp=0.0559944 | sl=0.05503598654400001 | confirmation=entry touched by mark price (0.04909)",
       "takeProfitPrice": 0.0559944,
       "stopLossPrice": 0.05503598654400001,
       "signalType": "LIQUID_SCAN",
@@ -15426,7 +17695,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:12.695Z",
+      "fillPrice": 0.055284768000000005,
+      "fillMarkPrice": 0.04909,
+      "openedSnapshot": {
+        "markPrice": 0.04909,
+        "entryPrice": 0.055284768000000005,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.0559944,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.04909,
+      "closedAt": "2026-05-29T06:59:12.773Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.04909"
     },
     {
       "id": "31c83154-52ae-4173-aa4f-6efd74bb969e",
@@ -15937,15 +18228,15 @@
       "id": "3d964d28-5f54-4840-8ccb-9bc0ae1623c7",
       "symbol": "PENDLEUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 5.468220579470656,
       "entryPrice": 1.828748466648,
       "createdAt": "2026-05-25T04:38:31.584Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:09.728Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=1.85222 | tp=1.85222 | sl=1.8205190985480841",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=1.85222 | tp=1.85222 | sl=1.8205190985480841 | confirmation=entry touched by mark price (1.4606)",
       "takeProfitPrice": 1.85222,
       "stopLossPrice": 1.8205190985480841,
       "signalType": "LIQUID_SCAN",
@@ -15969,7 +18260,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:09.728Z",
+      "fillPrice": 1.828748466648,
+      "fillMarkPrice": 1.4606,
+      "openedSnapshot": {
+        "markPrice": 1.4606,
+        "entryPrice": 1.828748466648,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 1.85222,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 1.4606,
+      "closedAt": "2026-05-29T06:59:10.018Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 1.4606"
     },
     {
       "id": "bfe5b89b-19b0-4bfc-ba7f-cdc7bd32c3bf",
@@ -16201,15 +18514,15 @@
       "id": "6a1bb06c-f931-4fe7-a8cd-c525735f1a8b",
       "symbol": "APTUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 10.62723500973795,
       "entryPrice": 0.9409785321240001,
       "createdAt": "2026-05-25T04:38:30.942Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:10.438Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.953057 | tp=0.953057 | sl=0.9367441287294421",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.953057 | tp=0.953057 | sl=0.9367441287294421 | confirmation=entry touched by mark price (0.92815)",
       "takeProfitPrice": 0.953057,
       "stopLossPrice": 0.9367441287294421,
       "signalType": "LIQUID_SCAN",
@@ -16233,7 +18546,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:10.438Z",
+      "fillPrice": 0.9409785321240001,
+      "fillMarkPrice": 0.92815,
+      "openedSnapshot": {
+        "markPrice": 0.92815,
+        "entryPrice": 0.9409785321240001,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.953057,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.92815,
+      "closedAt": "2026-05-29T06:59:11.629Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.92815"
     },
     {
       "id": "df33306f-662d-4816-86ba-c067b6c40628",
@@ -16684,15 +19019,15 @@
       "id": "8eabde8c-c252-4189-8151-ed1703607e32",
       "symbol": "TIAUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 23.676890282855123,
       "entryPrice": 0.422352761724,
       "createdAt": "2026-05-25T04:38:29.601Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:11.687Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.427774 | tp=0.427774 | sl=0.420452174296242",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=0.427774 | tp=0.427774 | sl=0.420452174296242 | confirmation=entry touched by mark price (0.4196)",
       "takeProfitPrice": 0.427774,
       "stopLossPrice": 0.420452174296242,
       "signalType": "LIQUID_SCAN",
@@ -16716,7 +19051,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:11.687Z",
+      "fillPrice": 0.422352761724,
+      "fillMarkPrice": 0.4196,
+      "openedSnapshot": {
+        "markPrice": 0.4196,
+        "entryPrice": 0.422352761724,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 0.427774,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.41955,
+      "closedAt": "2026-05-29T06:59:11.837Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 0.41955"
     },
     {
       "id": "8a347921-6fdd-42bd-ba5f-23f2bb622209",
@@ -17100,15 +19457,15 @@
       "id": "5cf70fd9-edb7-4b8b-b667-2772612927be",
       "symbol": "AAVEUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 0.11708057704375345,
       "entryPrice": 85.41126335807999,
       "createdAt": "2026-05-25T04:38:28.366Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:09.665Z",
       "source": "liquid-scan-auto-88",
-      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=86.5076 | tp=86.5076 | sl=85.02691267296863",
+      "note": "autoPaper point>75 | sweepProb=88% | heavySide=above | target=86.5076 | tp=86.5076 | sl=85.02691267296863 | confirmation=entry touched by mark price (81.69)",
       "takeProfitPrice": 86.5076,
       "stopLossPrice": 85.02691267296863,
       "signalType": "LIQUID_SCAN",
@@ -17132,7 +19489,29 @@
         "feasibilityScore": 56,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:09.665Z",
+      "fillPrice": 85.41126335807999,
+      "fillMarkPrice": 81.69,
+      "openedSnapshot": {
+        "markPrice": 81.69,
+        "entryPrice": 85.41126335807999,
+        "signalPoint": 88,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 86.5076,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 81.695,
+      "closedAt": "2026-05-29T06:59:10.219Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 81.695"
     },
     {
       "id": "9f9442dc-0528-4535-89b7-b8c363e74b97",
@@ -19034,15 +21413,15 @@
       "id": "60a2af50-79ed-45fc-9ac7-36bcf7dc33d2",
       "symbol": "BCHUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 0.029051156696613564,
       "entryPrice": 344.2203732,
       "createdAt": "2026-05-25T04:29:55.744Z",
-      "openedAt": null,
+      "openedAt": "2026-05-29T06:59:11.998Z",
       "source": "liquid-scan-auto-84",
-      "note": "autoPaper point>75 | sweepProb=84% | heavySide=above | target=348.196 | tp=348.196 | sl=344.745",
+      "note": "autoPaper point>75 | sweepProb=84% | heavySide=above | target=348.196 | tp=348.196 | sl=344.745 | confirmation=entry touched by mark price (307.51)",
       "takeProfitPrice": 348.196,
       "stopLossPrice": 344.745,
       "signalType": "LIQUID_SCAN",
@@ -19066,7 +21445,29 @@
         "feasibilityScore": 55,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên dày: vào LONG theo hướng hút lên target."
-      }
+      },
+      "filledAt": "2026-05-29T06:59:11.998Z",
+      "fillPrice": 344.2203732,
+      "fillMarkPrice": 307.51,
+      "openedSnapshot": {
+        "markPrice": 307.51,
+        "entryPrice": 344.2203732,
+        "signalPoint": 84,
+        "signalType": "LIQUID_SCAN",
+        "signalMarkPrice": null,
+        "sweepTargetPrice": 348.196,
+        "sweepDistancePct": null,
+        "feasibleLeverage": null,
+        "feasibilityScore": null,
+        "rewardPct": null,
+        "riskPct": null,
+        "rr": null,
+        "heavySide": "above"
+      },
+      "exitPrice": 307.51,
+      "closedAt": "2026-05-29T06:59:12.069Z",
+      "outcome": "SL",
+      "closeNote": "Auto-closed: SL hit @ 307.51"
     },
     {
       "id": "7fc1bcd2-24a5-4224-ad50-320e315ac8d3",

@@ -54,6 +54,21 @@ const elements = {
   liquidityBias: document.querySelector('#liquidityBias'),
   bookImbalance: document.querySelector('#bookImbalance'),
   marketExplain: document.querySelector('#marketExplain'),
+  killZoneBox: document.querySelector('#killZoneBox'),
+  mainKillZoneItem: document.querySelector('#mainKillZoneItem'),
+  mainKillZoneRange: document.querySelector('#mainKillZoneRange'),
+  mainKillZoneMeta: document.querySelector('#mainKillZoneMeta'),
+  exhaustionZoneItem: document.querySelector('#exhaustionZoneItem'),
+  exhaustionZoneRange: document.querySelector('#exhaustionZoneRange'),
+  exhaustionZoneMeta: document.querySelector('#exhaustionZoneMeta'),
+  farKillZoneItem: document.querySelector('#farKillZoneItem'),
+  farKillZoneRange: document.querySelector('#farKillZoneRange'),
+  farKillZoneMeta: document.querySelector('#farKillZoneMeta'),
+  farKillZonePeaks: document.querySelector('#farKillZonePeaks'),
+  killLogicBox: document.querySelector('#killLogicBox'),
+  killLogicLabel: document.querySelector('#killLogicLabel'),
+  killLogicTitle: document.querySelector('#killLogicTitle'),
+  killLogicBody: document.querySelector('#killLogicBody'),
   bidNotional: document.querySelector('#bidNotional'),
   askNotional: document.querySelector('#askNotional'),
   bidBar: document.querySelector('#bidBar'),
@@ -233,14 +248,22 @@ function render(data) {
   const sweepDist = document.getElementById('sweepTargetDist');
   if (st) {
     const isAbove = st.direction === 'above';
+    const kz = data.liquidationProxy.killZoneCluster?.mainKillZone;
+    const fk = data.liquidationProxy.killZoneCluster?.farKillZone;
     sweepLabel.textContent = isAbove ? '🚀 Kéo lên quét short tại' : '💥 Kéo xuống quét long tại';
     sweepPrice.textContent = formatPrice(st.price, priceDigits);
     sweepPrice.className = isAbove ? 'positive' : 'negative';
-    sweepDist.textContent = `${st.distancePct > 0 ? '+' : ''}${formatNumber(st.distancePct, 2)}% away`;
+    sweepDist.textContent = kz
+      ? `${st.distancePct > 0 ? '+' : ''}${formatNumber(st.distancePct, 2)}% away · kill zone ${formatPrice(kz.low, priceDigits)} - ${formatPrice(kz.high, priceDigits)}`
+      : fk
+        ? `${st.distancePct > 0 ? '+' : ''}${formatNumber(st.distancePct, 2)}% away · far kill ${formatPrice(fk.low, priceDigits)} - ${formatPrice(fk.high, priceDigits)}`
+      : `${st.distancePct > 0 ? '+' : ''}${formatNumber(st.distancePct, 2)}% away`;
     sweepBox.style.display = 'block';
   } else {
     sweepBox.style.display = 'none';
   }
+  renderKillZoneBox(data.liquidationProxy.killZoneCluster, priceDigits);
+  renderKillLogicBox(data, priceDigits);
   const ema = data.ema99;
   if (ema && (ema.current || ema.h1 || ema.h4)) {
     elements.emaRow.style.display = '';
@@ -271,7 +294,7 @@ function render(data) {
   renderBookBars(data.orderBook);
   renderHeatmap(data.liquidationProxy, data.price.mark, priceDigits);
 
-  elements.marketExplain.textContent = marketExplanation(data, coin);
+  elements.marketExplain.textContent = marketExplanation(data, coin, priceDigits);
   elements.bookExplain.textContent = bookExplanation(data.orderBook);
   elements.tradeContext.innerHTML = tradeContext(data, coin, priceDigits).map((line) => `<p>${line}</p>`).join('');
 }
@@ -586,7 +609,113 @@ function renderZones({ coin, side, zones, total, codeElement, listElement, total
   }
 }
 
-function marketExplanation(data, coin) {
+function zoneRangeText(zone, priceDigits) {
+  if (!zone) return '-';
+  return `${formatPrice(zone.low, priceDigits)} - ${formatPrice(zone.high, priceDigits)}`;
+}
+
+function zoneMetaText(zone) {
+  if (!zone) return '-';
+  const low = Number(zone.distancePctLow ?? 0);
+  const high = Number(zone.distancePctHigh ?? 0);
+  const score = zone.score != null ? ` · score ${formatCompact(zone.score)}` : '';
+  return `${low >= 0 ? '+' : ''}${formatNumber(low, 1)}% → ${high >= 0 ? '+' : ''}${formatNumber(high, 1)}%${score}`;
+}
+
+function renderKillZoneBox(cluster, priceDigits) {
+  const main = cluster?.mainKillZone ?? null;
+  const exhaustion = cluster?.exhaustionZone ?? null;
+  const far = cluster?.farKillZone ?? null;
+  const hasAny = main || exhaustion || far;
+  elements.killZoneBox.style.display = hasAny ? '' : 'none';
+
+  elements.mainKillZoneItem.style.display = main ? '' : 'none';
+  if (main) {
+    elements.mainKillZoneRange.textContent = zoneRangeText(main, priceDigits);
+    elements.mainKillZoneMeta.textContent = zoneMetaText(main);
+  }
+
+  elements.exhaustionZoneItem.style.display = exhaustion ? '' : 'none';
+  if (exhaustion) {
+    elements.exhaustionZoneRange.textContent = zoneRangeText(exhaustion, priceDigits);
+    elements.exhaustionZoneMeta.textContent = zoneMetaText(exhaustion);
+  }
+
+  elements.farKillZoneItem.style.display = far ? '' : 'none';
+  if (far) {
+    elements.farKillZoneRange.textContent = zoneRangeText(far, priceDigits);
+    elements.farKillZoneMeta.textContent = zoneMetaText(far);
+    elements.farKillZonePeaks.innerHTML = (far.peaks ?? []).slice(0, 5)
+      .map((peak) => `<b>${formatPrice(peak.price, priceDigits)}</b>`)
+      .join('');
+  }
+}
+
+function zoneShortText(zone, priceDigits) {
+  return zone ? `${formatPrice(zone.low, priceDigits)} - ${formatPrice(zone.high, priceDigits)}` : '-';
+}
+
+function renderKillLogicBox(data, priceDigits) {
+  const cluster = data.liquidationProxy.killZoneCluster;
+  if (!cluster) {
+    elements.killLogicBox.style.display = 'none';
+    return;
+  }
+
+  const isAbove = cluster.direction === 'above';
+  const near = cluster.nearSweep;
+  const main = cluster.mainKillZone;
+  const exhaustion = cluster.exhaustionZone;
+  const far = cluster.farKillZone;
+  const hasZone = near || main || exhaustion || far;
+  if (!hasZone) {
+    elements.killLogicBox.style.display = 'none';
+    return;
+  }
+
+  const nearText = zoneShortText(near, priceDigits);
+  const mainText = zoneShortText(main, priceDigits);
+  const exhaustionText = zoneShortText(exhaustion, priceDigits);
+  const farText = zoneShortText(far, priceDigits);
+  const peakText = (far?.peaks ?? []).slice(0, 4).map((peak) => formatPrice(peak.price, priceDigits)).join(' / ');
+  const mark = data.price.mark;
+  const failLevel = isAbove
+    ? (near?.low ?? data.liquidationProxy.nearestBelow?.[0]?.price ?? null)
+    : (near?.high ?? data.liquidationProxy.nearestAbove?.[0]?.price ?? null);
+  const avoidChaseLevel = isAbove
+    ? (exhaustion?.high ?? main?.high ?? far?.high ?? null)
+    : (exhaustion?.low ?? main?.low ?? far?.low ?? null);
+
+  elements.killLogicBox.style.display = '';
+  elements.killLogicBox.className = `kill-logic-box ${isAbove ? 'above' : 'below'}`;
+  elements.killLogicLabel.textContent = isAbove ? 'Kill Short Logic' : 'Kill Long Logic';
+  elements.killLogicTitle.textContent = isAbove
+    ? 'Đang ưu tiên hướng hút lên quét short'
+    : 'Đang ưu tiên hướng kéo xuống quét long';
+
+  const lines = isAbove
+    ? [
+      `Near sweep: ${nearText}. Target gần có thể chỉ là lần quét đầu, không nên short sớm nếu giá còn giữ trên vùng này.`,
+      main ? `Vùng short/reject đáng chú ý hơn: ${mainText}${exhaustion ? `, exhaustion ${exhaustionText}` : ''}.` : null,
+      far ? `Nếu momentum expansion tiếp tục, far kill zone nằm ở ${farText}${peakText ? `; peaks ${peakText}` : ''}.` : null,
+      failLevel ? `Squeeze yếu đi nếu mất ${formatPrice(failLevel, priceDigits)}; lúc đó mới bắt đầu coi lại kịch bản kill long phía dưới.` : null,
+      avoidChaseLevel ? `Không long đuổi sau ${formatPrice(avoidChaseLevel, priceDigits)} nếu taker buy/volume không tiếp sức.` : null,
+    ]
+    : [
+      `Near sweep: ${nearText}. Target gần có thể chỉ là lần quét đầu, không nên long sớm nếu giá còn nằm dưới vùng này.`,
+      main ? `Vùng long/reject đáng chú ý hơn: ${mainText}${exhaustion ? `, exhaustion ${exhaustionText}` : ''}.` : null,
+      far ? `Nếu momentum dump tiếp tục, far kill zone nằm ở ${farText}${peakText ? `; peaks ${peakText}` : ''}.` : null,
+      failLevel ? `Dump squeeze yếu đi nếu vượt lại ${formatPrice(failLevel, priceDigits)}; lúc đó mới coi lại kịch bản kill short phía trên.` : null,
+      avoidChaseLevel ? `Không short đuổi dưới ${formatPrice(avoidChaseLevel, priceDigits)} nếu sell flow không còn tiếp sức.` : null,
+    ];
+
+  const contextLine = `Mark hiện tại ${formatPrice(mark, priceDigits)} · bias ${data.liquidationProxy.bias >= 0 ? '+' : ''}${formatNumber(data.liquidationProxy.bias, 3)} · signal ${escapeHtml(data.signal.label)}.`;
+  elements.killLogicBody.innerHTML = [contextLine, ...lines.filter(Boolean)]
+    .map((line) => `<p>${escapeHtml(line)}</p>`)
+    .join('');
+}
+
+function marketExplanation(data, coin, priceDigits) {
   const parts = [];
 
   if (Math.abs(data.liquidationProxy.bias) < 0.05) {
@@ -595,6 +724,15 @@ function marketExplanation(data, coin) {
     parts.push(`Liquidity phía trên dày hơn, ${coin} có thể bị hút lên để quét short nếu momentum xác nhận.`);
   } else {
     parts.push(`Liquidity phía dưới dày hơn, ${coin} có rủi ro bị kéo xuống sweep long nếu mất vùng hỗ trợ gần.`);
+  }
+
+  const kz = data.liquidationProxy.killZoneCluster?.mainKillZone;
+  if (kz && data.liquidationProxy.killZoneCluster?.isOneSided) {
+    parts.push(`Main kill zone nằm quanh ${formatPrice(kz.low, priceDigits)} - ${formatPrice(kz.high, priceDigits)}, target gần có thể chỉ là lần quét đầu.`);
+  }
+  const fk = data.liquidationProxy.killZoneCluster?.farKillZone;
+  if (fk) {
+    parts.push(`Far kill zone nằm quanh ${formatPrice(fk.low, priceDigits)} - ${formatPrice(fk.high, priceDigits)} nếu momentum expansion tiếp tục.`);
   }
 
   if (data.market.takerBuyRatio > 0.53) {
@@ -630,6 +768,15 @@ function tradeContext(data, coin, priceDigits) {
     `<strong>Kịch bản phá lên:</strong> nếu ${coin} vượt vùng gần ${formatPrice(above[0]?.price, priceDigits)} và taker buy tăng, chú ý các target liquidity ${aboveText}.`,
     `<strong>Kịch bản rơi xuống:</strong> nếu ${coin} mất vùng giá hiện tại và book imbalance chuyển âm mạnh, chú ý các vùng ${belowText}.`,
   ];
+
+  const kz = data.liquidationProxy.killZoneCluster?.mainKillZone;
+  if (kz) {
+    lines.push(`<strong>Main kill zone:</strong> ${formatPrice(kz.low, priceDigits)} - ${formatPrice(kz.high, priceDigits)}. Khi liquidity một chiều, vùng này quan trọng hơn target quét gần nhất.`);
+  }
+  const fk = data.liquidationProxy.killZoneCluster?.farKillZone;
+  if (fk) {
+    lines.push(`<strong>Far kill zone:</strong> ${formatPrice(fk.low, priceDigits)} - ${formatPrice(fk.high, priceDigits)}. Đây là vùng cho cú momentum expansion xa kiểu spike LAB.`);
+  }
 
   if (data.market.longShortRatio?.longShortRatio > 1.8) {
     lines.push('<strong>Cảnh báo crowding:</strong> long account đang đông, nếu giá yếu có thể dễ xuất hiện long squeeze.');

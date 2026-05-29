@@ -561,6 +561,29 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null, to
     lines.push(`🎯 Sweep target: **${fp(st.price, d)}** (${sign}${st.distancePct.toFixed(2)}%)`);
   }
 
+  if (heatmap.killZoneCluster?.mainKillZone) {
+    const kz = heatmap.killZoneCluster.mainKillZone;
+    const lowDist = kz.distancePctLow >= 0 ? `+${kz.distancePctLow.toFixed(1)}` : kz.distancePctLow.toFixed(1);
+    const highDist = kz.distancePctHigh >= 0 ? `+${kz.distancePctHigh.toFixed(1)}` : kz.distancePctHigh.toFixed(1);
+    lines.push(`🧲 Main kill zone: **${fp(kz.low, d)} - ${fp(kz.high, d)}** (${lowDist}% → ${highDist}%)`);
+    const ex = heatmap.killZoneCluster.exhaustionZone;
+    if (ex && (ex.low !== kz.low || ex.high !== kz.high)) {
+      lines.push(`🏁 Exhaustion zone: **${fp(ex.low, d)} - ${fp(ex.high, d)}**`);
+    }
+    if (heatmap.killZoneCluster.isOneSided) {
+      lines.push(`⚠️ Target gần có thể chỉ là lần quét đầu; vùng kill chính nằm xa hơn.`);
+    }
+  }
+  if (heatmap.killZoneCluster?.farKillZone) {
+    const fk = heatmap.killZoneCluster.farKillZone;
+    const lowDist = fk.distancePctLow >= 0 ? `+${fk.distancePctLow.toFixed(1)}` : fk.distancePctLow.toFixed(1);
+    const highDist = fk.distancePctHigh >= 0 ? `+${fk.distancePctHigh.toFixed(1)}` : fk.distancePctHigh.toFixed(1);
+    lines.push(`🛰️ Far kill zone: **${fp(fk.low, d)} - ${fp(fk.high, d)}** (${lowDist}% → ${highDist}%)`);
+    if (fk.peaks?.length) {
+      lines.push(`Far peaks: ${fk.peaks.slice(0, 4).map((z) => `${fp(z.price, d)}(${z.distancePct >= 0 ? '+' : ''}${z.distancePct.toFixed(1)}%)`).join(', ')}`);
+    }
+  }
+
   const topAbove = (heatmap.heatmapAbove ?? []).slice(0, 3);
   const topBelow = (heatmap.heatmapBelow ?? []).slice(0, 3);
   if (topAbove.length) {
@@ -716,7 +739,7 @@ export function startLiqImbalanceScanner({
         try {
           const klines = await getKlines(row.symbol, '15m', 500);
           if (!klines || klines.length < 60) continue;
-          const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice });
+          const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice, momentumPct: row.change24hPct });
           const total = heatmap.liquidityAbove + heatmap.liquidityBelow;
 
           const isImbalanced = Math.abs(heatmap.bias) >= biasThreshold;
