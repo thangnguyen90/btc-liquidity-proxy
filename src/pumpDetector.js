@@ -45,6 +45,199 @@ export function computeIndicators(klines) {
   };
 }
 
+function gradeScore(score) {
+  if (score >= 85) return 'A';
+  if (score >= 70) return 'B';
+  if (score >= 55) return 'C';
+  return 'D';
+}
+
+function smaAt(values, period, endIdx) {
+  if (endIdx < period - 1) return NaN;
+  let sum = 0;
+  for (let i = endIdx - period + 1; i <= endIdx; i++) sum += values[i];
+  return sum / period;
+}
+
+function atrAt(candles, period, endIdx) {
+  if (endIdx < 1) return NaN;
+  let sum = 0, count = 0;
+  const start = Math.max(1, endIdx - period + 1);
+  for (let i = start; i <= endIdx; i++) {
+    const h = +candles[i].high;
+    const l = +candles[i].low;
+    const pc = +candles[i - 1].close;
+    sum += Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+    count++;
+  }
+  return count ? sum / count : NaN;
+}
+
+function detectMa60VolumeCluster(candles, state = {}, opts = {}) {
+  const C = {
+    timeframe: '15m',
+    type: 'ma60_volume_cluster',
+    scanTail: 8,
+    clusterMin: 3,
+    clusterMax: 5,
+    touchLookback: 10,
+    touchBandPct: 0.004,
+    holdBandPct: 0.002,
+    minClusterGainPct: 0.012,
+    minBreakoutPct: 0.004,
+    pivotLookback: 12,
+    minVolNowX: 1.25,
+    minVolClusterX: 1.65,
+    minVolRamp: 1.08,
+    minGreenFrac: 0.6,
+    maxUpperWickFrac: 0.35,
+    minRsi14: 42,             // hard floor: không LONG khi RSI quá thấp / falling knife
+    minMa60SlopePct: -0.0015, // MA60 không được giảm quá 0.15% so với 10 bar trước
+    minScore: 58,
+    maxCurrentDistPct: 0.08,  // current price phải <= 8% trên MA60 (15m)
+    maxStalePct:       0.05,  // nếu cluster kết thúc trước đó, giá hiện tại không được vượt quá 5% so với cluster-end
+    ...opts,
+  };
+
+  const n = candles.length;
+  if (n < 90) return { pass: false, reason: 'not enough candles' };
+
+  const opens = candles.map((k) => +k.open);
+  const highs = candles.map((k) => +k.high);
+  const lows = candles.map((k) => +k.low);
+  const closes = candles.map((k) => +k.close);
+  const vols = candles.map((k) => +k.volume);
+  const scanEnd = n - 2;
+
+  let best = null;
+  for (let end = scanEnd; end >= Math.max(70, scanEnd - C.scanTail); end--) {
+    for (let len = C.clusterMax; len >= C.clusterMin; len--) {
+      const start = end - len + 1;
+      if (start < 65) continue;
+
+      let touchIdx = null;
+      let ma60 = NaN;
+      const touchStart = Math.max(59, start - C.touchLookback);
+      for (let i = start; i >= touchStart; i--) {
+        const ma = smaAt(closes, 60, i);
+        if (!Number.isFinite(ma) || ma <= 0) continue;
+        const touched = lows[i] <= ma * (1 + C.touchBandPct);
+        const held = closes[i] >= ma * (1 - C.holdBandPct);
+        if (touched && held) {
+          touchIdx = i;
+          ma60 = ma;
+          break;
+        }
+      }
+      if (touchIdx == null) continue;
+
+      const baseLow = Math.min(...lows.slice(touchIdx, end + 1));
+      const clusterGainPct = (closes[end] - baseLow) / Math.max(baseLow, 1e-9);
+      if (clusterGainPct < C.minClusterGainPct) continue;
+
+      const prevHigh = Math.max(...highs.slice(Math.max(0, start - C.pivotLookback), start));
+      const breakoutPct = (closes[end] - prevHigh) / Math.max(prevHigh, 1e-9);
+      if (breakoutPct < C.minBreakoutPct) continue;
+
+      let green = 0, volSum = 0, upperWickWorst = 0;
+      for (let i = start; i <= end; i++) {
+        if (closes[i] > opens[i]) green++;
+        volSum += vols[i];
+        const range = highs[i] - lows[i];
+        const upper = highs[i] - Math.max(opens[i], closes[i]);
+        upperWickWorst = Math.max(upperWickWorst, range > 0 ? upper / range : 0);
+      }
+      const greenFrac = green / len;
+      if (greenFrac < C.minGreenFrac) continue;
+      if (upperWickWorst > C.maxUpperWickFrac) continue;
+
+      const vol20 = smaAt(vols, 20, start - 1);
+      const vol5Now = smaAt(vols, 5, end);
+      const vol10Now = smaAt(vols, 10, end);
+      const volNowX = vols[end] / Math.max(vol20, 1e-9);
+      const volClusterX = (volSum / len) / Math.max(vol20, 1e-9);
+      const volRamp = vol5Now / Math.max(vol10Now, 1e-9);
+      const rampOk = volNowX >= C.minVolNowX && volClusterX >= C.minVolClusterX && volRamp >= C.minVolRamp;
+      if (!rampOk) continue;
+
+      // Guard: RSI hard floor — không LONG khi momentum quá yếu / falling knife
+      const rsi14 = Number.isFinite(state.rsi14) ? state.rsi14 : calcRsi(closes, 14);
+      if (Number.isFinite(rsi14) && rsi14 < C.minRsi14) continue;
+
+      // Guard: MA60 slope — MA60 không được đang giảm mạnh (downtrend support breakdown risk)
+      const ma60Prev = smaAt(closes, 60, touchIdx - 10);
+      if (Number.isFinite(ma60Prev) && ma60Prev > 0) {
+        const ma60Slope = (ma60 - ma60Prev) / ma60Prev;
+        if (ma60Slope < C.minMa60SlopePct) continue;
+      }
+
+      // Guard: giá hiện tại không được quá xa MA60 — dùng MA60 TẠI n-2 (hiện tại), không phải tại touch
+      const currentClose = closes[n - 2];
+      const ma60Now = smaAt(closes, 60, n - 2);
+      const currentDistFromMa60 = Number.isFinite(ma60Now) && ma60Now > 0
+        ? (currentClose - ma60Now) / ma60Now
+        : (currentClose - ma60) / ma60;
+      if (currentDistFromMa60 > C.maxCurrentDistPct) continue;
+
+      // Guard: nếu cluster kết thúc trước đó (end < n-2), giá không được chạy quá xa so với cluster entry
+      if (end < n - 2) {
+        const staleGainPct = (currentClose - closes[end]) / Math.max(closes[end], 1e-9);
+        if (staleGainPct > C.maxStalePct) continue;
+      }
+      const A = atrAt(candles, 14, end);
+      const scTouch = Math.max(0, Math.min(1, 1 - Math.abs(lows[touchIdx] - ma60) / Math.max(ma60 * C.touchBandPct, 1e-9)));
+      const scGain = Math.max(0, Math.min(1, (clusterGainPct - C.minClusterGainPct) / 0.035));
+      const scBreak = Math.max(0, Math.min(1, breakoutPct / 0.025));
+      const scVol = Math.max(0, Math.min(1, (Math.max(volNowX, volClusterX) - 1) / 3));
+      const scRamp = Math.max(0, Math.min(1, (volRamp - 1) / 0.55));
+      const scRsi = Number.isFinite(rsi14) ? Math.max(0, Math.min(1, (rsi14 - 50) / 25)) : 0.5;
+      const score = Math.round(100 * (scTouch * 0.14 + scGain * 0.20 + scBreak * 0.18 + scVol * 0.20 + scRamp * 0.14 + scRsi * 0.14));
+      if (score < C.minScore) continue;
+
+      const entry = closes[end];
+      const clusterHigh = Math.max(...highs.slice(start, end + 1));
+      const pullbackEntry = baseLow + (clusterHigh - baseLow) * 0.45;
+      const sl = Math.min(ma60 * 0.996, baseLow - (Number.isFinite(A) ? A * 0.35 : entry * 0.006));
+      const risk = Math.max(entry - sl, entry * 0.006);
+      const tp = entry + risk * 2.2;
+      const found = {
+        pass: true,
+        action: 'LONG',
+        type: C.type,
+        score,
+        grade: gradeScore(score),
+        entry: +entry.toFixed(10),
+        altEntry: +pullbackEntry.toFixed(10),
+        sl: +sl.toFixed(10),
+        tp: +tp.toFixed(10),
+        reason: 'MA60 touch held + volume ramp + breakout cluster',
+        note: `MA60_CLUSTER_${C.timeframe} | ma60=${ma60.toFixed(6)} | gain=${(clusterGainPct * 100).toFixed(1)}% | breakout=${(breakoutPct * 100).toFixed(1)}% | volNow=${volNowX.toFixed(1)}x | volCluster=${volClusterX.toFixed(1)}x | ramp=${volRamp.toFixed(2)} | RSI14=${Number.isFinite(rsi14) ? rsi14.toFixed(1) : '-'}`,
+        factors: {
+          timeframe: C.timeframe,
+          ma60: +ma60.toFixed(10),
+          touchDistPct: +(((lows[touchIdx] - ma60) / ma60) * 100).toFixed(2),
+          clusterGainPct: +(clusterGainPct * 100).toFixed(2),
+          breakoutPct: +(breakoutPct * 100).toFixed(2),
+          volNowX: +volNowX.toFixed(2),
+          volClusterX: +volClusterX.toFixed(2),
+          volRamp: +volRamp.toFixed(2),
+          greenCandles: green,
+          clusterBars: len,
+          rsi14val: Number.isFinite(rsi14) ? +rsi14.toFixed(1) : null,
+          emaRibbon: 1,
+          ema99: Number.isFinite(state.ema99) && state.ema99 > 0 ? +state.ema99.toFixed(10) : null,
+          ema99DistPct: Number.isFinite(state.ema99) && state.ema99 > 0
+            ? +(((currentClose - state.ema99) / state.ema99) * 100).toFixed(2)
+            : null,
+        },
+      };
+      if (!best || found.score > best.score) best = found;
+    }
+  }
+
+  return best ?? { pass: false, reason: 'no ma60 volume cluster' };
+}
+
 // ── Scan orchestrator ──────────────────────────────────────────────────────────
 
 export async function runPumpScan(symbols, klineCache, snapshotMap) {
@@ -53,12 +246,85 @@ export async function runPumpScan(symbols, klineCache, snapshotMap) {
   for (const symbol of symbols) {
     try {
       const klines = klineCache.getIfCached(symbol, '15m', 200);
-      if (!klines || klines.length < 40) continue; // skip — no REST fallback
+      const klines5m = klineCache.getIfCached(symbol, '5m', 200);
+      if ((!klines || klines.length < 40) && (!klines5m || klines5m.length < 90)) continue; // skip — no REST fallback
       processed++;
 
-      const state = computeIndicators(klines);
       const snap  = snapshotMap.get(symbol);
+
+      if (klines5m && klines5m.length >= 90) {
+        const state5m = computeIndicators(klines5m);
+        if (snap) state5m.price = snap.markPrice;
+        const ma60Det5m = detectMa60VolumeCluster(klines5m, state5m, {
+          timeframe: '5m',
+          type: 'ma60_volume_cluster_5m',
+          clusterMin: 4,
+          clusterMax: 8,
+          touchLookback: 18,
+          maxCurrentDistPct: 0.06,  // 5m: tighter — ≤6% trên MA60
+          maxStalePct:       0.04,  // 5m: ≤4% chased
+          minClusterGainPct: 0.009,
+          minBreakoutPct: 0.003,    // 5m: 0.3% breakout (slightly lower than 15m)
+          pivotLookback: 14,        // 5m: 14 bars = 70m — more recent resistance
+          minVolNowX: 1.5,
+          minVolClusterX: 1.8,
+          minVolRamp: 1.12,
+          maxUpperWickFrac: 0.38,   // 5m: tighter wick filter
+          minRsi14: 42,             // 5m: same RSI floor
+          minMa60SlopePct: -0.002,  // 5m: slightly looser slope — 5m MA60 can wiggle more
+          minScore: 58,
+        });
+        if (ma60Det5m.pass) {
+          results.push({
+            symbol,
+            action:    ma60Det5m.action,
+            type:      ma60Det5m.type,
+            score:     ma60Det5m.score,
+            grade:     ma60Det5m.grade,
+            entry:     ma60Det5m.entry,
+            altEntry:  ma60Det5m.altEntry,
+            sl:        ma60Det5m.sl,
+            tp:        ma60Det5m.tp,
+            reason:    ma60Det5m.reason,
+            note:      ma60Det5m.note,
+            factors:   ma60Det5m.factors,
+            marketOk:  true,
+            blockShort: true,
+            markPrice: snap?.markPrice,
+            change24h: snap?.change24hPct,
+            volume:    snap?.quoteVolume,
+            scannedAt: Date.now(),
+          });
+        }
+      }
+
+      if (!klines || klines.length < 40) continue;
+      const state = computeIndicators(klines);
       if (snap) state.price = snap.markPrice;
+
+      const ma60Det = detectMa60VolumeCluster(klines, state);
+      if (ma60Det.pass) {
+        results.push({
+          symbol,
+          action:    ma60Det.action,
+          type:      ma60Det.type,
+          score:     ma60Det.score,
+          grade:     ma60Det.grade,
+          entry:     ma60Det.entry,
+          altEntry:  ma60Det.altEntry,
+          sl:        ma60Det.sl,
+          tp:        ma60Det.tp,
+          reason:    ma60Det.reason,
+          note:      ma60Det.note,
+          factors:   ma60Det.factors,
+          marketOk:  true,
+          blockShort: true,
+          markPrice: snap?.markPrice,
+          change24h: snap?.change24hPct,
+          volume:    snap?.quoteVolume,
+          scannedAt: Date.now(),
+        });
+      }
 
       const det = detectPumpClimaxSimpleActionNew(klines, state, null);
       if (!det.pass) continue;

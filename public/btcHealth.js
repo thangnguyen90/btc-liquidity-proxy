@@ -5,6 +5,49 @@
 (function () {
   const REFRESH_MS = 30_000; // 30s — khớp với server cache TTL, tránh burst requests
 
+  // ── Live BTC price via mark price WebSocket ────────────────────────────────
+  const BTC_WS_URLS = [
+    'wss://fstream.binance.com/ws/btcusdt@markPrice@1s',
+    'wss://fstream.binancefuture.com/ws/btcusdt@markPrice@1s',
+  ];
+  let _btcWsIdx = 0;
+  let _lastBtcPrice = 0;
+  let _btcWsStarted = false;
+
+  function fmtBtcPrice(p) {
+    if (!p || !isFinite(p)) return '–';
+    return '$' + Number(p).toLocaleString('en', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  }
+
+  function startBtcPriceWs() {
+    if (_btcWsStarted) return;
+    _btcWsStarted = true;
+    connectBtcPriceWs();
+  }
+
+  function connectBtcPriceWs() {
+    const ws = new WebSocket(BTC_WS_URLS[_btcWsIdx % BTC_WS_URLS.length]);
+    ws.onmessage = (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.e !== 'markPriceUpdate') return;
+        const p = Number(d.p);
+        if (!isFinite(p) || p <= 0) return;
+        const el = document.getElementById('btch-btc-price');
+        if (!el) return;
+        const dir = p > _lastBtcPrice ? 'up' : p < _lastBtcPrice ? 'dn' : '';
+        _lastBtcPrice = p;
+        el.textContent = fmtBtcPrice(p);
+        if (dir === 'up') el.style.color = '#34d399';
+        else if (dir === 'dn') el.style.color = '#f87171';
+      } catch {}
+    };
+    ws.onclose = () => {
+      _btcWsIdx++;
+      setTimeout(connectBtcPriceWs, 3000);
+    };
+  }
+
   function colorFunding(v) {
     if (v > 0.08) return '#f87171';
     if (v > 0.04) return '#fbbf24';
@@ -66,9 +109,12 @@
     } else {
       autoChip = `<span class="btch-chip" style="color:#34d399;font-weight:600">✅ Auto ON</span>`;
     }
+    const initPrice = d.price && isFinite(d.price) ? fmtBtcPrice(d.price) : '…';
     el.innerHTML = `
 <div class="btch-bar">
-  <span class="btch-label">BTC Health</span>
+  <span class="btch-label">BTC</span>
+  <span id="btch-btc-price" style="font-weight:700;color:#94a3b8;font-size:13px;letter-spacing:.01em">${initPrice}</span>
+  <span class="btch-sep">|</span>
   <span class="btch-chip" style="color:${colorBias(d.bias)};font-weight:700">${biasLabel(d.bias)}</span>
   ${d.bullBias && d.bullBias !== 'neutral' ? `<span class="btch-chip" style="color:${colorBullBias(d.bullBias)};font-weight:700">${bullBiasLabel(d.bullBias)}</span>` : ''}
   ${autoChip}
@@ -164,6 +210,7 @@
     injectStyles();
     load();
     setInterval(load, REFRESH_MS);
+    startBtcPriceWs();
   }
 
   if (document.readyState === 'loading') {

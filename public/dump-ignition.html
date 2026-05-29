@@ -42,6 +42,32 @@
         height: 3px;
         background: var(--amber);
       }
+      .di-card.stage-risk {
+        border-color: rgba(251,113,133,.42);
+        background:
+          linear-gradient(135deg, rgba(127,29,29,.46), rgba(69,10,10,.22)),
+          var(--panel);
+      }
+      .di-card.stage-risk::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+        background: var(--red);
+      }
+      .di-card.stage-bounce {
+        border-color: rgba(54,211,153,.38);
+        background:
+          linear-gradient(135deg, rgba(6,95,70,.38), rgba(6,78,59,.18)),
+          var(--panel);
+      }
+      .di-card.stage-bounce::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+        background: var(--green);
+      }
 
       /* ── Header ── */
       .di-card-top {
@@ -85,6 +111,11 @@
         color: var(--red);
         border: 1px solid rgba(251,113,133,.3);
       }
+      .di-action-badge.long {
+        background: rgba(54,211,153,.16);
+        color: var(--green);
+        border-color: rgba(54,211,153,.35);
+      }
 
       .di-score-wrap { display: flex; align-items: baseline; gap: 5px; }
       .di-score-num  { font-size: 22px; font-weight: 900; line-height: 1; }
@@ -113,6 +144,16 @@
         color: var(--amber);
         border: 1px solid rgba(251,191,36,.3);
       }
+      .di-stage-badge.risk {
+        background: rgba(251,113,133,.2);
+        color: var(--red);
+        border: 1px solid rgba(251,113,133,.45);
+      }
+      .di-stage-badge.bounce {
+        background: rgba(54,211,153,.16);
+        color: var(--green);
+        border: 1px solid rgba(54,211,153,.35);
+      }
 
       /* ── Pattern desc ── */
       .di-pattern {
@@ -132,6 +173,8 @@
       }
       .di-pattern-dot.ignition { background: var(--red); box-shadow: 0 0 6px rgba(251,113,133,.5); }
       .di-pattern-dot.early    { background: var(--amber); box-shadow: 0 0 6px rgba(251,191,36,.5); }
+      .di-pattern-dot.risk     { background: var(--red); box-shadow: 0 0 6px rgba(251,113,133,.65); }
+      .di-pattern-dot.bounce   { background: var(--green); box-shadow: 0 0 6px rgba(54,211,153,.6); }
 
       /* ── Prices ── */
       .di-prices {
@@ -229,6 +272,7 @@
       }
       .di-paper-btn:hover { opacity: .75; }
       .di-paper-btn.short { background: rgba(251,113,133,.2); color: var(--red); border: 1px solid rgba(251,113,133,.4); }
+      .di-paper-btn.long { background: rgba(54,211,153,.18); color: var(--green); border: 1px solid rgba(54,211,153,.4); }
       .di-paper-btn:disabled { opacity: .4; cursor: default; }
       .di-paper-close-btn {
         font-size: 10px; padding: 2px 8px; border-radius: 4px;
@@ -252,6 +296,7 @@
         </div>
         <div class="top-actions">
           <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/etf-proxy">ETF Flow</a>
           <a class="nav-link" href="/pump">Pump</a>
           <a class="nav-link" href="/pump-ignition">Pump Ign</a>
           <a class="nav-link" href="/cap">Capitulation</a>
@@ -259,6 +304,7 @@
           <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
           <a class="nav-link" href="/killshort">Kill Short</a>
           <a class="nav-link" href="/spike-reversal">Spike Rev</a>
+          <a class="nav-link" href="/post-pump-kill-short">Post Pump KS</a>
           <a class="nav-link" href="/orders">Orders</a>
           <div class="status" id="scanStatus">Loading...</div>
         </div>
@@ -310,6 +356,8 @@
             <option value="">Tất cả</option>
             <option value="dump_ignition">IGNITION only</option>
             <option value="dump_ignition_early">EARLY only</option>
+            <option value="post_pump_dump_risk">Post-pump risk</option>
+            <option value="post_dump_bounce_risk">Post-dump bounce</option>
           </select>
         </label>
         <div class="socket-note">

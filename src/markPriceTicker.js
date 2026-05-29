@@ -8,6 +8,12 @@ const WS_OPTS = {
   },
 };
 
+// Exponential backoff config
+const BACKOFF_BASE_MS = 5_000;
+const BACKOFF_MAX_MS  = 5 * 60_000; // max 5 min
+const BACKOFF_MULT    = 2;
+const BAN_WAIT_MS     = 3 * 60_000; // 3 min wait on 418/429/403
+
 /**
  * Binance futures real-time price ticker via bookTicker WebSocket.
  * Uses mid price (bid+ask)/2 as mark price proxy — accurate to <$0.10 for BTC.
@@ -19,6 +25,7 @@ export function createMarkPriceTicker({ onPrice }) {
   let reconnectTimer = null;
   let closed = false;
   let dataReceived = false;
+  let backoffMs = BACKOFF_BASE_MS;
 
   function connect() {
     if (closed) return;
@@ -31,12 +38,13 @@ export function createMarkPriceTicker({ onPrice }) {
     }
 
     ws.on('open', () => {
+      backoffMs = BACKOFF_BASE_MS; // reset on successful open
       console.log('[MarkTick] Connected to Binance futures bookTicker stream.');
       if (subscribedSymbols.size > 0) sendSubscribe([...subscribedSymbols]);
 
       setTimeout(() => {
         if (!dataReceived && !closed) {
-          console.warn('[MarkTick] ⚠️ No data after 30s — stream may be blocked. REST polling is the fallback.');
+          console.warn('[MarkTick] ⚠️ No data after 30s — stream may be blocked. Check IP / connection.');
         }
       }, 30_000);
     });
@@ -46,20 +54,36 @@ export function createMarkPriceTicker({ onPrice }) {
         const msg = JSON.parse(raw.toString());
         if (msg.e === 'bookTicker') {
           dataReceived = true;
+          backoffMs = BACKOFF_BASE_MS; // reset backoff on data
           const markPrice = (Number(msg.b) + Number(msg.a)) / 2;
           onPrice({ symbol: msg.s, markPrice });
         }
       } catch { /* ignore parse errors */ }
     });
 
-    ws.on('close', () => {
-      if (!closed) {
-        console.log('[MarkTick] Disconnected. Reconnecting in 5s…');
-        scheduleReconnect();
+    ws.on('error', (err) => {
+      const msg = err?.message ?? '';
+      const isBan = /Unexpected server response: (418|429|403)/.test(msg)
+                 || msg.includes('ECONNREFUSED')
+                 || msg.includes('ECONNRESET');
+      if (isBan) {
+        backoffMs = BAN_WAIT_MS;
+        console.warn(`[MarkTick] ⛔ Ban/rate-limit detected. Waiting ${BAN_WAIT_MS / 60000}min before retry.`);
       }
     });
 
-    ws.on('error', () => { /* close event handles reconnect */ });
+    ws.on('close', () => {
+      if (!closed) {
+        const delay = backoffMs;
+        backoffMs = Math.min(backoffMs * BACKOFF_MULT, BACKOFF_MAX_MS);
+        if (delay > BACKOFF_BASE_MS) {
+          console.log(`[MarkTick] Disconnected. Reconnecting in ${Math.round(delay / 1000)}s (backoff)…`);
+        } else {
+          console.log('[MarkTick] Disconnected. Reconnecting in 5s…');
+        }
+        scheduleReconnect(delay);
+      }
+    });
   }
 
   function sendSubscribe(symbols) {
@@ -80,9 +104,9 @@ export function createMarkPriceTicker({ onPrice }) {
     }));
   }
 
-  function scheduleReconnect() {
+  function scheduleReconnect(delay = BACKOFF_BASE_MS) {
     clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => { if (!closed) connect(); }, 5_000);
+    reconnectTimer = setTimeout(() => { if (!closed) connect(); }, delay);
   }
 
   function setSymbols(symbols) {

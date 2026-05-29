@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ETF Proxy Flow · BTC / ETH</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .etf-note {
+        color: var(--muted);
+        font-size: 13px;
+        max-width: 720px;
+        line-height: 1.45;
+      }
+
+      .etf-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        gap: 14px;
+        margin-top: 16px;
+      }
+
+      .etf-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 16px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .etf-card.buy {
+        border-color: rgba(54,211,153,.42);
+        background: linear-gradient(135deg, rgba(6,95,70,.32), rgba(28,32,31,.92));
+      }
+
+      .etf-card.sell {
+        border-color: rgba(251,113,133,.42);
+        background: linear-gradient(135deg, rgba(127,29,29,.34), rgba(28,32,31,.92));
+      }
+
+      .etf-card.mixed {
+        border-color: rgba(251,191,36,.45);
+        background: linear-gradient(135deg, rgba(120,53,15,.30), rgba(28,32,31,.92));
+      }
+
+      .etf-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .etf-asset {
+        display: grid;
+        gap: 5px;
+      }
+
+      .etf-asset strong {
+        font-size: 30px;
+        line-height: 1;
+      }
+
+      .etf-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 132px;
+        padding: 6px 10px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: .03em;
+        text-transform: uppercase;
+      }
+
+      .etf-card.buy .etf-badge { color: var(--green); border-color: rgba(54,211,153,.44); }
+      .etf-card.sell .etf-badge { color: var(--red); border-color: rgba(251,113,133,.48); }
+      .etf-card.mixed .etf-badge { color: var(--amber); border-color: rgba(251,191,36,.48); }
+
+      .etf-metrics {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .etf-metric {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255,255,255,.025);
+        padding: 10px;
+        min-width: 0;
+      }
+
+      .etf-metric span {
+        color: var(--muted);
+        display: block;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+
+      .etf-metric strong {
+        display: block;
+        margin-top: 5px;
+        font-size: 20px;
+        line-height: 1.1;
+      }
+
+      .etf-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      .etf-table th,
+      .etf-table td {
+        border-bottom: 1px solid var(--line);
+        padding: 8px 6px;
+        text-align: right;
+      }
+
+      .etf-table th:first-child,
+      .etf-table td:first-child {
+        text-align: left;
+      }
+
+      .etf-table th {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      .positive { color: var(--green); }
+      .negative { color: var(--red); }
+
+      @media (max-width: 740px) {
+        .etf-grid { grid-template-columns: 1fr; }
+        .etf-head { display: grid; }
+        .etf-metrics { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell wide-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Intraday ETF Proxy</p>
+          <h1>BTC / ETH ETF Flow Proxy</h1>
+          <p class="etf-note">Theo doi ap luc mua/ban ETF trong phien My bang proxy intraday. Day khong phai net flow chinh thuc; flow chinh thuc thuong xac nhan sau khi dong phien.</p>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/dump-ignition">Dump Ign</a>
+          <a class="nav-link" href="/pump">Pump</a>
+          <a class="nav-link" href="/orders">Orders</a>
+          <div class="status" id="status">Loading...</div>
+        </div>
+      </section>
+
+      <section class="summary-grid signal-summary">
+        <article class="metric">
+          <span>BTC Score</span>
+          <strong id="btcScore">-</strong>
+          <small id="btcType">-</small>
+        </article>
+        <article class="metric">
+          <span>ETH Score</span>
+          <strong id="ethScore">-</strong>
+          <small id="ethType">-</small>
+        </article>
+        <article class="metric">
+          <span>Source</span>
+          <strong>Yahoo + Binance</strong>
+          <small>Refresh 60s</small>
+        </article>
+        <article class="metric">
+          <span>Last Scan</span>
+          <strong id="lastScan">-</strong>
+          <small id="sourceText">-</small>
+        </article>
+      </section>
+
+      <section id="grid" class="etf-grid"></section>
+    </main>
+
+    <script src="/etf-proxy.js" type="module"></script>
+  </body>
+</html>

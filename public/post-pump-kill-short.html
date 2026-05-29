@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Post Pump Kill Short Board</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .ppks-controls { grid-template-columns: minmax(220px, 1fr) 120px 160px auto auto; }
+      .ppks-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:12px; margin-top:14px; }
+      .ppks-card { border:1px solid rgba(96,165,250,.32); border-radius:8px; background:rgba(37,99,235,.16); padding:14px; display:grid; gap:10px; position:relative; overflow:hidden; }
+      .ppks-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background:var(--blue); }
+      .ppks-card.confirmed_short::before { background:var(--blue); }
+      .ppks-card.watch_long_sweep, .ppks-card.confirmed_long { border-color:rgba(54,211,153,.32); background:rgba(6,95,70,.16); }
+      .ppks-card.watch_long_sweep::before, .ppks-card.confirmed_long::before { background:var(--green); }
+      .ppks-top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+      .ppks-symbol { color:var(--text); text-decoration:none; font-size:18px; font-weight:900; line-height:1; }
+      .ppks-symbol:hover { color:var(--blue); }
+      .ppks-symbol span { color:var(--muted); font-size:13px; font-weight:500; }
+      .ppks-change { display:block; margin-top:4px; font-size:12px; font-weight:700; }
+      .ppks-right { display:flex; flex-direction:column; align-items:flex-end; gap:5px; flex-shrink:0; }
+      .ppks-badge { font-size:11px; font-weight:900; padding:3px 9px; border-radius:999px; text-transform:uppercase; letter-spacing:.04em; border:1px solid rgba(96,165,250,.4); color:var(--blue); background:rgba(96,165,250,.14); }
+      .ppks-badge.short { color:var(--blue); background:rgba(96,165,250,.18); border-color:rgba(96,165,250,.45); }
+      .ppks-badge.long { color:var(--green); background:rgba(54,211,153,.14); border-color:rgba(54,211,153,.42); }
+      .ppks-score { display:flex; align-items:baseline; gap:6px; }
+      .ppks-score strong { font-size:22px; line-height:1; }
+      .ppks-grade { font-size:12px; font-weight:800; padding:1px 6px; border-radius:4px; }
+      .grade-a { background:rgba(54,211,153,.2); color:var(--green); }
+      .grade-b { background:rgba(96,165,250,.2); color:var(--blue); }
+      .grade-c { background:rgba(251,191,36,.2); color:var(--amber); }
+      .grade-d { background:rgba(157,170,165,.15); color:var(--muted); }
+      .ppks-pattern { background:var(--panel-2); border-radius:6px; padding:7px 10px; color:var(--muted); font-size:12px; line-height:1.45; }
+      .ppks-prices { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+      .ppks-cell { background:var(--panel-2); border-radius:6px; padding:8px 10px; display:grid; gap:3px; }
+      .ppks-cell span { font-size:10px; color:var(--muted); text-transform:uppercase; font-weight:800; }
+      .ppks-cell strong { font-size:13px; }
+      .ppks-chips { display:flex; flex-wrap:wrap; gap:5px; }
+      .ppks-chip { font-size:11px; padding:2px 7px; border-radius:4px; color:var(--muted); background:var(--panel-2); white-space:nowrap; }
+      .ppks-chip.ok { color:var(--green); background:rgba(54,211,153,.1); }
+      .ppks-chip.warn { color:var(--amber); background:rgba(251,191,36,.1); }
+      .ppks-chip.bad { color:var(--red); background:rgba(251,113,133,.1); }
+      .ppks-note { color:var(--muted); font-family:'SF Mono','Fira Code',monospace; font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
+      .ppks-footer { border-top:1px solid var(--line); padding-top:8px; display:flex; justify-content:space-between; color:var(--muted); font-size:11px; }
+      .ppks-empty { grid-column:1/-1; text-align:center; color:var(--muted); padding:48px 0; }
+      .ppks-empty strong { display:block; color:var(--text); font-size:18px; margin-bottom:6px; }
+      .scan-meta { display:flex; align-items:center; gap:14px; font-size:12px; color:var(--muted); padding:10px 14px; border:1px solid var(--line); border-radius:6px; background:var(--panel); margin-top:10px; }
+      .scan-meta strong { color:var(--text); }
+      /* ── PPKS Paper trades ── */
+      .ppks-paper-section { margin-top: 20px; }
+      .ppks-paper-btn {
+        font-size: 10px; font-weight: 800;
+        padding: 3px 10px; border-radius: 4px;
+        border: none; cursor: pointer;
+        letter-spacing: .04em; text-transform: uppercase;
+        transition: opacity .15s;
+      }
+      .ppks-paper-btn:hover { opacity: .75; }
+      .ppks-paper-btn.short { background: rgba(96,165,250,.2); color: var(--blue); border: 1px solid rgba(96,165,250,.4); }
+      .ppks-paper-btn.long  { background: rgba(54,211,153,.18); color: var(--green); border: 1px solid rgba(54,211,153,.4); }
+      .ppks-paper-btn:disabled { opacity: .4; cursor: default; }
+      .ppks-paper-close-btn {
+        font-size: 10px; padding: 2px 8px; border-radius: 4px;
+        border: 1px solid var(--line); background: var(--panel-2);
+        color: var(--muted); cursor: pointer;
+      }
+      .ppks-paper-close-btn:hover { color: var(--red); border-color: var(--red); }
+      .ppks-paper-sort { cursor: pointer; user-select: none; white-space: nowrap; }
+      .ppks-paper-sort:hover { color: var(--text); }
+      .ppks-paper-sort.active { color: var(--blue); }
+      .ppks-paper-sort .sort-mark { font-size: 9px; margin-left: 3px; opacity: .7; }
+
+      @media (max-width:640px) {
+        .ppks-controls { grid-template-columns:1fr 1fr; }
+        .ppks-controls .search-field { grid-column:1/-1; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell wide-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Post Pump Short Fade - Post Dump Long Reclaim</p>
+          <h1>Kill Spike Reversal Board</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/pump">Pump</a>
+          <a class="nav-link" href="/edge-short">Short Edge</a>
+          <a class="nav-link" href="/spike-reversal">Spike Rev</a>
+          <a class="nav-link" href="/post-pump-kill-short">Post Pump KS</a>
+          <a class="nav-link" href="/dump-ignition">Dump Ign</a>
+          <a class="nav-link" href="/etf-proxy">ETF Flow</a>
+          <a class="nav-link" href="/orders">Orders</a>
+          <div class="status" id="scanStatus">Loading...</div>
+        </div>
+      </section>
+
+      <div id="btcHealth"></div>
+
+      <section class="summary-grid signal-summary">
+        <article class="metric">
+          <span>Watch Spike</span>
+          <strong id="watchCount">-</strong>
+          <small>Spike kill short, wait reject</small>
+        </article>
+        <article class="metric">
+          <span>Confirmed Short</span>
+          <strong id="shortCount">-</strong>
+          <small>Rejected spike fade</small>
+        </article>
+        <article class="metric">
+          <span>Confirmed Long</span>
+          <strong id="longCount">-</strong>
+          <small>Kill-long sweep reclaim</small>
+        </article>
+        <article class="metric">
+          <span>Avg Score</span>
+          <strong id="avgScore">-</strong>
+          <small>Pattern quality</small>
+        </article>
+        <article class="metric">
+          <span>Cached / Scanned</span>
+          <strong id="totalScanned">-</strong>
+          <small>Top 400 by volume - 15m</small>
+        </article>
+      </section>
+
+      <section class="controls ppks-controls">
+        <label class="field search-field">
+          <span>Search</span>
+          <input id="searchInput" placeholder="EDEN, BLUAI, BTC..." autocomplete="off">
+          <button id="searchClear" class="search-clear" type="button" style="display:none">x</button>
+        </label>
+        <label class="field">
+          <span>Min Score</span>
+          <select id="scoreFilter">
+            <option value="0">Any</option>
+            <option value="50">>= 50</option>
+            <option value="60">>= 60</option>
+            <option value="70">>= 70</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Stage</span>
+          <select id="stageFilter">
+            <option value="all">All</option>
+            <option value="watch_spike">Watch spike</option>
+            <option value="confirmed_short">Confirmed short</option>
+            <option value="watch_long_sweep">Watch long sweep</option>
+            <option value="confirmed_long">Confirmed long</option>
+          </select>
+        </label>
+        <div class="socket-note">
+          <strong id="visibleCount">0</strong>
+          <span>signals</span>
+        </div>
+        <button id="symbolTest" type="button">Test Symbol</button>
+      </section>
+
+      <div id="scanMeta" class="scan-meta" style="display:none">
+        <span>Cached <strong id="metaTotal">0</strong> coins</span>
+        <span>-</span>
+        <span>Found <strong id="metaSignals">0</strong> signals</span>
+        <span>-</span>
+        <span>Updated <strong id="metaTime">-</strong></span>
+      </div>
+
+      <div class="ppks-grid" id="ppksGrid">
+        <div class="ppks-empty">
+          <strong>Dang tai...</strong>
+          Dang quet post-pump kill-short pattern
+        </div>
+      </div>
+
+      <section class="panel ppks-paper-section">
+        <div class="panel-head">
+          <h2>Paper Trades — Post Pump Kill Short</h2>
+          <span id="ppksPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+        </div>
+        <div class="table-wrap">
+          <table class="signal-table">
+            <thead>
+              <tr>
+                <th class="ppks-paper-sort" data-ppks-sort="symbol">Symbol <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="side">Side <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="sl">SL <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="tp">TP <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="pnl">PnL <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="roe">ROE <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort active" data-ppks-sort="status">Status <span class="sort-mark">^</span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="source">Source <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="time">Time <span class="sort-mark"></span></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="ppksPaperBody">
+              <tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ post-pump kill-short signals.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/btcHealth.js"></script>
+    <script src="/post-pump-kill-short.js" type="module"></script>
+  </body>
+</html>

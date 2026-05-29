@@ -1,4 +1,4 @@
-import { createMarkPriceTicker } from './markPriceTicker.js';
+import { sharedMarkTicker } from './sharedMarkTicker.js';
 
 const protectedPositions = new Map(); // symbol → { orderId, stopPrice, roe, at }
 const positionDataCache = new Map();  // symbol → { amt, entry, margin } — updated each REST scan
@@ -56,7 +56,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
 
       // Update position cache + ticker subscription
       const activeSymbolSet = new Set(active.map((p) => p.symbol));
-      ticker?.setSymbols([...activeSymbolSet]);
+      sharedMarkTicker.setSymbols('trailingStop', [...activeSymbolSet]);
 
       // Clean up closed positions from map
       const activeSymbols = activeSymbolSet;
@@ -215,39 +215,37 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
   // Mark price ticker — trigger immediate TSL scan khi ROE vượt ngưỡng
   let lastTickScan = 0;
   let wsNotified = false;
-  const ticker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      if (!wsNotified) {
-        wsNotified = true;
-        console.log('[MarkTick] ✅ First tick received — realtime price tracking active');
-        notify(`📡 **[MarkTick]** WebSocket bookTicker connected — đang nhận giá realtime từ Binance futures`);
-      }
-      const cached = positionDataCache.get(symbol);
-      if (!cached) return;
-      if (isExcluded?.(symbol)) return;
+  sharedMarkTicker.register('trailingStop', ({ symbol, markPrice }) => {
+    if (!wsNotified) {
+      wsNotified = true;
+      console.log('[MarkTick] ✅ First tick received — realtime price tracking active');
+      notify(`📡 **[MarkTick]** WebSocket bookTicker connected — đang nhận giá realtime từ Binance futures`);
+    }
+    const cached = positionDataCache.get(symbol);
+    if (!cached) return;
+    if (isExcluded?.(symbol)) return;
 
-      const { amt, entry, margin } = cached;
-      const upnl = (markPrice - entry) * amt;
-      const roe = margin > 0 ? (upnl / margin) * 100 : 0;
+    const { amt, entry, margin } = cached;
+    const upnl = (markPrice - entry) * amt;
+    const roe = margin > 0 ? (upnl / margin) * 100 : 0;
 
-      const existing = protectedPositions.get(symbol);
-      const roeGain = existing?.roe != null ? roe - existing.roe : 0;
+    const existing = protectedPositions.get(symbol);
+    const roeGain = existing?.roe != null ? roe - existing.roe : 0;
 
-      // Trigger nếu: chưa có SL và ROE >= trigger, HOẶC có SL và ROE tăng đủ để dời
-      const needsAction = roe >= triggerRoe && (
-        (!existing) ||
-        (!existing.manual && roeGain >= updateRoe)
-      );
-      if (!needsAction) return;
+    // Trigger nếu: chưa có SL và ROE >= trigger, HOẶC có SL và ROE tăng đủ để dời
+    const needsAction = roe >= triggerRoe && (
+      (!existing) ||
+      (!existing.manual && roeGain >= updateRoe)
+    );
+    if (!needsAction) return;
 
-      const now = Date.now();
-      if (now - lastTickScan < 8_000) return; // debounce 8s
-      lastTickScan = now;
+    const now = Date.now();
+    if (now - lastTickScan < 8_000) return; // debounce 8s
+    lastTickScan = now;
 
-      console.log(`[MarkTick] 🎯 ${symbol} ROE≈${roe.toFixed(1)}% → immediate TSL scan`);
-      notify(`🎯 **[MarkTick] ${symbol}** ROE≈${roe.toFixed(1)}% → trigger TSL scan ngay`);
-      run().catch(() => {});
-    },
+    console.log(`[MarkTick] 🎯 ${symbol} ROE≈${roe.toFixed(1)}% → immediate TSL scan`);
+    notify(`🎯 **[MarkTick] ${symbol}** ROE≈${roe.toFixed(1)}% → trigger TSL scan ngay`);
+    run().catch(() => {});
   });
 
   setTimeout(run, 5000);

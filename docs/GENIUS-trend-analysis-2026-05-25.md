@@ -24,6 +24,100 @@ Best read:
 GENIUSUSDT mark price: ~0.7025
 ```
 
+## ETF / Macro Flow Filter
+
+Use this before deciding the final trend, especially during the US session and the VN night window.
+
+Source:
+
+```text
+ETF Flow page: /etf-proxy
+API: /api/etf-proxy
+Assets: BTC ETF proxy + ETH ETF proxy
+```
+
+Important limitation:
+
+```text
+This is intraday ETF proxy flow, not official daily ETF net flow.
+Official ETF net flow is usually confirmed after the US market closes.
+The proxy is still useful because heavy ETF selling during the US session can pressure BTC/ETH before the official flow data is published.
+```
+
+How the proxy is calculated:
+
+```text
+Proxy Inflow  = sum of ETF dollar volume on green 5m candles
+Proxy Outflow = sum of ETF dollar volume on red 5m candles
+Proxy Net Flow = Proxy Inflow - Proxy Outflow
+Net Flow % = Proxy Net Flow / Total ETF dollar volume
+```
+
+Read BTC first:
+
+```text
+BTC ETF net flow strongly positive:
+- BTC macro tailwind.
+- Long setups on BTC/ETH/large caps are safer if price also holds EMA/support.
+- Short setups need stronger local breakdown confirmation.
+
+BTC ETF net flow strongly negative:
+- BTC macro headwind.
+- Alt longs are weaker even if local chart looks bullish.
+- Pump signals can fail faster; prioritize waiting for reclaim or use smaller risk.
+- Short/dump/reversal signals get higher conviction if BTC also loses support.
+
+BTC ETF flow mixed or neutral:
+- Do not let ETF flow dominate the decision.
+- Use liquidity map, EMA structure, taker flow, funding, and local signal score.
+```
+
+Then read ETH:
+
+```text
+ETH ETF net flow positive while BTC neutral:
+- ETH and ETH-beta alts can outperform.
+- Long setups on ETH ecosystem coins deserve more tolerance if local structure agrees.
+
+ETH ETF net flow negative while BTC neutral/weak:
+- ETH-beta alts are vulnerable.
+- Avoid chasing ETH/alt longs into resistance.
+```
+
+Practical thresholds:
+
+```text
+Net Flow % > +15% and score > +25:
+  Macro flow supports upside.
+
+Net Flow % < -15% and score < -25:
+  Macro flow supports downside.
+
+Total ETF volume > 1.4x normal but Net Flow % near zero:
+  High activity but no clean direction. Treat as chop/fake-volume risk.
+
+ETF sell pressure appears after a strong BTC/ETH run-up:
+  Treat as distribution risk. A later support break can turn into a fast dump.
+```
+
+Example logic:
+
+```text
+If last night BTC ETF proxy showed heavy outflow / red net flow during the US session,
+and BTC failed to reclaim intraday support, then the correct read is not "normal pullback".
+It is "macro sell pressure active", so the forecast should downgrade BTC trend from bullish/neutral
+to caution or bearish until ETF flow stabilizes and BTC reclaims support.
+```
+
+How to apply this to non-BTC/ETH coins:
+
+```text
+For altcoins, ETF flow is a macro filter, not a direct coin flow.
+If BTC ETF flow is negative, reduce confidence on alt LONG setups.
+If BTC ETF flow is positive, alt LONG setups can get a tailwind, but still need local confirmation.
+If ETH ETF flow is stronger than BTC, ETH-beta alts may hold better than BTC-beta alts.
+```
+
 ## 15m View
 
 ```text
@@ -225,13 +319,27 @@ Current price:
 - Nearest upper zones:
 - Nearest lower zones:
 
-3. Flow confirmation
+3. ETF / macro flow filter
+- BTC ETF proxy type:
+- BTC ETF proxy score:
+- BTC proxy inflow:
+- BTC proxy outflow:
+- BTC proxy net flow:
+- BTC net flow %:
+- ETH ETF proxy type:
+- ETH ETF proxy score:
+- ETH proxy net flow:
+- Macro read:
+- Does ETF flow confirm or contradict the local coin setup?
+- If BTC ETF outflow is heavy, should alt long confidence be downgraded?
+
+4. Flow confirmation
 - Taker buy ratio:
 - Orderbook imbalance:
 - Funding:
 - Long/short ratio:
 
-4. Code setup
+5. Code setup
 - Direction:
 - Confidence:
 - Entry zone:
@@ -239,8 +347,9 @@ Current price:
 - Invalidation / SL:
 - Targets:
 
-5. Final read
+6. Final read
 - Main trend:
+- ETF macro pressure:
 - Short-term trap risk:
 - Best entry condition:
 - Invalidated when:

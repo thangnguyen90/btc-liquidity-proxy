@@ -3,10 +3,11 @@ const SOURCES = [
   { id: 'cap',       label: 'Cap',        url: '/api/cap-signals',            stream: '/api/cap-stream' },
   { id: 'killshort', label: 'Kill Short', url: '/api/killshort-signals',      stream: '/api/killshort-stream' },
   { id: 'ignition',  label: 'Ignition',   url: '/api/dump-ignition-signals',  stream: '/api/dump-ignition-stream' },
+  { id: 'ppks',      label: 'Post Pump KS', url: '/api/post-pump-kill-short-signals', stream: '/api/post-pump-kill-short-stream' },
 ];
 
 const state = {
-  signalsBySource: { pump: [], cap: [], killshort: [], ignition: [] },
+  signalsBySource: { pump: [], cap: [], killshort: [], ignition: [], ppks: [] },
   rawSignals: [],
   rows: [],
   lastLoadedAt: null,

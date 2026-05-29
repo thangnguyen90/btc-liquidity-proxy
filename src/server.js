@@ -7,6 +7,7 @@ import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
+import { binanceRateGate } from './binanceRateGate.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
 import { computeHeatmapData } from './liquidityProxy.js';
@@ -17,11 +18,13 @@ import { runCapScan }  from './capDetector.js';
 import { runKillShortScan } from './killShortDetector.js';
 import { runDumpIgnitionScan } from './dumpIgnitionDetector.js';
 import { runSpikeReversalScan } from './spikeReversalDetector.js';
+import { detectPostDumpKillLong, detectPostPumpKillShort, runPostPumpKillShortScan } from './postPumpKillShortDetector.js';
 import { runPumpIgnitionScan } from './pumpIgnitionDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
-import { createMarkPriceTicker } from './markPriceTicker.js';
+import { sharedMarkTicker } from './sharedMarkTicker.js';
+import { getEtfProxy } from './etfProxy.js';
 import WebSocket from 'ws';
 
 loadEnv();
@@ -37,6 +40,7 @@ const capScanCache       = { data: null, expiresAt: 0 };
 const killShortScanCache    = { data: null, expiresAt: 0 };
 const dumpIgnitionScanCache = { data: null, expiresAt: 0 };
 const spikeReversalScanCache  = { data: null, expiresAt: 0 };
+const postPumpKillShortScanCache = { data: null, expiresAt: 0 };
 const pumpIgnitionScanCache   = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 
@@ -44,7 +48,7 @@ const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 let _snapshotCache = null;
 let _snapshotCacheAt = 0;
 let _snapshotInflight = null;
-const SNAPSHOT_TTL_MS = 25_000; // 25s — đủ cho 1 chu kỳ scan, không stale quá lâu
+const SNAPSHOT_TTL_MS = 60_000; // 60s — giảm getTicker24hr(w=40)+getPremiumIndex(w=10) frequency
 
 async function getSharedSnapshot() {
   const now = Date.now();
@@ -68,6 +72,7 @@ const capSseClients          = new Set();
 const killShortSseClients    = new Set();
 const dumpIgnitionSseClients = new Set();
 const spikeReversalSseClients  = new Set();
+const postPumpKillShortSseClients = new Set();
 const pumpIgnitionSseClients   = new Set();
 const liquidPaperSseClients    = new Set();
 
@@ -97,6 +102,7 @@ let _pumpScanDebounce = null;
 async function schedulePumpScan() {
   clearTimeout(_pumpScanDebounce);
   _pumpScanDebounce = setTimeout(async () => {
+    if (!strategyScansReady('PumpScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -263,6 +269,7 @@ let _capScanDebounce = null;
 async function scheduleCapScan() {
   clearTimeout(_capScanDebounce);
   _capScanDebounce = setTimeout(async () => {
+    if (!strategyScansReady('CapScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -336,6 +343,7 @@ let _killShortScanDebounce = null;
 async function scheduleKillShortScan() {
   clearTimeout(_killShortScanDebounce);
   _killShortScanDebounce = setTimeout(async () => {
+    if (!strategyScansReady('KillShortScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -397,6 +405,8 @@ function numberFromNoteValue(value) {
 }
 
 function evaluateDumpIgnitionAutoQuality(sig, health = {}) {
+  if (sig.type === 'post_pump_dump_risk') return { ok: false, reason: 'post-pump risk is watch-only' };
+  if (sig.type === 'post_dump_bounce_risk') return { ok: false, reason: 'post-dump bounce is handled by real-order module' };
   const minScore = Number(process.env.DUMP_IGNITION_AUTO_MIN_SCORE ?? 90);
   if (sig.score < minScore) return { ok: false, reason: `score ${sig.score} < ${minScore}` };
 
@@ -426,6 +436,345 @@ function evaluateDumpIgnitionAutoQuality(sig, health = {}) {
   }
 
   return { ok: true, reason: 'quality gate passed' };
+}
+
+function applyPostPumpDumpRiskTslExcludes(signals) {
+  for (const sig of signals ?? []) {
+    if (sig?.type !== 'post_pump_dump_risk' || !sig.symbol) continue;
+    const symbol = String(sig.symbol).toUpperCase();
+    if (tslExcludedSymbols.has(symbol)) continue;
+    tslExcludedSymbols.add(symbol);
+    console.log(`[TSL-Exclude] ⛔ ${symbol} excluded by Post-pump Dump Risk signal`);
+  }
+}
+
+function applyPostDumpBounceRiskTslExcludes(signals) {
+  for (const sig of signals ?? []) {
+    if (sig?.type !== 'post_dump_bounce_risk' || !sig.symbol) continue;
+    const symbol = String(sig.symbol).toUpperCase();
+    if (tslExcludedSymbols.has(symbol)) continue;
+    tslExcludedSymbols.add(symbol);
+    console.log(`[TSL-Exclude] ⛔ ${symbol} excluded by Post-dump Bounce Risk signal`);
+  }
+}
+
+function calcAutoLeverage(entry, sl, defaultLev = 10) {
+  const e = Number(entry);
+  const s = Number(sl);
+  if (!e || !s || !Number.isFinite(e) || !Number.isFinite(s)) return defaultLev;
+  const slDistPct = Math.abs(e - s) / e;
+  return slDistPct * 10 * 100 > 20 ? 5 : 10;
+}
+
+async function handlePostPumpDumpRiskRealOrder(sig) {
+  if (sig?.type !== 'post_pump_dump_risk') return;
+  if (process.env.POST_PUMP_DUMP_RISK_AUTO_ORDER_ENABLED !== 'true') return;
+  if (sig.action !== 'SHORT') return;
+
+  applyPostPumpDumpRiskTslExcludes([sig]);
+
+  const minScore = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_MIN_SCORE ?? 62);
+  if (sig.score < minScore) return;
+  if (!sig.entry || !sig.sl) return;
+
+  const cooldownMs = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|${sig.type}`;
+  const last = postPumpDumpRiskOrderFired.get(dedupKey) ?? 0;
+  if (Date.now() - last < cooldownMs) {
+    console.log(`[PostPumpDumpRiskOrder] skip ${sig.symbol} - cooldown`);
+    return;
+  }
+
+  if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
+    console.log(`[PostPumpDumpRiskOrder] skip ${sig.symbol} - real Binance order disabled/dry-run`);
+    return;
+  }
+
+  let apiKey;
+  let apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch (err) {
+    apiKey = process.env.BINANCE_API_KEY;
+    apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw err;
+  }
+
+  const [positions, openOrders] = await Promise.all([
+    client.getPositions({ apiKey, apiSecret }),
+    getCachedOpenOrders(apiKey, apiSecret),
+  ]);
+  const hasPosition = positions.some((p) => p.symbol === sig.symbol && Math.abs(Number(p.positionAmt ?? 0)) > 0);
+  if (hasPosition) {
+    console.log(`[PostPumpDumpRiskOrder] skip ${sig.symbol} - already has position`);
+    return;
+  }
+  const hasEntryOrder = openOrders.some((o) => {
+    if (o.symbol !== sig.symbol) return false;
+    if (String(o.reduceOnly ?? '').toLowerCase() === 'true') return false;
+    const type = String(o.type ?? o.origType ?? '').toUpperCase();
+    return ['MARKET', 'LIMIT', 'LIMIT_MAKER'].includes(type);
+  });
+  if (hasEntryOrder) {
+    console.log(`[PostPumpDumpRiskOrder] skip ${sig.symbol} - already has entry order`);
+    return;
+  }
+
+  const marginUsdt = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_MARGIN_USDT ?? 1);
+  const defaultLeverage = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_LEVERAGE ?? 10);
+  const leverage = calcAutoLeverage(sig.entry, sig.sl, defaultLeverage);
+  const notionalUsdt = marginUsdt * leverage;
+  const orderType = String(process.env.POST_PUMP_DUMP_RISK_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const maxOpenPositions = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+  const result = await placeOrder({
+    symbol: sig.symbol,
+    side: 'SELL',
+    orderType,
+    notionalUsdt,
+    leverage,
+    limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
+    takeProfitPrice: sig.tp ?? undefined,
+    stopLossPrice: sig.sl ?? undefined,
+    maxOpenPositions,
+    dryRun: false,
+  }, null, { apiKey, apiSecret });
+
+  postPumpDumpRiskOrderFired.set(dedupKey, Date.now());
+  invalidateOpenOrdersCache();
+
+  const orderId = result?.orderResult?.orderId ?? '-';
+  const avgPrice = result?.orderResult?.avgPrice ?? result?.order?.markPrice ?? sig.entry;
+  console.log(`[PostPumpDumpRiskOrder] REAL ${sig.symbol} SHORT ${orderType} orderId=${orderId} score=${sig.score}`);
+
+  const webhookUrl = process.env.DUMP_IGNITION_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '';
+  if (webhookUrl) {
+    const fmt = (v) => v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toPrecision(8).replace(/\.?0+$/, '');
+    const msg = [
+      `**[REAL ORDER] Post-pump Dump Risk ${sig.symbol} SHORT - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+      `OrderId: \`${orderId}\` | Avg/Mark: \`${fmt(avgPrice)}\``,
+      `Margin: $${marginUsdt} x ${leverage}x | Notional: $${notionalUsdt}`,
+      `Entry signal: \`${fmt(sig.entry)}\` | SL: \`${fmt(sig.sl)}\` | TP: \`${fmt(sig.tp)}\``,
+      `Skip TSL: true`,
+    ].join('\n');
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: msg }),
+    }).catch(() => {});
+  }
+}
+
+function sendPostPumpDumpRiskDiscord(sig) {
+  if (sig?.type !== 'post_pump_dump_risk') return;
+  const webhookUrl = process.env.POST_PUMP_DUMP_RISK_WEBHOOK_URL || '';
+  if (!webhookUrl) return;
+
+  const minScore = Number(process.env.POST_PUMP_DUMP_RISK_MIN_DISCORD_SCORE ?? 0);
+  if (sig.score < minScore) return;
+
+  const dedupMs = Number(process.env.POST_PUMP_DUMP_RISK_DISCORD_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|post_pump_dump_risk`;
+  const lastFired = dumpIgnDiscordFired.get(dedupKey) ?? 0;
+  if (Date.now() - lastFired < dedupMs) return;
+  dumpIgnDiscordFired.set(dedupKey, Date.now());
+
+  const fmt = (v) => {
+    if (v == null || !Number.isFinite(Number(v))) return '-';
+    const n = Number(v);
+    if (Math.abs(n) >= 1000) return n.toLocaleString('en', { maximumFractionDigits: 2 });
+    if (Math.abs(n) >= 1) return n.toFixed(4);
+    return n.toFixed(6);
+  };
+  const noteKV = Object.fromEntries((sig.note ?? '')
+    .split('|')
+    .map((s) => s.trim().split('='))
+    .filter((a) => a.length === 2)
+    .map(([k, v]) => [k.trim(), v.trim()]));
+  const fields = [
+    { name: 'Entry / SL / TP', value: `\`${fmt(sig.entry)}\` / \`${fmt(sig.sl)}\` / \`${fmt(sig.tp)}\``, inline: false },
+    { name: 'Runup', value: noteKV.runup ? `${noteKV.runup}%` : '-', inline: true },
+    { name: 'Red volume', value: noteKV.redVolShare ? `${noteKV.redVolShare}%` : '-', inline: true },
+    { name: 'Vol recent', value: noteKV.volRecent ? `${noteKV.volRecent}x` : '-', inline: true },
+    { name: 'RSI fade', value: noteKV.rsiFade ?? '-', inline: true },
+    { name: 'Support break', value: noteKV.supportBreak ? `${noteKV.supportBreak}%` : '-', inline: true },
+    { name: 'Mark', value: fmt(sig.markPrice), inline: true },
+  ];
+
+  fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      content: `🔴 **[POST_PUMP_DUMP_RISK] ${sig.symbol} SHORT** · Score ${sig.score} (${sig.grade ?? '-'})`,
+      embeds: [{
+        title: `[POST_PUMP_DUMP_RISK] ${sig.symbol} · SHORT`,
+        description: sig.reason ?? 'Post-pump distribution risk',
+        color: 0xEF4444,
+        fields,
+        footer: { text: 'Dump Ignition Board' },
+        timestamp: new Date().toISOString(),
+      }],
+    }),
+  }).catch((err) => console.warn(`[PostPumpDumpRisk] Discord ${sig.symbol}:`, err.message));
+
+  console.log(`[PostPumpDumpRisk] 📨 Discord: ${sig.symbol} score=${sig.score}`);
+}
+
+function sendPostDumpBounceRiskDiscord(sig) {
+  if (sig?.type !== 'post_dump_bounce_risk') return;
+  const webhookUrl = process.env.POST_DUMP_BOUNCE_RISK_WEBHOOK_URL
+    || process.env.POST_PUMP_DUMP_RISK_WEBHOOK_URL
+    || process.env.DUMP_IGNITION_WEBHOOK_URL
+    || '';
+  if (!webhookUrl) return;
+
+  const minScore = Number(process.env.POST_DUMP_BOUNCE_RISK_MIN_DISCORD_SCORE ?? 0);
+  if (sig.score < minScore) return;
+
+  const dedupMs = Number(process.env.POST_DUMP_BOUNCE_RISK_DISCORD_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|post_dump_bounce_risk`;
+  const lastFired = dumpIgnDiscordFired.get(dedupKey) ?? 0;
+  if (Date.now() - lastFired < dedupMs) return;
+  dumpIgnDiscordFired.set(dedupKey, Date.now());
+
+  const fmt = (v) => {
+    if (v == null || !Number.isFinite(Number(v))) return '-';
+    const n = Number(v);
+    if (Math.abs(n) >= 1000) return n.toLocaleString('en', { maximumFractionDigits: 2 });
+    if (Math.abs(n) >= 1) return n.toFixed(4);
+    return n.toFixed(6);
+  };
+  const noteKV = Object.fromEntries((sig.note ?? '')
+    .split('|')
+    .map((s) => s.trim().split('='))
+    .filter((a) => a.length === 2)
+    .map(([k, v]) => [k.trim(), v.trim()]));
+  const fields = [
+    { name: 'Entry / SL / TP', value: `\`${fmt(sig.entry)}\` / \`${fmt(sig.sl)}\` / \`${fmt(sig.tp)}\``, inline: false },
+    { name: 'Dump', value: noteKV.dump ? `${noteKV.dump}%` : '-', inline: true },
+    { name: 'Bounce', value: noteKV.bounce ? `${noteKV.bounce}%` : '-', inline: true },
+    { name: 'Green volume', value: noteKV.greenVolShare ? `${noteKV.greenVolShare}%` : '-', inline: true },
+    { name: 'Vol recent', value: noteKV.volRecent ? `${noteKV.volRecent}x` : '-', inline: true },
+    { name: 'RSI recover', value: noteKV.rsiRecover ?? '-', inline: true },
+    { name: 'Resistance break', value: noteKV.resistanceBreak ? `${noteKV.resistanceBreak}%` : '-', inline: true },
+    { name: 'Higher lows', value: noteKV.higherLows ?? '-', inline: true },
+    { name: 'Mark', value: fmt(sig.markPrice), inline: true },
+  ];
+
+  fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      content: `🟢 **[POST_DUMP_BOUNCE_RISK] ${sig.symbol} LONG** · Score ${sig.score} (${sig.grade ?? '-'})`,
+      embeds: [{
+        title: `[POST_DUMP_BOUNCE_RISK] ${sig.symbol} · LONG`,
+        description: sig.reason ?? 'Post-dump bounce risk: sell pressure fading, green volume recovery, reclaim resistance/EMA',
+        color: 0x22C55E,
+        fields,
+        footer: { text: 'Dump Ignition Board' },
+        timestamp: new Date().toISOString(),
+      }],
+    }),
+  }).catch((err) => console.warn(`[PostDumpBounceRisk] Discord ${sig.symbol}:`, err.message));
+
+  console.log(`[PostDumpBounceRisk] Discord: ${sig.symbol} score=${sig.score}`);
+}
+
+async function handlePostDumpBounceRiskRealOrder(sig) {
+  if (sig?.type !== 'post_dump_bounce_risk') return;
+  if (process.env.POST_DUMP_BOUNCE_RISK_AUTO_ORDER_ENABLED !== 'true') return;
+  if (sig.action !== 'LONG') return;
+
+  applyPostDumpBounceRiskTslExcludes([sig]);
+
+  const minScore = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_MIN_SCORE ?? 66);
+  if (sig.score < minScore) return;
+  if (!sig.entry || !sig.sl) return;
+
+  const cooldownMs = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|${sig.type}`;
+  const last = postDumpBounceRiskOrderFired.get(dedupKey) ?? 0;
+  if (Date.now() - last < cooldownMs) {
+    console.log(`[PostDumpBounceRiskOrder] skip ${sig.symbol} - cooldown`);
+    return;
+  }
+
+  if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
+    console.log(`[PostDumpBounceRiskOrder] skip ${sig.symbol} - real Binance order disabled/dry-run`);
+    return;
+  }
+
+  let apiKey;
+  let apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch (err) {
+    apiKey = process.env.BINANCE_API_KEY;
+    apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw err;
+  }
+
+  const [positions, openOrders] = await Promise.all([
+    client.getPositions({ apiKey, apiSecret }),
+    getCachedOpenOrders(apiKey, apiSecret),
+  ]);
+  const hasPosition = positions.some((p) => p.symbol === sig.symbol && Math.abs(Number(p.positionAmt ?? 0)) > 0);
+  if (hasPosition) {
+    console.log(`[PostDumpBounceRiskOrder] skip ${sig.symbol} - already has position`);
+    return;
+  }
+  const hasEntryOrder = openOrders.some((o) => {
+    if (o.symbol !== sig.symbol) return false;
+    if (String(o.reduceOnly ?? '').toLowerCase() === 'true') return false;
+    const type = String(o.type ?? o.origType ?? '').toUpperCase();
+    return ['MARKET', 'LIMIT', 'LIMIT_MAKER'].includes(type);
+  });
+  if (hasEntryOrder) {
+    console.log(`[PostDumpBounceRiskOrder] skip ${sig.symbol} - already has entry order`);
+    return;
+  }
+
+  const marginUsdt = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_MARGIN_USDT ?? 1);
+  const defaultLeverage = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_LEVERAGE ?? 10);
+  const leverage = calcAutoLeverage(sig.entry, sig.sl, defaultLeverage);
+  const notionalUsdt = marginUsdt * leverage;
+  const orderType = String(process.env.POST_DUMP_BOUNCE_RISK_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const maxOpenPositions = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+  const result = await placeOrder({
+    symbol: sig.symbol,
+    side: 'BUY',
+    orderType,
+    notionalUsdt,
+    leverage,
+    limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
+    takeProfitPrice: sig.tp ?? undefined,
+    stopLossPrice: sig.sl ?? undefined,
+    maxOpenPositions,
+    dryRun: false,
+  }, null, { apiKey, apiSecret });
+
+  postDumpBounceRiskOrderFired.set(dedupKey, Date.now());
+  invalidateOpenOrdersCache();
+
+  const orderId = result?.orderResult?.orderId ?? '-';
+  const avgPrice = result?.orderResult?.avgPrice ?? result?.order?.markPrice ?? sig.entry;
+  console.log(`[PostDumpBounceRiskOrder] REAL ${sig.symbol} LONG ${orderType} orderId=${orderId} score=${sig.score}`);
+
+  const webhookUrl = process.env.DUMP_IGNITION_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '';
+  if (webhookUrl) {
+    const fmt = (v) => v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toPrecision(8).replace(/\.?0+$/, '');
+    const msg = [
+      `**[REAL ORDER] Post-dump Bounce Risk ${sig.symbol} LONG - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+      `OrderId: \`${orderId}\` | Avg/Mark: \`${fmt(avgPrice)}\``,
+      `Margin: $${marginUsdt} x ${leverage}x | Notional: $${notionalUsdt}`,
+      `Entry signal: \`${fmt(sig.entry)}\` | SL: \`${fmt(sig.sl)}\` | TP: \`${fmt(sig.tp)}\``,
+      `Skip TSL: true`,
+    ].join('\n');
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: msg }),
+    }).catch(() => {});
+  }
 }
 
 async function autoCreateDiPaperTrades(signals) {
@@ -462,6 +811,7 @@ async function autoCreateDiPaperTrades(signals) {
 async function scheduleDumpIgnitionScan() {
   clearTimeout(_dumpIgnitionScanDebounce);
   _dumpIgnitionScanDebounce = setTimeout(async () => {
+    if (!strategyScansReady('DumpIgnitionScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -476,6 +826,18 @@ async function scheduleDumpIgnitionScan() {
       dumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
       pushSse(dumpIgnitionSseClients, result);
       if (signals.length) console.log(`[DumpIgnition] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.type} ${s.score})`).join(', ')}`);
+      applyPostPumpDumpRiskTslExcludes(signals);
+      applyPostDumpBounceRiskTslExcludes(signals);
+      for (const sig of signals) {
+        sendPostPumpDumpRiskDiscord(sig);
+        sendPostDumpBounceRiskDiscord(sig);
+        handlePostPumpDumpRiskRealOrder(sig).catch((e) => {
+          console.warn(`[PostPumpDumpRiskOrder] ${sig.symbol}:`, e.message);
+        });
+        handlePostDumpBounceRiskRealOrder(sig).catch((e) => {
+          console.warn(`[PostDumpBounceRiskOrder] ${sig.symbol}:`, e.message);
+        });
+      }
       await autoCreateDiPaperTrades(signals);
 
       // Edge paper auto-fire: dump_ignition signals chỉ xuất hiện trên edge-short
@@ -495,7 +857,8 @@ async function scheduleDumpIgnitionScan() {
           dumpIgnDiscordFired.set(sig.symbol, Date.now());
 
           const isIgnition = sig.type === 'dump_ignition';
-          const stageBadge = isIgnition ? '🔥 IGNITION' : '⚠️ EARLY';
+          const isRisk = sig.type === 'post_pump_dump_risk';
+          const stageBadge = isIgnition ? '🔥 IGNITION' : isRisk ? '🟠 POST-PUMP RISK' : '⚠️ EARLY';
           const sym = sig.symbol.replace(/USDT$/, '');
           const gradeEmoji = sig.grade === 'A' ? '🔥' : sig.grade === 'B' ? '⚡' : '📌';
           const fmtP = (v) => v == null ? '—' : Number(v) >= 1000 ? Number(v).toLocaleString('en', { maximumFractionDigits: 2 }) : Number(v) >= 1 ? Number(v).toFixed(4) : Number(v).toFixed(6);
@@ -530,6 +893,7 @@ let _spikeRevDebounce = null;
 async function scheduleSpikeReversalScan() {
   clearTimeout(_spikeRevDebounce);
   _spikeRevDebounce = setTimeout(async () => {
+    if (!strategyScansReady('SpikeReversalScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -538,6 +902,7 @@ async function scheduleSpikeReversalScan() {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runSpikeReversalScan(topSymbols, klineCache, snapshotMap);
+      applySpikeReversalTslExcludes(signals);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       spikeReversalScanCache.data = result;
@@ -602,6 +967,241 @@ async function scheduleSpikeReversalScan() {
       console.error('[SpikeReversalScan] error:', e.message);
     }
   }, 2_500);
+}
+
+let _postPumpKillShortDebounce = null;
+async function schedulePostPumpKillShortScan() {
+  clearTimeout(_postPumpKillShortDebounce);
+  _postPumpKillShortDebounce = setTimeout(async () => {
+    if (!strategyScansReady('PostPumpKillShortScan')) return;
+    try {
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runPostPumpKillShortScan(topSymbols, klineCache, snapshotMap);
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      postPumpKillShortScanCache.data = result;
+      postPumpKillShortScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(postPumpKillShortSseClients, result);
+      if (signals.length) console.log(`[PostPumpKillShort] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.stage} ${s.score})`).join(', ')}`);
+
+      // Edge paper (shared /edge-short board) — only confirmed_short
+      for (const sig of signals) {
+        if (sig.stage !== 'confirmed_short' || sig.score < 60) continue;
+        const key = `ppks|${sig.symbol}|${sig.type}`;
+        const last = edgePaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        edgePaperAutoFired.set(key, Date.now());
+        createEdgePaperTrade({
+          symbol: sig.symbol,
+          side: 'SHORT',
+          status: 'OPEN',
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
+          source: `ppks-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch((e) => console.warn(`[EdgePaper] ppks ${sig.symbol}:`, e.message));
+      }
+
+      // PPKS paper auto-fire — cả confirmed_short lẫn confirmed_long vào /post-pump-kill-short page
+      for (const sig of signals) {
+        const isConfirmedShort = sig.stage === 'confirmed_short';
+        const isConfirmedLong  = sig.stage === 'confirmed_long';
+        if (!isConfirmedShort && !isConfirmedLong) continue;
+        if (sig.score < 60) continue;
+        const side = isConfirmedLong ? 'LONG' : 'SHORT';
+        const ppksKey = `ppks-paper|${sig.symbol}|${sig.type}`;
+        const ppksLast = ppksPaperAutoFired.get(ppksKey) ?? 0;
+        if (Date.now() - ppksLast < 4 * 3600 * 1000) continue;
+        ppksPaperAutoFired.set(ppksKey, Date.now());
+        createPpksPaperTrade({
+          symbol: sig.symbol,
+          side,
+          status: 'OPEN',
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
+          source: `ppks-auto-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch((e) => console.warn(`[PpksPaper] auto-fire ${sig.symbol}:`, e.message));
+      }
+
+      for (const sig of signals) {
+        handlePostPumpKillShortRealOrder(sig).catch((e) => {
+          console.warn(`[PostPumpKillShortOrder] ${sig.symbol}:`, e.message);
+        });
+      }
+
+      const ppksWebhook = process.env.POST_PUMP_KILL_SHORT_WEBHOOK_URL || '';
+      const ppksMinScore = Number(process.env.POST_PUMP_KILL_SHORT_MIN_DISCORD_SCORE ?? 60);
+      const ppksSendWatch = process.env.POST_PUMP_KILL_SHORT_SEND_WATCH === 'true';
+      if (ppksWebhook) {
+        const DEDUP_MS = 4 * 3600 * 1000;
+        const fmtP = (v) => {
+          if (v == null || !Number.isFinite(Number(v))) return '-';
+          const n = Number(v);
+          if (Math.abs(n) >= 1000) return n.toLocaleString('en', { maximumFractionDigits: 2 });
+          if (Math.abs(n) >= 1) return n.toFixed(4);
+          return n.toFixed(6);
+        };
+        const fmtPct = (v, d = 1) => v == null || !Number.isFinite(Number(v)) ? '-' : `${Number(v).toFixed(d)}%`;
+        const fmtX = (v, d = 1) => v == null || !Number.isFinite(Number(v)) ? '-' : `${Number(v).toFixed(d)}x`;
+
+        for (const sig of signals) {
+          const isConfirmed = sig.stage === 'confirmed_short' || sig.stage === 'confirmed_long';
+          if (!isConfirmed && !ppksSendWatch) continue;
+          if (sig.score < ppksMinScore) continue;
+          const dedupKey = `${sig.symbol}|${sig.stage}|${sig.type}`;
+          const lastFired = postPumpKillShortDiscordFired.get(dedupKey) ?? 0;
+          if (Date.now() - lastFired < DEDUP_MS) continue;
+          postPumpKillShortDiscordFired.set(dedupKey, Date.now());
+
+          const isLong = sig.stage === 'confirmed_long' || sig.type === 'post_dump_kill_long';
+          const sym = sig.symbol.replace(/USDT$/, '');
+          const f = sig.factors ?? {};
+          const title = isLong ? 'Post Dump Kill Long' : 'Post Pump Kill Short';
+          const side = isLong ? 'LONG' : 'SHORT';
+          const pattern = isLong
+            ? `Dump ${fmtPct(f.dumpPct)} -> bounce ${fmtPct(f.postDumpBouncePct)} -> lower sweep ${fmtPct(f.sweepMovePct)}`
+            : `Pump ${fmtPct(f.pumpPct)} -> drop ${fmtPct(f.postPumpDropPct)} -> upper spike ${fmtPct(f.spikeMovePct)}`;
+          const wickLine = isLong
+            ? `Lower wick ${fmtPct((f.lowerWickFrac ?? 0) * 100, 0)} | closePos ${fmtPct((f.closePos ?? 0) * 100, 0)} | RSI6 ${f.rsi6 != null ? Number(f.rsi6).toFixed(0) : '-'}`
+            : `Upper wick ${fmtPct((f.upperWickFrac ?? 0) * 100, 0)} | closePos ${fmtPct((f.closePos ?? 0) * 100, 0)} | RSI6 ${f.rsi6 != null ? Number(f.rsi6).toFixed(0) : '-'}`;
+          const volLine = isLong
+            ? `Sweep vol ${fmtX(f.sweepVolRatio)} | move ${fmtX(f.sweepAtrMove)} ATR`
+            : `Spike vol ${fmtX(f.spikeVolRatio)} | move ${fmtX(f.spikeAtrMove)} ATR`;
+          const msg = [
+            `**[${title}] ${sym}USDT - ${side} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+            sig.reason ? `Reason: ${sig.reason}` : '',
+            `Entry: \`${fmtP(sig.entry)}\` | SL: \`${fmtP(sig.sl)}\` | TP: \`${fmtP(sig.tp)}\``,
+            `Pattern: ${pattern}`,
+            `Reject: ${wickLine}`,
+            `Volume: ${volLine}`,
+            sig.markPrice ? `Mark: \`${fmtP(sig.markPrice)}\`` : '',
+            sig.change24hPct != null ? `24h: ${fmtPct(sig.change24hPct, 2)}` : '',
+          ].filter(Boolean).join('\n');
+
+          fetch(ppksWebhook, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ content: msg }),
+          }).catch((err) => console.warn(`[PostPumpKillShort] Discord ${sig.symbol}:`, err.message));
+
+          console.log(`[PostPumpKillShort] Discord: ${sig.symbol} ${sig.stage} score=${sig.score}`);
+        }
+      }
+    } catch (e) {
+      console.error('[PostPumpKillShortScan] error:', e.message);
+    }
+  }, 2_800);
+}
+
+async function handlePostPumpKillShortRealOrder(sig) {
+  if (process.env.POST_PUMP_KILL_SHORT_AUTO_ORDER_ENABLED !== 'true') return;
+  const isShort = sig.stage === 'confirmed_short' || sig.stage === 'watch_spike';
+  const isLong = sig.stage === 'confirmed_long' || sig.stage === 'watch_long_sweep';
+  if (!isShort && !isLong) return;
+
+  const minScore = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MIN_SCORE ?? 0);
+  if (sig.score < minScore) return;
+  if (!sig.entry || !sig.sl) return;
+
+  const cooldownMs = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const dedupKey = `${sig.symbol}|${sig.stage}|${sig.type}`;
+  const last = postPumpKillShortOrderFired.get(dedupKey) ?? 0;
+  if (Date.now() - last < cooldownMs) {
+    console.log(`[PostPumpKillShortOrder] skip ${sig.symbol} - cooldown`);
+    return;
+  }
+
+  if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
+    console.log(`[PostPumpKillShortOrder] skip ${sig.symbol} - real Binance order disabled/dry-run`);
+    return;
+  }
+
+  let apiKey;
+  let apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch (err) {
+    apiKey = process.env.BINANCE_API_KEY;
+    apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw err;
+  }
+  const [positions, openOrders] = await Promise.all([
+    client.getPositions({ apiKey, apiSecret }),
+    getCachedOpenOrders(apiKey, apiSecret),
+  ]);
+
+  const hasPosition = positions.some((p) => p.symbol === sig.symbol && Math.abs(Number(p.positionAmt ?? 0)) > 0);
+  if (hasPosition) {
+    console.log(`[PostPumpKillShortOrder] skip ${sig.symbol} - already has position`);
+    return;
+  }
+
+  const hasEntryOrder = openOrders.some((o) => {
+    if (o.symbol !== sig.symbol) return false;
+    if (String(o.reduceOnly ?? '').toLowerCase() === 'true') return false;
+    const type = String(o.type ?? o.origType ?? '').toUpperCase();
+    return ['MARKET', 'LIMIT', 'LIMIT_MAKER'].includes(type);
+  });
+  if (hasEntryOrder) {
+    console.log(`[PostPumpKillShortOrder] skip ${sig.symbol} - already has entry order`);
+    return;
+  }
+
+  const marginUsdt = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MARGIN_USDT ?? 1);
+  const defaultLeverage = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_LEVERAGE ?? 10);
+  const leverage = calcAutoLeverage(sig.entry, sig.sl, defaultLeverage);
+  const notionalUsdt = marginUsdt * leverage;
+  const orderType = String(process.env.POST_PUMP_KILL_SHORT_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const maxOpenPositions = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+  const side = isLong ? 'BUY' : 'SELL';
+  const result = await placeOrder({
+    symbol: sig.symbol,
+    side,
+    orderType,
+    notionalUsdt,
+    leverage,
+    limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
+    takeProfitPrice: sig.tp ?? undefined,
+    stopLossPrice: sig.sl ?? undefined,
+    maxOpenPositions,
+    dryRun: false,
+  }, null, { apiKey, apiSecret });
+
+  postPumpKillShortOrderFired.set(dedupKey, Date.now());
+  invalidateOpenOrdersCache();
+
+  const orderId = result?.orderResult?.orderId ?? '-';
+  const avgPrice = result?.orderResult?.avgPrice ?? result?.order?.markPrice ?? sig.entry;
+  console.log(`[PostPumpKillShortOrder] REAL ${sig.symbol} ${side} ${orderType} orderId=${orderId} score=${sig.score}`);
+
+  const webhookUrl = process.env.POST_PUMP_KILL_SHORT_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '';
+  if (webhookUrl) {
+    const fmt = (v) => v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toPrecision(8).replace(/\.?0+$/, '');
+    const msg = [
+      `**[REAL ORDER] ${sig.symbol} ${isLong ? 'LONG' : 'SHORT'} - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+      `OrderId: \`${orderId}\` | Avg/Mark: \`${fmt(avgPrice)}\``,
+      `Margin: $${marginUsdt} x ${leverage}x | Notional: $${notionalUsdt}`,
+      `Entry signal: \`${fmt(sig.entry)}\` | SL: \`${fmt(sig.sl)}\` | TP: \`${fmt(sig.tp)}\``,
+      `Type: ${sig.type ?? '-'} | Stage: ${sig.stage}`,
+    ].join('\n');
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: msg }),
+    }).catch(() => {});
+  }
 }
 
 let _pumpIgnitionDebounce = null;
@@ -686,6 +1286,7 @@ async function autoCreatePiPaperTrades(signals) {
 async function schedulePumpIgnitionScan() {
   clearTimeout(_pumpIgnitionDebounce);
   _pumpIgnitionDebounce = setTimeout(async () => {
+    if (!strategyScansReady('PumpIgnitionScan')) return;
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -772,12 +1373,7 @@ async function schedulePumpIgnitionScan() {
 
 klineCache.on('candleClose', ({ interval }) => {
   if (interval !== '15m') return;
-  schedulePumpScan();
-  scheduleCapScan();
-  scheduleKillShortScan();
-  scheduleDumpIgnitionScan();
-  scheduleSpikeReversalScan();
-  schedulePumpIgnitionScan();
+  scheduleStrategyScans('candleClose');
 });
 
 // Scan theo tick (mỗi khi có cập nhật nến) với debounce 60s — bắt signal sớm hơn trong nến
@@ -786,33 +1382,168 @@ klineCache.on('candleTick', ({ interval }) => {
   if (interval !== '15m') return;
   clearTimeout(_tickScanDebounce);
   _tickScanDebounce = setTimeout(() => {
-    schedulePumpScan();
-    scheduleCapScan();
-    scheduleKillShortScan();
-    scheduleDumpIgnitionScan();
-    scheduleSpikeReversalScan();
-    schedulePumpIgnitionScan();
+    scheduleStrategyScans('candleTick');
   }, 60_000);
 });
 
 // Chạy scan ngay sau 30s để có data ban đầu dù WebSocket chưa kết nối
-setTimeout(() => { schedulePumpScan(); scheduleCapScan(); scheduleKillShortScan(); scheduleDumpIgnitionScan(); scheduleSpikeReversalScan(); schedulePumpIgnitionScan(); }, 30_000);
+setTimeout(() => scheduleStrategyScans('initial'), 30_000);
 
 // Fallback: scan mỗi 2 phút kể cả khi WebSocket không có tick
 let _staleReseedLock = false;
+let _tieredWarmupPromise = null;
+let _klineWarmupSymbols = [];
+let _allowLogicBeforeKlineReady = false;
+const KLINE_WARMUP_TIERS = [
+  { max: 50,  batchSize: 1, batchDelayMs: 1400, afterMs: 0 },
+  { max: 100, batchSize: 1, batchDelayMs: 1600, afterMs: 0 },
+  { max: 200, batchSize: 1, batchDelayMs: 1800, afterMs: 0 },
+  { max: 400, batchSize: 1, batchDelayMs: 2200, afterMs: 0 },
+];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function klineWarmupReady() {
+  if (_allowLogicBeforeKlineReady) return true;
+  if (_klineWarmupSymbols.length === 0) return false;
+  const minReady = Number(process.env.KLINE_START_LOGIC_MIN_READY ?? _klineWarmupSymbols.length);
+  const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
+  return klineCache.countReady(_klineWarmupSymbols, '15m', minBars) >= Math.min(minReady, _klineWarmupSymbols.length);
+}
+
+function scheduleStrategyScans(reason = 'manual') {
+  if (!klineWarmupReady()) {
+    const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
+    const ready = _klineWarmupSymbols.length ? klineCache.countReady(_klineWarmupSymbols, '15m', minBars) : 0;
+    console.log(`[StrategyScans] Waiting for kline warm-up (${ready}/${_klineWarmupSymbols.length}) before ${reason}.`);
+    return;
+  }
+  schedulePumpScan();
+  scheduleCapScan();
+  scheduleKillShortScan();
+  scheduleDumpIgnitionScan();
+  scheduleSpikeReversalScan();
+  schedulePostPumpKillShortScan();
+  schedulePumpIgnitionScan();
+}
+
+function strategyScansReady(label) {
+  if (klineWarmupReady()) return true;
+  const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
+  const ready = _klineWarmupSymbols.length ? klineCache.countReady(_klineWarmupSymbols, '15m', minBars) : 0;
+  console.log(`[${label}] Skip until kline warm-up ready (${ready}/${_klineWarmupSymbols.length}).`);
+  return false;
+}
+
+function shouldDeferAlgoRest() {
+  return _klineWarmupSymbols.length > 0 && !klineWarmupReady();
+}
+
+function runAfterKlineWarmup(label, fn, { checkMs = 15_000, timeoutMs = Number(process.env.KLINE_START_LOGIC_TIMEOUT_MS ?? 20 * 60_000) } = {}) {
+  const startedAt = Date.now();
+  const tick = () => {
+    if (klineWarmupReady()) {
+      console.log(`[Startup] ${label}: kline warm-up ready, starting.`);
+      fn();
+      return;
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
+      const ready = _klineWarmupSymbols.length ? klineCache.countReady(_klineWarmupSymbols, '15m', minBars) : 0;
+      console.warn(`[Startup] ${label}: kline warm-up timeout (${ready}/${_klineWarmupSymbols.length}); starting anyway.`);
+      _allowLogicBeforeKlineReady = true;
+      fn();
+      return;
+    }
+    setTimeout(tick, checkMs);
+  };
+  tick();
+}
+
+async function startTieredKlineWarmup(snapshot, reason = 'startup') {
+  if (_tieredWarmupPromise) return _tieredWarmupPromise;
+  _tieredWarmupPromise = (async () => {
+    const sorted = [...snapshot].sort((a, b) => b.quoteVolume - a.quoteVolume);
+    const maxSocketSymbols = Math.max(...KLINE_WARMUP_TIERS.map((t) => t.max));
+    const socketSymbols15m = sorted.slice(0, maxSocketSymbols).map((r) => r.symbol);
+    _klineWarmupSymbols = socketSymbols15m;
+    console.log(`[KlineWarmup] Tiered warm-up started (${reason}).`);
+    try {
+      let ma60Seeded5m = false;
+      klineCache.subscribe(socketSymbols15m, '15m');
+      const ma60Max5mInitial = Number(process.env.MA60_5M_WARMUP_MAX_SYMBOLS ?? 20);
+      if (ma60Max5mInitial > 0) {
+        klineCache.subscribe(sorted.slice(0, ma60Max5mInitial).map((r) => r.symbol), '5m');
+      }
+      console.log(`[KlineWarmup] WS subscribed ${socketSymbols15m.length} symbols @15m before REST seed.`);
+      for (const tier of KLINE_WARMUP_TIERS) {
+        if (binanceRateGate.isBlocked?.()) {
+          console.warn(`[KlineWarmup] Skip tier top ${tier.max}: Binance REST blocked.`);
+          break;
+        }
+        if (tier.afterMs > 0) await sleep(tier.afterMs);
+        const symbols = sorted.slice(0, tier.max).map((r) => r.symbol);
+        console.log(`[KlineWarmup] Seeding top ${tier.max} symbols @15m (${tier.batchSize} req/batch, ${tier.batchDelayMs}ms delay).`);
+        await klineCache.seed(symbols, '15m', 500, {
+          batchSize: tier.batchSize,
+          batchDelayMs: tier.batchDelayMs,
+        });
+        const ma60Max5m = Number(process.env.MA60_5M_WARMUP_MAX_SYMBOLS ?? 20);
+        if (!ma60Seeded5m && ma60Max5m > 0 && tier.max >= ma60Max5m && !binanceRateGate.isBlocked?.()) {
+          const symbols5m = sorted.slice(0, ma60Max5m).map((r) => r.symbol);
+          ma60Seeded5m = true;
+          console.log(`[KlineWarmup] Seeding top ${symbols5m.length} symbols @5m for MA60 cluster.`);
+          await klineCache.seed(symbols5m, '5m', 220, {
+            batchSize: tier.batchSize,
+            batchDelayMs: Math.max(tier.batchDelayMs, 3000),
+          });
+        }
+      }
+    } finally {
+      _tieredWarmupPromise = null;
+      _staleReseedLock = false;
+      const minCached = Number(process.env.KLINE_WARMUP_RETRY_MIN_CACHED ?? 20);
+      const minReadyBars = Number(process.env.KLINE_WARMUP_RETRY_MIN_READY_BARS ?? 40);
+      const retryMs = Number(process.env.KLINE_WARMUP_RETRY_MS ?? 90_000);
+      const readyForScan = klineCache.countReady(socketSymbols15m, '15m', minReadyBars);
+      if (klineCache.stats('15m').cached < minCached || readyForScan < socketSymbols15m.length) {
+        console.warn(`[KlineWarmup] Ready ${readyForScan}/${socketSymbols15m.length} symbols (${minReadyBars}+ bars); retrying seed in ${Math.round(retryMs / 1000)}s.`);
+        setTimeout(async () => {
+          if (_tieredWarmupPromise) return;
+          startTieredKlineWarmup(snapshot, 'retry').catch((err) => {
+            console.warn('[KlineWarmup] Retry failed:', err.message);
+          });
+        }, retryMs);
+      }
+    }
+  })();
+  return _tieredWarmupPromise;
+}
+
+function noteApiNoLargeReseed(board, processed) {
+  if (processed !== 0) return;
+  console.warn(`[KlineWarmup] ${board} processed=0; API will not trigger 400-symbol REST reseed. Waiting for tiered warm-up/WS cache.`);
+}
 setInterval(async () => {
   schedulePumpScan();
   scheduleCapScan();
   scheduleKillShortScan();
   // Re-seed nếu WebSocket stale (không có tick trong 3 phút)
+  if (process.env.KLINE_AUTO_RESEED_ENABLED !== 'true') return;
   const stats = klineCache.stats('15m');
   if (stats.isStale && !_staleReseedLock) {
     _staleReseedLock = true;
     try {
       const snapshot = await getSharedSnapshot();
-      const topSymbols = snapshot.sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, 400).map((r) => r.symbol);
-      await klineCache.seed(topSymbols, '15m', 500);
-      console.log('[KlineCache] Re-seed triggered (WebSocket stale)');
+      const topSymbols = [...snapshot].sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, 50).map((r) => r.symbol);
+      await klineCache.seed(topSymbols, '15m', 500, { batchSize: 1, batchDelayMs: 2000 });
+      const ma60Max5m = Number(process.env.MA60_5M_WARMUP_MAX_SYMBOLS ?? 20);
+      if (ma60Max5m > 0 && !binanceRateGate.isBlocked?.()) {
+        await klineCache.seed(topSymbols.slice(0, ma60Max5m), '5m', 220, { batchSize: 1, batchDelayMs: 3000 });
+      }
+      console.log('[KlineCache] Small re-seed triggered (WebSocket stale, top 50 only)');
       schedulePumpScan();
       scheduleCapScan();
       scheduleKillShortScan();
@@ -866,10 +1597,33 @@ let tslScanner = null;
 let posMonitor = null;
 // Symbols bị loại khỏi mọi auto position management (trailing stop, timeout, neg-TP, SL trail, avg-down)
 const tslExcludedSymbols = new Set();
+
+function isConfirmedSpikeReversalSignal(sig) {
+  const status = String(sig?.stage ?? sig?.status ?? '').toLowerCase();
+  return sig?.confirmed === true
+    || status.includes('confirmed')
+    || sig?.type === 'spike_reversal';
+}
+
+function applySpikeReversalTslExcludes(signals) {
+  for (const sig of signals ?? []) {
+    if (!sig?.symbol || !isConfirmedSpikeReversalSignal(sig)) continue;
+    const symbol = String(sig.symbol).toUpperCase();
+    if (tslExcludedSymbols.has(symbol)) continue;
+    tslExcludedSymbols.add(symbol);
+    console.log(`[TSL-Exclude] ⛔ ${symbol} excluded by confirmed Spike Reversal signal`);
+  }
+}
+
 // Discord dedup: symbol → lastFiredAt (ms) — tránh spam cùng 1 signal
 const spikeRevDiscordFired  = new Map();
 const dumpIgnDiscordFired   = new Map();
 const pumpIgnDiscordFired   = new Map();
+const postPumpKillShortDiscordFired = new Map();
+const postPumpKillShortOrderFired = new Map();
+const ppksPaperAutoFired = new Map(); // dedup cho PPKS paper trade auto-fire
+const postPumpDumpRiskOrderFired = new Map();
+const postDumpBounceRiskOrderFired = new Map();
 const longShortCache = new Map();    // symbol → { longShortRatio, longAccount }
 const hedgeModeCache = new Map();    // apiKey → bool
 const topPositionCache = new Map(); // symbol → { longShortRatio, longPosition, shortPosition }
@@ -892,6 +1646,8 @@ const DI_PAPER_FILE     = join(rootDir, 'data', 'di-paper-trades.json');
 const PI_PAPER_FILE     = join(rootDir, 'data', 'pi-paper-trades.json');
 const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
 const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
+const SR_PAPER_FILE     = join(rootDir, 'data', 'sr-paper-trades.json');
+const PPKS_PAPER_FILE   = join(rootDir, 'data', 'ppks-paper-trades.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
 let liquidPaperRestPoller = null;
@@ -912,6 +1668,12 @@ const pumpPaperFillLocks = new Set();
 const edgeMarkCache = new Map(); // symbol -> markPrice (for edge paper trades)
 let edgePaperTicker = null;
 const edgePaperFillLocks = new Set();
+const srMarkCache = new Map();  // symbol → markPrice  (for spike reversal paper trades)
+let srPaperTicker = null;
+const srPaperFillLocks = new Set();
+const ppksMarkCache = new Map(); // symbol → markPrice  (for ppks paper trades)
+let ppksPaperTicker = null;
+const ppksPaperFillLocks = new Set();
 
 async function loadSlTracking() {
   try {
@@ -1344,9 +2106,7 @@ const server = createServer(async (request, response) => {
         .map((r) => r.symbol);
       const { signals, processed } = await runPumpScan(topSymbols, klineCache, snapshotMap);
       // Cache trống → seed ngay, scan lại sau 15s
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; schedulePumpScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('pump', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       pumpScanCache.data = result;
@@ -1384,9 +2144,7 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runCapScan(topSymbols, klineCache, snapshotMap);
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleCapScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('cap', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       capScanCache.data = result;
@@ -1424,9 +2182,7 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runKillShortScan(topSymbols, klineCache, snapshotMap);
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleKillShortScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('killshort', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       killShortScanCache.data = result;
@@ -1455,6 +2211,18 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/dump-ignition-signals') {
       if (dumpIgnitionScanCache.data && Date.now() < dumpIgnitionScanCache.expiresAt) {
+        applyPostPumpDumpRiskTslExcludes(dumpIgnitionScanCache.data.signals ?? []);
+        applyPostDumpBounceRiskTslExcludes(dumpIgnitionScanCache.data.signals ?? []);
+        for (const sig of dumpIgnitionScanCache.data.signals ?? []) {
+          sendPostPumpDumpRiskDiscord(sig);
+          sendPostDumpBounceRiskDiscord(sig);
+          handlePostPumpDumpRiskRealOrder(sig).catch((e) => {
+            console.warn(`[PostPumpDumpRiskOrder] ${sig.symbol}:`, e.message);
+          });
+          handlePostDumpBounceRiskRealOrder(sig).catch((e) => {
+            console.warn(`[PostDumpBounceRiskOrder] ${sig.symbol}:`, e.message);
+          });
+        }
         await autoCreateDiPaperTrades(dumpIgnitionScanCache.data.signals ?? []);
         return sendJson(response, dumpIgnitionScanCache.data);
       }
@@ -1465,14 +2233,29 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runDumpIgnitionScan(topSymbols, klineCache, snapshotMap);
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleDumpIgnitionScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('dump-ignition', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       dumpIgnitionScanCache.data = result;
       dumpIgnitionScanCache.expiresAt = Date.now() + 30_000;
+      applyPostPumpDumpRiskTslExcludes(signals);
+      applyPostDumpBounceRiskTslExcludes(signals);
+      for (const sig of signals) {
+        sendPostPumpDumpRiskDiscord(sig);
+        sendPostDumpBounceRiskDiscord(sig);
+        handlePostPumpDumpRiskRealOrder(sig).catch((e) => {
+          console.warn(`[PostPumpDumpRiskOrder] ${sig.symbol}:`, e.message);
+        });
+        handlePostDumpBounceRiskRealOrder(sig).catch((e) => {
+          console.warn(`[PostDumpBounceRiskOrder] ${sig.symbol}:`, e.message);
+        });
+      }
       await autoCreateDiPaperTrades(signals);
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/etf-proxy') {
+      const result = await getEtfProxy({ client });
       return sendJson(response, result);
     }
 
@@ -1506,13 +2289,91 @@ const server = createServer(async (request, response) => {
         .slice(0, 400)
         .map((r) => r.symbol);
       const { signals, processed } = await runSpikeReversalScan(topSymbols, klineCache, snapshotMap);
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; scheduleSpikeReversalScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      applySpikeReversalTslExcludes(signals);
+      if (processed === 0) noteApiNoLargeReseed('spike-reversal', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       spikeReversalScanCache.data = result;
       spikeReversalScanCache.expiresAt = Date.now() + 30_000;
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/post-pump-kill-short-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (postPumpKillShortScanCache.data && (postPumpKillShortScanCache.data.signals?.length > 0 || postPumpKillShortScanCache.data.processed > 0)) {
+        response.write(`data: ${JSON.stringify(postPumpKillShortScanCache.data)}\n\n`);
+      }
+      postPumpKillShortSseClients.add(response);
+      request.on('close', () => postPumpKillShortSseClients.delete(response));
+      if (!postPumpKillShortScanCache.data || Date.now() > postPumpKillShortScanCache.expiresAt) {
+        schedulePostPumpKillShortScan();
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/post-pump-kill-short-signals') {
+      const testSymbol = requestUrl.searchParams.get('symbol');
+      if (testSymbol) {
+        const symbol = normalizeSymbol(testSymbol);
+        const klines = await client.getKlines(symbol, '15m', 220);
+        const detections = [
+          detectPostPumpKillShort(klines),
+          detectPostDumpKillLong(klines),
+        ].filter((det) => det.pass);
+        const snapshot = await getSharedSnapshot().catch(() => []);
+        const snap = snapshot.find((r) => r.symbol === symbol);
+        const signals = detections.map((det) => ({
+          symbol,
+          action: det.action,
+          type: det.type,
+          stage: det.stage,
+          score: det.score,
+          grade: det.grade,
+          entry: det.entry,
+          altEntry: det.altEntry,
+          sl: det.sl,
+          tp: det.tp,
+          reason: det.reason,
+          note: det.note,
+          factors: det.factors,
+          blockLong: det.stage === 'confirmed_short',
+          blockShort: det.stage === 'confirmed_long',
+          markPrice: snap?.markPrice,
+          change24h: snap?.change24hPct,
+          volume: snap?.quoteVolume,
+          scannedAt: Date.now(),
+        }));
+        return sendJson(response, {
+          signals,
+          scannedAt: Date.now(),
+          total: 1,
+          processed: 1,
+          testSymbol: symbol,
+          noSignalReason: signals.length ? null : 'no post-pump short or post-dump long pattern',
+          cacheStats: klineCache.stats('15m'),
+        });
+      }
+      if (postPumpKillShortScanCache.data && Date.now() < postPumpKillShortScanCache.expiresAt) {
+        return sendJson(response, postPumpKillShortScanCache.data);
+      }
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runPostPumpKillShortScan(topSymbols, klineCache, snapshotMap);
+      if (processed === 0) noteApiNoLargeReseed('post-pump-kill-short', processed);
+      const cacheStats = klineCache.stats('15m');
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      postPumpKillShortScanCache.data = result;
+      postPumpKillShortScanCache.expiresAt = Date.now() + 30_000;
       return sendJson(response, result);
     }
 
@@ -1548,9 +2409,7 @@ const server = createServer(async (request, response) => {
         .map((r) => r.symbol);
       const btcBias = btcHealthCache.data?.bias ?? 'neutral';
       const { signals, processed } = await runPumpIgnitionScan(topSymbols, klineCache, snapshotMap, { btcBias });
-      if (processed === 0) {
-        if (!_staleReseedLock) { _staleReseedLock = true; klineCache.seed(topSymbols, '15m', 500).then(() => { _staleReseedLock = false; schedulePumpIgnitionScan(); }).catch(() => { _staleReseedLock = false; }); }
-      }
+      if (processed === 0) noteApiNoLargeReseed('pump-ignition', processed);
       const cacheStats = klineCache.stats('15m');
       const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       pumpIgnitionScanCache.data = result;
@@ -1561,6 +2420,11 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/btc-health') {
       await sendJson(response, await getBtcHealth());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/binance-rate-gate') {
+      await sendJson(response, { gate: binanceRateGate.snapshot(), kline15m: klineCache.stats('15m'), scannedAt: Date.now() });
       return;
     }
 
@@ -1753,6 +2617,50 @@ const server = createServer(async (request, response) => {
     }
     if (requestUrl.pathname === '/api/di-paper-trades/delete' && request.method === 'POST') {
       await sendJson(response, await deleteDiPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/sr-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getSrPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const trade = await createSrPaperTrade({ ...body, status: 'PENDING' });
+        syncSrPaperTicker().catch(() => {});
+        await sendJson(response, trade);
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/sr-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closeSrPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/sr-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deleteSrPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/ppks-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getPpksPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const trade = await createPpksPaperTrade({ ...body, status: 'PENDING' });
+        syncPpksPaperTicker().catch(() => {});
+        await sendJson(response, trade);
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/ppks-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closePpksPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/ppks-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deletePpksPaperTrade(await readJsonBody(request)));
       return;
     }
 
@@ -2282,63 +3190,72 @@ const server = createServer(async (request, response) => {
 server.listen(port, '127.0.0.1', () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
   loadDynamicBlacklist();
-  loadSlTracking().then(() =>
-    adoptExistingSlPositions().catch((err) => console.warn('[SlTracking] Adopt failed:', err.message)),
-  );
-  loadPumpOrders().then(() => {
-    setInterval(() => pollPumpOrders().catch(() => {}), 60_000);
-  });
-  loadPumpWatching().then(() => {
-    setInterval(() => pollPumpWatching().catch(() => {}), 3 * 60_000);
-  });
+  loadSlTracking();
+  loadPumpOrders();
+  loadPumpWatching();
+  // BTC mark price WebSocket — funding rate + mark price liên tục, không tốn REST
+  startBtcMarkPriceWs();
+
+  // Pha 1: ưu tiên kline cache trước. Các logic dùng REST/account sẽ được bật sau
+  // khi top symbols đã có đủ nến tối thiểu, tránh chen request làm Binance 429.
+  (async () => {
+    try {
+      const snapshot = await getSharedSnapshot();
+      if (!_staleReseedLock) {
+        _staleReseedLock = true;
+        startTieredKlineWarmup(snapshot, 'startup').catch((err) => {
+          _staleReseedLock = false;
+          console.warn('[KlineWarmup] Tiered warm-up failed:', err.message);
+        });
+      }
+      setTimeout(() => klineCache.seed(['BTCUSDT'], '1h', 250, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 15_000);
+      setTimeout(() => klineCache.seed(['BTCUSDT'], '4h', 150, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 25_000);
+      setTimeout(() => klineCache.seed(['BTCUSDT'], '1d', 60, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 35_000);
+    } catch (err) {
+      console.warn('[KlineCache] Seed failed:', err.message);
+      const retryMs = Number(process.env.KLINE_WARMUP_RETRY_MS ?? 90_000);
+      setTimeout(async () => {
+        if (_tieredWarmupPromise || _staleReseedLock || binanceRateGate.isBlocked?.()) return;
+        try {
+          const snapshot = await getSharedSnapshot();
+          _staleReseedLock = true;
+          startTieredKlineWarmup(snapshot, 'startup-retry').catch((retryErr) => {
+            _staleReseedLock = false;
+            console.warn('[KlineWarmup] Startup retry failed:', retryErr.message);
+          });
+        } catch (retryErr) {
+          console.warn('[KlineWarmup] Startup retry snapshot failed:', retryErr.message);
+        }
+      }, retryMs);
+    }
+  })();
+
   const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
   const brgIntervalMs = Math.max(Number(process.env.BTC_REVERSAL_GUARD_INTERVAL_MS ?? 41000), 15000);
-  // Stagger service startup to avoid burst at t=0
-  startAutoTrader();
-  setTimeout(() => startLongShortRefresh(), 65_000); // sau khi seed 400 symbols xong (~53s)
-  setTimeout(() => {
+
+  runAfterKlineWarmup('algo APIs', () => {
+    loadSlTracking().then(() =>
+      adoptExistingSlPositions().catch((err) => console.warn('[SlTracking] Adopt failed:', err.message)),
+    );
+    loadPumpOrders().then(() => {
+      pollPumpOrders().catch(() => {});
+      setInterval(() => pollPumpOrders().catch(() => {}), 60_000);
+    });
+    loadPumpWatching().then(() => {
+      setInterval(() => pollPumpWatching().catch(() => {}), 3 * 60_000);
+    });
+    startAutoTrader();
+    if (process.env.LONG_SHORT_REFRESH_ENABLED !== 'false') {
+      startLongShortRefresh();
+    }
     tslScanner = startTrailingStopScanner({ client, getSymbols, intervalMs: tslIntervalMs, webhookUrl: process.env.TSL_WEBHOOK_URL, isExcluded: (sym) => tslExcludedSymbols.has(sym), getPositionData: getSharedPositionData });
-  }, 7000);
-  setTimeout(() => {
     startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: brgIntervalMs, getPositionData: getSharedPositionData });
-  }, 12000);
-  // Proactive position store refresh — chủ động làm mới trước khi scanner cần,
-  // tránh scanner là người trigger REST call. Bắt đầu sau 55s (sau khi tất cả đã warm-up).
-  setTimeout(() => {
+    // Proactive position store refresh — chủ động làm mới trước khi scanner cần.
     setInterval(async () => {
       if (_posStoreInflight) return;
       _posStore.fetchedAt = 0; // invalidate để force fresh fetch
       getSharedPositionData().catch(() => {});
     }, POS_STORE_TTL_MS);
-  }, 55_000);
-  setTimeout(async () => {
-    // Seed kline cache sớm để pump/cap scan có data ngay khi browser mở trang.
-    // getMarketSnapshot() is cheap (cached for 15s) and gives us the top coins by volume.
-    try {
-      const snapshot = await getSharedSnapshot();
-      const liqScanMax = Number(process.env.LIQ_SCAN_MAX_COINS ?? 200);
-      const seedMax = Math.max(liqScanMax, 400); // 400 covers pump/cap/killshort scans
-      const topSymbols = snapshot
-        .sort((a, b) => b.quoteVolume - a.quoteVolume)
-        .slice(0, seedMax)
-        .map((r) => r.symbol);
-      // Fire-and-forget: seeding runs in background while scanners start
-      // LiqScan needs 500 candles; VolDump only needs 42 but 500 covers both
-      // Seed chậm hơn (batchSize=3, 1s delay) → 3 req/s thay vì 8.3 req/s → tránh vượt rate limit
-      // Lock để SSE endpoint không trigger seed song song
-      if (!_staleReseedLock) {
-        _staleReseedLock = true;
-        klineCache.seed(topSymbols, '15m', 500, { batchSize: 3, batchDelayMs: 1000 })
-          .then(() => { _staleReseedLock = false; })
-          .catch(() => { _staleReseedLock = false; });
-      }
-      // Seed BTC klines — Wilder's RSI cần nhiều nến để warm-up và khớp Binance
-      klineCache.seed(['BTCUSDT'], '1h', 250).catch(() => {});  // 250 nến 1h ~10 ngày
-      klineCache.seed(['BTCUSDT'], '4h', 150).catch(() => {});  // 150 nến 4h ~25 ngày
-      klineCache.seed(['BTCUSDT'], '1d', 60).catch(() => {});   // 60 nến 1d ~2 tháng
-    } catch (err) {
-      console.warn('[KlineCache] Seed failed:', err.message);
-    }
 
     startDiscordScanner({
       client,
@@ -2361,35 +3278,24 @@ server.listen(port, '127.0.0.1', () => {
       maxCoins: Number(process.env.LIQ_SCAN_MAX_COINS ?? 200),
       onHighProbAlert: getLiqHighProbHandler(),
       highProbThreshold: getLiqHighProbThreshold(),
+      topTraderCache: topPositionCache, // tái dùng cache từ startLongShortRefresh, tránh 51 REST calls
     });
     // startVolumeDumpScanner disabled — tắt để giảm tải API (150 REST calls/phút)
-  }, 5000);
-  setTimeout(() => {
     runStaleOrderCleaner(); // seed initial position set, no cancellations on first run
     setInterval(runStaleOrderCleaner, 35_000); // 35s — lệch nhịp TSL(30s) tránh cùng lúc
-  }, 22000);
-  setTimeout(() => {
     runBtcHealthMonitor(); // initial read — seed _prevBtcBias, no cancellations
     setInterval(runBtcHealthMonitor, 2 * 60_000); // check every 2 minutes
-  }, 40000);
-  setTimeout(() => {
     startNegTpScanner();
-  }, 28000);
-  setTimeout(() => {
     startPaperTradeTicker();
     startCapPaperTicker();
     startDiPaperTicker();
     startPiPaperTicker();
     startPumpPaperTicker();
     startEdgePaperTicker();
-  }, 29000);
-  setTimeout(() => {
+    startSrPaperTicker();
+    startPpksPaperTicker();
     startMissingTpScanner();
-  }, 31000);
-  setTimeout(() => {
     startSlTrailSafetyScanner();
-  }, 34000);
-  setTimeout(() => {
     posMonitor = startPositionMonitor({
       client,
       getCredentials: () => getApiCredentials(null),
@@ -2457,9 +3363,7 @@ server.listen(port, '127.0.0.1', () => {
         }
       },
     });
-  }, 25000);
-  // BTC mark price WebSocket — funding rate + mark price liên tục, không tốn REST
-  startBtcMarkPriceWs();
+  });
 });
 
 // ── BTC Health ────────────────────────────────────────────────────────────────
@@ -2719,7 +3623,7 @@ async function getSymbols() {
   return symbols;
 }
 
-async function placeOrder(payload, token = null) {
+async function placeOrder(payload, token = null, credentialsOverride = null) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   const side = String(payload.side ?? '').toUpperCase();
   const orderType = String(payload.orderType ?? payload.type ?? 'MARKET').toUpperCase();
@@ -2803,7 +3707,7 @@ async function placeOrder(payload, token = null) {
     };
   }
 
-  const { apiKey, apiSecret } = getApiCredentials(token);
+  const { apiKey, apiSecret } = credentialsOverride ?? getApiCredentials(token);
 
   if (maxOpenPositions > 0) {
     const positions = await client.getPositions({ apiKey, apiSecret });
@@ -2831,7 +3735,7 @@ async function placeOrder(payload, token = null) {
     orderParams.price = roundedLimitPrice;
     orderParams.timeInForce = 'IOC';
   }
-  const isHedge = await getHedgeMode(token);
+  const isHedge = await getHedgeMode(token, credentialsOverride);
   const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
   const positionSide = isHedge ? (side === 'BUY' ? 'LONG' : 'SHORT') : undefined;
 
@@ -3095,6 +3999,124 @@ function buildLiquidEntryPlan({ heavySide, markPrice, target, heatmap }) {
   };
 }
 
+function calcLiquidRsi(closes, period = 14) {
+  if (!Array.isArray(closes) || closes.length <= period) return null;
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i <= period; i += 1) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  for (let i = period + 1; i < closes.length; i += 1) {
+    const diff = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(diff, 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(-diff, 0)) / period;
+  }
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+function calcLiquidEma(values, period) {
+  if (!Array.isArray(values) || values.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = values.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
+  for (let i = period; i < values.length; i += 1) {
+    ema = values[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+function detectLiquidationHuntPattern({ row, klines, heatmap, target, heavySide, interval }) {
+  const closed = klines.slice(0, -1);
+  if (closed.length < 80 || !target) return null;
+
+  const recent = closed.slice(-8);
+  const prior = closed.slice(-48, -8);
+  const last = closed.at(-1);
+  const closes = closed.map((k) => k.close);
+  const volumes = closed.map((k) => k.quoteVolume);
+  const avgVol = prior.length ? prior.reduce((sum, k) => sum + k.quoteVolume, 0) / prior.length : 0;
+  const recentVol = recent.reduce((sum, k) => sum + k.quoteVolume, 0);
+  const avgRecentVol = avgVol * Math.max(recent.length, 1);
+  const volX = avgRecentVol > 0 ? recentVol / avgRecentVol : 0;
+  const greenCount = recent.filter((k) => k.close > k.open).length;
+  const redCount = recent.filter((k) => k.close < k.open).length;
+  const rsi = calcLiquidRsi(closes, 14);
+  const ema13 = calcLiquidEma(closes, 13);
+  const ema25 = calcLiquidEma(closes, 25);
+  const ema99 = calcLiquidEma(closes, 99);
+  const runupBase = closed[Math.max(0, closed.length - 17)]?.close ?? closed[0]?.close;
+  const runupPct = runupBase > 0 ? ((last.close - runupBase) / runupBase) * 100 : 0;
+  const drawdownBase = closed[Math.max(0, closed.length - 17)]?.close ?? closed[0]?.close;
+  const drawdownPct = drawdownBase > 0 ? ((drawdownBase - last.close) / drawdownBase) * 100 : 0;
+  const distancePct = Number(target.distancePct ?? 999);
+  const absDistance = Math.abs(distancePct);
+  const isNearTarget = absDistance <= Number(process.env.LIQ_HUNT_MAX_TARGET_DISTANCE_PCT ?? 1.2);
+  const targetIntensity = Number(target.intensity ?? 0);
+  const targetStrong = targetIntensity >= 0.45 || Number(target.score ?? 0) >= Math.max(Number(heatmap.liquidityAbove ?? 0), Number(heatmap.liquidityBelow ?? 0)) * 0.08;
+  const rsiHot = rsi != null && rsi >= Number(process.env.LIQ_HUNT_RSI_HOT ?? 78);
+  const rsiCold = rsi != null && rsi <= Number(process.env.LIQ_HUNT_RSI_COLD ?? 22);
+  const emaBull = ema13 != null && ema25 != null && ema99 != null && last.close > ema13 && ema13 > ema25 && ema25 > ema99;
+  const emaBear = ema13 != null && ema25 != null && ema99 != null && last.close < ema13 && ema13 < ema25 && ema25 < ema99;
+  const strongUp = runupPct >= Number(process.env.LIQ_HUNT_RUNUP_PCT ?? 4.0) || Number(row.change24hPct ?? 0) >= 10;
+  const strongDown = drawdownPct >= Number(process.env.LIQ_HUNT_DRAWDOWN_PCT ?? 4.0) || Number(row.change24hPct ?? 0) <= -10;
+  const volHot = volX >= Number(process.env.LIQ_HUNT_VOL_X ?? 1.8);
+
+  const isUpsideHunt = heavySide === 'above'
+    && distancePct > 0
+    && isNearTarget
+    && targetStrong
+    && strongUp
+    && greenCount >= 5
+    && volHot
+    && (rsiHot || emaBull);
+
+  const isDownsideHunt = heavySide === 'below'
+    && distancePct < 0
+    && isNearTarget
+    && targetStrong
+    && strongDown
+    && redCount >= 5
+    && volHot
+    && (rsiCold || emaBear);
+
+  if (!isUpsideHunt && !isDownsideHunt) return null;
+
+  const score = Math.round(clamp(
+    (isUpsideHunt ? Math.min(runupPct / 14, 1) : Math.min(drawdownPct / 14, 1)) * 28
+    + Math.min(volX / 4, 1) * 22
+    + Math.min(absDistance <= 0.15 ? 1 : (1.2 - absDistance) / 1.05, 1) * 20
+    + Math.min(targetIntensity || 0.6, 1) * 16
+    + (isUpsideHunt ? Math.min((rsi ?? 50) / 100, 1) : Math.min((100 - (rsi ?? 50)) / 100, 1)) * 14,
+    0,
+    100,
+  ));
+
+  return {
+    type: isUpsideHunt ? 'LIQUIDITY_RUNUP_HUNT' : 'LIQUIDITY_DUMP_HUNT',
+    side: isUpsideHunt ? 'UP' : 'DOWN',
+    score,
+    interval,
+    targetPrice: target.price,
+    targetDistancePct: distancePct,
+    targetIntensity,
+    runupPct,
+    drawdownPct,
+    volX,
+    greenCount,
+    redCount,
+    rsi,
+    emaStack: isUpsideHunt ? (emaBull ? 'bull' : 'hot') : (emaBear ? 'bear' : 'cold'),
+    note: isUpsideHunt
+      ? 'Pump manh, volume xanh bung no, RSI nong va gia dang hut len cum thanh ly tren.'
+      : 'Dump manh, volume do bung no, RSI lanh va gia dang hut xuong cum thanh ly duoi.',
+  };
+}
+
 async function mapConcurrent(items, concurrency, mapper) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -3118,6 +4140,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
   const rows = await mapConcurrent(candidates, 8, async (row) => {
     try {
       const klines = await klineCache.getKlines(row.symbol, interval, 500);
+      if (!klines || klines.length < 60) return null;
       const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice });
       const above = Number(heatmap.liquidityAbove ?? 0);
       const below = Number(heatmap.liquidityBelow ?? 0);
@@ -3135,6 +4158,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
       const sweepProb = liquidSweepProb(heatmap, target);
       const isNearTarget = targetDistancePct != null && Math.abs(targetDistancePct) <= 0.35;
       const entryPlan = buildLiquidEntryPlan({ heavySide, markPrice: row.markPrice, target, heatmap });
+      const huntSignal = detectLiquidationHuntPattern({ row, klines, heatmap, target, heavySide, interval });
 
       return {
         symbol: row.symbol,
@@ -3151,6 +4175,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
         heavyPct,
         sweepProb,
         sweepLabel: liquidSweepLabel(sweepProb),
+        huntSignal,
         sweepTarget: target ? {
           direction: target.direction ?? heavySide,
           price: target.price,
@@ -3174,7 +4199,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
     }
   });
 
-  const successful = rows.filter((row) => !row.error);
+  const successful = rows.filter((row) => row && !row.error);
   successful.sort((a, b) => b.sweepProb - a.sweepProb || Math.abs(b.bias) - Math.abs(a.bias) || b.quoteVolume - a.quoteVolume);
 
   return {
@@ -3184,7 +4209,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
     processed: successful.length,
     failed: rows.length - successful.length,
     rows: successful,
-    errors: rows.filter((row) => row.error).slice(0, 10),
+    errors: rows.filter((row) => row?.error).slice(0, 10),
     cacheStats: klineCache.stats(interval),
   };
 }
@@ -3403,6 +4428,25 @@ async function createPaperTrade(payload) {
   const rr = payload.rr != null
     ? Number(payload.rr)
     : (entryPlan?.rr != null ? Number(entryPlan.rr) : null);
+  const huntSignal = payload.huntSignal && typeof payload.huntSignal === 'object'
+    ? {
+        type: String(payload.huntSignal.type ?? '').slice(0, 80),
+        side: String(payload.huntSignal.side ?? '').slice(0, 16),
+        score: Number(payload.huntSignal.score ?? 0),
+        interval: String(payload.huntSignal.interval ?? '').slice(0, 16),
+        targetPrice: payload.huntSignal.targetPrice != null ? Number(payload.huntSignal.targetPrice) : null,
+        targetDistancePct: payload.huntSignal.targetDistancePct != null ? Number(payload.huntSignal.targetDistancePct) : null,
+        targetIntensity: payload.huntSignal.targetIntensity != null ? Number(payload.huntSignal.targetIntensity) : null,
+        runupPct: payload.huntSignal.runupPct != null ? Number(payload.huntSignal.runupPct) : null,
+        drawdownPct: payload.huntSignal.drawdownPct != null ? Number(payload.huntSignal.drawdownPct) : null,
+        volX: payload.huntSignal.volX != null ? Number(payload.huntSignal.volX) : null,
+        greenCount: payload.huntSignal.greenCount != null ? Number(payload.huntSignal.greenCount) : null,
+        redCount: payload.huntSignal.redCount != null ? Number(payload.huntSignal.redCount) : null,
+        rsi: payload.huntSignal.rsi != null ? Number(payload.huntSignal.rsi) : null,
+        emaStack: String(payload.huntSignal.emaStack ?? '').slice(0, 20),
+        note: String(payload.huntSignal.note ?? '').slice(0, 180),
+      }
+    : null;
 
   const trade = {
     id: crypto.randomUUID(),
@@ -3430,6 +4474,9 @@ async function createPaperTrade(payload) {
     riskPct: Number.isFinite(riskPct) ? riskPct : null,
     rr: Number.isFinite(rr) ? rr : null,
     heavySide: payload.heavySide ? String(payload.heavySide).slice(0, 20) : null,
+    huntSignal,
+    huntType: huntSignal?.type || null,
+    huntScore: huntSignal ? Number(huntSignal.score) : null,
     entryPlan,
   };
 
@@ -3940,7 +4987,7 @@ async function syncPaperTickerSymbols() {
     .filter((t) => ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status))
     .map((t) => t.symbol)
     .filter(Boolean))];
-  paperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('paperTrade', symbols);
 }
 
 async function pollLiquidPaperMarksOnce() {
@@ -4169,18 +5216,17 @@ async function syncCapPaperTicker() {
   if (!capPaperTicker) return;
   const store = await readCapPaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  capPaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('capPaper', symbols);
 }
 
 function startCapPaperTicker() {
   if (capPaperTicker) return;
-  capPaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      capMarkCache.set(symbol, markPrice);
-      processCapPaperFills(symbol, markPrice).catch(() => {});
-    },
+  capPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('capPaper', ({ symbol, markPrice }) => {
+    capMarkCache.set(symbol, markPrice);
+    processCapPaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[CapPaper] Mark ticker started.');
+  console.log('[CapPaper] Mark ticker started (shared).');
   syncCapPaperTicker().catch(() => {});
   setInterval(() => syncCapPaperTicker().catch(() => {}), 30_000);
 }
@@ -4352,18 +5398,17 @@ async function syncDiPaperTicker() {
   if (!diPaperTicker) return;
   const store = await readDiPaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  diPaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('diPaper', symbols);
 }
 
 function startDiPaperTicker() {
   if (diPaperTicker) return;
-  diPaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      diMarkCache.set(symbol, markPrice);
-      processDiPaperFills(symbol, markPrice).catch(() => {});
-    },
+  diPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('diPaper', ({ symbol, markPrice }) => {
+    diMarkCache.set(symbol, markPrice);
+    processDiPaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[DiPaper] Mark ticker started.');
+  console.log('[DiPaper] Mark ticker started (shared).');
   syncDiPaperTicker().catch(() => {});
   setInterval(() => syncDiPaperTicker().catch(() => {}), 30_000);
 }
@@ -4536,18 +5581,17 @@ async function syncPiPaperTicker() {
   if (!piPaperTicker) return;
   const store = await readPiPaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  piPaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('piPaper', symbols);
 }
 
 function startPiPaperTicker() {
   if (piPaperTicker) return;
-  piPaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      piMarkCache.set(symbol, markPrice);
-      processPiPaperFills(symbol, markPrice).catch(() => {});
-    },
+  piPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('piPaper', ({ symbol, markPrice }) => {
+    piMarkCache.set(symbol, markPrice);
+    processPiPaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[PiPaper] Mark ticker started.');
+  console.log('[PiPaper] Mark ticker started (shared).');
   syncPiPaperTicker().catch(() => {});
   setInterval(() => syncPiPaperTicker().catch(() => {}), 30_000);
 }
@@ -4745,18 +5789,17 @@ async function syncPumpPaperTicker() {
   if (!pumpPaperTicker) return;
   const store = await readPumpPaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  pumpPaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('pumpPaper', symbols);
 }
 
 function startPumpPaperTicker() {
   if (pumpPaperTicker) return;
-  pumpPaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      pumpMarkCache.set(symbol, markPrice);
-      processPumpPaperFills(symbol, markPrice).catch(() => {});
-    },
+  pumpPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('pumpPaper', ({ symbol, markPrice }) => {
+    pumpMarkCache.set(symbol, markPrice);
+    processPumpPaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[PumpPaper] Mark ticker started.');
+  console.log('[PumpPaper] Mark ticker started (shared).');
   syncPumpPaperTicker().catch(() => {});
   setInterval(() => syncPumpPaperTicker().catch(() => {}), 30_000);
 }
@@ -4977,37 +6020,400 @@ async function syncEdgePaperTicker() {
   if (!edgePaperTicker) return;
   const store = await readEdgePaperStore();
   const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
-  edgePaperTicker.setSymbols(symbols);
+  sharedMarkTicker.setSymbols('edgePaper', symbols);
 }
 
 function startEdgePaperTicker() {
   if (edgePaperTicker) return;
-  edgePaperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      edgeMarkCache.set(symbol, markPrice);
-      processEdgePaperFills(symbol, markPrice).catch(() => {});
-    },
+  edgePaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('edgePaper', ({ symbol, markPrice }) => {
+    edgeMarkCache.set(symbol, markPrice);
+    processEdgePaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[EdgePaper] Mark ticker started.');
+  console.log('[EdgePaper] Mark ticker started (shared).');
   syncEdgePaperTicker().catch(() => {});
   setInterval(() => syncEdgePaperTicker().catch(() => {}), 30_000);
+}
+
+// ── SR Paper Trades (Spike Reversal) ─────────────────────────────────────────
+
+async function readSrPaperStore() {
+  try {
+    const raw = await readFile(SR_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[SrPaper] Store read error, starting fresh:', e.message);
+    return { trades: [] };
+  }
+}
+
+let _srPaperWriteLock = Promise.resolve();
+async function writeSrPaperStore(store) {
+  _srPaperWriteLock = _srPaperWriteLock.then(() => atomicWriteJson(SR_PAPER_FILE, store));
+  return _srPaperWriteLock;
+}
+
+function enrichSrPaperTrade(t, markPrice) {
+  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
+  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
+  return { ...t, markPrice: mark, pnl, roe };
+}
+
+async function getSrPaperTrades() {
+  const store = await readSrPaperStore();
+  const trades = store.trades.map((t) => enrichSrPaperTrade(t, srMarkCache.get(t.symbol)));
+  const open   = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length > 0
+    ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length : null;
+  const summary = {
+    total: trades.length, open: open.length, closed: closed.length,
+    wins, losses: closed.length - wins, tpHits, slHits,
+    avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null,
+  };
+  return { trades, summary };
+}
+
+async function createSrPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? 'SHORT').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+
+  const store = await readSrPaperStore();
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol && t.side === side &&
+    Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichSrPaperTrade(dup, srMarkCache.get(symbol)) };
+
+  const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol, side, status,
+    marginUsdt, leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    tp: payload.tp != null ? Number(payload.tp) : null,
+    sl: payload.sl != null ? Number(payload.sl) : null,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null,
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+  };
+  store.trades.unshift(trade);
+  await writeSrPaperStore(store);
+  console.log(`[SrPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
+  return { trade: enrichSrPaperTrade(trade, entryPrice) };
+}
+
+async function closeSrPaperTrade(payload) {
+  const store = await readSrPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('SR paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichSrPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (srMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  await writeSrPaperStore(store);
+  return { trade: enrichSrPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deleteSrPaperTrade(payload) {
+  const store = await readSrPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writeSrPaperStore(store);
+  return { ok: true };
+}
+
+async function fillSrPendingTrade(trade, markPrice) {
+  if (srPaperFillLocks.has(trade.id)) return;
+  srPaperFillLocks.add(trade.id);
+  try {
+    const store = await readSrPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const entry = Number(store.trades[idx].entryPrice);
+    const touched = store.trades[idx].side === 'LONG' ? markPrice <= entry : markPrice >= entry;
+    if (!touched) return;
+    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    await writeSrPaperStore(store);
+    console.log(`[SrPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+  } finally {
+    srPaperFillLocks.delete(trade.id);
+  }
+}
+
+async function processSrPaperFills(symbol, markPrice) {
+  const store = await readSrPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillSrPendingTrade(t, markPrice);
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) await checkSrPaperTpSl(t, markPrice);
+}
+
+const srPaperTpSlLocks = new Set();
+async function checkSrPaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (srPaperTpSlLocks.has(trade.id)) return;
+  const isLong = trade.side === 'LONG';
+  const tpHit = trade.tp != null && (isLong ? markPrice >= trade.tp : markPrice <= trade.tp);
+  const slHit = trade.sl != null && (isLong ? markPrice <= trade.sl : markPrice >= trade.sl);
+  if (!tpHit && !slHit) return;
+  srPaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closeSrPaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[SrPaper] 🎯 ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    srPaperTpSlLocks.delete(trade.id);
+  }
+}
+
+async function syncSrPaperTicker() {
+  if (!srPaperTicker) return;
+  const store = await readSrPaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  sharedMarkTicker.setSymbols('srPaper', symbols);
+}
+
+function startSrPaperTicker() {
+  if (srPaperTicker) return;
+  srPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('srPaper', ({ symbol, markPrice }) => {
+    srMarkCache.set(symbol, markPrice);
+    processSrPaperFills(symbol, markPrice).catch(() => {});
+  });
+  console.log('[SrPaper] Mark ticker started (shared).');
+  syncSrPaperTicker().catch(() => {});
+  setInterval(() => syncSrPaperTicker().catch(() => {}), 30_000);
+}
+
+// ── PPKS Paper Trades (Post Pump Kill Short / Post Dump Kill Long) ─────────────
+
+async function readPpksPaperStore() {
+  try {
+    const raw = await readFile(PPKS_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[PpksPaper] Store read error, starting fresh:', e.message);
+    return { trades: [] };
+  }
+}
+
+let _ppksPaperWriteLock = Promise.resolve();
+async function writePpksPaperStore(store) {
+  _ppksPaperWriteLock = _ppksPaperWriteLock.then(() => atomicWriteJson(PPKS_PAPER_FILE, store));
+  return _ppksPaperWriteLock;
+}
+
+function enrichPpksPaperTrade(t, markPrice) {
+  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
+  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
+  return { ...t, markPrice: mark, pnl, roe };
+}
+
+async function getPpksPaperTrades() {
+  const store = await readPpksPaperStore();
+  const trades = store.trades.map((t) => enrichPpksPaperTrade(t, ppksMarkCache.get(t.symbol)));
+  const open   = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length > 0
+    ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length : null;
+  const summary = {
+    total: trades.length, open: open.length, closed: closed.length,
+    wins, losses: closed.length - wins, tpHits, slHits,
+    avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null,
+  };
+  return { trades, summary };
+}
+
+async function createPpksPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? 'SHORT').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+
+  const store = await readPpksPaperStore();
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol && t.side === side &&
+    Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichPpksPaperTrade(dup, ppksMarkCache.get(symbol)) };
+
+  const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol, side, status,
+    marginUsdt, leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    tp: payload.tp != null ? Number(payload.tp) : null,
+    sl: payload.sl != null ? Number(payload.sl) : null,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null,
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+  };
+  store.trades.unshift(trade);
+  await writePpksPaperStore(store);
+  console.log(`[PpksPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
+  return { trade: enrichPpksPaperTrade(trade, entryPrice) };
+}
+
+async function closePpksPaperTrade(payload) {
+  const store = await readPpksPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('PPKS paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichPpksPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (ppksMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  await writePpksPaperStore(store);
+  return { trade: enrichPpksPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deletePpksPaperTrade(payload) {
+  const store = await readPpksPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writePpksPaperStore(store);
+  return { ok: true };
+}
+
+async function fillPpksPendingTrade(trade, markPrice) {
+  if (ppksPaperFillLocks.has(trade.id)) return;
+  ppksPaperFillLocks.add(trade.id);
+  try {
+    const store = await readPpksPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const entry = Number(store.trades[idx].entryPrice);
+    const touched = store.trades[idx].side === 'LONG' ? markPrice <= entry : markPrice >= entry;
+    if (!touched) return;
+    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    await writePpksPaperStore(store);
+    console.log(`[PpksPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+  } finally {
+    ppksPaperFillLocks.delete(trade.id);
+  }
+}
+
+async function processPpksPaperFills(symbol, markPrice) {
+  const store = await readPpksPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillPpksPendingTrade(t, markPrice);
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) await checkPpksPaperTpSl(t, markPrice);
+}
+
+const ppksPaperTpSlLocks = new Set();
+async function checkPpksPaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (ppksPaperTpSlLocks.has(trade.id)) return;
+  const isLong = trade.side === 'LONG';
+  const tpHit = trade.tp != null && (isLong ? markPrice >= trade.tp : markPrice <= trade.tp);
+  const slHit = trade.sl != null && (isLong ? markPrice <= trade.sl : markPrice >= trade.sl);
+  if (!tpHit && !slHit) return;
+  ppksPaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closePpksPaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[PpksPaper] 🎯 ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    ppksPaperTpSlLocks.delete(trade.id);
+  }
+}
+
+async function syncPpksPaperTicker() {
+  if (!ppksPaperTicker) return;
+  const store = await readPpksPaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  sharedMarkTicker.setSymbols('ppksPaper', symbols);
+}
+
+function startPpksPaperTicker() {
+  if (ppksPaperTicker) return;
+  ppksPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('ppksPaper', ({ symbol, markPrice }) => {
+    ppksMarkCache.set(symbol, markPrice);
+    processPpksPaperFills(symbol, markPrice).catch(() => {});
+  });
+  console.log('[PpksPaper] Mark ticker started (shared).');
+  syncPpksPaperTicker().catch(() => {});
+  setInterval(() => syncPpksPaperTicker().catch(() => {}), 30_000);
 }
 
 function startPaperTradeTicker() {
   if (process.env.PAPER_TRADE_TICKER_ENABLED === 'false') return;
   if (paperTicker) return;
-  paperTicker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      paperMarkCache.set(symbol, { markPrice, at: Date.now(), source: 'ws' });
-      processPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
-      processLiquidPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
-      scheduleLiquidPaperBroadcast();
-    },
+  paperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('paperTrade', ({ symbol, markPrice }) => {
+    paperMarkCache.set(symbol, { markPrice, at: Date.now(), source: 'ws' });
+    processPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
+    processLiquidPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
+    scheduleLiquidPaperBroadcast();
   });
-  console.log('[PaperLiq] Mark ticker started for paper trades.');
+  console.log('[PaperLiq] Mark ticker started for paper trades (shared).');
   syncPaperTickerSymbols().catch(() => {});
   setInterval(() => syncPaperTickerSymbols().catch(() => {}), 10_000);
-  startLiquidPaperRestPoller();
+  // REST poller disabled — sharedMarkTicker WS handles mark price updates
+  // startLiquidPaperRestPoller();
 }
 
 async function callOpenAI(messages) {
@@ -5435,8 +6841,8 @@ function computeATR(klines, period = 14) {
 
 async function calculateEntryLevel(symbol, direction, markPrice, symbolInfo, score = 0) {
   try {
-    const klines = await client.getKlines(symbol, '15m', 110);
-    if (klines.length < 100) return null;
+    const klines = klineCache.getIfCached(symbol, '15m', 110);
+    if (!klines || klines.length < 100) return null;
     const closes = klines.map((k) => k.close);
     const ema99 = computeEMA(closes, 99);
     const atr = computeATR(klines, 14);
@@ -5558,18 +6964,19 @@ async function batchedAllSettled(items, fn, batchSize = 5, delayMs = 300) {
 function startLongShortRefresh() {
   const run = async () => {
     try {
-      const [symbols, tickers] = await Promise.all([getSymbols(), client.getTicker24hr()]);
-      const allowed = new Set(symbols.map((s) => s.symbol));
-      const top = tickers
-        .filter((t) => allowed.has(t.symbol))
-        .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
-        .slice(0, 40)
+      // Dùng getSharedSnapshot() thay vì gọi getTicker24hr() riêng (tránh tốn w=40)
+      const snapshot = await getSharedSnapshot();
+      const maxSymbols = Number(process.env.LONG_SHORT_REFRESH_MAX_SYMBOLS ?? 15);
+      if (maxSymbols <= 0) return;
+      const top = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, maxSymbols)
         .map((t) => t.symbol);
 
       // Stagger calls: 5 per batch, 300ms between batches → ~2.4s total instead of burst
       const [globalResults, topResults] = await Promise.all([
-        batchedAllSettled(top, (sym) => client.getGlobalLongShortRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] }))),
-        batchedAllSettled(top, (sym) => client.getTopLongShortPositionRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] }))),
+        batchedAllSettled(top, (sym) => client.getGlobalLongShortRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] })), 1, 1200),
+        batchedAllSettled(top, (sym) => client.getTopLongShortPositionRatio(sym, '15m', 1).then((rows) => ({ sym, row: rows[0] })), 1, 1200),
       ]);
 
       for (const r of globalResults) {
@@ -5595,11 +7002,11 @@ function startLongShortRefresh() {
     }
   };
   setTimeout(run, 8000);
-  setInterval(run, 5 * 60 * 1000);
+  setInterval(run, Number(process.env.LONG_SHORT_REFRESH_INTERVAL_MS ?? 15 * 60 * 1000));
 }
 
-async function getHedgeMode(token = null) {
-  const { apiKey, apiSecret } = getApiCredentials(token);
+async function getHedgeMode(token = null, credentialsOverride = null) {
+  const { apiKey, apiSecret } = credentialsOverride ?? getApiCredentials(token);
   if (hedgeModeCache.has(apiKey)) return hedgeModeCache.get(apiKey);
   try {
     const mode = await client.getPositionMode({ apiKey, apiSecret });
@@ -5635,6 +7042,7 @@ const BALANCE_TTL_MS = 60_000; // 1 phút — balance không cần real-time
 
 async function getAccountBalance(token = null) {
   if (_balanceCache && Date.now() - _balanceCacheAt < BALANCE_TTL_MS) return _balanceCache;
+  if (shouldDeferAlgoRest()) return _balanceCache ?? [];
   const { apiKey, apiSecret } = getApiCredentials(token);
   const rows = await client.getBalance({ apiKey, apiSecret });
   _balanceCache = rows.filter((b) => Number(b.balance) > 0 || Number(b.crossUnPnl) !== 0);
@@ -5644,10 +7052,11 @@ async function getAccountBalance(token = null) {
 
 let _dailyPnlCache = null;
 let _dailyPnlCacheAt = 0;
-const DAILY_PNL_TTL_MS = 120_000; // 2 phút — income API weight cao (30)
+const DAILY_PNL_TTL_MS = 300_000; // 5 phút — income API weight=30, không cần real-time
 
 async function getDailyPnl(token = null) {
   if (_dailyPnlCache && Date.now() - _dailyPnlCacheAt < DAILY_PNL_TTL_MS) return _dailyPnlCache;
+  if (shouldDeferAlgoRest()) return _dailyPnlCache ?? { realized: 0, commission: 0, funding: 0, net: 0, since: new Date().toISOString() };
   const { apiKey, apiSecret } = getApiCredentials(token);
   const startOfDay = new Date();
   startOfDay.setUTCHours(0, 0, 0, 0);
@@ -5674,11 +7083,12 @@ async function getPositions(token = null) {
 // Tất cả scanners dùng chung — tối đa 1 REST burst per TTL window.
 let _posStore = { positions: [], openOrders: [], algoOrders: [], fetchedAt: 0 };
 let _posStoreInflight = null;
-const POS_STORE_TTL_MS = 30_000; // 30s — đủ để tránh IP ban, scanners cách nhau 30-41s
+const POS_STORE_TTL_MS = 60_000; // 60s — positions/openOrders không cần <30s; giảm getOpenOrders(w=40) frequency
 
 async function getSharedPositionData() {
   if (Date.now() - _posStore.fetchedAt < POS_STORE_TTL_MS) return _posStore;
   if (_posStoreInflight) return _posStoreInflight;
+  if (shouldDeferAlgoRest()) return _posStore;
   let creds;
   try { creds = getApiCredentials(null); } catch { return _posStore; }
   const { apiKey, apiSecret } = creds;
@@ -6244,6 +7654,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
   if (!runtimeSettings.pumpAutoOrderEnabled) return;
   if (isVnBlockHour()) { console.log(`[PumpAuto] ⏰ Block 17-19h VN — ${signal.symbol}`); return; }
   const { symbol, action, score, marketOk, entry, sl, factors, type: signalType } = signal;
+  if (String(signalType ?? '').startsWith('ma60_volume_cluster')) return;
   const pumpAutoMinScore = Number(process.env.PUMP_AUTO_MIN_SCORE ?? 80);
   const pumpAutoMaxScore = Number(process.env.PUMP_AUTO_MAX_SCORE ?? 999);
   if (score < pumpAutoMinScore) return;
@@ -6433,7 +7844,8 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
     const margin = Number(process.env.PUMP_AUTO_ORDER_MARGIN ?? 1);
-    const leverage = Number(process.env.PUMP_AUTO_ORDER_LEVERAGE ?? 10);
+    const defaultLeverage = Number(process.env.PUMP_AUTO_ORDER_LEVERAGE ?? 10);
+    const leverage = calcAutoLeverage(signal.entry, signal.sl, defaultLeverage);
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
     const maxLimitOrders = runtimeSettings.pumpMaxLimitOrders;
 
@@ -7418,8 +8830,12 @@ async function sendStatic(pathname, response) {
           ? '/killshort.html'
         : pathname === '/spike-reversal'
           ? '/spike-reversal.html'
+        : pathname === '/post-pump-kill-short'
+          ? '/post-pump-kill-short.html'
         : pathname === '/dump-ignition'
           ? '/dump-ignition.html'
+        : pathname === '/etf-proxy'
+          ? '/etf-proxy.html'
         : pathname === '/pump-ignition'
           ? '/pump-ignition.html'
         : pathname === '/edge-short'

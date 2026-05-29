@@ -419,7 +419,7 @@ export function startVolumeDumpScanner({
       for (const row of candidates) {
         try {
           const klines = await getKlines(row.symbol, '15m', 42);
-          if (klines.length < 22) continue;
+          if (!klines || klines.length < 22) continue;
 
           const closed = klines.slice(0, -1);
           const baseline = closed.slice(-36, -13); // candles 14-36 from end → clean baseline
@@ -612,6 +612,11 @@ export function summarizeTopTraderTrend(rows) {
       }))
       .filter((r) => Number.isFinite(r.longShortRatio))
     : [];
+  // Với 1 điểm (dùng cache): trả về snapshot hiện tại, không tính trend
+  if (valid.length === 1) {
+    const r = valid[0];
+    return { ratio: r.longShortRatio, firstRatio: r.longShortRatio, longPct: r.longAccount * 100, shortPct: r.shortAccount * 100, direction: 'flat', slope: 0 };
+  }
   if (valid.length < 2) return null;
 
   const first = valid[0];
@@ -673,11 +678,24 @@ export function startLiqImbalanceScanner({
   maxCoins = 60,
   onHighProbAlert = null,
   highProbThreshold = 90,
+  topTraderCache = null, // Map<symbol, { longShortRatio, longPosition, shortPosition }> từ startLongShortRefresh
 }) {
   const getKlines = (symbol, interval, limit) =>
     klineCache ? klineCache.getKlines(symbol, interval, limit) : client.getKlines(symbol, interval, limit);
-  const getTopTraderRatio = (symbol) =>
-    client.getTopLongShortPositionRatio(symbol, '5m', Number(process.env.LIQ_TOP_TRADER_RATIO_LIMIT ?? 50));
+  // Dùng cache từ startLongShortRefresh nếu có (tránh gọi REST mới cho từng symbol)
+  const getTopTraderRatio = (symbol) => {
+    const cached = topTraderCache?.get(symbol);
+    if (cached) {
+      // Wrap cached data vào array giống response gốc để summarizeTopTraderTrend dùng được
+      return Promise.resolve([{
+        longShortRatio: String(cached.longShortRatio),
+        longAccount: String(cached.longPosition),
+        shortAccount: String(cached.shortPosition),
+        timestamp: String(Date.now()),
+      }]);
+    }
+    return client.getTopLongShortPositionRatio(symbol, '5m', 1); // limit=1 thay vì 50 nếu phải fallback REST
+  };
   console.log(`[LiqScan] Started. threshold=±${biasThreshold} interval=${intervalMs / 60000}min cooldown=${cooldownMs / 60000}min${klineCache ? ' ws-cache' : ''}${onHighProbAlert ? ` autoOrder≥${highProbThreshold}%` : ''}`);
 
   const run = async () => {
@@ -697,6 +715,7 @@ export function startLiqImbalanceScanner({
       for (const row of candidates) {
         try {
           const klines = await getKlines(row.symbol, '15m', 500);
+          if (!klines || klines.length < 60) continue;
           const heatmap = computeHeatmapData({ klines, currentPrice: row.markPrice });
           const total = heatmap.liquidityAbove + heatmap.liquidityBelow;
 

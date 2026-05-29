@@ -1,14 +1,61 @@
 import crypto from 'node:crypto';
+import { binanceRateGate } from './binanceRateGate.js';
 
 const FUTURES_BASE_URL = 'https://fapi.binance.com';
 
 export class BinanceRateLimitError extends Error {
-  constructor(message, { status, retryAfterMs }) {
+  constructor(message, { status, retryAfterMs, blockedUntil }) {
     super(message);
     this.name = 'BinanceRateLimitError';
     this.status = status;
     this.retryAfterMs = retryAfterMs;
+    this.blockedUntil = blockedUntil;
   }
+}
+
+function parseRateLimitMeta(response, bodyText = '') {
+  const retryAfter = response.headers.get('retry-after');
+  let retryAfterMs = retryAfter ? Number(retryAfter) * 1000 : 60_000;
+  let blockedUntil = 0;
+  const m = String(bodyText).match(/banned until\s+(\d+)/i);
+  if (m) {
+    blockedUntil = Number(m[1]);
+    retryAfterMs = Math.max(retryAfterMs, blockedUntil - Date.now());
+  }
+  if (response.status === 418 && !blockedUntil) retryAfterMs = Math.max(retryAfterMs, 2 * 60_000);
+  return { retryAfterMs, blockedUntil };
+}
+
+async function throwIfRateLimited(response, label) {
+  if (response.ok) return;
+  const text = await response.text().catch(() => '');
+  if (response.status === 429 || response.status === 418) {
+    throw new BinanceRateLimitError(`${label} ${response.status}: ${text}`, {
+      status: response.status,
+      ...parseRateLimitMeta(response, text),
+    });
+  }
+  throw new Error(`${label} ${response.status}: ${text}`);
+}
+
+function endpointWeight(method, path, params = {}) {
+  const p = String(path);
+  if (p.includes('/fapi/v1/ticker/24hr')) return params?.symbol ? 1 : 40;
+  if (p.includes('/fapi/v1/premiumIndex')) return params?.symbol ? 1 : 10;
+  if (p.includes('/fapi/v1/klines')) return 1;
+  if (p.includes('/fapi/v1/depth')) {
+    const limit = Number(params?.limit ?? 100);
+    if (limit >= 1000) return 20;
+    if (limit >= 500) return 10;
+    return 5;
+  }
+  if (p.includes('/fapi/v2/positionRisk')) return 5;
+  if (p.includes('/fapi/v1/openOrders')) return params?.symbol ? 1 : 40;
+  if (p.includes('/fapi/v1/openAlgoOrders')) return params?.symbol ? 1 : 40;
+  if (p.includes('/fapi/v1/income')) return 30;
+  if (p.includes('/futures/data/')) return 1;
+  if (method === 'POST' || method === 'DELETE') return 1;
+  return 1;
 }
 
 export class BinanceClient {
@@ -129,19 +176,33 @@ export class BinanceClient {
   }
 
   async createListenKey({ apiKey }) {
-    const res = await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
+    return binanceRateGate.schedule({
       method: 'POST',
-      headers: { 'X-MBX-APIKEY': apiKey, 'user-agent': 'btc-liquidity-proxy/0.1.0' },
+      path: '/fapi/v1/listenKey',
+      weight: endpointWeight('POST', '/fapi/v1/listenKey'),
+    }, async () => {
+      const res = await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
+        method: 'POST',
+        headers: { 'X-MBX-APIKEY': apiKey, 'user-agent': 'btc-liquidity-proxy/0.1.0' },
+      });
+      await throwIfRateLimited(res, 'createListenKey');
+      return res.json();
     });
-    if (!res.ok) throw new Error(`createListenKey ${res.status}`);
-    return res.json();
   }
 
   async keepAliveListenKey({ listenKey, apiKey }) {
-    await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
+    await binanceRateGate.schedule({
       method: 'PUT',
-      headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/json', 'user-agent': 'btc-liquidity-proxy/0.1.0' },
-      body: JSON.stringify({ listenKey }),
+      path: '/fapi/v1/listenKey',
+      weight: endpointWeight('PUT', '/fapi/v1/listenKey'),
+    }, async () => {
+      const res = await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
+        method: 'PUT',
+        headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/json', 'user-agent': 'btc-liquidity-proxy/0.1.0' },
+        body: JSON.stringify({ listenKey }),
+      });
+      await throwIfRateLimited(res, 'keepAliveListenKey');
+      return null;
     });
   }
 
@@ -167,10 +228,17 @@ export class BinanceClient {
     Object.entries(payload).forEach(([k, v]) => { if (v !== undefined) query.set(k, String(v)); });
     const sig = (await import('node:crypto')).createHmac('sha256', apiSecret).update(query.toString()).digest('hex');
     query.set('signature', sig);
-    const res = await fetch(`https://api.binance.com/sapi/v1/account/uid?${query}`, {
-      headers: { 'X-MBX-APIKEY': apiKey },
+    return binanceRateGate.schedule({
+      method: 'GET',
+      path: '/sapi/v1/account/uid',
+      weight: 1,
+    }, async () => {
+      const res = await fetch(`https://api.binance.com/sapi/v1/account/uid?${query}`, {
+        headers: { 'X-MBX-APIKEY': apiKey },
+      });
+      await throwIfRateLimited(res, 'getAccountUid');
+      return res.json();
     });
-    return res.json();
   }
 
   async signedRequest(method, path, params, { apiKey, apiSecret }) {
@@ -202,7 +270,7 @@ export class BinanceClient {
       query.forEach((value, key) => url.searchParams.set(key, value));
     }
 
-    try {
+    const doFetch = async () => {
       const response = await fetch(url, {
         method,
         headers: {
@@ -215,13 +283,28 @@ export class BinanceClient {
         signal: controller.signal,
       });
       const text = await response.text();
-      const body = text ? JSON.parse(text) : {};
+      let body = {};
+      try { body = text ? JSON.parse(text) : {}; } catch { body = { msg: text }; }
 
       if (!response.ok) {
+        if (response.status === 429 || response.status === 418) {
+          throw new BinanceRateLimitError(body?.msg ?? `Binance ${response.status} ${response.statusText}: ${text}`, {
+            status: response.status,
+            ...parseRateLimitMeta(response, text),
+          });
+        }
         throw new Error(body?.msg ?? `Binance ${response.status} ${response.statusText}`);
       }
 
       return body;
+    };
+
+    try {
+      return await binanceRateGate.schedule({
+        method,
+        path,
+        weight: endpointWeight(method, path, params),
+      }, doFetch);
     } finally {
       clearTimeout(timeout);
     }
@@ -239,7 +322,7 @@ export class BinanceClient {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
-    try {
+    const doFetch = async () => {
       const response = await fetch(url, {
         headers: {
           accept: 'application/json',
@@ -250,13 +333,11 @@ export class BinanceClient {
 
       if (!response.ok) {
         const body = await response.text();
-        const retryAfter = response.headers.get('retry-after');
-        const retryAfterMs = retryAfter ? Number(retryAfter) * 1000 : 60000;
 
         if (response.status === 429 || response.status === 418) {
           throw new BinanceRateLimitError(`Binance ${response.status} ${response.statusText}: ${body}`, {
             status: response.status,
-            retryAfterMs,
+            ...parseRateLimitMeta(response, body),
           });
         }
 
@@ -264,6 +345,14 @@ export class BinanceClient {
       }
 
       return response.json();
+    };
+
+    try {
+      return await binanceRateGate.schedule({
+        method: 'GET',
+        path,
+        weight: endpointWeight('GET', path, params),
+      }, doFetch);
     } finally {
       clearTimeout(timeout);
     }
