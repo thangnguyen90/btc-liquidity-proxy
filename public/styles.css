@@ -519,6 +519,100 @@ select:focus {
   color: var(--muted);
 }
 
+.kill-zone-box {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.kill-zone-item {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.kill-zone-item.far {
+  border-left-color: var(--amber);
+}
+
+.kill-zone-item span,
+.kill-zone-item small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.kill-zone-item strong {
+  display: block;
+  margin: 3px 0;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.kill-zone-peaks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.kill-zone-peaks b {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.13);
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.kill-logic-box {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--amber);
+  border-radius: 6px;
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.kill-logic-box.below {
+  border-left-color: var(--red);
+  background: rgba(251, 113, 133, 0.08);
+}
+
+.kill-logic-box.above {
+  border-left-color: var(--green);
+  background: rgba(54, 211, 153, 0.08);
+}
+
+.kill-logic-box span,
+.kill-logic-box small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.kill-logic-box strong {
+  display: block;
+  margin: 3px 0 7px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.kill-logic-box p {
+  margin: 0 0 6px;
+  color: #d7dfdc;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.kill-logic-box p:last-child {
+  margin-bottom: 0;
+}
+
 .ema-row {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1142,6 +1236,22 @@ pre {
   color: var(--red);
   background: rgba(251, 113, 133, 0.12);
   border: 1px solid rgba(251, 113, 133, 0.35);
+}
+
+.liquid-paper-kill-long td {
+  background: rgba(54, 211, 153, 0.08);
+}
+
+.liquid-paper-kill-short td {
+  background: rgba(251, 113, 133, 0.08);
+}
+
+.liquid-paper-kill-long:hover td {
+  background: rgba(54, 211, 153, 0.13);
+}
+
+.liquid-paper-kill-short:hover td {
+  background: rgba(251, 113, 133, 0.13);
 }
 
 .near-target {

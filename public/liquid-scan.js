@@ -118,6 +118,11 @@ function sortLiquidPaperRows(rows) {
   });
 }
 
+function liquidPaperRowClass(trade) {
+  if (trade.signalType !== 'LIQUID_KILL_ZONE') return '';
+  return trade.side === 'LONG' ? 'liquid-paper-kill-long' : 'liquid-paper-kill-short';
+}
+
 function updateLiquidPaperSortHeaders() {
   document.querySelectorAll('[data-paper-sort]').forEach((th) => {
     const active = th.dataset.paperSort === paperSort.key;
@@ -146,11 +151,71 @@ function zoneText(zones) {
   }).join('<br>');
 }
 
+function killZoneCell(cluster) {
+  const main = cluster?.mainKillZone;
+  const far = cluster?.farKillZone;
+  if (!main && !far) return '-';
+  const dir = cluster.direction === 'above' ? 'trên' : 'dưới';
+  const active = main ?? far;
+  const lowDist = Number(active.distancePctLow ?? 0);
+  const highDist = Number(active.distancePctHigh ?? 0);
+  const near = cluster.nearSweep
+    ? `<small>near ${fmtPrice(cluster.nearSweep.low)} - ${fmtPrice(cluster.nearSweep.high)}</small>`
+    : '';
+  const exhaustion = cluster.exhaustionZone
+    ? `<small>exhaust ${fmtPrice(cluster.exhaustionZone.low)} - ${fmtPrice(cluster.exhaustionZone.high)}</small>`
+    : '';
+  const farLine = far
+    ? `<small>far ${fmtPrice(far.low)} - ${fmtPrice(far.high)}</small>`
+    : '';
+  const farPeaks = far?.peaks?.length
+    ? `<small>peaks ${far.peaks.slice(0, 3).map((z) => fmtPrice(z.price)).join(' / ')}</small>`
+    : '';
+  const warn = cluster.isOneSided || (!main && far) ? '<small class="near-target">kill zone</small>' : '';
+  return `
+    <strong>${fmtPrice(active.low)} - ${fmtPrice(active.high)}</strong>
+    <small>${dir} ${lowDist >= 0 ? '+' : ''}${lowDist.toFixed(2)}% → ${highDist >= 0 ? '+' : ''}${highDist.toFixed(2)}%</small>
+    ${near}
+    ${exhaustion}
+    ${farLine}
+    ${farPeaks}
+    ${warn}
+  `;
+}
+
 function meaning(row) {
+  if (row.killZoneCluster?.isOneSided) {
+    const side = row.heavySide === 'above' ? 'trên' : 'dưới';
+    return `Thanh khoản ${side} một chiều: target gần có thể chỉ là quét lần 1, ưu tiên nhìn main kill zone để tránh thoát/short quá sớm.`;
+  }
+  if (row.killZoneCluster?.farKillZone) {
+    const side = row.killZoneCluster.farKillZone.direction === 'above' ? 'trên' : 'dưới';
+    return `Có far kill zone phía ${side}: nếu momentum expansion tiếp diễn, giá có thể bỏ qua target gần và chạy tới vùng xa.`;
+  }
   if (row.heavySide === 'above') {
     return `Trên dày hơn: ưu tiên LONG theo lực hút lên vùng thanh khoản, target là cụm phía trên.`;
   }
   return `Dưới dày hơn: ưu tiên SHORT theo lực kéo xuống vùng thanh khoản, target là cụm phía dưới.`;
+}
+
+function isKillZoneRow(row) {
+  const cluster = row.killZoneCluster;
+  return Boolean(cluster?.mainKillZone || cluster?.farKillZone || cluster?.isOneSided);
+}
+
+function liquidSignalType(row) {
+  return isKillZoneRow(row) ? 'LIQUID_KILL_ZONE' : 'LIQUID_SCAN';
+}
+
+function killZoneDistancePct(row) {
+  const zone = row.killZoneCluster?.farKillZone
+    ?? row.killZoneCluster?.mainKillZone
+    ?? row.killZoneCluster?.exhaustionZone
+    ?? null;
+  if (!zone) return null;
+  const a = Math.abs(Number(zone.distancePctLow ?? 0));
+  const b = Math.abs(Number(zone.distancePctHigh ?? 0));
+  return Math.max(a, b);
 }
 
 function entryCell(plan) {
@@ -241,7 +306,7 @@ async function loadScan() {
   const url = `/api/liquid-scan?interval=${encodeURIComponent(interval)}&limit=${encodeURIComponent(limit)}`;
   els.refreshButton.disabled = true;
   els.scanStatus.textContent = 'Scanning...';
-  els.scanBody.innerHTML = '<tr><td colspan="16" class="table-empty">Đang scan liquidation top symbol...</td></tr>';
+  els.scanBody.innerHTML = '<tr><td colspan="17" class="table-empty">Đang scan liquidation top symbol...</td></tr>';
 
   try {
     const res = await fetch(url, { cache: 'no-store' });
@@ -253,7 +318,7 @@ async function loadScan() {
     await autoCreatePaperTests({ silent: true });
   } catch (err) {
     els.scanStatus.textContent = 'Scan failed';
-    els.scanBody.innerHTML = `<tr><td colspan="16" class="table-empty">Lỗi scan: ${escapeHtml(err.message)}</td></tr>`;
+    els.scanBody.innerHTML = `<tr><td colspan="17" class="table-empty">Lỗi scan: ${escapeHtml(err.message)}</td></tr>`;
   } finally {
     els.refreshButton.disabled = false;
   }
@@ -297,11 +362,11 @@ function render() {
   renderMetrics(rows);
 
   if (!scanData) {
-    els.scanBody.innerHTML = '<tr><td colspan="16" class="table-empty">Bấm Scan để tải dữ liệu.</td></tr>';
+    els.scanBody.innerHTML = '<tr><td colspan="17" class="table-empty">Bấm Scan để tải dữ liệu.</td></tr>';
     return;
   }
   if (rows.length === 0) {
-    els.scanBody.innerHTML = '<tr><td colspan="16" class="table-empty">Không có symbol phù hợp filter.</td></tr>';
+    els.scanBody.innerHTML = '<tr><td colspan="17" class="table-empty">Không có symbol phù hợp filter.</td></tr>';
     return;
   }
 
@@ -326,6 +391,7 @@ function render() {
         <td><span class="liq-side ${sideClass}">${sideText}</span><small>${row.heavyPct.toFixed(1)}%</small></td>
         <td><span class="confidence-pill ${probClass(row.sweepProb)}">${row.sweepProb}%</span><small>${escapeHtml(row.sweepLabel)}</small></td>
         <td>${target}${nearBadge}</td>
+        <td>${killZoneCell(row.killZoneCluster)}</td>
         <td>${sweepCell(row.entryPlan)}</td>
         <td>${entryCell(row.entryPlan)}</td>
         <td>${setupCell(row.entryPlan)}</td>
@@ -357,14 +423,17 @@ async function createPaperFromRow(row, button) {
     source: 'liquid-scan',
     note: [
       `sweepProb=${row.sweepProb}%`,
+      `type=${liquidSignalType(row)}`,
       `heavySide=${row.heavySide}`,
       `target=${row.sweepTarget?.price ?? '-'}`,
+      `killZone=${row.killZoneCluster?.mainKillZone ? `${row.killZoneCluster.mainKillZone.low}-${row.killZoneCluster.mainKillZone.high}` : '-'}`,
+      `farKill=${row.killZoneCluster?.farKillZone ? `${row.killZoneCluster.farKillZone.low}-${row.killZoneCluster.farKillZone.high}` : '-'}`,
       `tp=${plan.takeProfitPrice ?? '-'}`,
       `sl=${plan.stopLossPrice ?? '-'}`,
     ].join(' | '),
     takeProfitPrice: plan.takeProfitPrice,
     stopLossPrice: plan.stopLossPrice,
-    signalType: 'LIQUID_SCAN',
+    signalType: liquidSignalType(row),
     signalPoint: row.sweepProb,
     signalMarkPrice: row.markPrice,
     sweepTargetPrice: row.sweepTarget?.price ?? null,
@@ -418,14 +487,18 @@ async function autoCreatePaperTests({ silent = false } = {}) {
   const minPoint = Number(els.autoPaperPointInput.value || 75);
   const minDist = Number(els.autoPaperMinDistInput?.value ?? 2);
   const candidates = renderedRows.filter((row) => {
-    if (Number(row.sweepProb) <= minPoint) return false;
+    const killZone = isKillZoneRow(row);
+    if (!killZone && Number(row.sweepProb) <= minPoint) return false;
     if (!row.entryPlan?.entryPrice || !row.entryPlan?.side) return false;
-    const dist = Math.abs(Number(row.sweepTarget?.distancePct ?? row.entryPlan?.targetDistancePct ?? 0));
+    const dist = Math.max(
+      Math.abs(Number(row.sweepTarget?.distancePct ?? row.entryPlan?.targetDistancePct ?? 0)),
+      Number(killZoneDistancePct(row) ?? 0),
+    );
     if (minDist > 0 && dist < minDist) return false;
     return true;
   });
   if (candidates.length === 0) {
-    if (!silent) showActionResult(`Không có dòng visible nào có point > ${minPoint} và dist ≥ ${minDist}%.`);
+    if (!silent) showActionResult(`Không có dòng visible nào có kill zone hoặc point > ${minPoint} và dist ≥ ${minDist}%.`);
     return;
   }
 
@@ -439,7 +512,8 @@ async function autoCreatePaperTests({ silent = false } = {}) {
   }
 
   if (!silent) {
-    const ok = confirm(`Tạo ${toCreate.length} paper trade PENDING cho Liquid Scan point > ${minPoint}?`);
+    const killCount = toCreate.filter(isKillZoneRow).length;
+    const ok = confirm(`Tạo ${toCreate.length} paper trade PENDING cho Liquid Scan (${killCount} kill-zone)?`);
     if (!ok) return;
   }
 
@@ -462,15 +536,18 @@ async function autoCreatePaperTests({ silent = false } = {}) {
             source: `liquid-scan-auto-${row.sweepProb}`,
             note: [
               `autoPaper point>${minPoint}`,
+              `type=${liquidSignalType(row)}`,
               `sweepProb=${row.sweepProb}%`,
               `heavySide=${row.heavySide}`,
               `target=${row.sweepTarget?.price ?? '-'}`,
+              `killZone=${row.killZoneCluster?.mainKillZone ? `${row.killZoneCluster.mainKillZone.low}-${row.killZoneCluster.mainKillZone.high}` : '-'}`,
+              `farKill=${row.killZoneCluster?.farKillZone ? `${row.killZoneCluster.farKillZone.low}-${row.killZoneCluster.farKillZone.high}` : '-'}`,
               `tp=${plan.takeProfitPrice ?? '-'}`,
               `sl=${plan.stopLossPrice ?? '-'}`,
             ].join(' | '),
             takeProfitPrice: plan.takeProfitPrice,
             stopLossPrice: plan.stopLossPrice,
-            signalType: 'LIQUID_SCAN',
+            signalType: liquidSignalType(row),
             signalPoint: row.sweepProb,
             signalMarkPrice: row.markPrice,
             sweepTargetPrice: row.sweepTarget?.price ?? null,
@@ -578,8 +655,9 @@ function renderAutoPaperTrades() {
       const signalClass = signalPnl > 0 ? 'positive' : signalPnl < 0 ? 'negative' : '';
       const entryClass = toEntry == null ? '' : toEntry <= 0 ? 'positive' : 'negative';
       const statusCls = trade.status === 'OPEN' ? 'positive' : 'neutral';
+      const rowClass = liquidPaperRowClass(trade);
       return `
-        <tr>
+        <tr class="${rowClass}">
           <td><a class="symbol-link" href="/?symbol=${encodeURIComponent(trade.symbol)}">${escapeHtml(trade.symbol)}</a></td>
           <td><span class="liq-side ${trade.side === 'LONG' ? 'liquid-long' : 'liquid-short'}">${escapeHtml(trade.side)}</span></td>
           <td class="${statusCls}">${escapeHtml(trade.status)}</td>
@@ -613,8 +691,9 @@ function renderAutoPaperTrades() {
       const signalClass = signalPnl > 0 ? 'positive' : signalPnl < 0 ? 'negative' : '';
       const outcome = trade.outcome ?? (pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : '-');
       const outcomeCls = outcome === 'TP' || outcome === 'WIN' ? 'positive' : outcome === 'SL' || outcome === 'LOSS' ? 'negative' : '';
+      const rowClass = liquidPaperRowClass(trade);
       return `
-        <tr>
+        <tr class="${rowClass}">
           <td><a class="symbol-link" href="/?symbol=${encodeURIComponent(trade.symbol)}">${escapeHtml(trade.symbol)}</a></td>
           <td><span class="liq-side ${trade.side === 'LONG' ? 'liquid-long' : 'liquid-short'}">${escapeHtml(trade.side)}</span></td>
           <td class="${outcomeCls}"><strong>${escapeHtml(outcome)}</strong></td>
