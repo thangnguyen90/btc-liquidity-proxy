@@ -35,6 +35,7 @@ let paperTrades = [];
 let autoPaperRunning = false;
 let liquidPaperStream = null;
 const paperSort = { key: 'opened', dir: 'desc' };
+const scanSort = { key: 'sweepProb', dir: 'desc' };
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (m) => ({
@@ -104,6 +105,7 @@ function liquidPaperSortValue(trade, key) {
   if (key === 'pnl') return Number(trade.pnl ?? 0);
   if (key === 'roe') return Number(trade.roe ?? 0);
   if (key === 'signalRoe') return Number(trade.signalRoe ?? -999);
+  if (key === 'hunt') return Number(trade.huntScore ?? trade.huntSignal?.score ?? 0);
   if (key === 'note') return trade.note ?? '';
   return Date.parse(trade.openedAt ?? trade.entryReadyAt ?? trade.createdAt ?? 0) || 0;
 }
@@ -129,6 +131,15 @@ function updateLiquidPaperSortHeaders() {
     th.classList.toggle('active', active);
     const mark = th.querySelector('.sort-mark');
     if (mark) mark.textContent = active ? (paperSort.dir === 'asc' ? '^' : 'v') : '';
+  });
+}
+
+function updateScanSortHeaders() {
+  document.querySelectorAll('[data-scan-sort]').forEach((th) => {
+    const active = th.dataset.scanSort === scanSort.key;
+    th.classList.toggle('active', active);
+    const mark = th.querySelector('.sort-mark');
+    if (mark) mark.textContent = active ? (scanSort.dir === 'asc' ? '^' : 'v') : '';
   });
 }
 
@@ -254,6 +265,39 @@ function setupCell(plan) {
   `;
 }
 
+function huntCell(signal) {
+  if (!signal) return '<span class="muted">-</span>';
+  const isUp = signal.side === 'UP';
+  const cls = isUp ? 'liquid-long' : 'liquid-short';
+  const label = isUp ? 'RUNUP HUNT' : 'DUMP HUNT';
+  const dist = Number(signal.targetDistancePct ?? 0);
+  const rsi = Number(signal.rsi ?? NaN);
+  const volX = Number(signal.volX ?? 0);
+  const move = isUp ? Number(signal.runupPct ?? 0) : Number(signal.drawdownPct ?? 0);
+  return `
+    <span class="liq-side ${cls}">${label} ${signal.score}</span>
+    <small>${isUp ? 'hut len cum short liq' : 'hut xuong cum long liq'}</small>
+    <small>dist ${dist >= 0 ? '+' : ''}${dist.toFixed(2)}% - move ${move.toFixed(1)}%</small>
+    <small>RSI ${Number.isFinite(rsi) ? rsi.toFixed(0) : '-'} - vol ${volX.toFixed(1)}x</small>
+  `;
+}
+
+function huntTradeCell(trade) {
+  const signal = trade.huntSignal ?? (trade.huntType ? { type: trade.huntType, score: trade.huntScore } : null);
+  if (!signal?.type) return '<span class="muted">-</span>';
+  const isUp = String(signal.type).includes('RUNUP');
+  const cls = isUp ? 'liquid-long' : 'liquid-short';
+  const label = isUp ? 'RUNUP' : 'DUMP';
+  const score = Number(signal.score ?? 0);
+  const dist = Number(signal.targetDistancePct ?? 0);
+  const rsi = Number(signal.rsi ?? NaN);
+  return `
+    <span class="liq-side ${cls}">${label} ${Number.isFinite(score) ? score.toFixed(0) : '-'}</span>
+    <small>${Number.isFinite(dist) && dist !== 0 ? `dist ${dist >= 0 ? '+' : ''}${dist.toFixed(2)}%` : escapeHtml(signal.type)}</small>
+    <small>${Number.isFinite(rsi) ? `RSI ${rsi.toFixed(0)}` : ''}</small>
+  `;
+}
+
 function showActionResult(value) {
   els.actionResult.style.display = 'block';
   els.actionResult.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
@@ -287,6 +331,21 @@ function isSamePlannedTrade(trade, row) {
   if (trade.status === 'CLOSED') return false;
   const openedAt = Date.parse(trade.openedAt ?? trade.createdAt ?? 0) || 0;
   return Date.now() - openedAt < 4 * 60 * 60 * 1000;
+}
+
+function huntNote(signal) {
+  if (!signal) return null;
+  const score = Number(signal.score ?? 0);
+  const dist = Number(signal.targetDistancePct ?? 0);
+  const rsi = Number(signal.rsi ?? NaN);
+  const volX = Number(signal.volX ?? 0);
+  return [
+    `hunt=${signal.type}`,
+    `huntScore=${score}`,
+    `huntDist=${dist.toFixed(2)}%`,
+    Number.isFinite(rsi) ? `huntRSI=${rsi.toFixed(0)}` : null,
+    `huntVol=${volX.toFixed(1)}x`,
+  ].filter(Boolean).join(' ');
 }
 
 function actionCell(row, idx) {
@@ -328,7 +387,7 @@ function filteredRows() {
   const search = els.searchInput.value.trim().toUpperCase();
   const side = els.sideFilter.value;
   const minProb = Number(els.probFilter.value);
-  const sort = els.sortInput.value;
+  const sort = scanSort.key || els.sortInput.value;
   let rows = [...(scanData?.rows ?? [])];
 
   if (search) rows = rows.filter((row) => row.symbol.includes(search));
@@ -336,11 +395,29 @@ function filteredRows() {
   if (minProb > 0) rows = rows.filter((row) => row.sweepProb >= minProb);
 
   rows.sort((a, b) => {
-    if (sort === 'bias') return Math.abs(b.bias) - Math.abs(a.bias);
-    if (sort === 'heavyPct') return b.heavyPct - a.heavyPct;
-    if (sort === 'distance') return Math.abs(a.sweepTarget?.distancePct ?? 999) - Math.abs(b.sweepTarget?.distancePct ?? 999);
-    if (sort === 'quoteVolume') return b.quoteVolume - a.quoteVolume;
-    return b.sweepProb - a.sweepProb;
+    let av;
+    let bv;
+    if (sort === 'bias') {
+      av = Math.abs(a.bias);
+      bv = Math.abs(b.bias);
+    } else if (sort === 'hunt') {
+      av = Number(a.huntSignal?.score ?? 0);
+      bv = Number(b.huntSignal?.score ?? 0);
+    } else if (sort === 'heavyPct') {
+      av = Number(a.heavyPct ?? 0);
+      bv = Number(b.heavyPct ?? 0);
+    } else if (sort === 'distance') {
+      av = -Math.abs(a.sweepTarget?.distancePct ?? 999);
+      bv = -Math.abs(b.sweepTarget?.distancePct ?? 999);
+    } else if (sort === 'quoteVolume') {
+      av = Number(a.quoteVolume ?? 0);
+      bv = Number(b.quoteVolume ?? 0);
+    } else {
+      av = Number(a.sweepProb ?? 0);
+      bv = Number(b.sweepProb ?? 0);
+    }
+    const dir = scanSort.dir === 'asc' ? 1 : -1;
+    return (av - bv) * dir;
   });
 
   return rows;
@@ -360,6 +437,7 @@ function render() {
   const rows = filteredRows();
   renderedRows = rows;
   renderMetrics(rows);
+  updateScanSortHeaders();
 
   if (!scanData) {
     els.scanBody.innerHTML = '<tr><td colspan="17" class="table-empty">Bấm Scan để tải dữ liệu.</td></tr>';
@@ -390,6 +468,7 @@ function render() {
         <td class="${row.change24hPct >= 0 ? 'positive' : 'negative'}">${fmtPct(row.change24hPct)}</td>
         <td><span class="liq-side ${sideClass}">${sideText}</span><small>${row.heavyPct.toFixed(1)}%</small></td>
         <td><span class="confidence-pill ${probClass(row.sweepProb)}">${row.sweepProb}%</span><small>${escapeHtml(row.sweepLabel)}</small></td>
+        <td>${huntCell(row.huntSignal)}</td>
         <td>${target}${nearBadge}</td>
         <td>${killZoneCell(row.killZoneCluster)}</td>
         <td>${sweepCell(row.entryPlan)}</td>
@@ -424,6 +503,7 @@ async function createPaperFromRow(row, button) {
     note: [
       `sweepProb=${row.sweepProb}%`,
       `type=${liquidSignalType(row)}`,
+      huntNote(row.huntSignal),
       `heavySide=${row.heavySide}`,
       `target=${row.sweepTarget?.price ?? '-'}`,
       `killZone=${row.killZoneCluster?.mainKillZone ? `${row.killZoneCluster.mainKillZone.low}-${row.killZoneCluster.mainKillZone.high}` : '-'}`,
@@ -444,6 +524,7 @@ async function createPaperFromRow(row, button) {
     riskPct: plan.riskPct,
     rr: plan.rr,
     heavySide: row.heavySide,
+    huntSignal: row.huntSignal ?? null,
     entryPlan: plan,
   };
   const data = await api('/api/liquid-paper-trades', {
@@ -538,6 +619,7 @@ async function autoCreatePaperTests({ silent = false } = {}) {
               `autoPaper point>${minPoint}`,
               `type=${liquidSignalType(row)}`,
               `sweepProb=${row.sweepProb}%`,
+              huntNote(row.huntSignal),
               `heavySide=${row.heavySide}`,
               `target=${row.sweepTarget?.price ?? '-'}`,
               `killZone=${row.killZoneCluster?.mainKillZone ? `${row.killZoneCluster.mainKillZone.low}-${row.killZoneCluster.mainKillZone.high}` : '-'}`,
@@ -558,6 +640,7 @@ async function autoCreatePaperTests({ silent = false } = {}) {
             riskPct: plan.riskPct,
             rr: plan.rr,
             heavySide: row.heavySide,
+            huntSignal: row.huntSignal ?? null,
             entryPlan: plan,
           }),
         });
@@ -583,7 +666,7 @@ async function loadAutoPaperTrades() {
     updateLiveStatus(data, 'poll');
     renderAutoPaperTrades();
   } catch (err) {
-    els.openPaperBody.innerHTML = `<tr><td colspan="14" class="table-empty">Lỗi tải paper: ${escapeHtml(err.message)}</td></tr>`;
+    els.openPaperBody.innerHTML = `<tr><td colspan="15" class="table-empty">Lỗi tải paper: ${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -594,7 +677,7 @@ function startLiquidPaperStream() {
     try {
       const data = JSON.parse(event.data);
       if (data.error) {
-        els.openPaperBody.innerHTML = `<tr><td colspan="14" class="table-empty">Stream lỗi: ${escapeHtml(data.error)}</td></tr>`;
+        els.openPaperBody.innerHTML = `<tr><td colspan="15" class="table-empty">Stream lỗi: ${escapeHtml(data.error)}</td></tr>`;
         return;
       }
       paperTrades = data.trades ?? [];
@@ -639,7 +722,7 @@ function renderAutoPaperTrades() {
 
   // ── Open / Pending table ──
   if (open.length === 0) {
-    els.openPaperBody.innerHTML = '<tr><td colspan="14" class="table-empty">Không có trade đang mở.</td></tr>';
+    els.openPaperBody.innerHTML = '<tr><td colspan="15" class="table-empty">Không có trade đang mở.</td></tr>';
   } else {
     els.openPaperBody.innerHTML = open.map((trade) => {
       const pnl = Number(trade.pnl ?? 0);
@@ -670,6 +753,7 @@ function renderAutoPaperTrades() {
           <td class="${pnlClass}">${fmt(pnl, 4)}</td>
           <td class="${pnlClass}">${fmt(roe, 2)}%</td>
           <td class="${signalClass}">${fmt(signalPnl, 4)}<small>${fmt(signalRoe, 2)}%</small></td>
+          <td>${huntTradeCell(trade)}</td>
           <td>${escapeHtml(trade.note ?? '')}</td>
           <td>${fmtTime(trade.openedAt ?? trade.entryReadyAt ?? trade.createdAt)}</td>
         </tr>
@@ -755,7 +839,24 @@ els.searchClear.addEventListener('click', () => {
 });
 els.sideFilter.addEventListener('change', render);
 els.probFilter.addEventListener('change', render);
-els.sortInput.addEventListener('change', render);
+els.sortInput.addEventListener('change', () => {
+  scanSort.key = els.sortInput.value;
+  scanSort.dir = 'desc';
+  render();
+});
+document.querySelectorAll('[data-scan-sort]').forEach((th) => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.scanSort;
+    if (scanSort.key === key) {
+      scanSort.dir = scanSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      scanSort.key = key;
+      scanSort.dir = 'desc';
+    }
+    els.sortInput.value = key;
+    render();
+  });
+});
 
 loadScan();
 loadAutoPaperTrades();

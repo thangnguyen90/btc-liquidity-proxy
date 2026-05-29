@@ -75,6 +75,7 @@
           <span>Sort</span>
           <select id="sortInput">
             <option value="sweepProb" selected>Sweep Prob</option>
+            <option value="hunt">Hunt Pattern</option>
             <option value="bias">Bias</option>
             <option value="heavyPct">Heavy %</option>
             <option value="distance">Target Near</option>
@@ -128,7 +129,8 @@
                 <th>Mark</th>
                 <th>24h</th>
                 <th>Heavy Side</th>
-                <th>Sweep Prob</th>
+                <th class="liquid-scan-sort active" data-scan-sort="sweepProb">Sweep Prob <span class="sort-mark">v</span></th>
+                <th class="liquid-scan-sort" data-scan-sort="hunt">Hunt Pattern <span class="sort-mark"></span></th>
                 <th>Target</th>
                 <th>Kill Zone</th>
                 <th>Hướng quét</th>
@@ -191,12 +193,13 @@
                 <th class="liquid-paper-sort" data-paper-sort="pnl">P&amp;L <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="roe">ROE <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="signalRoe">Signal ROE <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="hunt">Hunt <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="note">Note <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort active" data-paper-sort="opened">Opened <span class="sort-mark">v</span></th>
               </tr>
             </thead>
             <tbody id="openPaperBody">
-              <tr><td colspan="14" class="table-empty">Chưa có paper test từ Liquid Scan.</td></tr>
+              <tr><td colspan="15" class="table-empty">Chưa có paper test từ Liquid Scan.</td></tr>
             </tbody>
           </table>
         </div>
