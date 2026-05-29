@@ -4,6 +4,10 @@ let allSignals = [];
 let scannedAt  = null;
 let total      = 0;
 
+let srPaperTrades      = [];
+let srPaperOpenSymbols = new Set();
+let srPaperSummaryCache = null;
+
 const grid        = document.getElementById('srGrid');
 const shortCount  = document.getElementById('shortCount');
 const avgScore    = document.getElementById('avgScore');
@@ -98,7 +102,18 @@ function buildFactors(sig) {
 
 // ── Card builder ──────────────────────────────────────────────────────────────
 
+function calcAutoLeverage(entry, sl, defaultLev = 10) {
+  const e = Number(entry);
+  const s = Number(sl);
+  if (!e || !s || !Number.isFinite(e) || !Number.isFinite(s)) return defaultLev;
+  return Math.abs(e - s) / e * 10 * 100 > 20 ? 5 : 10;
+}
+
 function buildCard(sig) {
+  const autoLev = calcAutoLeverage(sig.entry, sig.sl);
+  const levBadge = autoLev === 5
+    ? '<span class="lev-badge warn" title="SL rộng — 5x">5×⚠</span>'
+    : '<span class="lev-badge ok"   title="SL gần — 10x">10×</span>';
   const changeClass = (sig.change24h ?? 0) >= 0 ? 'positive' : 'negative';
   const gradeClass  = `grade-${(sig.grade || 'd').toLowerCase()}`;
   const detailUrl   = `/?symbol=${sig.symbol}`;
@@ -138,7 +153,7 @@ function buildCard(sig) {
       <div class="sr-prices">
         <div class="sr-price-cell">
           <span>Entry (Short)</span>
-          <strong class="negative">${fmtPrice(sig.entry)}</strong>
+          <strong class="negative">${fmtPrice(sig.entry)} ${levBadge}</strong>
         </div>
         <div class="sr-price-cell">
           <span>SL</span>
@@ -155,12 +170,15 @@ function buildCard(sig) {
 
       <div class="sr-footer">
         <span>${timeAgo(sig.scannedAt)}</span>
-        ${chasePct > 0.25
-          ? `<span class="sr-chase-warn">⚠ Chase ${(chasePct * 100).toFixed(0)}% — đã trễ</span>`
-          : chasePct > 0.10
-            ? `<span class="sr-chase-warn" style="color:var(--amber)">Chase ${(chasePct * 100).toFixed(0)}%</span>`
-            : '<span></span>'
-        }
+        <div style="display:flex;align-items:center;gap:8px">
+          ${chasePct > 0.25
+            ? `<span class="sr-chase-warn">⚠ Chase ${(chasePct * 100).toFixed(0)}% — đã trễ</span>`
+            : chasePct > 0.10
+              ? `<span class="sr-chase-warn" style="color:var(--amber)">Chase ${(chasePct * 100).toFixed(0)}%</span>`
+              : '<span></span>'
+          }
+          <button class="sr-paper-btn short" onclick="enterSrPaperTrade(this,'${sig.symbol}','SHORT',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}')">+ Paper</button>
+        </div>
       </div>
     </article>
   `;
@@ -324,6 +342,212 @@ function connectPriceSocket() {
   };
 }
 
+// ── SR Paper trades ──────────────────────────────────────────────────────────
+
+let srPaperSort = { key: 'status', dir: 'asc' };
+
+document.addEventListener('click', (e) => {
+  const th = e.target.closest('[data-sr-sort]');
+  if (!th || !th.classList.contains('sr-paper-sort')) return;
+  const key = th.dataset.srSort;
+  if (srPaperSort.key === key) {
+    srPaperSort.dir = srPaperSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    srPaperSort = { key, dir: key === 'status' ? 'asc' : 'desc' };
+  }
+  renderSrPaperTable();
+});
+
+function srPaperSortValue(t, key) {
+  if (key === 'symbol') return t.symbol ?? '';
+  if (key === 'side')   return t.side ?? '';
+  if (key === 'entry')  return Number(t.entryPrice);
+  if (key === 'sl')     return t.sl == null ? null : Number(t.sl);
+  if (key === 'tp')     return t.tp == null ? null : Number(t.tp);
+  if (key === 'mark')   return Number(t.markPrice ?? t.exitPrice);
+  if (key === 'pnl')    return t.pnl == null ? null : Number(t.pnl);
+  if (key === 'roe')    return t.roe == null ? null : Number(t.roe);
+  if (key === 'source') return t.source ?? '';
+  if (key === 'time')   return Date.parse(t.createdAt ?? '') || 0;
+  if (key === 'status') {
+    const order = { OPEN: 0, PENDING: 1, CLOSED: 2 };
+    return order[t.status] ?? 9;
+  }
+  return '';
+}
+
+function compareSrValues(a, b, dir) {
+  const aMiss = a == null || (typeof a === 'number' && isNaN(a));
+  const bMiss = b == null || (typeof b === 'number' && isNaN(b));
+  if (aMiss && bMiss) return 0;
+  if (aMiss) return 1;
+  if (bMiss) return -1;
+  const r = typeof a === 'string' ? String(a).localeCompare(String(b), 'en') : a - b;
+  return dir === 'asc' ? r : -r;
+}
+
+function sortSrPaperTrades(trades) {
+  const { key, dir } = srPaperSort;
+  return trades.slice().sort((a, b) => {
+    const r = compareSrValues(srPaperSortValue(a, key), srPaperSortValue(b, key), dir);
+    return r !== 0 ? r : compareSrValues(srPaperSortValue(a, 'time'), srPaperSortValue(b, 'time'), 'desc');
+  });
+}
+
+function updateSrSortHeaders() {
+  document.querySelectorAll('[data-sr-sort]').forEach((th) => {
+    const active = th.dataset.srSort === srPaperSort.key;
+    th.classList.toggle('active', active);
+    const mark = th.querySelector('.sort-mark');
+    if (mark) mark.textContent = active ? (srPaperSort.dir === 'asc' ? '^' : 'v') : '';
+  });
+}
+
+function fmtSrPnl(pnl, roe) {
+  if (pnl == null) return '-';
+  const sign = pnl >= 0 ? '+' : '';
+  const cls  = pnl >= 0 ? 'positive' : 'negative';
+  return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)} (${sign}${Number(roe ?? 0).toFixed(1)}%)</span>`;
+}
+
+function renderSrPaperTable() {
+  const tbody   = document.getElementById('srPaperBody');
+  const countEl = document.getElementById('srPaperCount');
+  if (!tbody) return;
+
+  const trades  = srPaperTrades;
+  const summary = srPaperSummaryCache;
+  const open    = trades.filter((t) => t.status !== 'CLOSED');
+  const closed  = trades.filter((t) => t.status === 'CLOSED');
+
+  let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
+  if (summary && summary.closed > 0) {
+    const wr = Math.round(summary.wins / summary.closed * 100);
+    countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
+    if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+  }
+  if (countEl) countEl.textContent = countTxt;
+
+  if (!trades.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ spike reversal signals.</td></tr>';
+    updateSrSortHeaders();
+    return;
+  }
+
+  const sorted = sortSrPaperTrades([...open, ...closed]);
+  tbody.innerHTML = sorted.map((t) => {
+    const isShort  = t.side === 'SHORT';
+    const sideHtml = isShort
+      ? `<span style="color:var(--red);font-weight:700">SHORT</span>`
+      : `<span style="color:var(--green);font-weight:700">LONG</span>`;
+    const isClosed = t.status === 'CLOSED';
+    const mark     = t.markPrice ?? t.exitPrice ?? '-';
+    const actionBtns = isClosed
+      ? `<button class="sr-paper-close-btn" style="opacity:.6;font-size:10px" onclick="deleteSrPaperTrade('${t.id}')">Del</button>`
+      : `<button class="sr-paper-close-btn" onclick="closeSrPaperTrade('${t.id}')">Close</button>`;
+    const rowStyle = isClosed ? 'opacity:.5' : '';
+    const slColor  = isShort ? 'var(--green)' : 'var(--red)';
+    const tpColor  = isShort ? 'var(--red)'   : 'var(--green)';
+    const outcomeHtml = isClosed
+      ? t.outcome === 'TP' ? '<span style="color:var(--green);font-weight:700">✅ TP</span>'
+        : t.outcome === 'SL' ? '<span style="color:var(--red);font-weight:700">🔴 SL</span>'
+        : '<span style="color:var(--muted)">Manual</span>'
+      : t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>'
+      : '<span style="color:var(--green)">OPEN</span>';
+    return `<tr data-id="${t.id}" style="${rowStyle}">
+      <td><a href="/?symbol=${t.symbol}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol.replace(/USDT$/, '')}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
+      <td>${sideHtml}</td>
+      <td>${fmtPrice(t.entryPrice)}</td>
+      <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td data-sr-mark="${t.id}">${fmtPrice(mark)}</td>
+      <td data-sr-pnl="${t.id}">${fmtSrPnl(t.pnl, t.roe)}</td>
+      <td data-sr-roe="${t.id}">${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
+      <td style="font-size:11px">${outcomeHtml}</td>
+      <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
+      <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
+      <td>${actionBtns}</td>
+    </tr>`;
+  }).join('');
+  updateSrSortHeaders();
+}
+
+let _srPaperFetching = false;
+async function loadSrPaperTrades() {
+  if (_srPaperFetching) return;
+  _srPaperFetching = true;
+  try {
+    const res = await fetch('/api/sr-paper-trades');
+    if (!res.ok) return;
+    const data = await res.json();
+    srPaperTrades = data.trades ?? [];
+    srPaperSummaryCache = data.summary;
+    srPaperOpenSymbols = new Set(
+      srPaperTrades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol),
+    );
+    renderSrPaperTable();
+  } catch {} finally {
+    _srPaperFetching = false;
+  }
+}
+
+let _srPaperPollTimer = null;
+function scheduleSrPaperPoll() {
+  clearTimeout(_srPaperPollTimer);
+  const hasOpen = srPaperTrades.some((t) => t.status === 'OPEN');
+  _srPaperPollTimer = setTimeout(async () => {
+    await loadSrPaperTrades();
+    scheduleSrPaperPoll();
+  }, hasOpen ? 3_000 : 15_000);
+}
+
+window.enterSrPaperTrade = async function(btn, symbol, side, entryPrice, score, sl, tp, noteEncoded) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  const note = noteEncoded ? decodeURIComponent(noteEncoded) : '';
+  try {
+    const res = await fetch('/api/sr-paper-trades', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice, tp: tp ?? null, sl: sl ?? null, source: `sr-${score}`, note }),
+    });
+    if (res.ok) {
+      btn.textContent = '⏳';
+      setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+      loadSrPaperTrades();
+    } else {
+      btn.textContent = 'ERR';
+      setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+    }
+  } catch {
+    btn.textContent = 'ERR';
+    setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+  }
+};
+
+window.closeSrPaperTrade = async function(id) {
+  try {
+    const res = await fetch('/api/sr-paper-trades/close', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) { await loadSrPaperTrades(); scheduleSrPaperPoll(); }
+  } catch {}
+};
+
+window.deleteSrPaperTrade = async function(id) {
+  if (!confirm('Xóa paper trade này?')) return;
+  try {
+    const res = await fetch('/api/sr-paper-trades/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) { await loadSrPaperTrades(); scheduleSrPaperPoll(); }
+  } catch {}
+};
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 function showFetchError(err) {
@@ -359,4 +583,6 @@ async function fetchAndApply(attempt = 0) {
   await fetchAndApply();
   connect();
   connectPriceSocket();
+  await loadSrPaperTrades();
+  scheduleSrPaperPoll();
 })();

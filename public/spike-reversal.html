@@ -203,6 +203,30 @@
       .scan-meta strong { color: var(--text); }
       .scan-meta .scan-dot { color: var(--red); font-size: 10px; }
 
+      /* ── SR Paper trades ── */
+      .sr-paper-section { margin-top: 20px; }
+      .sr-paper-btn {
+        font-size: 10px; font-weight: 800;
+        padding: 3px 10px; border-radius: 4px;
+        border: none; cursor: pointer;
+        letter-spacing: .04em; text-transform: uppercase;
+        transition: opacity .15s;
+      }
+      .sr-paper-btn:hover { opacity: .75; }
+      .sr-paper-btn.short { background: rgba(251,113,133,.2); color: var(--red); border: 1px solid rgba(251,113,133,.4); }
+      .sr-paper-btn:disabled { opacity: .4; cursor: default; }
+      .sr-paper-close-btn {
+        font-size: 10px; padding: 2px 8px; border-radius: 4px;
+        border: 1px solid var(--line); background: var(--panel-2);
+        color: var(--muted); cursor: pointer;
+      }
+      .sr-paper-close-btn:hover { color: var(--red); border-color: var(--red); }
+
+      .sr-paper-sort { cursor: pointer; user-select: none; white-space: nowrap; }
+      .sr-paper-sort:hover { color: var(--text); }
+      .sr-paper-sort.active { color: var(--blue); }
+      .sr-paper-sort .sort-mark { font-size: 9px; margin-left: 3px; opacity: .7; }
+
       @media (max-width: 640px) {
         .sr-controls { grid-template-columns: 1fr 1fr; }
         .sr-controls .search-field { grid-column: 1 / -1; }
@@ -294,6 +318,36 @@
           Đang quét spike reversal pattern
         </div>
       </div>
+
+      <section class="panel sr-paper-section">
+        <div class="panel-head">
+          <h2>Paper Trades — Spike Reversal</h2>
+          <span id="srPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+        </div>
+        <div class="table-wrap">
+          <table class="signal-table">
+            <thead>
+              <tr>
+                <th class="sr-paper-sort" data-sr-sort="symbol">Symbol <span class="sort-mark"></span></th>
+                <th class="sr-paper-sort" data-sr-sort="side">Side <span class="sort-mark"></span></th>
+                <th class="sr-paper-sort" data-sr-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th class="sr-paper-sort" data-sr-sort="sl">SL <span class="sort-mark"></span></th>
+                <th class="sr-paper-sort" data-sr-sort="tp">TP <span class="sort-mark"></span></th>
+                <th class="sr-paper-sort" data-sr-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="sr-paper-sort" data-sr-sort="pnl">PnL <span class="sort-mark"></span></th>
+                <th class="sr-paper-sort" data-sr-sort="roe">ROE <span class="sort-mark"></span></th>
+                <th class="sr-paper-sort active" data-sr-sort="status">Status <span class="sort-mark">^</span></th>
+                <th class="sr-paper-sort" data-sr-sort="source">Source <span class="sort-mark"></span></th>
+                <th class="sr-paper-sort" data-sr-sort="time">Time <span class="sort-mark"></span></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="srPaperBody">
+              <tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ spike reversal signals.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script src="/btcHealth.js"></script>

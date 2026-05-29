@@ -45,6 +45,30 @@
       .ppks-empty strong { display:block; color:var(--text); font-size:18px; margin-bottom:6px; }
       .scan-meta { display:flex; align-items:center; gap:14px; font-size:12px; color:var(--muted); padding:10px 14px; border:1px solid var(--line); border-radius:6px; background:var(--panel); margin-top:10px; }
       .scan-meta strong { color:var(--text); }
+      /* ── PPKS Paper trades ── */
+      .ppks-paper-section { margin-top: 20px; }
+      .ppks-paper-btn {
+        font-size: 10px; font-weight: 800;
+        padding: 3px 10px; border-radius: 4px;
+        border: none; cursor: pointer;
+        letter-spacing: .04em; text-transform: uppercase;
+        transition: opacity .15s;
+      }
+      .ppks-paper-btn:hover { opacity: .75; }
+      .ppks-paper-btn.short { background: rgba(96,165,250,.2); color: var(--blue); border: 1px solid rgba(96,165,250,.4); }
+      .ppks-paper-btn.long  { background: rgba(54,211,153,.18); color: var(--green); border: 1px solid rgba(54,211,153,.4); }
+      .ppks-paper-btn:disabled { opacity: .4; cursor: default; }
+      .ppks-paper-close-btn {
+        font-size: 10px; padding: 2px 8px; border-radius: 4px;
+        border: 1px solid var(--line); background: var(--panel-2);
+        color: var(--muted); cursor: pointer;
+      }
+      .ppks-paper-close-btn:hover { color: var(--red); border-color: var(--red); }
+      .ppks-paper-sort { cursor: pointer; user-select: none; white-space: nowrap; }
+      .ppks-paper-sort:hover { color: var(--text); }
+      .ppks-paper-sort.active { color: var(--blue); }
+      .ppks-paper-sort .sort-mark { font-size: 9px; margin-left: 3px; opacity: .7; }
+
       @media (max-width:640px) {
         .ppks-controls { grid-template-columns:1fr 1fr; }
         .ppks-controls .search-field { grid-column:1/-1; }
@@ -147,6 +171,36 @@
           Dang quet post-pump kill-short pattern
         </div>
       </div>
+
+      <section class="panel ppks-paper-section">
+        <div class="panel-head">
+          <h2>Paper Trades — Post Pump Kill Short</h2>
+          <span id="ppksPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+        </div>
+        <div class="table-wrap">
+          <table class="signal-table">
+            <thead>
+              <tr>
+                <th class="ppks-paper-sort" data-ppks-sort="symbol">Symbol <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="side">Side <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="sl">SL <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="tp">TP <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="pnl">PnL <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="roe">ROE <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort active" data-ppks-sort="status">Status <span class="sort-mark">^</span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="source">Source <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="time">Time <span class="sort-mark"></span></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="ppksPaperBody">
+              <tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ post-pump kill-short signals.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script src="/btcHealth.js"></script>

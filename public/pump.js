@@ -169,6 +169,11 @@ function buildFactors(sig) {
     if (f.volRamp != null) chips.push({ label: `Ramp ${Number(f.volRamp).toFixed(2)}`, ok: Number(f.volRamp) >= 1.15 ? 'ok' : 'orange' });
     if (f.greenCandles != null && f.clusterBars != null) chips.push({ label: `${f.greenCandles}/${f.clusterBars} green`, ok: 'ok' });
     if (f.rsi14val != null) chips.push({ label: `RSI ${f.rsi14val}`, ok: f.rsi14val >= 55 && f.rsi14val <= 75 ? 'ok' : 'warn' });
+    if (f.ema99 != null && f.ema99DistPct != null) {
+      const d = Number(f.ema99DistPct);
+      const sign = d >= 0 ? '+' : '';
+      chips.push({ label: `EMA99 ${fmtPrice(f.ema99)} (${sign}${d.toFixed(1)}%)`, ok: Math.abs(d) <= 3 ? 'ok' : d > 0 ? 'orange' : 'warn' });
+    }
     return chips.map((c) => `<span class="pump-factor ${c.ok}">${c.label}</span>`).join('');
   }
 
@@ -336,7 +341,18 @@ function entryBadge(sig) {
   return { label: '✅ Có thể vào', cls: 'entry-badge good' };
 }
 
+function calcAutoLeverage(entry, sl, defaultLev = 10) {
+  const e = Number(entry);
+  const s = Number(sl);
+  if (!e || !s || !Number.isFinite(e) || !Number.isFinite(s)) return defaultLev;
+  return Math.abs(e - s) / e * 10 * 100 > 20 ? 5 : 10;
+}
+
 function buildCard(sig) {
+  const autoLev = calcAutoLeverage(sig.entry, sig.sl);
+  const levBadge = autoLev === 5
+    ? '<span class="lev-badge warn" title="SL rộng — 5x">5×⚠</span>'
+    : '<span class="lev-badge ok"   title="SL gần — 10x">10×</span>';
   const isLong      = sig.action === 'LONG';
   const isMa60      = sig.type === 'ma60_volume_cluster' || sig.type === 'ma60_volume_cluster_5m';
   const dirClass    = isLong ? 'long' : 'short';
@@ -385,7 +401,7 @@ function buildCard(sig) {
       <div class="pump-prices">
         <div class="pump-price-cell">
           <span>Entry</span>
-          <strong>${fmtPrice(sig.entry)}</strong>
+          <strong>${fmtPrice(sig.entry)} ${levBadge}</strong>
         </div>
         <div class="pump-price-cell">
           <span>SL</span>
@@ -409,7 +425,9 @@ function buildCard(sig) {
         <button style="font-size:10px;font-weight:800;padding:3px 8px;border-radius:4px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);cursor:pointer;margin-left:4px" onclick="enterPumpPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'})">+ Paper</button>
       </div>
       <div class="pump-footer">
-        <span>${timeAgo(sig.scannedAt)}</span>
+        <span>${isMa60 && sig.scannedAt
+          ? `🕐 ${new Date(sig.scannedAt).toLocaleTimeString('vi', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} · ${timeAgo(sig.scannedAt)}`
+          : timeAgo(sig.scannedAt)}</span>
         <span>${sig.blockShort ? '🔒 blocks short' : ''}</span>
       </div>
     </article>

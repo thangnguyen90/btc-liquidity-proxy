@@ -458,6 +458,14 @@ function applyPostDumpBounceRiskTslExcludes(signals) {
   }
 }
 
+function calcAutoLeverage(entry, sl, defaultLev = 10) {
+  const e = Number(entry);
+  const s = Number(sl);
+  if (!e || !s || !Number.isFinite(e) || !Number.isFinite(s)) return defaultLev;
+  const slDistPct = Math.abs(e - s) / e;
+  return slDistPct * 10 * 100 > 20 ? 5 : 10;
+}
+
 async function handlePostPumpDumpRiskRealOrder(sig) {
   if (sig?.type !== 'post_pump_dump_risk') return;
   if (process.env.POST_PUMP_DUMP_RISK_AUTO_ORDER_ENABLED !== 'true') return;
@@ -513,7 +521,8 @@ async function handlePostPumpDumpRiskRealOrder(sig) {
   }
 
   const marginUsdt = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_MARGIN_USDT ?? 1);
-  const leverage = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_LEVERAGE ?? 10);
+  const defaultLeverage = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_LEVERAGE ?? 10);
+  const leverage = calcAutoLeverage(sig.entry, sig.sl, defaultLeverage);
   const notionalUsdt = marginUsdt * leverage;
   const orderType = String(process.env.POST_PUMP_DUMP_RISK_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
   const maxOpenPositions = Number(process.env.POST_PUMP_DUMP_RISK_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
@@ -725,7 +734,8 @@ async function handlePostDumpBounceRiskRealOrder(sig) {
   }
 
   const marginUsdt = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_MARGIN_USDT ?? 1);
-  const leverage = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_LEVERAGE ?? 10);
+  const defaultLeverage = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_LEVERAGE ?? 10);
+  const leverage = calcAutoLeverage(sig.entry, sig.sl, defaultLeverage);
   const notionalUsdt = marginUsdt * leverage;
   const orderType = String(process.env.POST_DUMP_BOUNCE_RISK_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
   const maxOpenPositions = Number(process.env.POST_DUMP_BOUNCE_RISK_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
@@ -979,6 +989,7 @@ async function schedulePostPumpKillShortScan() {
       pushSse(postPumpKillShortSseClients, result);
       if (signals.length) console.log(`[PostPumpKillShort] ${signals.length} signal(s): ${signals.map((s) => `${s.symbol}(${s.stage} ${s.score})`).join(', ')}`);
 
+      // Edge paper (shared /edge-short board) — only confirmed_short
       for (const sig of signals) {
         if (sig.stage !== 'confirmed_short' || sig.score < 60) continue;
         const key = `ppks|${sig.symbol}|${sig.type}`;
@@ -997,6 +1008,31 @@ async function schedulePostPumpKillShortScan() {
           source: `ppks-${sig.score}`,
           note: sig.note ?? '',
         }).catch((e) => console.warn(`[EdgePaper] ppks ${sig.symbol}:`, e.message));
+      }
+
+      // PPKS paper auto-fire — cả confirmed_short lẫn confirmed_long vào /post-pump-kill-short page
+      for (const sig of signals) {
+        const isConfirmedShort = sig.stage === 'confirmed_short';
+        const isConfirmedLong  = sig.stage === 'confirmed_long';
+        if (!isConfirmedShort && !isConfirmedLong) continue;
+        if (sig.score < 60) continue;
+        const side = isConfirmedLong ? 'LONG' : 'SHORT';
+        const ppksKey = `ppks-paper|${sig.symbol}|${sig.type}`;
+        const ppksLast = ppksPaperAutoFired.get(ppksKey) ?? 0;
+        if (Date.now() - ppksLast < 4 * 3600 * 1000) continue;
+        ppksPaperAutoFired.set(ppksKey, Date.now());
+        createPpksPaperTrade({
+          symbol: sig.symbol,
+          side,
+          status: 'OPEN',
+          marginUsdt: 1,
+          leverage: 10,
+          entryPrice: sig.entry,
+          tp: sig.tp ?? null,
+          sl: sig.sl ?? null,
+          source: `ppks-auto-${sig.score}`,
+          note: sig.note ?? '',
+        }).catch((e) => console.warn(`[PpksPaper] auto-fire ${sig.symbol}:`, e.message));
       }
 
       for (const sig of signals) {
@@ -1124,7 +1160,8 @@ async function handlePostPumpKillShortRealOrder(sig) {
   }
 
   const marginUsdt = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MARGIN_USDT ?? 1);
-  const leverage = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_LEVERAGE ?? 10);
+  const defaultLeverage = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_LEVERAGE ?? 10);
+  const leverage = calcAutoLeverage(sig.entry, sig.sl, defaultLeverage);
   const notionalUsdt = marginUsdt * leverage;
   const orderType = String(process.env.POST_PUMP_KILL_SHORT_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
   const maxOpenPositions = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
@@ -1584,6 +1621,7 @@ const dumpIgnDiscordFired   = new Map();
 const pumpIgnDiscordFired   = new Map();
 const postPumpKillShortDiscordFired = new Map();
 const postPumpKillShortOrderFired = new Map();
+const ppksPaperAutoFired = new Map(); // dedup cho PPKS paper trade auto-fire
 const postPumpDumpRiskOrderFired = new Map();
 const postDumpBounceRiskOrderFired = new Map();
 const longShortCache = new Map();    // symbol → { longShortRatio, longAccount }
@@ -1608,6 +1646,8 @@ const DI_PAPER_FILE     = join(rootDir, 'data', 'di-paper-trades.json');
 const PI_PAPER_FILE     = join(rootDir, 'data', 'pi-paper-trades.json');
 const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
 const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
+const SR_PAPER_FILE     = join(rootDir, 'data', 'sr-paper-trades.json');
+const PPKS_PAPER_FILE   = join(rootDir, 'data', 'ppks-paper-trades.json');
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
 let paperTicker = null;
 let liquidPaperRestPoller = null;
@@ -1628,6 +1668,12 @@ const pumpPaperFillLocks = new Set();
 const edgeMarkCache = new Map(); // symbol -> markPrice (for edge paper trades)
 let edgePaperTicker = null;
 const edgePaperFillLocks = new Set();
+const srMarkCache = new Map();  // symbol → markPrice  (for spike reversal paper trades)
+let srPaperTicker = null;
+const srPaperFillLocks = new Set();
+const ppksMarkCache = new Map(); // symbol → markPrice  (for ppks paper trades)
+let ppksPaperTicker = null;
+const ppksPaperFillLocks = new Set();
 
 async function loadSlTracking() {
   try {
@@ -2574,6 +2620,50 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/sr-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getSrPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const trade = await createSrPaperTrade({ ...body, status: 'PENDING' });
+        syncSrPaperTicker().catch(() => {});
+        await sendJson(response, trade);
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/sr-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closeSrPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/sr-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deleteSrPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/ppks-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getPpksPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const trade = await createPpksPaperTrade({ ...body, status: 'PENDING' });
+        syncPpksPaperTicker().catch(() => {});
+        await sendJson(response, trade);
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/ppks-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closePpksPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/ppks-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deletePpksPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/pi-paper-trades') {
       if (request.method === 'GET') {
         await sendJson(response, await getPiPaperTrades());
@@ -3202,6 +3292,8 @@ server.listen(port, '127.0.0.1', () => {
     startPiPaperTicker();
     startPumpPaperTicker();
     startEdgePaperTicker();
+    startSrPaperTicker();
+    startPpksPaperTicker();
     startMissingTpScanner();
     startSlTrailSafetyScanner();
     posMonitor = startPositionMonitor({
@@ -3907,6 +3999,124 @@ function buildLiquidEntryPlan({ heavySide, markPrice, target, heatmap }) {
   };
 }
 
+function calcLiquidRsi(closes, period = 14) {
+  if (!Array.isArray(closes) || closes.length <= period) return null;
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i <= period; i += 1) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  for (let i = period + 1; i < closes.length; i += 1) {
+    const diff = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(diff, 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(-diff, 0)) / period;
+  }
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+function calcLiquidEma(values, period) {
+  if (!Array.isArray(values) || values.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = values.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
+  for (let i = period; i < values.length; i += 1) {
+    ema = values[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+function detectLiquidationHuntPattern({ row, klines, heatmap, target, heavySide, interval }) {
+  const closed = klines.slice(0, -1);
+  if (closed.length < 80 || !target) return null;
+
+  const recent = closed.slice(-8);
+  const prior = closed.slice(-48, -8);
+  const last = closed.at(-1);
+  const closes = closed.map((k) => k.close);
+  const volumes = closed.map((k) => k.quoteVolume);
+  const avgVol = prior.length ? prior.reduce((sum, k) => sum + k.quoteVolume, 0) / prior.length : 0;
+  const recentVol = recent.reduce((sum, k) => sum + k.quoteVolume, 0);
+  const avgRecentVol = avgVol * Math.max(recent.length, 1);
+  const volX = avgRecentVol > 0 ? recentVol / avgRecentVol : 0;
+  const greenCount = recent.filter((k) => k.close > k.open).length;
+  const redCount = recent.filter((k) => k.close < k.open).length;
+  const rsi = calcLiquidRsi(closes, 14);
+  const ema13 = calcLiquidEma(closes, 13);
+  const ema25 = calcLiquidEma(closes, 25);
+  const ema99 = calcLiquidEma(closes, 99);
+  const runupBase = closed[Math.max(0, closed.length - 17)]?.close ?? closed[0]?.close;
+  const runupPct = runupBase > 0 ? ((last.close - runupBase) / runupBase) * 100 : 0;
+  const drawdownBase = closed[Math.max(0, closed.length - 17)]?.close ?? closed[0]?.close;
+  const drawdownPct = drawdownBase > 0 ? ((drawdownBase - last.close) / drawdownBase) * 100 : 0;
+  const distancePct = Number(target.distancePct ?? 999);
+  const absDistance = Math.abs(distancePct);
+  const isNearTarget = absDistance <= Number(process.env.LIQ_HUNT_MAX_TARGET_DISTANCE_PCT ?? 1.2);
+  const targetIntensity = Number(target.intensity ?? 0);
+  const targetStrong = targetIntensity >= 0.45 || Number(target.score ?? 0) >= Math.max(Number(heatmap.liquidityAbove ?? 0), Number(heatmap.liquidityBelow ?? 0)) * 0.08;
+  const rsiHot = rsi != null && rsi >= Number(process.env.LIQ_HUNT_RSI_HOT ?? 78);
+  const rsiCold = rsi != null && rsi <= Number(process.env.LIQ_HUNT_RSI_COLD ?? 22);
+  const emaBull = ema13 != null && ema25 != null && ema99 != null && last.close > ema13 && ema13 > ema25 && ema25 > ema99;
+  const emaBear = ema13 != null && ema25 != null && ema99 != null && last.close < ema13 && ema13 < ema25 && ema25 < ema99;
+  const strongUp = runupPct >= Number(process.env.LIQ_HUNT_RUNUP_PCT ?? 4.0) || Number(row.change24hPct ?? 0) >= 10;
+  const strongDown = drawdownPct >= Number(process.env.LIQ_HUNT_DRAWDOWN_PCT ?? 4.0) || Number(row.change24hPct ?? 0) <= -10;
+  const volHot = volX >= Number(process.env.LIQ_HUNT_VOL_X ?? 1.8);
+
+  const isUpsideHunt = heavySide === 'above'
+    && distancePct > 0
+    && isNearTarget
+    && targetStrong
+    && strongUp
+    && greenCount >= 5
+    && volHot
+    && (rsiHot || emaBull);
+
+  const isDownsideHunt = heavySide === 'below'
+    && distancePct < 0
+    && isNearTarget
+    && targetStrong
+    && strongDown
+    && redCount >= 5
+    && volHot
+    && (rsiCold || emaBear);
+
+  if (!isUpsideHunt && !isDownsideHunt) return null;
+
+  const score = Math.round(clamp(
+    (isUpsideHunt ? Math.min(runupPct / 14, 1) : Math.min(drawdownPct / 14, 1)) * 28
+    + Math.min(volX / 4, 1) * 22
+    + Math.min(absDistance <= 0.15 ? 1 : (1.2 - absDistance) / 1.05, 1) * 20
+    + Math.min(targetIntensity || 0.6, 1) * 16
+    + (isUpsideHunt ? Math.min((rsi ?? 50) / 100, 1) : Math.min((100 - (rsi ?? 50)) / 100, 1)) * 14,
+    0,
+    100,
+  ));
+
+  return {
+    type: isUpsideHunt ? 'LIQUIDITY_RUNUP_HUNT' : 'LIQUIDITY_DUMP_HUNT',
+    side: isUpsideHunt ? 'UP' : 'DOWN',
+    score,
+    interval,
+    targetPrice: target.price,
+    targetDistancePct: distancePct,
+    targetIntensity,
+    runupPct,
+    drawdownPct,
+    volX,
+    greenCount,
+    redCount,
+    rsi,
+    emaStack: isUpsideHunt ? (emaBull ? 'bull' : 'hot') : (emaBear ? 'bear' : 'cold'),
+    note: isUpsideHunt
+      ? 'Pump manh, volume xanh bung no, RSI nong va gia dang hut len cum thanh ly tren.'
+      : 'Dump manh, volume do bung no, RSI lanh va gia dang hut xuong cum thanh ly duoi.',
+  };
+}
+
 async function mapConcurrent(items, concurrency, mapper) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -3948,6 +4158,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
       const sweepProb = liquidSweepProb(heatmap, target);
       const isNearTarget = targetDistancePct != null && Math.abs(targetDistancePct) <= 0.35;
       const entryPlan = buildLiquidEntryPlan({ heavySide, markPrice: row.markPrice, target, heatmap });
+      const huntSignal = detectLiquidationHuntPattern({ row, klines, heatmap, target, heavySide, interval });
 
       return {
         symbol: row.symbol,
@@ -3964,6 +4175,7 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
         heavyPct,
         sweepProb,
         sweepLabel: liquidSweepLabel(sweepProb),
+        huntSignal,
         sweepTarget: target ? {
           direction: target.direction ?? heavySide,
           price: target.price,
@@ -4216,6 +4428,25 @@ async function createPaperTrade(payload) {
   const rr = payload.rr != null
     ? Number(payload.rr)
     : (entryPlan?.rr != null ? Number(entryPlan.rr) : null);
+  const huntSignal = payload.huntSignal && typeof payload.huntSignal === 'object'
+    ? {
+        type: String(payload.huntSignal.type ?? '').slice(0, 80),
+        side: String(payload.huntSignal.side ?? '').slice(0, 16),
+        score: Number(payload.huntSignal.score ?? 0),
+        interval: String(payload.huntSignal.interval ?? '').slice(0, 16),
+        targetPrice: payload.huntSignal.targetPrice != null ? Number(payload.huntSignal.targetPrice) : null,
+        targetDistancePct: payload.huntSignal.targetDistancePct != null ? Number(payload.huntSignal.targetDistancePct) : null,
+        targetIntensity: payload.huntSignal.targetIntensity != null ? Number(payload.huntSignal.targetIntensity) : null,
+        runupPct: payload.huntSignal.runupPct != null ? Number(payload.huntSignal.runupPct) : null,
+        drawdownPct: payload.huntSignal.drawdownPct != null ? Number(payload.huntSignal.drawdownPct) : null,
+        volX: payload.huntSignal.volX != null ? Number(payload.huntSignal.volX) : null,
+        greenCount: payload.huntSignal.greenCount != null ? Number(payload.huntSignal.greenCount) : null,
+        redCount: payload.huntSignal.redCount != null ? Number(payload.huntSignal.redCount) : null,
+        rsi: payload.huntSignal.rsi != null ? Number(payload.huntSignal.rsi) : null,
+        emaStack: String(payload.huntSignal.emaStack ?? '').slice(0, 20),
+        note: String(payload.huntSignal.note ?? '').slice(0, 180),
+      }
+    : null;
 
   const trade = {
     id: crypto.randomUUID(),
@@ -4243,6 +4474,9 @@ async function createPaperTrade(payload) {
     riskPct: Number.isFinite(riskPct) ? riskPct : null,
     rr: Number.isFinite(rr) ? rr : null,
     heavySide: payload.heavySide ? String(payload.heavySide).slice(0, 20) : null,
+    huntSignal,
+    huntType: huntSignal?.type || null,
+    huntScore: huntSignal ? Number(huntSignal.score) : null,
     entryPlan,
   };
 
@@ -5801,6 +6035,370 @@ function startEdgePaperTicker() {
   setInterval(() => syncEdgePaperTicker().catch(() => {}), 30_000);
 }
 
+// ── SR Paper Trades (Spike Reversal) ─────────────────────────────────────────
+
+async function readSrPaperStore() {
+  try {
+    const raw = await readFile(SR_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[SrPaper] Store read error, starting fresh:', e.message);
+    return { trades: [] };
+  }
+}
+
+let _srPaperWriteLock = Promise.resolve();
+async function writeSrPaperStore(store) {
+  _srPaperWriteLock = _srPaperWriteLock.then(() => atomicWriteJson(SR_PAPER_FILE, store));
+  return _srPaperWriteLock;
+}
+
+function enrichSrPaperTrade(t, markPrice) {
+  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
+  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
+  return { ...t, markPrice: mark, pnl, roe };
+}
+
+async function getSrPaperTrades() {
+  const store = await readSrPaperStore();
+  const trades = store.trades.map((t) => enrichSrPaperTrade(t, srMarkCache.get(t.symbol)));
+  const open   = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length > 0
+    ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length : null;
+  const summary = {
+    total: trades.length, open: open.length, closed: closed.length,
+    wins, losses: closed.length - wins, tpHits, slHits,
+    avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null,
+  };
+  return { trades, summary };
+}
+
+async function createSrPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? 'SHORT').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+
+  const store = await readSrPaperStore();
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol && t.side === side &&
+    Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichSrPaperTrade(dup, srMarkCache.get(symbol)) };
+
+  const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol, side, status,
+    marginUsdt, leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    tp: payload.tp != null ? Number(payload.tp) : null,
+    sl: payload.sl != null ? Number(payload.sl) : null,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null,
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+  };
+  store.trades.unshift(trade);
+  await writeSrPaperStore(store);
+  console.log(`[SrPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
+  return { trade: enrichSrPaperTrade(trade, entryPrice) };
+}
+
+async function closeSrPaperTrade(payload) {
+  const store = await readSrPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('SR paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichSrPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (srMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  await writeSrPaperStore(store);
+  return { trade: enrichSrPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deleteSrPaperTrade(payload) {
+  const store = await readSrPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writeSrPaperStore(store);
+  return { ok: true };
+}
+
+async function fillSrPendingTrade(trade, markPrice) {
+  if (srPaperFillLocks.has(trade.id)) return;
+  srPaperFillLocks.add(trade.id);
+  try {
+    const store = await readSrPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const entry = Number(store.trades[idx].entryPrice);
+    const touched = store.trades[idx].side === 'LONG' ? markPrice <= entry : markPrice >= entry;
+    if (!touched) return;
+    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    await writeSrPaperStore(store);
+    console.log(`[SrPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+  } finally {
+    srPaperFillLocks.delete(trade.id);
+  }
+}
+
+async function processSrPaperFills(symbol, markPrice) {
+  const store = await readSrPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillSrPendingTrade(t, markPrice);
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) await checkSrPaperTpSl(t, markPrice);
+}
+
+const srPaperTpSlLocks = new Set();
+async function checkSrPaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (srPaperTpSlLocks.has(trade.id)) return;
+  const isLong = trade.side === 'LONG';
+  const tpHit = trade.tp != null && (isLong ? markPrice >= trade.tp : markPrice <= trade.tp);
+  const slHit = trade.sl != null && (isLong ? markPrice <= trade.sl : markPrice >= trade.sl);
+  if (!tpHit && !slHit) return;
+  srPaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closeSrPaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[SrPaper] 🎯 ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    srPaperTpSlLocks.delete(trade.id);
+  }
+}
+
+async function syncSrPaperTicker() {
+  if (!srPaperTicker) return;
+  const store = await readSrPaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  sharedMarkTicker.setSymbols('srPaper', symbols);
+}
+
+function startSrPaperTicker() {
+  if (srPaperTicker) return;
+  srPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('srPaper', ({ symbol, markPrice }) => {
+    srMarkCache.set(symbol, markPrice);
+    processSrPaperFills(symbol, markPrice).catch(() => {});
+  });
+  console.log('[SrPaper] Mark ticker started (shared).');
+  syncSrPaperTicker().catch(() => {});
+  setInterval(() => syncSrPaperTicker().catch(() => {}), 30_000);
+}
+
+// ── PPKS Paper Trades (Post Pump Kill Short / Post Dump Kill Long) ─────────────
+
+async function readPpksPaperStore() {
+  try {
+    const raw = await readFile(PPKS_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[PpksPaper] Store read error, starting fresh:', e.message);
+    return { trades: [] };
+  }
+}
+
+let _ppksPaperWriteLock = Promise.resolve();
+async function writePpksPaperStore(store) {
+  _ppksPaperWriteLock = _ppksPaperWriteLock.then(() => atomicWriteJson(PPKS_PAPER_FILE, store));
+  return _ppksPaperWriteLock;
+}
+
+function enrichPpksPaperTrade(t, markPrice) {
+  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
+  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
+  return { ...t, markPrice: mark, pnl, roe };
+}
+
+async function getPpksPaperTrades() {
+  const store = await readPpksPaperStore();
+  const trades = store.trades.map((t) => enrichPpksPaperTrade(t, ppksMarkCache.get(t.symbol)));
+  const open   = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length > 0
+    ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length : null;
+  const summary = {
+    total: trades.length, open: open.length, closed: closed.length,
+    wins, losses: closed.length - wins, tpHits, slHits,
+    avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null,
+  };
+  return { trades, summary };
+}
+
+async function createPpksPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? 'SHORT').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+
+  const store = await readPpksPaperStore();
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol && t.side === side &&
+    Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichPpksPaperTrade(dup, ppksMarkCache.get(symbol)) };
+
+  const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol, side, status,
+    marginUsdt, leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    tp: payload.tp != null ? Number(payload.tp) : null,
+    sl: payload.sl != null ? Number(payload.sl) : null,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null,
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+  };
+  store.trades.unshift(trade);
+  await writePpksPaperStore(store);
+  console.log(`[PpksPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
+  return { trade: enrichPpksPaperTrade(trade, entryPrice) };
+}
+
+async function closePpksPaperTrade(payload) {
+  const store = await readPpksPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('PPKS paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichPpksPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (ppksMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  await writePpksPaperStore(store);
+  return { trade: enrichPpksPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deletePpksPaperTrade(payload) {
+  const store = await readPpksPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writePpksPaperStore(store);
+  return { ok: true };
+}
+
+async function fillPpksPendingTrade(trade, markPrice) {
+  if (ppksPaperFillLocks.has(trade.id)) return;
+  ppksPaperFillLocks.add(trade.id);
+  try {
+    const store = await readPpksPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const entry = Number(store.trades[idx].entryPrice);
+    const touched = store.trades[idx].side === 'LONG' ? markPrice <= entry : markPrice >= entry;
+    if (!touched) return;
+    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    await writePpksPaperStore(store);
+    console.log(`[PpksPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+  } finally {
+    ppksPaperFillLocks.delete(trade.id);
+  }
+}
+
+async function processPpksPaperFills(symbol, markPrice) {
+  const store = await readPpksPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillPpksPendingTrade(t, markPrice);
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) await checkPpksPaperTpSl(t, markPrice);
+}
+
+const ppksPaperTpSlLocks = new Set();
+async function checkPpksPaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (ppksPaperTpSlLocks.has(trade.id)) return;
+  const isLong = trade.side === 'LONG';
+  const tpHit = trade.tp != null && (isLong ? markPrice >= trade.tp : markPrice <= trade.tp);
+  const slHit = trade.sl != null && (isLong ? markPrice <= trade.sl : markPrice >= trade.sl);
+  if (!tpHit && !slHit) return;
+  ppksPaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closePpksPaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[PpksPaper] 🎯 ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    ppksPaperTpSlLocks.delete(trade.id);
+  }
+}
+
+async function syncPpksPaperTicker() {
+  if (!ppksPaperTicker) return;
+  const store = await readPpksPaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  sharedMarkTicker.setSymbols('ppksPaper', symbols);
+}
+
+function startPpksPaperTicker() {
+  if (ppksPaperTicker) return;
+  ppksPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
+  sharedMarkTicker.register('ppksPaper', ({ symbol, markPrice }) => {
+    ppksMarkCache.set(symbol, markPrice);
+    processPpksPaperFills(symbol, markPrice).catch(() => {});
+  });
+  console.log('[PpksPaper] Mark ticker started (shared).');
+  syncPpksPaperTicker().catch(() => {});
+  setInterval(() => syncPpksPaperTicker().catch(() => {}), 30_000);
+}
+
 function startPaperTradeTicker() {
   if (process.env.PAPER_TRADE_TICKER_ENABLED === 'false') return;
   if (paperTicker) return;
@@ -7246,7 +7844,8 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
     const margin = Number(process.env.PUMP_AUTO_ORDER_MARGIN ?? 1);
-    const leverage = Number(process.env.PUMP_AUTO_ORDER_LEVERAGE ?? 10);
+    const defaultLeverage = Number(process.env.PUMP_AUTO_ORDER_LEVERAGE ?? 10);
+    const leverage = calcAutoLeverage(signal.entry, signal.sl, defaultLeverage);
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
     const maxLimitOrders = runtimeSettings.pumpMaxLimitOrders;
 

@@ -162,7 +162,18 @@ function buildFactors(sig) {
 
 // ── Card builder ──────────────────────────────────────────────────────────────
 
+function calcAutoLeverage(entry, sl, defaultLev = 10) {
+  const e = Number(entry);
+  const s = Number(sl);
+  if (!e || !s || !Number.isFinite(e) || !Number.isFinite(s)) return defaultLev;
+  return Math.abs(e - s) / e * 10 * 100 > 20 ? 5 : 10;
+}
+
 function buildCard(sig) {
+  const autoLev = calcAutoLeverage(sig.entry, sig.sl);
+  const levBadge = autoLev === 5
+    ? '<span class="lev-badge warn" title="SL rộng — 5x">5×⚠</span>'
+    : '<span class="lev-badge ok"   title="SL gần — 10x">10×</span>';
   const isIgnition  = sig.type === 'dump_ignition';
   const isRisk      = sig.type === 'post_pump_dump_risk';
   const isBounce    = sig.type === 'post_dump_bounce_risk';
@@ -211,7 +222,7 @@ function buildCard(sig) {
       <div class="di-prices">
         <div class="di-price-cell">
           <span>Entry (Short)</span>
-          <strong class="negative">${fmtPrice(sig.entry)}</strong>
+          <strong class="negative">${fmtPrice(sig.entry)} ${levBadge}</strong>
         </div>
         <div class="di-price-cell">
           <span>SL</span>

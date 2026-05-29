@@ -140,7 +140,18 @@ function killTrapWarning(sig) {
 
 // ── Card builder ──────────────────────────────────────────────────────────────
 
+function calcAutoLeverage(entry, sl, defaultLev = 10) {
+  const e = Number(entry);
+  const s = Number(sl);
+  if (!e || !s || !Number.isFinite(e) || !Number.isFinite(s)) return defaultLev;
+  return Math.abs(e - s) / e * 10 * 100 > 20 ? 5 : 10;
+}
+
 function buildCard(sig) {
+  const autoLev = calcAutoLeverage(sig.entry, sig.sl);
+  const levBadge = autoLev === 5
+    ? '<span class="lev-badge warn" title="SL rộng — 5x">5×⚠</span>'
+    : '<span class="lev-badge ok"   title="SL gần — 10x">10×</span>';
   const isIgnition  = sig.type === 'pump_ignition';
   const stageClass  = isIgnition ? 'stage-ignition' : 'stage-early';
   const stageBadge  = isIgnition ? 'ignition' : 'early';
@@ -185,7 +196,7 @@ function buildCard(sig) {
       <div class="pi-prices">
         <div class="pi-price-cell">
           <span>Entry (Long)</span>
-          <strong class="positive">${fmtPrice(sig.entry)}</strong>
+          <strong class="positive">${fmtPrice(sig.entry)} ${levBadge}</strong>
         </div>
         <div class="pi-price-cell">
           <span>SL</span>

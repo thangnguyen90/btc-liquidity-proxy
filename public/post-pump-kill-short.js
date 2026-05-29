@@ -5,6 +5,10 @@ let allSignals = [];
 let scannedAt = null;
 let total = 0;
 
+let ppksPaperTrades      = [];
+let ppksPaperOpenSymbols = new Set();
+let ppksPaperSummaryCache = null;
+
 const grid = document.getElementById('ppksGrid');
 const watchCount = document.getElementById('watchCount');
 const shortCount = document.getElementById('shortCount');
@@ -77,7 +81,18 @@ function buildChips(sig) {
   return chips.map((c) => `<span class="ppks-chip ${c.cls}">${escapeHtml(c.label)}</span>`).join('');
 }
 
+function calcAutoLeverage(entry, sl, defaultLev = 10) {
+  const e = Number(entry);
+  const s = Number(sl);
+  if (!e || !s || !Number.isFinite(e) || !Number.isFinite(s)) return defaultLev;
+  return Math.abs(e - s) / e * 10 * 100 > 20 ? 5 : 10;
+}
+
 function buildCard(sig) {
+  const autoLev = calcAutoLeverage(sig.entry, sig.sl);
+  const levBadge = autoLev === 5
+    ? '<span class="lev-badge warn" title="SL rộng — 5x">5×⚠</span>'
+    : '<span class="lev-badge ok"   title="SL gần — 10x">10×</span>';
   const stage = sig.stage || 'watch_spike';
   const isShort = stage === 'confirmed_short';
   const isLong = stage === 'confirmed_long';
@@ -121,7 +136,7 @@ function buildCard(sig) {
       <div class="ppks-prices">
         <div class="ppks-cell">
           <span>${isShort ? 'Entry short' : isLong ? 'Entry long' : 'Watch price'}</span>
-          <strong class="${isShort ? 'negative' : isLong ? 'positive' : ''}">${fmtPrice(sig.entry)}</strong>
+          <strong class="${isShort ? 'negative' : isLong ? 'positive' : ''}">${fmtPrice(sig.entry)} ${levBadge}</strong>
         </div>
         <div class="ppks-cell">
           <span>SL</span>
@@ -137,7 +152,10 @@ function buildCard(sig) {
       <div class="ppks-note">${escapeHtml(sig.note)}</div>
       <div class="ppks-footer">
         <span>${timeAgo(sig.scannedAt)}</span>
-        <span>${escapeHtml(sig.reason)}</span>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:var(--muted)">${escapeHtml(sig.reason)}</span>
+          <button class="ppks-paper-btn ${isLongType ? 'long' : 'short'}" onclick="enterPpksPaperTrade(this,'${escapeHtml(sig.symbol)}','${isLongType ? 'LONG' : 'SHORT'}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}')">+ Paper</button>
+        </div>
       </div>
     </article>
   `;
@@ -253,5 +271,210 @@ searchInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') testSymbol();
 });
 
+// ── Paper trades ──────────────────────────────────────────────────────────────
+
+let ppksPaperSort = { key: 'status', dir: 'asc' };
+
+document.addEventListener('click', (e) => {
+  const th = e.target.closest('[data-ppks-sort]');
+  if (!th || !th.classList.contains('ppks-paper-sort')) return;
+  const key = th.dataset.ppksSort;
+  if (ppksPaperSort.key === key) {
+    ppksPaperSort.dir = ppksPaperSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    ppksPaperSort = { key, dir: key === 'status' ? 'asc' : 'desc' };
+  }
+  renderPpksPaperTable();
+});
+
+function ppksPaperSortValue(t, key) {
+  if (key === 'symbol') return t.symbol ?? '';
+  if (key === 'side')   return t.side ?? '';
+  if (key === 'entry')  return Number(t.entryPrice);
+  if (key === 'sl')     return t.sl == null ? null : Number(t.sl);
+  if (key === 'tp')     return t.tp == null ? null : Number(t.tp);
+  if (key === 'mark')   return Number(t.markPrice ?? t.exitPrice);
+  if (key === 'pnl')    return t.pnl == null ? null : Number(t.pnl);
+  if (key === 'roe')    return t.roe == null ? null : Number(t.roe);
+  if (key === 'source') return t.source ?? '';
+  if (key === 'time')   return Date.parse(t.createdAt ?? '') || 0;
+  if (key === 'status') return ({ OPEN: 0, PENDING: 1, CLOSED: 2 })[t.status] ?? 9;
+  return '';
+}
+
+function comparePpksValues(a, b, dir) {
+  const aMiss = a == null || (typeof a === 'number' && isNaN(a));
+  const bMiss = b == null || (typeof b === 'number' && isNaN(b));
+  if (aMiss && bMiss) return 0;
+  if (aMiss) return 1;
+  if (bMiss) return -1;
+  const r = typeof a === 'string' ? String(a).localeCompare(String(b), 'en') : a - b;
+  return dir === 'asc' ? r : -r;
+}
+
+function sortPpksPaperTrades(trades) {
+  const { key, dir } = ppksPaperSort;
+  return trades.slice().sort((a, b) => {
+    const r = comparePpksValues(ppksPaperSortValue(a, key), ppksPaperSortValue(b, key), dir);
+    return r !== 0 ? r : comparePpksValues(ppksPaperSortValue(a, 'time'), ppksPaperSortValue(b, 'time'), 'desc');
+  });
+}
+
+function updatePpksSortHeaders() {
+  document.querySelectorAll('[data-ppks-sort]').forEach((th) => {
+    const active = th.dataset.ppksSort === ppksPaperSort.key;
+    th.classList.toggle('active', active);
+    const mark = th.querySelector('.sort-mark');
+    if (mark) mark.textContent = active ? (ppksPaperSort.dir === 'asc' ? '^' : 'v') : '';
+  });
+}
+
+function fmtPpksPnl(pnl, roe) {
+  if (pnl == null) return '-';
+  const sign = pnl >= 0 ? '+' : '';
+  const cls  = pnl >= 0 ? 'positive' : 'negative';
+  return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)} (${sign}${Number(roe ?? 0).toFixed(1)}%)</span>`;
+}
+
+function renderPpksPaperTable() {
+  const tbody   = document.getElementById('ppksPaperBody');
+  const countEl = document.getElementById('ppksPaperCount');
+  if (!tbody) return;
+
+  const trades  = ppksPaperTrades;
+  const summary = ppksPaperSummaryCache;
+  const open    = trades.filter((t) => t.status !== 'CLOSED');
+  const closed  = trades.filter((t) => t.status === 'CLOSED');
+
+  let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
+  if (summary && summary.closed > 0) {
+    const wr = Math.round(summary.wins / summary.closed * 100);
+    countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
+    if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+  }
+  if (countEl) countEl.textContent = countTxt;
+
+  if (!trades.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ post-pump kill-short signals.</td></tr>';
+    updatePpksSortHeaders();
+    return;
+  }
+
+  const sorted = sortPpksPaperTrades([...open, ...closed]);
+  tbody.innerHTML = sorted.map((t) => {
+    const isShort  = t.side === 'SHORT';
+    const sideHtml = isShort
+      ? `<span style="color:var(--blue);font-weight:700">SHORT</span>`
+      : `<span style="color:var(--green);font-weight:700">LONG</span>`;
+    const isClosed = t.status === 'CLOSED';
+    const mark     = t.markPrice ?? t.exitPrice ?? '-';
+    const actionBtns = isClosed
+      ? `<button class="ppks-paper-close-btn" style="opacity:.6;font-size:10px" onclick="deletePpksPaperTrade('${t.id}')">Del</button>`
+      : `<button class="ppks-paper-close-btn" onclick="closePpksPaperTrade('${t.id}')">Close</button>`;
+    const rowStyle = isClosed ? 'opacity:.5' : '';
+    const slColor  = isShort ? 'var(--green)' : 'var(--red)';
+    const tpColor  = isShort ? 'var(--red)'   : 'var(--green)';
+    const outcomeHtml = isClosed
+      ? t.outcome === 'TP' ? '<span style="color:var(--green);font-weight:700">✅ TP</span>'
+        : t.outcome === 'SL' ? '<span style="color:var(--red);font-weight:700">🔴 SL</span>'
+        : '<span style="color:var(--muted)">Manual</span>'
+      : t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>'
+      : '<span style="color:var(--green)">OPEN</span>';
+    return `<tr data-id="${t.id}" style="${rowStyle}">
+      <td><a href="/?symbol=${t.symbol}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:700">${t.symbol.replace(/USDT$/, '')}<span style="color:var(--muted);font-size:11px;font-weight:400">USDT</span></a></td>
+      <td>${sideHtml}</td>
+      <td>${fmtPrice(t.entryPrice)}</td>
+      <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td>${fmtPrice(mark)}</td>
+      <td>${fmtPpksPnl(t.pnl, t.roe)}</td>
+      <td>${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
+      <td style="font-size:11px">${outcomeHtml}</td>
+      <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
+      <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
+      <td>${actionBtns}</td>
+    </tr>`;
+  }).join('');
+  updatePpksSortHeaders();
+}
+
+let _ppksPaperFetching = false;
+async function loadPpksPaperTrades() {
+  if (_ppksPaperFetching) return;
+  _ppksPaperFetching = true;
+  try {
+    const res = await fetch('/api/ppks-paper-trades');
+    if (!res.ok) return;
+    const data = await res.json();
+    ppksPaperTrades = data.trades ?? [];
+    ppksPaperSummaryCache = data.summary;
+    ppksPaperOpenSymbols = new Set(
+      ppksPaperTrades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol),
+    );
+    renderPpksPaperTable();
+  } catch {} finally {
+    _ppksPaperFetching = false;
+  }
+}
+
+let _ppksPaperPollTimer = null;
+function schedulePpksPaperPoll() {
+  clearTimeout(_ppksPaperPollTimer);
+  const hasOpen = ppksPaperTrades.some((t) => t.status === 'OPEN');
+  _ppksPaperPollTimer = setTimeout(async () => {
+    await loadPpksPaperTrades();
+    schedulePpksPaperPoll();
+  }, hasOpen ? 3_000 : 15_000);
+}
+
+window.enterPpksPaperTrade = async function(btn, symbol, side, entryPrice, score, sl, tp, noteEncoded) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  const note = noteEncoded ? decodeURIComponent(noteEncoded) : '';
+  try {
+    const res = await fetch('/api/ppks-paper-trades', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice, tp: tp ?? null, sl: sl ?? null, source: `ppks-${score}`, note }),
+    });
+    if (res.ok) {
+      btn.textContent = '⏳';
+      setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+      loadPpksPaperTrades();
+    } else {
+      btn.textContent = 'ERR';
+      setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+    }
+  } catch {
+    btn.textContent = 'ERR';
+    setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+  }
+};
+
+window.closePpksPaperTrade = async function(id) {
+  try {
+    const res = await fetch('/api/ppks-paper-trades/close', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) { await loadPpksPaperTrades(); schedulePpksPaperPoll(); }
+  } catch {}
+};
+
+window.deletePpksPaperTrade = async function(id) {
+  if (!confirm('Xóa paper trade này?')) return;
+  try {
+    const res = await fetch('/api/ppks-paper-trades/delete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) { await loadPpksPaperTrades(); schedulePpksPaperPoll(); }
+  } catch {}
+};
+
 await fetchAndApply();
 connect();
+await loadPpksPaperTrades();
+schedulePpksPaperPoll();

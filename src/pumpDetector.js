@@ -84,14 +84,18 @@ function detectMa60VolumeCluster(candles, state = {}, opts = {}) {
     touchBandPct: 0.004,
     holdBandPct: 0.002,
     minClusterGainPct: 0.012,
-    minBreakoutPct: 0.0015,
-    pivotLookback: 18,
+    minBreakoutPct: 0.004,
+    pivotLookback: 12,
     minVolNowX: 1.25,
     minVolClusterX: 1.65,
     minVolRamp: 1.08,
     minGreenFrac: 0.6,
-    maxUpperWickFrac: 0.45,
-    minScore: 55,
+    maxUpperWickFrac: 0.35,
+    minRsi14: 42,             // hard floor: không LONG khi RSI quá thấp / falling knife
+    minMa60SlopePct: -0.0015, // MA60 không được giảm quá 0.15% so với 10 bar trước
+    minScore: 58,
+    maxCurrentDistPct: 0.08,  // current price phải <= 8% trên MA60 (15m)
+    maxStalePct:       0.05,  // nếu cluster kết thúc trước đó, giá hiện tại không được vượt quá 5% so với cluster-end
     ...opts,
   };
 
@@ -156,7 +160,30 @@ function detectMa60VolumeCluster(candles, state = {}, opts = {}) {
       const rampOk = volNowX >= C.minVolNowX && volClusterX >= C.minVolClusterX && volRamp >= C.minVolRamp;
       if (!rampOk) continue;
 
+      // Guard: RSI hard floor — không LONG khi momentum quá yếu / falling knife
       const rsi14 = Number.isFinite(state.rsi14) ? state.rsi14 : calcRsi(closes, 14);
+      if (Number.isFinite(rsi14) && rsi14 < C.minRsi14) continue;
+
+      // Guard: MA60 slope — MA60 không được đang giảm mạnh (downtrend support breakdown risk)
+      const ma60Prev = smaAt(closes, 60, touchIdx - 10);
+      if (Number.isFinite(ma60Prev) && ma60Prev > 0) {
+        const ma60Slope = (ma60 - ma60Prev) / ma60Prev;
+        if (ma60Slope < C.minMa60SlopePct) continue;
+      }
+
+      // Guard: giá hiện tại không được quá xa MA60 — dùng MA60 TẠI n-2 (hiện tại), không phải tại touch
+      const currentClose = closes[n - 2];
+      const ma60Now = smaAt(closes, 60, n - 2);
+      const currentDistFromMa60 = Number.isFinite(ma60Now) && ma60Now > 0
+        ? (currentClose - ma60Now) / ma60Now
+        : (currentClose - ma60) / ma60;
+      if (currentDistFromMa60 > C.maxCurrentDistPct) continue;
+
+      // Guard: nếu cluster kết thúc trước đó (end < n-2), giá không được chạy quá xa so với cluster entry
+      if (end < n - 2) {
+        const staleGainPct = (currentClose - closes[end]) / Math.max(closes[end], 1e-9);
+        if (staleGainPct > C.maxStalePct) continue;
+      }
       const A = atrAt(candles, 14, end);
       const scTouch = Math.max(0, Math.min(1, 1 - Math.abs(lows[touchIdx] - ma60) / Math.max(ma60 * C.touchBandPct, 1e-9)));
       const scGain = Math.max(0, Math.min(1, (clusterGainPct - C.minClusterGainPct) / 0.035));
@@ -198,6 +225,10 @@ function detectMa60VolumeCluster(candles, state = {}, opts = {}) {
           clusterBars: len,
           rsi14val: Number.isFinite(rsi14) ? +rsi14.toFixed(1) : null,
           emaRibbon: 1,
+          ema99: Number.isFinite(state.ema99) && state.ema99 > 0 ? +state.ema99.toFixed(10) : null,
+          ema99DistPct: Number.isFinite(state.ema99) && state.ema99 > 0
+            ? +(((currentClose - state.ema99) / state.ema99) * 100).toFixed(2)
+            : null,
         },
       };
       if (!best || found.score > best.score) best = found;
@@ -230,12 +261,18 @@ export async function runPumpScan(symbols, klineCache, snapshotMap) {
           clusterMin: 4,
           clusterMax: 8,
           touchLookback: 18,
+          maxCurrentDistPct: 0.06,  // 5m: tighter — ≤6% trên MA60
+          maxStalePct:       0.04,  // 5m: ≤4% chased
           minClusterGainPct: 0.009,
-          pivotLookback: 24,
+          minBreakoutPct: 0.003,    // 5m: 0.3% breakout (slightly lower than 15m)
+          pivotLookback: 14,        // 5m: 14 bars = 70m — more recent resistance
           minVolNowX: 1.5,
           minVolClusterX: 1.8,
           minVolRamp: 1.12,
-          maxUpperWickFrac: 0.50,
+          maxUpperWickFrac: 0.38,   // 5m: tighter wick filter
+          minRsi14: 42,             // 5m: same RSI floor
+          minMa60SlopePct: -0.002,  // 5m: slightly looser slope — 5m MA60 can wiggle more
+          minScore: 58,
         });
         if (ma60Det5m.pass) {
           results.push({
