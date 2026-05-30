@@ -1394,7 +1394,7 @@ let _staleReseedLock = false;
 let _tieredWarmupPromise = null;
 let _klineWarmupSymbols = [];
 let _allowLogicBeforeKlineReady = false;
-const _warmupMaxSymbols = Number(process.env.KLINE_WARMUP_MAX_SYMBOLS ?? 400);
+const _warmupMaxSymbols = Number(process.env.KLINE_WARMUP_MAX_SYMBOLS) || 400; // || 400 guards against NaN/0 from bad env value
 const KLINE_WARMUP_TIERS = [
   { max: Math.min(50,  _warmupMaxSymbols), batchSize: 1, batchDelayMs: 2500, afterMs: 0 },
   { max: Math.min(100, _warmupMaxSymbols), batchSize: 1, batchDelayMs: 3000, afterMs: 0 },
