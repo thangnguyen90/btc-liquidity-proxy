@@ -42,7 +42,13 @@ function endpointWeight(method, path, params = {}) {
   const p = String(path);
   if (p.includes('/fapi/v1/ticker/24hr')) return params?.symbol ? 1 : 40;
   if (p.includes('/fapi/v1/premiumIndex')) return params?.symbol ? 1 : 10;
-  if (p.includes('/fapi/v1/klines')) return 1;
+  if (p.includes('/fapi/v1/klines')) {
+    // Binance Futures weight: ceil(limit/100), min 1 — https://binance-docs.github.io/apidocs/futures/en/
+    const limit = Number(params?.limit ?? 100);
+    if (limit > 500) return 10;
+    if (limit > 100) return 5;
+    return 2;
+  }
   if (p.includes('/fapi/v1/depth')) {
     const limit = Number(params?.limit ?? 100);
     if (limit >= 1000) return 20;

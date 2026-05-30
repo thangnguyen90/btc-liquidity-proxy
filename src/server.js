@@ -1394,12 +1394,13 @@ let _staleReseedLock = false;
 let _tieredWarmupPromise = null;
 let _klineWarmupSymbols = [];
 let _allowLogicBeforeKlineReady = false;
+const _warmupMaxSymbols = Number(process.env.KLINE_WARMUP_MAX_SYMBOLS ?? 400);
 const KLINE_WARMUP_TIERS = [
-  { max: 50,  batchSize: 1, batchDelayMs: 1400, afterMs: 0 },
-  { max: 100, batchSize: 1, batchDelayMs: 1600, afterMs: 0 },
-  { max: 200, batchSize: 1, batchDelayMs: 1800, afterMs: 0 },
-  { max: 400, batchSize: 1, batchDelayMs: 2200, afterMs: 0 },
-];
+  { max: Math.min(50,  _warmupMaxSymbols), batchSize: 1, batchDelayMs: 2500, afterMs: 0 },
+  { max: Math.min(100, _warmupMaxSymbols), batchSize: 1, batchDelayMs: 3000, afterMs: 0 },
+  { max: Math.min(200, _warmupMaxSymbols), batchSize: 1, batchDelayMs: 3500, afterMs: 0 },
+  { max: Math.min(400, _warmupMaxSymbols), batchSize: 1, batchDelayMs: 4000, afterMs: 0 },
+].filter((t, i, arr) => i === 0 || t.max > arr[i - 1].max); // bỏ tiers trùng khi KLINE_WARMUP_MAX_SYMBOLS nhỏ
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -3281,6 +3282,23 @@ server.listen(port, '127.0.0.1', () => {
       topTraderCache: topPositionCache, // tái dùng cache từ startLongShortRefresh, tránh 51 REST calls
     });
     // startVolumeDumpScanner disabled — tắt để giảm tải API (150 REST calls/phút)
+    startVolumeDumpScanner({
+      client,
+      klineCache,
+      webhookUrl: process.env.VOL_DUMP_WEBHOOK_URL || process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '',
+      bigCandleWebhookUrl: process.env.BIG_CANDLE_WEBHOOK_URL || '',
+      getSnapshot: getMarketSnapshot,
+      intervalMs: Number(process.env.VOL_DUMP_INTERVAL_MS ?? 60000),
+      cooldownMs: Number(process.env.VOL_DUMP_COOLDOWN_MS ?? 7200000),
+      minVolumeUsdt: Number(process.env.VOL_DUMP_MIN_VOLUME ?? 5000000),
+      maxCoins: Number(process.env.VOL_DUMP_MAX_COINS ?? 150),
+      volMult: Number(process.env.VOL_DUMP_VOL_MULT ?? 1.8),
+      sustainedCandles: Number(process.env.VOL_DUMP_SUSTAINED ?? 3),
+      dumpPct: Number(process.env.VOL_DUMP_DROP_PCT ?? 1.5),
+      move4cPct: Number(process.env.VOL_DUMP_MOVE4C_PCT ?? 2.5),
+      bigCandlePct: Number(process.env.BIG_CANDLE_PCT ?? 8),
+      bigCandleCooldownMs: Number(process.env.BIG_CANDLE_COOLDOWN_MS ?? 3600000),
+    });
     runStaleOrderCleaner(); // seed initial position set, no cancellations on first run
     setInterval(runStaleOrderCleaner, 35_000); // 35s — lệch nhịp TSL(30s) tránh cùng lúc
     runBtcHealthMonitor(); // initial read — seed _prevBtcBias, no cancellations
@@ -4258,7 +4276,7 @@ async function _fetchMarketSnapshot() {
       };
     });
   snapshotCache.data = result;
-  snapshotCache.expiresAt = Date.now() + 15000;
+  snapshotCache.expiresAt = Date.now() + 60_000; // 60s — align với getSharedSnapshot TTL tránh duplicate w=50 call
   return result;
 }
 
