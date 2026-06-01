@@ -17,12 +17,14 @@
 import { createMarkPriceTicker } from './markPriceTicker.js';
 
 const _handlers = new Map(); // id → { symbols: Set<string>, onPrice: fn }
+const _latestPrices = new Map(); // symbol -> { markPrice, at }
 let _ticker = null;
 
 function _ensureTicker() {
   if (_ticker) return;
   _ticker = createMarkPriceTicker({
     onPrice: ({ symbol, markPrice }) => {
+      _latestPrices.set(symbol, { markPrice, at: Date.now() });
       for (const h of _handlers.values()) {
         if (h.symbols.has(symbol)) {
           try { h.onPrice({ symbol, markPrice }); } catch {}
@@ -70,5 +72,9 @@ export const sharedMarkTicker = {
   unregister(id) {
     _handlers.delete(id);
     _rebuildSymbols();
+  },
+
+  getPrice(symbol) {
+    return _latestPrices.get(String(symbol ?? '').toUpperCase())?.markPrice ?? null;
   },
 };

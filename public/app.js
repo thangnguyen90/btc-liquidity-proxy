@@ -96,8 +96,9 @@ const elements = {
 
 let autoRefreshTimer = null;
 let latestAnalysis = null;
+let _analysisLoading = false;
 let priceWsSymbol = null;
-let priceWsReconnectTimer = null;
+let priceWs = null;
 const initialSymbol = new URLSearchParams(window.location.search).get('symbol')
   || localStorage.getItem('lastSymbol');
 
@@ -168,6 +169,8 @@ async function loadSymbols() {
 }
 
 async function loadAnalysis() {
+  if (_analysisLoading) return; // bỏ qua nếu request trước chưa xong
+  _analysisLoading = true;
   const symbol = normalizeSymbol(elements.symbolInput.value);
   const coin = symbol.replace(/USDT$/, '');
   elements.coinglassLink.href = `https://www.coinglass.com/pro/futures/LiquidationHeatMapNew?coin=${coin}`;
@@ -177,13 +180,20 @@ async function loadAnalysis() {
     interval: elements.intervalInput.value,
     rangePct: elements.rangeInput.value,
     binSizePct: elements.binSizeInput.value,
-    depthLimit: '500',
   });
 
   setLoading(true);
+  document.getElementById('rg-reset-hint')?.remove();
 
   try {
-    const response = await fetch(`/api/analyze?${params.toString()}`);
+    const ctrl = new AbortController();
+    const clientTimeout = setTimeout(() => ctrl.abort(new Error('Client timeout 25s')), 25_000);
+    let response;
+    try {
+      response = await fetch(`/api/analyze?${params.toString()}`, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(clientTimeout);
+    }
     const payload = await response.json();
 
     if (!response.ok) {
@@ -197,16 +207,40 @@ async function loadAnalysis() {
     connectPriceSocket(payload.symbol);
     loadLsRatioChart(payload.symbol);
   } catch (error) {
-    elements.status.textContent = messageFor(error);
+    const msg = error?.name === 'AbortError' ? 'Timeout — server không phản hồi, thử lại sau' : messageFor(error);
+    elements.status.textContent = msg;
+    if (msg.includes('blocked') || msg.includes('skip REST') || msg.includes('rate-limit')) {
+      showRateGateResetHint();
+    }
   } finally {
+    _analysisLoading = false;
     setLoading(false);
   }
+}
+
+function showRateGateResetHint() {
+  if (document.getElementById('rg-reset-hint')) return;
+  const div = document.createElement('div');
+  div.id = 'rg-reset-hint';
+  div.style.cssText = 'margin:6px 0;padding:5px 10px;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);border-radius:6px;font-size:12px;color:var(--text-secondary,#ccc);';
+  div.innerHTML = '⚠ Server đang block IP cũ. Nếu đã đổi IP: <button id="rg-reset-btn" style="margin-left:6px;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Reset Gate</button>';
+  elements.status.insertAdjacentElement('afterend', div);
+  document.getElementById('rg-reset-btn').addEventListener('click', async () => {
+    document.getElementById('rg-reset-btn').textContent = 'Đang reset...';
+    try {
+      await fetch('/api/rate-gate/reset', { method: 'POST' });
+      div.remove();
+      loadAnalysis();
+    } catch {
+      document.getElementById('rg-reset-btn').textContent = 'Lỗi, thử lại';
+    }
+  });
 }
 
 function render(data) {
   latestAnalysis = data;
   const coin = data.symbol.replace(/USDT$/, '');
-  const signalClass = classFor(data.signal.score);
+  const signalClass = data.signal.label === 'kill_short_zone' ? 'neutral' : classFor(data.signal.score);
   const priceDigits = priceDigitsFor(data.price.mark);
 
   elements.signalValue.textContent = labelForSignal(data.signal.label);
@@ -807,6 +841,7 @@ function normalizeSymbol(input) {
 function labelForSignal(signal) {
   const labels = {
     bullish_squeeze: 'Bullish Squeeze',
+    kill_short_zone: 'Kill Short Zone ↑',
     bearish_sweep: 'Bearish Sweep',
     uptrend: 'Uptrend',
     downtrend: 'Downtrend',
@@ -925,45 +960,46 @@ function messageFor(error) {
 }
 
 function connectPriceSocket(symbol) {
-  if (priceWsReconnectTimer) {
-    clearInterval(priceWsReconnectTimer);
-    priceWsReconnectTimer = null;
+  // Cleanup previous WebSocket
+  if (priceWs) {
+    priceWs.onclose = null; // prevent auto-reconnect for old symbol
+    priceWs.close();
+    priceWs = null;
   }
 
   priceWsSymbol = symbol;
   const dot = document.querySelector('#priceSocketDot');
+  if (dot) dot.style.display = 'inline-block';
 
-  if (dot) {
-    dot.style.display = 'inline-block';
+  function connect() {
+    if (priceWsSymbol !== symbol) return; // symbol changed, abort
+    const ws = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@markPrice@1s`);
+    priceWs = ws;
+
+    ws.onmessage = (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.e !== 'markPriceUpdate') return;
+        const mark = Number(d.p);
+        const idx = Number(d.i);
+        if (!mark) return;
+        const digits = priceDigitsFor(mark);
+        elements.markPrice.textContent = formatPrice(mark, digits);
+        elements.indexPrice.textContent = `Index ${formatPrice(idx, digits)}`;
+        if (dot) {
+          dot.classList.add('blink');
+          setTimeout(() => dot.classList.remove('blink'), 300);
+        }
+      } catch { /* ignore parse errors */ }
+    };
+
+    ws.onclose = () => {
+      priceWs = null;
+      if (priceWsSymbol === symbol) setTimeout(connect, 3000); // auto-reconnect same symbol
+    };
   }
 
-  priceWsReconnectTimer = setInterval(async () => {
-    if (priceWsSymbol !== symbol) {
-      return;
-    }
-
-    try {
-      const res = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`);
-      const data = await res.json();
-      const mark = Number(data.mark);
-      const idx = Number(data.index);
-
-      if (!mark) {
-        return;
-      }
-
-      const digits = priceDigitsFor(mark);
-      elements.markPrice.textContent = formatPrice(mark, digits);
-      elements.indexPrice.textContent = `Index ${formatPrice(idx, digits)}`;
-
-      if (dot) {
-        dot.classList.add('blink');
-        setTimeout(() => dot.classList.remove('blink'), 300);
-      }
-    } catch {
-      // ignore fetch errors, will retry next tick
-    }
-  }, 1000);
+  connect();
 }
 
 // ── Liquidation Heatmap ────────────────────────────────────────────────────────

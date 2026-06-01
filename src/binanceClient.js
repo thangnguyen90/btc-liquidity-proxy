@@ -65,21 +65,22 @@ function endpointWeight(method, path, params = {}) {
 }
 
 export class BinanceClient {
-  constructor({ baseUrl = FUTURES_BASE_URL, timeoutMs = 10000 } = {}) {
+  constructor({ baseUrl = FUTURES_BASE_URL, timeoutMs = 10000, rateGate = null } = {}) {
     this.baseUrl = baseUrl;
     this.timeoutMs = timeoutMs;
+    this.rateGate = rateGate ?? binanceRateGate; // fallback sang shared singleton
   }
 
-  async getPremiumIndex(symbol) {
-    return this.get('/fapi/v1/premiumIndex', symbol ? { symbol } : {});
+  async getPremiumIndex(symbol, options = {}) {
+    return this.get('/fapi/v1/premiumIndex', symbol ? { symbol } : {}, options);
   }
 
-  async getOpenInterest(symbol) {
-    return this.get('/fapi/v1/openInterest', { symbol });
+  async getOpenInterest(symbol, options = {}) {
+    return this.get('/fapi/v1/openInterest', { symbol }, options);
   }
 
-  async getKlines(symbol, interval, limit) {
-    const rows = await this.get('/fapi/v1/klines', { symbol, interval, limit });
+  async getKlines(symbol, interval, limit, options = {}) {
+    const rows = await this.get('/fapi/v1/klines', { symbol, interval, limit }, options);
 
     return rows.map((row) => ({
       openTime: Number(row[0]),
@@ -96,8 +97,8 @@ export class BinanceClient {
     }));
   }
 
-  async getDepth(symbol, limit = 1000) {
-    const depth = await this.get('/fapi/v1/depth', { symbol, limit });
+  async getDepth(symbol, limit = 1000, options = {}) {
+    const depth = await this.get('/fapi/v1/depth', { symbol, limit }, options);
 
     return {
       lastUpdateId: depth.lastUpdateId,
@@ -106,16 +107,16 @@ export class BinanceClient {
     };
   }
 
-  async getGlobalLongShortRatio(symbol, period = '15m', limit = 1) {
-    return this.get('/futures/data/globalLongShortAccountRatio', { symbol, period, limit });
+  async getGlobalLongShortRatio(symbol, period = '15m', limit = 1, options = {}) {
+    return this.get('/futures/data/globalLongShortAccountRatio', { symbol, period, limit }, options);
   }
 
-  async getTopLongShortPositionRatio(symbol, period = '15m', limit = 1) {
-    return this.get('/futures/data/topLongShortPositionRatio', { symbol, period, limit });
+  async getTopLongShortPositionRatio(symbol, period = '15m', limit = 1, options = {}) {
+    return this.get('/futures/data/topLongShortPositionRatio', { symbol, period, limit }, options);
   }
 
-  async getTopLongShortAccountRatio(symbol, period = '5m', limit = 50) {
-    return this.get('/futures/data/topLongShortAccountRatio', { symbol, period, limit });
+  async getTopLongShortAccountRatio(symbol, period = '5m', limit = 50, options = {}) {
+    return this.get('/futures/data/topLongShortAccountRatio', { symbol, period, limit }, options);
   }
 
   async getPositionMode({ apiKey, apiSecret }) {
@@ -123,12 +124,12 @@ export class BinanceClient {
     return res.dualSidePosition; // true = hedge mode
   }
 
-  async getExchangeInfo() {
-    return this.get('/fapi/v1/exchangeInfo');
+  async getExchangeInfo(options = {}) {
+    return this.get('/fapi/v1/exchangeInfo', {}, options);
   }
 
-  async getTicker24hr() {
-    return this.get('/fapi/v1/ticker/24hr');
+  async getTicker24hr(options = {}) {
+    return this.get('/fapi/v1/ticker/24hr', {}, options);
   }
 
   async setLeverage({ symbol, leverage, apiKey, apiSecret, recvWindow = 5000 }) {
@@ -182,7 +183,7 @@ export class BinanceClient {
   }
 
   async createListenKey({ apiKey }) {
-    return binanceRateGate.schedule({
+    return this.rateGate.schedule({
       method: 'POST',
       path: '/fapi/v1/listenKey',
       weight: endpointWeight('POST', '/fapi/v1/listenKey'),
@@ -197,7 +198,7 @@ export class BinanceClient {
   }
 
   async keepAliveListenKey({ listenKey, apiKey }) {
-    await binanceRateGate.schedule({
+    await this.rateGate.schedule({
       method: 'PUT',
       path: '/fapi/v1/listenKey',
       weight: endpointWeight('PUT', '/fapi/v1/listenKey'),
@@ -234,7 +235,7 @@ export class BinanceClient {
     Object.entries(payload).forEach(([k, v]) => { if (v !== undefined) query.set(k, String(v)); });
     const sig = (await import('node:crypto')).createHmac('sha256', apiSecret).update(query.toString()).digest('hex');
     query.set('signature', sig);
-    return binanceRateGate.schedule({
+    return this.rateGate.schedule({
       method: 'GET',
       path: '/sapi/v1/account/uid',
       weight: 1,
@@ -306,7 +307,7 @@ export class BinanceClient {
     };
 
     try {
-      return await binanceRateGate.schedule({
+      return await this.rateGate.schedule({
         method,
         path,
         weight: endpointWeight(method, path, params),
@@ -316,7 +317,7 @@ export class BinanceClient {
     }
   }
 
-  async get(path, params = {}) {
+  async get(path, params = {}, options = {}) {
     const url = new URL(path, this.baseUrl);
 
     Object.entries(params).forEach(([key, value]) => {
@@ -354,10 +355,13 @@ export class BinanceClient {
     };
 
     try {
-      return await binanceRateGate.schedule({
+      return await this.rateGate.schedule({
         method: 'GET',
         path,
         weight: endpointWeight('GET', path, params),
+        priority: options.priority,
+        dropOnCongestion: options.dropOnCongestion,
+        source: options.source,
       }, doFetch);
     } finally {
       clearTimeout(timeout);

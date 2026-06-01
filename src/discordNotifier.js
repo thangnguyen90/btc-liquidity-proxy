@@ -333,11 +333,48 @@ export function getHighVolData() {
   return Object.fromEntries(highVolMap);
 }
 
-function buildVolDumpEmbed(symbol, markPrice, stats) {
+function buildVolDumpShortPlan(markPrice, stats, analysis = null) {
+  const setup = analysis?.tradeSetup;
+  if (setup?.direction === 'short' && setup.stopLoss && (setup.primaryTarget || setup.targets?.length)) {
+    return {
+      source: 'analysis/liquidity',
+      entry: setup.entry ?? markPrice,
+      sl: setup.stopLoss,
+      tp: setup.primaryTarget ?? setup.targets?.[0],
+      trigger: setup.triggerPrice ?? null,
+    };
+  }
+
+  const d = digits(markPrice);
+  const below = analysis?.liquidationProxy?.strongestBelow?.[0]?.price
+    ?? analysis?.liquidationProxy?.nearestBelow?.[0]?.price
+    ?? null;
+  const recentHigh = Number(stats.recentHigh ?? 0);
+  const recentLow = Number(stats.recentLow ?? 0);
+  const entry = markPrice;
+  const slBase = recentHigh > markPrice ? recentHigh : markPrice * 1.018;
+  const sl = Math.max(slBase, markPrice * 1.012);
+  const risk = Math.max(sl - entry, entry * 0.006);
+  const rrTp = entry - risk * 1.6;
+  const tp = below && Number(below) < entry ? Math.max(Number(below), rrTp) : rrTp;
+  return {
+    source: below ? 'fallback+liquidity-below' : 'fallback-rr',
+    entry: fp(entry, d),
+    sl: fp(sl, d),
+    tp: fp(tp, d),
+    trigger: recentLow > 0 ? fp(recentLow, d) : null,
+  };
+}
+
+function buildVolDumpEmbed(symbol, markPrice, stats, analysis = null) {
   const { dumpCandlePct, move4cPct, highVolCount, avgVol, lastVol, maxVol } = stats;
   const d = digits(markPrice);
   const volMultLast = avgVol > 0 ? (lastVol / avgVol).toFixed(1) : '?';
   const volMultMax = avgVol > 0 ? (maxVol / avgVol).toFixed(1) : '?';
+  const plan = buildVolDumpShortPlan(markPrice, stats, analysis);
+  const quick = analysis?.quickScan;
+  const liq = analysis?.liquidationProxy;
+  const belowTarget = liq?.sweepTarget?.direction === 'below' ? liq.sweepTarget : null;
 
   return {
     username: 'Liquidity Proxy',
@@ -352,7 +389,126 @@ function buildVolDumpEmbed(symbol, markPrice, stats) {
         `Nến cuối sập: **${dumpCandlePct.toFixed(2)}%**  |  4 nến gần nhất: **${move4cPct.toFixed(2)}%**`,
         `Volume cao: **${highVolCount}/5** nến vừa rồi (cao nhất **${volMultMax}x** avg, nến cuối **${volMultLast}x** avg)`,
         `Vol trung bình: ${compact(avgVol)} USDT  →  Nến cuối: ${compact(lastVol)} USDT`,
-      ].join('\n'),
+        '',
+        `🎯 Entry: **${plan.entry}**${plan.trigger ? `  |  Trigger: **${plan.trigger}**` : ''}`,
+        `🛑 SL: **${plan.sl}**`,
+        `✅ TP: **${plan.tp}**`,
+        quick ? `Scan: **${String(quick.direction).toUpperCase()} ${Number(quick.score ?? 0).toFixed(3)}**` : null,
+        belowTarget ? `Liquidity TP hint: **${fp(Number(belowTarget.price), d)}** (${Number(belowTarget.distancePct).toFixed(2)}%)` : null,
+        `Plan source: ${plan.source}`,
+      ].filter(Boolean).join('\n'),
+      footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
+    }],
+  };
+}
+
+function buildVolUpLongPlan(markPrice, stats, analysis = null) {
+  const setup = analysis?.tradeSetup;
+  if (setup?.direction === 'long' && setup.stopLoss && (setup.primaryTarget || setup.targets?.length)) {
+    return {
+      source: 'analysis/liquidity',
+      entry: setup.entry ?? markPrice,
+      sl: setup.stopLoss,
+      tp: setup.primaryTarget ?? setup.targets?.[0],
+      trigger: setup.triggerPrice ?? null,
+    };
+  }
+
+  const d = digits(markPrice);
+  const above = analysis?.liquidationProxy?.strongestAbove?.[0]?.price
+    ?? analysis?.liquidationProxy?.nearestAbove?.[0]?.price
+    ?? null;
+  const recentHigh = Number(stats.recentHigh ?? 0);
+  const recentLow = Number(stats.recentLow ?? 0);
+  const entry = markPrice;
+  const slBase = recentLow > 0 && recentLow < markPrice ? recentLow : markPrice * 0.982;
+  const sl = Math.min(slBase, markPrice * 0.988);
+  const risk = Math.max(entry - sl, entry * 0.006);
+  const rrTp = entry + risk * 1.6;
+  const tp = above && Number(above) > entry ? Math.min(Number(above), rrTp) : rrTp;
+  return {
+    source: above ? 'fallback+liquidity-above' : 'fallback-rr',
+    entry: fp(entry, d),
+    sl: fp(sl, d),
+    tp: fp(tp, d),
+    trigger: recentHigh > 0 ? fp(recentHigh, d) : null,
+  };
+}
+
+function buildVolUpEmbed(symbol, markPrice, stats, analysis = null) {
+  const { dumpCandlePct, move4cPct, highVolCount, avgVol, lastVol, maxVol } = stats;
+  const d = digits(markPrice);
+  const volMultLast = avgVol > 0 ? (lastVol / avgVol).toFixed(1) : '?';
+  const volMultMax = avgVol > 0 ? (maxVol / avgVol).toFixed(1) : '?';
+  const plan = buildVolUpLongPlan(markPrice, stats, analysis);
+  const quick = analysis?.quickScan;
+  const liq = analysis?.liquidationProxy;
+  const aboveTarget = liq?.sweepTarget?.direction === 'above' ? liq.sweepTarget : null;
+
+  return {
+    username: 'Liquidity Proxy',
+    embeds: [{
+      title: `🚀 VOL UP: ${symbol} — Long entry?`,
+      url: symbolUrl(symbol),
+      color: 0x22c55e,
+      description: [
+        `**Volume cao liên tiếp rồi kéo mạnh** — cân nhắc vào long`,
+        '',
+        `Mark: **${fp(markPrice, d)}**`,
+        `Nến cuối tăng: **+${Math.max(0, dumpCandlePct).toFixed(2)}%**  |  4 nến gần nhất: **+${Math.max(0, move4cPct).toFixed(2)}%**`,
+        `Volume cao: **${highVolCount}/5** nến vừa rồi (cao nhất **${volMultMax}x** avg, nến cuối **${volMultLast}x** avg)`,
+        `Vol trung bình: ${compact(avgVol)} USDT  →  Nến cuối: ${compact(lastVol)} USDT`,
+        '',
+        `🎯 Entry: **${plan.entry}**${plan.trigger ? `  |  Trigger: **${plan.trigger}**` : ''}`,
+        `🛑 SL: **${plan.sl}**`,
+        `✅ TP: **${plan.tp}**`,
+        quick ? `Scan: **${String(quick.direction).toUpperCase()} ${Number(quick.score ?? 0).toFixed(3)}**` : null,
+        aboveTarget ? `Liquidity TP hint: **${fp(Number(aboveTarget.price), d)}** (${Number(aboveTarget.distancePct).toFixed(2)}%)` : null,
+        `Plan source: ${plan.source}`,
+      ].filter(Boolean).join('\n'),
+      footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
+    }],
+  };
+}
+
+function buildBullishVolDumpEmbed(symbol, markPrice, stats, analysis) {
+  const { dumpCandlePct, move4cPct, highVolCount, avgVol, lastVol, maxVol } = stats;
+  const d = digits(markPrice);
+  const volMultLast = avgVol > 0 ? (lastVol / avgVol).toFixed(1) : '?';
+  const volMultMax = avgVol > 0 ? (maxVol / avgVol).toFixed(1) : '?';
+  const signalScore = Number(analysis?.signal?.score ?? 0);
+  const quickScore = Number(analysis?.quickScan?.score ?? 0);
+  const liq = analysis?.liquidationProxy ?? {};
+  const target = liq?.sweepTarget;
+  const setup = analysis?.tradeSetup;
+  const plan = setup?.direction === 'long' ? {
+    entry: setup.entry ?? markPrice,
+    sl: setup.stopLoss ?? setup.invalidation ?? null,
+    tp: setup.primaryTarget ?? setup.targets?.[0] ?? null,
+    trigger: setup.triggerPrice ?? null,
+  } : null;
+
+  return {
+    username: 'Liquidity Proxy',
+    embeds: [{
+      title: `💥🟢 VOL DUMP + BULLISH SQUEEZE: ${symbol} — LONG watch`,
+      url: symbolUrl(symbol),
+      color: 0x22c55e,
+      description: [
+        `**Bullish Squeeze + Scan LONG + VOL DUMP**`,
+        '',
+        `Mark: **${fp(markPrice, d)}**`,
+        `Signal: **Bullish Squeeze** | Score **${signalScore.toFixed(4)}**`,
+        `Scan: **LONG ${quickScore.toFixed(3)}**`,
+        `Nến cuối: **${dumpCandlePct.toFixed(2)}%** | 4 nến: **${move4cPct.toFixed(2)}%**`,
+        `Volume cao: **${highVolCount}/5** nến (max **${volMultMax}x**, last **${volMultLast}x** avg)`,
+        plan ? '' : null,
+        plan ? `🎯 Entry: **${plan.entry}**${plan.trigger ? ` | Trigger: **${plan.trigger}**` : ''}` : null,
+        plan?.sl ? `🛑 SL: **${plan.sl}**` : null,
+        plan?.tp ? `✅ TP: **${plan.tp}**` : null,
+        target ? `Sweep target: **${target.direction} ${fp(Number(target.price), d)}** (${Number(target.distancePct).toFixed(2)}%)` : null,
+        `Liquidity bias: **${Number(liq.bias ?? 0).toFixed(3)}**`,
+      ].filter(Boolean).join('\n'),
       footer: { text: new Date().toLocaleString('vi-VN', { hour12: false }) },
     }],
   };
@@ -488,27 +644,61 @@ export function startVolumeDumpScanner({
           if (highVolCount < sustainedCandles) continue;
           const isDumpCandle = dumpCandlePct <= -dumpPct;
           const isSteadyDrop = move4cPctVal <= -move4cPct;
-          if (!isDumpCandle && !isSteadyDrop) continue;
+          const isUpCandle = dumpCandlePct >= Number(process.env.VOL_UP_PUMP_PCT ?? dumpPct);
+          const isSteadyUp = move4cPctVal >= Number(process.env.VOL_UP_MOVE4C_PCT ?? move4cPct);
+          const isVolUp = isUpCandle || isSteadyUp;
+          const isVolDump = isDumpCandle || isSteadyDrop;
+          if (!isVolDump && !isVolUp) continue;
+
+          let analysis = null;
+          let bullishVolDump = null;
+          try {
+            analysis = await fetchAnalysis({ client, symbol: row.symbol, interval: '15m', limit: 192 });
+            const signalOk = analysis?.signal?.label === 'bullish_squeeze'
+              && Number(analysis?.signal?.score ?? 0) >= Number(process.env.VOL_DUMP_BULLISH_MIN_SIGNAL_SCORE ?? 0.25);
+            const quickOk = analysis?.quickScan?.direction === 'long'
+              && Number(analysis?.quickScan?.score ?? 0) >= Number(process.env.VOL_DUMP_BULLISH_MIN_QUICK_SCORE ?? 0.7);
+            const volDumpOk = analysis?.volDump?.triggered === true;
+            if (signalOk && quickOk && volDumpOk) bullishVolDump = analysis;
+          } catch {
+            bullishVolDump = null;
+          }
 
           // Mark as dump in highVolMap
           const hvEntry = highVolMap.get(row.symbol);
-          if (hvEntry) hvEntry.isVolDump = true;
+          if (hvEntry) {
+            hvEntry.isVolDump = true;
+            hvEntry.volDumpType = isVolUp ? 'vol_up_long' : bullishVolDump ? 'bullish_squeeze_long' : 'short_dump';
+          }
 
           volDumpCooldowns.set(row.symbol, Date.now());
-          volDumpActive.set(row.symbol, { timestamp: Date.now(), dumpCandlePct, move4cPct: move4cPctVal, highVolCount });
+          volDumpActive.set(row.symbol, {
+            timestamp: Date.now(),
+            dumpCandlePct,
+            move4cPct: move4cPctVal,
+            highVolCount,
+            type: isVolUp ? 'vol_up_long' : bullishVolDump ? 'bullish_squeeze_long' : 'short_dump',
+          });
 
           if (webhookUrl) {
-            const embed = buildVolDumpEmbed(row.symbol, row.markPrice, {
+            const stats = {
               dumpCandlePct,
               move4cPct: move4cPctVal,
               highVolCount,
               avgVol,
               lastVol,
               maxVol: maxVol5,
-            });
+              recentHigh: Math.max(...recent5.map((k) => Number(k.high))),
+              recentLow: Math.min(...recent5.map((k) => Number(k.low))),
+            };
+            const embed = isVolUp
+              ? buildVolUpEmbed(row.symbol, row.markPrice, stats, analysis)
+              : bullishVolDump
+              ? buildBullishVolDumpEmbed(row.symbol, row.markPrice, stats, bullishVolDump)
+              : buildVolDumpEmbed(row.symbol, row.markPrice, stats, analysis);
             await sendWebhook(webhookUrl, embed);
           }
-          console.log(`[VolDump] Alert: ${row.symbol} dump=${dumpCandlePct.toFixed(2)}% 4c=${move4cPctVal.toFixed(2)}% hvol=${highVolCount}/5`);
+          console.log(`[VolDump] Alert: ${row.symbol} type=${isVolUp ? 'vol_up_long' : bullishVolDump ? 'bullish_squeeze_long' : 'short_dump'} candle=${dumpCandlePct.toFixed(2)}% 4c=${move4cPctVal.toFixed(2)}% hvol=${highVolCount}/5`);
         } catch {
           // skip individual coin failures
         }
@@ -702,6 +892,7 @@ export function startLiqImbalanceScanner({
   onHighProbAlert = null,
   highProbThreshold = 90,
   topTraderCache = null, // Map<symbol, { longShortRatio, longPosition, shortPosition }> từ startLongShortRefresh
+  topTraderRestFallback = false,
 }) {
   const getKlines = (symbol, interval, limit) =>
     klineCache ? klineCache.getKlines(symbol, interval, limit) : client.getKlines(symbol, interval, limit);
@@ -717,9 +908,10 @@ export function startLiqImbalanceScanner({
         timestamp: String(Date.now()),
       }]);
     }
+    if (!topTraderRestFallback) return Promise.resolve([]);
     return client.getTopLongShortPositionRatio(symbol, '5m', 1); // limit=1 thay vì 50 nếu phải fallback REST
   };
-  console.log(`[LiqScan] Started. threshold=±${biasThreshold} interval=${intervalMs / 60000}min cooldown=${cooldownMs / 60000}min${klineCache ? ' ws-cache' : ''}${onHighProbAlert ? ` autoOrder≥${highProbThreshold}%` : ''}`);
+  console.log(`[LiqScan] Started. threshold=±${biasThreshold} interval=${intervalMs / 60000}min cooldown=${cooldownMs / 60000}min${klineCache ? ' ws-cache' : ''}${topTraderRestFallback ? ' topTraderREST' : ''}${onHighProbAlert ? ` autoOrder≥${highProbThreshold}%` : ''}`);
 
   const run = async () => {
     try {

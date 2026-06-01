@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
-import { binanceRateGate } from './binanceRateGate.js';
+import { BinanceRateGate, binanceRateGate } from './binanceRateGate.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
 import { computeHeatmapData } from './liquidityProxy.js';
@@ -20,6 +20,7 @@ import { runDumpIgnitionScan } from './dumpIgnitionDetector.js';
 import { runSpikeReversalScan } from './spikeReversalDetector.js';
 import { detectPostDumpKillLong, detectPostPumpKillShort, runPostPumpKillShortScan } from './postPumpKillShortDetector.js';
 import { runPumpIgnitionScan } from './pumpIgnitionDetector.js';
+import { runEmaSqueezeScan } from './emaSqueezeDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -33,6 +34,14 @@ const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const publicDir = join(rootDir, 'public');
 const client = new BinanceClient({
   baseUrl: process.env.BINANCE_FUTURES_BASE_URL || undefined,
+  timeoutMs: 20_000,
+});
+// Rate gate + client riêng cho /api/analyze — không tranh queue với background scans
+const analyzeRateGate = new BinanceRateGate({ limitPerMin: 600, concurrency: 4 });
+const analyzeClient = new BinanceClient({
+  baseUrl: process.env.BINANCE_FUTURES_BASE_URL || undefined,
+  timeoutMs: 20_000,
+  rateGate: analyzeRateGate,
 });
 const klineCache = new KlineCache({ client, maxKlines: 500 });
 const pumpScanCache = { data: null, expiresAt: 0 };
@@ -42,17 +51,133 @@ const dumpIgnitionScanCache = { data: null, expiresAt: 0 };
 const spikeReversalScanCache  = { data: null, expiresAt: 0 };
 const postPumpKillShortScanCache = { data: null, expiresAt: 0 };
 const pumpIgnitionScanCache   = { data: null, expiresAt: 0 };
+const emaSqueezesScanCache    = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
+const analyzeCache = new Map(); // key: `${symbol}|${interval}|${rangePct}|${binSizePct}` → { data, expiresAt }
+const ANALYZE_CACHE_TTL_MS = 10_000; // 10s — nến 15m đổi mỗi 15 phút, giá live qua WS
 
 // ── Shared market snapshot cache — tất cả scan dùng chung, tránh spam REST ───
 let _snapshotCache = null;
 let _snapshotCacheAt = 0;
 let _snapshotInflight = null;
 const SNAPSHOT_TTL_MS = 60_000; // 60s — giảm getTicker24hr(w=40)+getPremiumIndex(w=10) frequency
+const STALE_BOARD_CACHE_MS = Number(process.env.STALE_BOARD_CACHE_MS ?? 15 * 60_000);
+
+function isBinanceRestCongested() {
+  return typeof binanceRateGate.isCongested === 'function'
+    ? binanceRateGate.isCongested()
+    : (binanceRateGate.snapshot?.().queue ?? 0) > 700;
+}
+
+let _lastRestCongestionLogAt = 0;
+function logRestCongestion(label, reason) {
+  const now = Date.now();
+  if (now - _lastRestCongestionLogAt < 30_000) return;
+  _lastRestCongestionLogAt = now;
+  const snap = binanceRateGate.snapshot?.();
+  console.warn(`[${label}] Skip ${reason}: Binance REST queue congested (${snap?.queue ?? '?'}).`);
+}
+
+function staleScanPayload(cache, reason = 'binance-rest-congested') {
+  if (!cache?.data) return null;
+  const ageMs = Date.now() - Number(cache.data.scannedAt ?? 0);
+  if (!Number.isFinite(ageMs) || ageMs > STALE_BOARD_CACHE_MS) return null;
+  return {
+    ...cache.data,
+    stale: true,
+    staleReason: reason,
+    gate: binanceRateGate.snapshot?.() ?? null,
+  };
+}
+
+let _lastRestBlockAlertKey = '';
+let _lastRestCongestedAlertAt = 0;
+
+function binanceRestAlertWebhook() {
+  return process.env.BINANCE_REST_ALERT_WEBHOOK_URL
+    || process.env.DISCORD_WEBHOOK_URL
+    || process.env.LIQ_SCAN_WEBHOOK_URL
+    || process.env.POST_PUMP_DUMP_RISK_WEBHOOK_URL
+    || '';
+}
+
+function topQueueText(snap) {
+  const rows = Array.isArray(snap?.queueTop) ? snap.queueTop.slice(0, 5) : [];
+  if (!rows.length) return '-';
+  return rows.map((r) => `${r.key} x${r.count} w${r.weight}`).join('\n');
+}
+
+function sendBinanceRestDiscordAlert(kind, snap, extra = {}) {
+  const webhookUrl = binanceRestAlertWebhook();
+  if (!webhookUrl) return;
+  const now = Date.now();
+  const blockedUntil = Number(snap?.blockedUntil ?? 0);
+  const remainingSec = blockedUntil > now ? Math.ceil((blockedUntil - now) / 1000) : 0;
+  const title = kind === 'blocked'
+    ? `Binance REST blocked (${snap?.blockReason || 'rate-limit'})`
+    : 'Binance REST queue congested';
+  const color = kind === 'blocked' ? 0xef4444 : 0xf59e0b;
+  const fields = [
+    { name: 'Queue', value: String(snap?.queue ?? 0), inline: true },
+    { name: 'Active', value: String(snap?.active ?? 0), inline: true },
+    { name: 'Tokens', value: String(snap?.tokens ?? '-'), inline: true },
+    kind === 'blocked'
+      ? { name: 'Resume ETA', value: remainingSec > 0 ? `${remainingSec}s | ${new Date(blockedUntil).toISOString()}` : '-', inline: false }
+      : { name: 'High watermark', value: String(snap?.highWatermark ?? '-'), inline: true },
+    { name: 'Top queue', value: `\`\`\`\n${topQueueText(snap).slice(0, 950)}\n\`\`\``, inline: false },
+  ].filter(Boolean);
+
+  fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      embeds: [{
+        title,
+        description: extra.message ?? 'Backend will prefer cache/WS and limit REST until the gate is stable.',
+        color,
+        fields,
+        timestamp: new Date(now).toISOString(),
+      }],
+    }),
+  })
+    .then((res) => {
+      if (!res.ok) console.warn(`[BinanceGate] Discord alert failed: ${res.status}`);
+      else console.warn(`[BinanceGate] Discord alert sent: ${kind}`);
+    })
+    .catch((err) => console.warn('[BinanceGate] Discord alert failed:', err.message));
+}
+
+function startBinanceRestAlertMonitor() {
+  const intervalMs = Math.max(Number(process.env.BINANCE_REST_ALERT_INTERVAL_MS ?? 5000), 2000);
+  const congestedCooldownMs = Number(process.env.BINANCE_REST_CONGESTED_ALERT_COOLDOWN_MS ?? 15 * 60_000);
+  const tick = () => {
+    const snap = binanceRateGate.snapshot?.();
+    if (!snap) return;
+    if (snap.blockedUntil > Date.now()) {
+      const key = `${snap.blockedUntil}|${snap.blockReason}`;
+      if (key !== _lastRestBlockAlertKey) {
+        _lastRestBlockAlertKey = key;
+        sendBinanceRestDiscordAlert('blocked', snap);
+      }
+      return;
+    }
+    if (_lastRestBlockAlertKey && snap.blockedUntil === 0) _lastRestBlockAlertKey = '';
+    if (snap.congested && Date.now() - _lastRestCongestedAlertAt >= congestedCooldownMs) {
+      _lastRestCongestedAlertAt = Date.now();
+      sendBinanceRestDiscordAlert('congested', snap);
+    }
+  };
+  setInterval(tick, intervalMs).unref?.();
+  setTimeout(tick, 3000).unref?.();
+}
 
 async function getSharedSnapshot() {
   const now = Date.now();
   if (_snapshotCache && now - _snapshotCacheAt < SNAPSHOT_TTL_MS) return _snapshotCache;
+  if (_snapshotCache && isBinanceRestCongested()) {
+    console.warn(`[MarketSnapshot] REST congested (queue=${binanceRateGate.snapshot?.().queue ?? '?'}); using stale snapshot.`);
+    return _snapshotCache;
+  }
   if (_snapshotInflight) return _snapshotInflight; // dedupe concurrent calls
   _snapshotInflight = getMarketSnapshot().then((snap) => {
     _snapshotCache   = snap;
@@ -61,6 +186,10 @@ async function getSharedSnapshot() {
     return snap;
   }).catch((e) => {
     _snapshotInflight = null;
+    if (_snapshotCache) {
+      console.warn(`[MarketSnapshot] Refresh failed (${e.message}); using stale snapshot.`);
+      return _snapshotCache;
+    }
     throw e;
   });
   return _snapshotInflight;
@@ -74,6 +203,7 @@ const dumpIgnitionSseClients = new Set();
 const spikeReversalSseClients  = new Set();
 const postPumpKillShortSseClients = new Set();
 const pumpIgnitionSseClients   = new Set();
+const emaSqueezeSseClients     = new Set();
 const liquidPaperSseClients    = new Set();
 
 function pushSse(clients, data) {
@@ -103,6 +233,13 @@ async function schedulePumpScan() {
   clearTimeout(_pumpScanDebounce);
   _pumpScanDebounce = setTimeout(async () => {
     if (!strategyScansReady('PumpScan')) return;
+    if (isBinanceRestCongested()) {
+      const stale = staleScanPayload(pumpScanCache);
+      if (stale) pushSse(pumpSseClients, stale);
+      binanceRateGate.pruneLowPriorityQueue?.();
+      logRestCongestion('PumpScan', 'scan');
+      return;
+    }
     try {
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
@@ -1371,18 +1508,283 @@ async function schedulePumpIgnitionScan() {
   }, 3_500);
 }
 
+let _emaSqueezDebounce = null;
+async function scheduleEmaSqueezeScan() {
+  clearTimeout(_emaSqueezDebounce);
+  _emaSqueezDebounce = setTimeout(async () => {
+    try {
+      if (binanceRateGate.isBlocked?.() && !_snapshotCache) {
+        console.warn('[EmaSqueezeScan] Skip: Binance REST blocked and no snapshot cache yet.');
+        return;
+      }
+      const snapshot    = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols  = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runEmaSqueezeScan(topSymbols, klineCache, snapshotMap, { intervals: EMA_SQUEEZE_INTERVALS.join(',') });
+      const cacheStats = Object.fromEntries(EMA_SQUEEZE_INTERVALS.map((interval) => [interval, klineCache.stats(interval)]));
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      emaSqueezesScanCache.data = result;
+      emaSqueezesScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(emaSqueezeSseClients, result);
+      if (signals.length) {
+        const breakouts = signals.filter((s) => s.stage === 'BREAKOUT');
+        const breakdowns = signals.filter((s) => s.stage === 'BREAKDOWN');
+        const squeezes  = signals.filter((s) => s.stage === 'SQUEEZE');
+        const squeezeShorts = signals.filter((s) => s.stage === 'SQUEEZE_SHORT');
+        const byTf = EMA_SQUEEZE_INTERVALS.map((tf) => `${tf}:${signals.filter((s) => s.interval === tf).length}`).join(' ');
+        console.log(`[EmaSqueeze] ${signals.length} signal(s) — BREAKOUT: ${breakouts.length}, BREAKDOWN: ${breakdowns.length}, SQUEEZE: ${squeezes.length}, SHORT: ${squeezeShorts.length} | ${byTf}`);
+      }
+      await sendEmaSqueezeDiscord(signals);
+      await createEmaSqueezePaperTrades(signals);
+      await handleEmaSqueezeRealLongOrders(signals);
+
+      // Edge paper auto-fire: BREAKOUT score >= 70, dedup 4h
+      for (const sig of signals) {
+        if (sig.stage !== 'BREAKOUT' || sig.action !== 'LONG' || sig.score < 70) continue;
+        const key  = `emasq|${sig.symbol}|${sig.interval ?? '15m'}`;
+        const last = edgePaperAutoFired.get(key) ?? 0;
+        if (Date.now() - last < 4 * 3600 * 1000) continue;
+        edgePaperAutoFired.set(key, Date.now());
+        createEdgePaperTrade({
+          symbol:     sig.symbol,
+          side:       'LONG',
+          status:     'OPEN',
+          marginUsdt: 1,
+          leverage:   10,
+          entryPrice: sig.entry,
+          tp:         sig.tp ?? null,
+          sl:         sig.sl ?? null,
+          source:     `emasq-${sig.interval ?? '15m'}-${sig.score}`,
+          note:       sig.note ?? '',
+        }).catch((e) => console.warn(`[EdgePaper] emasq ${sig.symbol}:`, e.message));
+      }
+    } catch (e) {
+      console.error('[EmaSqueezeScan] error:', e.message);
+    }
+  }, 3_500);
+}
+
+async function sendEmaSqueezeDiscord(signals = []) {
+  const webhookUrl = process.env.EMA_SQUEEZE_WEBHOOK_URL || '';
+  if (!webhookUrl) return;
+  const minScore = Number(process.env.EMA_SQUEEZE_MIN_DISCORD_SCORE ?? 65);
+  const cooldownMs = Number(process.env.EMA_SQUEEZE_DISCORD_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const now = Date.now();
+  const fmt = (v) => v == null || !Number.isFinite(Number(v))
+    ? '-'
+    : Number(v) >= 1000
+      ? Number(v).toLocaleString('en', { maximumFractionDigits: 2 })
+      : Number(v) >= 1
+        ? Number(v).toFixed(5).replace(/\.?0+$/, '')
+        : Number(v).toPrecision(6).replace(/\.?0+$/, '');
+  const pct = (v, d = 1) => v == null || !Number.isFinite(Number(v)) ? '-' : `${Number(v).toFixed(d)}%`;
+  const cleanText = (value) => String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  for (const sig of signals) {
+    if (sig?.stage !== 'SQUEEZE' && sig?.stage !== 'SQUEEZE_SHORT') continue;
+    if (Number(sig.score ?? 0) < minScore) continue;
+    const key = `${sig.symbol}|${sig.interval ?? '15m'}|${sig.stage}|${sig.action ?? ''}`;
+    const lastFired = emaSqueezeDiscordFired.get(key) ?? 0;
+    if (now - lastFired < cooldownMs) continue;
+    emaSqueezeDiscordFired.set(key, now);
+
+    const isShort = sig.action === 'SHORT' || sig.stage === 'SQUEEZE_SHORT';
+    const embed = {
+      title: `[EMA Squeeze ${isShort ? 'SHORT' : 'LONG'} ${sig.interval ?? '15m'}] ${sig.symbol} - Score ${sig.score} (${sig.grade ?? '-'})`,
+      description: cleanText(sig.reason ?? `Flat-base EMA squeeze setup ${isShort ? 'short' : 'long'}`),
+      color: isShort ? 0xef4444 : 0xf59e0b,
+      fields: [
+        { name: 'Entry / SL / TP', value: `\`${fmt(sig.entry)}\` / \`${fmt(sig.sl)}\` / \`${fmt(sig.tp)}\``, inline: false },
+        { name: 'Side', value: isShort ? 'SHORT' : 'LONG', inline: true },
+        { name: 'Timeframe', value: String(sig.interval ?? '15m'), inline: true },
+        { name: 'Base', value: pct(Number(sig.baseRangePct ?? 0) * 100), inline: true },
+        { name: 'Volume', value: `${fmt(sig.volRatio)}x`, inline: true },
+        { name: 'RSI', value: fmt(sig.rsi), inline: true },
+        { name: 'EMA Spread', value: pct(Number(sig.spreadPct ?? 0) * 100), inline: true },
+        { name: '24h', value: pct(sig.change24h, 2), inline: true },
+        { name: 'Mark', value: fmt(sig.markPrice), inline: true },
+      ],
+      footer: { text: cleanText(sig.note ?? '') },
+      timestamp: new Date(now).toISOString(),
+    };
+
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ embeds: [embed] }),
+    })
+      .then((res) => {
+        if (!res.ok) console.warn(`[EmaSqueeze] Discord ${sig.symbol} failed: ${res.status}`);
+        else console.log(`[EmaSqueeze] Discord sent: ${sig.symbol} score=${sig.score}`);
+      })
+      .catch((err) => console.warn(`[EmaSqueeze] Discord ${sig.symbol}:`, err.message));
+  }
+}
+
+async function createEmaSqueezePaperTrades(signals = []) {
+  if (process.env.EMA_SQUEEZE_PAPER_ENABLED === 'false') return;
+  const minScore = Number(process.env.EMA_SQUEEZE_PAPER_MIN_SCORE ?? 65);
+  const cooldownMs = Number(process.env.EMA_SQUEEZE_PAPER_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const marginUsdt = Number(process.env.EMA_SQUEEZE_PAPER_MARGIN_USDT ?? 1);
+  const leverage = Number(process.env.EMA_SQUEEZE_PAPER_LEVERAGE ?? 10);
+  const allowedStages = new Set(String(process.env.EMA_SQUEEZE_PAPER_STAGES ?? 'BREAKOUT,BREAKDOWN,SQUEEZE,SQUEEZE_SHORT')
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean));
+  const confirmedStages = new Set(['BREAKOUT', 'BREAKDOWN']);
+
+  for (const sig of signals) {
+    const stage = String(sig?.stage ?? '').toUpperCase();
+    const side = String(sig?.action ?? '').toUpperCase();
+    if (!allowedStages.has(stage)) continue;
+    if (!['LONG', 'SHORT'].includes(side)) continue;
+    if (Number(sig.score ?? 0) < minScore) continue;
+    if (!Number.isFinite(Number(sig.entry)) || Number(sig.entry) <= 0) continue;
+
+    const key = `${sig.symbol}|${sig.interval ?? '15m'}|${stage}|${side}`;
+    const last = emaSqueezePaperAutoFired.get(key) ?? 0;
+    if (Date.now() - last < cooldownMs) continue;
+    emaSqueezePaperAutoFired.set(key, Date.now());
+
+    await createPumpPaperTrade({
+      symbol: sig.symbol,
+      side,
+      status: confirmedStages.has(stage) ? 'OPEN' : 'PENDING',
+      marginUsdt,
+      leverage,
+      entryPrice: sig.entry,
+      tp: sig.tp ?? null,
+      sl: sig.sl ?? null,
+      source: `emasq-${sig.interval ?? '15m'}-${stage.toLowerCase()}-${sig.score}`,
+      note: sig.note ?? sig.reason ?? '',
+    })
+      .then(() => {
+        if (pumpPaperTicker) syncPumpPaperTicker().catch(() => {});
+        console.log(`[EmaSqueezePaper] ${side} ${sig.symbol} ${stage} score=${sig.score}`);
+      })
+      .catch((e) => console.warn(`[EmaSqueezePaper] ${sig.symbol}:`, e.message));
+  }
+}
+
+async function handleEmaSqueezeRealLongOrders(signals = []) {
+  if (process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED !== 'true') return;
+  if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
+    console.log('[EmaSqueezeReal] skip - real Binance order disabled/dry-run');
+    return;
+  }
+  if (isVnBlockHour()) {
+    console.log('[EmaSqueezeReal] skip - VN block hour');
+    return;
+  }
+
+  const minScore = Number(process.env.EMA_SQUEEZE_REAL_MIN_SCORE ?? 65);
+  const marginUsdt = Number(process.env.EMA_SQUEEZE_REAL_MARGIN_USDT ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(process.env.EMA_SQUEEZE_REAL_LEVERAGE ?? 10)));
+  const orderType = String(process.env.EMA_SQUEEZE_REAL_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const cooldownMs = Number(process.env.EMA_SQUEEZE_REAL_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const maxPerScan = Math.max(1, Number(process.env.EMA_SQUEEZE_REAL_MAX_ORDERS_PER_SCAN ?? 1));
+  const maxOpenPositions = Number(process.env.EMA_SQUEEZE_REAL_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+  if (!['MARKET', 'LIMIT', 'LIMIT_IOC'].includes(orderType)) {
+    console.warn(`[EmaSqueezeReal] invalid order type: ${orderType}`);
+    return;
+  }
+
+  let apiKey;
+  let apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch (err) {
+    apiKey = process.env.BINANCE_API_KEY;
+    apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw err;
+  }
+
+  const [positions, openOrders] = await Promise.all([
+    client.getPositions({ apiKey, apiSecret }),
+    getCachedOpenOrders(apiKey, apiSecret),
+  ]);
+
+  let submitted = 0;
+  for (const sig of signals) {
+    if (submitted >= maxPerScan) break;
+    const stage = String(sig?.stage ?? '').toUpperCase();
+    const side = String(sig?.action ?? '').toUpperCase();
+    if (stage !== 'SQUEEZE' || side !== 'LONG') continue;
+    if (Number(sig.score ?? 0) < minScore) continue;
+    if (!Number.isFinite(Number(sig.entry)) || Number(sig.entry) <= 0) continue;
+
+    const symbol = normalizeSymbol(sig.symbol);
+    const dedupKey = `${symbol}|${sig.interval ?? '15m'}|SQUEEZE|LONG`;
+    const last = emaSqueezeRealOrderFired.get(dedupKey) ?? 0;
+    if (Date.now() - last < cooldownMs) continue;
+
+    const hasPosition = positions.some((p) => p.symbol === symbol && Math.abs(Number(p.positionAmt ?? 0)) > 0);
+    if (hasPosition) {
+      console.log(`[EmaSqueezeReal] skip ${symbol} - already has position`);
+      continue;
+    }
+    const hasEntryOrder = openOrders.some((o) => {
+      if (o.symbol !== symbol) return false;
+      if (String(o.reduceOnly ?? '').toLowerCase() === 'true') return false;
+      const type = String(o.type ?? o.origType ?? '').toUpperCase();
+      return ['MARKET', 'LIMIT', 'LIMIT_MAKER'].includes(type);
+    });
+    if (hasEntryOrder) {
+      console.log(`[EmaSqueezeReal] skip ${symbol} - already has entry order`);
+      continue;
+    }
+
+    try {
+      const result = await placeOrder({
+        symbol,
+        side: 'BUY',
+        orderType,
+        notionalUsdt: marginUsdt * leverage,
+        leverage,
+        limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
+        takeProfitPrice: sig.tp ?? undefined,
+        stopLossPrice: sig.sl ?? undefined,
+        maxOpenPositions,
+        dryRun: false,
+      }, null, { apiKey, apiSecret });
+
+      submitted++;
+      emaSqueezeRealOrderFired.set(dedupKey, Date.now());
+      invalidateOpenOrdersCache();
+      const orderId = result?.orderResult?.orderId ?? '-';
+      console.log(`[EmaSqueezeReal] REAL ${symbol} LONG ${orderType} orderId=${orderId} margin=$${marginUsdt} score=${sig.score}`);
+    } catch (e) {
+      console.warn(`[EmaSqueezeReal] ${symbol}: ${e.message}`);
+    }
+  }
+}
+
 klineCache.on('candleClose', ({ interval }) => {
-  if (interval !== '15m') return;
-  scheduleStrategyScans('candleClose');
+  if (interval === '15m') {
+    scheduleStrategyScans('candleClose');
+    return;
+  }
+  if (EMA_SQUEEZE_INTERVALS.includes(interval)) {
+    scheduleEmaSqueezeScan();
+  }
 });
 
 // Scan theo tick (mỗi khi có cập nhật nến) với debounce 60s — bắt signal sớm hơn trong nến
 let _tickScanDebounce = null;
 klineCache.on('candleTick', ({ interval }) => {
-  if (interval !== '15m') return;
+  if (!EMA_SQUEEZE_INTERVALS.includes(interval)) return;
   clearTimeout(_tickScanDebounce);
   _tickScanDebounce = setTimeout(() => {
-    scheduleStrategyScans('candleTick');
+    if (interval === '15m') scheduleStrategyScans('candleTick');
+    else scheduleEmaSqueezeScan();
   }, 60_000);
 });
 
@@ -1394,27 +1796,68 @@ let _staleReseedLock = false;
 let _tieredWarmupPromise = null;
 let _klineWarmupSymbols = [];
 let _allowLogicBeforeKlineReady = false;
-const _warmupMaxSymbols = Number(process.env.KLINE_WARMUP_MAX_SYMBOLS) || 400; // || 400 guards against NaN/0 from bad env value
+let _emaQuickWarmupDone = false;
+const _warmupMaxSymbols = Number(process.env.KLINE_WARMUP_MAX_SYMBOLS) || 120; // keep REST warmup bounded
+const _socketMaxSymbols = Math.max(_warmupMaxSymbols, Number(process.env.KLINE_SOCKET_MAX_SYMBOLS) || 400);
+const EMA_SQUEEZE_EXCLUDE_SYMBOLS = new Set(String(process.env.EMA_SQUEEZE_EXCLUDE_SYMBOLS ?? 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,TONUSDT,TRXUSDT,LINKUSDT,BCHUSDT,LTCUSDT,AVAXUSDT')
+  .split(',')
+  .map((s) => s.trim().toUpperCase())
+  .filter(Boolean));
+const EMA_SQUEEZE_MIN_QUOTE_VOLUME = Number(process.env.EMA_SQUEEZE_MIN_QUOTE_VOLUME ?? 3_000_000);
+const EMA_SQUEEZE_MAX_QUOTE_VOLUME = Number(process.env.EMA_SQUEEZE_MAX_QUOTE_VOLUME ?? 150_000_000);
+const EMA_SQUEEZE_WARMUP_MAX_SYMBOLS = Number(process.env.EMA_SQUEEZE_WARMUP_MAX_SYMBOLS ?? 80);
+const EMA_SQUEEZE_INTERVALS = String(process.env.EMA_SQUEEZE_INTERVALS ?? '5m,15m,1h')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 const KLINE_WARMUP_TIERS = [
-  { max: Math.min(50,  _warmupMaxSymbols), batchSize: 1, batchDelayMs: 2500, afterMs: 0 },
-  { max: Math.min(100, _warmupMaxSymbols), batchSize: 1, batchDelayMs: 3000, afterMs: 0 },
-  { max: Math.min(200, _warmupMaxSymbols), batchSize: 1, batchDelayMs: 3500, afterMs: 0 },
-  { max: Math.min(400, _warmupMaxSymbols), batchSize: 1, batchDelayMs: 4000, afterMs: 0 },
+  { max: Math.min(50,  _warmupMaxSymbols), batchSize: 1, batchDelayMs: Number(process.env.KLINE_WARMUP_BATCH_DELAY_MS ?? 8000), afterMs: 0 },
+  { max: Math.min(120, _warmupMaxSymbols), batchSize: 1, batchDelayMs: Number(process.env.KLINE_WARMUP_BATCH_DELAY_MS_2 ?? 12000), afterMs: 0 },
 ].filter((t, i, arr) => i === 0 || t.max > arr[i - 1].max); // bỏ tiers trùng khi KLINE_WARMUP_MAX_SYMBOLS nhỏ
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function selectEmaSqueezeWarmupSymbols(snapshot) {
+  if (EMA_SQUEEZE_WARMUP_MAX_SYMBOLS <= 0) return [];
+  const eligible = [...snapshot]
+    .filter((r) => !EMA_SQUEEZE_EXCLUDE_SYMBOLS.has(r.symbol))
+    .filter((r) => Number(r.quoteVolume ?? 0) >= EMA_SQUEEZE_MIN_QUOTE_VOLUME)
+    .filter((r) => Number(r.quoteVolume ?? 0) <= EMA_SQUEEZE_MAX_QUOTE_VOLUME);
+  const byVolume = [...eligible]
+    .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+    .slice(0, Math.ceil(EMA_SQUEEZE_WARMUP_MAX_SYMBOLS * 0.55));
+  const byGainer = [...eligible]
+    .filter((r) => Number(r.change24hPct ?? r.priceChangePercent ?? 0) > 6)
+    .sort((a, b) => Number(b.change24hPct ?? b.priceChangePercent ?? 0) - Number(a.change24hPct ?? a.priceChangePercent ?? 0))
+    .slice(0, EMA_SQUEEZE_WARMUP_MAX_SYMBOLS);
+  const byActivity = [...eligible]
+    .sort((a, b) => (
+      Math.abs(Number(b.change24hPct ?? b.priceChangePercent ?? 0)) * Math.log10(Number(b.quoteVolume ?? 0) + 10)
+    ) - (
+      Math.abs(Number(a.change24hPct ?? a.priceChangePercent ?? 0)) * Math.log10(Number(a.quoteVolume ?? 0) + 10)
+    ))
+    .slice(0, Math.ceil(EMA_SQUEEZE_WARMUP_MAX_SYMBOLS * 0.45));
+  return [...new Set([...byGainer, ...byActivity, ...byVolume].map((r) => r.symbol))]
+    .slice(0, EMA_SQUEEZE_WARMUP_MAX_SYMBOLS);
+}
+
 function klineWarmupReady() {
   if (_allowLogicBeforeKlineReady) return true;
+  if (!_emaQuickWarmupDone) return false;
   if (_klineWarmupSymbols.length === 0) return false;
-  const minReady = Number(process.env.KLINE_START_LOGIC_MIN_READY ?? _klineWarmupSymbols.length);
+  const minReady = Number(process.env.KLINE_START_LOGIC_MIN_READY ?? Math.min(_warmupMaxSymbols, _klineWarmupSymbols.length));
   const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
   return klineCache.countReady(_klineWarmupSymbols, '15m', minBars) >= Math.min(minReady, _klineWarmupSymbols.length);
 }
 
 function scheduleStrategyScans(reason = 'manual') {
+  if (isBinanceRestCongested()) {
+    binanceRateGate.pruneLowPriorityQueue?.();
+    logRestCongestion('StrategyScans', reason);
+    return;
+  }
   if (!klineWarmupReady()) {
     const minBars = Number(process.env.KLINE_START_LOGIC_MIN_READY_BARS ?? 40);
     const ready = _klineWarmupSymbols.length ? klineCache.countReady(_klineWarmupSymbols, '15m', minBars) : 0;
@@ -1428,6 +1871,7 @@ function scheduleStrategyScans(reason = 'manual') {
   scheduleSpikeReversalScan();
   schedulePostPumpKillShortScan();
   schedulePumpIgnitionScan();
+  scheduleEmaSqueezeScan();
 }
 
 function strategyScansReady(label) {
@@ -1467,9 +1911,10 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
   if (_tieredWarmupPromise) return _tieredWarmupPromise;
   _tieredWarmupPromise = (async () => {
     const sorted = [...snapshot].sort((a, b) => b.quoteVolume - a.quoteVolume);
-    const maxSocketSymbols = Math.max(...KLINE_WARMUP_TIERS.map((t) => t.max));
+    const maxSocketSymbols = _socketMaxSymbols;
     const socketSymbols15m = sorted.slice(0, maxSocketSymbols).map((r) => r.symbol);
     _klineWarmupSymbols = socketSymbols15m;
+    _emaQuickWarmupDone = false;
     console.log(`[KlineWarmup] Tiered warm-up started (${reason}).`);
     try {
       let ma60Seeded5m = false;
@@ -1479,6 +1924,25 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
         klineCache.subscribe(sorted.slice(0, ma60Max5mInitial).map((r) => r.symbol), '5m');
       }
       console.log(`[KlineWarmup] WS subscribed ${socketSymbols15m.length} symbols @15m before REST seed.`);
+      const emaQuickSymbols = selectEmaSqueezeWarmupSymbols(sorted).slice(0, Number(process.env.EMA_SQUEEZE_QUICK_WARMUP_SYMBOLS ?? 20));
+      let emaQuickComplete = emaQuickSymbols.length === 0;
+      if (emaQuickSymbols.length && !binanceRateGate.isBlocked?.() && !isBinanceRestCongested()) {
+        emaQuickComplete = true;
+        for (const interval of EMA_SQUEEZE_INTERVALS) {
+          console.log(`[KlineWarmup] Quick seeding ${emaQuickSymbols.length} EMA-squeeze symbols @${interval}.`);
+          klineCache.subscribe(emaQuickSymbols, interval);
+          await klineCache.seed(emaQuickSymbols, interval, 250, {
+            batchSize: 1,
+            batchDelayMs: Number(process.env.EMA_SQUEEZE_QUICK_WARMUP_DELAY_MS ?? 1800),
+          });
+          scheduleEmaSqueezeScan();
+          if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) {
+            emaQuickComplete = false;
+            break;
+          }
+        }
+      }
+      _emaQuickWarmupDone = emaQuickComplete;
       for (const tier of KLINE_WARMUP_TIERS) {
         if (binanceRateGate.isBlocked?.()) {
           console.warn(`[KlineWarmup] Skip tier top ${tier.max}: Binance REST blocked.`);
@@ -1502,6 +1966,19 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
           });
         }
       }
+      const emaSymbols = selectEmaSqueezeWarmupSymbols(sorted);
+      if (emaSymbols.length && !binanceRateGate.isBlocked?.() && !isBinanceRestCongested()) {
+        for (const interval of EMA_SQUEEZE_INTERVALS) {
+          console.log(`[KlineWarmup] Seeding ${emaSymbols.length} EMA-squeeze small/mid symbols @${interval}.`);
+          klineCache.subscribe(emaSymbols, interval);
+          await klineCache.seed(emaSymbols, interval, 250, {
+            batchSize: 1,
+            batchDelayMs: Number(process.env.EMA_SQUEEZE_WARMUP_DELAY_MS ?? 5500),
+          });
+          scheduleEmaSqueezeScan();
+          if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) break;
+        }
+      }
     } finally {
       _tieredWarmupPromise = null;
       _staleReseedLock = false;
@@ -1513,6 +1990,10 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
         console.warn(`[KlineWarmup] Ready ${readyForScan}/${socketSymbols15m.length} symbols (${minReadyBars}+ bars); retrying seed in ${Math.round(retryMs / 1000)}s.`);
         setTimeout(async () => {
           if (_tieredWarmupPromise) return;
+          if (isBinanceRestCongested()) {
+            console.warn(`[KlineWarmup] Retry postponed: REST queue congested (${binanceRateGate.snapshot?.().queue ?? '?'}).`);
+            return;
+          }
           startTieredKlineWarmup(snapshot, 'retry').catch((err) => {
             console.warn('[KlineWarmup] Retry failed:', err.message);
           });
@@ -1528,6 +2009,11 @@ function noteApiNoLargeReseed(board, processed) {
   console.warn(`[KlineWarmup] ${board} processed=0; API will not trigger 400-symbol REST reseed. Waiting for tiered warm-up/WS cache.`);
 }
 setInterval(async () => {
+  if (isBinanceRestCongested()) {
+      binanceRateGate.pruneLowPriorityQueue?.();
+      logRestCongestion('KlineCache', 'fallback scans/reseed');
+      return;
+  }
   schedulePumpScan();
   scheduleCapScan();
   scheduleKillShortScan();
@@ -1620,6 +2106,9 @@ function applySpikeReversalTslExcludes(signals) {
 const spikeRevDiscordFired  = new Map();
 const dumpIgnDiscordFired   = new Map();
 const pumpIgnDiscordFired   = new Map();
+const emaSqueezeDiscordFired = new Map();
+const emaSqueezePaperAutoFired = new Map();
+const emaSqueezeRealOrderFired = new Map();
 const postPumpKillShortDiscordFired = new Map();
 const postPumpKillShortOrderFired = new Map();
 const ppksPaperAutoFired = new Map(); // dedup cho PPKS paper trade auto-fire
@@ -1666,6 +2155,7 @@ const piPaperFillLocks = new Set();
 const pumpMarkCache = new Map(); // symbol → markPrice (for pump paper trades)
 let pumpPaperTicker = null;
 const pumpPaperFillLocks = new Set();
+const emaSqueezePaperPeakRoe = new Map(); // tradeId -> peak ROE
 const edgeMarkCache = new Map(); // symbol -> markPrice (for edge paper trades)
 let edgePaperTicker = null;
 const edgePaperFillLocks = new Set();
@@ -2099,6 +2589,8 @@ const server = createServer(async (request, response) => {
       if (pumpScanCache.data && Date.now() < pumpScanCache.expiresAt) {
         return sendJson(response, pumpScanCache.data);
       }
+      const stale = isBinanceRestCongested() ? staleScanPayload(pumpScanCache) : null;
+      if (stale) return sendJson(response, stale);
       const snapshot    = await getSharedSnapshot();
       const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
       const topSymbols  = snapshot
@@ -2419,13 +2911,83 @@ const server = createServer(async (request, response) => {
       return sendJson(response, result);
     }
 
+    if (requestUrl.pathname === '/api/ema-squeeze-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (emaSqueezesScanCache.data && (emaSqueezesScanCache.data.signals?.length > 0 || emaSqueezesScanCache.data.processed > 0)) {
+        response.write(`data: ${JSON.stringify(emaSqueezesScanCache.data)}\n\n`);
+      }
+      emaSqueezeSseClients.add(response);
+      request.on('close', () => emaSqueezeSseClients.delete(response));
+      if (!emaSqueezesScanCache.data || Date.now() > emaSqueezesScanCache.expiresAt) {
+        scheduleEmaSqueezeScan();
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/ema-squeeze-signals') {
+      if (emaSqueezesScanCache.data && Date.now() < emaSqueezesScanCache.expiresAt) {
+        return sendJson(response, emaSqueezesScanCache.data);
+      }
+      const stale = isBinanceRestCongested() ? staleScanPayload(emaSqueezesScanCache) : null;
+      if (stale) return sendJson(response, stale);
+      if (binanceRateGate.isBlocked?.() && !_snapshotCache) {
+        return sendJson(response, {
+          signals: [],
+          scannedAt: Date.now(),
+          total: 0,
+          processed: 0,
+          blocked: true,
+          staleReason: 'binance-rest-blocked-no-snapshot',
+          gate: binanceRateGate.snapshot?.() ?? null,
+          cacheStats: Object.fromEntries(EMA_SQUEEZE_INTERVALS.map((interval) => [interval, klineCache.stats(interval)])),
+        });
+      }
+      const snapshot    = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols  = snapshot
+        .sort((a, b) => b.quoteVolume - a.quoteVolume)
+        .slice(0, 400)
+        .map((r) => r.symbol);
+      const { signals, processed } = await runEmaSqueezeScan(topSymbols, klineCache, snapshotMap, { intervals: EMA_SQUEEZE_INTERVALS.join(',') });
+      if (processed === 0) noteApiNoLargeReseed('ema-squeeze', processed);
+      const cacheStats = Object.fromEntries(EMA_SQUEEZE_INTERVALS.map((interval) => [interval, klineCache.stats(interval)]));
+      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      emaSqueezesScanCache.data = result;
+      emaSqueezesScanCache.expiresAt = Date.now() + 30_000;
+      await sendEmaSqueezeDiscord(signals);
+      await createEmaSqueezePaperTrades(signals);
+      await handleEmaSqueezeRealLongOrders(signals);
+      return sendJson(response, result);
+    }
+
     if (requestUrl.pathname === '/api/btc-health') {
       await sendJson(response, await getBtcHealth());
       return;
     }
 
     if (requestUrl.pathname === '/api/binance-rate-gate') {
-      await sendJson(response, { gate: binanceRateGate.snapshot(), kline15m: klineCache.stats('15m'), scannedAt: Date.now() });
+      await sendJson(response, {
+        gate: binanceRateGate.snapshot(),
+        analyzeGate: analyzeRateGate.snapshot(),
+        kline5m: klineCache.stats('5m'),
+        kline15m: klineCache.stats('15m'),
+        kline1h: klineCache.stats('1h'),
+        scannedAt: Date.now(),
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/rate-gate/reset' && request.method === 'POST') {
+      binanceRateGate.resetBlock();
+      analyzeRateGate.resetBlock();
+      console.warn('[Server] Rate gate blocks reset by admin request');
+      await sendJson(response, { ok: true, gate: binanceRateGate.snapshot(), analyzeGate: analyzeRateGate.snapshot() });
       return;
     }
 
@@ -2446,18 +3008,26 @@ const server = createServer(async (request, response) => {
     }
 
     if (requestUrl.pathname === '/api/analyze') {
-      const symbol = normalizeSymbol(requestUrl.searchParams.get('symbol') ?? 'BTCUSDT');
-      const interval = requestUrl.searchParams.get('interval') ?? '15m';
+      const symbol    = normalizeSymbol(requestUrl.searchParams.get('symbol') ?? 'BTCUSDT');
+      const interval  = requestUrl.searchParams.get('interval') ?? '15m';
+      const rangePct  = Number(requestUrl.searchParams.get('rangePct')  ?? 0.04);
+      const binSizePct = Number(requestUrl.searchParams.get('binSizePct') ?? 0.001);
+      const cacheKey  = `${symbol}|${interval}|${rangePct}|${binSizePct}`;
+      const cached    = analyzeCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        await sendJson(response, cached.data);
+        return;
+      }
       const analysis = await fetchAnalysis({
-        client,
+        client: analyzeClient, // rate gate riêng, không bị block bởi background scans
         symbol,
         interval,
-        limit: Number(requestUrl.searchParams.get('limit') ?? 192),
-        rangePct: Number(requestUrl.searchParams.get('rangePct') ?? 0.04),
-        binSizePct: Number(requestUrl.searchParams.get('binSizePct') ?? 0.001),
-        depthLimit: Number(requestUrl.searchParams.get('depthLimit') ?? 500),
+        limit:      Number(requestUrl.searchParams.get('limit') ?? 192),
+        rangePct,
+        binSizePct,
+        depthLimit: Number(requestUrl.searchParams.get('depthLimit') ?? 100),
       });
-
+      analyzeCache.set(cacheKey, { data: analysis, expiresAt: Date.now() + ANALYZE_CACHE_TTL_MS });
       await sendJson(response, analysis);
       return;
     }
@@ -3194,6 +3764,7 @@ server.listen(port, '127.0.0.1', () => {
   loadSlTracking();
   loadPumpOrders();
   loadPumpWatching();
+  startBinanceRestAlertMonitor();
   // BTC mark price WebSocket — funding rate + mark price liên tục, không tốn REST
   startBtcMarkPriceWs();
 
@@ -3215,8 +3786,11 @@ server.listen(port, '127.0.0.1', () => {
     } catch (err) {
       console.warn('[KlineCache] Seed failed:', err.message);
       const retryMs = Number(process.env.KLINE_WARMUP_RETRY_MS ?? 90_000);
-      setTimeout(async () => {
-        if (_tieredWarmupPromise || _staleReseedLock || binanceRateGate.isBlocked?.()) return;
+      const retryStartupWarmup = async () => {
+        if (_tieredWarmupPromise || _staleReseedLock || binanceRateGate.isBlocked?.()) {
+          setTimeout(retryStartupWarmup, retryMs).unref?.();
+          return;
+        }
         try {
           const snapshot = await getSharedSnapshot();
           _staleReseedLock = true;
@@ -3226,13 +3800,26 @@ server.listen(port, '127.0.0.1', () => {
           });
         } catch (retryErr) {
           console.warn('[KlineWarmup] Startup retry snapshot failed:', retryErr.message);
+          setTimeout(retryStartupWarmup, retryMs).unref?.();
         }
-      }, retryMs);
+      };
+      setTimeout(retryStartupWarmup, retryMs).unref?.();
     }
   })();
 
   const tslIntervalMs = Math.max(Number(process.env.TRAILING_STOP_INTERVAL_MS ?? 30000), 15000);
   const brgIntervalMs = Math.max(Number(process.env.BTC_REVERSAL_GUARD_INTERVAL_MS ?? 41000), 15000);
+
+  // Paper PnL only needs the shared bookTicker WS, so start it before kline warm-up.
+  // Otherwise paper rows can show mark=entry/PNL=0 while scanners are still warming cache.
+  startPaperTradeTicker();
+  startCapPaperTicker();
+  startDiPaperTicker();
+  startPiPaperTicker();
+  startPumpPaperTicker();
+  startEdgePaperTicker();
+  startSrPaperTicker();
+  startPpksPaperTicker();
 
   runAfterKlineWarmup('algo APIs', () => {
     loadSlTracking().then(() =>
@@ -3259,19 +3846,19 @@ server.listen(port, '127.0.0.1', () => {
     }, POS_STORE_TTL_MS);
 
     startDiscordScanner({
-      client,
+      client: analyzeClient,
       webhookUrl: process.env.DISCORD_WEBHOOK_URL || '',
       threshold: Number(process.env.DISCORD_SIGNAL_THRESHOLD ?? 0.7),
       intervalMs: Math.max(Number(process.env.DISCORD_INTERVAL_MS ?? 30000), 15000),
       cooldownMs: Number(process.env.DISCORD_COOLDOWN_MS ?? 3600000),
-      getSnapshot: getMarketSnapshot,
+      getSnapshot: getSharedSnapshot,
     });
     startLiqImbalanceScanner({
-      client,
+      client: analyzeClient,
       klineCache,
       webhookUrl: process.env.LIQ_SCAN_WEBHOOK_URL || '',
       highProbWebhookUrl: process.env.LIQ_HIGH_PROB_WEBHOOK_URL || '',
-      getSnapshot: getMarketSnapshot,
+      getSnapshot: getSharedSnapshot,
       biasThreshold: Number(process.env.LIQ_SCAN_BIAS_THRESHOLD ?? 0.4),
       intervalMs: Number(process.env.LIQ_SCAN_INTERVAL_MS ?? 5 * 60 * 1000),
       cooldownMs: Number(process.env.LIQ_SCAN_COOLDOWN_MS ?? 2 * 60 * 60 * 1000),
@@ -3280,14 +3867,14 @@ server.listen(port, '127.0.0.1', () => {
       onHighProbAlert: getLiqHighProbHandler(),
       highProbThreshold: getLiqHighProbThreshold(),
       topTraderCache: topPositionCache, // tái dùng cache từ startLongShortRefresh, tránh 51 REST calls
+      topTraderRestFallback: process.env.LIQ_SCAN_TOP_TRADER_REST_FALLBACK === 'true',
     });
-    // startVolumeDumpScanner disabled — tắt để giảm tải API (150 REST calls/phút)
     startVolumeDumpScanner({
-      client,
+      client: analyzeClient,
       klineCache,
       webhookUrl: process.env.VOL_DUMP_WEBHOOK_URL || process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '',
       bigCandleWebhookUrl: process.env.BIG_CANDLE_WEBHOOK_URL || '',
-      getSnapshot: getMarketSnapshot,
+      getSnapshot: getSharedSnapshot,
       intervalMs: Number(process.env.VOL_DUMP_INTERVAL_MS ?? 60000),
       cooldownMs: Number(process.env.VOL_DUMP_COOLDOWN_MS ?? 7200000),
       minVolumeUsdt: Number(process.env.VOL_DUMP_MIN_VOLUME ?? 5000000),
@@ -3622,7 +4209,7 @@ async function getSymbols() {
     return symbolCache.data;
   }
 
-  const exchangeInfo = await client.getExchangeInfo();
+  const exchangeInfo = await client.getExchangeInfo({ priority: 1, source: 'getSymbols' });
   const symbols = exchangeInfo.symbols
     .filter((item) => item.contractType === 'PERPETUAL' && item.quoteAsset === 'USDT' && item.status === 'TRADING')
     .map((item) => ({
@@ -4246,8 +4833,8 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
 async function _fetchMarketSnapshot() {
   const [symbols, tickers, premiumRows] = await Promise.all([
     getSymbols(),
-    client.getTicker24hr(),
-    client.getPremiumIndex(),
+    client.getTicker24hr({ priority: 1, source: 'marketSnapshot:ticker24hr' }),
+    client.getPremiumIndex(undefined, { priority: 1, source: 'marketSnapshot:premiumIndex' }),
   ]);
   const allowedSymbols = new Set(symbols.map((item) => item.symbol));
   const premiumBySymbol = new Map(
@@ -4350,12 +4937,20 @@ async function writeLiquidPaperStore(store) {
 }
 
 async function getPaperMark(symbol) {
-  // WS ticker liên tục cập nhật paperMarkCache → luôn dùng cache nếu có, không check tuổi
+  // WS ticker lien tuc cap nhat paperMarkCache. Mac dinh khong fallback REST
+  // vi cac vong lap paper-trade co the tao hang tram /premiumIndex request/phut.
   const cached = paperMarkCache.get(symbol);
   if (cached) return cached.markPrice;
-  // Cold start: WS chưa seed → REST với timeout 5s để tránh treo trang
+  if (process.env.PAPER_MARK_REST_FALLBACK_ENABLED !== 'true') {
+    throw new Error('mark unavailable: waiting for WS mark cache');
+  }
+  if (isBinanceRestCongested()) throw new Error('mark unavailable: Binance REST congested');
+  // Cold start fallback chi dung khi bat PAPER_MARK_REST_FALLBACK_ENABLED=true.
   const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('mark timeout')), 5_000));
-  const price = await Promise.race([client.getPremiumIndex(symbol), timeout]);
+  const price = await Promise.race([
+    client.getPremiumIndex(symbol, { priority: 7, dropOnCongestion: true, source: 'getPaperMark' }),
+    timeout,
+  ]);
   return Number(price.markPrice);
 }
 
@@ -5661,7 +6256,13 @@ function enrichPumpPaperTrade(t, markPrice) {
 
 async function getPumpPaperTrades() {
   const store = await readPumpPaperStore();
-  const trades = store.trades.map((t) => enrichPumpPaperTrade(t, pumpMarkCache.get(t.symbol)));
+  const snapshotMarks = new Map((_snapshotCache ?? [])
+    .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
+    .filter(([, price]) => Number.isFinite(price) && price > 0));
+  const trades = store.trades.map((t) => enrichPumpPaperTrade(
+    t,
+    pumpMarkCache.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? snapshotMarks.get(t.symbol),
+  ));
   const open = trades.filter((t) => t.status !== 'CLOSED');
   const closed = trades.filter((t) => t.status === 'CLOSED');
   const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
@@ -5766,13 +6367,68 @@ async function processPumpPaperFills(symbol, markPrice) {
   const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
   for (const t of open) {
     await checkPumpPaperTpSl(t, markPrice);
+    await checkEmaSqueezePaperProfit(t, markPrice);
     await checkPumpPaperTimeout(t, markPrice);
+  }
+}
+
+async function processPumpPaperCachedMarks() {
+  const store = await readPumpPaperStore();
+  const snapshotMarks = new Map((_snapshotCache ?? [])
+    .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
+    .filter(([, price]) => Number.isFinite(price) && price > 0));
+  const active = store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status));
+  for (const trade of active) {
+    const markPrice = pumpMarkCache.get(trade.symbol) ?? sharedMarkTicker.getPrice?.(trade.symbol) ?? snapshotMarks.get(trade.symbol);
+    if (!Number.isFinite(Number(markPrice)) || Number(markPrice) <= 0) continue;
+    if (trade.status === 'PENDING') await fillPumpPendingTrade(trade, Number(markPrice));
+    else {
+      await checkPumpPaperTpSl(trade, Number(markPrice));
+      await checkEmaSqueezePaperProfit(trade, Number(markPrice));
+      await checkPumpPaperTimeout(trade, Number(markPrice));
+    }
+  }
+}
+
+const emaSqueezeProfitLocks = new Set();
+async function checkEmaSqueezePaperProfit(trade, markPrice) {
+  if (!String(trade.source ?? '').startsWith('emasq-')) return;
+  if (emaSqueezeProfitLocks.has(trade.id)) return;
+
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const entry = Number(trade.entryPrice);
+  const qty = Number(trade.quantity);
+  const margin = Number(trade.marginUsdt);
+  if (!Number.isFinite(entry) || !Number.isFinite(qty) || !Number.isFinite(margin) || margin <= 0) return;
+
+  const pnl = (Number(markPrice) - entry) * qty * sideMult;
+  const roe = (pnl / margin) * 100;
+  const prevPeak = emaSqueezePaperPeakRoe.get(trade.id) ?? Number(trade.peakRoe ?? 0) ?? 0;
+  const peakRoe = Math.max(prevPeak, roe);
+  emaSqueezePaperPeakRoe.set(trade.id, peakRoe);
+
+  const takeRoe = Number(process.env.EMA_SQUEEZE_PAPER_TAKE_PROFIT_ROE ?? 80);
+  const trailStartRoe = Number(process.env.EMA_SQUEEZE_PAPER_TRAIL_START_ROE ?? 50);
+  const trailDropRoe = Number(process.env.EMA_SQUEEZE_PAPER_TRAIL_DROP_ROE ?? 20);
+  const takeHit = roe >= takeRoe;
+  const trailHit = peakRoe >= trailStartRoe && roe <= peakRoe - trailDropRoe;
+  if (!takeHit && !trailHit) return;
+
+  emaSqueezeProfitLocks.add(trade.id);
+  try {
+    const outcome = takeHit ? 'PROFIT' : 'TRAIL_PROFIT';
+    await closePumpPaperTrade({ id: trade.id, exitPrice: markPrice, outcome });
+    console.log(`[EmaSqueezePaper] ${outcome} ${trade.side} ${trade.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}%`);
+    emaSqueezePaperPeakRoe.delete(trade.id);
+  } finally {
+    emaSqueezeProfitLocks.delete(trade.id);
   }
 }
 
 const pumpPaperTimeoutLocks = new Set();
 async function checkPumpPaperTimeout(trade, markPrice) {
   if (!trade.openedAt) return;
+  if (String(trade.source ?? '').startsWith('emasq-')) return;
   const timeoutMs = runtimeSettings.pumpPaperTimeoutH * 3600_000;
   const openedMs  = Date.parse(trade.openedAt);
   if (Date.now() - openedMs < timeoutMs) return;
@@ -5831,6 +6487,7 @@ function startPumpPaperTicker() {
   console.log('[PumpPaper] Mark ticker started (shared).');
   syncPumpPaperTicker().catch(() => {});
   setInterval(() => syncPumpPaperTicker().catch(() => {}), 30_000);
+  setInterval(() => processPumpPaperCachedMarks().catch(() => {}), 10_000);
 }
 
 // ── End pump paper trade system ───────────────────────────────────────────────
@@ -8867,6 +9524,8 @@ async function sendStatic(pathname, response) {
           ? '/etf-proxy.html'
         : pathname === '/pump-ignition'
           ? '/pump-ignition.html'
+        : pathname === '/ema-squeeze'
+          ? '/ema-squeeze.html'
         : pathname === '/edge-short'
           ? '/edge-short.html'
         : pathname === '/orders'

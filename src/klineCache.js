@@ -45,7 +45,11 @@ export class KlineCache extends EventEmitter {
         const k = this._key(symbol, interval);
         this._seeding.add(k);
         try {
-          const klines = await this.client.getKlines(symbol, interval, limit);
+          const klines = await this.client.getKlines(symbol, interval, limit, {
+            priority: 8,
+            dropOnCongestion: true,
+            source: `KlineCache.seed:${interval}`,
+          });
           const existing = this._cache.get(k);
           if (!existing || existing.length < klines.length) {
             this._cache.set(k, klines.slice(-this.maxKlines));
@@ -206,7 +210,13 @@ export class KlineCache extends EventEmitter {
     const key = this._key(symbol, interval);
     const arr = this._cache.get(key);
     if (arr && arr.length > 0) return arr.slice(-limit);
-    if (fallbackRest) return this.client.getKlines(symbol, interval, limit);
+    if (fallbackRest) {
+      return this.client.getKlines(symbol, interval, limit, {
+        priority: 8,
+        dropOnCongestion: true,
+        source: `KlineCache.fallback:${interval}`,
+      });
+    }
     return null;
   }
 

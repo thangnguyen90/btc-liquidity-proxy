@@ -202,7 +202,8 @@ function buildKillZoneCluster({ zones, heatmapAbove, heatmapBelow, farAbove, far
     };
   }
 
-  const farKillZone = buildFarKillZone({ zones, farAbove, farBelow, currentPrice, priceDigits, preferredDirection: preferredDirection ?? direction });
+  // Far kill zone luôn theo direction của cluster (bias-based), không theo momentum
+  const farKillZone = buildFarKillZone({ zones, farAbove, farBelow, currentPrice, priceDigits, preferredDirection: direction });
 
   return {
     direction,
@@ -693,6 +694,8 @@ function scoreSignal({ momentumPct, fundingRate, takerBuyRatio, bookImbalance, l
 
   if (liquidityBias > 0.35 && score > 0.15) {
     label = 'bullish_squeeze';
+  } else if (liquidityBias > 0.35 && score < -0.15) {
+    label = 'kill_short_zone'; // countertrend: liq magnet kéo lên dù momentum xuống
   } else if (liquidityBias < -0.35 && score < -0.15) {
     label = 'bearish_sweep';
   } else if (score > 0.25) {
