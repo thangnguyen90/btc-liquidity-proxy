@@ -1,7 +1,8 @@
 import { sharedMarkTicker } from './sharedMarkTicker.js';
 
 const protectedPositions = new Map(); // symbol → { orderId, stopPrice, roe, at }
-const positionDataCache = new Map();  // symbol → { amt, entry, margin } — updated each REST scan
+const positionDataCache = new Map();  // symbol → { amt, entry, margin, positionSide } — updated each REST scan
+const symbolInfoCache   = new Map();  // symbol → symbolInfo (filters) — updated each REST scan
 
 export function startTrailingStopScanner({ client, getSymbols, intervalMs = 30000, webhookUrl, isExcluded = null, getPositionData = null }) {
   if (process.env.TRAILING_STOP_ENABLED !== 'true') {
@@ -13,7 +14,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
   // Ladder khóa lời: 10→1, 15→5, 20→10, 25→15...
   const updateRoe = Number(process.env.TRAILING_STOP_UPDATE_ROE ?? 5);
 
-  console.log(`[TSL] Enabled. Trigger ROE >= ${triggerRoe}% → SL ladder 10→1%, 15→5%, 20→10%. Dời mỗi ${updateRoe}pp. Interval: ${intervalMs / 1000}s`);
+  console.log(`[TSL] Enabled. Trigger ROE >= ${triggerRoe}% → SL ladder 10→3%, 15→5%, 20→10%, 25→15%, 30→15%, 35→20%, 40→25%... Dời mỗi ${updateRoe}pp. Interval: ${intervalMs / 1000}s`);
 
   const notify = (content) => {
     if (!webhookUrl) return;
@@ -25,14 +26,18 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
   };
 
   // Startup ping
-  notify(`🟢 **[TSL]** Khởi động — trigger ROE ≥ ${triggerRoe}% → SL ladder 10→1%, 15→5%, 20→10%, dời mỗi ${updateRoe}pp`);
+  notify(`🟢 **[TSL]** Khởi động — trigger ROE ≥ ${triggerRoe}% → SL ladder 10→3, 15→5, 20→10, 25→15, 30→15, 35→20, 40→25%... dời mỗi ${updateRoe}pp`);
 
   function getTargetLockRoe(roe) {
+    if (roe >= 30) {
+      const steps = Math.floor((roe - 30) / 5);
+      return 15 + steps * 5;        // 30→15, 35→20, 40→25, 45→30, ...
+    }
     if (roe >= 15) {
       const steps = Math.floor((roe - 15) / 5);
-      return (15 + steps * 5) - 10;
+      return (15 + steps * 5) - 10; // 15→5, 20→10, 25→15
     }
-    if (roe >= 10) return 1;
+    if (roe >= 10) return 3;
     return null;
   }
 
@@ -53,6 +58,9 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
       const sharedAlgoOrders = posData.algoOrders ?? null; // pre-fetched algo orders for all symbols
 
       const active = positions;
+
+      // Cache symbol info for tick-path rounding
+      for (const s of symbols) symbolInfoCache.set(s.symbol, s);
 
       // Update position cache + ticker subscription
       const activeSymbolSet = new Set(active.map((p) => p.symbol));
@@ -96,7 +104,7 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
         const roe = margin > 0 ? (upnl / margin) * 100 : 0;
 
         // Cache cho tick-triggered check
-        positionDataCache.set(pos.symbol, { amt, entry, margin });
+        positionDataCache.set(pos.symbol, { amt, entry, margin, positionSide: pos.positionSide ?? 'BOTH' });
 
         const existingProtected = protectedPositions.get(pos.symbol);
 
@@ -212,14 +220,98 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
     }
   };
 
-  // Mark price ticker — trigger immediate TSL scan khi ROE vượt ngưỡng
+  // ── Tick-path: đặt SL trực tiếp từ WebSocket price, không gọi getPositions() ──
+  // Dùng positionDataCache + symbolInfoCache đã có từ lần REST scan gần nhất.
+  // Chỉ cần 1-2 REST calls: cancelAlgoOrder (nếu dời) + placeAlgoOrder.
+  const tickApply = async (symbol, markPrice) => {
+    const apiKey    = process.env.BINANCE_API_KEY;
+    const apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) return;
+
+    const cached = positionDataCache.get(symbol);
+    if (!cached) return;
+
+    const { amt, entry, margin, positionSide } = cached;
+    const upnl = (markPrice - entry) * amt;
+    const roe  = margin > 0 ? (upnl / margin) * 100 : 0;
+    if (roe < triggerRoe) return;
+
+    const existing  = protectedPositions.get(symbol);
+    const roeGain   = existing?.roe != null ? roe - existing.roe : 0;
+    const needsNew  = !existing;
+    const needsUpd  = existing && !existing.manual && roeGain >= updateRoe;
+    if (!needsNew && !needsUpd) return;
+
+    // Cancel SL cũ nếu đang dời lên
+    if (existing?.algoId && needsUpd) {
+      try {
+        await client.cancelAlgoOrder({ algoId: existing.algoId, apiKey, apiSecret });
+        console.log(`[TSL-Tick] ${symbol} dời SL — ROE ${existing.roe?.toFixed(1)}% → ${roe.toFixed(1)}% (+${roeGain.toFixed(1)}pp)`);
+        notify(`🔼 **[TSL-Tick] ${symbol}** dời SL — ROE ${existing.roe?.toFixed(1)}% → ${roe.toFixed(1)}% | SL cũ: ${existing.stopPrice}`);
+      } catch { /* already gone */ }
+    }
+    protectedPositions.delete(symbol);
+
+    const lockRoe = getTargetLockRoe(roe);
+    if (lockRoe === null) return;
+
+    const lockedProfit = margin * (lockRoe / 100);
+    const isLong       = amt > 0;
+    const rawStop      = isLong
+      ? entry + lockedProfit / Math.abs(amt)
+      : entry - lockedProfit / Math.abs(amt);
+
+    const symbolInfo = symbolInfoCache.get(symbol);
+    const stopPrice  = roundToTick(rawStop, symbolInfo);
+    const side       = isLong ? 'SELL' : 'BUY';
+
+    // Sanity: stop phải nằm giữa entry và mark (vùng có lời)
+    if (isLong  && stopPrice >= markPrice) { console.warn(`[TSL-Tick] ${symbol} SKIP: stop ${stopPrice} >= mark ${markPrice}`); return; }
+    if (!isLong && stopPrice <= markPrice) { console.warn(`[TSL-Tick] ${symbol} SKIP: stop ${stopPrice} <= mark ${markPrice}`); return; }
+
+    const quantity   = formatQty(Math.abs(amt), symbolInfo);
+    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+    const isHedge    = positionSide !== 'BOTH';
+    const algoParams = {
+      algoType: 'CONDITIONAL',
+      symbol,
+      side,
+      type: 'STOP_MARKET',
+      triggerPrice: String(stopPrice),
+      quantity,
+      workingType: 'MARK_PRICE',
+      recvWindow,
+      newClientOrderId: `lp_tsl_${symbol}_${Date.now()}`.slice(0, 36),
+    };
+    if (isHedge) { algoParams.positionSide = positionSide; }
+    else         { algoParams.reduceOnly = 'true'; }
+
+    try {
+      const result = await client.placeAlgoOrder({ params: algoParams, apiKey, apiSecret });
+      protectedPositions.set(symbol, {
+        algoId:    result.algoId ?? result.orderId,
+        stopPrice,
+        roe:       Number(roe.toFixed(2)),
+        at:        new Date().toISOString(),
+        fromTick:  true,
+      });
+      console.log(`[TSL-Tick] ✅ ${symbol} ROE=${roe.toFixed(1)}% → SL @ ${stopPrice} (locks ${lockRoe.toFixed(1)}% ROE) algoId=${result.algoId ?? result.orderId}`);
+      notify(`✅ **[TSL-Tick] ${symbol}** ROE=${roe.toFixed(1)}% → SL @ **${stopPrice}** (khóa ${lockRoe.toFixed(1)}% ROE)${needsUpd ? ' **[TRAIL]**' : ' [NEW]'}`);
+    } catch (err) {
+      console.error(`[TSL-Tick] ❌ ${symbol} place SL failed:`, err.message);
+      // Fallback: schedule full REST run để retry
+      setTimeout(() => run().catch(() => {}), 2_000);
+    }
+  };
+
+  // Mark price ticker — chạy tickApply ngay trên mỗi tick thay vì gọi run()
   let lastTickScan = 0;
   let wsNotified = false;
   sharedMarkTicker.register('trailingStop', ({ symbol, markPrice }) => {
     if (!wsNotified) {
       wsNotified = true;
       console.log('[MarkTick] ✅ First tick received — realtime price tracking active');
-      notify(`📡 **[MarkTick]** WebSocket bookTicker connected — đang nhận giá realtime từ Binance futures`);
+      notify(`📡 **[MarkTick]** WebSocket connected — TSL chạy theo tick realtime`);
     }
     const cached = positionDataCache.get(symbol);
     if (!cached) return;
@@ -227,12 +319,11 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
 
     const { amt, entry, margin } = cached;
     const upnl = (markPrice - entry) * amt;
-    const roe = margin > 0 ? (upnl / margin) * 100 : 0;
+    const roe  = margin > 0 ? (upnl / margin) * 100 : 0;
 
     const existing = protectedPositions.get(symbol);
-    const roeGain = existing?.roe != null ? roe - existing.roe : 0;
+    const roeGain  = existing?.roe != null ? roe - existing.roe : 0;
 
-    // Trigger nếu: chưa có SL và ROE >= trigger, HOẶC có SL và ROE tăng đủ để dời
     const needsAction = roe >= triggerRoe && (
       (!existing) ||
       (!existing.manual && roeGain >= updateRoe)
@@ -240,18 +331,29 @@ export function startTrailingStopScanner({ client, getSymbols, intervalMs = 3000
     if (!needsAction) return;
 
     const now = Date.now();
-    if (now - lastTickScan < 8_000) return; // debounce 8s
+    if (now - lastTickScan < 2_000) return; // debounce 2s (giảm từ 8s — tick-path nhẹ hơn)
     lastTickScan = now;
 
-    console.log(`[MarkTick] 🎯 ${symbol} ROE≈${roe.toFixed(1)}% → immediate TSL scan`);
-    notify(`🎯 **[MarkTick] ${symbol}** ROE≈${roe.toFixed(1)}% → trigger TSL scan ngay`);
-    run().catch(() => {});
+    console.log(`[TSL-Tick] 🎯 ${symbol} ROE≈${roe.toFixed(1)}% → đặt SL ngay từ tick`);
+    tickApply(symbol, markPrice).catch((e) => console.error('[TSL-Tick] error:', e.message));
   });
 
   setTimeout(run, 5000);
   setInterval(run, intervalMs);
 
-  return { protectedPositions };
+  // scheduleRun — gọi từ bên ngoài khi có position mới (onOrderFill)
+  // debounce 2s để nhiều fill liên tiếp không trigger nhiều REST call
+  let _scheduleTimer = null;
+  function scheduleRun(delayMs = 2_000) {
+    clearTimeout(_scheduleTimer);
+    _scheduleTimer = setTimeout(() => {
+      _scheduleTimer = null;
+      console.log('[TSL] scheduleRun triggered (new position event)');
+      run().catch((e) => console.error('[TSL] scheduleRun error:', e.message));
+    }, delayMs);
+  }
+
+  return { protectedPositions, scheduleRun };
 }
 
 function roundToTick(price, symbolInfo) {

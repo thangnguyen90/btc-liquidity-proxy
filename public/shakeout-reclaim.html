@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Shakeout Reclaim Board</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .sr-shell { width: min(1440px, calc(100vw - 32px)); }
+      .sr-summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        gap: 10px;
+        margin: 14px 0;
+      }
+      .sr-stat, .sr-controls, .sr-card {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 8px;
+      }
+      .sr-stat { padding: 12px; }
+      .sr-stat span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .sr-stat strong {
+        display: block;
+        margin-top: 6px;
+        font-size: 26px;
+        line-height: 1;
+      }
+      .sr-controls {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) 130px 150px 130px 150px;
+        gap: 10px;
+        padding: 12px;
+        margin-bottom: 14px;
+      }
+      .sr-controls input, .sr-controls select {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        border-radius: 6px;
+        padding: 10px 11px;
+        outline: none;
+      }
+      .sr-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+        gap: 12px;
+      }
+      .sr-card {
+        position: relative;
+        overflow: hidden;
+        padding: 14px;
+        display: grid;
+        gap: 11px;
+      }
+      .sr-card::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto;
+        height: 3px;
+        background: #38bdf8;
+      }
+      .sr-card.confirmed::before { background: var(--green); }
+      .sr-card.watch::before { background: var(--amber); }
+      .sr-card.short::before { background: var(--red); }
+      .sr-card.confirmed { box-shadow: inset 0 0 0 1px rgba(54, 211, 153, .16); }
+      .sr-card.watch { box-shadow: inset 0 0 0 1px rgba(251, 191, 36, .16); }
+      .sr-card.short { box-shadow: inset 0 0 0 1px rgba(251, 113, 133, .18); }
+      .sr-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .sr-symbol {
+        color: var(--text);
+        text-decoration: none;
+        font-size: 19px;
+        font-weight: 900;
+      }
+      .sr-symbol span {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .sr-change {
+        margin-top: 3px;
+        display: block;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .sr-right {
+        display: grid;
+        justify-items: end;
+        gap: 5px;
+      }
+      .sr-badge {
+        border-radius: 4px;
+        padding: 3px 8px;
+        font-size: 11px;
+        font-weight: 900;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .sr-badge.confirmed {
+        color: var(--green);
+        border: 1px solid rgba(54, 211, 153, .35);
+        background: rgba(54, 211, 153, .14);
+      }
+      .sr-badge.watch {
+        color: var(--amber);
+        border: 1px solid rgba(251, 191, 36, .35);
+        background: rgba(251, 191, 36, .12);
+      }
+      .sr-badge.short {
+        color: var(--red);
+        border: 1px solid rgba(251, 113, 133, .4);
+        background: rgba(251, 113, 133, .14);
+      }
+      .sr-score {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .sr-score strong { font-size: 26px; line-height: 1; }
+      .sr-grade {
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 12px;
+        font-weight: 900;
+        background: rgba(96, 165, 250, .18);
+        color: var(--blue);
+      }
+      .sr-pattern {
+        border: 1px solid rgba(56, 189, 248, .18);
+        background: rgba(56, 189, 248, .08);
+        border-radius: 7px;
+        padding: 10px;
+        color: #d8f3ff;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .sr-trap-alert {
+        border: 2px solid rgba(248, 113, 113, .85);
+        background: linear-gradient(135deg, rgba(127, 29, 29, .96), rgba(185, 28, 28, .8));
+        color: #fff7f7;
+        border-radius: 8px;
+        padding: 12px;
+        box-shadow: 0 0 0 1px rgba(248, 113, 113, .3), 0 14px 35px rgba(127, 29, 29, .28);
+      }
+      .sr-trap-alert strong {
+        display: block;
+        font-size: 18px;
+        line-height: 1.15;
+        text-transform: uppercase;
+        letter-spacing: 0;
+      }
+      .sr-trap-alert span {
+        display: block;
+        margin-top: 6px;
+        font-size: 13px;
+        font-weight: 800;
+        line-height: 1.4;
+      }
+      .sr-prices {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+      }
+      .sr-ema-compare {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .sr-price {
+        background: var(--panel-2);
+        border-radius: 7px;
+        padding: 10px;
+        min-width: 0;
+      }
+      .sr-price span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .sr-price strong {
+        display: block;
+        margin-top: 5px;
+        font-size: 15px;
+        overflow-wrap: anywhere;
+      }
+      .sr-price small {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .sr-factors {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .sr-chip {
+        border: 1px solid rgba(157, 170, 165, .2);
+        background: rgba(157, 170, 165, .08);
+        color: #cde6dd;
+        border-radius: 5px;
+        padding: 4px 7px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .sr-chip.ok {
+        color: var(--green);
+        border-color: rgba(54, 211, 153, .25);
+        background: rgba(54, 211, 153, .08);
+      }
+      .sr-chip.warn {
+        color: var(--amber);
+        border-color: rgba(251, 191, 36, .25);
+        background: rgba(251, 191, 36, .08);
+      }
+      .sr-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        border-top: 1px solid var(--line);
+        padding-top: 9px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .empty {
+        grid-column: 1 / -1;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        padding: 28px;
+        text-align: center;
+        color: var(--muted);
+      }
+      .sr-paper-section {
+        margin-top: 18px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 8px;
+        padding: 14px;
+      }
+      .sr-paper-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+      .sr-paper-head h2 { margin: 0; font-size: 18px; }
+      .sr-paper-head span { color: var(--muted); font-size: 12px; }
+      .sr-paper-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      .sr-paper-table th,
+      .sr-paper-table td {
+        padding: 8px 9px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        white-space: nowrap;
+      }
+      .sr-paper-table th {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        background: var(--panel-2);
+      }
+      .sr-paper-table tr:last-child td { border-bottom: none; }
+      .sr-sort { cursor: pointer; user-select: none; white-space: nowrap; }
+      .sr-sort:hover { color: var(--text); }
+      .sr-sort.active { color: var(--blue); }
+      .sr-sort-mark { font-size: 10px; opacity: .8; }
+      .sr-paper-long { color: var(--green); font-weight: 900; }
+      .sr-paper-short { color: var(--red); font-weight: 900; }
+      .sr-paper-btn {
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        border-radius: 4px;
+        padding: 3px 8px;
+        font-size: 11px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .sr-paper-btn.del { color: var(--red); border-color: rgba(251, 113, 133, .35); }
+
+      /* ── Variant (cách vào) ── */
+      .sr-variant-badge {
+        display: inline-block;
+        font-size: 9px;
+        font-weight: 900;
+        padding: 2px 6px;
+        border-radius: 4px;
+        letter-spacing: .03em;
+        white-space: nowrap;
+        border: 1px solid transparent;
+      }
+      .sr-variant-badge.market {
+        color: #67e8f9;
+        background: rgba(34, 211, 238, .14);
+        border-color: rgba(34, 211, 238, .4);
+      }
+      .sr-variant-badge.pending {
+        color: var(--amber);
+        background: rgba(251, 191, 36, .14);
+        border-color: rgba(251, 191, 36, .4);
+      }
+      .sr-variant-badge.none { color: var(--muted); }
+      .sr-variant-badge.pending.waiting {
+        color: var(--muted);
+        background: transparent;
+        border-style: dashed;
+        border-color: rgba(251, 191, 36, .55);
+      }
+      /* viền trái phân biệt nhanh A (xanh cyan) vs B (vàng) */
+      .sr-paper-table tr.sr-row-market td:first-child { border-left: 3px solid rgba(34, 211, 238, .7); }
+      .sr-paper-table tr.sr-row-pending td:first-child { border-left: 3px solid rgba(251, 191, 36, .7); }
+      .sr-paper-table tr.sr-row-market { background: rgba(34, 211, 238, .04); }
+      .sr-paper-table tr.sr-row-pending { background: rgba(251, 191, 36, .04); }
+
+      /* ── Daily stats ── */
+      .sr-daily-wrap { margin: 4px 0 14px; overflow-x: auto; }
+      .sr-daily-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      .sr-daily-table th,
+      .sr-daily-table td {
+        padding: 6px 10px;
+        text-align: right;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+      }
+      .sr-daily-table th:first-child,
+      .sr-daily-table td:first-child { text-align: left; }
+      .sr-daily-table th {
+        color: var(--muted);
+        font-weight: 700;
+        text-transform: uppercase;
+        font-size: 10px;
+        letter-spacing: .04em;
+      }
+      .sr-daily-table tr:last-child td { border-bottom: none; }
+      .sr-daily-date { font-weight: 800; color: var(--text); }
+      .sr-daily-pos { color: var(--green); font-weight: 800; }
+      .sr-daily-neg { color: var(--red); font-weight: 800; }
+      .sr-daily-title {
+        font-size: 11px; font-weight: 800; color: var(--muted);
+        text-transform: uppercase; letter-spacing: .05em;
+        margin: 0 0 6px;
+      }
+      @media (max-width: 780px) {
+        .sr-summary, .sr-controls { grid-template-columns: 1fr 1fr; }
+        .sr-prices { grid-template-columns: 1fr 1fr; }
+        .sr-ema-compare { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell sr-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Volume expansion / shakeout / reclaim</p>
+          <h1>Shakeout Reclaim Board</h1>
+          <p class="muted" style="margin-top:8px">Detect coin volume tang tren 5m/15m, bi keo xuong ru hang/kill long de long, hoac hoi len kill short roi reject de short.</p>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Detail Dashboard</a>
+          <a class="nav-link" href="/pump">Pump Signal</a>
+          <a class="nav-link" href="/ema-squeeze">EMA Squeeze</a>
+          <a class="nav-link" href="/ema99-kill-reclaim">EMA99 Kill</a>
+          <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
+          <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
+          <a class="nav-link" href="/orders">Orders</a>
+        </div>
+      </header>
+
+      <section class="sr-summary">
+        <div class="sr-stat"><span>Confirmed</span><strong id="confirmedCount">-</strong></div>
+        <div class="sr-stat"><span>Watch</span><strong id="watchCount">-</strong></div>
+        <div class="sr-stat"><span>Scanned</span><strong id="totalScanned">-</strong></div>
+        <div class="sr-stat"><span>Updated</span><strong id="lastScan">-</strong></div>
+      </section>
+
+      <section class="sr-controls">
+        <input id="searchInput" placeholder="Search symbol: TRADOOR, BTC, ...">
+        <select id="sideFilter">
+          <option value="all">LONG + SHORT</option>
+          <option value="LONG">LONG reclaim</option>
+          <option value="SHORT">SHORT reject</option>
+        </select>
+        <select id="stageFilter">
+          <option value="all">All stages</option>
+          <option value="RECLAIM_CONFIRMED">Confirmed</option>
+          <option value="SHAKEOUT_WATCH">Watch</option>
+        </select>
+        <select id="scoreFilter">
+          <option value="0">Score all</option>
+          <option value="55">Score >=55</option>
+          <option value="70">Score >=70</option>
+          <option value="85">Score >=85</option>
+        </select>
+        <select id="sortSelect">
+          <option value="score">Sort score</option>
+          <option value="volume">Sort volume</option>
+          <option value="drop">Sort shakeout drop</option>
+          <option value="fresh">Sort fresh pullback</option>
+        </select>
+      </section>
+
+      <div class="status-bar">
+        <span>Cached <strong id="cachedCount">0</strong>/<strong id="totalCount">0</strong> coins</span>
+        <span>Found <strong id="foundCount">0</strong> signals</span>
+        <span id="scanStatus">Dang tai...</span>
+      </div>
+
+      <section id="srGrid" class="sr-grid" style="margin-top:14px">
+        <div class="empty">Dang quet shakeout reclaim pattern...</div>
+      </section>
+
+      <section class="sr-paper-section">
+        <div class="sr-paper-head">
+          <h2>Paper Trades - Shakeout Reclaim</h2>
+          <span id="srPaperSummary">Dang tai...</span>
+        </div>
+        <div id="srVariantCompare" class="sr-daily-wrap"></div>
+        <div id="srDailyStats" class="sr-daily-wrap"></div>
+        <div style="overflow-x:auto">
+          <table class="sr-paper-table">
+            <thead>
+              <tr>
+                <th class="sr-sort" data-sort="variant">Cach vao <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="symbol">Symbol <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="side">Side <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="entry">Entry <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="sl">SL <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="tp">TP <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="mark">Giá (last) <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="pnl">PnL <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="roe">ROE <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="status">Status <span class="sr-sort-mark">^</span></th>
+                <th class="sr-sort" data-sort="score">Score <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="source">Source <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="time">Time <span class="sr-sort-mark"></span></th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="srPaperBody">
+              <tr><td colspan="14" style="text-align:center;color:var(--muted);padding:16px">Dang tai...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/shakeout-reclaim.js" type="module"></script>
+  <script src="/btcHealth.js"></script>
+</body>
+</html>

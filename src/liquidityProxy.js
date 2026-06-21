@@ -223,6 +223,7 @@ function buildKillZoneCluster({ zones, heatmapAbove, heatmapBelow, farAbove, far
 export function analyzeMarket({
   symbol,
   klines,
+  liquidationKlines = klines,
   klines1h = null,
   klines4h = null,
   depth,
@@ -252,7 +253,7 @@ export function analyzeMarket({
   const takerBuyRatio = calculateTakerBuyRatio(klines);
   const book = summarizeOrderBook(depth, currentPrice, rangePct);
   const liquidationMap = buildLiquidationMap({
-    klines,
+    klines: liquidationKlines,
     currentPrice,
     priceDigits,
     rangePct: liqRangePct,
@@ -337,6 +338,8 @@ export function analyzeMarket({
     liquidationProxy: {
       rangePct,
       binSizePct,
+      lookbackBars: liquidationKlines.length,
+      signalBars: klines.length,
       liquidityAbove: zones.above.total,
       liquidityBelow: zones.below.total,
       bias: zones.bias,
@@ -525,10 +528,14 @@ function buildLiquidationMap({ klines, currentPrice, priceDigits, rangePct, binS
   const binSize = currentPrice * binSizePct;
   const binKeyDigits = Math.max(priceDigits + 2, 8);
   const bins = new Map();
-  const recentKlines = klines.slice(-Math.min(klines.length, 500));
+  const maxLookback = Math.max(50, Math.min(1500, Number(process.env.LIQ_HEATMAP_MAX_LOOKBACK_BARS ?? 1000)));
+  const agePower = Math.max(0.1, Number(process.env.LIQ_HEATMAP_AGE_POWER ?? 1.15));
+  const minAgeWeight = Math.max(0, Math.min(0.9, Number(process.env.LIQ_HEATMAP_MIN_AGE_WEIGHT ?? 0.22)));
+  const recentKlines = klines.slice(-Math.min(klines.length, maxLookback));
 
   recentKlines.forEach((kline, index) => {
-    const ageWeight = Math.pow((index + 1) / recentKlines.length, 2);
+    const agePosition = (index + 1) / recentKlines.length;
+    const ageWeight = minAgeWeight + (1 - minAgeWeight) * Math.pow(agePosition, agePower);
     const volumeWeight = Math.max(kline.quoteVolume, 1);
     const buyPressure = safeDivide(kline.takerBuyQuoteVolume, kline.quoteVolume, 0.5);
     // High buy pressure → price rising → contrarian SHORTS accumulate above

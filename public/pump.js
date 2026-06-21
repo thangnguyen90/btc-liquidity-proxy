@@ -355,14 +355,15 @@ function buildCard(sig) {
     : '<span class="lev-badge ok"   title="SL gần — 10x">10×</span>';
   const isLong      = sig.action === 'LONG';
   const isMa60      = sig.type === 'ma60_volume_cluster' || sig.type === 'ma60_volume_cluster_5m';
+  const isPumpShortSweet = !isLong && Number(sig.score) >= 40 && Number(sig.score) <= 79;
   const dirClass    = isLong ? 'long' : 'short';
-  const cardClass   = isMa60 ? `${dirClass} ma60-cluster` : dirClass;
+  const cardClass   = isMa60 ? `${dirClass} ma60-cluster` : (isPumpShortSweet ? `${dirClass} pump-short-sweet` : dirClass);
   const dirIcon     = isLong ? '🟢' : '🔴';
-  const dirLabel    = isMa60 ? (sig.type === 'ma60_volume_cluster_5m' ? 'MA60 5M LONG' : 'MA60 LONG') : (isLong ? 'LONG' : 'SHORT');
+  const dirLabel    = isMa60 ? (sig.type === 'ma60_volume_cluster_5m' ? 'MA60 5M LONG' : 'MA60 LONG') : (isPumpShortSweet ? 'PUMP_SHORT EDGE' : (isLong ? 'LONG' : 'SHORT'));
   const changeClass = (sig.change24h ?? 0) >= 0 ? 'positive' : 'negative';
   const gradeClass  = `grade-${(sig.grade || 'd').toLowerCase()}`;
   const typeLabel   = TYPE_LABELS[sig.type] ?? sig.type;
-  const typeExtra   = isMa60 ? ' type-ma60' : ((sig.type === 'dist_top' || sig.type === 'vol_climax') ? ' type-danger' : '');
+  const typeExtra   = isMa60 ? ' type-ma60' : (isPumpShortSweet ? ' type-pump-short-sweet' : ((sig.type === 'dist_top' || sig.type === 'vol_climax') ? ' type-danger' : ''));
   const detailUrl   = `/?symbol=${sig.symbol}`;
   const slColor     = isLong ? 'negative' : 'positive';
   const tpColor     = isLong ? 'positive' : 'negative';
@@ -389,7 +390,7 @@ function buildCard(sig) {
           <span class="pump-change ${changeClass}">${fmtPct(sig.change24h)} 24h · ${fmtPrice(sig.markPrice)}</span>
         </div>
         <div class="pump-right">
-          <span class="pump-action-badge ${dirClass}${isMa60 ? ' ma60-cluster' : ''}">${dirIcon} ${dirLabel}</span>
+          <span class="pump-action-badge ${dirClass}${isMa60 ? ' ma60-cluster' : ''}${isPumpShortSweet ? ' pump-short-sweet' : ''}">${dirIcon} ${dirLabel}</span>
           <div class="pump-score-wrap">
             <span class="pump-score-num">${sig.score}</span>
             <span class="pump-grade ${gradeClass}">${sig.grade}</span>

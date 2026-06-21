@@ -1,4 +1,69 @@
 {
   "createdAt": 1779013023602,
-  "positions": {}
+  "positions": {
+    "VVVUSDT": {
+      "openedAt": 1781686920622,
+      "openedAtStr": "2026-06-17T09:02:00.622Z",
+      "slPlaced": true,
+      "slPrice": "16.309",
+      "slPlacedAt": "2026-06-17T09:02:05.735Z"
+    },
+    "SPXUSDT": {
+      "openedAt": 1781686920623,
+      "openedAtStr": "2026-06-17T09:02:00.623Z",
+      "slPlaced": false
+    },
+    "BRUSDT": {
+      "openedAt": 1781686920623,
+      "openedAtStr": "2026-06-17T09:02:00.623Z",
+      "slPlaced": true,
+      "slPrice": "0.19217",
+      "slPlacedAt": "2026-06-17T09:02:06.713Z"
+    },
+    "JELLYJELLYUSDT": {
+      "openedAt": 1781703948198,
+      "openedAtStr": "2026-06-17T13:45:48.198Z",
+      "slPlaced": true,
+      "slPrice": "0.06281",
+      "slPlacedAt": "2026-06-17T13:53:42.667Z"
+    },
+    "ETHUSDT": {
+      "openedAt": 1781705695019,
+      "openedAtStr": "2026-06-17T14:14:55.019Z",
+      "entry": 1760.55,
+      "slPlaced": true,
+      "slPrice": "1716.54",
+      "slPlacedAt": "2026-06-17T14:15:00.186Z"
+    },
+    "SOLUSDT": {
+      "openedAt": 1781705837776,
+      "openedAtStr": "2026-06-17T14:17:17.776Z",
+      "entry": 72.51,
+      "slPlaced": true,
+      "slPrice": "70.7",
+      "slPlacedAt": "2026-06-17T14:17:25.976Z"
+    },
+    "EIGENUSDT": {
+      "openedAt": 1781711584414,
+      "openedAtStr": "2026-06-17T15:53:04.414Z",
+      "entry": 0.2145,
+      "slPlaced": false
+    },
+    "AVNTUSDT": {
+      "openedAt": 1781711696745,
+      "openedAtStr": "2026-06-17T15:54:56.745Z",
+      "entry": 0.1171,
+      "slPlaced": true,
+      "slPrice": "0.1142",
+      "slPlacedAt": "2026-06-17T15:55:18.174Z"
+    },
+    "SIRENUSDT": {
+      "openedAt": 1781713457348,
+      "openedAtStr": "2026-06-17T16:24:17.348Z",
+      "entry": 0.04668,
+      "slPlaced": true,
+      "slPrice": "0.04551",
+      "slPlacedAt": "2026-06-17T16:24:43.248Z"
+    }
+  }
 }

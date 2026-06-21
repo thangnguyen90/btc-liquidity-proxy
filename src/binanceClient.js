@@ -205,8 +205,7 @@ export class BinanceClient {
     }, async () => {
       const res = await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
         method: 'PUT',
-        headers: { 'X-MBX-APIKEY': apiKey, 'Content-Type': 'application/json', 'user-agent': 'btc-liquidity-proxy/0.1.0' },
-        body: JSON.stringify({ listenKey }),
+        headers: { 'X-MBX-APIKEY': apiKey, 'user-agent': 'btc-liquidity-proxy/0.1.0' },
       });
       await throwIfRateLimited(res, 'keepAliveListenKey');
       return null;

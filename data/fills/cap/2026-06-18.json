@@ -1,0 +1,32 @@
+[
+  {
+    "symbol": "PORTALUSDT",
+    "side": "BUY",
+    "filledQty": 600,
+    "avgPrice": 0.01628,
+    "positionSide": "BOTH",
+    "fillTime": 1781787308345,
+    "source": "cap",
+    "loggedAt": "2026-06-18T12:55:08.758Z"
+  },
+  {
+    "symbol": "PORTALUSDT",
+    "side": "BUY",
+    "filledQty": 13.4,
+    "avgPrice": 0.01628,
+    "positionSide": "BOTH",
+    "fillTime": 1781787308345,
+    "source": "cap",
+    "loggedAt": "2026-06-18T12:55:08.914Z"
+  },
+  {
+    "symbol": "FOLKSUSDT",
+    "side": "BUY",
+    "filledQty": 9.4,
+    "avgPrice": 2.918,
+    "positionSide": "BOTH",
+    "fillTime": 1781789740410,
+    "source": "cap",
+    "loggedAt": "2026-06-18T13:35:41.362Z"
+  }
+]

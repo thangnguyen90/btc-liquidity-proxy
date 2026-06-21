@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Market News Impact Board</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      .news-toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:14px 0; }
+      .news-toolbar input, .news-toolbar select {
+        background:#111b18; border:1px solid #263a34; color:#eafff7; border-radius:6px; padding:9px 10px;
+      }
+      .news-toolbar input { min-width:260px; flex:1; }
+      .news-grid { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:10px; margin:12px 0; }
+      .news-stat { background:#16211d; border:1px solid #263a34; border-radius:8px; padding:12px; }
+      .news-stat span { color:#9bb8ad; font-size:11px; text-transform:uppercase; }
+      .news-stat strong { display:block; margin-top:5px; font-size:22px; }
+      .news-list { display:grid; gap:10px; }
+      .news-card {
+        background:#151d1a; border:1px solid #263a34; border-left:5px solid #64748b;
+        border-radius:8px; padding:14px; display:grid; gap:9px;
+      }
+      .news-card.critical { border-left-color:#ef4444; background:#241818; }
+      .news-card.high { border-left-color:#f59e0b; }
+      .news-card.medium { border-left-color:#22c55e; }
+      .news-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+      .news-title { font-size:16px; font-weight:800; color:#f4fff9; text-decoration:none; line-height:1.35; }
+      .news-title:hover { color:#5eead4; }
+      .news-score { min-width:70px; text-align:right; font-size:28px; font-weight:900; color:#fff; }
+      .news-meta, .news-desc { color:#9bb8ad; font-size:12px; line-height:1.45; }
+      .news-tags { display:flex; gap:6px; flex-wrap:wrap; }
+      .news-tag { background:#20302b; color:#bdf7df; border:1px solid #2b493d; border-radius:999px; padding:3px 8px; font-size:11px; }
+      .news-tag.bearish { color:#fecdd3; border-color:#7f1d1d; background:#3a171b; }
+      .news-tag.bullish { color:#bbf7d0; border-color:#14532d; background:#12301e; }
+      .news-tag.critical { color:#fecaca; border-color:#991b1b; background:#431616; }
+      .muted-line { color:#789188; font-size:12px; }
+      @media (max-width: 800px) {
+        .news-grid { grid-template-columns:repeat(2,minmax(130px,1fr)); }
+        .news-head { display:block; }
+        .news-score { text-align:left; margin-top:6px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">Macro · ETF · Regulation · Exchange Risk</p>
+          <h1>Market News Impact Board</h1>
+          <p class="subtitle">Tin tức có khả năng tạo biến động, sort theo impact từ cao xuống thấp.</p>
+        </div>
+        <nav class="nav">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/pump">Pump</a>
+          <a class="nav-link" href="/ema-squeeze">EMA Squeeze</a>
+          <a class="nav-link" href="/ema99-kill-reclaim">EMA99 Kill</a>
+          <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
+          <a class="nav-link" href="/etf-proxy">ETF Flow</a>
+          <a class="nav-link" href="/coin-flow">Coin Flow</a>
+          <a class="nav-link" href="/token-unlocks">Token Unlocks</a>
+          <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
+          <a class="nav-link" href="/market-news">Market News</a>
+          <a class="nav-link" href="/orders">Orders</a>
+        </nav>
+      </header>
+
+      <section class="panel">
+        <div class="news-toolbar">
+          <input id="newsSearch" placeholder="Tìm BTC, ETF, SEC, Binance..." />
+          <select id="impactFilter">
+            <option value="ALL">All impact</option>
+            <option value="CRITICAL">Critical</option>
+            <option value="HIGH">High</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="LOW">Low</option>
+          </select>
+          <select id="biasFilter">
+            <option value="ALL">All bias</option>
+            <option value="BULLISH">Bullish</option>
+            <option value="BEARISH">Bearish</option>
+            <option value="NEUTRAL">Neutral</option>
+          </select>
+          <button id="refreshBtn" class="primary-button" type="button">Refresh batch</button>
+        </div>
+
+        <div id="newsStats" class="news-grid"></div>
+        <div id="newsStatus" class="muted-line">Đang tải...</div>
+      </section>
+
+      <section id="newsList" class="news-list"></section>
+    </main>
+
+    <script src="/market-news.js" type="module"></script>
+  <script src="/btcHealth.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+[
+  {
+    "symbol": "BANANAS31USDT",
+    "side": "BUY",
+    "filledQty": 439,
+    "avgPrice": 0.0112635,
+    "positionSide": "BOTH",
+    "fillTime": 1781760674745,
+    "source": "killshort",
+    "loggedAt": "2026-06-18T05:31:15.384Z"
+  },
+  {
+    "symbol": "BANANAS31USDT",
+    "side": "BUY",
+    "filledQty": 448,
+    "avgPrice": 0.011263,
+    "positionSide": "BOTH",
+    "fillTime": 1781760674745,
+    "source": "killshort",
+    "loggedAt": "2026-06-18T05:31:15.430Z"
+  }
+]

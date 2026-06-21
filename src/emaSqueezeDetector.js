@@ -19,6 +19,10 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
     baseRangeMaxPct: 0.10,                // nền trước breakout không được quá rộng
     volSpikeX: 2.5,                       // vol breakout > pre-base MA20 × 2.5
     preRampVolX: 1.35,                    // squeeze sớm: volume bắt đầu nhú so với nền
+    preBreakoutVolX: 1.2,                 // volume xanh bắt đầu bơm trước breakout
+    preBreakoutMinGreenBars: 2,
+    preBreakdownMinRedBars: 2,
+    preBreakoutMaxSpreadPct: 0.085,
     minPumpMovePct: 0.025,                // breakout phải rời nền tối thiểu 2.5%
     rsiMin: 40, rsiMax: 98,               // breakout vertical pump có thể RSI rất cao
     squeezeRsiMax: 72,                    // stage SQUEEZE chưa nên quá nóng
@@ -134,6 +138,8 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
   const maxEmaNow = Math.max(ema13now, ema25now, ema99now);
   const minEmaNow = Math.min(ema13now, ema25now, ema99now);
   const spreadNow = Cc[lastIdx] > 1e-12 ? (maxEmaNow - minEmaNow) / Cc[lastIdx] : 0;
+  const emaBandWidth = maxEmaNow - minEmaNow;
+  const emaBandPos = emaBandWidth > 1e-12 ? clamp((Cc[lastIdx] - minEmaNow) / emaBandWidth, 0, 1) : 0.5;
 
   const rsi14   = calcRsi(Cc, 14);
   const atrNow  = atrAt(lastIdx, C.atrPeriod);
@@ -191,6 +197,16 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
   const breakoutVol = breakoutIdx !== null ? V[breakoutIdx] : 0;
   const breakoutVolRatio = preAvgVol > 0 ? breakoutVol / preAvgVol : 0;
   const rampVolRatio = preAvgVol > 0 ? Math.max(volCurrent, volPrev) / preAvgVol : 0;
+  const pulseStart = Math.max(baseEnd + 1, lastIdx - 4);
+  let greenPulseBars = 0;
+  let redPulseBars = 0;
+  let pulseVolume = 0;
+  for (let i = pulseStart; i <= lastIdx; i++) {
+    if (Cc[i] > O[i]) greenPulseBars++;
+    if (Cc[i] < O[i]) redPulseBars++;
+    pulseVolume = Math.max(pulseVolume, V[i]);
+  }
+  const pulseVolRatio = preAvgVol > 0 ? pulseVolume / preAvgVol : 0;
   const pumpHigh = Math.max(...H.slice(eventIdx, lastIdx + 1));
   const dumpLow = Math.min(...L.slice(eventIdx, lastIdx + 1));
   const pumpMovePct = baseHigh > 1e-12 ? (pumpHigh - baseHigh) / baseHigh : 0;
@@ -226,18 +242,44 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
     && (volOk || recentBreakoutOk)
     && rsiOk
     && eventMovePct >= C.minPumpMovePct;
+  const isPreBreakout = !isBreakout
+    && !isShortSide
+    && flatBaseOk
+    && squeezeRsiOk
+    && spreadNow <= C.preBreakoutMaxSpreadPct
+    && Cc[lastIdx] >= maxEmaNow * 0.995
+    && Cc[lastIdx] <= maxEmaNow * 1.055
+    && emaBandPos >= 0.55
+    && closeInBase >= 0.50
+    && Math.max(rampVolRatio, pulseVolRatio) >= C.preBreakoutVolX
+    && greenPulseBars >= C.preBreakoutMinGreenBars
+    && greenPulseBars > redPulseBars;
+  const isPreBreakdown = !isBreakout
+    && isShortSide
+    && flatBaseOk
+    && squeezeRsiOk
+    && spreadNow <= C.preBreakoutMaxSpreadPct
+    && Cc[lastIdx] <= minEmaNow * 1.005
+    && Cc[lastIdx] >= minEmaNow * 0.945
+    && emaBandPos <= 0.45
+    && closeInBase <= 0.50
+    && Math.max(rampVolRatio, pulseVolRatio) >= C.preBreakoutVolX
+    && redPulseBars >= C.preBreakdownMinRedBars
+    && redPulseBars > greenPulseBars;
   const isSqueeze  = !isBreakout
+    && !isPreBreakout
+    && !isPreBreakdown
     && flatBaseOk
     && squeezeRsiOk
     && spreadNow <= C.moderatePct
     && (isShortSide
-      ? Cc[lastIdx] >= minEmaNow * 0.98 && Cc[lastIdx] <= maxEmaNow * 1.005
-      : Cc[lastIdx] <= maxEmaNow * 1.02 && Cc[lastIdx] >= minEmaNow * 0.995)
+      ? Cc[lastIdx] >= minEmaNow * 0.98 && Cc[lastIdx] <= maxEmaNow * 1.005 && emaBandPos <= 0.45
+      : Cc[lastIdx] <= maxEmaNow * 1.02 && Cc[lastIdx] >= minEmaNow * 0.995 && emaBandPos >= 0.55)
     && (isShortSide ? closeInBase <= 0.45 : closeInBase >= 0.55)
     && rampVolRatio >= C.preRampVolX     // volume bắt đầu thức dậy
     && Math.abs(Cc[lastIdx] - (isShortSide ? minEmaNow : maxEmaNow)) / Math.max(1e-12, Cc[lastIdx]) <= 0.035;
 
-  if (!isBreakout && !isSqueeze) {
+  if (!isBreakout && !isPreBreakout && !isPreBreakdown && !isSqueeze) {
     const why = !flatBaseOk && !recentBreakoutOk
       ? `Nền trước pump quá rộng: ${(baseRangePct * 100).toFixed(1)}%`
       : breakoutIdx !== null && !volOk && !recentBreakoutOk
@@ -252,6 +294,10 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
 
   const stage = isBreakout
     ? (isShortSide ? 'BREAKDOWN' : 'BREAKOUT')
+    : isPreBreakout
+      ? 'PRE_BREAKOUT'
+    : isPreBreakdown
+      ? 'PRE_BREAKDOWN'
     : (isShortSide ? 'SQUEEZE_SHORT' : 'SQUEEZE');
   const isRecentBreakout = isBreakout && recentBreakoutOk
     && (breakoutAge > C.breakoutMaxBars || spreadNow > C.breakoutMaxSpreadPct);
@@ -336,6 +382,75 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
     return { pass: false, reason: 'SL/TP không hợp lệ' };
   }
 
+  const tightRatioForRunner = squeezeBars > 0 ? tightBars / squeezeBars : 0;
+  const squeezeFillRatio = lbTotal > 0 ? squeezeBars / lbTotal : 0;
+  const runnerEdgePos = isShortSide ? 1 - emaBandPos : emaBandPos;
+  const runnerPreScore = !isBreakout ? Math.round(100 * (
+    clamp((C.tightPct - spreadNow) / C.tightPct, 0, 1) * 0.22 +
+    clamp((tightRatioForRunner - 0.72) / 0.28, 0, 1) * 0.18 +
+    clamp((squeezeFillRatio - 0.75) / 0.25, 0, 1) * 0.16 +
+    clamp((rampVolRatio - 1.8) / 2.7, 0, 1) * 0.20 +
+    clamp((runnerEdgePos - 0.72) / 0.28, 0, 1) * 0.12 +
+    clamp((0.085 - baseRangePct) / 0.06, 0, 1) * 0.12
+  )) : 0;
+  const runnerBreakScore = isBreakout ? Math.round(100 * (
+    clamp((tightRatioForRunner - 0.72) / 0.28, 0, 1) * 0.18 +
+    clamp((squeezeFillRatio - 0.75) / 0.25, 0, 1) * 0.16 +
+    clamp((breakoutVolRatio - 4) / 10, 0, 1) * 0.24 +
+    clamp((eventMovePct - 0.08) / 0.16, 0, 1) * 0.20 +
+    clamp((0.12 - baseRangePct) / 0.09, 0, 1) * 0.10 +
+    clamp((12 - Number(breakoutAge ?? 99)) / 12, 0, 1) * 0.12
+  )) : 0;
+  const runnerScore = Math.max(runnerPreScore, runnerBreakScore);
+  const runnerCandidate = runnerScore >= 70;
+  const runnerProjectedMovePct = runnerCandidate
+    ? (isBreakout
+      ? clamp(eventMovePct * 1.35 + Math.min(breakoutVolRatio, 16) * 0.006, 0.12, 0.45)
+      : clamp(baseRangePct * 2.8 + Math.min(rampVolRatio, 8) * 0.015 + tightRatioForRunner * 0.03, 0.08, 0.35))
+    : null;
+  const runnerTp = runnerCandidate
+    ? entry * (isShortSide ? (1 - runnerProjectedMovePct) : (1 + runnerProjectedMovePct))
+    : null;
+  const runnerReason = runnerCandidate
+    ? (isBreakout
+      ? `RUNNER ${isShortSide ? 'SHORT' : 'LONG'}: ${isShortSide ? 'breakdown' : 'breakout'} sau nền nén chặt, vol ${breakoutVolRatio.toFixed(1)}x, ${isShortSide ? 'dump' : 'pump'} ${(eventMovePct * 100).toFixed(1)}%`
+      : `RUNNER ${isShortSide ? 'SHORT' : 'LONG'}: EMA nén rất chặt, ramp vol ${rampVolRatio.toFixed(1)}x, giá nằm sát mép ${isShortSide ? 'dưới' : 'trên'} cụm EMA`)
+    : null;
+
+  const brLikeVolRatio = isBreakout ? breakoutVolRatio : Math.max(rampVolRatio, pulseVolRatio);
+  const brLikeMovePct = isBreakout
+    ? eventMovePct
+    : (baseLow > 1e-12 ? Math.max(0, Cc[lastIdx] - baseLow) / baseLow : 0);
+  const brBaseShape = clamp(1 - Math.abs(baseRangePct - 0.045) / 0.07, 0, 1);
+  const brCompression = clamp(tightRatioForRunner, 0, 1) * 0.55 + clamp(squeezeFillRatio, 0, 1) * 0.45;
+  const brVolShape = clamp(Math.log1p(Math.max(0, brLikeVolRatio)) / Math.log1p(120), 0, 1);
+  const brMoveShape = isBreakout
+    ? clamp((brLikeMovePct - 0.08) / 0.32, 0, 1)
+    : clamp((emaBandPos - 0.62) / 0.38, 0, 1) * 0.55 + clamp((closeInBase - 0.55) / 0.45, 0, 1) * 0.45;
+  const brSpreadShape = isBreakout
+    ? clamp((spreadNow - 0.025) / 0.13, 0, 1)
+    : clamp((C.preBreakoutMaxSpreadPct - spreadNow) / C.preBreakoutMaxSpreadPct, 0, 1);
+  const brGreenShape = clamp(greenPulseBars / 4, 0, 1);
+  const brFreshShape = isBreakout && breakoutAge != null
+    ? clamp((18 - breakoutAge) / 18, 0, 1)
+    : 1;
+  const brLikeScore = isShortSide ? 0 : Math.round(100 * (
+    brBaseShape * 0.16 +
+    brCompression * 0.18 +
+    brVolShape * 0.22 +
+    brMoveShape * 0.20 +
+    brSpreadShape * 0.10 +
+    brGreenShape * 0.08 +
+    brFreshShape * 0.06
+  ));
+  const brLikeLabel = brLikeScore >= 82
+    ? 'BR very close'
+    : brLikeScore >= 68
+      ? 'BR-like'
+      : brLikeScore >= 55
+        ? 'BR watch'
+        : null;
+
   // ── Build output ─────────────────────────────────────────────────────────────
   const volRatioFmt = isBreakout
     ? breakoutVolRatio.toFixed(1)
@@ -346,7 +461,10 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
     `nén=${squeezeBars}/${lbTotal}bars`,
     `tight=${tightBars}`,
     `RSI=${Number.isFinite(rsi14) ? rsi14.toFixed(0) : '?'}`,
+    `emaPos=${emaBandPos.toFixed(2)}`,
     isBreakout ? `breakVol=${volRatioFmt}x` : `rampVol=${volRatioFmt}x`,
+    isPreBreakout ? `preVol=${Math.max(rampVolRatio, pulseVolRatio).toFixed(1)}x green=${greenPulseBars}` : '',
+    isPreBreakdown ? `preVol=${Math.max(rampVolRatio, pulseVolRatio).toFixed(1)}x red=${redPulseBars}` : '',
     isBreakout ? `${isShortSide ? 'dump' : 'pump'}=${(eventMovePct * 100).toFixed(1)}%` : `${isShortSide ? 'minEMA' : 'maxEMA'}=${(isShortSide ? minEmaNow : maxEmaNow).toFixed(6)}`,
     isBreakout && breakoutIdx !== null ? `${isShortSide ? 'breakdown' : 'breakout'}-${breakoutAge}bars` : '',
     isRecentBreakout ? `recentSqueezeBreak=Y` : '',
@@ -356,6 +474,10 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
     ? isRecentBreakout
       ? `Recent EMA squeeze base → ${isShortSide ? 'BREAKDOWN/DUMP' : 'BREAKOUT/PUMP'} sau nén: EMA đã giãn ${(spreadNow * 100).toFixed(1)}% nhưng trước đó có ${tightBars} nến nén chặt, ${isShortSide ? 'dump' : 'pump'} ${(eventMovePct * 100).toFixed(1)}% trong ${breakoutAge} nến`
       : `Flat-base EMA squeeze → ${isShortSide ? 'BREAKDOWN/DUMP' : 'BREAKOUT/PUMP'} xác nhận (vol ${volRatioFmt}×, ${isShortSide ? 'dump' : 'pump'} ${(eventMovePct * 100).toFixed(1)}%)`
+    : isPreBreakout
+      ? `Pre-breakout EMA squeeze: EMA đang nén, giá bám mép trên cụm EMA/base, volume xanh bắt đầu bơm (${Math.max(rampVolRatio, pulseVolRatio).toFixed(1)}×)`
+    : isPreBreakdown
+      ? `Pre-breakdown EMA squeeze: đang ở vùng đỉnh/nền nén, giá gãy dưới cụm EMA/base, volume đỏ bắt đầu vào (${Math.max(rampVolRatio, pulseVolRatio).toFixed(1)}×)`
     : `Flat-base EMA squeeze đang chuẩn bị ${isShortSide ? 'xả/thủng xuống' : 'bơm'} (base ${(baseRangePct * 100).toFixed(1)}%, ramp vol ${volRatioFmt}×)`;
 
   return {
@@ -371,6 +493,11 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
     spreadPct:   spreadNow,
     baseRangePct,
     breakoutVolRatio: isBreakout ? +breakoutVolRatio.toFixed(2) : null,
+    preBreakout: isPreBreakout,
+    preBreakdown: isPreBreakdown,
+    pulseVolRatio: +pulseVolRatio.toFixed(2),
+    greenPulseBars,
+    redPulseBars,
     pumpMovePct: isBreakout ? +(eventMovePct * 100).toFixed(2) : null,
     squeezeBars,
     tightBars,
@@ -380,9 +507,23 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
     ema13:       ema13now,
     ema25:       ema25now,
     ema99:       ema99now,
+    emaBandPos:  +emaBandPos.toFixed(3),
     breakoutAge: isBreakout && breakoutIdx !== null ? breakoutAge : null,
+    runnerCandidate,
+    runnerScore,
+    runnerTp,
+    runnerProjectedMovePct: runnerProjectedMovePct != null ? +(runnerProjectedMovePct * 100).toFixed(2) : null,
+    runnerReason,
+    brLikeScore,
+    brLikeLabel,
+    brLikeVolRatio: +brLikeVolRatio.toFixed(2),
+    brLikeMovePct: +(brLikeMovePct * 100).toFixed(2),
     reason,
-    note: noteBase,
+    note: [
+      noteBase,
+      brLikeLabel ? `BR-like=${brLikeScore}` : '',
+      runnerCandidate ? `runner=${runnerScore} | runnerTP=${runnerTp.toFixed(6)}` : '',
+    ].filter(Boolean).join(' | '),
   };
 }
 
@@ -392,6 +533,81 @@ function normalizeKline(k) {
   if (typeof k.open === 'number') return k;
   const [openTime, open, high, low, close, volume, closeTime, quoteVolume] = k;
   return { openTime: +openTime, open: +open, high: +high, low: +low, close: +close, volume: +volume, closeTime: +closeTime, quoteVolume: +quoteVolume };
+}
+
+function pearson(xs, ys) {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 4) return null;
+  let sx = 0, sy = 0;
+  for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; }
+  const mx = sx / n;
+  const my = sy / n;
+  let num = 0, dx = 0, dy = 0;
+  for (let i = 0; i < n; i++) {
+    const a = xs[i] - mx;
+    const b = ys[i] - my;
+    num += a * b;
+    dx += a * a;
+    dy += b * b;
+  }
+  const den = Math.sqrt(dx * dy);
+  return den > 1e-12 ? num / den : null;
+}
+
+function pctMove(candles, bars) {
+  if (!Array.isArray(candles) || candles.length < bars + 1) return null;
+  const start = Number(candles[candles.length - bars - 1]?.close);
+  const end = Number(candles[candles.length - 1]?.close);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0) return null;
+  return ((end - start) / start) * 100;
+}
+
+function closeReturns(candles, bars) {
+  if (!Array.isArray(candles) || candles.length < bars + 1) return [];
+  const out = [];
+  const start = candles.length - bars;
+  for (let i = start; i < candles.length; i++) {
+    const prev = Number(candles[i - 1]?.close);
+    const cur = Number(candles[i]?.close);
+    if (!Number.isFinite(prev) || !Number.isFinite(cur) || prev <= 0) return [];
+    out.push((cur - prev) / prev);
+  }
+  return out;
+}
+
+function computeBtcChartRelation(coinCandles, btcCandles) {
+  if (!Array.isArray(coinCandles) || !Array.isArray(btcCandles)) return null;
+  const bars = Math.min(18, coinCandles.length - 1, btcCandles.length - 1);
+  const corrBars = Math.min(30, coinCandles.length - 1, btcCandles.length - 1);
+  if (bars < 6 || corrBars < 8) return null;
+
+  const coinMovePct = pctMove(coinCandles, bars);
+  const btcMovePct = pctMove(btcCandles, bars);
+  const corr = pearson(closeReturns(coinCandles, corrBars), closeReturns(btcCandles, corrBars));
+  if (coinMovePct == null || btcMovePct == null) return null;
+
+  const coinDir = Math.abs(coinMovePct) < 0.2 ? 'flat' : coinMovePct > 0 ? 'up' : 'down';
+  const btcDir = Math.abs(btcMovePct) < 0.15 ? 'flat' : btcMovePct > 0 ? 'up' : 'down';
+  const sameDirection = coinDir !== 'flat' && btcDir !== 'flat' && coinDir === btcDir;
+  const oppositeDirection = coinDir !== 'flat' && btcDir !== 'flat' && coinDir !== btcDir;
+
+  let relation = 'neutral';
+  if (oppositeDirection) relation = 'opposed';
+  else if (sameDirection && (corr == null || corr >= 0.15)) relation = 'aligned';
+  else if (sameDirection) relation = 'same_direction_weak_corr';
+  else if (coinDir !== 'flat' && btcDir === 'flat') relation = 'decoupled';
+
+  return {
+    relation,
+    coinMovePct: +coinMovePct.toFixed(2),
+    btcMovePct: +btcMovePct.toFixed(2),
+    corr: corr == null ? null : +corr.toFixed(2),
+    bars,
+    corrBars,
+    coinDir,
+    btcDir,
+    outperformancePct: +(coinMovePct - btcMovePct).toFixed(2),
+  };
 }
 
 // ── Scan ─────────────────────────────────────────────────────────────────────
@@ -409,6 +625,12 @@ export async function runEmaSqueezeScan(symbols, klineCache, snapshotMap, opts =
     .filter(Boolean));
   const minQuoteVolume = Number(opts.minQuoteVolume ?? process.env.EMA_SQUEEZE_MIN_QUOTE_VOLUME ?? 3_000_000);
   const maxQuoteVolume = Number(opts.maxQuoteVolume ?? process.env.EMA_SQUEEZE_MAX_QUOTE_VOLUME ?? 150_000_000);
+  const btcCandlesByInterval = new Map();
+  for (const interval of intervals) {
+    const btcRaw = klineCache.getIfCached('BTCUSDT', interval, 250);
+    const btcCandles = Array.isArray(btcRaw) ? btcRaw.map(normalizeKline).filter(Boolean) : null;
+    if (btcCandles?.length >= 40) btcCandlesByInterval.set(interval, btcCandles);
+  }
 
   for (const symbol of symbols) {
     try {
@@ -425,6 +647,7 @@ export async function runEmaSqueezeScan(symbols, klineCache, snapshotMap, opts =
 
         const candles = raw.map(normalizeKline);
         if (candles.some((c) => !c)) continue;
+        const btcChartRelation = computeBtcChartRelation(candles, btcCandlesByInterval.get(interval));
         processed++;
 
         for (const side of ['LONG', 'SHORT']) {
@@ -467,6 +690,11 @@ export async function runEmaSqueezeScan(symbols, klineCache, snapshotMap, opts =
             spreadPct:  det.spreadPct,
             baseRangePct: det.baseRangePct,
             breakoutVolRatio: det.breakoutVolRatio,
+            preBreakout: det.preBreakout,
+            preBreakdown: det.preBreakdown,
+            pulseVolRatio: det.pulseVolRatio,
+            greenPulseBars: det.greenPulseBars,
+            redPulseBars: det.redPulseBars,
             pumpMovePct: det.pumpMovePct,
             squeezeBars: det.squeezeBars,
             tightBars:  det.tightBars,
@@ -476,11 +704,22 @@ export async function runEmaSqueezeScan(symbols, klineCache, snapshotMap, opts =
             ema13:      det.ema13,
             ema25:      det.ema25,
             ema99:      det.ema99,
+            emaBandPos: det.emaBandPos,
             breakoutAge: det.breakoutAge,
+            runnerCandidate: det.runnerCandidate,
+            runnerScore: det.runnerScore,
+            runnerTp: det.runnerTp,
+            runnerProjectedMovePct: det.runnerProjectedMovePct,
+            runnerReason: det.runnerReason,
+            brLikeScore: det.brLikeScore,
+            brLikeLabel: det.brLikeLabel,
+            brLikeVolRatio: det.brLikeVolRatio,
+            brLikeMovePct: det.brLikeMovePct,
             reason:     det.reason,
             note:       `${interval} | ${det.note}${chasePct > 0.1 ? ` | chase=${(chasePct * 100).toFixed(0)}%TP` : ''}`,
             markPrice:  markNow,
             change24h:  snap?.change24hPct,
+            btcChartRelation,
             volume:     quoteVolume,
             scannedAt:  Date.now(),
           });
@@ -489,14 +728,45 @@ export async function runEmaSqueezeScan(symbols, klineCache, snapshotMap, opts =
     } catch { /* skip */ }
   }
 
+  const deconflicted = [];
+  const bySymbolInterval = new Map();
+  for (const sig of results) {
+    const key = `${sig.symbol}|${sig.interval}`;
+    const arr = bySymbolInterval.get(key) ?? [];
+    arr.push(sig);
+    bySymbolInterval.set(key, arr);
+  }
+
+  for (const group of bySymbolInterval.values()) {
+    const setups = group.filter((s) => s.stage === 'SQUEEZE' || s.stage === 'SQUEEZE_SHORT');
+    const others = group.filter((s) => s.stage !== 'SQUEEZE' && s.stage !== 'SQUEEZE_SHORT');
+    deconflicted.push(...others);
+    if (setups.length <= 1) {
+      deconflicted.push(...setups);
+      continue;
+    }
+
+    const best = setups.slice().sort((a, b) => {
+      const aBias = a.action === 'LONG'
+        ? Number(a.emaBandPos ?? 0.5)
+        : 1 - Number(a.emaBandPos ?? 0.5);
+      const bBias = b.action === 'LONG'
+        ? Number(b.emaBandPos ?? 0.5)
+        : 1 - Number(b.emaBandPos ?? 0.5);
+      if (Math.abs(bBias - aBias) > 0.05) return bBias - aBias;
+      return b.score - a.score;
+    })[0];
+    if (best) deconflicted.push(best);
+  }
+
   // Sort: confirmed trước, setup sau; trong mỗi nhóm sort by score DESC
-  const stageRank = { BREAKOUT: 0, BREAKDOWN: 1, SQUEEZE: 2, SQUEEZE_SHORT: 3 };
+  const stageRank = { BREAKOUT: 0, PRE_BREAKOUT: 1, BREAKDOWN: 2, PRE_BREAKDOWN: 3, SQUEEZE: 4, SQUEEZE_SHORT: 5 };
   const intervalRank = { '1h': 0, '15m': 1, '5m': 2 };
-  results.sort((a, b) => {
+  deconflicted.sort((a, b) => {
     if (a.stage !== b.stage) return (stageRank[a.stage] ?? 9) - (stageRank[b.stage] ?? 9);
     if (a.interval !== b.interval) return (intervalRank[a.interval] ?? 9) - (intervalRank[b.interval] ?? 9);
     return b.score - a.score;
   });
 
-  return { signals: results, processed };
+  return { signals: deconflicted, processed };
 }

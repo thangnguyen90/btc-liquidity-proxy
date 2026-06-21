@@ -1,0 +1,52 @@
+[
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781839795203,
+    "source": "liq",
+    "loggedAt": "2026-06-19T03:29:55.206Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781840008119,
+    "source": "liq",
+    "loggedAt": "2026-06-19T03:33:28.121Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781840219824,
+    "source": "liq",
+    "loggedAt": "2026-06-19T03:36:59.827Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781842893565,
+    "source": "liq",
+    "loggedAt": "2026-06-19T04:21:33.568Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781843306598,
+    "source": "liq",
+    "loggedAt": "2026-06-19T04:28:26.601Z"
+  }
+]

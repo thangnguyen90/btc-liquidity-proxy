@@ -1,0 +1,22 @@
+[
+  {
+    "symbol": "BSBUSDT",
+    "side": "BUY",
+    "filledQty": 39,
+    "avgPrice": 0.54627574,
+    "positionSide": "BOTH",
+    "fillTime": 1781700702381,
+    "source": "cap",
+    "loggedAt": "2026-06-17T12:51:46.007Z"
+  },
+  {
+    "symbol": "BSBUSDT",
+    "side": "BUY",
+    "filledQty": 39,
+    "avgPrice": 0.51202,
+    "positionSide": "BOTH",
+    "fillTime": 1781700702381,
+    "source": "cap",
+    "loggedAt": "2026-06-17T12:51:47.212Z"
+  }
+]

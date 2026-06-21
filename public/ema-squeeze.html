@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/styles.css">
     <style>
       .es-controls {
-        grid-template-columns: minmax(200px, 1fr) 110px 140px 120px auto;
+        grid-template-columns: minmax(200px, 1fr) 110px 140px 120px minmax(170px, auto) auto;
       }
 
       .es-grid {
@@ -35,12 +35,59 @@
         height: 3px;
         background: var(--green);
       }
+      .es-card.runner {
+        border-color: rgba(34,211,238,.62);
+        background:
+          linear-gradient(135deg, rgba(34,211,238,.12), rgba(28,32,31,.92) 42%),
+          var(--panel);
+        box-shadow: 0 0 0 1px rgba(34,211,238,.08), 0 10px 28px rgba(34,211,238,.08);
+      }
+      .es-card.runner::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+        background: #22d3ee;
+      }
+      .es-card.runner.stage-breakdown,
+      .es-card.runner.stage-squeeze-short {
+        border-color: rgba(34,211,238,.5);
+        background:
+          linear-gradient(135deg, rgba(34,211,238,.10), rgba(251,113,133,.10) 44%, rgba(28,32,31,.94) 72%),
+          var(--panel);
+      }
       .es-card.stage-squeeze::before {
         content: '';
         position: absolute;
         top: 0; left: 0; right: 0;
         height: 3px;
         background: var(--amber);
+      }
+      .es-card.stage-pre-breakout {
+        border-color: rgba(34,211,238,.42);
+        background:
+          linear-gradient(135deg, rgba(34,211,238,.10), rgba(28,32,31,.94) 58%),
+          var(--panel);
+      }
+      .es-card.stage-pre-breakout::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+        background: #22d3ee;
+      }
+      .es-card.stage-pre-breakdown {
+        border-color: rgba(216,180,254,.42);
+        background:
+          linear-gradient(135deg, rgba(216,180,254,.10), rgba(28,32,31,.94) 58%),
+          var(--panel);
+      }
+      .es-card.stage-pre-breakdown::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+        background: #d8b4fe;
       }
       .es-card.stage-breakdown::before,
       .es-card.stage-squeeze-short::before {
@@ -108,11 +155,52 @@
         color: var(--amber);
         border: 1px solid rgba(251,191,36,.3);
       }
+      .es-stage-badge.pre-breakout {
+        background: rgba(34,211,238,.16);
+        color: #67e8f9;
+        border: 1px solid rgba(34,211,238,.36);
+      }
+      .es-stage-badge.pre-breakdown {
+        background: rgba(216,180,254,.16);
+        color: #e9d5ff;
+        border: 1px solid rgba(216,180,254,.36);
+      }
       .es-stage-badge.breakdown,
       .es-stage-badge.squeeze-short {
         background: rgba(251,113,133,.15);
         color: var(--red);
         border: 1px solid rgba(251,113,133,.35);
+      }
+      .real-order-badge {
+        font-size: 10px;
+        font-weight: 900;
+        padding: 2px 8px;
+        border-radius: 3px;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        border: 1px solid transparent;
+      }
+      .real-order-badge.ok {
+        color: #67e8f9;
+        background: rgba(34,211,238,.16);
+        border-color: rgba(34,211,238,.36);
+      }
+      .real-order-badge.block-btc {
+        color: #fff;
+        background: rgba(248,113,113,.28);
+        border-color: rgba(248,113,113,.72);
+        box-shadow: 0 0 0 1px rgba(248,113,113,.18);
+      }
+      .real-order-badge.block {
+        color: var(--amber);
+        background: rgba(251,191,36,.16);
+        border-color: rgba(251,191,36,.42);
+      }
+      .real-order-badge.off {
+        color: var(--muted);
+        background: rgba(157,170,165,.10);
+        border-color: rgba(157,170,165,.22);
       }
 
       /* ── Compression bar ── */
@@ -147,7 +235,7 @@
       /* ── Prices ── */
       .es-prices {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(5, minmax(0, 1fr));
         gap: 6px;
       }
       .es-price-cell {
@@ -159,6 +247,11 @@
       }
       .es-price-cell span   { font-size: 10px; color: var(--muted); text-transform: uppercase; font-weight: 700; }
       .es-price-cell strong { font-size: 13px; font-weight: 700; }
+      .es-price-cell.liquid {
+        border: 1px solid rgba(59,130,246,.35);
+        background: rgba(59,130,246,.08);
+      }
+      .es-price-cell.muted strong { color: var(--muted); }
 
       /* ── Chips ── */
       .es-chips {
@@ -180,6 +273,97 @@
       .es-chip.ok   { background: rgba(54,211,153,.1);  color: var(--green); }
       .es-chip.warn { background: rgba(251,191,36,.1);  color: var(--amber); }
       .es-chip.bad  { background: rgba(251,113,133,.1); color: var(--red); }
+      .es-chip.runner {
+        background: rgba(34,211,238,.16);
+        color: #67e8f9;
+        border: 1px solid rgba(34,211,238,.35);
+      }
+      .es-chip.danger {
+        background: rgba(216,180,254,.14);
+        color: #e9d5ff;
+        border: 1px solid rgba(216,180,254,.34);
+      }
+      .es-chip.br-like {
+        background: rgba(248,113,113,.16);
+        color: #fecaca;
+        border: 1px solid rgba(248,113,113,.42);
+      }
+      .es-chip.br-hot {
+        background: rgba(239,68,68,.22);
+        color: #fee2e2;
+        border: 1px solid rgba(248,113,113,.64);
+        box-shadow: 0 0 0 1px rgba(248,113,113,.16), 0 0 14px rgba(239,68,68,.14);
+      }
+      .es-auto-toggle {
+        height: 100%;
+        min-height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        border: 1px solid rgba(34,211,238,.28);
+        border-radius: 7px;
+        background: rgba(34,211,238,.08);
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 900;
+        cursor: pointer;
+        padding: 0 12px;
+        white-space: nowrap;
+      }
+      .es-auto-toggle input {
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+        accent-color: #22d3ee;
+      }
+      .es-auto-toggle.off {
+        border-color: rgba(251,113,133,.35);
+        background: rgba(251,113,133,.10);
+        color: var(--red);
+      }
+      .es-auto-toggle.disabled {
+        opacity: .55;
+        cursor: not-allowed;
+      }
+      .btc-direction-alert {
+        border-radius: 7px;
+        padding: 8px 10px;
+        font-size: 12px;
+        font-weight: 900;
+        line-height: 1.35;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        border: 1px solid transparent;
+        text-transform: uppercase;
+      }
+      .btc-direction-alert small {
+        color: inherit;
+        opacity: .86;
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: none;
+        text-align: right;
+      }
+      .btc-direction-alert.aligned {
+        color: #67e8f9;
+        background: rgba(34,211,238,.16);
+        border-color: rgba(34,211,238,.42);
+        box-shadow: inset 3px 0 0 #22d3ee;
+      }
+      .btc-direction-alert.opposed {
+        color: var(--amber);
+        background: rgba(251,191,36,.16);
+        border-color: rgba(251,191,36,.42);
+        box-shadow: inset 3px 0 0 var(--amber);
+      }
+      .btc-direction-alert.neutral {
+        color: var(--muted);
+        background: rgba(157,170,165,.10);
+        border-color: rgba(157,170,165,.22);
+      }
 
       /* ── Note ── */
       .es-note {
@@ -300,6 +484,33 @@
         padding: 8px 16px;
         border-bottom: 1px solid var(--line);
       }
+      .es-paper-filters {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255,255,255,.012);
+        flex-wrap: wrap;
+      }
+      .es-paper-filters label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .es-paper-filters select {
+        min-width: 170px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel-2);
+        color: var(--text);
+        padding: 7px 9px;
+        font-size: 12px;
+      }
       .es-paper-stats {
         display: grid;
         grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -384,6 +595,29 @@
       }
       .es-paper-table tr:last-child td { border-bottom: none; }
       .es-paper-table tr:hover td { background: var(--panel-2); }
+
+      /* ── Variant (cách vào) badge ── */
+      .es-variant-badge {
+        display: inline-block;
+        font-size: 9px; font-weight: 900;
+        padding: 2px 6px; border-radius: 4px;
+        letter-spacing: .03em; white-space: nowrap;
+        border: 1px solid transparent;
+      }
+      .es-variant-badge.market {
+        color: #67e8f9; background: rgba(34,211,238,.14); border-color: rgba(34,211,238,.4);
+      }
+      .es-variant-badge.pending {
+        color: var(--amber); background: rgba(251,191,36,.14); border-color: rgba(251,191,36,.4);
+      }
+      .es-variant-badge.pending.waiting {
+        color: var(--muted); background: transparent; border-style: dashed; border-color: rgba(251,191,36,.55);
+      }
+      .es-variant-badge.none { color: var(--muted); }
+      .es-paper-table tr.es-row-market td:first-child { border-left: 3px solid rgba(34,211,238,.7); }
+      .es-paper-table tr.es-row-pending td:first-child { border-left: 3px solid rgba(251,191,36,.7); }
+      .es-paper-table tr.es-row-market td { background: rgba(34,211,238,.04); }
+      .es-paper-table tr.es-row-pending td { background: rgba(251,191,36,.04); }
       .es-paper-close-btn {
         font-size: 11px;
         font-weight: 700;
@@ -400,8 +634,72 @@
       .es-paper-close-btn.del:hover { background: rgba(251,113,133,.1); }
 
       @media (max-width: 760px) {
+        .es-prices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .es-paper-stats,
         .es-paper-breakdown { grid-template-columns: 1fr; }
+      }
+
+      .btc-squeeze-context {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 12px 14px;
+        margin: 0 0 14px;
+        display: grid;
+        gap: 9px;
+      }
+      .btc-sq-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .btc-sq-title {
+        font-size: 12px;
+        color: var(--muted);
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+      }
+      .btc-sq-bias {
+        font-size: 14px;
+        font-weight: 900;
+      }
+      .btc-sq-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(140px, 1fr));
+        gap: 8px;
+      }
+      .btc-sq-cell {
+        background: var(--panel-2);
+        border-radius: 7px;
+        padding: 8px 10px;
+      }
+      .btc-sq-cell span {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .btc-sq-cell strong {
+        display: block;
+        margin-top: 4px;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      .btc-sq-note {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+      .btc-sq-context.bearish { border-color: rgba(251,113,133,.5); background: rgba(251,113,133,.08); }
+      .btc-sq-context.bullish { border-color: rgba(54,211,153,.45); background: rgba(54,211,153,.07); }
+      .es-chip.btc-warn { background: rgba(251,191,36,.12); color: var(--amber); border: 1px solid rgba(251,191,36,.3); }
+      .es-chip.btc-ok { background: rgba(34,211,238,.14); color: #67e8f9; border: 1px solid rgba(34,211,238,.32); }
+      @media (max-width: 900px) {
+        .btc-sq-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
     </style>
   </head>
@@ -416,18 +714,28 @@
           <a class="nav-link" href="/">Dashboard</a>
           <a class="nav-link" href="/pump">Pump</a>
           <a class="nav-link" href="/pump-ignition">Pump Ign</a>
+          <a class="nav-link" href="/ema99-kill-reclaim">EMA99 Kill</a>
+          <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
           <a class="nav-link" href="/cap">Capitulation</a>
           <a class="nav-link" href="/killshort">Kill Short</a>
           <a class="nav-link" href="/spike-reversal">Spike Rev</a>
           <a class="nav-link" href="/dump-ignition">Dump Ign</a>
           <a class="nav-link" href="/edge-short">Short Edge</a>
           <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
+        <a class="nav-link" href="/market-news">Market News</a>
+        <a class="nav-link" href="/coin-flow">Coin Flow</a>
           <a class="nav-link" href="/orders">Orders</a>
           <div class="status" id="scanStatus">Loading...</div>
         </div>
       </section>
 
       <div id="btcHealth"></div>
+      <section id="btcSqueezeContext" class="btc-squeeze-context">
+        <div class="btc-sq-top">
+          <span class="btc-sq-title">BTC liquidation context</span>
+          <strong class="btc-sq-bias">Loading...</strong>
+        </div>
+      </section>
 
       <section class="summary-grid signal-summary">
         <article class="metric">
@@ -456,7 +764,10 @@
         <button class="es-tab active" data-stage="all">Tất cả</button>
         <button class="es-tab" data-stage="BREAKOUT">🟢 Breakout</button>
         <button class="es-tab" data-stage="BREAKDOWN">🔴 Breakdown</button>
+        <button class="es-tab" data-stage="PRE_BREAKOUT">🟦 Pre Breakout</button>
+        <button class="es-tab" data-stage="PRE_BREAKDOWN">🟪 Pre Breakdown</button>
         <button class="es-tab" data-stage="SQUEEZE">🔶 Squeeze</button>
+        <button class="es-tab" data-stage="RUNNER">💠 Runner</button>
         <button class="es-tab" data-stage="SQUEEZE_SHORT">🟥 Squeeze Short</button>
       </div>
 
@@ -488,9 +799,14 @@
           <select id="sortSelect">
             <option value="default">Stage → Score</option>
             <option value="score">Score cao nhất</option>
+            <option value="brLike">Giống BRUSDT nhất</option>
             <option value="squeeze">Nén lâu nhất</option>
             <option value="spread">Spread nhỏ nhất</option>
           </select>
+        </label>
+        <label class="es-auto-toggle" id="emaSqueezeAutoOrderWrap" title="Bật/tắt auto vào lệnh Binance cho EMA Squeeze">
+          <input id="emaSqueezeAutoOrderChk" type="checkbox">
+          <span id="emaSqueezeAutoOrderText">Auto Binance</span>
         </label>
         <div class="socket-note">
           <strong id="visibleCount">0</strong>
@@ -516,6 +832,37 @@
       <section class="es-paper-section">
         <h2>Paper Trades <span>EMA Squeeze auto log</span></h2>
         <div id="esPaperSummary">Loading...</div>
+        <div class="es-paper-filters">
+          <label>
+            Signal type
+            <select id="esPaperTypeFilter">
+              <option value="all">All</option>
+              <option value="Breakout" selected>Breakout</option>
+              <option value="Pre Breakout">Pre Breakout</option>
+              <option value="Squeeze">Squeeze</option>
+              <option value="Runner">Runner</option>
+              <option value="Squeeze Short">Squeeze Short</option>
+              <option value="Pre Breakdown">Pre Breakdown</option>
+              <option value="Breakdown">Breakdown</option>
+              <option value="Other">Other</option>
+            </select>
+          </label>
+          <label>
+            Theo ngày
+            <select id="esPaperDayFilter">
+              <option value="all">Tất cả</option>
+            </select>
+          </label>
+          <label>
+            Khung nến
+            <select id="esPaperTfFilter">
+              <option value="all">Tất cả</option>
+              <option value="5m">5m</option>
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+            </select>
+          </label>
+        </div>
         <div class="es-paper-stats" id="esPaperStats">
           <article class="es-paper-stat">
             <span>Closed WR</span>
@@ -543,6 +890,7 @@
           <table class="es-paper-table">
             <thead>
               <tr>
+                <th>Cách vào</th>
                 <th class="es-paper-sort" data-es-sort="symbol">Symbol <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="side">Side <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="entry">Entry <span class="sort-mark"></span></th>
@@ -566,6 +914,6 @@
     </main>
 
     <script src="/btcHealth.js"></script>
-    <script src="/ema-squeeze.js?v=20260601-paper" type="module"></script>
+    <script src="/ema-squeeze.js?v=20260604-real-block-badge" type="module"></script>
   </body>
 </html>

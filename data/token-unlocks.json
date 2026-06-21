@@ -1,0 +1,15 @@
+{
+  "rows": [],
+  "updatedAt": "2026-06-10T06:32:44.923Z",
+  "configured": false,
+  "sources": [],
+  "error": "Missing TOKEN_UNLOCKS_API_URL. You can also populate data/token-unlocks.json manually.",
+  "stats": {
+    "total": 0,
+    "next7d": 0,
+    "next30d": 0,
+    "totalValue30d": 0,
+    "largeUnlocks30d": 0
+  },
+  "refreshReason": "startup"
+}

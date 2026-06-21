@@ -1,27 +1,12 @@
 {
-  "BEATUSDT": {
-    "expiresAt": 1779777023003,
-    "addedAt": "2026-05-26T04:30:23.003Z",
-    "reason": "SL hit pnl=-0.0618"
+  "PORTALUSDT": {
+    "expiresAt": 1781794971269,
+    "addedAt": "2026-06-18T13:02:51.269Z",
+    "reason": "SL hit pnl=-0.0000"
   },
-  "ZENUSDT": {
-    "expiresAt": 1779780580744,
-    "addedAt": "2026-05-26T05:29:40.744Z",
-    "reason": "SL hit pnl=-0.0480"
-  },
-  "AZTECUSDT": {
-    "expiresAt": 1779781595748,
-    "addedAt": "2026-05-26T05:46:35.748Z",
-    "reason": "SL hit pnl=-0.1770"
-  },
-  "DEXEUSDT": {
-    "expiresAt": 1779797871477,
-    "addedAt": "2026-05-26T10:17:51.477Z",
-    "reason": "SL hit pnl=-0.0261"
-  },
-  "VVVUSDT": {
-    "expiresAt": 1779798572170,
-    "addedAt": "2026-05-26T10:29:32.170Z",
-    "reason": "SL hit pnl=-5.3776"
+  "FOLKSUSDT": {
+    "expiresAt": 1781804473102,
+    "addedAt": "2026-06-18T15:41:13.102Z",
+    "reason": "SL hit pnl=-1.6638"
   }
 }

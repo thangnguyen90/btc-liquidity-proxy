@@ -519,6 +519,142 @@ select:focus {
   color: var(--muted);
 }
 
+.liquid-totals-box {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(251, 191, 36, 0.42);
+  border-left: 4px solid var(--amber);
+  border-radius: 7px;
+  background: rgba(251, 191, 36, 0.10);
+}
+
+.liquid-totals-box.above {
+  border-color: rgba(54, 211, 153, 0.45);
+  border-left-color: var(--green);
+  background: linear-gradient(135deg, rgba(54, 211, 153, 0.16), rgba(37, 42, 40, 0.9));
+}
+
+.liquid-totals-box.below {
+  border-color: rgba(251, 113, 133, 0.48);
+  border-left-color: var(--red);
+  background: linear-gradient(135deg, rgba(251, 113, 133, 0.17), rgba(37, 42, 40, 0.92));
+}
+
+.liquid-total-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 9px;
+}
+
+.liquid-total-head span,
+.liquid-total-grid span,
+.liquid-total-grid small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.liquid-total-head strong {
+  color: var(--text);
+  font-size: 13px;
+  text-align: right;
+}
+
+.liquid-total-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.liquid-total-grid div {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.liquid-total-grid strong {
+  display: block;
+  margin: 3px 0;
+  color: #f8fafc;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.token-unlock-box {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(251, 191, 36, 0.42);
+  border-left: 4px solid var(--amber);
+  border-radius: 7px;
+  background: rgba(251, 191, 36, 0.10);
+}
+
+.token-unlock-box.high {
+  border-color: rgba(251, 113, 133, 0.5);
+  border-left-color: var(--red);
+  background: linear-gradient(135deg, rgba(251, 113, 133, 0.18), rgba(37, 42, 40, 0.92));
+}
+
+.token-unlock-box.mid {
+  border-color: rgba(251, 191, 36, 0.48);
+  border-left-color: var(--amber);
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.15), rgba(37, 42, 40, 0.92));
+}
+
+.token-unlock-box.low {
+  border-color: rgba(54, 211, 153, 0.42);
+  border-left-color: var(--green);
+  background: linear-gradient(135deg, rgba(54, 211, 153, 0.12), rgba(37, 42, 40, 0.9));
+}
+
+.token-unlock-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 9px;
+}
+
+.token-unlock-head span,
+.token-unlock-grid span,
+.token-unlock-grid small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.token-unlock-head strong {
+  color: var(--text);
+  font-size: 13px;
+  text-align: right;
+}
+
+.token-unlock-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.token-unlock-grid div {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.token-unlock-grid strong {
+  display: block;
+  margin: 3px 0;
+  color: #f8fafc;
+  font-size: 16px;
+  font-weight: 800;
+}
+
 .kill-zone-box {
   margin-top: 10px;
   display: grid;
@@ -1371,6 +1507,8 @@ pre {
   .target-row,
   .order-fields,
   .quick-order-grid,
+  .liquid-total-grid,
+  .token-unlock-grid,
   .signal-controls,
   .kv {
     grid-template-columns: 1fr 1fr;
@@ -1396,6 +1534,8 @@ pre {
   .target-row,
   .order-fields,
   .quick-order-grid,
+  .liquid-total-grid,
+  .token-unlock-grid,
   .kv,
   .bar-pair {
     grid-template-columns: 1fr;

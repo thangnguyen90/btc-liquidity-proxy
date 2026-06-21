@@ -23,11 +23,11 @@ let _ticker = null;
 function _ensureTicker() {
   if (_ticker) return;
   _ticker = createMarkPriceTicker({
-    onPrice: ({ symbol, markPrice }) => {
-      _latestPrices.set(symbol, { markPrice, at: Date.now() });
+    onPrice: ({ symbol, markPrice, eventTime }) => {
+      _latestPrices.set(symbol, { markPrice, at: eventTime });
       for (const h of _handlers.values()) {
         if (h.symbols.has(symbol)) {
-          try { h.onPrice({ symbol, markPrice }); } catch {}
+          try { h.onPrice({ symbol, markPrice, eventTime }); } catch {}
         }
       }
     },
@@ -76,5 +76,10 @@ export const sharedMarkTicker = {
 
   getPrice(symbol) {
     return _latestPrices.get(String(symbol ?? '').toUpperCase())?.markPrice ?? null;
+  },
+
+  getPriceInfo(symbol) {
+    const row = _latestPrices.get(String(symbol ?? '').toUpperCase());
+    return row ? { ...row } : null;
   },
 };

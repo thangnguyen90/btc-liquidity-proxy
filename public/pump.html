@@ -35,6 +35,11 @@
       }
       .pump-card.long::before  { background: var(--green); }
       .pump-card.short::before { background: var(--red); }
+      .pump-card.pump-short-sweet {
+        border-color: rgba(20,184,166,.62);
+        background: linear-gradient(180deg, rgba(20,184,166,.16), rgba(20,184,166,.045) 45%, var(--panel) 100%);
+      }
+      .pump-card.pump-short-sweet::before { background: #14b8a6; }
       .pump-card.ma60-cluster {
         border-color: rgba(249,115,22,.55);
         background: linear-gradient(180deg, rgba(249,115,22,.13), rgba(249,115,22,.035) 42%, var(--panel) 100%);
@@ -103,6 +108,7 @@
       }
       .pump-action-badge.long  { background: rgba(54,211,153,.15); color: var(--green); border: 1px solid rgba(54,211,153,.3); }
       .pump-action-badge.short { background: rgba(251,113,133,.15); color: var(--red);   border: 1px solid rgba(251,113,133,.3); }
+      .pump-action-badge.pump-short-sweet { background: rgba(20,184,166,.18); color: #5eead4; border: 1px solid rgba(20,184,166,.48); }
       .pump-action-badge.ma60-cluster { background: rgba(249,115,22,.18); color: #fb923c; border: 1px solid rgba(249,115,22,.45); }
 
       .pump-score-wrap {
@@ -140,6 +146,11 @@
         background: rgba(251,113,133,.2);
         color: var(--red);
         border: 1px solid rgba(251,113,133,.4);
+      }
+      .pump-type-badge.type-pump-short-sweet {
+        background: rgba(20,184,166,.2);
+        color: #5eead4;
+        border: 1px solid rgba(20,184,166,.42);
       }
       .pump-type-badge.type-ma60 {
         background: rgba(249,115,22,.2);
@@ -386,12 +397,16 @@
           <a class="nav-link" href="/">Detail Dashboard</a>
           <a class="nav-link" href="/pump-ignition">Pump Ign</a>
           <a class="nav-link" href="/ema-squeeze">EMA Squeeze</a>
+          <a class="nav-link" href="/ema99-kill-reclaim">EMA99 Kill</a>
+          <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
           <a class="nav-link" href="/cap">Capitulation</a>
           <a class="nav-link" href="/killshort">Kill Short</a>
           <a class="nav-link" href="/spike-reversal">Spike Rev</a>
           <a class="nav-link" href="/post-pump-kill-short">Post Pump KS</a>
           <a class="nav-link" href="/dump-ignition">Dump Ign</a>
           <a class="nav-link" href="/etf-proxy">ETF Flow</a>
+        <a class="nav-link" href="/market-news">Market News</a>
+        <a class="nav-link" href="/coin-flow">Coin Flow</a>
           <a class="nav-link" href="/edge-short">Short Edge</a>
           <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
           <a class="nav-link" href="/highvol">High Vol</a>

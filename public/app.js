@@ -54,6 +54,28 @@ const elements = {
   liquidityBias: document.querySelector('#liquidityBias'),
   bookImbalance: document.querySelector('#bookImbalance'),
   marketExplain: document.querySelector('#marketExplain'),
+  liquidTotalsBox: document.querySelector('#liquidTotalsBox'),
+  liquidTotalsBias: document.querySelector('#liquidTotalsBias'),
+  liquidAboveTotal: document.querySelector('#liquidAboveTotal'),
+  liquidAboveShare: document.querySelector('#liquidAboveShare'),
+  liquidBelowTotal: document.querySelector('#liquidBelowTotal'),
+  liquidBelowShare: document.querySelector('#liquidBelowShare'),
+  liquidTotalsRatio: document.querySelector('#liquidTotalsRatio'),
+  liquidTotalsHint: document.querySelector('#liquidTotalsHint'),
+  liquidMaxAbovePrice: document.querySelector('#liquidMaxAbovePrice'),
+  liquidMaxAboveMeta: document.querySelector('#liquidMaxAboveMeta'),
+  liquidMaxBelowPrice: document.querySelector('#liquidMaxBelowPrice'),
+  liquidMaxBelowMeta: document.querySelector('#liquidMaxBelowMeta'),
+  tokenUnlockBox: document.querySelector('#tokenUnlockBox'),
+  tokenUnlockRisk: document.querySelector('#tokenUnlockRisk'),
+  tokenUnlockDate: document.querySelector('#tokenUnlockDate'),
+  tokenUnlockDays: document.querySelector('#tokenUnlockDays'),
+  tokenUnlockAmount: document.querySelector('#tokenUnlockAmount'),
+  tokenUnlockAllocation: document.querySelector('#tokenUnlockAllocation'),
+  tokenUnlockValue: document.querySelector('#tokenUnlockValue'),
+  tokenUnlockPercent: document.querySelector('#tokenUnlockPercent'),
+  tokenUnlock30dValue: document.querySelector('#tokenUnlock30dValue'),
+  tokenUnlock30dMeta: document.querySelector('#tokenUnlock30dMeta'),
   killZoneBox: document.querySelector('#killZoneBox'),
   mainKillZoneItem: document.querySelector('#mainKillZoneItem'),
   mainKillZoneRange: document.querySelector('#mainKillZoneRange'),
@@ -272,6 +294,8 @@ function render(data) {
     : '-';
   elements.liquidityBias.textContent = formatNumber(data.liquidationProxy.bias, 4);
   elements.liquidityBias.className = classFor(data.liquidationProxy.bias);
+  renderLiquidTotalsBox(data.liquidationProxy, priceDigits);
+  renderTokenUnlockBox(data.tokenUnlock);
   elements.bookImbalance.textContent = formatNumber(data.orderBook.imbalance, 4);
   elements.bookImbalance.className = classFor(data.orderBook.imbalance);
 
@@ -613,6 +637,96 @@ function renderLsRatioChart(rows) {
 function formatTime(ts) {
   const d = new Date(Number(ts));
   return d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderLiquidTotalsBox(liq, priceDigits) {
+  if (!elements.liquidTotalsBox) return;
+  const above = Number(liq?.liquidityAbove ?? 0);
+  const below = Number(liq?.liquidityBelow ?? 0);
+  const total = above + below;
+  if (!Number.isFinite(total) || total <= 0) {
+    elements.liquidTotalsBox.style.display = 'none';
+    return;
+  }
+
+  const aboveShare = above / total * 100;
+  const belowShare = below / total * 100;
+  const ratio = below > 0 ? above / below : Infinity;
+  const bias = Number(liq?.bias ?? ((above - below) / total));
+  const absBias = Math.abs(bias);
+  const dominant = above > below ? 'above' : below > above ? 'below' : 'balanced';
+  const label = dominant === 'above'
+    ? 'Thanh lý phía trên dày hơn'
+    : dominant === 'below'
+      ? 'Thanh lý phía dưới dày hơn'
+      : 'Thanh lý cân bằng';
+  const hint = dominant === 'above'
+    ? 'dễ bị hút lên quét short'
+    : dominant === 'below'
+      ? 'dễ bị kéo xuống quét long'
+      : 'chưa lệch rõ';
+
+  elements.liquidTotalsBox.style.display = '';
+  elements.liquidTotalsBox.className = `liquid-totals-box ${dominant}`;
+  elements.liquidTotalsBias.textContent = `${label} · bias ${bias >= 0 ? '+' : ''}${formatNumber(bias, 3)}`;
+  elements.liquidAboveTotal.textContent = formatCompact(above);
+  elements.liquidAboveShare.textContent = `${formatNumber(aboveShare, 1)}% tổng heatmap`;
+  elements.liquidBelowTotal.textContent = formatCompact(below);
+  elements.liquidBelowShare.textContent = `${formatNumber(belowShare, 1)}% tổng heatmap`;
+  elements.liquidTotalsRatio.textContent = Number.isFinite(ratio) ? `${formatNumber(ratio, 2)}x` : '∞';
+  elements.liquidTotalsHint.textContent = absBias >= 0.25 ? hint : `lệch nhẹ, ${hint}`;
+
+  const maxAbove = Array.isArray(liq?.strongestAbove) ? liq.strongestAbove[0] : null;
+  const maxBelow = Array.isArray(liq?.strongestBelow) ? liq.strongestBelow[0] : null;
+  if (maxAbove) {
+    elements.liquidMaxAbovePrice.textContent = formatPrice(maxAbove.price, priceDigits);
+    elements.liquidMaxAboveMeta.textContent = `${signedPct(maxAbove.distancePct)} · score ${formatCompact(maxAbove.score)}`;
+  } else {
+    elements.liquidMaxAbovePrice.textContent = '-';
+    elements.liquidMaxAboveMeta.textContent = 'không có vùng rõ';
+  }
+  if (maxBelow) {
+    elements.liquidMaxBelowPrice.textContent = formatPrice(maxBelow.price, priceDigits);
+    elements.liquidMaxBelowMeta.textContent = `${signedPct(maxBelow.distancePct)} · score ${formatCompact(maxBelow.score)}`;
+  } else {
+    elements.liquidMaxBelowPrice.textContent = '-';
+    elements.liquidMaxBelowMeta.textContent = 'không có vùng rõ';
+  }
+}
+
+function renderTokenUnlockBox(unlock) {
+  if (!elements.tokenUnlockBox) return;
+  const next = unlock?.next;
+  if (!next?.unlockDate) {
+    elements.tokenUnlockBox.style.display = 'none';
+    return;
+  }
+
+  const days = Math.ceil((Date.parse(next.unlockDate) - Date.now()) / 86_400_000);
+  const valueUsd = Number(next.unlockValueUsd);
+  const pctSupply = Number(next.percentSupply);
+  const pctMcap = Number(next.percentMarketCap);
+  let risk = 'LOW';
+  if ((Number.isFinite(valueUsd) && valueUsd >= 50_000_000) || (Number.isFinite(pctSupply) && pctSupply >= 3) || (Number.isFinite(pctMcap) && pctMcap >= 3) || days <= 7) {
+    risk = 'HIGH';
+  } else if ((Number.isFinite(valueUsd) && valueUsd >= 10_000_000) || (Number.isFinite(pctSupply) && pctSupply >= 1) || (Number.isFinite(pctMcap) && pctMcap >= 1) || days <= 30) {
+    risk = 'MID';
+  }
+
+  elements.tokenUnlockBox.style.display = '';
+  elements.tokenUnlockBox.className = `token-unlock-box ${risk.toLowerCase()}`;
+  elements.tokenUnlockRisk.textContent = `${risk} supply risk`;
+  elements.tokenUnlockDate.textContent = formatDate(next.unlockDate);
+  elements.tokenUnlockDays.textContent = Number.isFinite(days) ? `${days}d to unlock` : '-';
+  elements.tokenUnlockAmount.textContent = formatCompact(next.unlockAmount);
+  elements.tokenUnlockAllocation.textContent = next.allocation || next.unlockType || '-';
+  elements.tokenUnlockValue.textContent = Number.isFinite(valueUsd) ? formatCurrency(valueUsd) : '-';
+  elements.tokenUnlockPercent.textContent = [
+    Number.isFinite(pctSupply) ? `${formatNumber(pctSupply, 2)}% supply` : null,
+    Number.isFinite(pctMcap) ? `${formatNumber(pctMcap, 2)}% mcap` : null,
+  ].filter(Boolean).join(' | ') || '-';
+  elements.tokenUnlock30dValue.textContent = unlock.next30d?.totalValueUsd ? formatCurrency(unlock.next30d.totalValueUsd) : '-';
+  elements.tokenUnlock30dMeta.textContent = `${unlock.next30d?.count ?? 0} event(s) next 30d`;
 }
 
 function renderBookBars(orderBook) {

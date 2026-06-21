@@ -1,126 +1,87 @@
 import WebSocket from 'ws';
 
-const WS_BASE = 'wss://fstream.binancefuture.com/ws';
-const WS_OPTS = {
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Origin': 'https://www.binance.com',
-  },
-};
-
-// Exponential backoff config
+const WS_BASE = 'wss://fstream.binance.com/public/ws';
 const BACKOFF_BASE_MS = 5_000;
-const BACKOFF_MAX_MS  = 5 * 60_000; // max 5 min
-const BACKOFF_MULT    = 2;
-const BAN_WAIT_MS     = 3 * 60_000; // 3 min wait on 418/429/403
+const BACKOFF_MAX_MS = 5 * 60_000;
 
-/**
- * Binance futures real-time price ticker via bookTicker WebSocket.
- * Uses mid price (bid+ask)/2 as mark price proxy — accurate to <$0.10 for BTC.
- * Returns { setSymbols(symbols), close() }
- */
 export function createMarkPriceTicker({ onPrice }) {
   let ws = null;
-  let subscribedSymbols = new Set();
+  let symbols = new Set();
+  let liveSymbols = new Set();
   let reconnectTimer = null;
+  let reconcileTimer = null;
+  let requestId = 1;
   let closed = false;
-  let dataReceived = false;
   let backoffMs = BACKOFF_BASE_MS;
+
+  function sendControl(method, targetSymbols) {
+    if (ws?.readyState !== WebSocket.OPEN || targetSymbols.length === 0) return;
+    for (let i = 0; i < targetSymbols.length; i += 200) {
+      ws.send(JSON.stringify({
+        method,
+        params: targetSymbols.slice(i, i + 200).map((symbol) => `${symbol.toLowerCase()}@bookTicker`),
+        id: requestId++,
+      }));
+    }
+  }
+
+  function reconcile() {
+    reconcileTimer = null;
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    const add = [...symbols].filter((symbol) => !liveSymbols.has(symbol));
+    const remove = [...liveSymbols].filter((symbol) => !symbols.has(symbol));
+    sendControl('SUBSCRIBE', add);
+    sendControl('UNSUBSCRIBE', remove);
+    for (const symbol of add) liveSymbols.add(symbol);
+    for (const symbol of remove) liveSymbols.delete(symbol);
+  }
+
+  function scheduleReconcile(delay = 100) {
+    clearTimeout(reconcileTimer);
+    reconcileTimer = setTimeout(reconcile, delay);
+  }
 
   function connect() {
     if (closed) return;
-    try {
-      ws = new WebSocket(WS_BASE, WS_OPTS);
-    } catch (e) {
-      console.error('[MarkTick] WS create failed:', e.message);
-      scheduleReconnect();
-      return;
-    }
-
+    ws = new WebSocket(WS_BASE);
     ws.on('open', () => {
-      backoffMs = BACKOFF_BASE_MS; // reset on successful open
-      console.log('[MarkTick] Connected to Binance futures bookTicker stream.');
-      if (subscribedSymbols.size > 0) sendSubscribe([...subscribedSymbols]);
-
-      setTimeout(() => {
-        if (!dataReceived && !closed) {
-          console.warn('[MarkTick] ⚠️ No data after 30s — stream may be blocked. Check IP / connection.');
-        }
-      }, 30_000);
+      backoffMs = BACKOFF_BASE_MS;
+      liveSymbols = new Set();
+      console.log('[MarkTick] Connected to Binance routed bookTicker stream.');
+      scheduleReconcile(0);
     });
-
     ws.on('message', (raw) => {
       try {
-        const msg = JSON.parse(raw.toString());
-        if (msg.e === 'bookTicker') {
-          dataReceived = true;
-          backoffMs = BACKOFF_BASE_MS; // reset backoff on data
-          const markPrice = (Number(msg.b) + Number(msg.a)) / 2;
-          onPrice({ symbol: msg.s, markPrice });
-        }
-      } catch { /* ignore parse errors */ }
+        const row = JSON.parse(raw.toString());
+        if (row?.e !== 'bookTicker') return;
+        const symbol = String(row.s ?? '').toUpperCase();
+        if (!symbols.has(symbol)) return;
+        const bid = Number(row.b);
+        const ask = Number(row.a);
+        const markPrice = (bid + ask) / 2;
+        if (!Number.isFinite(markPrice) || markPrice <= 0) return;
+        onPrice({ symbol, markPrice, eventTime: Number(row.E ?? Date.now()) });
+      } catch {}
     });
-
-    ws.on('error', (err) => {
-      const msg = err?.message ?? '';
-      const isBan = /Unexpected server response: (418|429|403)/.test(msg)
-                 || msg.includes('ECONNREFUSED')
-                 || msg.includes('ECONNRESET');
-      if (isBan) {
-        backoffMs = BAN_WAIT_MS;
-        console.warn(`[MarkTick] ⛔ Ban/rate-limit detected. Waiting ${BAN_WAIT_MS / 60000}min before retry.`);
-      }
-    });
-
+    ws.on('error', () => {});
     ws.on('close', () => {
-      if (!closed) {
-        const delay = backoffMs;
-        backoffMs = Math.min(backoffMs * BACKOFF_MULT, BACKOFF_MAX_MS);
-        if (delay > BACKOFF_BASE_MS) {
-          console.log(`[MarkTick] Disconnected. Reconnecting in ${Math.round(delay / 1000)}s (backoff)…`);
-        } else {
-          console.log('[MarkTick] Disconnected. Reconnecting in 5s…');
-        }
-        scheduleReconnect(delay);
-      }
+      if (closed) return;
+      const delay = backoffMs;
+      backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX_MS);
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, delay);
     });
   }
 
-  function sendSubscribe(symbols) {
-    if (ws?.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({
-      method: 'SUBSCRIBE',
-      params: symbols.map((s) => `${s.toLowerCase()}@bookTicker`),
-      id: Date.now(),
-    }));
-  }
-
-  function sendUnsubscribe(symbols) {
-    if (ws?.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({
-      method: 'UNSUBSCRIBE',
-      params: symbols.map((s) => `${s.toLowerCase()}@bookTicker`),
-      id: Date.now(),
-    }));
-  }
-
-  function scheduleReconnect(delay = BACKOFF_BASE_MS) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => { if (!closed) connect(); }, delay);
-  }
-
-  function setSymbols(symbols) {
-    const next = new Set(symbols);
-    const toAdd = symbols.filter((s) => !subscribedSymbols.has(s));
-    const toRemove = [...subscribedSymbols].filter((s) => !next.has(s));
-    if (toAdd.length > 0) sendSubscribe(toAdd);
-    if (toRemove.length > 0) sendUnsubscribe(toRemove);
-    subscribedSymbols = next;
+  function setSymbols(nextSymbols) {
+    symbols = new Set(nextSymbols.map((symbol) => String(symbol).toUpperCase()));
+    scheduleReconcile();
   }
 
   function close() {
     closed = true;
     clearTimeout(reconnectTimer);
+    clearTimeout(reconcileTimer);
     ws?.close();
   }
 

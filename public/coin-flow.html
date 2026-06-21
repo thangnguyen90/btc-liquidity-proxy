@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Coin Flow Board</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      .flow-toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:14px 0; }
+      .flow-toolbar input, .flow-toolbar select {
+        background:#111b18; border:1px solid #263a34; color:#eafff7; border-radius:6px; padding:9px 10px;
+      }
+      .flow-toolbar input { min-width:220px; flex:1; }
+      .flow-stats { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:10px; margin:12px 0; }
+      .flow-stat { background:#16211d; border:1px solid #263a34; border-radius:8px; padding:12px; }
+      .flow-stat span { color:#9bb8ad; font-size:11px; text-transform:uppercase; }
+      .flow-stat strong { display:block; margin-top:5px; font-size:22px; }
+      .flow-table td, .flow-table th { white-space:nowrap; }
+      .flow-table td.reason-cell { white-space:normal; min-width:260px; color:#b9d8cd; font-size:12px; }
+      .bias-bullish { color:#34d399; font-weight:800; }
+      .bias-bearish { color:#fb7185; font-weight:800; }
+      .bias-neutral { color:#cbd5e1; font-weight:800; }
+      .flow-note { color:#9bb8ad; font-size:12px; line-height:1.45; }
+      .config-warning { border-left:4px solid #f59e0b; background:#2b2416; }
+      @media (max-width: 800px) {
+        .flow-stats { grid-template-columns:repeat(2,minmax(130px,1fr)); }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">Exchange Netflow · Spot Flow</p>
+          <h1>Coin Flow Board</h1>
+          <p class="subtitle">Theo dõi coin đang bị nạp lên sàn hay rút khỏi sàn, dùng làm confirm tăng/giảm.</p>
+        </div>
+        <nav class="nav">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/market-news">Market News</a>
+          <a class="nav-link" href="/token-unlocks">Token Unlocks</a>
+          <a class="nav-link" href="/etf-proxy">ETF Flow</a>
+          <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
+          <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
+          <a class="nav-link" href="/pump">Pump</a>
+          <a class="nav-link" href="/orders">Orders</a>
+        </nav>
+      </header>
+
+      <section class="panel">
+        <div class="flow-toolbar">
+          <input id="flowSearch" placeholder="BTC, ETH, SOL..." />
+          <select id="biasFilter">
+            <option value="ALL">All bias</option>
+            <option value="BULLISH">Bullish</option>
+            <option value="BEARISH">Bearish</option>
+            <option value="NEUTRAL">Neutral</option>
+          </select>
+          <select id="sortInput">
+            <option value="score">Score</option>
+            <option value="ratio">Flow / Volume</option>
+            <option value="net24h">24h Netflow</option>
+            <option value="volume">Volume</option>
+          </select>
+          <button id="refreshBtn" class="primary-button" type="button">Refresh flow</button>
+        </div>
+        <div id="configBox" class="panel config-warning" style="display:none"></div>
+        <div id="flowStats" class="flow-stats"></div>
+        <p id="flowStatus" class="flow-note">Đang tải...</p>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="table-wrap">
+          <table class="signal-table flow-table">
+            <thead>
+              <tr>
+                <th>Coin</th>
+                <th>Bias</th>
+                <th>Score</th>
+                <th>Mark</th>
+                <th>24h %</th>
+                <th>1h Flow</th>
+                <th>4h Flow</th>
+                <th>24h Flow</th>
+                <th>Flow/Vol</th>
+                <th>Volume</th>
+                <th>Lý do</th>
+              </tr>
+            </thead>
+            <tbody id="flowBody">
+              <tr><td colspan="11" class="table-empty">Đang tải dữ liệu.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/coin-flow.js" type="module"></script>
+  <script src="/btcHealth.js"></script>
+</body>
+</html>

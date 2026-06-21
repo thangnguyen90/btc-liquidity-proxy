@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>EMA99 Kill Reclaim · 5m</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .ekr-shell { width: min(1420px, calc(100vw - 32px)); }
+      .ekr-summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        gap: 10px;
+        margin: 14px 0;
+      }
+      .ekr-stat, .ekr-controls, .ekr-card {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 8px;
+      }
+      .ekr-stat { padding: 12px; }
+      .ekr-stat span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .ekr-stat strong {
+        display: block;
+        margin-top: 6px;
+        font-size: 26px;
+        line-height: 1;
+      }
+      .ekr-controls {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) 130px 130px 150px;
+        gap: 10px;
+        padding: 12px;
+        margin-bottom: 14px;
+      }
+      .ekr-controls input, .ekr-controls select {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        color: var(--text);
+        border-radius: 6px;
+        padding: 10px 11px;
+        outline: none;
+      }
+      .ekr-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+        gap: 12px;
+      }
+      .ekr-card {
+        position: relative;
+        overflow: hidden;
+        padding: 14px;
+        display: grid;
+        gap: 11px;
+      }
+      .ekr-card.long::before, .ekr-card.short::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto;
+        height: 3px;
+      }
+      .ekr-card.long::before { background: var(--green); }
+      .ekr-card.short::before { background: var(--red); }
+      .ekr-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .ekr-symbol {
+        color: var(--text);
+        text-decoration: none;
+        font-size: 19px;
+        font-weight: 900;
+      }
+      .ekr-symbol span {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .ekr-change {
+        margin-top: 3px;
+        display: block;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .ekr-right {
+        display: grid;
+        justify-items: end;
+        gap: 5px;
+      }
+      .ekr-badge {
+        border-radius: 4px;
+        padding: 3px 8px;
+        font-size: 11px;
+        font-weight: 900;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .ekr-badge.long {
+        color: var(--green);
+        border: 1px solid rgba(54, 211, 153, .35);
+        background: rgba(54, 211, 153, .14);
+      }
+      .ekr-badge.short {
+        color: var(--red);
+        border: 1px solid rgba(251, 113, 133, .4);
+        background: rgba(251, 113, 133, .15);
+      }
+      .ekr-score {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .ekr-score strong { font-size: 26px; line-height: 1; }
+      .ekr-grade {
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 12px;
+        font-weight: 900;
+        background: rgba(96, 165, 250, .18);
+        color: var(--blue);
+      }
+      .ekr-pattern {
+        border: 1px solid rgba(96, 165, 250, .18);
+        background: rgba(96, 165, 250, .08);
+        border-radius: 7px;
+        padding: 10px;
+        color: #d8f3ff;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .ekr-prices {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+      }
+      .ekr-price {
+        background: var(--panel-2);
+        border-radius: 7px;
+        padding: 10px;
+        min-width: 0;
+      }
+      .ekr-price span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .ekr-price strong {
+        display: block;
+        margin-top: 5px;
+        font-size: 16px;
+        overflow-wrap: anywhere;
+      }
+      .ekr-factors {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .ekr-chip {
+        border: 1px solid rgba(157, 170, 165, .2);
+        background: rgba(157, 170, 165, .08);
+        color: #cde6dd;
+        border-radius: 5px;
+        padding: 4px 7px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .ekr-chip.ok {
+        color: var(--green);
+        border-color: rgba(54, 211, 153, .25);
+        background: rgba(54, 211, 153, .08);
+      }
+      .ekr-chip.warn {
+        color: var(--amber);
+        border-color: rgba(251, 191, 36, .25);
+        background: rgba(251, 191, 36, .08);
+      }
+      .ekr-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        border-top: 1px solid var(--line);
+        padding-top: 9px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .empty {
+        grid-column: 1 / -1;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        padding: 28px;
+        text-align: center;
+        color: var(--muted);
+      }
+      @media (max-width: 780px) {
+        .ekr-summary, .ekr-controls { grid-template-columns: 1fr 1fr; }
+        .ekr-prices { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell ekr-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">EMA99 kill - reclaim - 5m</p>
+          <h1>EMA99 Kill Reclaim Board</h1>
+          <p class="muted" style="margin-top:8px">Detect coin pump/dump manh, quet ve EMA99 de kill roi reclaim/reject di tiep theo huong chinh.</p>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Detail Dashboard</a>
+          <a class="nav-link" href="/ema-squeeze">EMA Squeeze</a>
+          <a class="nav-link" href="/ema99-kill-reclaim">EMA99 Kill</a>
+          <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
+          <a class="nav-link" href="/post-pump-kill-short">Post Pump KS</a>
+          <a class="nav-link" href="/pump">Pump Signal</a>
+        </div>
+      </header>
+
+      <section class="ekr-summary">
+        <div class="ekr-stat"><span>LONG reclaim</span><strong id="longCount">-</strong></div>
+        <div class="ekr-stat"><span>SHORT reject</span><strong id="shortCount">-</strong></div>
+        <div class="ekr-stat"><span>Scanned</span><strong id="totalScanned">-</strong></div>
+        <div class="ekr-stat"><span>Updated</span><strong id="lastScan">-</strong></div>
+      </section>
+
+      <section class="ekr-controls">
+        <input id="searchInput" placeholder="Search symbol: CLO, BTC, ...">
+        <select id="sideFilter">
+          <option value="all">LONG + SHORT</option>
+          <option value="LONG">LONG only</option>
+          <option value="SHORT">SHORT only</option>
+        </select>
+        <select id="scoreFilter">
+          <option value="0">Score all</option>
+          <option value="55">Score &gt;=55</option>
+          <option value="70">Score &gt;=70</option>
+          <option value="85">Score &gt;=85</option>
+        </select>
+        <select id="sortSelect">
+          <option value="score">Sort score</option>
+          <option value="fresh">Sort fresh kill</option>
+          <option value="volume">Sort volume</option>
+          <option value="change">Sort 24h move</option>
+        </select>
+      </section>
+
+      <div class="panel" style="padding:10px 12px;margin-bottom:14px">
+        <span class="live-dot">*</span>
+        <span id="scanStatus">Dang ket noi...</span>
+        <span style="color:var(--muted);margin-left:8px">Cached <b id="cachedCount">-</b>/<b id="totalCount">-</b> coins - Found <b id="foundCount">-</b> signals</span>
+      </div>
+
+      <section id="ekrGrid" class="ekr-grid"></section>
+    </main>
+    <script src="/ema99-kill-reclaim.js"></script>
+  <script src="/btcHealth.js"></script>
+</body>
+</html>

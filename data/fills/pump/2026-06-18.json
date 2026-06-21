@@ -1,0 +1,12 @@
+[
+  {
+    "symbol": "AAVEUSDT",
+    "side": "BUY",
+    "filledQty": 0.1,
+    "avgPrice": 75.76,
+    "positionSide": "BOTH",
+    "fillTime": 1781750594721,
+    "source": "pump",
+    "loggedAt": "2026-06-18T02:43:15.183Z"
+  }
+]

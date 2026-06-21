@@ -1,0 +1,182 @@
+[
+  {
+    "symbol": "MITOUSDT",
+    "side": "BUY",
+    "filledQty": 205,
+    "avgPrice": 0.02533,
+    "positionSide": "BOTH",
+    "fillTime": 1781708372467,
+    "source": "liq",
+    "loggedAt": "2026-06-17T14:59:42.450Z"
+  },
+  {
+    "symbol": "MITOUSDT",
+    "side": "BUY",
+    "filledQty": 1636,
+    "avgPrice": 0.02533,
+    "positionSide": "BOTH",
+    "fillTime": 1781708372467,
+    "source": "liq",
+    "loggedAt": "2026-06-17T14:59:44.248Z"
+  },
+  {
+    "symbol": "MITOUSDT",
+    "side": "BUY",
+    "filledQty": 227,
+    "avgPrice": 0.0253311,
+    "positionSide": "BOTH",
+    "fillTime": 1781708372467,
+    "source": "liq",
+    "loggedAt": "2026-06-17T14:59:47.784Z"
+  },
+  {
+    "symbol": "MITOUSDT",
+    "side": "BUY",
+    "filledQty": 1239,
+    "avgPrice": 0.0253344,
+    "positionSide": "BOTH",
+    "fillTime": 1781708372467,
+    "source": "liq",
+    "loggedAt": "2026-06-17T14:59:48.727Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 6,
+    "avgPrice": 1.924,
+    "positionSide": "BOTH",
+    "fillTime": 1781709272949,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:14:33.633Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 18,
+    "avgPrice": 1.924,
+    "positionSide": "BOTH",
+    "fillTime": 1781709262942,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:14:35.858Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 3,
+    "avgPrice": 1.924,
+    "positionSide": "BOTH",
+    "fillTime": 1781709262942,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:14:38.251Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 3,
+    "avgPrice": 1.924,
+    "positionSide": "BOTH",
+    "fillTime": 1781709262942,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:14:40.292Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 6,
+    "avgPrice": 1.924,
+    "positionSide": "BOTH",
+    "fillTime": 1781709262942,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:14:43.759Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 3,
+    "avgPrice": 1.901,
+    "positionSide": "BOTH",
+    "fillTime": 1781709329566,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:15:41.639Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 3,
+    "avgPrice": 1.901,
+    "positionSide": "BOTH",
+    "fillTime": 1781709329566,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:15:42.811Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 28,
+    "avgPrice": 1.901,
+    "positionSide": "BOTH",
+    "fillTime": 1781709329566,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:15:46.049Z"
+  },
+  {
+    "symbol": "PHAUSDT",
+    "side": "BUY",
+    "filledQty": 277,
+    "avgPrice": 0.03604,
+    "positionSide": "BOTH",
+    "fillTime": 1781711553119,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:52:48.636Z"
+  },
+  {
+    "symbol": "EIGENUSDT",
+    "side": "BUY",
+    "filledQty": 46.6,
+    "avgPrice": 0.2145,
+    "positionSide": "BOTH",
+    "fillTime": 1781711584414,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:53:13.200Z"
+  },
+  {
+    "symbol": "PHAUSDT",
+    "side": "BUY",
+    "filledQty": 603,
+    "avgPrice": 0.03614,
+    "positionSide": "BOTH",
+    "fillTime": 1781711667542,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:54:38.548Z"
+  },
+  {
+    "symbol": "PHAUSDT",
+    "side": "BUY",
+    "filledQty": 1909,
+    "avgPrice": 0.03614,
+    "positionSide": "BOTH",
+    "fillTime": 1781711667542,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:54:41.247Z"
+  },
+  {
+    "symbol": "AVNTUSDT",
+    "side": "BUY",
+    "filledQty": 85,
+    "avgPrice": 0.1171,
+    "positionSide": "BOTH",
+    "fillTime": 1781711696745,
+    "source": "liq",
+    "loggedAt": "2026-06-17T15:55:05.363Z"
+  },
+  {
+    "symbol": "SIRENUSDT",
+    "side": "BUY",
+    "filledQty": 213,
+    "avgPrice": 0.04668,
+    "positionSide": "BOTH",
+    "fillTime": 1781713457348,
+    "source": "liq",
+    "loggedAt": "2026-06-17T16:24:31.881Z"
+  }
+]

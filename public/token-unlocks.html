@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Token Unlocks Board</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      .unlock-toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:14px 0; }
+      .unlock-toolbar input, .unlock-toolbar select {
+        background:#111b18; border:1px solid #263a34; color:#eafff7; border-radius:6px; padding:9px 10px;
+      }
+      .unlock-toolbar input { min-width:220px; flex:1; }
+      .unlock-stats { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:10px; margin:12px 0; }
+      .unlock-stat { background:#16211d; border:1px solid #263a34; border-radius:8px; padding:12px; }
+      .unlock-stat span { color:#9bb8ad; font-size:11px; text-transform:uppercase; }
+      .unlock-stat strong { display:block; margin-top:5px; font-size:22px; }
+      .unlock-table td, .unlock-table th { white-space:nowrap; }
+      .unlock-table td.note-cell { white-space:normal; min-width:240px; color:#b9d8cd; font-size:12px; }
+      .unlock-risk-high { color:#fb7185; font-weight:900; }
+      .unlock-risk-mid { color:#fbbf24; font-weight:900; }
+      .unlock-risk-low { color:#34d399; font-weight:900; }
+      .unlock-note { color:#9bb8ad; font-size:12px; line-height:1.45; }
+      .config-warning { border-left:4px solid #f59e0b; background:#2b2416; }
+      @media (max-width: 800px) {
+        .unlock-stats { grid-template-columns:repeat(2,minmax(130px,1fr)); }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">Token Supply Events</p>
+          <h1>Token Unlocks Board</h1>
+          <p class="subtitle">Theo doi coin sap mo khoa token, uu tien so luong lon va ty le unlock cao.</p>
+        </div>
+        <nav class="nav">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/market-news">Market News</a>
+          <a class="nav-link" href="/coin-flow">Coin Flow</a>
+          <a class="nav-link" href="/etf-proxy">ETF Flow</a>
+          <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
+          <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
+          <a class="nav-link" href="/pump">Pump</a>
+          <a class="nav-link" href="/orders">Orders</a>
+        </nav>
+      </header>
+
+      <section class="panel">
+        <div class="unlock-toolbar">
+          <input id="unlockSearch" placeholder="BTC, ETH, SOL..." />
+          <select id="windowFilter">
+            <option value="ALL">All upcoming</option>
+            <option value="7">Next 7d</option>
+            <option value="30">Next 30d</option>
+            <option value="90">Next 90d</option>
+          </select>
+          <select id="sortInput">
+            <option value="date">Date soonest</option>
+            <option value="value">USD value</option>
+            <option value="amount">Token amount</option>
+            <option value="percentSupply">% supply</option>
+            <option value="percentMarketCap">% market cap</option>
+          </select>
+          <button id="refreshBtn" class="primary-button" type="button">Refresh unlocks</button>
+        </div>
+        <div id="configBox" class="panel config-warning" style="display:none"></div>
+        <div id="unlockStats" class="unlock-stats"></div>
+        <p id="unlockStatus" class="unlock-note">Dang tai...</p>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="table-wrap">
+          <table class="signal-table unlock-table">
+            <thead>
+              <tr>
+                <th>Coin</th>
+                <th>Date</th>
+                <th>Days</th>
+                <th>Amount</th>
+                <th>Value</th>
+                <th>% Supply</th>
+                <th>% MCap</th>
+                <th>Risk</th>
+                <th>Allocation</th>
+                <th>Type</th>
+              </tr>
+            </thead>
+            <tbody id="unlockBody">
+              <tr><td colspan="10" class="table-empty">Dang tai du lieu.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/token-unlocks.js" type="module"></script>
+  <script src="/btcHealth.js"></script>
+</body>
+</html>

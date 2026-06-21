@@ -21,11 +21,17 @@ import { runSpikeReversalScan } from './spikeReversalDetector.js';
 import { detectPostDumpKillLong, detectPostPumpKillShort, runPostPumpKillShortScan } from './postPumpKillShortDetector.js';
 import { runPumpIgnitionScan } from './pumpIgnitionDetector.js';
 import { runEmaSqueezeScan } from './emaSqueezeDetector.js';
+import { runEma99KillReclaimScan } from './ema99KillReclaimDetector.js';
+import { runShakeoutReclaimScan } from './shakeoutReclaimDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
 import { sharedMarkTicker } from './sharedMarkTicker.js';
+import { createAggTradeTicker } from './aggTradeTicker.js';
 import { getEtfProxy } from './etfProxy.js';
+import { fetchMarketNews, loadMarketNews, marketNewsConfig, saveMarketNews } from './marketNews.js';
+import { coinFlowConfig, fetchCoinFlowBoard, loadCoinFlow, saveCoinFlow } from './coinFlow.js';
+import { fetchTokenUnlocksBoard, getUnlockSummaryForSymbol, loadTokenUnlocks, saveTokenUnlocks, tokenUnlocksConfig } from './tokenUnlocks.js';
 import WebSocket from 'ws';
 
 loadEnv();
@@ -52,6 +58,8 @@ const spikeReversalScanCache  = { data: null, expiresAt: 0 };
 const postPumpKillShortScanCache = { data: null, expiresAt: 0 };
 const pumpIgnitionScanCache   = { data: null, expiresAt: 0 };
 const emaSqueezesScanCache    = { data: null, expiresAt: 0 };
+const ema99KillReclaimScanCache = { data: null, expiresAt: 0 };
+const shakeoutReclaimScanCache = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 const analyzeCache = new Map(); // key: `${symbol}|${interval}|${rangePct}|${binSizePct}` → { data, expiresAt }
 const ANALYZE_CACHE_TTL_MS = 10_000; // 10s — nến 15m đổi mỗi 15 phút, giá live qua WS
@@ -204,6 +212,10 @@ const spikeReversalSseClients  = new Set();
 const postPumpKillShortSseClients = new Set();
 const pumpIgnitionSseClients   = new Set();
 const emaSqueezeSseClients     = new Set();
+const ema99KillReclaimSseClients = new Set();
+const shakeoutReclaimSseClients = new Set();
+const shakeoutPaperSseClients = new Set();
+const emaSqueezePaperSseClients = new Set();
 const liquidPaperSseClients    = new Set();
 
 function pushSse(clients, data) {
@@ -223,6 +235,43 @@ function scheduleLiquidPaperBroadcast(delayMs = 700) {
       pushSse(liquidPaperSseClients, await getLiquidPaperTrades());
     } catch (err) {
       pushSse(liquidPaperSseClients, { error: err.message, updatedAt: new Date().toISOString() });
+    }
+  }, delayMs);
+}
+
+let shakeoutPaperBroadcastTimer = null;
+function scheduleShakeoutPaperBroadcast(delayMs = 700) {
+  if (shakeoutPaperSseClients.size === 0 || shakeoutPaperBroadcastTimer) return;
+  shakeoutPaperBroadcastTimer = setTimeout(async () => {
+    shakeoutPaperBroadcastTimer = null;
+    if (shakeoutPaperSseClients.size === 0) return;
+    try {
+      pushSse(shakeoutPaperSseClients, await getShakeoutPaperTrades());
+    } catch (err) {
+      pushSse(shakeoutPaperSseClients, { error: err.message, updatedAt: new Date().toISOString() });
+    }
+  }, delayMs);
+}
+
+let emaSqueezePaperBroadcastTimer = null;
+let emaSqueezePaperBroadcastRunning = false;
+function scheduleEmaSqueezePaperBroadcast(delayMs = 700) {
+  if (emaSqueezePaperSseClients.size === 0 || emaSqueezePaperBroadcastTimer || emaSqueezePaperBroadcastRunning) return;
+  emaSqueezePaperBroadcastTimer = setTimeout(async () => {
+    emaSqueezePaperBroadcastTimer = null;
+    if (emaSqueezePaperSseClients.size === 0 || emaSqueezePaperBroadcastRunning) return;
+    emaSqueezePaperBroadcastRunning = true;
+    try {
+      const data = await getPumpPaperTrades();
+      pushSse(emaSqueezePaperSseClients, {
+        trades: data.trades.filter((t) => String(t.source ?? '').startsWith('emasq-')),
+        summary: data.summary,
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      pushSse(emaSqueezePaperSseClients, { error: err.message, updatedAt: Date.now() });
+    } finally {
+      emaSqueezePaperBroadcastRunning = false;
     }
   }, delayMs);
 }
@@ -1525,7 +1574,9 @@ async function scheduleEmaSqueezeScan() {
         .map((r) => r.symbol);
       const { signals, processed } = await runEmaSqueezeScan(topSymbols, klineCache, snapshotMap, { intervals: EMA_SQUEEZE_INTERVALS.join(',') });
       const cacheStats = Object.fromEntries(EMA_SQUEEZE_INTERVALS.map((interval) => [interval, klineCache.stats(interval)]));
-      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      await Promise.all([getBtcHealth(), getGoldHealth()]).catch(() => {});
+      const enrichedSignals = annotateEmaSqueezeRealOrderStatus(await enrichEmaSqueezeSignalsWithLiquidityEntries(signals));
+      const result = { signals: enrichedSignals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       emaSqueezesScanCache.data = result;
       emaSqueezesScanCache.expiresAt = Date.now() + 30_000;
       pushSse(emaSqueezeSseClients, result);
@@ -1563,6 +1614,107 @@ async function scheduleEmaSqueezeScan() {
       }
     } catch (e) {
       console.error('[EmaSqueezeScan] error:', e.message);
+    }
+  }, 3_500);
+}
+
+let _ema99KillReclaimDebounce = null;
+async function scheduleEma99KillReclaimScan() {
+  clearTimeout(_ema99KillReclaimDebounce);
+  _ema99KillReclaimDebounce = setTimeout(async () => {
+    try {
+      if (binanceRateGate.isBlocked?.() && !_snapshotCache) {
+        console.warn('[Ema99KillReclaimScan] Skip: Binance REST blocked and no snapshot cache yet.');
+        return;
+      }
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+        .slice(0, Number(process.env.EMA99_KILL_RECLAIM_MAX_SYMBOLS ?? 400))
+        .map((r) => r.symbol);
+      const { signals, processed } = await runEma99KillReclaimScan(topSymbols, klineCache, snapshotMap, {
+        interval: process.env.EMA99_KILL_RECLAIM_INTERVAL || '5m',
+      });
+      const result = {
+        signals,
+        scannedAt: Date.now(),
+        total: topSymbols.length,
+        processed,
+        cacheStats: klineCache.stats(process.env.EMA99_KILL_RECLAIM_INTERVAL || '5m'),
+      };
+      ema99KillReclaimScanCache.data = result;
+      ema99KillReclaimScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(ema99KillReclaimSseClients, result);
+      if (signals.length) {
+        const longCount = signals.filter((s) => s.action === 'LONG').length;
+        const shortCount = signals.filter((s) => s.action === 'SHORT').length;
+        console.log(`[Ema99KillReclaim] ${signals.length} signal(s) — LONG: ${longCount}, SHORT: ${shortCount}, processed=${processed}`);
+      }
+      await sendEma99KillReclaimDiscord(signals);
+      await handleEma99KillReclaimRealLongOrders(signals);
+    } catch (e) {
+      console.error('[Ema99KillReclaimScan] error:', e.message);
+    }
+  }, 3_500);
+}
+
+let _shakeoutReclaimDebounce = null;
+let _shakeoutReclaimWarmupStartedAt = 0;
+function ensureShakeoutReclaimWarmup(topSymbols = []) {
+  const warmupMax = Number(process.env.SHAKEOUT_RECLAIM_WARMUP_SYMBOLS ?? 9999);
+  if (warmupMax <= 0 || !topSymbols.length) return;
+  if (Date.now() - _shakeoutReclaimWarmupStartedAt < 10 * 60_000) return;
+  _shakeoutReclaimWarmupStartedAt = Date.now();
+  const symbols = topSymbols.slice(0, warmupMax);
+  const batchSize = Number(process.env.SHAKEOUT_RECLAIM_WARMUP_BATCH_SIZE ?? 1);
+  const batchDelayMs = Number(process.env.SHAKEOUT_RECLAIM_WARMUP_DELAY_MS ?? 2500);
+  console.log(`[ShakeoutReclaim] Warmup ${symbols.length} symbols @5m/@15m.`);
+  Promise.all([
+    klineCache.seed(symbols, '5m', 180, { batchSize, batchDelayMs }),
+    klineCache.seed(symbols, '15m', 180, { batchSize, batchDelayMs }),
+  ]).catch((e) => console.warn('[ShakeoutReclaim] warmup failed:', e.message));
+}
+
+async function scheduleShakeoutReclaimScan() {
+  clearTimeout(_shakeoutReclaimDebounce);
+  _shakeoutReclaimDebounce = setTimeout(async () => {
+    try {
+      if (binanceRateGate.isBlocked?.() && !_snapshotCache) {
+        console.warn('[ShakeoutReclaimScan] Skip: Binance REST blocked and no snapshot cache yet.');
+        return;
+      }
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+        .slice(0, Number(process.env.SHAKEOUT_RECLAIM_MAX_SYMBOLS ?? 9999))
+        .map((r) => r.symbol);
+      const { signals, processed, diagnostics } = await runShakeoutReclaimScan(topSymbols, klineCache, snapshotMap);
+      if (processed < Number(process.env.SHAKEOUT_RECLAIM_MIN_READY ?? 9999)) ensureShakeoutReclaimWarmup(topSymbols);
+      const result = {
+        signals,
+        scannedAt: Date.now(),
+        total: topSymbols.length,
+        processed,
+        diagnostics,
+        cacheStats: {
+          m5: klineCache.stats('5m'),
+          m15: klineCache.stats('15m'),
+        },
+      };
+      shakeoutReclaimScanCache.data = result;
+      shakeoutReclaimScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(shakeoutReclaimSseClients, result);
+      if (signals.length) {
+        const confirmed = signals.filter((s) => s.stage === 'RECLAIM_CONFIRMED').length;
+        console.log(`[ShakeoutReclaim] ${signals.length} signal(s) confirmed=${confirmed}, processed=${processed}`);
+      }
+      await sendShakeoutReclaimDiscord(signals);
+      await createShakeoutPaperTrades(signals);
+      await handleShakeoutReclaimRealOrders(signals);
+    } catch (e) {
+      console.error('[ShakeoutReclaimScan] error:', e.message);
     }
   }, 3_500);
 }
@@ -1629,53 +1781,851 @@ async function sendEmaSqueezeDiscord(signals = []) {
   }
 }
 
+async function sendEma99KillReclaimDiscord(signals = []) {
+  const webhookUrl = process.env.EMA99_KILL_RECLAIM_WEBHOOK_URL
+    || 'https://discord.com/api/webhooks/1511764116631457802/tubWKfs3UMzQ3GhfzE6YAqAnM0TtS76egL23QLsHDsUBTo1z7S2Ag7XVD1zU_aMAQtn6';
+  if (!webhookUrl) return;
+  const minScore = Number(process.env.EMA99_KILL_RECLAIM_MIN_DISCORD_SCORE ?? 55);
+  const cooldownMs = Number(process.env.EMA99_KILL_RECLAIM_DISCORD_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const now = Date.now();
+  const fmt = (v) => v == null || !Number.isFinite(Number(v))
+    ? '-'
+    : Number(v) >= 1000
+      ? Number(v).toLocaleString('en', { maximumFractionDigits: 2 })
+      : Number(v) >= 1
+        ? Number(v).toFixed(5).replace(/\.?0+$/, '')
+        : Number(v).toPrecision(6).replace(/\.?0+$/, '');
+  const pct = (v, d = 1) => v == null || !Number.isFinite(Number(v)) ? '-' : `${Number(v).toFixed(d)}%`;
+  const cleanText = (value) => String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  for (const sig of signals) {
+    if (Number(sig?.score ?? 0) < minScore) continue;
+    const side = String(sig.action ?? '').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+    const key = `${sig.symbol}|${sig.interval ?? '5m'}|${side}|${sig.stage ?? ''}`;
+    const lastFired = ema99KillReclaimDiscordFired.get(key) ?? 0;
+    if (now - lastFired < cooldownMs) continue;
+    ema99KillReclaimDiscordFired.set(key, now);
+
+    const f = sig.factors ?? {};
+    const embed = {
+      title: `[EMA99 Kill Reclaim ${side} ${sig.interval ?? '5m'}] ${sig.symbol} - Score ${sig.score} (${sig.grade ?? '-'})`,
+      description: cleanText(sig.reason ?? (side === 'SHORT'
+        ? 'Dump xong wick len EMA99 roi reject'
+        : 'Pump xong kill ve EMA99 roi reclaim')),
+      color: side === 'SHORT' ? 0xef4444 : 0x22c55e,
+      fields: [
+        { name: 'Entry / SL / TP', value: `\`${fmt(sig.entry)}\` / \`${fmt(sig.sl)}\` / \`${fmt(sig.tp)}\``, inline: false },
+        { name: 'Side', value: side, inline: true },
+        { name: 'Timeframe', value: String(sig.interval ?? '5m'), inline: true },
+        { name: 'Mark', value: fmt(sig.markPrice), inline: true },
+        { name: 'Context move', value: pct(f.contextMovePct, 1), inline: true },
+        { name: 'Kill age', value: `${f.killAgeBars ?? '-'} bars`, inline: true },
+        { name: 'EMA99 dist', value: pct(f.ema99DistPct, 2), inline: true },
+        { name: 'Wick reject', value: pct(f.wickRejectPct, 0), inline: true },
+        { name: 'Reclaim', value: pct(f.reclaimPct, 1), inline: true },
+        { name: 'Volume', value: `${fmt(f.volRatio)}x`, inline: true },
+        { name: 'RSI14', value: fmt(f.rsi14 ?? sig.rsi14), inline: true },
+        { name: '24h', value: pct(sig.change24h, 2), inline: true },
+      ],
+      footer: { text: cleanText(sig.note ?? '') },
+      timestamp: new Date(now).toISOString(),
+    };
+
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ embeds: [embed] }),
+    })
+      .then((res) => {
+        if (!res.ok) console.warn(`[Ema99KillReclaim] Discord ${sig.symbol} failed: ${res.status}`);
+        else console.log(`[Ema99KillReclaim] Discord sent: ${sig.symbol} ${side} score=${sig.score}`);
+      })
+      .catch((err) => console.warn(`[Ema99KillReclaim] Discord ${sig.symbol}:`, err.message));
+  }
+}
+
+async function sendShakeoutReclaimDiscord(signals = []) {
+  const webhookUrl = process.env.SHAKEOUT_RECLAIM_WEBHOOK_URL
+    || 'https://discord.com/api/webhooks/1516025118508318820/_LsN5gFld07h5H6UcEqHkd9bjV53gVAKgeq7EMOCtXdMuhLOiuuuzmjFRhPQq4jgFoKn';
+  if (!webhookUrl) return;
+  const minScore = Number(process.env.SHAKEOUT_RECLAIM_MIN_DISCORD_SCORE ?? process.env.SHAKEOUT_RECLAIM_MIN_SCORE ?? 55);
+  const cooldownMs = Number(process.env.SHAKEOUT_RECLAIM_DISCORD_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const now = Date.now();
+  const fmt = (v) => v == null || !Number.isFinite(Number(v))
+    ? '-'
+    : Number(v) >= 1000
+      ? Number(v).toLocaleString('en', { maximumFractionDigits: 2 })
+      : Number(v) >= 1
+        ? Number(v).toFixed(5).replace(/\.?0+$/, '')
+        : Number(v).toPrecision(6).replace(/\.?0+$/, '');
+  const pct = (v, d = 1) => v == null || !Number.isFinite(Number(v)) ? '-' : `${Number(v).toFixed(d)}%`;
+  const cleanText = (value) => String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  for (const sig of signals) {
+    if (Number(sig?.score ?? 0) < minScore) continue;
+    const stage = String(sig.stage ?? 'SHAKEOUT_WATCH');
+    const side = String(sig.action ?? 'LONG').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+    const isShort = side === 'SHORT';
+    const key = `${sig.symbol}|${side}|${stage}`;
+    const lastFired = shakeoutReclaimDiscordFired.get(key) ?? 0;
+    if (now - lastFired < cooldownMs) continue;
+    shakeoutReclaimDiscordFired.set(key, now);
+
+    const confirmed = stage === 'RECLAIM_CONFIRMED';
+    const f = sig.factors ?? {};
+    const embed = {
+      title: `[Shakeout ${side} ${confirmed ? 'CONFIRMED' : 'WATCH'}] ${sig.symbol} - Score ${sig.score} (${sig.grade ?? '-'})`,
+      description: cleanText(sig.reason ?? (isShort
+        ? 'Dump expansion 5m/15m, pullback kills weak shorts near EMA zone, watching reject'
+        : 'Volume expansion 5m/15m, pullback shakeout near EMA zone, watching reclaim')),
+      color: isShort ? 0xef4444 : (confirmed ? 0x22c55e : 0xf59e0b),
+      fields: [
+        { name: 'Entry / SL / TP', value: `\`${fmt(sig.entry)}\` / \`${fmt(sig.sl)}\` / \`${fmt(sig.tp)}\``, inline: false },
+        { name: 'Side / Stage', value: `${side} / ${confirmed ? 'CONFIRMED' : 'WATCH'}`, inline: true },
+        { name: 'Mark', value: fmt(sig.markPrice), inline: true },
+        { name: '24h', value: pct(sig.change24h, 2), inline: true },
+        { name: `${isShort ? 'Dump' : 'Pump'} 5m / 15m`, value: `${pct(f.move5mPct, 1)} / ${pct(f.move15mPct, 1)}`, inline: true },
+        { name: 'Vol 5m / 15m', value: `${fmt(f.vol5mX)}x / ${fmt(f.vol15mX)}x`, inline: true },
+        { name: isShort ? 'Short-kill bounce' : 'Shakeout drop', value: pct(f.drop5mPct, 1), inline: true },
+        { name: 'EMA zone dist', value: pct(f.emaZoneDistPct, 2), inline: true },
+        { name: isShort ? 'Reject' : 'Reclaim', value: pct(f.reclaimPct, 1), inline: true },
+        { name: 'Pullback age', value: `${f.pullbackAge5m ?? '-'} bars`, inline: true },
+        { name: 'RSI 5m / 15m', value: `${fmt(f.rsi5m)} / ${fmt(f.rsi15m)}`, inline: true },
+        { name: isShort ? 'TP1 low' : 'TP1 high', value: fmt(sig.tp1), inline: true },
+      ],
+      footer: { text: cleanText(sig.note ?? '') },
+      timestamp: new Date(now).toISOString(),
+    };
+
+    fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ embeds: [embed] }),
+    })
+      .then((res) => {
+        if (!res.ok) console.warn(`[ShakeoutReclaim] Discord ${sig.symbol} failed: ${res.status}`);
+        else console.log(`[ShakeoutReclaim] Discord sent: ${sig.symbol} ${stage} score=${sig.score}`);
+      })
+      .catch((err) => console.warn(`[ShakeoutReclaim] Discord ${sig.symbol}:`, err.message));
+  }
+}
+
+function getCachedEmaSqueezeLiquidityPlan(sig) {
+  const symbol = String(sig?.symbol ?? '').toUpperCase();
+  const interval = String(sig?.interval ?? '15m');
+  if (!symbol) return null;
+
+  const ttlMs = Math.max(10_000, Number(process.env.EMA_SQUEEZE_LIQUIDITY_ENTRY_CACHE_MS ?? 60_000));
+  const key = `${symbol}|${interval}`;
+  const cached = emaSqueezeLiquidityEntryCache.get(key);
+  if (cached && Date.now() - cached.at < ttlMs) return cached.data;
+
+  const limit = Math.max(80, Math.min(500, Number(process.env.EMA_SQUEEZE_LIQUIDITY_KLINE_LIMIT ?? 240)));
+  const klines = klineCache.getIfCached(symbol, interval, limit);
+  if (!klines || klines.length < 60) return null;
+
+  const markPrice = Number(sig.markPrice ?? sig.currentPrice ?? klines.at(-1)?.close ?? sig.entry);
+  if (!Number.isFinite(markPrice) || markPrice <= 0) return null;
+  const side = String(sig?.action ?? '').toUpperCase();
+
+  const heatmap = computeHeatmapData({
+    klines,
+    currentPrice: markPrice,
+    momentumPct: sig.change24h ?? sig.change24hPct ?? null,
+    preferredDirection: side === 'SHORT' ? 'short' : 'long',
+  });
+  const above = Number(heatmap.liquidityAbove ?? 0);
+  const below = Number(heatmap.liquidityBelow ?? 0);
+  const bias = Number(heatmap.bias ?? 0);
+  const heavySide = bias >= 0 ? 'above' : 'below';
+  const target = heatmap.sweepTarget ?? (
+    heavySide === 'above'
+      ? (heatmap.heatmapAbove?.[0] ?? null)
+      : (heatmap.heatmapBelow?.[0] ?? null)
+  );
+  const sweepProb = liquidSweepProb(heatmap, target);
+  const entryPlan = buildLiquidEntryPlan({
+    heavySide,
+    markPrice,
+    target,
+    heatmap,
+    killZoneCluster: heatmap.killZoneCluster ?? null,
+  });
+
+  const data = {
+    markPrice,
+    heatmap,
+    above,
+    below,
+    total: above + below,
+    bias,
+    heavySide,
+    target,
+    sweepProb,
+    entryPlan,
+  };
+  emaSqueezeLiquidityEntryCache.set(key, { at: Date.now(), data });
+  return data;
+}
+
+async function refineEmaSqueezePaperSignal(sig, { allowFallback = false } = {}) {
+  const stage = String(sig?.stage ?? '').toUpperCase();
+  const side = String(sig?.action ?? '').toUpperCase();
+  if (!['BREAKOUT', 'BREAKDOWN', 'SQUEEZE', 'SQUEEZE_SHORT'].includes(stage)) return sig;
+  if (!['LONG', 'SHORT'].includes(side)) return sig;
+  if (process.env.EMA_SQUEEZE_LIQUIDITY_ENTRY_ENABLED === 'false') return sig;
+
+  const isSetupStage = stage === 'SQUEEZE' || stage === 'SQUEEZE_SHORT';
+  const requireLiquidity = !allowFallback && (isSetupStage
+    ? process.env.EMA_SQUEEZE_SQUEEZE_REQUIRES_LIQUIDITY !== 'false'
+    : process.env.EMA_SQUEEZE_CONFIRMED_REQUIRES_LIQUIDITY === 'true');
+  const planData = getCachedEmaSqueezeLiquidityPlan(sig);
+  if (!planData) return requireLiquidity ? null : sig;
+
+  const minBias = Number(process.env.EMA_SQUEEZE_LIQUIDITY_MIN_BIAS ?? 0.05);
+  const minSweepProb = Number(process.env.EMA_SQUEEZE_LIQUIDITY_MIN_SWEEP_PROB ?? 35);
+  const plan = planData.entryPlan ?? {};
+  const entry = Number(plan.entryPrice);
+  const tp = Number(plan.takeProfitPrice);
+  const sl = Number(plan.stopLossPrice);
+  const originalEntry = Number(sig.entry);
+  const originalTp = Number(sig.tp);
+  const originalSl = Number(sig.sl);
+  const expectedHeavySide = side === 'LONG' ? 'above' : 'below';
+  const sideBiasOk = side === 'LONG'
+    ? planData.bias >= minBias
+    : planData.bias <= -minBias;
+  const hasDirectionalLiquidity = planData.heavySide === expectedHeavySide
+    && plan.side === side
+    && sideBiasOk
+    && planData.sweepProb >= minSweepProb;
+
+  if (!hasDirectionalLiquidity) return requireLiquidity ? null : sig;
+  if (![entry, tp, sl].every((v) => Number.isFinite(v) && v > 0)) return requireLiquidity ? null : sig;
+  if (side === 'LONG' ? (sl >= entry || tp <= entry) : (sl <= entry || tp >= entry)) return requireLiquidity ? null : sig;
+
+  const maxPullbackPct = Math.max(0.1, Number(process.env.EMA_SQUEEZE_LIQUIDITY_MAX_PULLBACK_PCT ?? 1.2));
+  const pullbackPct = originalEntry > 0 ? Math.abs((entry - originalEntry) / originalEntry) * 100 : 0;
+  if (pullbackPct > maxPullbackPct) return requireLiquidity ? null : sig;
+
+  const refinedEntry = side === 'LONG'
+    ? Math.min(originalEntry, entry)
+    : Math.max(originalEntry, entry);
+  const refinedTp = side === 'LONG'
+    ? (Number.isFinite(tp) && tp > refinedEntry
+        ? tp
+        : (Number.isFinite(originalTp) && originalTp > refinedEntry ? originalTp : null))
+    : (Number.isFinite(tp) && tp < refinedEntry
+        ? tp
+        : (Number.isFinite(originalTp) && originalTp < refinedEntry ? originalTp : null));
+  const refinedSl = side === 'LONG'
+    ? (Number.isFinite(sl) && sl < refinedEntry
+        ? sl
+        : (Number.isFinite(originalSl) && originalSl < refinedEntry ? originalSl : null))
+    : (Number.isFinite(sl) && sl > refinedEntry
+        ? sl
+        : (Number.isFinite(originalSl) && originalSl > refinedEntry ? originalSl : null));
+  if (!refinedTp || !refinedSl || (side === 'LONG' ? (refinedSl >= refinedEntry || refinedTp <= refinedEntry) : (refinedSl <= refinedEntry || refinedTp >= refinedEntry))) {
+    return requireLiquidity ? null : sig;
+  }
+
+  const target = planData.target;
+  const liqNote = [
+    'liqEntry=Y',
+    `bias=${planData.bias.toFixed(2)}`,
+    `sweep=${planData.sweepProb}`,
+    `entryPullback=${pullbackPct.toFixed(2)}%`,
+    target?.price ? `liqTarget=${Number(target.price).toFixed(6)}` : '',
+    plan.killZoneTakeProfitPrice ? `killZoneTP=${Number(plan.killZoneTakeProfitPrice).toFixed(6)}` : '',
+  ].filter(Boolean).join(' | ');
+
+  return {
+    ...sig,
+    entry: refinedEntry,
+    tp: refinedTp,
+    sl: refinedSl,
+    liquidPlanEntry: entry,
+    liquidPlanTp: tp,
+    liquidPlanSl: sl,
+    paperStatus: 'PENDING',
+    note: [sig.note ?? sig.reason ?? '', liqNote, plan.note ?? ''].filter(Boolean).join(' | '),
+    entryPlan: {
+      ...plan,
+      markPrice: planData.markPrice,
+      signalMarkPrice: Number(sig.markPrice ?? planData.markPrice),
+      liquidityBias: planData.bias,
+      sweepProb: planData.sweepProb,
+    },
+    heavySide: planData.heavySide,
+    sweepTargetPrice: target?.price ?? null,
+    sweepDistancePct: target?.distancePct ?? null,
+    rewardPct: plan.rewardPct ?? null,
+    riskPct: plan.riskPct ?? null,
+    rr: plan.rr ?? null,
+    feasibleLeverage: plan.feasibleLeverage ?? null,
+    feasibilityScore: plan.feasibilityScore ?? null,
+    liquidityEntry: {
+      bias: planData.bias,
+      sweepProb: planData.sweepProb,
+      originalEntry,
+      planEntry: entry,
+      planTp: tp,
+      planSl: sl,
+      entry: refinedEntry,
+      tp: refinedTp,
+      sl: refinedSl,
+      targetPrice: target?.price ?? null,
+      targetDistancePct: target?.distancePct ?? null,
+    },
+  };
+}
+
+function signalFromEmaSqueezePaperPayload(payload = {}) {
+  const source = String(payload.source ?? '');
+  if (!source.startsWith('emasq-')) return null;
+  const match = source.match(/^emasq-(?:(5m|15m|1h)-)?([a-z_]+)-(\d+)$/i)
+    ?? source.match(/^emasq-(?:(5m|15m|1h)-)?(\d+)$/i);
+  if (!match) return null;
+
+  const interval = match.length === 4 ? (match[1] || '15m') : (match[1] || '15m');
+  const rawStage = match.length === 4 ? match[2] : 'squeeze';
+  const score = Number(match.length === 4 ? match[3] : match[2]);
+  const stage = String(rawStage ?? 'squeeze').toUpperCase();
+  const side = String(payload.side ?? (
+    stage.includes('SHORT') || stage === 'BREAKDOWN' ? 'SHORT' : 'LONG'
+  )).toUpperCase();
+  return {
+    symbol: normalizeSymbol(payload.symbol),
+    action: side,
+    stage,
+    interval,
+    score,
+    entry: Number(payload.entryPrice ?? payload.entry),
+    tp: payload.tp ?? payload.takeProfitPrice ?? null,
+    sl: payload.sl ?? payload.stopLossPrice ?? null,
+    note: payload.note ?? '',
+    markPrice: payload.signalMarkPrice ?? payload.markPrice ?? null,
+  };
+}
+
+async function refineEmaSqueezePaperPayload(payload = {}) {
+  const sig = signalFromEmaSqueezePaperPayload(payload);
+  if (!sig) return payload;
+  const refined = await refineEmaSqueezePaperSignal(sig, { allowFallback: true }).catch((err) => {
+    console.warn(`[EmaSqueezePaper] manual liquidity refine ${sig.symbol}:`, err.message);
+    return null;
+  });
+  const runnerMeta = buildEmaSqueezeRunnerPaperMeta({ ...payload, ...refined });
+  if (!refined || refined === sig || !refined.liquidityEntry) {
+    return runnerMeta.isRunner ? {
+      ...payload,
+      ...runnerMeta.payload,
+      source: String(payload.source ?? '').includes('runner') || !payload.source
+        ? payload.source
+        : String(payload.source).replace(/-(\d+)$/, `${runnerMeta.sourceSuffix}-$1`),
+      note: [payload.note ?? '', runnerMeta.noteSuffix].filter(Boolean).join(' | '),
+    } : payload;
+  }
+  return {
+    ...payload,
+    ...runnerMeta.payload,
+    status: refined.paperStatus ?? payload.status,
+    entryPrice: refined.entry,
+    tp: refined.tp ?? payload.tp,
+    sl: refined.sl ?? payload.sl,
+    note: [refined.note ?? payload.note, runnerMeta.noteSuffix].filter(Boolean).join(' | '),
+    signalMarkPrice: refined.markPrice ?? refined.entryPlan?.signalMarkPrice ?? payload.signalMarkPrice,
+    sweepTargetPrice: refined.sweepTargetPrice ?? payload.sweepTargetPrice,
+    sweepDistancePct: refined.sweepDistancePct ?? payload.sweepDistancePct,
+    feasibleLeverage: refined.feasibleLeverage ?? payload.feasibleLeverage,
+    feasibilityScore: refined.feasibilityScore ?? payload.feasibilityScore,
+    rewardPct: refined.rewardPct ?? payload.rewardPct,
+    riskPct: refined.riskPct ?? payload.riskPct,
+    rr: refined.rr ?? payload.rr,
+    heavySide: refined.heavySide ?? payload.heavySide,
+    entryPlan: refined.entryPlan ?? payload.entryPlan,
+  };
+}
+
+function buildEmaSqueezeRunnerPaperMeta(sig = {}) {
+  const isRunner = Boolean(sig.runnerCandidate);
+  if (!isRunner) return { isRunner: false, sourceSuffix: '', noteSuffix: '', payload: {} };
+  const runnerSide = String(sig.action ?? sig.side ?? '').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+  const runnerScore = Number(sig.runnerScore ?? 0);
+  const runnerTp = Number(sig.runnerTp ?? 0);
+  const projected = Number(sig.runnerProjectedMovePct ?? 0);
+  const noteParts = [
+    'runner=Y',
+    `runnerSide=${runnerSide}`,
+    Number.isFinite(runnerScore) && runnerScore > 0 ? `runnerScore=${runnerScore.toFixed(0)}` : '',
+    Number.isFinite(runnerTp) && runnerTp > 0 ? `runnerTP=${runnerTp.toFixed(6)}` : '',
+    Number.isFinite(projected) && projected > 0 ? `runnerProjected=${runnerSide === 'SHORT' ? '-' : '+'}${projected.toFixed(1)}%` : '',
+    sig.runnerReason ? `runnerReason=${sig.runnerReason}` : '',
+  ].filter(Boolean);
+  return {
+    isRunner: true,
+    sourceSuffix: '-runner',
+    noteSuffix: noteParts.join(' | '),
+    payload: {
+      runnerCandidate: true,
+      runnerSide,
+      runnerScore: Number.isFinite(runnerScore) ? runnerScore : null,
+      runnerTp: Number.isFinite(runnerTp) && runnerTp > 0 ? runnerTp : null,
+      runnerProjectedMovePct: Number.isFinite(projected) ? projected : null,
+      runnerReason: sig.runnerReason ?? null,
+    },
+  };
+}
+
+async function enrichEmaSqueezeSignalsWithLiquidityEntries(signals = []) {
+  const out = [];
+  for (const sig of signals ?? []) {
+    const refined = await refineEmaSqueezePaperSignal(sig, { allowFallback: true }).catch(() => null);
+    if (!refined?.liquidityEntry) {
+      out.push({
+        ...sig,
+        emaEntry: sig.entry,
+        emaTp: sig.tp ?? null,
+        emaSl: sig.sl ?? null,
+      });
+      continue;
+    }
+    out.push({
+      ...sig,
+      emaEntry: sig.entry,
+      emaTp: sig.tp ?? null,
+      emaSl: sig.sl ?? null,
+      liquidEntry: refined.liquidPlanEntry ?? refined.entry,
+      liquidTp: refined.liquidPlanTp ?? refined.tp ?? null,
+      liquidSl: refined.liquidPlanSl ?? refined.sl ?? null,
+      paperEntry: refined.entry,
+      paperTp: refined.tp ?? null,
+      paperSl: refined.sl ?? null,
+      liquidEntryOk: true,
+      liquidityEntry: refined.liquidityEntry,
+      liquidityEntryPlan: refined.entryPlan ?? null,
+      liquidityEntryNote: refined.note ?? '',
+    });
+  }
+  return out;
+}
+
+// Phân loại regime BTC cho gate pre-stage:
+//   WEAK   – BTC yếu/giảm → ưu tiên SHORT, hạn chế LONG
+//   STRONG – BTC mạnh/tăng → ưu tiên LONG, hạn chế SHORT
+//   FLAT   – đi ngang/không rõ → coi như hạn chế LONG (theo backtest pre_breakout FLAT âm nặng)
+function emaSqueezeBtcRegime(health = btcHealthCache.data) {
+  if (!health || health.error) return 'FLAT';
+  const bearishBias = health.bias === 'bearish' || health.bias === 'caution';
+  const bearSignals = health.emaTrend1h === 'below'
+    || (health.rsi1h != null && health.rsi1h < 45)
+    || (health.pct6h != null && health.pct6h < -0.5);
+  const bullSignals = health.emaTrend1h === 'above'
+    && (health.rsi1h == null || health.rsi1h >= 52)
+    && (health.pct6h == null || health.pct6h > 0.3);
+  if (bearishBias || bearSignals) return 'WEAK';
+  if (bullSignals && health.bias === 'neutral') return 'STRONG';
+  return 'FLAT';
+}
+
+// Gate pre-stage theo xu hướng BTC (backtest: pre-long thua khi BTC WEAK/FLAT, pre-short thắng khi WEAK/FLAT)
+//   LONG  chỉ fire khi BTC STRONG
+//   SHORT chỉ fire khi BTC KHÔNG STRONG (WEAK/FLAT)
+function emaSqueezePreStageBtcGate(side, health = btcHealthCache.data) {
+  const regime = emaSqueezeBtcRegime(health);
+  if (side === 'LONG') {
+    return regime === 'STRONG'
+      ? { ok: true, regime }
+      : { ok: false, regime, reason: `pre-long chặn: BTC ${regime} (chỉ long khi BTC STRONG)` };
+  }
+  // SHORT: chặn khi BTC STRONG, HOẶC đang BOUNCE/chop (bias yếu nhưng giá đang bật) — short whipsaw.
+  // Vd 19/06: bias caution nhưng EMA1h above + 6h dương → breakdown short bị bật, net sụt mạnh.
+  if (regime === 'STRONG') {
+    return { ok: false, regime, reason: 'pre-short chặn: BTC STRONG (chỉ short khi BTC WEAK/FLAT)' };
+  }
+  if (process.env.EMA_SQUEEZE_PAPER_SHORT_BLOCK_BOUNCE !== 'false' && health && !health.error) {
+    const bounceMomentum = Number(process.env.EMA_SQUEEZE_PAPER_SHORT_BOUNCE_PCT6H ?? 0.3);
+    const bouncing = health.emaTrend1h === 'above'
+      && ((health.pct6h != null && health.pct6h > bounceMomentum)
+        || (health.rsi1h != null && health.rsi1h >= 52));
+    if (bouncing) {
+      return { ok: false, regime, reason: `pre-short chặn: BTC đang bounce (EMA1h above, 6h=${health.pct6h ?? '-'}%, RSI1h=${health.rsi1h ?? '-'}) — chop dễ whipsaw short` };
+    }
+  }
+  return { ok: true, regime };
+}
+
+// Snapshot BTC health lúc vào lệnh — lưu per-trade để backtest regime/gate sau này
+function buildBtcHealthSnapshot(health = btcHealthCache.data) {
+  if (!health || health.error) return null;
+  return {
+    regime: emaSqueezeBtcRegime(health),
+    bias: health.bias ?? null,
+    bearPoints: health.bearPoints ?? null,
+    rsi1h: health.rsi1h ?? null,
+    rsi4h: health.rsi4h ?? null,
+    rsi1d: health.rsi1d ?? null,
+    pct6h: health.pct6h ?? null,
+    emaTrend1h: health.emaTrend1h ?? null,
+    obvTrend: health.obvTrend ?? null,
+    fundingRate: health.fundingRate ?? null,
+    longPct: health.longPct ?? null,
+    at: new Date().toISOString(),
+  };
+}
+
 async function createEmaSqueezePaperTrades(signals = []) {
   if (process.env.EMA_SQUEEZE_PAPER_ENABLED === 'false') return;
-  const minScore = Number(process.env.EMA_SQUEEZE_PAPER_MIN_SCORE ?? 65);
+  const minScore = Number(process.env.EMA_SQUEEZE_PAPER_MIN_SCORE ?? 80);
+  const maxScore = Number(process.env.EMA_SQUEEZE_PAPER_MAX_SCORE ?? 89);
   const cooldownMs = Number(process.env.EMA_SQUEEZE_PAPER_COOLDOWN_MS ?? 4 * 3600 * 1000);
   const marginUsdt = Number(process.env.EMA_SQUEEZE_PAPER_MARGIN_USDT ?? 1);
   const leverage = Number(process.env.EMA_SQUEEZE_PAPER_LEVERAGE ?? 10);
-  const allowedStages = new Set(String(process.env.EMA_SQUEEZE_PAPER_STAGES ?? 'BREAKOUT,BREAKDOWN,SQUEEZE,SQUEEZE_SHORT')
+  const btcSnap = buildBtcHealthSnapshot(); // lưu cùng mỗi lệnh để backtest gate sau này
+  const allowedStages = new Set(String(process.env.EMA_SQUEEZE_PAPER_STAGES ?? 'BREAKOUT')
     .split(',')
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean));
+  const allowedSides = new Set(String(process.env.EMA_SQUEEZE_PAPER_SIDES ?? 'LONG')
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean));
+  const allowedIntervals = new Set(String(process.env.EMA_SQUEEZE_PAPER_INTERVALS ?? '5m,15m,1h')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean));
   const confirmedStages = new Set(['BREAKOUT', 'BREAKDOWN']);
+  const stageRank = { BREAKOUT: 0, PRE_BREAKOUT: 1, SQUEEZE: 2, BREAKDOWN: 3, PRE_BREAKDOWN: 4, SQUEEZE_SHORT: 5 };
 
-  for (const sig of signals) {
+  const orderedSignals = [...signals].sort((a, b) => {
+    const ar = stageRank[String(a?.stage ?? '').toUpperCase()] ?? 9;
+    const br = stageRank[String(b?.stage ?? '').toUpperCase()] ?? 9;
+    return ar - br || Number(b?.score ?? 0) - Number(a?.score ?? 0);
+  });
+
+  for (const sig of orderedSignals) {
     const stage = String(sig?.stage ?? '').toUpperCase();
     const side = String(sig?.action ?? '').toUpperCase();
+    const interval = String(sig?.interval ?? '15m');
+    const score = Number(sig.score ?? 0);
     if (!allowedStages.has(stage)) continue;
-    if (!['LONG', 'SHORT'].includes(side)) continue;
-    if (Number(sig.score ?? 0) < minScore) continue;
+    if (!allowedSides.has(side)) continue;
+    if (allowedIntervals.size && !allowedIntervals.has(interval)) continue;
+    if (score < minScore || score > maxScore) continue;
     if (!Number.isFinite(Number(sig.entry)) || Number(sig.entry) <= 0) continue;
 
-    const key = `${sig.symbol}|${sig.interval ?? '15m'}|${stage}|${side}`;
+    // Trần score cho 5m PRE_BREAKDOWN: score quá cao = dump over-extended/kiệt sức → dễ V-bounce → thua.
+    // Backtest: score 80-83 exp +6..+9%, nhưng 86-89 exp -1.8% (net -211%). Bỏ ≥86.
+    const pbd5mMaxScore = Number(process.env.EMA_SQUEEZE_PAPER_5M_PRE_BREAKDOWN_MAX_SCORE ?? 85);
+    if (stage === 'PRE_BREAKDOWN' && interval === '5m' && score > pbd5mMaxScore) {
+      console.log(`[EmaSqueezePaper] skip ${sig.symbol} PRE_BREAKDOWN 5m - score ${score} > ${pbd5mMaxScore} (over-extended, dễ V-bounce)`);
+      continue;
+    }
+
+    // Gate pre-stage theo xu hướng BTC: BTC yếu → cấm pre-long; BTC mạnh → cấm pre-short
+    const btcGateStages = new Set(String(process.env.EMA_SQUEEZE_PAPER_BTC_GATE_STAGES ?? 'PRE_BREAKOUT,PRE_BREAKDOWN')
+      .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean));
+    if (process.env.EMA_SQUEEZE_PAPER_BTC_GATE !== 'false' && btcGateStages.has(stage)) {
+      const gate = emaSqueezePreStageBtcGate(side);
+      if (!gate.ok) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} ${stage} ${side} - ${gate.reason}`);
+        continue;
+      }
+    }
+
+    const requiresLiquidEntry = stage === 'SQUEEZE' || stage === 'SQUEEZE_SHORT';
+    const paperSignal = await refineEmaSqueezePaperSignal(sig, { allowFallback: !requiresLiquidEntry }).catch((err) => {
+      console.warn(`[EmaSqueezePaper] liquidity refine ${sig?.symbol ?? '?'}:`, err.message);
+      return null;
+    });
+    if (!paperSignal) continue;
+    if (requiresLiquidEntry && !paperSignal.liquidityEntry) continue;
+    const runnerMeta = buildEmaSqueezeRunnerPaperMeta(paperSignal);
+
+    if (stage === 'BREAKOUT') {
+      const minRr = Number(process.env.EMA_SQUEEZE_PAPER_BREAKOUT_MIN_RR ?? 2);
+      const minEmaPos = Number(process.env.EMA_SQUEEZE_PAPER_BREAKOUT_MIN_EMA_POS ?? 0.9);
+      const emaPos = Number(sig.emaBandPos);
+      const breakoutEntry = Number(sig.entry);
+      const breakoutTp = Number(paperSignal.tp);
+      const effectiveSl = emaSqueezePaperStopLossFromRoe({
+        source: 'emasq-breakout-filter',
+        side,
+        entryPrice: breakoutEntry,
+        leverage,
+      });
+      const risk = Math.abs(breakoutEntry - Number(effectiveSl));
+      const reward = Math.abs(breakoutTp - breakoutEntry);
+      const rr = risk > 0 && Number.isFinite(reward) ? reward / risk : null;
+
+      if (!Number.isFinite(emaPos) || emaPos < minEmaPos) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BREAKOUT - emaPos=${Number.isFinite(emaPos) ? emaPos.toFixed(2) : '?'} < ${minEmaPos}`);
+        continue;
+      }
+      if (!Number.isFinite(rr) || rr < minRr) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BREAKOUT - RR=${Number.isFinite(rr) ? rr.toFixed(2) : '?'} < ${minRr} entry=${breakoutEntry} sl=${effectiveSl} tp=${breakoutTp}`);
+        continue;
+      }
+    }
+
+    const key = `${paperSignal.symbol}|${paperSignal.interval ?? '15m'}|${stage}|${side}`;
     const last = emaSqueezePaperAutoFired.get(key) ?? 0;
     if (Date.now() - last < cooldownMs) continue;
     emaSqueezePaperAutoFired.set(key, Date.now());
 
-    await createPumpPaperTrade({
-      symbol: sig.symbol,
+    const basePayload = {
+      symbol: paperSignal.symbol,
       side,
-      status: confirmedStages.has(stage) ? 'OPEN' : 'PENDING',
       marginUsdt,
       leverage,
-      entryPrice: sig.entry,
-      tp: sig.tp ?? null,
-      sl: sig.sl ?? null,
-      source: `emasq-${sig.interval ?? '15m'}-${stage.toLowerCase()}-${sig.score}`,
-      note: sig.note ?? sig.reason ?? '',
-    })
+      tp: paperSignal.tp ?? null,
+      sl: paperSignal.sl ?? null,
+      note: [paperSignal.note ?? paperSignal.reason ?? '', runnerMeta.noteSuffix].filter(Boolean).join(' | '),
+      signalMarkPrice: paperSignal.markPrice ?? paperSignal.entryPlan?.signalMarkPrice ?? null,
+      ...runnerMeta.payload,
+      sweepTargetPrice: paperSignal.sweepTargetPrice ?? null,
+      sweepDistancePct: paperSignal.sweepDistancePct ?? null,
+      feasibleLeverage: paperSignal.feasibleLeverage ?? null,
+      feasibilityScore: paperSignal.feasibilityScore ?? null,
+      rewardPct: paperSignal.rewardPct ?? null,
+      riskPct: paperSignal.riskPct ?? null,
+      rr: paperSignal.rr ?? null,
+      heavySide: paperSignal.heavySide ?? null,
+      entryPlan: paperSignal.entryPlan ?? null,
+      btcHealth: btcSnap,
+    };
+    const srcBase = `emasq-${paperSignal.interval ?? '15m'}-${stage.toLowerCase()}${runnerMeta.sourceSuffix}-${paperSignal.score}`;
+    const fire = (extra) => createPumpPaperTrade({ ...basePayload, ...extra })
       .then(() => {
         if (pumpPaperTicker) syncPumpPaperTicker().catch(() => {});
-        console.log(`[EmaSqueezePaper] ${side} ${sig.symbol} ${stage} score=${sig.score}`);
+        console.log(`[EmaSqueezePaper] ${side} ${paperSignal.symbol} ${stage}${extra.variant ? '/' + extra.variant : ''} score=${paperSignal.score}`);
       })
-      .catch((e) => console.warn(`[EmaSqueezePaper] ${sig.symbol}:`, e.message));
+      .catch((e) => console.warn(`[EmaSqueezePaper] ${paperSignal.symbol}:`, e.message));
+
+    if (stage === 'BREAKOUT') {
+      // 2 lệnh cùng signalId để so sánh: MARKET (vào breakout ngay) vs PENDING (chờ retest về mép cụm EMA)
+      const signalId = crypto.randomUUID();
+      const marketEntry = Number(sig.entry);
+      const emas = [Number(sig.ema13), Number(sig.ema25), Number(sig.ema99)].filter((v) => Number.isFinite(v) && v > 0);
+      let pendingEntry;
+      if (paperSignal.paperStatus === 'PENDING' && Number.isFinite(Number(paperSignal.entry))
+          && (side === 'LONG' ? Number(paperSignal.entry) < marketEntry : Number(paperSignal.entry) > marketEntry)) {
+        pendingEntry = Number(paperSignal.entry); // dùng entry liquidity nếu có (đã thấp/cao hơn breakout)
+      } else if (emas.length) {
+        const edge = side === 'LONG' ? Math.max(...emas) : Math.min(...emas); // mép cụm EMA = vùng retest
+        pendingEntry = (side === 'LONG' ? edge < marketEntry : edge > marketEntry)
+          ? edge : marketEntry * (side === 'LONG' ? 0.997 : 1.003);
+      } else {
+        pendingEntry = marketEntry * (side === 'LONG' ? 0.997 : 1.003);
+      }
+      await fire({ status: 'OPEN', variant: 'MARKET', signalId, entryPrice: marketEntry, source: `${srcBase}-mkt` });
+      await fire({ status: 'PENDING', variant: 'PENDING', signalId, entryPrice: pendingEntry, source: `${srcBase}-pend` });
+    } else {
+      await fire({
+        status: paperSignal.paperStatus ?? (confirmedStages.has(stage) ? 'OPEN' : 'PENDING'),
+        entryPrice: paperSignal.entry,
+        source: srcBase,
+      });
+    }
   }
+}
+
+function emaSqueezeBtcChartAllowsOrder(sig) {
+  if (process.env.EMA_SQUEEZE_REAL_BTC_CHART_FILTER === 'false') return { ok: true, reason: 'disabled' };
+  const rel = sig?.btcChartRelation;
+  if (!rel || rel.relation !== 'aligned') return { ok: true, reason: 'coin independent/opposed to BTC' };
+
+  const side = String(sig?.action ?? '').toUpperCase();
+  const btcMovePct = Number(rel.btcMovePct);
+  const minMovePct = Math.max(0, Number(process.env.EMA_SQUEEZE_REAL_BTC_CHART_MIN_MOVE_PCT ?? 0.15));
+  if (!Number.isFinite(btcMovePct) || Math.abs(btcMovePct) < minMovePct) {
+    return { ok: true, reason: 'BTC flat while chart aligned' };
+  }
+
+  const btcDirection = btcMovePct > 0 ? 'LONG' : 'SHORT';
+  if (side === btcDirection) return { ok: true, reason: `aligned with BTC ${btcDirection}` };
+  return {
+    ok: false,
+    reason: `chart follows BTC but signal ${side} conflicts with BTC ${btcDirection}`,
+    btcDirection,
+    btcMovePct,
+    relation: rel.relation,
+    corr: rel.corr,
+  };
+}
+
+function emaSqueezeBtcHealthAllowsOrder(health = btcHealthCache.data) {
+  if (process.env.EMA_SQUEEZE_REAL_BTC_HEALTH_FILTER === 'false') return { ok: true, reason: 'disabled' };
+  if (!health || health.error) {
+    return { ok: false, code: 'BTC_HEALTH_UNKNOWN', label: 'BLOCK BTC', reason: 'BTC health unavailable' };
+  }
+  const isDangerLow = (health.rsi1h != null && health.rsi1h < 25) || (health.rsi4h != null && health.rsi4h < 32);
+  const isDangerHigh = (health.rsi1h != null && health.rsi1h > 80) || (health.rsi4h != null && health.rsi4h > 72);
+  const btcWeak = (health.bias === 'bearish' && (
+    health.emaTrend1h === 'below'
+    || (health.rsi1h != null && health.rsi1h < 45)
+    || (health.pct6h != null && health.pct6h < 0)
+  ))
+    || (health.emaTrend1h === 'below' && health.rsi1h != null && health.rsi1h < 45)
+    || (health.pct6h != null && health.pct6h <= -1)
+    || (health.btcCandle1hPct != null && health.btcCandle1hPct <= -0.5);
+
+  if (isDangerLow || isDangerHigh) {
+    return {
+      ok: false,
+      code: 'BTC_DANGER',
+      label: 'BLOCK BTC',
+      reason: `BTC danger RSI (RSI1h=${health.rsi1h ?? '-'} RSI4h=${health.rsi4h ?? '-'})`,
+      health,
+    };
+  }
+  if (btcWeak) {
+    return {
+      ok: false,
+      code: 'BTC_WEAK',
+      label: 'BLOCK BTC',
+      reason: `BTC weak / limit long (bearPoints=${health.bearPoints ?? '-'} RSI1h=${health.rsi1h ?? '-'} pct6h=${health.pct6h ?? '-'})`,
+      health,
+    };
+  }
+  if (health.bias === 'bearish' || health.bias === 'caution') {
+    return {
+      ok: false,
+      code: 'BTC_HEALTH',
+      label: 'BLOCK BTC',
+      reason: `BTC ${health.bias} (bearPoints=${health.bearPoints ?? '-'})`,
+      health,
+    };
+  }
+  if (health.bearishDiv || health.btcSpikeAlert) {
+    return {
+      ok: false,
+      code: health.btcSpikeAlert ? 'BTC_SPIKE' : 'BTC_BEAR_DIV',
+      label: 'BLOCK BTC',
+      reason: health.btcSpikeAlert ? 'BTC spike alert' : 'BTC bearish RSI divergence',
+      health,
+    };
+  }
+  return { ok: true, reason: `BTC ${health.bias ?? 'neutral'}`, health };
+}
+
+function emaSqueezeGoldAllowsOrder(gold = goldHealthCache.data) {
+  if (process.env.EMA_SQUEEZE_REAL_GOLD_FILTER === 'false') return { ok: true, reason: 'disabled' };
+  if (gold?.disabled) return { ok: true, reason: 'Gold filter disabled', gold };
+  if (!gold || gold.error) {
+    return { ok: false, code: 'GOLD_UNKNOWN', label: 'BLOCK GOLD', reason: 'Gold health unavailable' };
+  }
+  if (gold.red) {
+    return {
+      ok: false,
+      code: 'GOLD_RED',
+      label: 'BLOCK GOLD',
+      reason: `${gold.symbol} ${gold.interval} ${gold.mode} candle red (${gold.changePct}%)`,
+      gold,
+    };
+  }
+  return { ok: true, reason: `${gold.symbol} not red (${gold.changePct}%)`, gold };
+}
+
+function emaSqueezeMarketAllowsRealOrder({ btcHealth = btcHealthCache.data, goldHealth = goldHealthCache.data } = {}) {
+  const btcGuard = emaSqueezeBtcHealthAllowsOrder(btcHealth);
+  if (!btcGuard.ok) return btcGuard;
+  const goldGuard = emaSqueezeGoldAllowsOrder(goldHealth);
+  if (!goldGuard.ok) return goldGuard;
+  return { ok: true, reason: `${btcGuard.reason}; ${goldGuard.reason}`, btcHealth, goldHealth };
+}
+
+function getEmaSqueezeRealOrderRules() {
+  return {
+    envEnabled: process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
+    runtimeEnabled: runtimeSettings.emaSqueezeRealOrderEnabled,
+    orderEnabled: runtimeSettings.orderEnabled,
+    dryRun: runtimeSettings.dryRun,
+    vnBlockHour: isVnBlockHour(),
+    minScore: Number(process.env.EMA_SQUEEZE_REAL_MIN_SCORE ?? 65),
+    maxScore: Number(process.env.EMA_SQUEEZE_REAL_MAX_SCORE ?? 100),
+    allowedIntervals: new Set(String(process.env.EMA_SQUEEZE_REAL_INTERVALS ?? '5m,15m,1h')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)),
+    allowedStages: new Set(String(process.env.EMA_SQUEEZE_REAL_STAGES ?? 'BREAKOUT,SQUEEZE')
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean)),
+    executableStages: new Set(['BREAKOUT', 'SQUEEZE', 'PRE_BREAKOUT']),
+    squeezeRunnerMinScore: Number(process.env.EMA_SQUEEZE_REAL_RUNNER_MIN_SCORE ?? 70),
+    requireRunnerForBreakout: process.env.EMA_SQUEEZE_REAL_REQUIRE_RUNNER_FOR_BREAKOUT === 'true',
+  };
+}
+
+function getEmaSqueezeRealOrderStatus(sig, rules = getEmaSqueezeRealOrderRules()) {
+  if (!rules.envEnabled) return { status: 'DISABLED', code: 'ENV_OFF', label: 'REAL OFF ENV', reason: 'EMA_SQUEEZE_REAL_ORDER_ENABLED=false' };
+  if (!rules.runtimeEnabled) return { status: 'DISABLED', code: 'BOARD_OFF', label: 'REAL OFF', reason: 'Auto Binance is disabled on EMA Squeeze board' };
+  if (!rules.orderEnabled) return { status: 'DISABLED', code: 'ORDER_OFF', label: 'ORDER OFF', reason: 'Binance order execution is disabled' };
+  if (rules.dryRun) return { status: 'DISABLED', code: 'DRY_RUN', label: 'DRY RUN', reason: 'Dry run is enabled' };
+  if (rules.vnBlockHour) return { status: 'DISABLED', code: 'VN_BLOCK', label: 'TIME BLOCK', reason: 'VN block hour' };
+
+  const stage = String(sig?.stage ?? '').toUpperCase();
+  const side = String(sig?.action ?? '').toUpperCase();
+  const interval = String(sig?.interval ?? '15m');
+  const score = Number(sig?.score ?? 0);
+
+  if (!rules.executableStages.has(stage)) return { status: 'BLOCKED', code: 'STAGE_NOT_REAL', label: 'REAL BLOCK', reason: `${stage || 'UNKNOWN'} not executable for real order` };
+  if (!rules.allowedStages.has(stage)) return { status: 'BLOCKED', code: 'STAGE_FILTER', label: 'REAL BLOCK', reason: `${stage} is not in EMA_SQUEEZE_REAL_STAGES` };
+  if (side !== 'LONG') return { status: 'BLOCKED', code: 'SHORT_REAL_OFF', label: 'REAL BLOCK', reason: 'EMA Squeeze real order currently only allows LONG' };
+  if (rules.allowedIntervals.size && !rules.allowedIntervals.has(interval)) return { status: 'BLOCKED', code: 'TF_FILTER', label: 'REAL BLOCK', reason: `${interval} is not in EMA_SQUEEZE_REAL_INTERVALS` };
+  if (score < rules.minScore) return { status: 'BLOCKED', code: 'SCORE_LOW', label: 'REAL BLOCK', reason: `score ${score} < ${rules.minScore}` };
+  if (score > rules.maxScore) return { status: 'BLOCKED', code: 'SCORE_HIGH', label: 'REAL BLOCK', reason: `score ${score} > ${rules.maxScore}` };
+
+  const runnerScore = Number(sig?.runnerScore ?? 0);
+  const isRunner = Boolean(sig?.runnerCandidate) && runnerScore >= rules.squeezeRunnerMinScore;
+  if (stage === 'SQUEEZE' && !isRunner) return { status: 'BLOCKED', code: 'RUNNER_REQUIRED', label: 'REAL BLOCK', reason: `SQUEEZE needs runner >= ${rules.squeezeRunnerMinScore}` };
+  if (stage === 'BREAKOUT' && rules.requireRunnerForBreakout && !isRunner) return { status: 'BLOCKED', code: 'RUNNER_REQUIRED', label: 'REAL BLOCK', reason: `BREAKOUT needs runner >= ${rules.squeezeRunnerMinScore}` };
+  if (stage === 'PRE_BREAKOUT' && !isRunner) return { status: 'BLOCKED', code: 'RUNNER_REQUIRED', label: 'REAL BLOCK', reason: `PRE_BREAKOUT needs runner >= ${rules.squeezeRunnerMinScore}` };
+
+  const btcChartGuard = emaSqueezeBtcChartAllowsOrder(sig);
+  if (!btcChartGuard.ok) return {
+    status: 'BLOCKED',
+    code: 'BTC_CHART',
+    label: 'BLOCK BTC',
+    reason: btcChartGuard.reason,
+  };
+  const marketGuard = emaSqueezeMarketAllowsRealOrder();
+  if (!marketGuard.ok) return {
+    status: 'BLOCKED',
+    code: marketGuard.code ?? 'MARKET_GUARD',
+    label: marketGuard.label ?? 'REAL BLOCK',
+    reason: marketGuard.reason,
+  };
+  if (!Number.isFinite(Number(sig?.entry)) || Number(sig.entry) <= 0) return { status: 'BLOCKED', code: 'ENTRY_INVALID', label: 'REAL BLOCK', reason: 'invalid entry' };
+
+  return { status: 'CANDIDATE', code: 'REAL_OK', label: 'REAL OK', reason: 'passes real-order filters before position/liquidity checks' };
+}
+
+function annotateEmaSqueezeRealOrderStatus(signals = []) {
+  const rules = getEmaSqueezeRealOrderRules();
+  return signals.map((sig) => ({
+    ...sig,
+    realOrderStatus: getEmaSqueezeRealOrderStatus(sig, rules),
+  }));
 }
 
 async function handleEmaSqueezeRealLongOrders(signals = []) {
   if (process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED !== 'true') return;
+  if (!runtimeSettings.emaSqueezeRealOrderEnabled) {
+    console.log('[EmaSqueezeReal] skip - EMA Squeeze auto Binance disabled on board');
+    return;
+  }
   if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
     console.log('[EmaSqueezeReal] skip - real Binance order disabled/dry-run');
     return;
@@ -1686,14 +2636,34 @@ async function handleEmaSqueezeRealLongOrders(signals = []) {
   }
 
   const minScore = Number(process.env.EMA_SQUEEZE_REAL_MIN_SCORE ?? 65);
+  const maxScore = Number(process.env.EMA_SQUEEZE_REAL_MAX_SCORE ?? 100);
+  const allowedIntervals = new Set(String(process.env.EMA_SQUEEZE_REAL_INTERVALS ?? '5m,15m,1h')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean));
+  const allowedStages = new Set(String(process.env.EMA_SQUEEZE_REAL_STAGES ?? 'BREAKOUT,SQUEEZE')
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean));
+  const executableStages = new Set(['BREAKOUT', 'SQUEEZE', 'PRE_BREAKOUT']);
+  const squeezeRunnerMinScore = Number(process.env.EMA_SQUEEZE_REAL_RUNNER_MIN_SCORE ?? 70);
+  const requireRunnerForBreakout = process.env.EMA_SQUEEZE_REAL_REQUIRE_RUNNER_FOR_BREAKOUT === 'true';
   const marginUsdt = Number(process.env.EMA_SQUEEZE_REAL_MARGIN_USDT ?? 1);
   const leverage = Math.max(1, Math.min(125, Number(process.env.EMA_SQUEEZE_REAL_LEVERAGE ?? 10)));
   const orderType = String(process.env.EMA_SQUEEZE_REAL_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const stopLossRoe = Number(process.env.EMA_SQUEEZE_REAL_STOP_LOSS_ROE ?? 30);
   const cooldownMs = Number(process.env.EMA_SQUEEZE_REAL_COOLDOWN_MS ?? 4 * 3600 * 1000);
   const maxPerScan = Math.max(1, Number(process.env.EMA_SQUEEZE_REAL_MAX_ORDERS_PER_SCAN ?? 1));
   const maxOpenPositions = Number(process.env.EMA_SQUEEZE_REAL_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
   if (!['MARKET', 'LIMIT', 'LIMIT_IOC'].includes(orderType)) {
     console.warn(`[EmaSqueezeReal] invalid order type: ${orderType}`);
+    return;
+  }
+
+  const [btcHealth, goldHealth] = await Promise.all([getBtcHealth(), getGoldHealth()]);
+  const marketGuard = emaSqueezeMarketAllowsRealOrder({ btcHealth, goldHealth });
+  if (!marketGuard.ok) {
+    console.log(`[EmaSqueezeReal] skip all - ${marketGuard.reason}`);
     return;
   }
 
@@ -1713,16 +2683,51 @@ async function handleEmaSqueezeRealLongOrders(signals = []) {
   ]);
 
   let submitted = 0;
-  for (const sig of signals) {
+  const stageRank = { PRE_BREAKOUT: 0, BREAKOUT: 1, SQUEEZE: 2, BREAKDOWN: 3, SQUEEZE_SHORT: 4 };
+  const orderedSignals = [...signals].sort((a, b) => {
+    const ar = stageRank[String(a?.stage ?? '').toUpperCase()] ?? 9;
+    const br = stageRank[String(b?.stage ?? '').toUpperCase()] ?? 9;
+    return ar - br || Number(b?.score ?? 0) - Number(a?.score ?? 0);
+  });
+
+  for (const sig of orderedSignals) {
     if (submitted >= maxPerScan) break;
     const stage = String(sig?.stage ?? '').toUpperCase();
     const side = String(sig?.action ?? '').toUpperCase();
-    if (stage !== 'SQUEEZE' || side !== 'LONG') continue;
-    if (Number(sig.score ?? 0) < minScore) continue;
+    const interval = String(sig?.interval ?? '15m');
+    if (!executableStages.has(stage)) continue;
+    if (!allowedStages.has(stage) || side !== 'LONG') continue;
+    if (allowedIntervals.size && !allowedIntervals.has(interval)) continue;
+    const score = Number(sig.score ?? 0);
+    if (score < minScore || score > maxScore) continue;
+    const runnerScore = Number(sig.runnerScore ?? 0);
+    const isRunner = Boolean(sig.runnerCandidate) && runnerScore >= squeezeRunnerMinScore;
+    if (stage === 'SQUEEZE' && !isRunner) {
+      console.log(`[EmaSqueezeReal] skip ${sig.symbol} SQUEEZE - not runner type (runner=${runnerScore || 0}, min=${squeezeRunnerMinScore})`);
+      continue;
+    }
+    if (stage === 'BREAKOUT' && requireRunnerForBreakout && !isRunner) {
+      console.log(`[EmaSqueezeReal] skip ${sig.symbol} BREAKOUT - runner required`);
+      continue;
+    }
+    if (stage === 'PRE_BREAKOUT' && !isRunner) {
+      console.log(`[EmaSqueezeReal] skip ${sig.symbol} PRE_BREAKOUT - runner required`);
+      continue;
+    }
+    const btcChartGuard = emaSqueezeBtcChartAllowsOrder(sig);
+    if (!btcChartGuard.ok) {
+      console.log(`[EmaSqueezeReal] skip ${sig.symbol} - ${btcChartGuard.reason} (btc=${btcChartGuard.btcMovePct?.toFixed?.(2)}%, corr=${btcChartGuard.corr ?? '-'})`);
+      continue;
+    }
     if (!Number.isFinite(Number(sig.entry)) || Number(sig.entry) <= 0) continue;
 
     const symbol = normalizeSymbol(sig.symbol);
-    const dedupKey = `${symbol}|${sig.interval ?? '15m'}|SQUEEZE|LONG`;
+    const liqBlock = liqAutoBlockReason(symbol, 'LONG');
+    if (liqBlock) {
+      console.log(`[EmaSqueezeReal] skip ${symbol} - ${liqBlock}`);
+      continue;
+    }
+    const dedupKey = `${symbol}|${sig.interval ?? '15m'}|${stage}|LONG`;
     const last = emaSqueezeRealOrderFired.get(dedupKey) ?? 0;
     if (Date.now() - last < cooldownMs) continue;
 
@@ -1743,15 +2748,35 @@ async function handleEmaSqueezeRealLongOrders(signals = []) {
     }
 
     try {
+      const requiresLiquidEntry = stage === 'SQUEEZE';
+      const orderSignal = await refineEmaSqueezePaperSignal(sig, { allowFallback: !requiresLiquidEntry }) || null;
+      if (!orderSignal || (requiresLiquidEntry && !orderSignal.liquidityEntry)) {
+        console.log(`[EmaSqueezeReal] skip ${symbol} ${stage} - no good liquid entry`);
+        continue;
+      }
+      const orderEntry = Number(orderSignal.entry);
+      const orderTp = Number(orderSignal.tp);
+      const defaultEntry = Number(sig.entry);
+      if (!Number.isFinite(orderEntry) || orderEntry <= 0) {
+        console.warn(`[EmaSqueezeReal] skip ${symbol} - invalid refined entry`);
+        continue;
+      }
+      const orderSl = Number.isFinite(stopLossRoe) && stopLossRoe > 0
+        ? orderEntry * (1 - (stopLossRoe / 100 / leverage))
+        : Number(orderSignal.sl);
+      const usesBetterLiquidEntry = Boolean(orderSignal.liquidityEntry)
+        && Number.isFinite(defaultEntry)
+        && (side === 'LONG' ? orderEntry < defaultEntry : orderEntry > defaultEntry);
+      const effectiveOrderType = orderType === 'MARKET' && usesBetterLiquidEntry ? 'LIMIT' : orderType;
       const result = await placeOrder({
         symbol,
         side: 'BUY',
-        orderType,
+        orderType: effectiveOrderType,
         notionalUsdt: marginUsdt * leverage,
         leverage,
-        limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
-        takeProfitPrice: sig.tp ?? undefined,
-        stopLossPrice: sig.sl ?? undefined,
+        limitPrice: effectiveOrderType === 'MARKET' ? undefined : orderEntry,
+        takeProfitPrice: Number.isFinite(orderTp) && orderTp > 0 ? orderTp : undefined,
+        stopLossPrice: Number.isFinite(orderSl) && orderSl > 0 ? orderSl : undefined,
         maxOpenPositions,
         dryRun: false,
       }, null, { apiKey, apiSecret });
@@ -1760,9 +2785,117 @@ async function handleEmaSqueezeRealLongOrders(signals = []) {
       emaSqueezeRealOrderFired.set(dedupKey, Date.now());
       invalidateOpenOrdersCache();
       const orderId = result?.orderResult?.orderId ?? '-';
-      console.log(`[EmaSqueezeReal] REAL ${symbol} LONG ${orderType} orderId=${orderId} margin=$${marginUsdt} score=${sig.score}`);
+      const entrySource = orderSignal.liquidityEntry ? ` entry=${orderEntry} liquidPlan=${orderSignal.liquidPlanEntry ?? '-'}` : ` entry=${orderEntry}`;
+      const modeText = effectiveOrderType === orderType ? effectiveOrderType : `${effectiveOrderType}(from ${orderType})`;
+      console.log(`[EmaSqueezeReal] REAL ${symbol} LONG ${stage} ${interval} ${modeText}${entrySource} orderId=${orderId} margin=$${marginUsdt} score=${sig.score}`);
     } catch (e) {
       console.warn(`[EmaSqueezeReal] ${symbol}: ${e.message}`);
+    }
+  }
+}
+
+async function handleEma99KillReclaimRealLongOrders(signals = []) {
+  if (process.env.EMA99_KILL_RECLAIM_REAL_ORDER_ENABLED !== 'true') return;
+  if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
+    console.log('[Ema99KillReclaimReal] skip - real Binance order disabled/dry-run');
+    return;
+  }
+
+  const minScore = Number(process.env.EMA99_KILL_RECLAIM_REAL_MIN_SCORE ?? 55);
+  const maxScore = Number(process.env.EMA99_KILL_RECLAIM_REAL_MAX_SCORE ?? 100);
+  const intervalAllow = String(process.env.EMA99_KILL_RECLAIM_REAL_INTERVAL ?? '5m');
+  const marginUsdt = Number(process.env.EMA99_KILL_RECLAIM_REAL_MARGIN_USDT ?? 1);
+  const leverage = Math.max(1, Math.min(125, Number(process.env.EMA99_KILL_RECLAIM_REAL_LEVERAGE ?? 10)));
+  const orderType = String(process.env.EMA99_KILL_RECLAIM_REAL_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const cooldownMs = Number(process.env.EMA99_KILL_RECLAIM_REAL_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const maxPerScan = Math.max(1, Number(process.env.EMA99_KILL_RECLAIM_REAL_MAX_ORDERS_PER_SCAN ?? 1));
+  const maxOpenPositions = Number(process.env.EMA99_KILL_RECLAIM_REAL_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+  if (!['MARKET', 'LIMIT', 'LIMIT_IOC'].includes(orderType)) {
+    console.warn(`[Ema99KillReclaimReal] invalid order type: ${orderType}`);
+    return;
+  }
+
+  let apiKey;
+  let apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch (err) {
+    apiKey = process.env.BINANCE_API_KEY;
+    apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw err;
+  }
+
+  const [positions, openOrders] = await Promise.all([
+    client.getPositions({ apiKey, apiSecret }),
+    getCachedOpenOrders(apiKey, apiSecret),
+  ]);
+
+  const orderedSignals = [...signals]
+    .filter((sig) => String(sig?.action ?? '').toUpperCase() === 'LONG')
+    .filter((sig) => String(sig?.interval ?? '5m') === intervalAllow)
+    .sort((a, b) => Number(b?.score ?? 0) - Number(a?.score ?? 0));
+
+  let submitted = 0;
+  for (const sig of orderedSignals) {
+    if (submitted >= maxPerScan) break;
+    const score = Number(sig.score ?? 0);
+    if (score < minScore || score > maxScore) continue;
+    const entry = Number(sig.entry);
+    const tp = Number(sig.tp);
+    const sl = Number(sig.sl);
+    if (![entry, tp, sl].every((v) => Number.isFinite(v) && v > 0)) continue;
+    if (sl >= entry || tp <= entry) {
+      console.warn(`[Ema99KillReclaimReal] skip ${sig.symbol} - invalid LONG TP/SL`);
+      continue;
+    }
+
+    const symbol = normalizeSymbol(sig.symbol);
+    const liqBlock = liqAutoBlockReason(symbol, 'LONG');
+    if (liqBlock) {
+      console.log(`[Ema99KillReclaimReal] skip ${symbol} - ${liqBlock}`);
+      continue;
+    }
+    const dedupKey = `${symbol}|${sig.interval ?? '5m'}|EMA99_RECLAIM_LONG`;
+    const last = ema99KillReclaimRealOrderFired.get(dedupKey) ?? 0;
+    if (Date.now() - last < cooldownMs) continue;
+
+    const hasPosition = positions.some((p) => p.symbol === symbol && Math.abs(Number(p.positionAmt ?? 0)) > 0);
+    if (hasPosition) {
+      console.log(`[Ema99KillReclaimReal] skip ${symbol} - already has position`);
+      continue;
+    }
+    const hasEntryOrder = openOrders.some((o) => {
+      if (o.symbol !== symbol) return false;
+      if (String(o.reduceOnly ?? '').toLowerCase() === 'true') return false;
+      const type = String(o.type ?? o.origType ?? '').toUpperCase();
+      return ['MARKET', 'LIMIT', 'LIMIT_MAKER'].includes(type);
+    });
+    if (hasEntryOrder) {
+      console.log(`[Ema99KillReclaimReal] skip ${symbol} - already has entry order`);
+      continue;
+    }
+
+    try {
+      const result = await placeOrder({
+        symbol,
+        side: 'BUY',
+        orderType,
+        notionalUsdt: marginUsdt * leverage,
+        leverage,
+        limitPrice: orderType === 'MARKET' ? undefined : entry,
+        takeProfitPrice: tp,
+        stopLossPrice: sl,
+        maxOpenPositions,
+        dryRun: false,
+      }, null, { apiKey, apiSecret });
+
+      submitted++;
+      ema99KillReclaimRealOrderFired.set(dedupKey, Date.now());
+      invalidateOpenOrdersCache();
+      const orderId = result?.orderResult?.orderId ?? '-';
+      console.log(`[Ema99KillReclaimReal] REAL ${symbol} LONG ${sig.interval ?? '5m'} ${orderType} entry=${entry} tp=${tp} sl=${sl} orderId=${orderId} margin=$${marginUsdt} score=${score}`);
+    } catch (e) {
+      console.warn(`[Ema99KillReclaimReal] ${sig.symbol}: ${e.message}`);
     }
   }
 }
@@ -1775,6 +2908,12 @@ klineCache.on('candleClose', ({ interval }) => {
   if (EMA_SQUEEZE_INTERVALS.includes(interval)) {
     scheduleEmaSqueezeScan();
   }
+  if (interval === (process.env.EMA99_KILL_RECLAIM_INTERVAL || '5m')) {
+    scheduleEma99KillReclaimScan();
+  }
+  if (interval === '5m' || interval === '15m') {
+    scheduleShakeoutReclaimScan();
+  }
 });
 
 // Scan theo tick (mỗi khi có cập nhật nến) với debounce 60s — bắt signal sớm hơn trong nến
@@ -1785,6 +2924,8 @@ klineCache.on('candleTick', ({ interval }) => {
   _tickScanDebounce = setTimeout(() => {
     if (interval === '15m') scheduleStrategyScans('candleTick');
     else scheduleEmaSqueezeScan();
+    if (interval === (process.env.EMA99_KILL_RECLAIM_INTERVAL || '5m')) scheduleEma99KillReclaimScan();
+    if (interval === '5m' || interval === '15m') scheduleShakeoutReclaimScan();
   }, 60_000);
 });
 
@@ -1852,6 +2993,18 @@ function klineWarmupReady() {
   return klineCache.countReady(_klineWarmupSymbols, '15m', minBars) >= Math.min(minReady, _klineWarmupSymbols.length);
 }
 
+function emaSqueezeWarmupReadiness(symbols, minBars = 40) {
+  const list = Array.isArray(symbols) ? symbols : [];
+  const counts = Object.fromEntries(EMA_SQUEEZE_INTERVALS.map((interval) => [
+    interval,
+    list.length ? klineCache.countReady(list, interval, minBars) : 0,
+  ]));
+  const min = EMA_SQUEEZE_INTERVALS.length
+    ? Math.min(...EMA_SQUEEZE_INTERVALS.map((interval) => counts[interval] ?? 0))
+    : 0;
+  return { counts, min };
+}
+
 function scheduleStrategyScans(reason = 'manual') {
   if (isBinanceRestCongested()) {
     binanceRateGate.pruneLowPriorityQueue?.();
@@ -1872,6 +3025,8 @@ function scheduleStrategyScans(reason = 'manual') {
   schedulePostPumpKillShortScan();
   schedulePumpIgnitionScan();
   scheduleEmaSqueezeScan();
+  scheduleEma99KillReclaimScan();
+  scheduleShakeoutReclaimScan();
 }
 
 function strategyScansReady(label) {
@@ -1913,6 +3068,7 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
     const sorted = [...snapshot].sort((a, b) => b.quoteVolume - a.quoteVolume);
     const maxSocketSymbols = _socketMaxSymbols;
     const socketSymbols15m = sorted.slice(0, maxSocketSymbols).map((r) => r.symbol);
+    let emaWarmupSymbols = [];
     _klineWarmupSymbols = socketSymbols15m;
     _emaQuickWarmupDone = false;
     console.log(`[KlineWarmup] Tiered warm-up started (${reason}).`);
@@ -1924,7 +3080,8 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
         klineCache.subscribe(sorted.slice(0, ma60Max5mInitial).map((r) => r.symbol), '5m');
       }
       console.log(`[KlineWarmup] WS subscribed ${socketSymbols15m.length} symbols @15m before REST seed.`);
-      const emaQuickSymbols = selectEmaSqueezeWarmupSymbols(sorted).slice(0, Number(process.env.EMA_SQUEEZE_QUICK_WARMUP_SYMBOLS ?? 20));
+      emaWarmupSymbols = selectEmaSqueezeWarmupSymbols(sorted);
+      const emaQuickSymbols = emaWarmupSymbols.slice(0, Number(process.env.EMA_SQUEEZE_QUICK_WARMUP_SYMBOLS ?? 20));
       let emaQuickComplete = emaQuickSymbols.length === 0;
       if (emaQuickSymbols.length && !binanceRateGate.isBlocked?.() && !isBinanceRestCongested()) {
         emaQuickComplete = true;
@@ -1966,7 +3123,7 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
           });
         }
       }
-      const emaSymbols = selectEmaSqueezeWarmupSymbols(sorted);
+      const emaSymbols = emaWarmupSymbols.length ? emaWarmupSymbols : selectEmaSqueezeWarmupSymbols(sorted);
       if (emaSymbols.length && !binanceRateGate.isBlocked?.() && !isBinanceRestCongested()) {
         for (const interval of EMA_SQUEEZE_INTERVALS) {
           console.log(`[KlineWarmup] Seeding ${emaSymbols.length} EMA-squeeze small/mid symbols @${interval}.`);
@@ -1984,10 +3141,26 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
       _staleReseedLock = false;
       const minCached = Number(process.env.KLINE_WARMUP_RETRY_MIN_CACHED ?? 20);
       const minReadyBars = Number(process.env.KLINE_WARMUP_RETRY_MIN_READY_BARS ?? 40);
+      const minLogicReady = Number(process.env.KLINE_START_LOGIC_MIN_READY ?? Math.min(_warmupMaxSymbols, socketSymbols15m.length));
       const retryMs = Number(process.env.KLINE_WARMUP_RETRY_MS ?? 90_000);
       const readyForScan = klineCache.countReady(socketSymbols15m, '15m', minReadyBars);
-      if (klineCache.stats('15m').cached < minCached || readyForScan < socketSymbols15m.length) {
-        console.warn(`[KlineWarmup] Ready ${readyForScan}/${socketSymbols15m.length} symbols (${minReadyBars}+ bars); retrying seed in ${Math.round(retryMs / 1000)}s.`);
+      const scanReadyTarget = Math.min(minLogicReady, socketSymbols15m.length);
+      const emaReady = emaSqueezeWarmupReadiness(emaWarmupSymbols, minReadyBars);
+      const emaReadyTarget = emaWarmupSymbols.length
+        ? Math.min(
+            Number(process.env.EMA_SQUEEZE_WARMUP_RETRY_MIN_READY ?? Math.ceil(emaWarmupSymbols.length * 0.85)),
+            emaWarmupSymbols.length,
+          )
+        : 0;
+      const emaReadyText = EMA_SQUEEZE_INTERVALS
+        .map((interval) => `${interval}:${emaReady.counts[interval] ?? 0}/${emaWarmupSymbols.length}`)
+        .join(' ');
+      if (
+        klineCache.stats('15m').cached < minCached
+        || readyForScan < scanReadyTarget
+        || (emaWarmupSymbols.length && emaReady.min < emaReadyTarget)
+      ) {
+        console.warn(`[KlineWarmup] Ready 15m ${readyForScan}/${scanReadyTarget}; EMA ${emaReadyText} (target ${emaReadyTarget}); retrying seed in ${Math.round(retryMs / 1000)}s.`);
         setTimeout(async () => {
           if (_tieredWarmupPromise) return;
           if (isBinanceRestCongested()) {
@@ -2061,6 +3234,7 @@ const runtimeSettings = {
   autoProbeEnabled: process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION === 'true',
   autoProbeMargin: Number(process.env.AUTO_LIQ_PROBE_MARGIN ?? 1),
   pumpAutoOrderEnabled: process.env.PUMP_AUTO_ORDER_ENABLED === 'true',
+  emaSqueezeRealOrderEnabled: process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
   pumpMaxLimitOrders: Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30),
   pumpMaxPositions: Number(process.env.AUTO_TRADE_MAX_POSITIONS ?? 0),
   pumpPaperTimeoutH: Number(process.env.PUMP_PAPER_TIMEOUT_H ?? 3), // giờ — tự cắt nếu quá thời gian và pnl ≤ 1%
@@ -2085,6 +3259,129 @@ let posMonitor = null;
 // Symbols bị loại khỏi mọi auto position management (trailing stop, timeout, neg-TP, SL trail, avg-down)
 const tslExcludedSymbols = new Set();
 
+function sendOrderFillDiscord({ symbol, side, filledQty, avgPrice, positionSide, fillTime, source }) {
+  const webhookUrl = process.env.ORDER_FILL_WEBHOOK_URL || '';
+  if (!webhookUrl || source !== 'ORDER_TRADE_UPDATE') return;
+
+  const price = Number(avgPrice);
+  const qty = Number(filledQty);
+  const isBuy = String(side).toUpperCase() === 'BUY';
+  const embed = {
+    title: `[BINANCE FILL] ${symbol} ${isBuy ? 'LONG/BUY' : 'SHORT/SELL'}`,
+    color: isBuy ? 0x22c55e : 0xef4444,
+    fields: [
+      { name: 'Side', value: String(side ?? '-'), inline: true },
+      { name: 'Qty', value: Number.isFinite(qty) ? String(qty) : String(filledQty ?? '-'), inline: true },
+      { name: 'Avg Fill', value: Number.isFinite(price) ? String(price) : String(avgPrice ?? '-'), inline: true },
+      { name: 'Position Side', value: String(positionSide ?? 'BOTH'), inline: true },
+      { name: 'Source', value: String(source), inline: true },
+      { name: 'Time', value: fillTime ? new Date(Number(fillTime)).toISOString() : new Date().toISOString(), inline: false },
+    ],
+    timestamp: new Date().toISOString(),
+  };
+
+  fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ embeds: [embed] }),
+  })
+    .then((res) => {
+      if (!res.ok) console.warn(`[OrderFillDiscord] ${symbol} failed: ${res.status}`);
+      else console.log(`[OrderFillDiscord] sent ${symbol} ${side} qty=${filledQty}`);
+    })
+    .catch((err) => console.warn(`[OrderFillDiscord] ${symbol}:`, err.message));
+}
+
+function startPositionSocketMonitor() {
+  if (posMonitor) return posMonitor;
+  posMonitor = startPositionMonitor({
+    client,
+    getCredentials: () => getApiCredentials(null),
+    onPositionClose: (symbol) => {
+      // Triggered ngay khi ACCOUNT_UPDATE báo pa=0 — không cần đợi StaleOrder poll 30s
+      console.log(`[PosMonitor] 🔴 ${symbol} closed → cancelling open orders immediately`);
+      signalProtectionPlans.delete(symbol);
+      let creds;
+      try { creds = getApiCredentials(null); } catch { return; }
+      const { apiKey, apiSecret } = creds;
+      cancelAllOrdersForSymbol(symbol, apiKey, apiSecret)
+        .then(() => invalidateOpenOrdersCache())
+        .catch((err) => console.warn(`[PosMonitor] Cancel orders ${symbol}:`, err.message));
+    },
+    onOrderFill: (symbol, { side, filledQty, avgPrice, positionSide, fillTime, orderStatus = null, orderId = null, source = 'UNKNOWN' }) => {
+      console.log(`[SlGuard] onOrderFill ${symbol} source=${source} fillTime=${fillTime} createdAt=${slTracking.createdAt}`);
+      const protectionPlan = source === 'ORDER_TRADE_UPDATE' ? signalProtectionPlans.get(symbol) : null;
+      if (source !== 'REST_SYNC' || !slTracking.positions[symbol]) {
+        slTracking.positions[symbol] = {
+          openedAt: fillTime,
+          openedAtStr: new Date(fillTime).toISOString(),
+          entry: Number(avgPrice) || null,
+          slPlaced: false,
+          signalTp: protectionPlan?.tpPrice ?? null,
+          signalSl: protectionPlan?.slPrice ?? null,
+          signalSource: protectionPlan?.source ?? null,
+        };
+        saveSlTracking();
+      }
+      if (protectionPlan) {
+        if (orderStatus === 'FILLED') {
+          console.log(`[SignalProtection] ${symbol} full fill orderId=${orderId ?? protectionPlan.orderId ?? '-'}; applying signal TP/SL`);
+          setTimeout(() => applySignalProtectionOnFill(symbol), 800);
+        } else {
+          console.log(`[SignalProtection] ${symbol} ${orderStatus ?? 'PARTIAL'} fill; waiting for full fill before TP/SL`);
+        }
+      } else {
+        console.log(`[SlGuard] Registered ${symbol}, triggering fallback SL/TP guard in 1s`);
+        setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
+      }
+      sendOrderFillDiscord({ symbol, side, filledQty, avgPrice, positionSide, fillTime, source });
+      appendFillLog({ symbol, side, filledQty, avgPrice, positionSide, fillTime }).catch(() => {});
+      invalidateOpenOrdersCache();
+      tpConfirmedClear(symbol);
+      negTpLastRun.delete(symbol);
+      if (!protectionPlan && process.env.AUTO_TP_ON_FILL_ENABLED !== 'false') {
+        const delayMs = Math.max(500, Number(process.env.AUTO_TP_ON_FILL_DELAY_MS ?? 2500));
+        setTimeout(() => refreshTakeProfitForSymbol(symbol).catch((err) =>
+          console.warn(`[AutoTP] fill refresh ${symbol}: ${err.message}`),
+        ), delayMs);
+      }
+      // Notify TSL scanner về position mới — không phải đợi REST poll 30s
+      if (tslScanner?.scheduleRun) {
+        invalidatePosStore();
+        tslScanner.scheduleRun(3_000);
+      }
+    },
+    onRoeUpdate: (symbol, pos, markPrice, roe) => {
+      if (!positionFirstSeenAt.has(symbol)) positionFirstSeenAt.set(symbol, Date.now());
+      const skipTsl = tslExcludedSymbols.has(symbol);
+      if (pendingLiqTp.has(symbol)) {
+        placePendingLiqTp(symbol, pos).catch(() => {});
+      }
+      const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
+      if (roe <= tpGuardRoe) {
+        handleTpEntryGuard(symbol, pos, markPrice, roe).catch(() => {});
+      }
+      const avgDownRoe = Number(process.env.AVG_DOWN_ROE ?? -60);
+      if (roe <= avgDownRoe) {
+        handleAvgDown(symbol, pos, roe).catch(() => {});
+      }
+      if (!skipTsl) handleSlTrailByProfit(symbol, pos, roe, markPrice).catch(() => {});
+      handlePositionTimeout(symbol, pos, markPrice, roe).catch(() => {});
+      if (roe < 0) {
+        if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
+        const negMs = Date.now() - negativeSince.get(symbol);
+        const timeoutMs = Number(process.env.NEG_TP_TIMEOUT_MS ?? 4 * 3600 * 1000);
+        if (negMs >= timeoutMs) {
+          handleNegativeTimeoutTp(symbol, pos).catch(() => {});
+        }
+      } else {
+        negativeSince.delete(symbol);
+      }
+    },
+  });
+  return posMonitor;
+}
+
 function isConfirmedSpikeReversalSignal(sig) {
   const status = String(sig?.stage ?? sig?.status ?? '').toLowerCase();
   return sig?.confirmed === true
@@ -2107,8 +3404,13 @@ const spikeRevDiscordFired  = new Map();
 const dumpIgnDiscordFired   = new Map();
 const pumpIgnDiscordFired   = new Map();
 const emaSqueezeDiscordFired = new Map();
+const ema99KillReclaimDiscordFired = new Map();
+const shakeoutReclaimDiscordFired = new Map();
 const emaSqueezePaperAutoFired = new Map();
+const emaSqueezeLiquidityEntryCache = new Map();
 const emaSqueezeRealOrderFired = new Map();
+const ema99KillReclaimRealOrderFired = new Map();
+const shakeoutReclaimRealOrderFired = new Map();
 const postPumpKillShortDiscordFired = new Map();
 const postPumpKillShortOrderFired = new Map();
 const ppksPaperAutoFired = new Map(); // dedup cho PPKS paper trade auto-fire
@@ -2138,13 +3440,124 @@ const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
 const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
 const SR_PAPER_FILE     = join(rootDir, 'data', 'sr-paper-trades.json');
 const PPKS_PAPER_FILE   = join(rootDir, 'data', 'ppks-paper-trades.json');
+const SHAKEOUT_PAPER_FILE = join(rootDir, 'data', 'shakeout-paper-trades.json');
+const MARKET_NEWS_FILE  = join(rootDir, 'data', 'market-news.json');
+const COIN_FLOW_FILE    = join(rootDir, 'data', 'coin-flow.json');
+const TOKEN_UNLOCKS_FILE = join(rootDir, 'data', 'token-unlocks.json');
+
+let marketNewsCache = { items: [], updatedAt: null, sources: [], error: null };
+let marketNewsRefreshInflight = null;
+let coinFlowCache = { rows: [], updatedAt: null, sources: [], error: null, configured: false };
+let coinFlowRefreshInflight = null;
+let tokenUnlocksCache = { rows: [], updatedAt: null, sources: [], error: null, configured: false, stats: {} };
+let tokenUnlocksRefreshInflight = null;
+
+async function refreshMarketNews(reason = 'manual') {
+  if (marketNewsRefreshInflight) return marketNewsRefreshInflight;
+  marketNewsRefreshInflight = (async () => {
+    const cfg = marketNewsConfig();
+    console.log(`[MarketNews] Refresh started (${reason}) feeds=${cfg.feeds.length}`);
+    try {
+      const payload = await fetchMarketNews(cfg);
+      marketNewsCache = { ...payload, refreshReason: reason };
+      await saveMarketNews(MARKET_NEWS_FILE, marketNewsCache);
+      console.log(`[MarketNews] Refresh OK items=${payload.items.length}`);
+      return marketNewsCache;
+    } catch (err) {
+      marketNewsCache = { ...marketNewsCache, error: err.message, failedAt: new Date().toISOString() };
+      console.warn('[MarketNews] Refresh failed:', err.message);
+      return marketNewsCache;
+    } finally {
+      marketNewsRefreshInflight = null;
+    }
+  })();
+  return marketNewsRefreshInflight;
+}
+
+async function initMarketNewsBatch() {
+  marketNewsCache = await loadMarketNews(MARKET_NEWS_FILE);
+  const cfg = marketNewsConfig();
+  const ageMs = marketNewsCache.updatedAt ? Date.now() - Date.parse(marketNewsCache.updatedAt) : Infinity;
+  if (!marketNewsCache.items?.length || ageMs > cfg.refreshMs) {
+    refreshMarketNews('startup').catch(() => {});
+  }
+  setInterval(() => refreshMarketNews('daily-batch').catch(() => {}), cfg.refreshMs).unref?.();
+}
+
+async function refreshCoinFlow(reason = 'manual') {
+  if (coinFlowRefreshInflight) return coinFlowRefreshInflight;
+  coinFlowRefreshInflight = (async () => {
+    const cfg = coinFlowConfig();
+    console.log(`[CoinFlow] Refresh started (${reason}) configured=${Boolean(cfg.apiKey)}`);
+    try {
+      const snapshot = await getSharedSnapshot().catch(() => []);
+      const snapshotMap = new Map((Array.isArray(snapshot) ? snapshot : []).map((r) => [r.symbol, r]));
+      const payload = await fetchCoinFlowBoard({ cfg, snapshotMap });
+      coinFlowCache = { ...payload, refreshReason: reason };
+      await saveCoinFlow(COIN_FLOW_FILE, coinFlowCache);
+      console.log(`[CoinFlow] Refresh OK rows=${payload.rows.length} configured=${payload.configured}`);
+      return coinFlowCache;
+    } catch (err) {
+      coinFlowCache = { ...coinFlowCache, error: err.message, failedAt: new Date().toISOString() };
+      console.warn('[CoinFlow] Refresh failed:', err.message);
+      return coinFlowCache;
+    } finally {
+      coinFlowRefreshInflight = null;
+    }
+  })();
+  return coinFlowRefreshInflight;
+}
+
+async function initCoinFlowBatch() {
+  coinFlowCache = await loadCoinFlow(COIN_FLOW_FILE);
+  const cfg = coinFlowConfig();
+  const ageMs = coinFlowCache.updatedAt ? Date.now() - Date.parse(coinFlowCache.updatedAt) : Infinity;
+  if (!coinFlowCache.rows?.length || ageMs > cfg.refreshMs) {
+    refreshCoinFlow('startup').catch(() => {});
+  }
+  setInterval(() => refreshCoinFlow('batch').catch(() => {}), cfg.refreshMs).unref?.();
+}
 const paperMarkCache = new Map(); // symbol → { markPrice, at }
+async function refreshTokenUnlocks(reason = 'manual') {
+  if (tokenUnlocksRefreshInflight) return tokenUnlocksRefreshInflight;
+  tokenUnlocksRefreshInflight = (async () => {
+    const cfg = tokenUnlocksConfig();
+    console.log(`[TokenUnlocks] Refresh started (${reason}) configured=${Boolean(cfg.apiUrl)}`);
+    try {
+      const filePayload = await loadTokenUnlocks(TOKEN_UNLOCKS_FILE);
+      const payload = await fetchTokenUnlocksBoard({ cfg, filePayload });
+      tokenUnlocksCache = { ...payload, refreshReason: reason };
+      await saveTokenUnlocks(TOKEN_UNLOCKS_FILE, tokenUnlocksCache);
+      console.log(`[TokenUnlocks] Refresh OK rows=${payload.rows.length} configured=${payload.configured}`);
+      return tokenUnlocksCache;
+    } catch (err) {
+      tokenUnlocksCache = { ...tokenUnlocksCache, error: err.message, failedAt: new Date().toISOString() };
+      console.warn('[TokenUnlocks] Refresh failed:', err.message);
+      return tokenUnlocksCache;
+    } finally {
+      tokenUnlocksRefreshInflight = null;
+    }
+  })();
+  return tokenUnlocksRefreshInflight;
+}
+
+async function initTokenUnlocksBatch() {
+  tokenUnlocksCache = await loadTokenUnlocks(TOKEN_UNLOCKS_FILE);
+  const cfg = tokenUnlocksConfig();
+  const ageMs = tokenUnlocksCache.updatedAt ? Date.now() - Date.parse(tokenUnlocksCache.updatedAt) : Infinity;
+  if (!tokenUnlocksCache.rows?.length || ageMs > cfg.refreshMs) {
+    refreshTokenUnlocks('startup').catch(() => {});
+  }
+  setInterval(() => refreshTokenUnlocks('daily-batch').catch(() => {}), cfg.refreshMs).unref?.();
+}
+
 let paperTicker = null;
 let liquidPaperRestPoller = null;
 const paperFillLocks = new Set();
 const liquidPaperFillLocks = new Set();
 const capMarkCache = new Map();  // symbol → markPrice  (for cap paper trades)
 let capPaperTicker = null;
+let capPaperBatchRunning = false;
 const capPaperFillLocks = new Set();
 const diMarkCache = new Map();   // symbol → markPrice  (for di paper trades)
 let diPaperTicker = null;
@@ -2153,11 +3566,21 @@ const piMarkCache = new Map();   // symbol → markPrice  (for pi paper trades)
 let piPaperTicker = null;
 const piPaperFillLocks = new Set();
 const pumpMarkCache = new Map(); // symbol → markPrice (for pump paper trades)
+const emaSqueezeSocketMarks = new Map();
+const emaSqueezeSocketMarkAt = new Map();
+const emaSqueezePendingProcess = new Map();
+let emaSqueezePaperTicker = null;
+let emaSqueezeProcessTimer = null;
+let emaSqueezeProcessRunning = false;
 let pumpPaperTicker = null;
+let pumpPaperBatchRunning = false;
 const pumpPaperFillLocks = new Set();
+const pumpPaperPeakRoe = new Map(); // tradeId -> peak ROE
 const emaSqueezePaperPeakRoe = new Map(); // tradeId -> peak ROE
+const shakeoutPaperPeakRoe = new Map(); // tradeId -> peak ROE
 const edgeMarkCache = new Map(); // symbol -> markPrice (for edge paper trades)
 let edgePaperTicker = null;
+let edgePaperBatchRunning = false;
 const edgePaperFillLocks = new Set();
 const srMarkCache = new Map();  // symbol → markPrice  (for spike reversal paper trades)
 let srPaperTicker = null;
@@ -2165,6 +3588,14 @@ const srPaperFillLocks = new Set();
 const ppksMarkCache = new Map(); // symbol → markPrice  (for ppks paper trades)
 let ppksPaperTicker = null;
 const ppksPaperFillLocks = new Set();
+const shakeoutSocketMarks = new Map(); // symbol -> latest mark received directly from WS
+const shakeoutSocketMarkAt = new Map(); // symbol -> WS receive timestamp
+const shakeoutPaperPendingProcess = new Map(); // symbol -> latest socket price awaiting paper evaluation
+let shakeoutPaperProcessTimer = null;
+let shakeoutPaperProcessRunning = false;
+let shakeoutPaperTicker = null;
+const shakeoutPaperFillLocks = new Set();
+const shakeoutPaperAutoFired = new Map();
 
 async function loadSlTracking() {
   try {
@@ -2532,6 +3963,59 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/market-snapshot') {
       await sendJson(response, await getMarketSnapshot());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/market-news') {
+      const cfg = marketNewsConfig();
+      await sendJson(response, {
+        ...marketNewsCache,
+        refreshing: Boolean(marketNewsRefreshInflight),
+        config: { refreshMs: cfg.refreshMs, limit: cfg.limit },
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/market-news/refresh' && request.method === 'POST') {
+      await sendJson(response, await refreshMarketNews('manual'));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coin-flow') {
+      const cfg = coinFlowConfig();
+      await sendJson(response, {
+        ...coinFlowCache,
+        refreshing: Boolean(coinFlowRefreshInflight),
+        config: {
+          refreshMs: cfg.refreshMs,
+          perPage: cfg.perPage,
+          configured: Boolean(cfg.apiKey),
+        },
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coin-flow/refresh' && request.method === 'POST') {
+      await sendJson(response, await refreshCoinFlow('manual'));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/token-unlocks') {
+      const cfg = tokenUnlocksConfig();
+      await sendJson(response, {
+        ...tokenUnlocksCache,
+        refreshing: Boolean(tokenUnlocksRefreshInflight),
+        config: {
+          refreshMs: cfg.refreshMs,
+          horizonDays: cfg.horizonDays,
+          configured: Boolean(cfg.apiUrl),
+        },
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/token-unlocks/refresh' && request.method === 'POST') {
+      await sendJson(response, await refreshTokenUnlocks('manual'));
       return;
     }
 
@@ -2957,12 +4441,137 @@ const server = createServer(async (request, response) => {
       const { signals, processed } = await runEmaSqueezeScan(topSymbols, klineCache, snapshotMap, { intervals: EMA_SQUEEZE_INTERVALS.join(',') });
       if (processed === 0) noteApiNoLargeReseed('ema-squeeze', processed);
       const cacheStats = Object.fromEntries(EMA_SQUEEZE_INTERVALS.map((interval) => [interval, klineCache.stats(interval)]));
-      const result = { signals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
+      await Promise.all([getBtcHealth(), getGoldHealth()]).catch(() => {});
+      const enrichedSignals = annotateEmaSqueezeRealOrderStatus(await enrichEmaSqueezeSignalsWithLiquidityEntries(signals));
+      const result = { signals: enrichedSignals, scannedAt: Date.now(), total: topSymbols.length, processed, cacheStats };
       emaSqueezesScanCache.data = result;
       emaSqueezesScanCache.expiresAt = Date.now() + 30_000;
       await sendEmaSqueezeDiscord(signals);
       await createEmaSqueezePaperTrades(signals);
       await handleEmaSqueezeRealLongOrders(signals);
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/ema99-kill-reclaim-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (ema99KillReclaimScanCache.data && (ema99KillReclaimScanCache.data.signals?.length > 0 || ema99KillReclaimScanCache.data.processed > 0)) {
+        response.write(`data: ${JSON.stringify(ema99KillReclaimScanCache.data)}\n\n`);
+      }
+      ema99KillReclaimSseClients.add(response);
+      request.on('close', () => ema99KillReclaimSseClients.delete(response));
+      if (!ema99KillReclaimScanCache.data || Date.now() > ema99KillReclaimScanCache.expiresAt) {
+        scheduleEma99KillReclaimScan();
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/ema99-kill-reclaim-signals') {
+      if (ema99KillReclaimScanCache.data && Date.now() < ema99KillReclaimScanCache.expiresAt) {
+        return sendJson(response, ema99KillReclaimScanCache.data);
+      }
+      const stale = isBinanceRestCongested() ? staleScanPayload(ema99KillReclaimScanCache) : null;
+      if (stale) return sendJson(response, stale);
+      if (binanceRateGate.isBlocked?.() && !_snapshotCache) {
+        return sendJson(response, {
+          signals: [],
+          scannedAt: Date.now(),
+          total: 0,
+          processed: 0,
+          blocked: true,
+          staleReason: 'binance-rest-blocked-no-snapshot',
+          gate: binanceRateGate.snapshot?.() ?? null,
+          cacheStats: klineCache.stats(process.env.EMA99_KILL_RECLAIM_INTERVAL || '5m'),
+        });
+      }
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+        .slice(0, Number(process.env.EMA99_KILL_RECLAIM_MAX_SYMBOLS ?? 400))
+        .map((r) => r.symbol);
+      const { signals, processed } = await runEma99KillReclaimScan(topSymbols, klineCache, snapshotMap, {
+        interval: process.env.EMA99_KILL_RECLAIM_INTERVAL || '5m',
+      });
+      if (processed === 0) noteApiNoLargeReseed('ema99-kill-reclaim', processed);
+      const result = {
+        signals,
+        scannedAt: Date.now(),
+        total: topSymbols.length,
+        processed,
+        cacheStats: klineCache.stats(process.env.EMA99_KILL_RECLAIM_INTERVAL || '5m'),
+      };
+      ema99KillReclaimScanCache.data = result;
+      ema99KillReclaimScanCache.expiresAt = Date.now() + 30_000;
+      await sendEma99KillReclaimDiscord(signals);
+      await handleEma99KillReclaimRealLongOrders(signals);
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/shakeout-reclaim-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (shakeoutReclaimScanCache.data && (shakeoutReclaimScanCache.data.signals?.length > 0 || shakeoutReclaimScanCache.data.processed > 0)) {
+        response.write(`data: ${JSON.stringify(shakeoutReclaimScanCache.data)}\n\n`);
+      }
+      shakeoutReclaimSseClients.add(response);
+      request.on('close', () => shakeoutReclaimSseClients.delete(response));
+      if (!shakeoutReclaimScanCache.data || Date.now() > shakeoutReclaimScanCache.expiresAt) {
+        scheduleShakeoutReclaimScan();
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/shakeout-reclaim-signals') {
+      if (shakeoutReclaimScanCache.data && Date.now() < shakeoutReclaimScanCache.expiresAt) {
+        return sendJson(response, shakeoutReclaimScanCache.data);
+      }
+      const stale = isBinanceRestCongested() ? staleScanPayload(shakeoutReclaimScanCache) : null;
+      if (stale) return sendJson(response, stale);
+      if (binanceRateGate.isBlocked?.() && !_snapshotCache) {
+        return sendJson(response, {
+          signals: [],
+          scannedAt: Date.now(),
+          total: 0,
+          processed: 0,
+          blocked: true,
+          staleReason: 'binance-rest-blocked-no-snapshot',
+          gate: binanceRateGate.snapshot?.() ?? null,
+          cacheStats: { m5: klineCache.stats('5m'), m15: klineCache.stats('15m') },
+        });
+      }
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((r) => [r.symbol, r]));
+      const topSymbols = snapshot
+        .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+        .slice(0, Number(process.env.SHAKEOUT_RECLAIM_MAX_SYMBOLS ?? 9999))
+        .map((r) => r.symbol);
+      const { signals, processed, diagnostics } = await runShakeoutReclaimScan(topSymbols, klineCache, snapshotMap);
+      if (processed < Number(process.env.SHAKEOUT_RECLAIM_MIN_READY ?? 9999)) ensureShakeoutReclaimWarmup(topSymbols);
+      if (processed === 0) noteApiNoLargeReseed('shakeout-reclaim', processed);
+      const result = {
+        signals,
+        scannedAt: Date.now(),
+        total: topSymbols.length,
+        processed,
+        diagnostics,
+        cacheStats: { m5: klineCache.stats('5m'), m15: klineCache.stats('15m') },
+      };
+      shakeoutReclaimScanCache.data = result;
+      shakeoutReclaimScanCache.expiresAt = Date.now() + 30_000;
+      await sendShakeoutReclaimDiscord(signals);
+      await createShakeoutPaperTrades(signals);
+      await handleShakeoutReclaimRealOrders(signals);
       return sendJson(response, result);
     }
 
@@ -3012,7 +4621,8 @@ const server = createServer(async (request, response) => {
       const interval  = requestUrl.searchParams.get('interval') ?? '15m';
       const rangePct  = Number(requestUrl.searchParams.get('rangePct')  ?? 0.04);
       const binSizePct = Number(requestUrl.searchParams.get('binSizePct') ?? 0.001);
-      const cacheKey  = `${symbol}|${interval}|${rangePct}|${binSizePct}`;
+      const liquidationLimit = Number(requestUrl.searchParams.get('liquidationLimit') ?? process.env.LIQ_HEATMAP_LOOKBACK_LIMIT ?? 720);
+      const cacheKey  = `${symbol}|${interval}|${rangePct}|${binSizePct}|liq${liquidationLimit}`;
       const cached    = analyzeCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) {
         await sendJson(response, cached.data);
@@ -3023,10 +4633,12 @@ const server = createServer(async (request, response) => {
         symbol,
         interval,
         limit:      Number(requestUrl.searchParams.get('limit') ?? 192),
+        liquidationLimit,
         rangePct,
         binSizePct,
         depthLimit: Number(requestUrl.searchParams.get('depthLimit') ?? 100),
       });
+      analysis.tokenUnlock = getUnlockSummaryForSymbol(tokenUnlocksCache, symbol);
       analyzeCache.set(cacheKey, { data: analysis, expiresAt: Date.now() + ANALYZE_CACHE_TTL_MS });
       await sendJson(response, analysis);
       return;
@@ -3091,7 +4703,8 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (request.method === 'POST') {
-        await sendJson(response, await createPaperTrade(await readJsonBody(request)));
+        const body = await readJsonBody(request);
+        await sendJson(response, await createPaperTrade(await refineEmaSqueezePaperPayload(body)));
         return;
       }
     }
@@ -3235,6 +4848,47 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/shakeout-paper-trades-stream') {
+      response.writeHead(200, {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      shakeoutPaperSseClients.add(response);
+      request.on('close', () => shakeoutPaperSseClients.delete(response));
+      getShakeoutPaperTrades()
+        .then((data) => {
+          if (!response.destroyed) response.write(`data: ${JSON.stringify(data)}\n\n`);
+        })
+        .catch((err) => {
+          if (!response.destroyed) response.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+        });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/shakeout-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getShakeoutPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const trade = await createShakeoutPaperTrade({ ...body, status: body.status ?? 'OPEN' });
+        await sendJson(response, trade);
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/shakeout-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closeShakeoutPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/shakeout-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deleteShakeoutPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/pi-paper-trades') {
       if (request.method === 'GET') {
         await sendJson(response, await getPiPaperTrades());
@@ -3267,6 +4921,19 @@ const server = createServer(async (request, response) => {
         await sendJson(response, await createPumpPaperTrade(payload));
         return;
       }
+    }
+    if (requestUrl.pathname === '/api/ema-squeeze-paper-trades-stream') {
+      response.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      emaSqueezePaperSseClients.add(response);
+      request.on('close', () => emaSqueezePaperSseClients.delete(response));
+      scheduleEmaSqueezePaperBroadcast(50);
+      return;
     }
     if (requestUrl.pathname === '/api/pump-paper-trades/close' && request.method === 'POST') {
       await sendJson(response, await closePumpPaperTrade(await readJsonBody(request)));
@@ -3307,6 +4974,28 @@ const server = createServer(async (request, response) => {
         if (typeof body.enabled === 'boolean') runtimeSettings.pumpAutoOrderEnabled = body.enabled;
         console.log(`[PumpAuto] ${runtimeSettings.pumpAutoOrderEnabled ? '✅ Bật' : '⏸ Tắt'} pump auto order`);
         await sendJson(response, { enabled: runtimeSettings.pumpAutoOrderEnabled });
+        return;
+      }
+    }
+
+    if (requestUrl.pathname === '/api/ema-squeeze-auto-order-enabled') {
+      if (request.method === 'GET') {
+        await sendJson(response, {
+          enabled: runtimeSettings.emaSqueezeRealOrderEnabled && process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
+          envEnabled: process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
+          runtimeEnabled: runtimeSettings.emaSqueezeRealOrderEnabled,
+        });
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        if (typeof body.enabled === 'boolean') runtimeSettings.emaSqueezeRealOrderEnabled = body.enabled;
+        console.log(`[EmaSqueezeReal] ${runtimeSettings.emaSqueezeRealOrderEnabled ? 'Bật' : 'Tắt'} auto Binance từ board`);
+        await sendJson(response, {
+          enabled: runtimeSettings.emaSqueezeRealOrderEnabled && process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
+          envEnabled: process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
+          runtimeEnabled: runtimeSettings.emaSqueezeRealOrderEnabled,
+        });
         return;
       }
     }
@@ -3765,7 +5454,10 @@ server.listen(port, '127.0.0.1', () => {
   loadPumpOrders();
   loadPumpWatching();
   startBinanceRestAlertMonitor();
+  initMarketNewsBatch().catch((err) => console.warn('[MarketNews] Init failed:', err.message));
+  initCoinFlowBatch().catch((err) => console.warn('[CoinFlow] Init failed:', err.message));
   // BTC mark price WebSocket — funding rate + mark price liên tục, không tốn REST
+  initTokenUnlocksBatch().catch((err) => console.warn('[TokenUnlocks] Init failed:', err.message));
   startBtcMarkPriceWs();
 
   // Pha 1: ưu tiên kline cache trước. Các logic dùng REST/account sẽ được bật sau
@@ -3780,6 +5472,12 @@ server.listen(port, '127.0.0.1', () => {
           console.warn('[KlineWarmup] Tiered warm-up failed:', err.message);
         });
       }
+      setTimeout(() => {
+        for (const interval of EMA_SQUEEZE_INTERVALS) {
+          klineCache.subscribe(['BTCUSDT'], interval);
+          klineCache.seed(['BTCUSDT'], interval, 250, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {});
+        }
+      }, 5_000);
       setTimeout(() => klineCache.seed(['BTCUSDT'], '1h', 250, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 15_000);
       setTimeout(() => klineCache.seed(['BTCUSDT'], '4h', 150, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 25_000);
       setTimeout(() => klineCache.seed(['BTCUSDT'], '1d', 60, { batchSize: 1, batchDelayMs: 2000 }).catch(() => {}), 35_000);
@@ -3820,6 +5518,8 @@ server.listen(port, '127.0.0.1', () => {
   startEdgePaperTicker();
   startSrPaperTicker();
   startPpksPaperTicker();
+  startShakeoutPaperTicker();
+  startPositionSocketMonitor();
 
   runAfterKlineWarmup('algo APIs', () => {
     loadSlTracking().then(() =>
@@ -3899,81 +5599,18 @@ server.listen(port, '127.0.0.1', () => {
     startEdgePaperTicker();
     startSrPaperTicker();
     startPpksPaperTicker();
+    startShakeoutPaperTicker();
     startMissingTpScanner();
     startSlTrailSafetyScanner();
-    posMonitor = startPositionMonitor({
-      client,
-      getCredentials: () => getApiCredentials(null),
-      onPositionClose: (symbol) => {
-        // Triggered ngay khi ACCOUNT_UPDATE báo pa=0 — không cần đợi StaleOrder poll 30s
-        console.log(`[PosMonitor] 🔴 ${symbol} closed → cancelling open orders immediately`);
-        let creds;
-        try { creds = getApiCredentials(null); } catch { return; }
-        const { apiKey, apiSecret } = creds;
-        cancelAllOrdersForSymbol(symbol, apiKey, apiSecret)
-          .then(() => invalidateOpenOrdersCache())
-          .catch((err) => console.warn(`[PosMonitor] Cancel orders ${symbol}:`, err.message));
-      },
-      onOrderFill: (symbol, { side, filledQty, avgPrice, positionSide, fillTime }) => {
-        console.log(`[SlGuard] onOrderFill ${symbol} fillTime=${fillTime} createdAt=${slTracking.createdAt}`);
-        // Only track fills that happened after sl-tracking.json was created
-        if (fillTime < slTracking.createdAt) {
-          console.log(`[SlGuard] Skip ${symbol} — filled before JSON created`);
-          return;
-        }
-        if (!slTracking.positions[symbol]) {
-          slTracking.positions[symbol] = { openedAt: fillTime, openedAtStr: new Date(fillTime).toISOString(), slPlaced: false };
-          saveSlTracking();
-        }
-        console.log(`[SlGuard] Registered ${symbol}, triggering SL guard in 1s`);
-        setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
-        appendFillLog({ symbol, side, filledQty, avgPrice, positionSide, fillTime }).catch(() => {});
-        invalidateOpenOrdersCache();
-        tpConfirmedClear(symbol);
-        negTpLastRun.delete(symbol);
-      },
-      onRoeUpdate: (symbol, pos, markPrice, roe) => {
-        // Ghi nhận thời điểm đầu tiên thấy position (fallback khi slTracking không có openedAt)
-        if (!positionFirstSeenAt.has(symbol)) positionFirstSeenAt.set(symbol, Date.now());
-        // Bỏ qua toàn bộ auto position management nếu symbol bị exclude
-        if (tslExcludedSymbols.has(symbol)) return;
-        // Đặt TP pending từ AutoLiq nếu position đã mở
-        if (pendingLiqTp.has(symbol)) {
-          placePendingLiqTp(symbol, pos).catch(() => {});
-        }
-        // TP entry guard: move TP to entry when ROE ≤ threshold
-        const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
-        if (roe <= tpGuardRoe) {
-          handleTpEntryGuard(symbol, pos, markPrice, roe).catch(() => {});
-        }
-        // Avg-down: place DCA order when ROE ≤ threshold
-        const avgDownRoe = Number(process.env.AVG_DOWN_ROE ?? -60);
-        if (roe <= avgDownRoe) {
-          handleAvgDown(symbol, pos, roe).catch(() => {});
-        }
-        // SL trail: move SL up as profit grows (all positions with existing SL)
-        handleSlTrailByProfit(symbol, pos, roe, markPrice).catch(() => {});
-        // Position timeout: đóng lệnh thật sau X giờ nếu ROE > minRoe%
-        handlePositionTimeout(symbol, pos, markPrice, roe).catch(() => {});
-        // Time-based: âm liên tiếp quá NEG_TP_TIMEOUT_MS → đặt TP về entry
-        if (roe < 0) {
-          if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
-          const negMs = Date.now() - negativeSince.get(symbol);
-          const timeoutMs = Number(process.env.NEG_TP_TIMEOUT_MS ?? 4 * 3600 * 1000);
-          if (negMs >= timeoutMs) {
-            handleNegativeTimeoutTp(symbol, pos).catch(() => {});
-          }
-        } else {
-          negativeSince.delete(symbol);
-        }
-      },
-    });
+    startPositionSocketMonitor();
   });
 });
 
 // ── BTC Health ────────────────────────────────────────────────────────────────
 let btcHealthCache = { data: null, expiresAt: 0 };
 let _btcHealthInflight = null; // dedup concurrent calls — only one REST fetch at a time
+let goldHealthCache = { data: null, expiresAt: 0 };
+let _goldHealthInflight = null;
 // L/S ratio: không có WS → REST cache 30 phút (thay đổi rất chậm)
 let btcLsRatioCache = { data: null, expiresAt: 0 };
 // Funding rate + mark price: từ WebSocket markPrice stream (field r + p)
@@ -4194,6 +5831,59 @@ function getBtcHealth() {
   return _btcHealthInflight;
 }
 
+async function _fetchGoldHealth() {
+  const symbol = String(process.env.EMA_SQUEEZE_REAL_GOLD_SYMBOL ?? 'PAXGUSDT').toUpperCase().trim();
+  const interval = String(process.env.EMA_SQUEEZE_REAL_GOLD_INTERVAL ?? '1h').trim() || '1h';
+  const useLiveCandle = process.env.EMA_SQUEEZE_REAL_GOLD_USE_LIVE_CANDLE !== 'false';
+  const redThresholdPct = Number(process.env.EMA_SQUEEZE_REAL_GOLD_RED_THRESHOLD_PCT ?? 0);
+  try {
+    const rows = await client.getKlines(symbol, interval, 3, {
+      priority: 4,
+      dropOnCongestion: true,
+      source: 'emaSqueezeGoldHealth',
+    });
+    const idx = useLiveCandle ? rows.length - 1 : rows.length - 2;
+    const k = rows[idx];
+    if (!k) throw new Error(`not enough ${symbol} ${interval} candles`);
+    const open = Number(k.open ?? k[1]);
+    const close = Number(k.close ?? k[4]);
+    if (!Number.isFinite(open) || open <= 0 || !Number.isFinite(close) || close <= 0) {
+      throw new Error(`invalid ${symbol} ${interval} candle`);
+    }
+    const changePct = ((close - open) / open) * 100;
+    const data = {
+      symbol,
+      interval,
+      mode: useLiveCandle ? 'live' : 'closed',
+      open,
+      close,
+      changePct: +changePct.toFixed(3),
+      red: changePct < redThresholdPct,
+      redThresholdPct,
+      updatedAt: Date.now(),
+    };
+    goldHealthCache = { data, expiresAt: Date.now() + 60_000 };
+    return data;
+  } catch (e) {
+    console.warn('[GoldHealth] error:', e.message);
+    const data = { symbol, interval, error: e.message, updatedAt: Date.now() };
+    goldHealthCache = { data, expiresAt: Date.now() + 60_000 };
+    return data;
+  }
+}
+
+function getGoldHealth() {
+  if (process.env.EMA_SQUEEZE_REAL_GOLD_FILTER === 'false') {
+    return Promise.resolve({ disabled: true, red: false });
+  }
+  if (goldHealthCache.data && Date.now() < goldHealthCache.expiresAt) {
+    return Promise.resolve(goldHealthCache.data);
+  }
+  if (_goldHealthInflight) return _goldHealthInflight;
+  _goldHealthInflight = _fetchGoldHealth().finally(() => { _goldHealthInflight = null; });
+  return _goldHealthInflight;
+}
+
 // ── RSI update khi nến mới đóng (1h/4h/1d) — không dùng candleTick để tránh ban IP ──────
 // klineCache._applyTick() liên tục cập nhật close của nến hiện tại từ WS,
 // nên khi getBtcHealth() chạy (mỗi 30s) RSI đã dùng giá live rồi — không cần invalidate liên tục.
@@ -4228,6 +5918,53 @@ async function getSymbols() {
   return symbols;
 }
 
+const signalProtectionPlans = new Map(); // symbol -> intended TP/SL to apply after full fill
+const signalProtectionRunning = new Set();
+
+function rememberSignalProtectionPlan({ symbol, side, takeProfitPrice, stopLossPrice, source, orderId = null }) {
+  const tpPrice = Number(takeProfitPrice);
+  const slPrice = Number(stopLossPrice);
+  if ((!Number.isFinite(tpPrice) || tpPrice <= 0) && (!Number.isFinite(slPrice) || slPrice <= 0)) return;
+  signalProtectionPlans.set(symbol, {
+    symbol,
+    side,
+    tpPrice: Number.isFinite(tpPrice) && tpPrice > 0 ? tpPrice : null,
+    slPrice: Number.isFinite(slPrice) && slPrice > 0 ? slPrice : null,
+    source: String(source ?? 'signal'),
+    orderId,
+    createdAt: Date.now(),
+  });
+}
+
+async function applySignalProtectionOnFill(symbol, attempt = 1) {
+  const plan = signalProtectionPlans.get(symbol);
+  if (!plan || signalProtectionRunning.has(symbol)) return;
+  if (Date.now() - plan.createdAt > 24 * 3600_000) {
+    signalProtectionPlans.delete(symbol);
+    return;
+  }
+
+  signalProtectionRunning.add(symbol);
+  try {
+    await setTpSl({ symbol, tpPrice: plan.tpPrice, slPrice: plan.slPrice });
+    if (plan.slPrice && slTracking.positions[symbol]) {
+      slTracking.positions[symbol].slPlaced = true;
+      slTracking.positions[symbol].slPrice = plan.slPrice;
+      slTracking.positions[symbol].slPlacedAt = new Date().toISOString();
+      saveSlTracking();
+    }
+    plan.appliedAt = Date.now();
+    console.log(`[SignalProtection] ${symbol} applied source=${plan.source} TP=${plan.tpPrice ?? '-'} SL=${plan.slPrice ?? '-'}`);
+  } catch (err) {
+    console.warn(`[SignalProtection] ${symbol} attempt=${attempt} failed: ${err.message}`);
+    if (attempt < 4) {
+      setTimeout(() => applySignalProtectionOnFill(symbol, attempt + 1), attempt * 1500);
+    }
+  } finally {
+    signalProtectionRunning.delete(symbol);
+  }
+}
+
 async function placeOrder(payload, token = null, credentialsOverride = null) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   const side = String(payload.side ?? '').toUpperCase();
@@ -4244,6 +5981,8 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
   const stopLossPrice = payload.stopLossPrice === undefined || payload.stopLossPrice === null || payload.stopLossPrice === ''
     ? null
     : Number(payload.stopLossPrice);
+  const protectionOnFill = payload.protectionOnFill === true;
+  const protectionSource = String(payload.source ?? 'signal');
   const maxOpenPositions = Number(payload.maxOpenPositions ?? 0);
   const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
 
@@ -4369,7 +6108,23 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
     apiSecret,
     recvWindow,
   });
-  let orderResult = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret });
+  if (protectionOnFill) {
+    rememberSignalProtectionPlan({
+      symbol,
+      side,
+      takeProfitPrice: roundedTakeProfitPrice,
+      stopLossPrice: roundedStopLossPrice,
+      source: protectionSource,
+    });
+  }
+
+  let orderResult;
+  try {
+    orderResult = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret });
+  } catch (err) {
+    if (protectionOnFill) signalProtectionPlans.delete(symbol);
+    throw err;
+  }
 
   // LIMIT IOC: if not filled, fall back to MARKET immediately
   if (isLimitIOC && Number(orderResult.executedQty ?? 0) === 0) {
@@ -4379,12 +6134,17 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
     delete marketParams.timeInForce;
     orderResult = await client.placeFuturesOrder({ params: marketParams, apiKey, apiSecret });
   }
-  const takeProfitResult = takeProfitParams
+  const takeProfitResult = !protectionOnFill && takeProfitParams
     ? await client.placeAlgoOrder({ params: takeProfitParams, apiKey, apiSecret })
     : null;
-  const stopLossResult = stopLossParams
+  const stopLossResult = !protectionOnFill && stopLossParams
     ? await client.placeAlgoOrder({ params: stopLossParams, apiKey, apiSecret })
     : null;
+
+  if (protectionOnFill) {
+    const plan = signalProtectionPlans.get(symbol);
+    if (plan) plan.orderId = orderResult?.orderId ?? null;
+  }
 
   trackSubmittedOrderPosition({
     symbol,
@@ -5572,10 +7332,16 @@ async function processLiquidPaperPendingFillsForSymbol(symbol, markPrice) {
       const slHit = sl > 0 && (isLong ? markPrice <= sl : markPrice >= sl);
       if (!tpHit && !slHit) continue;
       const outcome = tpHit ? 'TP' : 'SL';
+      const exitPrice = outcome === 'TP' ? tp : sl;
+      const sideMult = isLong ? 1 : -1;
+      const pnl = (exitPrice - Number(t.entryPrice)) * Number(t.quantity) * sideMult;
+      const roe = Number(t.marginUsdt) > 0 ? (pnl / Number(t.marginUsdt)) * 100 : 0;
       store.trades[i] = {
         ...t,
         status: 'CLOSED',
-        exitPrice: markPrice,
+        exitPrice,
+        pnl,
+        roe,
         closedAt: new Date().toISOString(),
         outcome,
         closeNote: `Auto-closed: ${outcome} hit @ ${markPrice}`,
@@ -5817,6 +7583,23 @@ async function processCapPaperFills(symbol, markPrice) {
   for (const t of open) await checkCapPaperTpSl(t, markPrice);
 }
 
+async function processCapPaperCachedMarks() {
+  if (capPaperBatchRunning) return;
+  capPaperBatchRunning = true;
+  try {
+    const store = await readCapPaperStore();
+    const active = store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status));
+    for (const trade of active) {
+      const markPrice = Number(capMarkCache.get(trade.symbol) ?? sharedMarkTicker.getPrice?.(trade.symbol));
+      if (!Number.isFinite(markPrice) || markPrice <= 0) continue;
+      if (trade.status === 'PENDING') await fillCapPendingTrade(trade, markPrice);
+      else await checkCapPaperTpSl(trade, markPrice);
+    }
+  } finally {
+    capPaperBatchRunning = false;
+  }
+}
+
 const capPaperTpSlLocks = new Set();
 async function checkCapPaperTpSl(trade, markPrice) {
   if (!trade.tp && !trade.sl) return;
@@ -5848,11 +7631,13 @@ function startCapPaperTicker() {
   capPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
   sharedMarkTicker.register('capPaper', ({ symbol, markPrice }) => {
     capMarkCache.set(symbol, markPrice);
-    processCapPaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[CapPaper] Mark ticker started (shared).');
+  console.log('[CapPaper] Mark ticker started (shared, 1s batched processing).');
   syncCapPaperTicker().catch(() => {});
   setInterval(() => syncCapPaperTicker().catch(() => {}), 30_000);
+  setInterval(() => processCapPaperCachedMarks().catch((err) => {
+    console.warn('[CapPaper] Batch mark processing failed:', err.message);
+  }), 1_000);
 }
 
 // ── End cap paper trade system ───────────────────────────────────────────────
@@ -6243,15 +8028,45 @@ async function writePumpPaperStore(store) {
 }
 
 function enrichPumpPaperTrade(t, markPrice) {
-  const mark = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const liveMark = Number(markPrice);
+  const hasLiveMark = Number.isFinite(liveMark) && liveMark > 0;
+  const isEmaSqueeze = String(t.source ?? '').startsWith('emasq-');
+  const needsLiveMark = ['OPEN', 'PENDING'].includes(t.status);
+  const mark = isEmaSqueeze && needsLiveMark
+    ? (hasLiveMark ? liveMark : null)
+    : Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
   const entry = Number(t.entryPrice);
   const qty = Number(t.quantity);
   const margin = Number(t.marginUsdt);
   const sideMult = t.side === 'LONG' ? 1 : -1;
   const isActive = t.status === 'OPEN';
-  const pnl = isActive ? (mark - entry) * qty * sideMult : (t.pnl ?? null);
-  const roe = isActive && margin > 0 ? (pnl / margin) * 100 : (t.roe ?? null);
-  return { ...t, markPrice: mark, pnl, roe };
+  const pnl = isActive
+    ? (Number.isFinite(mark) && mark > 0 ? (mark - entry) * qty * sideMult : null)
+    : (t.pnl ?? null);
+  const roe = isActive && margin > 0
+    ? (pnl == null ? null : (pnl / margin) * 100)
+    : (t.roe ?? null);
+  return {
+    ...t,
+    markPrice: mark,
+    markUpdatedAt: isEmaSqueeze
+      ? (emaSqueezeSocketMarkAt.get(String(t.symbol ?? '').toUpperCase()) ?? null)
+      : null,
+    pnl,
+    roe,
+  };
+}
+
+function emaSqueezePaperStopLossFromRoe({ source, side, entryPrice, leverage }) {
+  if (!String(source ?? '').startsWith('emasq-')) return null;
+  const stopLossRoe = Number(process.env.EMA_SQUEEZE_PAPER_STOP_LOSS_ROE ?? 30);
+  const entry = Number(entryPrice);
+  const lev = Math.max(1, Number(leverage) || 1);
+  if (!Number.isFinite(stopLossRoe) || stopLossRoe <= 0 || !Number.isFinite(entry) || entry <= 0) return null;
+  const priceMovePct = stopLossRoe / 100 / lev;
+  return side === 'LONG'
+    ? entry * (1 - priceMovePct)
+    : entry * (1 + priceMovePct);
 }
 
 async function getPumpPaperTrades() {
@@ -6261,7 +8076,9 @@ async function getPumpPaperTrades() {
     .filter(([, price]) => Number.isFinite(price) && price > 0));
   const trades = store.trades.map((t) => enrichPumpPaperTrade(
     t,
-    pumpMarkCache.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? snapshotMarks.get(t.symbol),
+    String(t.source ?? '').startsWith('emasq-')
+      ? emaSqueezeSocketMarks.get(t.symbol)
+      : (pumpMarkCache.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? snapshotMarks.get(t.symbol)),
   ));
   const open = trades.filter((t) => t.status !== 'CLOSED');
   const closed = trades.filter((t) => t.status === 'CLOSED');
@@ -6286,22 +8103,34 @@ async function createPumpPaperTrade(payload) {
   if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
   if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
 
+  const variant = payload.variant ? String(payload.variant).toUpperCase().slice(0, 16) : null;
+  const signalId = payload.signalId ? String(payload.signalId).slice(0, 64) : null;
+
   const store = await readPumpPaperStore();
   const dup = store.trades.find((t) =>
-    t.symbol === symbol && t.side === side && Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
+    t.symbol === symbol && t.side === side && (t.variant ?? null) === variant &&
+    Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
     ['PENDING', 'OPEN'].includes(t.status),
   );
-  if (dup) return { trade: enrichPumpPaperTrade(dup, pumpMarkCache.get(symbol)) };
+  if (dup) {
+    const dupMark = String(dup.source ?? '').startsWith('emasq-')
+      ? emaSqueezeSocketMarks.get(symbol)
+      : pumpMarkCache.get(symbol);
+    return { trade: enrichPumpPaperTrade(dup, dupMark) };
+  }
 
   const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const source = String(payload.source ?? 'manual').slice(0, 80);
+  const emaSqueezeSl = emaSqueezePaperStopLossFromRoe({ source, side, entryPrice, leverage });
   const trade = {
     id: crypto.randomUUID(),
+    signalId, variant,
     symbol, side, status,
     marginUsdt, leverage,
     quantity: (marginUsdt * leverage) / entryPrice,
     entryPrice,
     tp: payload.tp != null ? Number(payload.tp) : null,
-    sl: payload.sl != null ? Number(payload.sl) : null,
+    sl: emaSqueezeSl ?? (payload.sl != null ? Number(payload.sl) : null),
     fillPrice: status === 'OPEN' ? entryPrice : null,
     exitPrice: null,
     pnl: null,
@@ -6310,13 +8139,21 @@ async function createPumpPaperTrade(payload) {
     createdAt: new Date().toISOString(),
     openedAt: status === 'OPEN' ? new Date().toISOString() : null,
     closedAt: null,
-    source: String(payload.source ?? 'manual').slice(0, 80),
+    source,
     note: String(payload.note ?? '').slice(0, 500),
+    btcHealth: payload.btcHealth ?? null, // snapshot BTC health lúc vào — để backtest gate
   };
   store.trades.unshift(trade);
   await writePumpPaperStore(store);
+  if (source.startsWith('emasq-')) syncEmaSqueezePaperTicker().catch(() => {});
+  else syncPumpPaperTicker().catch(() => {});
   console.log(`[PumpPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
-  return { trade: enrichPumpPaperTrade(trade, entryPrice) };
+  return {
+    trade: enrichPumpPaperTrade(
+      trade,
+      source.startsWith('emasq-') ? emaSqueezeSocketMarks.get(symbol) : entryPrice,
+    ),
+  };
 }
 
 async function closePumpPaperTrade(payload) {
@@ -6325,20 +8162,33 @@ async function closePumpPaperTrade(payload) {
   if (idx < 0) throw new Error('Pump paper trade not found');
   const trade = store.trades[idx];
   if (trade.status === 'CLOSED') return { trade: enrichPumpPaperTrade(trade, trade.exitPrice) };
-  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (pumpMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  const isEmaSqueeze = String(trade.source ?? '').startsWith('emasq-');
+  const exitPrice = payload.exitPrice
+    ? Number(payload.exitPrice)
+    : isEmaSqueeze
+      ? Number(emaSqueezeSocketMarks.get(trade.symbol))
+      : (pumpMarkCache.get(trade.symbol) ?? trade.entryPrice);
+  if (!Number.isFinite(exitPrice) || exitPrice <= 0) {
+    throw new Error(`Chưa có tick socket mới cho ${trade.symbol}; không thể đóng bằng giá cache/entry`);
+  }
   const sideMult = trade.side === 'LONG' ? 1 : -1;
   const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
   const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
   const outcome = payload.outcome ?? 'MANUAL';
   store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
   await writePumpPaperStore(store);
+  if (String(trade.source ?? '').startsWith('emasq-')) syncEmaSqueezePaperTicker().catch(() => {});
+  else syncPumpPaperTicker().catch(() => {});
   return { trade: enrichPumpPaperTrade(store.trades[idx], exitPrice) };
 }
 
 async function deletePumpPaperTrade(payload) {
   const store = await readPumpPaperStore();
+  const deleted = store.trades.find((t) => t.id === payload.id);
   store.trades = store.trades.filter((t) => t.id !== payload.id);
   await writePumpPaperStore(store);
+  if (String(deleted?.source ?? '').startsWith('emasq-')) syncEmaSqueezePaperTicker().catch(() => {});
+  else syncPumpPaperTicker().catch(() => {});
   return { ok: true };
 }
 
@@ -6367,26 +8217,126 @@ async function processPumpPaperFills(symbol, markPrice) {
   const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
   for (const t of open) {
     await checkPumpPaperTpSl(t, markPrice);
+    await checkPumpPaperDynamicRisk(t, markPrice);
     await checkEmaSqueezePaperProfit(t, markPrice);
     await checkPumpPaperTimeout(t, markPrice);
   }
 }
 
 async function processPumpPaperCachedMarks() {
+  if (pumpPaperBatchRunning) return;
+  pumpPaperBatchRunning = true;
+  try {
   const store = await readPumpPaperStore();
   const snapshotMarks = new Map((_snapshotCache ?? [])
     .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
     .filter(([, price]) => Number.isFinite(price) && price > 0));
   const active = store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status));
   for (const trade of active) {
+    if (String(trade.source ?? '').startsWith('emasq-')) continue;
     const markPrice = pumpMarkCache.get(trade.symbol) ?? sharedMarkTicker.getPrice?.(trade.symbol) ?? snapshotMarks.get(trade.symbol);
     if (!Number.isFinite(Number(markPrice)) || Number(markPrice) <= 0) continue;
     if (trade.status === 'PENDING') await fillPumpPendingTrade(trade, Number(markPrice));
     else {
       await checkPumpPaperTpSl(trade, Number(markPrice));
+      await checkPumpPaperDynamicRisk(trade, Number(markPrice));
       await checkEmaSqueezePaperProfit(trade, Number(markPrice));
       await checkPumpPaperTimeout(trade, Number(markPrice));
     }
+  }
+  scheduleEmaSqueezePaperBroadcast();
+  } finally {
+    pumpPaperBatchRunning = false;
+  }
+}
+
+function isPumpBoardPaperSource(source) {
+  const s = String(source ?? '');
+  return s.startsWith('pump-') && !s.startsWith('pump-short-') && !s.startsWith('emasq-');
+}
+
+const pumpPaperDynamicRiskLocks = new Set();
+async function checkPumpPaperDynamicRisk(trade, markPrice) {
+  if (process.env.PUMP_PAPER_DYNAMIC_MANAGEMENT_ENABLED === 'false') return;
+  if (!isPumpBoardPaperSource(trade.source)) return;
+  if (pumpPaperDynamicRiskLocks.has(trade.id)) return;
+
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const entry = Number(trade.entryPrice);
+  const qty = Number(trade.quantity);
+  const margin = Number(trade.marginUsdt);
+  const mark = Number(markPrice);
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(qty) || qty <= 0) return;
+  if (!Number.isFinite(margin) || margin <= 0 || !Number.isFinite(mark) || mark <= 0) return;
+
+  const pnl = (mark - entry) * qty * sideMult;
+  const roe = (pnl / margin) * 100;
+  const prevPeak = pumpPaperPeakRoe.get(trade.id) ?? Number(trade.peakRoe ?? 0) ?? 0;
+  const peakRoe = Math.max(prevPeak, roe);
+  pumpPaperPeakRoe.set(trade.id, peakRoe);
+
+  const isLong = trade.side === 'LONG';
+  const updates = {};
+  const notes = [];
+
+  if (process.env.PUMP_PAPER_SL_TRAIL_ENABLED !== 'false') {
+    const trailStartRoe = Number(process.env.PUMP_PAPER_TRAIL_START_ROE ?? 10);
+    if (roe >= trailStartRoe) {
+      const targetLockRoe = getTargetLockRoe(roe);
+      if (targetLockRoe != null) {
+        const leverage = Math.max(1, Number(trade.leverage) || 1);
+        const lockMove = targetLockRoe / 100 / leverage;
+        const newSl = isLong ? entry * (1 + lockMove) : entry * (1 - lockMove);
+        const curSl = Number(trade.sl ?? 0);
+        const improves = !Number.isFinite(curSl) || curSl <= 0
+          || (isLong ? newSl > curSl : newSl < curSl);
+        const validSide = isLong ? newSl < mark : newSl > mark;
+        if (Number.isFinite(newSl) && newSl > 0 && validSide && improves) {
+          updates.sl = newSl;
+          updates.slTrailLockRoe = targetLockRoe;
+          notes.push(`pumpPaperSlTrail=${targetLockRoe}%@${newSl}`);
+        }
+      }
+    }
+  }
+
+  if (process.env.PUMP_PAPER_NEG_TP_ENABLED !== 'false') {
+    const negTpRoe = Number(process.env.PUMP_PAPER_NEG_TP_ROE ?? -30);
+    const alreadyMoved = trade.paperTpMovedToEntry === true || String(trade.note ?? '').includes('pumpPaperTpEntryGuard=');
+    if (!alreadyMoved && roe <= negTpRoe) {
+      const curTp = Number(trade.tp ?? 0);
+      const improvesExit = !Number.isFinite(curTp) || curTp <= 0
+        || (isLong ? curTp > entry : curTp < entry);
+      const validSide = isLong ? entry > mark : entry < mark;
+      if (improvesExit && validSide) {
+        updates.tp = entry;
+        updates.paperTpMovedToEntry = true;
+        updates.paperTpMovedToEntryRoe = +roe.toFixed(2);
+        notes.push(`pumpPaperTpEntryGuard=${negTpRoe}%@${entry}`);
+      }
+    }
+  }
+
+  if (!Object.keys(updates).length) return;
+
+  pumpPaperDynamicRiskLocks.add(trade.id);
+  try {
+    const store = await readPumpPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'OPEN');
+    if (idx < 0) return;
+    const row = store.trades[idx];
+    const note = [String(row.note ?? ''), ...notes].filter(Boolean).join(' | ').slice(0, 500);
+    store.trades[idx] = {
+      ...row,
+      ...updates,
+      peakRoe,
+      dynamicRiskUpdatedAt: new Date().toISOString(),
+      note,
+    };
+    await writePumpPaperStore(store);
+    console.log(`[PumpPaper] DYNAMIC ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% sl=${store.trades[idx].sl ?? '-'} tp=${store.trades[idx].tp ?? '-'}`);
+  } finally {
+    pumpPaperDynamicRiskLocks.delete(trade.id);
   }
 }
 
@@ -6394,6 +8344,7 @@ const emaSqueezeProfitLocks = new Set();
 async function checkEmaSqueezePaperProfit(trade, markPrice) {
   if (!String(trade.source ?? '').startsWith('emasq-')) return;
   if (emaSqueezeProfitLocks.has(trade.id)) return;
+  if (process.env.EMA_SQUEEZE_PAPER_SL_TRAIL_ENABLED === 'false') return;
 
   const sideMult = trade.side === 'LONG' ? 1 : -1;
   const entry = Number(trade.entryPrice);
@@ -6407,19 +8358,40 @@ async function checkEmaSqueezePaperProfit(trade, markPrice) {
   const peakRoe = Math.max(prevPeak, roe);
   emaSqueezePaperPeakRoe.set(trade.id, peakRoe);
 
-  const takeRoe = Number(process.env.EMA_SQUEEZE_PAPER_TAKE_PROFIT_ROE ?? 80);
-  const trailStartRoe = Number(process.env.EMA_SQUEEZE_PAPER_TRAIL_START_ROE ?? 50);
-  const trailDropRoe = Number(process.env.EMA_SQUEEZE_PAPER_TRAIL_DROP_ROE ?? 20);
-  const takeHit = roe >= takeRoe;
-  const trailHit = peakRoe >= trailStartRoe && roe <= peakRoe - trailDropRoe;
-  if (!takeHit && !trailHit) return;
+  const trailStartRoe = Number(process.env.EMA_SQUEEZE_PAPER_TRAIL_START_ROE ?? 10);
+  if (roe < trailStartRoe) return;
+  const targetLockRoe = getTargetLockRoe(roe);
+  if (targetLockRoe == null) return;
 
   emaSqueezeProfitLocks.add(trade.id);
   try {
-    const outcome = takeHit ? 'PROFIT' : 'TRAIL_PROFIT';
-    await closePumpPaperTrade({ id: trade.id, exitPrice: markPrice, outcome });
-    console.log(`[EmaSqueezePaper] ${outcome} ${trade.side} ${trade.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}%`);
-    emaSqueezePaperPeakRoe.delete(trade.id);
+    const store = await readPumpPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'OPEN');
+    if (idx < 0) return;
+    const row = store.trades[idx];
+    const leverage = Math.max(1, Number(row.leverage ?? trade.leverage) || 1);
+    const isLong = row.side === 'LONG';
+    const lockMove = targetLockRoe / 100 / leverage;
+    const newSl = isLong ? entry * (1 + lockMove) : entry * (1 - lockMove);
+    const mark = Number(markPrice);
+    if (!Number.isFinite(newSl) || newSl <= 0 || !Number.isFinite(mark) || mark <= 0) return;
+    if ((isLong && newSl >= mark) || (!isLong && newSl <= mark)) return;
+
+    const curSl = Number(row.sl ?? 0);
+    const improves = !Number.isFinite(curSl) || curSl <= 0
+      || (isLong ? newSl > curSl : newSl < curSl);
+    if (!improves) return;
+
+    const notePart = `paperSlTrail=${targetLockRoe}%@${newSl}`;
+    store.trades[idx] = {
+      ...row,
+      sl: newSl,
+      peakRoe,
+      slTrailLockRoe: targetLockRoe,
+      note: [String(row.note ?? ''), notePart].filter(Boolean).join(' | ').slice(0, 500),
+    };
+    await writePumpPaperStore(store);
+    console.log(`[EmaSqueezePaper] SL_TRAIL ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% sl=${newSl}`);
   } finally {
     emaSqueezeProfitLocks.delete(trade.id);
   }
@@ -6473,8 +8445,81 @@ async function checkPumpPaperTpSl(trade, markPrice) {
 async function syncPumpPaperTicker() {
   if (!pumpPaperTicker) return;
   const store = await readPumpPaperStore();
-  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  const symbols = [...new Set(store.trades
+    .filter((t) => ['PENDING', 'OPEN'].includes(t.status) && !String(t.source ?? '').startsWith('emasq-'))
+    .map((t) => t.symbol))];
   sharedMarkTicker.setSymbols('pumpPaper', symbols);
+}
+
+async function processEmaSqueezePaperSymbol(symbol, markPrice) {
+  const store = await readPumpPaperStore();
+  const trades = store.trades.filter((t) =>
+    t.symbol === symbol
+    && ['PENDING', 'OPEN'].includes(t.status)
+    && String(t.source ?? '').startsWith('emasq-'));
+  for (const trade of trades) {
+    if (trade.status === 'PENDING') {
+      await fillPumpPendingTrade(trade, markPrice);
+      continue;
+    }
+    await checkPumpPaperTpSl(trade, markPrice);
+    await checkEmaSqueezePaperProfit(trade, markPrice);
+  }
+}
+
+function queueEmaSqueezePaperProcessing(symbol, markPrice) {
+  emaSqueezePendingProcess.set(symbol, markPrice);
+  if (emaSqueezeProcessTimer || emaSqueezeProcessRunning) return;
+  emaSqueezeProcessTimer = setTimeout(drainEmaSqueezePaperProcessing, 250);
+}
+
+async function drainEmaSqueezePaperProcessing() {
+  emaSqueezeProcessTimer = null;
+  if (emaSqueezeProcessRunning) return;
+  const next = emaSqueezePendingProcess.entries().next();
+  if (next.done) return;
+  const [symbol, markPrice] = next.value;
+  emaSqueezePendingProcess.delete(symbol);
+  emaSqueezeProcessRunning = true;
+  try {
+    if (Number.isFinite(Number(markPrice)) && Number(markPrice) > 0) {
+      await processEmaSqueezePaperSymbol(symbol, Number(markPrice));
+    }
+  } catch (err) {
+    console.warn(`[EmaSqueezePaper] socket processing ${symbol}:`, err.message);
+  } finally {
+    emaSqueezeProcessRunning = false;
+    if (emaSqueezePendingProcess.size > 0 && !emaSqueezeProcessTimer) {
+      emaSqueezeProcessTimer = setTimeout(drainEmaSqueezePaperProcessing, 250);
+    }
+  }
+}
+
+async function syncEmaSqueezePaperTicker() {
+  if (!emaSqueezePaperTicker) return;
+  const store = await readPumpPaperStore();
+  const symbols = [...new Set(store.trades
+    .filter((t) =>
+      ['PENDING', 'OPEN'].includes(t.status)
+      && String(t.source ?? '').startsWith('emasq-'))
+    .map((t) => t.symbol))];
+  emaSqueezePaperTicker.setSymbols(symbols);
+}
+
+function startEmaSqueezePaperTicker() {
+  if (emaSqueezePaperTicker) return;
+  emaSqueezePaperTicker = createAggTradeTicker({
+    logLabel: 'EmaSqueezeTick',
+    onPrice: ({ symbol, markPrice, eventTime }) => {
+      emaSqueezeSocketMarks.set(symbol, markPrice);
+      emaSqueezeSocketMarkAt.set(symbol, eventTime);
+      scheduleEmaSqueezePaperBroadcast();
+      queueEmaSqueezePaperProcessing(symbol, markPrice);
+    },
+  });
+  console.log('[EmaSqueezePaper] Dedicated socket-only last-price ticker started.');
+  syncEmaSqueezePaperTicker().catch(() => {});
+  setInterval(() => syncEmaSqueezePaperTicker().catch(() => {}), 30_000);
 }
 
 function startPumpPaperTicker() {
@@ -6482,12 +8527,39 @@ function startPumpPaperTicker() {
   pumpPaperTicker = true; // guard flag — actual WS is sharedMarkTicker
   sharedMarkTicker.register('pumpPaper', ({ symbol, markPrice }) => {
     pumpMarkCache.set(symbol, markPrice);
-    processPumpPaperFills(symbol, markPrice).catch(() => {});
+    scheduleEmaSqueezePaperBroadcast();
   });
-  console.log('[PumpPaper] Mark ticker started (shared).');
+  console.log('[PumpPaper] Mark ticker started (shared, 1s batched processing).');
   syncPumpPaperTicker().catch(() => {});
   setInterval(() => syncPumpPaperTicker().catch(() => {}), 30_000);
-  setInterval(() => processPumpPaperCachedMarks().catch(() => {}), 10_000);
+  setInterval(() => processPumpPaperCachedMarks().catch((err) => {
+    console.warn('[PumpPaper] Batch mark processing failed:', err.message);
+  }), 1_000);
+  setInterval(() => expireOldEmaSqueezePending().catch(() => {}), 60_000);
+  startEmaSqueezePaperTicker();
+}
+
+// Xóa lệnh EMA Squeeze paper PENDING quá TTL (4h) chưa khớp (chỉ source emasq-, không đụng pump strategy)
+async function expireOldEmaSqueezePending() {
+  const ttlMs = Number(process.env.EMA_SQUEEZE_PAPER_PENDING_TTL_MS ?? 4 * 3600 * 1000);
+  const store = await readPumpPaperStore();
+  const now = Date.now();
+  const keep = [];
+  let removed = 0;
+  for (const t of store.trades) {
+    if (t.status === 'PENDING' && String(t.source ?? '').startsWith('emasq-')
+        && (now - (Date.parse(t.createdAt ?? 0) || now)) > ttlMs) {
+      console.log(`[EmaSqueezePaper] EXPIRE pending ${t.side} ${t.symbol} - >${(ttlMs / 3600000).toFixed(0)}h chưa khớp, xóa lệnh`);
+      removed++;
+      continue;
+    }
+    keep.push(t);
+  }
+  if (removed) {
+    store.trades = keep;
+    await writePumpPaperStore(store);
+    syncEmaSqueezePaperTicker().catch(() => {});
+  }
 }
 
 // ── End pump paper trade system ───────────────────────────────────────────────
@@ -6660,6 +8732,26 @@ async function processEdgePaperFills(symbol, markPrice) {
   }
 }
 
+async function processEdgePaperCachedMarks() {
+  if (edgePaperBatchRunning) return;
+  edgePaperBatchRunning = true;
+  try {
+    const store = await readEdgePaperStore();
+    const active = store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status));
+    for (const trade of active) {
+      const markPrice = Number(edgeMarkCache.get(trade.symbol) ?? sharedMarkTicker.getPrice?.(trade.symbol));
+      if (!Number.isFinite(markPrice) || markPrice <= 0) continue;
+      if (trade.status === 'PENDING') await fillEdgePendingTrade(trade, markPrice);
+      else {
+        await checkEdgePaperTpSl(trade, markPrice);
+        await checkEdgePaperTimeout(trade, markPrice);
+      }
+    }
+  } finally {
+    edgePaperBatchRunning = false;
+  }
+}
+
 const edgePaperTimeoutLocks = new Set();
 async function checkEdgePaperTimeout(trade, markPrice) {
   if (!trade.openedAt) return;
@@ -6714,11 +8806,13 @@ function startEdgePaperTicker() {
   edgePaperTicker = true; // guard flag — actual WS is sharedMarkTicker
   sharedMarkTicker.register('edgePaper', ({ symbol, markPrice }) => {
     edgeMarkCache.set(symbol, markPrice);
-    processEdgePaperFills(symbol, markPrice).catch(() => {});
   });
-  console.log('[EdgePaper] Mark ticker started (shared).');
+  console.log('[EdgePaper] Mark ticker started (shared, 1s batched processing).');
   syncEdgePaperTicker().catch(() => {});
   setInterval(() => syncEdgePaperTicker().catch(() => {}), 30_000);
+  setInterval(() => processEdgePaperCachedMarks().catch((err) => {
+    console.warn('[EdgePaper] Batch mark processing failed:', err.message);
+  }), 1_000);
 }
 
 // ── SR Paper Trades (Spike Reversal) ─────────────────────────────────────────
@@ -7083,6 +9177,707 @@ function startPpksPaperTicker() {
   console.log('[PpksPaper] Mark ticker started (shared).');
   syncPpksPaperTicker().catch(() => {});
   setInterval(() => syncPpksPaperTicker().catch(() => {}), 30_000);
+}
+
+// Shakeout Reclaim Paper Trades
+
+async function readShakeoutPaperStore() {
+  try {
+    const raw = await readFile(SHAKEOUT_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+    return parsed;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[ShakeoutPaper] Store read error, starting fresh:', e.message);
+    return { trades: [] };
+  }
+}
+
+let _shakeoutPaperWriteLock = Promise.resolve();
+async function writeShakeoutPaperStore(store) {
+  _shakeoutPaperWriteLock = _shakeoutPaperWriteLock.then(() => atomicWriteJson(SHAKEOUT_PAPER_FILE, store));
+  return _shakeoutPaperWriteLock;
+}
+
+function enrichShakeoutPaperTrade(t, markPrice) {
+  const liveMark = Number(markPrice);
+  const hasLiveMark = Number.isFinite(liveMark) && liveMark > 0;
+  const needsLiveMark = t.status === 'OPEN' || t.status === 'PENDING';
+  const mark = needsLiveMark
+    ? (hasLiveMark ? liveMark : null)
+    : Number(t.exitPrice ?? t.entryPrice);
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isActive = t.status === 'OPEN';
+  const pnl = isActive
+    ? (hasLiveMark ? (liveMark - entry) * qty * sideMult : null)
+    : (t.pnl ?? null);
+  const roe = isActive && margin > 0
+    ? (pnl == null ? null : (pnl / margin) * 100)
+    : (t.roe ?? null);
+  return {
+    ...t,
+    markPrice: mark,
+    markUpdatedAt: shakeoutSocketMarkAt.get(String(t.symbol ?? '').toUpperCase()) ?? null,
+    pnl,
+    roe,
+  };
+}
+
+function getShakeoutPaperMark(symbol) {
+  const key = String(symbol ?? '').toUpperCase();
+  const wsMark = Number(shakeoutSocketMarks.get(key));
+  if (Number.isFinite(wsMark) && wsMark > 0) return wsMark;
+  return null;
+}
+
+async function getShakeoutPaperTrades() {
+  const store = await readShakeoutPaperStore();
+  const trades = store.trades.map((t) => enrichShakeoutPaperTrade(
+    t,
+    getShakeoutPaperMark(t.symbol),
+  ));
+  const open = trades.filter((t) => t.status !== 'CLOSED');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const invalid = closed.filter((t) => t.outcome === 'INVALID').length;
+  const validClosed = closed.filter((t) => t.outcome !== 'INVALID');
+  const wins = validClosed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const tpHits = validClosed.filter((t) => t.outcome === 'TP').length;
+  const slHits = validClosed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = validClosed.length > 0 ? validClosed.reduce((s, t) => s + (t.roe ?? 0), 0) / validClosed.length : null;
+
+  // Thống kê theo ngày (group theo closedAt, bỏ INVALID)
+  const dailyMap = new Map();
+  for (const t of validClosed) {
+    const date = String(t.closedAt ?? t.createdAt ?? '').slice(0, 10);
+    if (!date) continue;
+    const d = dailyMap.get(date) ?? {
+      date, orders: 0, wins: 0, losses: 0, tpHits: 0, slHits: 0,
+      totalPnl: 0, totalRoe: 0, winRate: 0, avgPnl: 0,
+    };
+    const pnl = Number(t.pnl ?? 0);
+    d.orders += 1;
+    if (pnl > 0) d.wins += 1; else d.losses += 1;
+    if (t.outcome === 'TP') d.tpHits += 1;
+    if (t.outcome === 'SL') d.slHits += 1;
+    d.totalPnl = +(d.totalPnl + pnl).toFixed(4);
+    d.totalRoe = +(d.totalRoe + Number(t.roe ?? 0)).toFixed(2);
+    dailyMap.set(date, d);
+  }
+  const daily = [...dailyMap.values()]
+    .map((d) => ({
+      ...d,
+      winRate: d.orders > 0 ? +((d.wins / d.orders) * 100).toFixed(1) : 0,
+      avgPnl: d.orders > 0 ? +(d.totalPnl / d.orders).toFixed(4) : 0,
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  // So sánh điểm vào MARKET vs PENDING (2 lệnh cùng signalId)
+  const buildVariant = (name) => {
+    const all = trades.filter((t) => t.variant === name);
+    const vClosed = all.filter((t) => t.status === 'CLOSED' && t.outcome !== 'INVALID');
+    const w = vClosed.filter((t) => (t.pnl ?? 0) > 0).length;
+    const totalPnl = vClosed.reduce((s, t) => s + Number(t.pnl ?? 0), 0);
+    const totalRoe = vClosed.reduce((s, t) => s + Number(t.roe ?? 0), 0);
+    return {
+      variant: name,
+      total: all.length,
+      open: all.filter((t) => t.status === 'OPEN').length,
+      pending: all.filter((t) => t.status === 'PENDING').length,   // PENDING chưa fill (chưa chạm entry)
+      closed: vClosed.length,
+      wins: w,
+      losses: vClosed.length - w,
+      winRate: vClosed.length > 0 ? +((w / vClosed.length) * 100).toFixed(1) : 0,
+      totalPnl: +totalPnl.toFixed(4),
+      totalRoe: +totalRoe.toFixed(2),
+      avgRoe: vClosed.length > 0 ? +(totalRoe / vClosed.length).toFixed(1) : null,
+    };
+  };
+  const variantCompare = [buildVariant('MARKET'), buildVariant('PENDING')];
+
+  return {
+    trades,
+    summary: {
+      total: trades.length,
+      open: open.length,
+      closed: closed.length,
+      invalid,
+      wins,
+      losses: validClosed.length - wins,
+      tpHits,
+      slHits,
+      avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null,
+    },
+    daily,
+    variantCompare,
+  };
+}
+
+async function createShakeoutPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase().trim();
+  const side = String(payload.side ?? payload.action ?? 'LONG').toUpperCase();
+  const marginUsdt = Number(payload.marginUsdt ?? process.env.SHAKEOUT_RECLAIM_PAPER_MARGIN_USDT ?? 10);
+  const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
+  const entryPrice = Number(payload.entryPrice ?? payload.entry);
+
+  if (!symbol) throw new Error('symbol required');
+  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
+  const sl = payload.sl != null ? Number(payload.sl) : null;
+  const tp = payload.tp != null ? Number(payload.tp) : null;
+  if (Number.isFinite(sl) && Number.isFinite(tp)) {
+    const validGeometry = side === 'LONG'
+      ? (sl < entryPrice && entryPrice < tp)
+      : (tp < entryPrice && entryPrice < sl);
+    if (!validGeometry) throw new Error(`invalid ${side} geometry entry=${entryPrice} sl=${sl} tp=${tp}`);
+  }
+
+  // variant: 'MARKET' (vào ngay theo giá market) hoặc 'PENDING' (chờ giá chạm entry dự kiến)
+  const variant = payload.variant ? String(payload.variant).toUpperCase().slice(0, 16) : null;
+  const signalId = payload.signalId ? String(payload.signalId).slice(0, 64) : null;
+
+  const store = await readShakeoutPaperStore();
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol &&
+    t.side === side &&
+    (t.variant ?? null) === variant &&
+    String(t.source ?? '').startsWith('shakeout-auto') &&
+    ['PENDING', 'OPEN'].includes(t.status),
+  );
+  if (dup) return { trade: enrichShakeoutPaperTrade(dup, getShakeoutPaperMark(symbol)) };
+
+  const status = payload.status === 'PENDING' ? 'PENDING' : 'OPEN';
+  const trade = {
+    id: crypto.randomUUID(),
+    signalId,
+    variant,
+    symbol,
+    side,
+    status,
+    marginUsdt,
+    leverage,
+    quantity: (marginUsdt * leverage) / entryPrice,
+    entryPrice,
+    tp,
+    sl,
+    fillPrice: status === 'OPEN' ? entryPrice : null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null,
+    score: payload.score != null ? Number(payload.score) : null,
+    signalType: String(payload.signalType ?? payload.type ?? '').slice(0, 80),
+    stage: String(payload.stage ?? '').slice(0, 80),
+    createdAt: new Date().toISOString(),
+    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    closedAt: null,
+    source: String(payload.source ?? 'manual').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+    trapRisk: payload.trapRisk ? String(payload.trapRisk).toUpperCase().slice(0, 12) : null,
+    warning: Array.isArray(payload.trapReasons) ? payload.trapReasons.join('; ').slice(0, 300) : null,
+  };
+  store.trades.unshift(trade);
+  await writeShakeoutPaperStore(store);
+  console.log(`[ShakeoutPaper] ${status} ${side} ${symbol} entry=${entryPrice} score=${trade.score ?? '-'} trap=${trade.trapRisk ?? 'LOW'} src=${trade.source}`);
+  syncShakeoutPaperTicker().catch(() => {});
+  scheduleShakeoutPaperBroadcast(50);
+  return { trade: enrichShakeoutPaperTrade(trade, getShakeoutPaperMark(symbol)) };
+}
+
+async function closeShakeoutPaperTrade(payload) {
+  const store = await readShakeoutPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === payload.id);
+  if (idx < 0) throw new Error('Shakeout paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade: enrichShakeoutPaperTrade(trade, trade.exitPrice) };
+  const exitPrice = payload.exitPrice
+    ? Number(payload.exitPrice)
+    : getShakeoutPaperMark(trade.symbol);
+  if (!Number.isFinite(exitPrice) || exitPrice <= 0) {
+    throw new Error(`Chưa có tick socket mới cho ${trade.symbol}; không thể đóng bằng giá cache/entry`);
+  }
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+  const outcome = payload.outcome ?? 'MANUAL';
+  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  await writeShakeoutPaperStore(store);
+  syncShakeoutPaperTicker().catch(() => {});
+  scheduleShakeoutPaperBroadcast(50);
+  return { trade: enrichShakeoutPaperTrade(store.trades[idx], exitPrice) };
+}
+
+async function deleteShakeoutPaperTrade(payload) {
+  const store = await readShakeoutPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== payload.id);
+  await writeShakeoutPaperStore(store);
+  syncShakeoutPaperTicker().catch(() => {});
+  scheduleShakeoutPaperBroadcast(50);
+  return { ok: true };
+}
+
+async function fillShakeoutPendingTrade(trade, markPrice) {
+  if (shakeoutPaperFillLocks.has(trade.id)) return;
+  shakeoutPaperFillLocks.add(trade.id);
+  try {
+    const store = await readShakeoutPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
+    if (idx < 0) return;
+    const row = store.trades[idx];
+    const limit = Number(row.entryPrice);
+    const side = row.side;
+    const touched = side === 'LONG' ? markPrice <= limit : markPrice >= limit;
+    if (!touched) return;
+    // Giá khớp thực tế: limit đã marketable (giá vượt qua) thì khớp ở giá market, không bao giờ tệ hơn market
+    const fill = side === 'LONG' ? Math.min(limit, markPrice) : Math.max(limit, markPrice);
+    const margin = Number(row.marginUsdt);
+    const lev = Number(row.leverage);
+    const qty = fill > 0 ? (margin * lev) / fill : row.quantity;
+    store.trades[idx] = {
+      ...row,
+      status: 'OPEN',
+      entryPrice: fill,
+      fillPrice: fill,
+      quantity: qty,
+      openedAt: new Date().toISOString(),
+    };
+    await writeShakeoutPaperStore(store);
+    scheduleShakeoutPaperBroadcast(50);
+    console.log(`[ShakeoutPaper] FILLED ${side} ${row.symbol} limit=${limit} fill=${fill} mark=${markPrice}`);
+  } finally {
+    shakeoutPaperFillLocks.delete(trade.id);
+  }
+}
+
+const shakeoutPaperTpSlLocks = new Set();
+async function checkShakeoutPaperTpSl(trade, markPrice) {
+  if (!trade.tp && !trade.sl) return;
+  if (shakeoutPaperTpSlLocks.has(trade.id)) return;
+  const isLong = trade.side === 'LONG';
+  const tpHit = trade.tp != null && (isLong ? markPrice >= trade.tp : markPrice <= trade.tp);
+  const slHit = trade.sl != null && (isLong ? markPrice <= trade.sl : markPrice >= trade.sl);
+  if (!tpHit && !slHit) return;
+  shakeoutPaperTpSlLocks.add(trade.id);
+  try {
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = tpHit ? trade.tp : trade.sl;
+    await closeShakeoutPaperTrade({ id: trade.id, exitPrice, outcome });
+    console.log(`[ShakeoutPaper] ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+  } finally {
+    shakeoutPaperTpSlLocks.delete(trade.id);
+  }
+}
+
+const shakeoutPaperSlTrailLocks = new Set();
+async function checkShakeoutPaperSlTrail(trade, markPrice) {
+  if (process.env.SHAKEOUT_RECLAIM_PAPER_SL_TRAIL_ENABLED === 'false') return;
+  if (trade.status !== 'OPEN' || trade.outcome === 'INVALID') return;
+  if (shakeoutPaperSlTrailLocks.has(trade.id)) return;
+
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const entry = Number(trade.entryPrice);
+  const qty = Number(trade.quantity);
+  const margin = Number(trade.marginUsdt);
+  const mark = Number(markPrice);
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(qty) || qty <= 0) return;
+  if (!Number.isFinite(margin) || margin <= 0 || !Number.isFinite(mark) || mark <= 0) return;
+
+  const pnl = (mark - entry) * qty * sideMult;
+  const roe = (pnl / margin) * 100;
+  const prevPeak = shakeoutPaperPeakRoe.get(trade.id) ?? Number(trade.peakRoe ?? 0) ?? 0;
+  const peakRoe = Math.max(prevPeak, roe);
+  shakeoutPaperPeakRoe.set(trade.id, peakRoe);
+
+  const trailStartRoe = Number(process.env.SHAKEOUT_RECLAIM_PAPER_TRAIL_START_ROE ?? 10);
+  const targetLockRoe = peakRoe >= trailStartRoe ? getTargetLockRoe(peakRoe) : null;
+
+  const leverage = Math.max(1, Number(trade.leverage) || 1);
+  const isLong = trade.side === 'LONG';
+  let newSl = null;
+  let improves = false;
+  let crossedLock = false;
+  if (targetLockRoe != null) {
+    const lockMove = targetLockRoe / 100 / leverage;
+    newSl = isLong ? entry * (1 + lockMove) : entry * (1 - lockMove);
+    if (Number.isFinite(newSl) && newSl > 0) {
+      const curSl = Number(trade.sl ?? 0);
+      improves = !Number.isFinite(curSl) || curSl <= 0
+        || (isLong ? newSl > curSl : newSl < curSl);
+      crossedLock = improves && (isLong ? newSl >= mark : newSl <= mark);
+    }
+  }
+
+  const shouldPersistPeak = peakRoe > Number(trade.peakRoe ?? 0) + 0.05;
+  if (!shouldPersistPeak && (!improves || !Number.isFinite(newSl) || newSl <= 0)) return;
+
+  shakeoutPaperSlTrailLocks.add(trade.id);
+  try {
+    const store = await readShakeoutPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'OPEN');
+    if (idx < 0) return;
+    const row = store.trades[idx];
+    const notes = [];
+    if (targetLockRoe != null && improves && Number.isFinite(newSl) && newSl > 0) {
+      notes.push(`shakeoutPaperSlTrail=${targetLockRoe}%@${newSl}`);
+    }
+    if (shouldPersistPeak && (targetLockRoe == null || !improves)) {
+      notes.push(`shakeoutPaperPeak=${peakRoe.toFixed(1)}%`);
+    }
+    store.trades[idx] = {
+      ...row,
+      ...(targetLockRoe != null && improves && !crossedLock ? { sl: newSl } : {}),
+      peakRoe,
+      ...(targetLockRoe != null ? { slTrailLockRoe: targetLockRoe } : {}),
+      dynamicRiskUpdatedAt: new Date().toISOString(),
+      note: [String(row.note ?? ''), ...notes].filter(Boolean).join(' | ').slice(0, 500),
+    };
+    await writeShakeoutPaperStore(store);
+    scheduleShakeoutPaperBroadcast(50);
+    if (crossedLock) {
+      await closeShakeoutPaperTrade({ id: trade.id, exitPrice: newSl, outcome: 'SL' });
+      console.log(`[ShakeoutPaper] SL_LOCK_HIT ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% exit=${newSl}`);
+    } else if (targetLockRoe != null && improves && Number.isFinite(newSl) && newSl > 0) {
+      console.log(`[ShakeoutPaper] SL_TRAIL ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% sl=${newSl}`);
+    }
+  } finally {
+    shakeoutPaperSlTrailLocks.delete(trade.id);
+  }
+}
+
+async function processShakeoutPaperFills(symbol, markPrice) {
+  const store = await readShakeoutPaperStore();
+  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  for (const t of pending) await fillShakeoutPendingTrade(t, markPrice);
+  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  for (const t of open) {
+    await checkShakeoutPaperSlTrail(t, markPrice);
+    await checkShakeoutPaperTpSl(t, markPrice);
+  }
+  scheduleShakeoutPaperBroadcast();
+}
+
+function queueShakeoutPaperProcessing(symbol, markPrice) {
+  shakeoutPaperPendingProcess.set(symbol, markPrice);
+  if (shakeoutPaperProcessTimer || shakeoutPaperProcessRunning) return;
+  shakeoutPaperProcessTimer = setTimeout(drainShakeoutPaperProcessing, 250);
+}
+
+async function drainShakeoutPaperProcessing() {
+  shakeoutPaperProcessTimer = null;
+  if (shakeoutPaperProcessRunning) return;
+  const next = shakeoutPaperPendingProcess.entries().next();
+  if (next.done) return;
+  const [symbol, markPrice] = next.value;
+  shakeoutPaperPendingProcess.delete(symbol);
+  shakeoutPaperProcessRunning = true;
+  try {
+    if (Number.isFinite(Number(markPrice)) && Number(markPrice) > 0) {
+      await processShakeoutPaperFills(symbol, Number(markPrice));
+    }
+  } catch {} finally {
+    shakeoutPaperProcessRunning = false;
+    if (shakeoutPaperPendingProcess.size > 0 && !shakeoutPaperProcessTimer) {
+      shakeoutPaperProcessTimer = setTimeout(drainShakeoutPaperProcessing, 250);
+    }
+  }
+}
+
+async function syncShakeoutPaperTicker() {
+  if (!shakeoutPaperTicker) return;
+  const store = await readShakeoutPaperStore();
+  const symbols = [...new Set(store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol))];
+  shakeoutPaperTicker.setSymbols(symbols);
+}
+
+// Xóa lệnh PENDING quá TTL (mặc định 4h) chưa khớp
+async function expireOldShakeoutPending() {
+  const ttlMs = Number(process.env.SHAKEOUT_RECLAIM_PAPER_PENDING_TTL_MS ?? 4 * 3600 * 1000);
+  const store = await readShakeoutPaperStore();
+  const now = Date.now();
+  const keep = [];
+  let removed = 0;
+  for (const t of store.trades) {
+    if (t.status === 'PENDING' && (now - (Date.parse(t.createdAt ?? 0) || now)) > ttlMs) {
+      console.log(`[ShakeoutPaper] EXPIRE pending ${t.side} ${t.symbol} ${t.variant ?? ''} - >${(ttlMs / 3600000).toFixed(0)}h chưa khớp, xóa lệnh`);
+      removed++;
+      continue;
+    }
+    keep.push(t);
+  }
+  if (removed) {
+    store.trades = keep;
+    await writeShakeoutPaperStore(store);
+    scheduleShakeoutPaperBroadcast(50);
+    syncShakeoutPaperTicker().catch(() => {});
+  }
+}
+
+function startShakeoutPaperTicker() {
+  if (shakeoutPaperTicker) return;
+  shakeoutPaperTicker = createAggTradeTicker({
+    logLabel: 'ShakeoutTick',
+    onPrice: ({ symbol, markPrice, eventTime }) => {
+      shakeoutSocketMarks.set(symbol, markPrice);
+      shakeoutSocketMarkAt.set(symbol, eventTime);
+      scheduleShakeoutPaperBroadcast();
+      queueShakeoutPaperProcessing(symbol, markPrice);
+    },
+  });
+  console.log('[ShakeoutPaper] Dedicated socket-only aggTrade ticker started.');
+  syncShakeoutPaperTicker().catch(() => {});
+  setInterval(() => syncShakeoutPaperTicker().catch(() => {}), 30_000);
+  setInterval(() => expireOldShakeoutPending().catch(() => {}), 60_000);
+}
+
+async function createShakeoutPaperTrades(signals = []) {
+  if (process.env.SHAKEOUT_RECLAIM_PAPER_ENABLED === 'false') return;
+  const minScore = Number(process.env.SHAKEOUT_RECLAIM_PAPER_MIN_SCORE ?? 55);
+  const marketMinScore = Number(process.env.SHAKEOUT_RECLAIM_PAPER_MARKET_MIN_SCORE ?? 60);
+  const shortMarketMinScore = Number(process.env.SHAKEOUT_RECLAIM_PAPER_SHORT_MARKET_MIN_SCORE ?? 60);
+  const cooldownMs = Number(process.env.SHAKEOUT_RECLAIM_PAPER_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const noHedge = process.env.SHAKEOUT_RECLAIM_PAPER_NO_HEDGE !== 'false';
+  const now = Date.now();
+
+  // Chặn hedge: nếu coin đang có lệnh chiều ngược active (OPEN/PENDING) thì không vào chiều mới
+  const activeSide = new Map(); // symbol -> Set sides đang active
+  if (noHedge) {
+    const store = await readShakeoutPaperStore();
+    for (const t of store.trades) {
+      if (['OPEN', 'PENDING'].includes(t.status)) {
+        if (!activeSide.has(t.symbol)) activeSide.set(t.symbol, new Set());
+        activeSide.get(t.symbol).add(t.side);
+      }
+    }
+  }
+
+  for (const sig of signals) {
+    if (Number(sig?.score ?? 0) < minScore) continue;
+    if (String(sig?.stage ?? '') !== 'RECLAIM_CONFIRMED') continue;
+    const side = String(sig.action ?? '').toUpperCase();
+    if (!['LONG', 'SHORT'].includes(side)) continue;
+    if (noHedge) {
+      const opposite = side === 'LONG' ? 'SHORT' : 'LONG';
+      if (activeSide.get(sig.symbol)?.has(opposite)) {
+        console.log(`[ShakeoutPaper] skip ${sig.symbol} ${side} - đã có lệnh ${opposite} active (chặn hedge)`);
+        continue;
+      }
+    }
+    const key = `${sig.symbol}|${side}|${sig.stage ?? ''}`;
+    const last = shakeoutPaperAutoFired.get(key) ?? 0;
+    if (now - last < cooldownMs) continue;
+    shakeoutPaperAutoFired.set(key, now);
+
+    // Tạo 2 lệnh cùng 1 signalId để so sánh điểm vào:
+    //   MARKET  (cách A): entry = giá market lúc signal, vào OPEN ngay
+    //   PENDING (cách B): entry = giá dự kiến (EMA99 cho score thấp), chờ giá chạm mới fill
+    // Binary 5x/10x theo SL distance của từng entry (giống real-order handlers).
+    const signalId = crypto.randomUUID();
+    const marketEntry = Number(sig.entryReference ?? sig.markPrice ?? sig.entry);
+    const pendingEntry = Number(sig.entry ?? sig.markPrice);
+    const marginUsdt = Number(process.env.SHAKEOUT_RECLAIM_PAPER_MARGIN_USDT ?? 10);
+    const sc = sig.score;
+    const sideL = side.toLowerCase();
+    const marketThreshold = side === 'SHORT' ? shortMarketMinScore : marketMinScore;
+    const referenceEntry = Number(sig.entryReference ?? sig.markPrice ?? sig.entry);
+    const signalSl = Number(sig.sl);
+    const signalTp = Number(sig.tp);
+    const riskPct = Number.isFinite(referenceEntry) && referenceEntry > 0 && Number.isFinite(signalSl)
+      ? Math.min(0.35, Math.max(0.003, Math.abs(referenceEntry - signalSl) / referenceEntry))
+      : 0.03;
+    const rewardPct = Number.isFinite(referenceEntry) && referenceEntry > 0 && Number.isFinite(signalTp)
+      ? Math.max(riskPct * 1.1, Math.abs(signalTp - referenceEntry) / referenceEntry)
+      : riskPct * 2.2;
+
+    const variants = [
+      ...(sc >= marketThreshold
+        ? [{ variant: 'MARKET', status: 'OPEN', entryPrice: marketEntry, tag: 'mkt' }]
+        : []),
+      { variant: 'PENDING', status: 'PENDING', entryPrice: pendingEntry, tag: 'pend' },
+    ];
+    for (const v of variants) {
+      if (!Number.isFinite(v.entryPrice) || v.entryPrice <= 0) continue;
+      const geometryOk = side === 'LONG'
+        ? signalSl < v.entryPrice && v.entryPrice < signalTp
+        : signalTp < v.entryPrice && v.entryPrice < signalSl;
+      const variantSl = geometryOk
+        ? signalSl
+        : side === 'LONG'
+          ? v.entryPrice * (1 - riskPct)
+          : v.entryPrice * (1 + riskPct);
+      const variantTp = geometryOk
+        ? signalTp
+        : side === 'LONG'
+          ? v.entryPrice * (1 + rewardPct)
+          : v.entryPrice * (1 - rewardPct);
+      const lev = calcAutoLeverage(v.entryPrice, variantSl);
+      await createShakeoutPaperTrade({
+        symbol: sig.symbol,
+        side,
+        status: v.status,
+        variant: v.variant,
+        signalId,
+        marginUsdt,
+        leverage: lev,
+        entryPrice: v.entryPrice,
+        sl: variantSl,
+        tp: variantTp,
+        score: sc,
+        stage: sig.stage,
+        signalType: sig.type,
+        source: `shakeout-auto-${sideL}-${sc}-${v.tag}-${lev}x`,
+        note: [
+          sig.note ?? sig.reason ?? '',
+          geometryOk ? '' : `variantGeometryAdjusted=${v.variant} sl=${variantSl} tp=${variantTp}`,
+        ].filter(Boolean).join(' | '),
+        trapRisk: sig.riskFlags?.trapRisk ?? null,
+        trapReasons: sig.riskFlags?.trapReasons ?? null,
+      }).catch((e) => console.warn(`[ShakeoutPaper] auto-fire ${v.variant} ${sig.symbol}:`, e.message));
+    }
+    // đánh dấu side active để chặn chiều ngược trong cùng batch scan
+    if (noHedge) {
+      if (!activeSide.has(sig.symbol)) activeSide.set(sig.symbol, new Set());
+      activeSide.get(sig.symbol).add(side);
+    }
+  }
+}
+
+async function handleShakeoutReclaimRealOrders(signals = []) {
+  if (process.env.SHAKEOUT_RECLAIM_REAL_ORDER_ENABLED !== 'true') return;
+  if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
+    console.log('[ShakeoutReclaimOrder] skip - real Binance order disabled/dry-run');
+    return;
+  }
+
+  const minScore = Number(process.env.SHAKEOUT_RECLAIM_REAL_MIN_SCORE ?? 60);
+  const cooldownMs = Number(process.env.SHAKEOUT_RECLAIM_REAL_COOLDOWN_MS ?? 4 * 3600 * 1000);
+  const maxOrders = Math.max(1, Number(process.env.SHAKEOUT_RECLAIM_REAL_MAX_ORDERS_PER_SCAN ?? 1));
+  const marginUsdt = Number(process.env.SHAKEOUT_RECLAIM_REAL_MARGIN_USDT ?? 1);
+  const defaultLeverage = Number(process.env.SHAKEOUT_RECLAIM_REAL_LEVERAGE ?? 10);
+  const minNotionalUsdt = Number(process.env.SHAKEOUT_RECLAIM_REAL_MIN_NOTIONAL_USDT ?? 5.5);
+  const orderType = String(process.env.SHAKEOUT_RECLAIM_REAL_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const maxOpenPositions = Number(process.env.SHAKEOUT_RECLAIM_REAL_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
+  if (!['MARKET', 'LIMIT', 'LIMIT_IOC'].includes(orderType)) {
+    console.warn(`[ShakeoutReclaimOrder] invalid order type: ${orderType}`);
+    return;
+  }
+
+  const ordered = [...signals]
+    .filter((sig) => Number(sig?.score ?? 0) >= minScore)
+    .filter((sig) => ['LONG', 'SHORT'].includes(String(sig?.action ?? '').toUpperCase()))
+    .filter((sig) => Number.isFinite(Number(sig?.entry)) && Number(sig.entry) > 0)
+    .filter((sig) => Number.isFinite(Number(sig?.sl)) && Number(sig.sl) > 0)
+    .filter((sig) => !['MEDIUM', 'HIGH'].includes(String(sig?.riskFlags?.trapRisk ?? 'LOW').toUpperCase()))
+    .sort((a, b) => Number(b?.score ?? 0) - Number(a?.score ?? 0));
+  if (!ordered.length) return;
+
+  let apiKey;
+  let apiSecret;
+  try {
+    ({ apiKey, apiSecret } = getApiCredentials(null));
+  } catch (err) {
+    apiKey = process.env.BINANCE_API_KEY;
+    apiSecret = process.env.BINANCE_API_SECRET;
+    if (!apiKey || !apiSecret) throw err;
+  }
+
+  const [positions, openOrders] = await Promise.all([
+    client.getPositions({ apiKey, apiSecret }),
+    getCachedOpenOrders(apiKey, apiSecret),
+  ]);
+
+  let submitted = 0;
+
+  for (const sig of ordered) {
+    if (submitted >= maxOrders) break;
+    const symbol = normalizeSymbol(sig?.symbol ?? '');
+    const action = String(sig?.action ?? '').toUpperCase();
+    const isLong = action === 'LONG';
+    const isShort = action === 'SHORT';
+    if (!symbol || (!isLong && !isShort)) continue;
+    if (!Number.isFinite(Number(sig.entry)) || Number(sig.entry) <= 0) continue;
+    if (!Number.isFinite(Number(sig.sl)) || Number(sig.sl) <= 0) continue;
+    const trapRisk = String(sig?.riskFlags?.trapRisk ?? 'LOW').toUpperCase();
+    if (trapRisk === 'MEDIUM' || trapRisk === 'HIGH') {
+      console.log(`[ShakeoutReclaimOrder] skip ${symbol} ${action} - trapRisk=${trapRisk}`);
+      continue;
+    }
+    const liqBlock = liqAutoBlockReason(symbol, action);
+    if (liqBlock) {
+      console.log(`[ShakeoutReclaimOrder] skip ${symbol} ${action} - ${liqBlock}`);
+      continue;
+    }
+
+    const dedupKey = `${symbol}|${sig.stage ?? '-'}|${action}`;
+    const last = shakeoutReclaimRealOrderFired.get(dedupKey) ?? 0;
+    if (Date.now() - last < cooldownMs) {
+      console.log(`[ShakeoutReclaimOrder] skip ${symbol} - cooldown`);
+      continue;
+    }
+
+    const hasPosition = positions.some((p) => p.symbol === symbol && Math.abs(Number(p.positionAmt ?? 0)) > 0);
+    if (hasPosition) {
+      console.log(`[ShakeoutReclaimOrder] skip ${symbol} - already has position`);
+      continue;
+    }
+
+    const hasEntryOrder = openOrders.some((o) => {
+      if (o.symbol !== symbol) return false;
+      if (String(o.reduceOnly ?? '').toLowerCase() === 'true') return false;
+      const type = String(o.type ?? o.origType ?? '').toUpperCase();
+      return ['MARKET', 'LIMIT', 'LIMIT_MAKER'].includes(type);
+    });
+    if (hasEntryOrder) {
+      console.log(`[ShakeoutReclaimOrder] skip ${symbol} - already has entry order`);
+      continue;
+    }
+
+    const leverage = calcAutoLeverage(sig.entry, sig.sl, defaultLeverage);
+    const notionalUsdt = Math.max(marginUsdt * leverage, minNotionalUsdt);
+    const side = isLong ? 'BUY' : 'SELL';
+
+    try {
+      const result = await placeOrder({
+        symbol,
+        side,
+        orderType,
+        notionalUsdt,
+        leverage,
+        limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
+        takeProfitPrice: sig.tp ?? undefined,
+        stopLossPrice: sig.sl ?? undefined,
+        protectionOnFill: true,
+        maxOpenPositions,
+        dryRun: false,
+        source: 'shakeout-reclaim',
+      }, null, { apiKey, apiSecret });
+
+      submitted++;
+      shakeoutReclaimRealOrderFired.set(dedupKey, Date.now());
+      invalidateOpenOrdersCache();
+      const orderId = result?.orderResult?.orderId ?? '-';
+      console.log(`[ShakeoutReclaimOrder] REAL ${symbol} ${action} ${orderType} orderId=${orderId} margin=$${marginUsdt} score=${sig.score}`);
+
+      const webhookUrl = process.env.SHAKEOUT_RECLAIM_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '';
+      if (webhookUrl) {
+        const fmt = (v) => v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toPrecision(8).replace(/\.?0+$/, '');
+        const msg = [
+          `**[REAL ORDER] Shakeout Reclaim ${symbol} ${action} - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+          `OrderId: \`${orderId}\` | Margin: $${marginUsdt} x ${leverage}x | Notional: $${notionalUsdt}`,
+          `Entry: \`${fmt(sig.entry)}\` | SL: \`${fmt(sig.sl)}\` | TP: \`${fmt(sig.tp)}\``,
+          `Stage: ${sig.stage ?? '-'} | Type: ${sig.type ?? '-'}`,
+        ].join('\n');
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: msg }),
+        }).catch(() => {});
+      }
+    } catch (e) {
+      console.warn(`[ShakeoutReclaimOrder] ${symbol}:`, e.message);
+    }
+  }
 }
 
 function startPaperTradeTicker() {
@@ -7714,10 +10509,13 @@ function getApiCredentials(token = null) {
     if (!apiKey || !apiSecret) throw new Error('Missing Binance API credentials. Enter API key on login or set BINANCE_API_KEY in .env.');
     return { apiKey, apiSecret };
   }
-  // Background (token=null): chỉ dùng session đã đăng nhập, không lấy từ env
+  // Background (token=null): ưu tiên session, fallback env để socket/manual order guards vẫn chạy sau restart.
   if (sessionCredentials.size > 0) {
     const first = sessionCredentials.values().next().value;
     if (first?.apiKey && first?.apiSecret) return { apiKey: first.apiKey, apiSecret: first.apiSecret };
+  }
+  if (process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET) {
+    return { apiKey: process.env.BINANCE_API_KEY, apiSecret: process.env.BINANCE_API_SECRET };
   }
   throw new Error('Chưa đăng nhập. Vào /orders và nhập API key để sử dụng.');
 }
@@ -8226,13 +11024,6 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
     const leverage = Number(p.leverage) || 10;
     if (!entry || !amt) continue;
 
-    // Skip positions already in loss
-    const markPrice = Number(p.markPrice ?? 0);
-    if (markPrice > 0) {
-      const currentRoe = ((markPrice - entry) / entry) * leverage * (amt > 0 ? 1 : -1) * 100;
-      if (currentRoe < 0) continue;
-    }
-
     // Check regular STOP_MARKET orders
     const hasRegularSl = allOrders.some((o) => o.symbol === symbol && (o.type === 'STOP_MARKET' || o.type === 'STOP'));
     if (hasRegularSl) {
@@ -8299,6 +11090,42 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
 
 const liqAutoOrderFired = new Map(); // `${symbol}:${price}` → timestamp
 const pendingLiqTp = new Map(); // symbol → { tpPrice, tpRoePct, direction, at }
+const recentLiqAutoBlock = new Map(); // symbol -> { direction, bias, sweepProb, at }
+
+function rememberLiqAutoBlock(payload) {
+  if (!payload?.symbol) return;
+  const sweepProb = Number(payload.sweepProb ?? 0);
+  const minProb = Number(process.env.LIQ_AUTO_BLOCK_MIN_PROB ?? 80);
+  if (sweepProb < minProb) return;
+  recentLiqAutoBlock.set(String(payload.symbol).toUpperCase(), {
+    direction: String(payload.direction ?? '').toLowerCase(),
+    bias: Number(payload.bias ?? 0),
+    sweepProb,
+    at: Date.now(),
+  });
+}
+
+function liqAutoBlockReason(symbol, side) {
+  const rec = recentLiqAutoBlock.get(String(symbol ?? '').toUpperCase());
+  if (!rec) return '';
+  const ttlMs = Number(process.env.LIQ_AUTO_BLOCK_TTL_MS ?? 2 * 60 * 60 * 1000);
+  if (Date.now() - rec.at > ttlMs) {
+    recentLiqAutoBlock.delete(String(symbol ?? '').toUpperCase());
+    return '';
+  }
+  const minProb = Number(process.env.LIQ_AUTO_BLOCK_MIN_PROB ?? 80);
+  if (rec.sweepProb < minProb) return '';
+  const orderSide = String(side ?? '').toUpperCase();
+  const longBlocked = orderSide === 'LONG' || orderSide === 'BUY';
+  const shortBlocked = orderSide === 'SHORT' || orderSide === 'SELL';
+  if (longBlocked && (rec.direction === 'long' || rec.bias <= -Number(process.env.LIQ_AUTO_BLOCK_MIN_ABS_BIAS ?? 0.5))) {
+    return `liq-scan bearish sweepProb=${rec.sweepProb}% bias=${Number(rec.bias).toFixed(3)}`;
+  }
+  if (shortBlocked && (rec.direction === 'short' || rec.bias >= Number(process.env.LIQ_AUTO_BLOCK_MIN_ABS_BIAS ?? 0.5))) {
+    return `liq-scan bullish sweepProb=${rec.sweepProb}% bias=${Number(rec.bias).toFixed(3)}`;
+  }
+  return '';
+}
 
 function getLiqHighProbThreshold() {
   const thresholds = [];
@@ -8313,6 +11140,8 @@ function getLiqHighProbHandler() {
   if (!paperEnabled && !realEnabled) return null;
 
   return async (payload) => {
+    rememberLiqAutoBlock(payload);
+
     if (paperEnabled) {
       await createLiqPaperTrade(payload).catch((err) => {
         console.error(`[PaperLiq] ❌ ${payload.symbol}:`, err.message);
@@ -8336,17 +11165,39 @@ const SIGNAL_FLOOD_WINDOW_MS = 5 * 60 * 1000;  // window 5 phút
 const SIGNAL_FLOOD_THRESHOLD = 8;               // ≥ 8 lệnh/5 phút → flood
 const SIGNAL_FLOOD_PAUSE_MS  = 30 * 60 * 1000; // dừng 30 phút sau khi detect
 
+function isPumpShortEdgeAutoRecord(order) {
+  const side = String(order?.side ?? order?.action ?? '').toUpperCase();
+  const score = Number(order?.score);
+  return (side === 'SELL' || side === 'SHORT') && score >= 40 && score <= 79;
+}
+
+function countPumpShortEdgeAutoExposure() {
+  const ids = new Set();
+  for (const order of [...pumpPendingOrders, ...pumpWatchingOrders]) {
+    if (!isPumpShortEdgeAutoRecord(order)) continue;
+    ids.add(order.orderId ?? `${order.symbol}:${order.side}:${order.placedAt ?? order.filledAt ?? ''}`);
+  }
+  return ids.size;
+}
+
 async function handlePumpAutoOrder(signal, openOrders = null) {
   if (!runtimeSettings.pumpAutoOrderEnabled) return;
   if (isVnBlockHour()) { console.log(`[PumpAuto] ⏰ Block 17-19h VN — ${signal.symbol}`); return; }
   const { symbol, action, score, marketOk, entry, sl, factors, type: signalType } = signal;
   if (String(signalType ?? '').startsWith('ma60_volume_cluster')) return;
+  const liqBlock = liqAutoBlockReason(symbol, action);
+  if (liqBlock) {
+    console.log(`[PumpAuto] skip ${symbol} ${action} - ${liqBlock}`);
+    return;
+  }
+  const onlyPumpShortEdge = process.env.PUMP_AUTO_ONLY_PUMP_SHORT_EDGE === 'true';
   const pumpAutoMinScore = Number(process.env.PUMP_AUTO_MIN_SCORE ?? 80);
   const pumpAutoMaxScore = Number(process.env.PUMP_AUTO_MAX_SCORE ?? 999);
+  if (onlyPumpShortEdge && action !== 'SHORT') return;
   if (score < pumpAutoMinScore) return;
   if (score > pumpAutoMaxScore) return;
-  if (marketOk === false) return;
-  if (factors?.emaRibbon === 0) return; // EMA ribbon không bullish → không đặt lệnh
+  if (!onlyPumpShortEdge && marketOk === false) return;
+  if (!onlyPumpShortEdge && factors?.emaRibbon === 0) return; // EMA ribbon không bullish → không đặt lệnh
   // Chase guard — bỏ qua nếu giá đã chạy > 30% vào TP range
   const chasePct = factors?.chasePct ?? 0;
   if (chasePct > 0.30) {
@@ -8354,7 +11205,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     return;
   }
   // Adjusted score guard (score đã trừ chase penalty từ detector)
-  if (score < 70) {
+  if (!onlyPumpShortEdge && score < 70) {
     console.log(`[PumpAuto] ⏭ ${symbol} adj.score=${score} < 70 — skip`);
     return;
   }
@@ -8492,7 +11343,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
   }
 
   // Block SHORT khi BTC đang bullish — đối xứng với block LONG khi bearish
-  if (action === 'SHORT') {
+  if (action === 'SHORT' && !onlyPumpShortEdge) {
     const health = btcHealthCache.data;
     if (health?.bullBias === 'bullish') { // caution = cảnh báo thôi, không hard-block SHORT
       console.log(`[PumpAuto] ⛔ ${symbol} block SHORT — BTC bullBias=${health.bullBias} (RSI1h=${health.rsi1h} EMA1h=${health.emaTrend1h} pct6h=${health.pct6h}%)`);
@@ -8544,6 +11395,15 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     if (openLimitEntries.length >= maxLimitOrders) {
       console.log(`[PumpAuto] ⚠ ${symbol} skip — max ${maxLimitOrders} limit orders reached`);
       return;
+    }
+
+    if (onlyPumpShortEdge) {
+      const maxShortEdge = Number(process.env.PUMP_AUTO_SHORT_EDGE_MAX_POSITIONS ?? 10);
+      const currentShortEdge = countPumpShortEdgeAutoExposure();
+      if (maxShortEdge > 0 && currentShortEdge >= maxShortEdge) {
+        console.log(`[PumpAuto] ⚠ ${symbol} skip — PUMP_SHORT EDGE max ${maxShortEdge} reached (current=${currentShortEdge})`);
+        return;
+      }
     }
 
     // Max positions check: positions đang mở + LIMIT pending không vượt ngưỡng
@@ -9022,7 +11882,6 @@ function startNegTpScanner() {
       }
       for (const p of active) {
         const symbol = p.symbol;
-        if (tslExcludedSymbols.has(symbol)) continue; // Skip TSL excluded
         const amt = Number(p.positionAmt);
         const entry = Number(p.entryPrice);
         const lev = Number(p.leverage) || 1;
@@ -9088,6 +11947,70 @@ function startSlTrailSafetyScanner() {
   setInterval(run, intervalMs);
 }
 
+async function refreshTakeProfitForSymbol(symbol) {
+  const { apiKey, apiSecret } = getApiCredentials(null);
+  invalidateOpenOrdersCache();
+
+  const { positions } = await getSharedPositionData();
+  let pos = positions.find((p) => p.symbol === symbol);
+  if (!pos && posMonitor?.getActivePositions) {
+    pos = posMonitor.getActivePositions().find((p) => p.symbol === symbol);
+  }
+  if (!pos || Number(pos.positionAmt) === 0) {
+    console.warn(`[AutoTP] ${symbol} fill refresh skipped: active position not found`);
+    return;
+  }
+
+  const symbols = await getSymbols();
+  await ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, null, null, { force: true });
+}
+
+async function getPositionRoeForTpGuard(pos, { fetchMark = false } = {}) {
+  const symbol = pos.symbol;
+  const amt = Number(pos.positionAmt ?? pos.amt);
+  const entry = Number(pos.entryPrice ?? pos.entry);
+  const leverage = Number(pos.leverage) || 1;
+  if (!symbol || !amt || !entry) return { ready: false, amt, entry, leverage };
+
+  const isolatedMargin = Number(pos.isolatedMargin);
+  const initialMargin = Number(pos.initialMargin);
+  const margin = isolatedMargin > 0
+    ? isolatedMargin
+    : initialMargin > 0
+      ? initialMargin
+      : Math.abs(amt) * entry / leverage;
+  if (margin <= 0) return { ready: false, amt, entry, leverage };
+
+  let mark = Number(pos.markPrice);
+  let rawUpnl = Number(pos.unRealizedProfit ?? pos.unrealizedProfit);
+  const needsMark = fetchMark || !Number.isFinite(mark) || mark <= 0 || !Number.isFinite(rawUpnl) || rawUpnl === 0;
+  if (needsMark) {
+    const premium = await client.getPremiumIndex(symbol).catch(() => null);
+    const fetchedMark = Number(premium?.markPrice);
+    if (Number.isFinite(fetchedMark) && fetchedMark > 0) mark = fetchedMark;
+  }
+
+  const upnl = fetchMark && Number.isFinite(mark) && mark > 0
+    ? (mark - entry) * amt
+    : Number.isFinite(rawUpnl) && rawUpnl !== 0
+      ? rawUpnl
+      : Number.isFinite(mark) && mark > 0
+        ? (mark - entry) * amt
+        : NaN;
+  if (!Number.isFinite(upnl)) return { ready: false, amt, entry, leverage, margin, mark };
+
+  return {
+    ready: true,
+    amt,
+    entry,
+    leverage,
+    margin,
+    mark,
+    upnl,
+    roe: (upnl / margin) * 100,
+  };
+}
+
 async function runSlTrailSafetyScan() {
   if (process.env.AUTO_SL_ENABLED === 'false') return;
   const { positions: active } = await getSharedPositionData();
@@ -9135,26 +12058,41 @@ async function runMissingTpScan() {
 
   const symbols = await getSymbols();
   for (const pos of active) {
-    if (tslExcludedSymbols.has(pos.symbol)) continue; // Skip TSL excluded
     await ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, sharedOpenOrders, sharedAlgoOrders);
     await new Promise((r) => setTimeout(r, 80));
   }
 }
 
-async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, sharedOpenOrders = null, sharedAlgoOrders = null) {
+async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, sharedOpenOrders = null, sharedAlgoOrders = null, options = {}) {
   const symbol = pos.symbol;
   const amt = Number(pos.positionAmt);
   const entry = Number(pos.entryPrice);
   const leverage = Number(pos.leverage) || 1;
   if (!symbol || !amt || !entry) return;
 
-  // Skip API calls if we already confirmed a TP exists for this symbol+entry combo
   const tpKey = `${symbol}|${entry.toFixed(8)}`;
-  if (tpConfirmedSet.has(tpKey)) return;
-
   const isLong = amt > 0;
   const closeSide = isLong ? 'SELL' : 'BUY';
   const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+  const roeInfo = await getPositionRoeForTpGuard(pos, { fetchMark: options.force });
+  const negTpRoe = Number(process.env.NEG_TP_ROE ?? -30);
+  const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
+  if (roeInfo.ready && (roeInfo.roe <= negTpRoe || roeInfo.roe <= tpGuardRoe)) {
+    console.log(`[AutoTP] ${symbol} ROE=${roeInfo.roe.toFixed(2)}% <= guard (${Math.max(negTpRoe, tpGuardRoe)}%) -> move TP to entry`);
+    await handleNegativeTimeoutTp(symbol, {
+      amt,
+      entry,
+      leverage,
+      positionSide: pos.positionSide ?? 'BOTH',
+    });
+    return;
+  }
+  if (options.force && !roeInfo.ready) {
+    console.warn(`[AutoTP] ${symbol} skip normal TP: cannot compute fresh ROE after fill`);
+    return;
+  }
+  // Skip API calls only after the negative guard had a chance to move TP to entry.
+  if (!options.force && tpConfirmedSet.has(tpKey)) return;
 
   let openOrders, algoRows;
   if (sharedOpenOrders && sharedAlgoOrders) {
@@ -9169,28 +12107,19 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
     algoRows = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
   }
 
-  const hasAlgoTp = algoRows.some((o) => {
-    const t = String(o.orderType ?? o.type ?? '').toUpperCase();
-    return o.symbol === symbol && (t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT');
-  });
-  const hasRegularTp = openOrders.some((o) => {
-    const t = String(o.origType ?? o.type ?? '').toUpperCase();
-    return o.symbol === symbol && o.side === closeSide && (t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT');
-  });
-  if (hasAlgoTp || hasRegularTp) {
-    tpConfirmedSet.add(tpKey);
-    return;
-  }
-
   const symbolInfo = symbols.find((s) => s.symbol === symbol);
   if (!symbolInfo) return;
 
-  // Ưu tiên TP từ signal pump (manual hoặc auto) nếu có
+  // Ưu tiên TP gốc của signal đã lưu khi socket fill.
+  const trackedSignalTp = Number(slTracking.positions[symbol]?.signalTp ?? 0);
   const pumpRecord = [...pumpPendingOrders, ...pumpWatchingOrders].find(
     (r) => r.symbol === symbol && r.tp && Math.abs((Number(r.fillPrice ?? r.entry) - entry) / entry) < 0.01,
   );
   let rawTpPrice;
-  if (pumpRecord?.tp) {
+  if (Number.isFinite(trackedSignalTp) && trackedSignalTp > 0) {
+    rawTpPrice = trackedSignalTp;
+    console.log(`[AutoTP] 📌 ${symbol} giữ signal TP=${rawTpPrice} source=${slTracking.positions[symbol]?.signalSource ?? '-'}`);
+  } else if (pumpRecord?.tp) {
     rawTpPrice = Number(pumpRecord.tp);
     console.log(`[AutoTP] 📌 ${symbol} dùng signal TP=${rawTpPrice} thay vì ROE cố định`);
   } else {
@@ -9212,6 +12141,69 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
   const steppedQty = Math.floor(Math.abs(amt) / stepSize) * stepSize;
   const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
   if (Number(quantity) <= 0) return;
+
+  const expectedPrice = Number(triggerPrice);
+  const expectedQty = Number(quantity);
+  const priceTol = Math.max(0.001, Number(process.env.AUTO_TP_REFRESH_PRICE_TOL_PCT ?? 0.15) / 100);
+  const qtyTol = Math.max(0.000001, Number(process.env.AUTO_TP_REFRESH_QTY_TOL_PCT ?? 0.5) / 100);
+  const isTpType = (t) => {
+    const u = String(t ?? '').toUpperCase();
+    return u === 'TAKE_PROFIT_MARKET' || u === 'TAKE_PROFIT';
+  };
+  const orderPrice = (o) => Number(o.triggerPrice ?? o.stopPrice ?? o.price);
+  const orderQty = (o) => Number(o.origQty ?? o.quantity ?? o.executedQty ?? 0);
+  const priceMatches = (p) => Number.isFinite(p) && Math.abs(p - expectedPrice) / expectedPrice <= priceTol;
+  const qtyCovers = (q) => !Number.isFinite(q) || q <= 0 || q >= expectedQty * (1 - qtyTol);
+
+  const existingAlgoTp = algoRows.find((o) =>
+    o.symbol === symbol &&
+    String(o.side ?? '').toUpperCase() === closeSide &&
+    isTpType(o.orderType ?? o.type) &&
+    priceMatches(orderPrice(o)) &&
+    qtyCovers(orderQty(o)),
+  );
+  const existingRegularTp = openOrders.find((o) =>
+    o.symbol === symbol &&
+    o.side === closeSide &&
+    isTpType(o.origType ?? o.type) &&
+    priceMatches(orderPrice(o)) &&
+    qtyCovers(orderQty(o)),
+  );
+  if (existingAlgoTp || existingRegularTp) {
+    tpConfirmedSet.add(tpKey);
+    return;
+  }
+
+  const staleRegularTp = openOrders.filter((o) =>
+    o.symbol === symbol &&
+    o.side === closeSide &&
+    isTpType(o.origType ?? o.type) &&
+    (!priceMatches(orderPrice(o)) || !qtyCovers(orderQty(o))),
+  );
+  const staleAlgoTp = algoRows.filter((o) =>
+    o.symbol === symbol &&
+    String(o.side ?? '').toUpperCase() === closeSide &&
+    isTpType(o.orderType ?? o.type) &&
+    (!priceMatches(orderPrice(o)) || !qtyCovers(orderQty(o))),
+  );
+  for (const o of staleRegularTp) {
+    if (!o.orderId) continue;
+    await client.cancelOrder({ symbol, orderId: o.orderId, apiKey, apiSecret, recvWindow }).catch((e) =>
+      console.warn(`[AutoTP] ${symbol} cancel stale TP order ${o.orderId}: ${e.message}`),
+    );
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  for (const o of staleAlgoTp) {
+    if (!o.algoId) continue;
+    await client.cancelAlgoOrder({ algoId: o.algoId, apiKey, apiSecret, recvWindow }).catch((e) =>
+      console.warn(`[AutoTP] ${symbol} cancel stale TP algo ${o.algoId}: ${e.message}`),
+    );
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  if (staleRegularTp.length || staleAlgoTp.length) {
+    invalidateOpenOrdersCache();
+    console.log(`[AutoTP] ${symbol} stale TP refresh: regular=${staleRegularTp.length}, algo=${staleAlgoTp.length}, newQty=${quantity}, newTP=${triggerPrice}`);
+  }
 
   const positionSide = pos.positionSide ?? 'BOTH';
   const isHedge = positionSide !== 'BOTH';
@@ -9352,19 +12344,24 @@ async function handleNegativeTimeoutTp(symbol, pos) {
     const newTpPrice = priceFromTick(symbolInfo, entry);
     if (!newTpPrice || newTpPrice === 'NaN' || Number(newTpPrice) <= 0) { console.warn(`[NegTp] ${symbol} priceFromTick returned invalid: ${newTpPrice}`); return; }
 
-    // Check if a suitable close order already exists at/better than entry
+    const entryTol = 0.005;
+    const isNearEntry = (price) => {
+      const p = Number(price);
+      return Number.isFinite(p) && Math.abs(p - Number(newTpPrice)) / Number(newTpPrice) <= entryTol;
+    };
+
+    // Check if a close order already exists near entry. A normal TP far above/below
+    // entry is not enough here because this guard intentionally moves TP to breakeven.
     const allOpen = Array.isArray(openOrders) ? openOrders : [];
     const existingClose = allOpen.find((o) => {
-      const t = String(o.type ?? '').toUpperCase();
+      const t = String(o.origType ?? o.type ?? '').toUpperCase();
       const sideOk = isLong ? o.side === 'SELL' : o.side === 'BUY';
       if (!sideOk) return false;
       if (t === 'TAKE_PROFIT_MARKET' || t === 'TAKE_PROFIT') {
-        const p = Number(o.stopPrice);
-        return isLong ? p >= newTpPrice * 0.995 : p <= newTpPrice * 1.005;
+        return isNearEntry(o.stopPrice ?? o.triggerPrice);
       }
       if (t === 'LIMIT') {
-        const p = Number(o.price);
-        return isLong ? p >= newTpPrice * 0.995 : p <= newTpPrice * 1.005;
+        return isNearEntry(o.price);
       }
       return false;
     });
@@ -9378,14 +12375,49 @@ async function handleNegativeTimeoutTp(symbol, pos) {
     const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
     const existingAlgo = allAlgo.find((o) => {
       if (o.symbol !== symbol) return false;
-      const t = String(o.type ?? '').toUpperCase();
+      const t = String(o.orderType ?? o.type ?? '').toUpperCase();
       if (t !== 'TAKE_PROFIT_MARKET' && t !== 'TAKE_PROFIT') return false;
-      const p = Number(o.triggerPrice);
-      return isLong ? p >= newTpPrice * 0.995 : p <= newTpPrice * 1.005;
+      return isNearEntry(o.triggerPrice ?? o.stopPrice);
     });
     if (existingAlgo) {
       tpMovedToEntry.set(symbol, entry);
+      console.log(`[NegTp] ${symbol} already has algo close near entry, skip`);
       return;
+    }
+
+    const closeSide = isLong ? 'SELL' : 'BUY';
+    const staleTpOpen = allOpen.filter((o) => {
+      const t = String(o.origType ?? o.type ?? '').toUpperCase();
+      if (o.side !== closeSide) return false;
+      if (t !== 'LIMIT' && t !== 'TAKE_PROFIT' && t !== 'TAKE_PROFIT_MARKET') return false;
+      const p = t === 'LIMIT' ? o.price : (o.stopPrice ?? o.triggerPrice);
+      return !isNearEntry(p);
+    });
+    for (const o of staleTpOpen) {
+      if (!o.orderId) continue;
+      await client.cancelOrder({ symbol, orderId: o.orderId, apiKey, apiSecret, recvWindow }).catch((e) =>
+        console.warn(`[NegTp] ${symbol} cancel stale TP order ${o.orderId}: ${e.message}`),
+      );
+      await new Promise((r) => setTimeout(r, 80));
+    }
+
+    const staleTpAlgo = allAlgo.filter((o) => {
+      if (o.symbol !== symbol) return false;
+      const t = String(o.orderType ?? o.type ?? '').toUpperCase();
+      if (t !== 'TAKE_PROFIT' && t !== 'TAKE_PROFIT_MARKET') return false;
+      if (String(o.side ?? '').toUpperCase() !== closeSide) return false;
+      return !isNearEntry(o.triggerPrice ?? o.stopPrice);
+    });
+    for (const o of staleTpAlgo) {
+      if (!o.algoId) continue;
+      await client.cancelAlgoOrder({ algoId: o.algoId, apiKey, apiSecret, recvWindow }).catch((e) =>
+        console.warn(`[NegTp] ${symbol} cancel stale TP algo ${o.algoId}: ${e.message}`),
+      );
+      await new Promise((r) => setTimeout(r, 80));
+    }
+    if (staleTpOpen.length || staleTpAlgo.length) {
+      invalidateOpenOrdersCache();
+      console.log(`[NegTp] ${symbol} canceled stale TP(s): regular=${staleTpOpen.length}, algo=${staleTpAlgo.length}`);
     }
 
     const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
@@ -9522,10 +12554,20 @@ async function sendStatic(pathname, response) {
           ? '/dump-ignition.html'
         : pathname === '/etf-proxy'
           ? '/etf-proxy.html'
+        : pathname === '/market-news'
+          ? '/market-news.html'
+        : pathname === '/coin-flow'
+          ? '/coin-flow.html'
+        : pathname === '/token-unlocks'
+          ? '/token-unlocks.html'
         : pathname === '/pump-ignition'
           ? '/pump-ignition.html'
         : pathname === '/ema-squeeze'
           ? '/ema-squeeze.html'
+        : pathname === '/ema99-kill-reclaim'
+          ? '/ema99-kill-reclaim.html'
+        : pathname === '/shakeout-reclaim'
+          ? '/shakeout-reclaim.html'
         : pathname === '/edge-short'
           ? '/edge-short.html'
         : pathname === '/orders'

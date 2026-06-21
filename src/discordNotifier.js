@@ -951,6 +951,9 @@ export function startLiqImbalanceScanner({
                 symbol: row.symbol,
                 markPrice: row.markPrice,
                 direction,
+                bias: heatmap.bias,
+                liquidityAbove: heatmap.liquidityAbove,
+                liquidityBelow: heatmap.liquidityBelow,
                 sweepTargetPrice: heatmap.sweepTarget.price,
                 sweepProb,
                 confirmation: assessSweepReversal({

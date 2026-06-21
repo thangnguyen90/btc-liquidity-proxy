@@ -83,9 +83,19 @@
     return t === 'rising' ? '↑' : t === 'falling' ? '↓' : '→';
   }
 
+  function ensureMount() {
+    let el = document.getElementById('btcHealth');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'btcHealth';
+    el.className = 'btch-auto-mount';
+    const host = document.querySelector('main, .container, .wrap, .shell, .page') || document.body;
+    host.prepend(el);
+    return el;
+  }
+
   function render(d) {
-    const el = document.getElementById('btcHealth');
-    if (!el) return;
+    const el = ensureMount();
     if (d.error) {
       el.innerHTML = `<div class="btch-bar btch-err">BTC Health unavailable</div>`;
       return;
@@ -96,6 +106,34 @@
     // Auto order status — mirrors server-side handlePumpAutoOrder checks
     const autoLongBlocked  = isDangerLow || isDangerHigh || d.bias === 'bearish' || d.bias === 'caution';
     const autoShortBlocked = isDangerLow || isDangerHigh || d.bullBias === 'bullish'; // caution không hard-block SHORT
+    const btcWeak = (d.bias === 'bearish' && (
+      d.emaTrend1h === 'below'
+      || (d.rsi1h != null && d.rsi1h < 45)
+      || (d.pct6h != null && d.pct6h < 0)
+    ))
+      || (d.emaTrend1h === 'below' && d.rsi1h != null && d.rsi1h < 45)
+      || (d.pct6h != null && d.pct6h <= -1)
+      || (d.btcCandle1hPct != null && d.btcCandle1hPct <= -0.5);
+    const longRisk = autoLongBlocked || d.bearishDiv || d.btcSpikeAlert;
+    const btcStrong = d.bias !== 'bearish' && ((d.bullBias === 'bullish' && (
+      d.emaTrend1h === 'above'
+      || (d.rsi1h != null && d.rsi1h > 55)
+      || (d.pct6h != null && d.pct6h > 0)
+    ))
+      || (d.emaTrend1h === 'above' && d.rsi1h != null && d.rsi1h > 60)
+      || (d.pct6h != null && d.pct6h >= 1 && d.rsi1h != null && d.rsi1h > 55)
+      || (d.btcCandle1hPct != null && d.btcCandle1hPct >= 0.5));
+    const shortRisk = autoShortBlocked || d.bullBias === 'caution';
+    const longWarning = btcWeak
+      ? `<div class="btch-long-flag btch-long-flag-danger"><strong>BTC YẾU</strong><span>HẠN CHẾ LONG</span><small>Bear ${d.bearPoints ?? 0} · RSI1h ${d.rsi1h ?? '-'} · 6h ${d.pct6h != null ? `${d.pct6h > 0 ? '+' : ''}${d.pct6h}%` : '-'}</small></div>`
+      : longRisk
+        ? `<div class="btch-long-flag btch-long-flag-caution"><strong>BTC RỦI RO</strong><span>THẬN TRỌNG LONG</span><small>Bear ${d.bearPoints ?? 0} · ${d.emaTrend1h === 'below' ? 'Dưới EMA20 1h' : 'Momentum chưa thuận'}</small></div>`
+        : `<div class="btch-long-flag btch-long-flag-ok"><strong>BTC ỔN</strong><span>LONG KHÔNG BỊ CẢNH BÁO</span></div>`;
+    const shortWarning = btcStrong
+      ? `<div class="btch-long-flag btch-long-flag-danger"><strong>BTC MẠNH</strong><span>HẠN CHẾ SHORT</span><small>Bull ${d.bullPoints ?? 0} · RSI1h ${d.rsi1h ?? '-'} · 6h ${d.pct6h != null ? `${d.pct6h > 0 ? '+' : ''}${d.pct6h}%` : '-'}</small></div>`
+      : shortRisk
+        ? `<div class="btch-long-flag btch-long-flag-caution"><strong>BTC RỦI RO</strong><span>THẬN TRỌNG SHORT</span><small>Bull ${d.bullPoints ?? 0} · ${d.emaTrend1h === 'above' ? 'Trên EMA20 1h' : 'Momentum có thể đảo chiều'}</small></div>`
+        : `<div class="btch-long-flag btch-long-flag-ok"><strong>BTC ỔN</strong><span>SHORT KHÔNG BỊ CẢNH BÁO</span></div>`;
     let autoChip;
     if (isDangerLow || isDangerHigh) {
       const reason = isDangerLow ? 'RSI oversold cực đoan' : 'RSI overbought cực đoan';
@@ -111,6 +149,10 @@
     }
     const initPrice = d.price && isFinite(d.price) ? fmtBtcPrice(d.price) : '…';
     el.innerHTML = `
+<div class="btch-direction-flags">
+  ${longWarning}
+  ${shortWarning}
+</div>
 <div class="btch-bar">
   <span class="btch-label">BTC</span>
   <span id="btch-btc-price" style="font-weight:700;color:#94a3b8;font-size:13px;letter-spacing:.01em">${initPrice}</span>
@@ -194,6 +236,32 @@
   font-size: 12px;
   margin-bottom: 12px;
 }
+.btch-auto-mount { width: 100%; margin-bottom: 12px; }
+.btch-direction-flags {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.btch-long-flag {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.btch-long-flag strong { font-size: 14px; }
+.btch-long-flag span { font-weight: 800; }
+.btch-long-flag small { margin-left: auto; opacity: .82; }
+.btch-long-flag-danger { color: #fecaca; background: #3a1217; border-color: #ef4444; box-shadow: inset 4px 0 0 #ef4444; }
+.btch-long-flag-danger strong, .btch-long-flag-danger span { color: #fb7185; }
+.btch-long-flag-caution { color: #fde68a; background: #332408; border-color: #f59e0b; box-shadow: inset 4px 0 0 #f59e0b; }
+.btch-long-flag-caution strong, .btch-long-flag-caution span { color: #fbbf24; }
+.btch-long-flag-ok { color: #a7f3d0; background: #072c24; border-color: #10b981; box-shadow: inset 4px 0 0 #10b981; }
+.btch-long-flag-ok strong, .btch-long-flag-ok span { color: #34d399; }
 .btch-label { font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: .05em; font-size: 11px; }
 .btch-sep { color: #1e293b; }
 .btch-item { display: flex; align-items: center; gap: 4px; }
@@ -202,12 +270,18 @@
 .btch-div { background: #451a03; color: #fbbf24; border-radius: 4px; padding: 1px 6px; }
 .btch-age { margin-left: auto; color: #334155; font-size: 11px; }
 .btch-err { color: #64748b; font-style: italic; }
+@media (max-width: 720px) {
+  .btch-direction-flags { grid-template-columns: 1fr; }
+  .btch-long-flag { align-items: flex-start; flex-wrap: wrap; }
+  .btch-long-flag small { width: 100%; margin-left: 0; }
+}
 `;
     document.head.appendChild(s);
   }
 
   function init() {
     injectStyles();
+    ensureMount();
     load();
     setInterval(load, REFRESH_MS);
     startBtcPriceWs();

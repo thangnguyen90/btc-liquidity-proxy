@@ -26,11 +26,31 @@ export function loadEnv() {
     }
 
     const key = trimmed.slice(0, separatorIndex).trim();
-    const rawValue = trimmed.slice(separatorIndex + 1).trim();
+    const rawValue = stripInlineComment(trimmed.slice(separatorIndex + 1)).trim();
     const value = rawValue.replace(/^["']|["']$/g, '');
 
     if (!process.env[key]) {
       process.env[key] = value;
     }
   });
+}
+
+function stripInlineComment(value) {
+  let quote = null;
+
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    const prev = value[i - 1];
+
+    if ((ch === '"' || ch === "'") && prev !== '\\') {
+      quote = quote === ch ? null : quote ?? ch;
+      continue;
+    }
+
+    if (ch === '#' && quote === null) {
+      return value.slice(0, i);
+    }
+  }
+
+  return value;
 }

@@ -1,0 +1,132 @@
+[
+  {
+    "symbol": "LUMIAUSDT",
+    "side": "BUY",
+    "filledQty": 667.7,
+    "avgPrice": 0.09769407,
+    "positionSide": "BOTH",
+    "fillTime": 1781694390759,
+    "source": "pump",
+    "loggedAt": "2026-06-17T11:06:33.311Z"
+  },
+  {
+    "symbol": "LUMIAUSDT",
+    "side": "BUY",
+    "filledQty": 667.7,
+    "avgPrice": 0.09774,
+    "positionSide": "BOTH",
+    "fillTime": 1781694390759,
+    "source": "pump",
+    "loggedAt": "2026-06-17T11:06:34.253Z"
+  },
+  {
+    "symbol": "LUMIAUSDT",
+    "side": "BUY",
+    "filledQty": 54.200000000000045,
+    "avgPrice": 0.09769793,
+    "positionSide": "BOTH",
+    "fillTime": 1781694390759,
+    "source": "pump",
+    "loggedAt": "2026-06-17T11:06:34.762Z"
+  },
+  {
+    "symbol": "LUMIAUSDT",
+    "side": "BUY",
+    "filledQty": 54.2,
+    "avgPrice": 0.0977415,
+    "positionSide": "BOTH",
+    "fillTime": 1781694390759,
+    "source": "pump",
+    "loggedAt": "2026-06-17T11:06:35.291Z"
+  },
+  {
+    "symbol": "LUMIAUSDT",
+    "side": "BUY",
+    "filledQty": 50.89999999999998,
+    "avgPrice": 0.09770168,
+    "positionSide": "BOTH",
+    "fillTime": 1781694390759,
+    "source": "pump",
+    "loggedAt": "2026-06-17T11:06:35.619Z"
+  },
+  {
+    "symbol": "LUMIAUSDT",
+    "side": "BUY",
+    "filledQty": 50.9,
+    "avgPrice": 0.09774338,
+    "positionSide": "BOTH",
+    "fillTime": 1781694390759,
+    "source": "pump",
+    "loggedAt": "2026-06-17T11:06:35.979Z"
+  },
+  {
+    "symbol": "AIOTUSDT",
+    "side": "BUY",
+    "filledQty": 514,
+    "avgPrice": 0.09769,
+    "positionSide": "BOTH",
+    "fillTime": 1781703829234,
+    "source": "pump",
+    "loggedAt": "2026-06-17T13:43:54.560Z"
+  },
+  {
+    "symbol": "AIOTUSDT",
+    "side": "BUY",
+    "filledQty": 514,
+    "avgPrice": 0.09769,
+    "positionSide": "BOTH",
+    "fillTime": 1781703829234,
+    "source": "pump",
+    "loggedAt": "2026-06-17T13:43:55.535Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 11,
+    "avgPrice": 1.82,
+    "positionSide": "BOTH",
+    "fillTime": 1781712177926,
+    "source": "pump",
+    "loggedAt": "2026-06-17T16:02:58.352Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 7,
+    "avgPrice": 1.82,
+    "positionSide": "BOTH",
+    "fillTime": 1781712171511,
+    "source": "pump",
+    "loggedAt": "2026-06-17T16:03:00.912Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 4,
+    "avgPrice": 1.82,
+    "positionSide": "BOTH",
+    "fillTime": 1781712171511,
+    "source": "pump",
+    "loggedAt": "2026-06-17T16:03:01.939Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 4,
+    "avgPrice": 1.82,
+    "positionSide": "BOTH",
+    "fillTime": 1781712171511,
+    "source": "pump",
+    "loggedAt": "2026-06-17T16:03:04.378Z"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "side": "BUY",
+    "filledQty": 7,
+    "avgPrice": 1.82,
+    "positionSide": "BOTH",
+    "fillTime": 1781712171511,
+    "source": "pump",
+    "loggedAt": "2026-06-17T16:03:08.237Z"
+  }
+]

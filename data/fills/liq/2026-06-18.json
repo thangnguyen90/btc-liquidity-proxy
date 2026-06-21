@@ -1,0 +1,162 @@
+[
+  {
+    "symbol": "GUAUSDT",
+    "side": "BUY",
+    "filledQty": 4,
+    "avgPrice": 1.2864,
+    "positionSide": "BOTH",
+    "fillTime": 1781777954582,
+    "source": "liq",
+    "loggedAt": "2026-06-18T10:19:14.970Z"
+  },
+  {
+    "symbol": "HEIUSDT",
+    "side": "BUY",
+    "filledQty": 111.9,
+    "avgPrice": 0.08925,
+    "positionSide": "BOTH",
+    "fillTime": 1781778307899,
+    "source": "liq",
+    "loggedAt": "2026-06-18T10:25:08.265Z"
+  },
+  {
+    "symbol": "HEIUSDT",
+    "side": "BUY",
+    "filledQty": 112.3,
+    "avgPrice": 0.08338,
+    "positionSide": "BOTH",
+    "fillTime": 1781779444242,
+    "source": "liq",
+    "loggedAt": "2026-06-18T10:44:04.643Z"
+  },
+  {
+    "symbol": "HEIUSDT",
+    "side": "BUY",
+    "filledQty": 7.6,
+    "avgPrice": 0.08338,
+    "positionSide": "BOTH",
+    "fillTime": 1781779444242,
+    "source": "liq",
+    "loggedAt": "2026-06-18T10:44:04.816Z"
+  },
+  {
+    "symbol": "USELESSUSDT",
+    "side": "BUY",
+    "filledQty": 80,
+    "avgPrice": 0.07708,
+    "positionSide": "BOTH",
+    "fillTime": 1781783232087,
+    "source": "liq",
+    "loggedAt": "2026-06-18T11:47:12.569Z"
+  },
+  {
+    "symbol": "USELESSUSDT",
+    "side": "BUY",
+    "filledQty": 49,
+    "avgPrice": 0.0770838,
+    "positionSide": "BOTH",
+    "fillTime": 1781783232087,
+    "source": "liq",
+    "loggedAt": "2026-06-18T11:47:12.908Z"
+  },
+  {
+    "symbol": "USELESSUSDT",
+    "side": "BUY",
+    "filledQty": 277,
+    "avgPrice": 0.07667,
+    "positionSide": "BOTH",
+    "fillTime": 1781783473943,
+    "source": "liq",
+    "loggedAt": "2026-06-18T11:51:14.438Z"
+  },
+  {
+    "symbol": "GUAUSDT",
+    "side": "SELL",
+    "filledQty": 10,
+    "avgPrice": 1.2969,
+    "positionSide": "BOTH",
+    "fillTime": 1781788593750,
+    "source": "liq",
+    "loggedAt": "2026-06-18T13:16:34.204Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781791165008,
+    "source": "liq",
+    "loggedAt": "2026-06-18T13:59:25.010Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781791462536,
+    "source": "liq",
+    "loggedAt": "2026-06-18T14:04:22.538Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781791525228,
+    "source": "liq",
+    "loggedAt": "2026-06-18T14:05:25.231Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781791556667,
+    "source": "liq",
+    "loggedAt": "2026-06-18T14:05:56.669Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781798238938,
+    "source": "liq",
+    "loggedAt": "2026-06-18T15:57:18.941Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781798241439,
+    "source": "liq",
+    "loggedAt": "2026-06-18T15:57:21.442Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781798551214,
+    "source": "liq",
+    "loggedAt": "2026-06-18T16:02:31.216Z"
+  },
+  {
+    "symbol": "SPXUSDT",
+    "side": "BUY",
+    "filledQty": 417,
+    "avgPrice": 0.4791880095923,
+    "positionSide": "BOTH",
+    "fillTime": 1781798790487,
+    "source": "liq",
+    "loggedAt": "2026-06-18T16:06:30.489Z"
+  }
+]

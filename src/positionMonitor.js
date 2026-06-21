@@ -13,7 +13,8 @@
 
 import WebSocket from 'ws';
 
-const WS_BASE = 'wss://fstream.binancefuture.com';
+const USER_WS_BASE = 'wss://fstream.binance.com/private/ws';
+const MARKET_WS_BASE = 'wss://fstream.binance.com/ws';
 
 export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, onPositionClose = null, getCredentials = null }) {
   // symbol → { amt, entry, leverage, isolatedMargin, initialMargin }
@@ -27,6 +28,9 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
     lastRoeUpdateAt: null,
     lastRoeSymbol: null,
     lastUserDataConnectedAt: null,
+    lastAccountUpdateAt: null,
+    lastOrderTradeUpdateAt: null,
+    lastDetectedOpenAt: null,
   };
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -43,6 +47,29 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
     updateMarkPriceSubscriptions();
   }
 
+  function shouldNotifyOpen(prev, next) {
+    if (!onOrderFill || !next?.amt || !next?.entry) return false;
+    if (!prev || !prev.amt || !prev.entry) return true;
+    const sameSide = Math.sign(prev.amt) === Math.sign(next.amt);
+    const sizeIncreased = sameSide && Math.abs(next.amt) > Math.abs(prev.amt) + 1e-12;
+    const entryChanged = Math.abs(next.entry - prev.entry) / Math.max(Math.abs(prev.entry), 1e-9) > 0.0001;
+    return sizeIncreased || entryChanged;
+  }
+
+  function notifyOpen(symbol, prev, next, source, eventTime = Date.now()) {
+    if (!shouldNotifyOpen(prev, next)) return;
+    stats.lastDetectedOpenAt = Date.now();
+    console.log(`[PosMonitor] detected ${source} open/increase ${symbol} amt=${next.amt} entry=${next.entry}`);
+    onOrderFill(symbol, {
+      side: next.amt > 0 ? 'BUY' : 'SELL',
+      filledQty: Math.abs((next.amt ?? 0) - (prev?.amt ?? 0)) || Math.abs(next.amt),
+      avgPrice: next.entry,
+      positionSide: next.positionSide ?? 'BOTH',
+      fillTime: eventTime,
+      source,
+    });
+  }
+
   // ── REST position sync ─────────────────────────────────────────────────────
   async function syncPositions() {
     try {
@@ -55,16 +82,23 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
         const symbol = p.symbol;
         activeSymbols.add(symbol);
         const existing = posCache.get(symbol);
+        const next = {
+          amt: Number(p.positionAmt),
+          entry: Number(p.entryPrice),
+          leverage: Number(p.leverage) || 1,
+          isolatedMargin: Number(p.isolatedMargin),
+          initialMargin: Number(p.initialMargin),
+          positionSide: p.positionSide ?? 'BOTH',
+        };
         // Always update structural fields; skip if already tracked with same entry
         if (!existing || Math.abs(Number(p.entryPrice) - existing.entry) / (existing.entry || 1) > 0.0001) {
-          upsert(symbol, {
-            amt: Number(p.positionAmt),
-            entry: Number(p.entryPrice),
-            leverage: Number(p.leverage) || 1,
-            isolatedMargin: Number(p.isolatedMargin),
-            initialMargin: Number(p.initialMargin),
-            positionSide: p.positionSide ?? 'BOTH',
-          });
+          upsert(symbol, next);
+          notifyOpen(symbol, existing, next, 'REST_SYNC');
+        } else if (existing && Math.abs(next.amt) > Math.abs(existing.amt) + 1e-12) {
+          upsert(symbol, next);
+          notifyOpen(symbol, existing, next, 'REST_SYNC');
+        } else {
+          upsert(symbol, next);
         }
       }
 
@@ -86,6 +120,7 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
   // ── User Data Stream ───────────────────────────────────────────────────────
   let listenKey = null;
   let keepAliveTimer = null;
+  const userDataEventLogAt = new Map();
 
   function resolveCredentials() {
     if (getCredentials) return getCredentials();
@@ -114,13 +149,21 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
       return;
     }
 
-    const ws = new WebSocket(`${WS_BASE}/ws/${listenKey}`);
+    const ws = new WebSocket(`${USER_WS_BASE}/${listenKey}`);
 
-    ws.addEventListener('message', ({ data }) => {
+    ws.addEventListener('message', async ({ data }) => {
       let msg;
       try { msg = JSON.parse(data); } catch { return; }
+      if (msg?.e) {
+        const last = userDataEventLogAt.get(msg.e) ?? 0;
+        if (Date.now() - last > 30_000) {
+          userDataEventLogAt.set(msg.e, Date.now());
+          console.log(`[PosMonitor] user-data event ${msg.e}`);
+        }
+      }
 
       if (msg.e === 'ACCOUNT_UPDATE') {
+        stats.lastAccountUpdateAt = Date.now();
         for (const p of msg.a?.P ?? []) {
           const amt = Number(p.pa);
           if (amt === 0) {
@@ -131,22 +174,39 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
               if (onPositionClose) onPositionClose(p.s);
             }
           } else {
-            upsert(p.s, {
+            const prev = posCache.get(p.s);
+            const next = {
               amt,
               entry: Number(p.ep),
+              leverage: Number(prev?.leverage ?? 1),
               isolatedMargin: Number(p.iw ?? 0),
               positionSide: p.ps ?? 'BOTH',
-            });
+            };
+            upsert(p.s, next);
           }
         }
         return;
       }
 
       if (msg.e === 'ORDER_TRADE_UPDATE' && onOrderFill) {
+        stats.lastOrderTradeUpdateAt = Date.now();
         const o = msg.o;
         // Only care about fills that open/increase a position (not reduceOnly)
-        if (o && o.x === 'TRADE' && !o.R && Number(o.l) > 0) {
-          onOrderFill(o.s, { side: o.S, filledQty: Number(o.l), avgPrice: Number(o.ap || o.p), positionSide: o.ps ?? 'BOTH', fillTime: Number(o.T) });
+        const reduceOnly = o?.R === true || String(o?.R).toLowerCase() === 'true';
+        if (o && o.x === 'TRADE' && !reduceOnly && Number(o.l) > 0) {
+          const avgPrice = Number(o.ap || 0) > 0 ? Number(o.ap) : Number(o.L || o.p);
+          console.log(`[PosMonitor] SOCKET_FILL ${o.s} side=${o.S} qty=${o.l} avg=${avgPrice} status=${o.X} exec=${o.x}`);
+          await syncPositions();
+          onOrderFill(o.s, {
+            side: o.S,
+            filledQty: Number(o.l),
+            avgPrice,
+            positionSide: o.ps ?? 'BOTH',
+            fillTime: Number(o.T),
+            orderStatus: o.X,
+            orderId: o.i,
+            source: 'ORDER_TRADE_UPDATE',
+          });
         }
       }
     });
@@ -199,7 +259,7 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
   const _markStreamBackoffMax = 5 * 60_000;
 
   function startMarkPriceStream() {
-    markWs = new WebSocket(`${WS_BASE}/stream`);
+    markWs = new WebSocket(MARKET_WS_BASE);
     wsReady = false;
 
     markWs.addEventListener('open', () => {
