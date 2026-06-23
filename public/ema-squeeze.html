@@ -35,6 +35,44 @@
         height: 3px;
         background: var(--green);
       }
+      .es-card.breakout-premium {
+        border-color: rgba(34,211,238,.72);
+        box-shadow: 0 0 0 1px rgba(34,211,238,.12);
+      }
+      .es-card.breakout-premium::before { background: #22d3ee; }
+      .es-card.breakout-quality { border-color: rgba(54,211,153,.58); }
+      .es-card.breakout-exhaustion {
+        border-color: rgba(248,113,113,.72);
+        background: linear-gradient(135deg, rgba(248,113,113,.12), rgba(28,32,31,.95) 48%);
+      }
+      .es-card.breakout-exhaustion::before { background: #f87171; }
+      .breakout-quality-banner {
+        border: 1px solid rgba(157,170,165,.25);
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .breakout-quality-banner.premium {
+        color: #67e8f9;
+        background: rgba(34,211,238,.12);
+        border-color: rgba(34,211,238,.38);
+      }
+      .breakout-quality-banner.quality {
+        color: var(--green);
+        background: rgba(54,211,153,.10);
+        border-color: rgba(54,211,153,.32);
+      }
+      .breakout-quality-banner.exhaustion {
+        color: #fff;
+        background: rgba(220,38,38,.32);
+        border-color: rgba(248,113,113,.7);
+      }
+      .breakout-quality-banner.review {
+        color: var(--amber);
+        background: rgba(251,191,36,.10);
+        border-color: rgba(251,191,36,.32);
+      }
       .es-card.runner {
         border-color: rgba(34,211,238,.62);
         background:
@@ -716,6 +754,7 @@
           <a class="nav-link" href="/pump-ignition">Pump Ign</a>
           <a class="nav-link" href="/ema99-kill-reclaim">EMA99 Kill</a>
           <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
+          <a class="nav-link" href="/top-reversal">Top Reversal</a>
           <a class="nav-link" href="/cap">Capitulation</a>
           <a class="nav-link" href="/killshort">Kill Short</a>
           <a class="nav-link" href="/spike-reversal">Spike Rev</a>

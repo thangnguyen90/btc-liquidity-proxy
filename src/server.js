@@ -23,6 +23,7 @@ import { runPumpIgnitionScan } from './pumpIgnitionDetector.js';
 import { runEmaSqueezeScan } from './emaSqueezeDetector.js';
 import { runEma99KillReclaimScan } from './ema99KillReclaimDetector.js';
 import { runShakeoutReclaimScan } from './shakeoutReclaimDetector.js';
+import { runTopReversalScan } from './topReversalDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
@@ -60,6 +61,7 @@ const pumpIgnitionScanCache   = { data: null, expiresAt: 0 };
 const emaSqueezesScanCache    = { data: null, expiresAt: 0 };
 const ema99KillReclaimScanCache = { data: null, expiresAt: 0 };
 const shakeoutReclaimScanCache = { data: null, expiresAt: 0 };
+const topReversalScanCache = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 const analyzeCache = new Map(); // key: `${symbol}|${interval}|${rangePct}|${binSizePct}` → { data, expiresAt }
 const ANALYZE_CACHE_TTL_MS = 10_000; // 10s — nến 15m đổi mỗi 15 phút, giá live qua WS
@@ -215,6 +217,8 @@ const emaSqueezeSseClients     = new Set();
 const ema99KillReclaimSseClients = new Set();
 const shakeoutReclaimSseClients = new Set();
 const shakeoutPaperSseClients = new Set();
+const topReversalSseClients = new Set();
+const topReversalPaperSseClients = new Set();
 const emaSqueezePaperSseClients = new Set();
 const liquidPaperSseClients    = new Set();
 
@@ -262,12 +266,7 @@ function scheduleEmaSqueezePaperBroadcast(delayMs = 700) {
     if (emaSqueezePaperSseClients.size === 0 || emaSqueezePaperBroadcastRunning) return;
     emaSqueezePaperBroadcastRunning = true;
     try {
-      const data = await getPumpPaperTrades();
-      pushSse(emaSqueezePaperSseClients, {
-        trades: data.trades.filter((t) => String(t.source ?? '').startsWith('emasq-')),
-        summary: data.summary,
-        updatedAt: Date.now(),
-      });
+      pushSse(emaSqueezePaperSseClients, await getEmaSqueezePaperTrades({ deltaOnly: true }));
     } catch (err) {
       pushSse(emaSqueezePaperSseClients, { error: err.message, updatedAt: Date.now() });
     } finally {
@@ -1690,7 +1689,14 @@ async function scheduleShakeoutReclaimScan() {
         .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
         .slice(0, Number(process.env.SHAKEOUT_RECLAIM_MAX_SYMBOLS ?? 9999))
         .map((r) => r.symbol);
-      const { signals, processed, diagnostics } = await runShakeoutReclaimScan(topSymbols, klineCache, snapshotMap);
+      const btcHealth = await getBtcHealth();
+      const btcRegime = emaSqueezeBtcRegime(btcHealth);
+      const { signals, processed, diagnostics } = await runShakeoutReclaimScan(
+        topSymbols,
+        klineCache,
+        snapshotMap,
+        { btcRegime },
+      );
       if (processed < Number(process.env.SHAKEOUT_RECLAIM_MIN_READY ?? 9999)) ensureShakeoutReclaimWarmup(topSymbols);
       const result = {
         signals,
@@ -1698,6 +1704,7 @@ async function scheduleShakeoutReclaimScan() {
         total: topSymbols.length,
         processed,
         diagnostics,
+        btcRegime,
         cacheStats: {
           m5: klineCache.stats('5m'),
           m15: klineCache.stats('15m'),
@@ -2290,7 +2297,7 @@ async function createEmaSqueezePaperTrades(signals = []) {
   const maxScore = Number(process.env.EMA_SQUEEZE_PAPER_MAX_SCORE ?? 89);
   const cooldownMs = Number(process.env.EMA_SQUEEZE_PAPER_COOLDOWN_MS ?? 4 * 3600 * 1000);
   const marginUsdt = Number(process.env.EMA_SQUEEZE_PAPER_MARGIN_USDT ?? 1);
-  const leverage = Number(process.env.EMA_SQUEEZE_PAPER_LEVERAGE ?? 10);
+  const defaultLeverage = Number(process.env.EMA_SQUEEZE_PAPER_LEVERAGE ?? 10);
   const btcSnap = buildBtcHealthSnapshot(); // lưu cùng mỗi lệnh để backtest gate sau này
   const allowedStages = new Set(String(process.env.EMA_SQUEEZE_PAPER_STAGES ?? 'BREAKOUT')
     .split(',')
@@ -2323,6 +2330,11 @@ async function createEmaSqueezePaperTrades(signals = []) {
     if (allowedIntervals.size && !allowedIntervals.has(interval)) continue;
     if (score < minScore || score > maxScore) continue;
     if (!Number.isFinite(Number(sig.entry)) || Number(sig.entry) <= 0) continue;
+    const paperMarginUsdt = stage === 'BREAKOUT'
+      ? Number(process.env.EMA_SQUEEZE_PAPER_BREAKOUT_MARGIN_USDT
+        ?? process.env.EMA_SQUEEZE_PAPER_BREAKOUT_80_89_MARGIN_USDT
+        ?? 10)
+      : marginUsdt;
 
     // Trần score cho 5m PRE_BREAKDOWN: score quá cao = dump over-extended/kiệt sức → dễ V-bounce → thua.
     // Backtest: score 80-83 exp +6..+9%, nhưng 86-89 exp -1.8% (net -211%). Bỏ ≥86.
@@ -2351,29 +2363,46 @@ async function createEmaSqueezePaperTrades(signals = []) {
     if (!paperSignal) continue;
     if (requiresLiquidEntry && !paperSignal.liquidityEntry) continue;
     const runnerMeta = buildEmaSqueezeRunnerPaperMeta(paperSignal);
+    let breakoutPaperRr = null;
 
     if (stage === 'BREAKOUT') {
-      const minRr = Number(process.env.EMA_SQUEEZE_PAPER_BREAKOUT_MIN_RR ?? 2);
+      const qualityGateEnabled = process.env.EMA_SQUEEZE_PAPER_BREAKOUT_QUALITY_GATE !== 'false';
+      const qualityTier = String(sig.breakoutQuality ?? 'REVIEW').toUpperCase();
+      if (qualityGateEnabled && sig.breakoutPaperEligible !== true) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BREAKOUT ${interval} - quality=${qualityTier}: ${sig.breakoutQualityReason ?? 'not eligible'}`);
+        continue;
+      }
+
       const minEmaPos = Number(process.env.EMA_SQUEEZE_PAPER_BREAKOUT_MIN_EMA_POS ?? 0.9);
+      const minRr = Number(process.env.EMA_SQUEEZE_PAPER_BREAKOUT_MIN_RR ?? 1);
       const emaPos = Number(sig.emaBandPos);
-      const breakoutEntry = Number(sig.entry);
-      const breakoutTp = Number(paperSignal.tp);
-      const effectiveSl = emaSqueezePaperStopLossFromRoe({
+      const marketEntry = Number(sig.entry);
+      const marketTp = Number(paperSignal.tp);
+      const marketLeverage = calcAutoLeverage(
+        marketEntry,
+        Number(paperSignal.sl ?? sig.sl),
+        defaultLeverage,
+      );
+      const marketSl = emaSqueezePaperStopLossFromRoe({
         source: 'emasq-breakout-filter',
         side,
-        entryPrice: breakoutEntry,
-        leverage,
+        entryPrice: marketEntry,
+        leverage: marketLeverage,
       });
-      const risk = Math.abs(breakoutEntry - Number(effectiveSl));
-      const reward = Math.abs(breakoutTp - breakoutEntry);
-      const rr = risk > 0 && Number.isFinite(reward) ? reward / risk : null;
+      const risk = side === 'LONG'
+        ? marketEntry - Number(marketSl)
+        : Number(marketSl) - marketEntry;
+      const reward = side === 'LONG'
+        ? marketTp - marketEntry
+        : marketEntry - marketTp;
+      breakoutPaperRr = risk > 0 && reward > 0 ? reward / risk : null;
 
       if (!Number.isFinite(emaPos) || emaPos < minEmaPos) {
         console.log(`[EmaSqueezePaper] skip ${sig.symbol} BREAKOUT - emaPos=${Number.isFinite(emaPos) ? emaPos.toFixed(2) : '?'} < ${minEmaPos}`);
         continue;
       }
-      if (!Number.isFinite(rr) || rr < minRr) {
-        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BREAKOUT - RR=${Number.isFinite(rr) ? rr.toFixed(2) : '?'} < ${minRr} entry=${breakoutEntry} sl=${effectiveSl} tp=${breakoutTp}`);
+      if (!Number.isFinite(breakoutPaperRr) || breakoutPaperRr < minRr) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BREAKOUT - RR=${Number.isFinite(breakoutPaperRr) ? breakoutPaperRr.toFixed(2) : '?'} < ${minRr} entry=${marketEntry} sl=${marketSl} tp=${marketTp}`);
         continue;
       }
     }
@@ -2386,11 +2415,19 @@ async function createEmaSqueezePaperTrades(signals = []) {
     const basePayload = {
       symbol: paperSignal.symbol,
       side,
-      marginUsdt,
-      leverage,
+      marginUsdt: paperMarginUsdt,
       tp: paperSignal.tp ?? null,
       sl: paperSignal.sl ?? null,
-      note: [paperSignal.note ?? paperSignal.reason ?? '', runnerMeta.noteSuffix].filter(Boolean).join(' | '),
+      note: [
+        paperSignal.note ?? paperSignal.reason ?? '',
+        stage === 'BREAKOUT' && sig.breakoutQuality
+          ? `breakoutQuality=${sig.breakoutQuality} | breakoutQualityReason=${sig.breakoutQualityReason ?? '-'}`
+          : '',
+        stage === 'BREAKOUT' && Number.isFinite(breakoutPaperRr)
+          ? `paperRR=${breakoutPaperRr.toFixed(2)} | entryMode=MARKET_ONLY`
+          : '',
+        runnerMeta.noteSuffix,
+      ].filter(Boolean).join(' | '),
       signalMarkPrice: paperSignal.markPrice ?? paperSignal.entryPlan?.signalMarkPrice ?? null,
       ...runnerMeta.payload,
       sweepTargetPrice: paperSignal.sweepTargetPrice ?? null,
@@ -2403,9 +2440,30 @@ async function createEmaSqueezePaperTrades(signals = []) {
       heavySide: paperSignal.heavySide ?? null,
       entryPlan: paperSignal.entryPlan ?? null,
       btcHealth: btcSnap,
+      breakoutQuality: paperSignal.breakoutQuality ?? sig.breakoutQuality ?? null,
+      breakoutQualityReason: paperSignal.breakoutQualityReason ?? sig.breakoutQualityReason ?? null,
+      breakoutPaperEligible: paperSignal.breakoutPaperEligible ?? sig.breakoutPaperEligible ?? null,
     };
     const srcBase = `emasq-${paperSignal.interval ?? '15m'}-${stage.toLowerCase()}${runnerMeta.sourceSuffix}-${paperSignal.score}`;
-    const fire = (extra) => createPumpPaperTrade({ ...basePayload, ...extra })
+    const fire = (extra) => {
+      const entryPrice = Number(extra.entryPrice ?? paperSignal.entry);
+      const autoLeverage = calcAutoLeverage(
+        entryPrice,
+        Number(paperSignal.sl ?? sig.sl),
+        defaultLeverage,
+      );
+      return createPumpPaperTrade({
+        ...basePayload,
+        ...extra,
+        leverage: autoLeverage,
+        note: [
+          basePayload.note,
+          `autoLeverage=${autoLeverage}x`,
+          `structureSl=${Number(paperSignal.sl ?? sig.sl) || '-'}`,
+        ].filter(Boolean).join(' | '),
+      });
+    }
+    const fireLogged = (extra) => fire(extra)
       .then(() => {
         if (pumpPaperTicker) syncPumpPaperTicker().catch(() => {});
         console.log(`[EmaSqueezePaper] ${side} ${paperSignal.symbol} ${stage}${extra.variant ? '/' + extra.variant : ''} score=${paperSignal.score}`);
@@ -2413,25 +2471,12 @@ async function createEmaSqueezePaperTrades(signals = []) {
       .catch((e) => console.warn(`[EmaSqueezePaper] ${paperSignal.symbol}:`, e.message));
 
     if (stage === 'BREAKOUT') {
-      // 2 lệnh cùng signalId để so sánh: MARKET (vào breakout ngay) vs PENDING (chờ retest về mép cụm EMA)
+      // Quality backtest: only one MARKET paper trade per breakout signal.
       const signalId = crypto.randomUUID();
       const marketEntry = Number(sig.entry);
-      const emas = [Number(sig.ema13), Number(sig.ema25), Number(sig.ema99)].filter((v) => Number.isFinite(v) && v > 0);
-      let pendingEntry;
-      if (paperSignal.paperStatus === 'PENDING' && Number.isFinite(Number(paperSignal.entry))
-          && (side === 'LONG' ? Number(paperSignal.entry) < marketEntry : Number(paperSignal.entry) > marketEntry)) {
-        pendingEntry = Number(paperSignal.entry); // dùng entry liquidity nếu có (đã thấp/cao hơn breakout)
-      } else if (emas.length) {
-        const edge = side === 'LONG' ? Math.max(...emas) : Math.min(...emas); // mép cụm EMA = vùng retest
-        pendingEntry = (side === 'LONG' ? edge < marketEntry : edge > marketEntry)
-          ? edge : marketEntry * (side === 'LONG' ? 0.997 : 1.003);
-      } else {
-        pendingEntry = marketEntry * (side === 'LONG' ? 0.997 : 1.003);
-      }
-      await fire({ status: 'OPEN', variant: 'MARKET', signalId, entryPrice: marketEntry, source: `${srcBase}-mkt` });
-      await fire({ status: 'PENDING', variant: 'PENDING', signalId, entryPrice: pendingEntry, source: `${srcBase}-pend` });
+      await fireLogged({ status: 'OPEN', variant: 'MARKET', signalId, entryPrice: marketEntry, source: `${srcBase}-mkt` });
     } else {
-      await fire({
+      await fireLogged({
         status: paperSignal.paperStatus ?? (confirmedStages.has(stage) ? 'OPEN' : 'PENDING'),
         entryPrice: paperSignal.entry,
         source: srcBase,
@@ -2913,6 +2958,7 @@ klineCache.on('candleClose', ({ interval }) => {
   }
   if (interval === '5m' || interval === '15m') {
     scheduleShakeoutReclaimScan();
+    scheduleTopReversalScan();
   }
 });
 
@@ -2925,7 +2971,10 @@ klineCache.on('candleTick', ({ interval }) => {
     if (interval === '15m') scheduleStrategyScans('candleTick');
     else scheduleEmaSqueezeScan();
     if (interval === (process.env.EMA99_KILL_RECLAIM_INTERVAL || '5m')) scheduleEma99KillReclaimScan();
-    if (interval === '5m' || interval === '15m') scheduleShakeoutReclaimScan();
+    if (interval === '5m' || interval === '15m') {
+      scheduleShakeoutReclaimScan();
+      scheduleTopReversalScan();
+    }
   }, 60_000);
 });
 
@@ -3027,6 +3076,7 @@ function scheduleStrategyScans(reason = 'manual') {
   scheduleEmaSqueezeScan();
   scheduleEma99KillReclaimScan();
   scheduleShakeoutReclaimScan();
+  scheduleTopReversalScan();
 }
 
 function strategyScansReady(label) {
@@ -3441,6 +3491,7 @@ const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
 const SR_PAPER_FILE     = join(rootDir, 'data', 'sr-paper-trades.json');
 const PPKS_PAPER_FILE   = join(rootDir, 'data', 'ppks-paper-trades.json');
 const SHAKEOUT_PAPER_FILE = join(rootDir, 'data', 'shakeout-paper-trades.json');
+const TOP_REVERSAL_PAPER_FILE = join(rootDir, 'data', 'top-reversal-paper-trades.json');
 const MARKET_NEWS_FILE  = join(rootDir, 'data', 'market-news.json');
 const COIN_FLOW_FILE    = join(rootDir, 'data', 'coin-flow.json');
 const TOKEN_UNLOCKS_FILE = join(rootDir, 'data', 'token-unlocks.json');
@@ -3596,6 +3647,13 @@ let shakeoutPaperProcessRunning = false;
 let shakeoutPaperTicker = null;
 const shakeoutPaperFillLocks = new Set();
 const shakeoutPaperAutoFired = new Map();
+const topReversalSocketMarks = new Map();
+const topReversalSocketMarkAt = new Map();
+const topReversalPendingProcess = new Map();
+let topReversalPaperTicker = null;
+let topReversalProcessTimer = null;
+let topReversalProcessRunning = false;
+const topReversalPaperAutoFired = new Map();
 
 async function loadSlTracking() {
   try {
@@ -4556,7 +4614,14 @@ const server = createServer(async (request, response) => {
         .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
         .slice(0, Number(process.env.SHAKEOUT_RECLAIM_MAX_SYMBOLS ?? 9999))
         .map((r) => r.symbol);
-      const { signals, processed, diagnostics } = await runShakeoutReclaimScan(topSymbols, klineCache, snapshotMap);
+      const btcHealth = await getBtcHealth();
+      const btcRegime = emaSqueezeBtcRegime(btcHealth);
+      const { signals, processed, diagnostics } = await runShakeoutReclaimScan(
+        topSymbols,
+        klineCache,
+        snapshotMap,
+        { btcRegime },
+      );
       if (processed < Number(process.env.SHAKEOUT_RECLAIM_MIN_READY ?? 9999)) ensureShakeoutReclaimWarmup(topSymbols);
       if (processed === 0) noteApiNoLargeReseed('shakeout-reclaim', processed);
       const result = {
@@ -4565,6 +4630,7 @@ const server = createServer(async (request, response) => {
         total: topSymbols.length,
         processed,
         diagnostics,
+        btcRegime,
         cacheStats: { m5: klineCache.stats('5m'), m15: klineCache.stats('15m') },
       };
       shakeoutReclaimScanCache.data = result;
@@ -4572,6 +4638,54 @@ const server = createServer(async (request, response) => {
       await sendShakeoutReclaimDiscord(signals);
       await createShakeoutPaperTrades(signals);
       await handleShakeoutReclaimRealOrders(signals);
+      return sendJson(response, result);
+    }
+
+    if (requestUrl.pathname === '/api/top-reversal-stream') {
+      response.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      if (topReversalScanCache.data) {
+        response.write(`data: ${JSON.stringify(topReversalScanCache.data)}\n\n`);
+      }
+      topReversalSseClients.add(response);
+      request.on('close', () => topReversalSseClients.delete(response));
+      if (!topReversalScanCache.data || Date.now() > topReversalScanCache.expiresAt) {
+        scheduleTopReversalScan();
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/top-reversal-signals') {
+      if (topReversalScanCache.data && Date.now() < topReversalScanCache.expiresAt) {
+        return sendJson(response, topReversalScanCache.data);
+      }
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((row) => [row.symbol, row]));
+      const topSymbols = snapshot
+        .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+        .slice(0, Number(process.env.TOP_REVERSAL_MAX_SYMBOLS ?? 400))
+        .map((row) => row.symbol);
+      const { signals, processed, diagnostics } = await runTopReversalScan(
+        topSymbols,
+        klineCache,
+        snapshotMap,
+      );
+      const result = {
+        signals,
+        processed,
+        total: topSymbols.length,
+        diagnostics,
+        scannedAt: Date.now(),
+        cacheStats: { m5: klineCache.stats('5m'), m15: klineCache.stats('15m') },
+      };
+      topReversalScanCache.data = result;
+      topReversalScanCache.expiresAt = Date.now() + 30_000;
+      await createTopReversalPaperTrades(signals);
       return sendJson(response, result);
     }
 
@@ -4889,6 +5003,42 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/top-reversal-paper-trades-stream') {
+      response.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      response.write(': connected\n\n');
+      topReversalPaperSseClients.add(response);
+      request.on('close', () => topReversalPaperSseClients.delete(response));
+      getTopReversalPaperTrades()
+        .then((data) => {
+          if (!response.destroyed) response.write(`data: ${JSON.stringify(data)}\n\n`);
+        })
+        .catch(() => {});
+      return;
+    }
+    if (requestUrl.pathname === '/api/top-reversal-paper-trades') {
+      if (request.method === 'GET') {
+        await sendJson(response, await getTopReversalPaperTrades());
+        return;
+      }
+      if (request.method === 'POST') {
+        await sendJson(response, await createTopReversalPaperTrade(await readJsonBody(request)));
+        return;
+      }
+    }
+    if (requestUrl.pathname === '/api/top-reversal-paper-trades/close' && request.method === 'POST') {
+      await sendJson(response, await closeTopReversalPaperTrade(await readJsonBody(request)));
+      return;
+    }
+    if (requestUrl.pathname === '/api/top-reversal-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deleteTopReversalPaperTrade(await readJsonBody(request)));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/pi-paper-trades') {
       if (request.method === 'GET') {
         await sendJson(response, await getPiPaperTrades());
@@ -4933,6 +5083,10 @@ const server = createServer(async (request, response) => {
       emaSqueezePaperSseClients.add(response);
       request.on('close', () => emaSqueezePaperSseClients.delete(response));
       scheduleEmaSqueezePaperBroadcast(50);
+      return;
+    }
+    if (requestUrl.pathname === '/api/ema-squeeze-paper-trades' && request.method === 'GET') {
+      await sendJson(response, await getEmaSqueezePaperTrades());
       return;
     }
     if (requestUrl.pathname === '/api/pump-paper-trades/close' && request.method === 'POST') {
@@ -5519,6 +5673,7 @@ server.listen(port, '127.0.0.1', () => {
   startSrPaperTicker();
   startPpksPaperTicker();
   startShakeoutPaperTicker();
+  startTopReversalPaperTicker();
   startPositionSocketMonitor();
 
   runAfterKlineWarmup('algo APIs', () => {
@@ -5600,6 +5755,7 @@ server.listen(port, '127.0.0.1', () => {
     startSrPaperTicker();
     startPpksPaperTicker();
     startShakeoutPaperTicker();
+    startTopReversalPaperTicker();
     startMissingTpScanner();
     startSlTrailSafetyScanner();
     startPositionSocketMonitor();
@@ -8010,21 +8166,115 @@ function startPiPaperTicker() {
 // ── Pump paper trade system ───────────────────────────────────────────────────
 
 async function readPumpPaperStore() {
+  if (_pumpPaperStoreCache) return _pumpPaperStoreCache;
+  if (_pumpPaperStoreLoadPromise) return _pumpPaperStoreLoadPromise;
+  _pumpPaperStoreLoadPromise = (async () => {
+    try {
+      const raw = await readFile(PUMP_PAPER_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+      _pumpPaperStoreCache = parsed;
+      console.log(`[PumpPaper] Store cached in memory (${parsed.trades.length} trades).`);
+    } catch (e) {
+      console.warn('[PumpPaper] Store read error, starting fresh:', e.message);
+      _pumpPaperStoreCache = { trades: [] };
+    } finally {
+      _pumpPaperStoreLoadPromise = null;
+    }
+    return _pumpPaperStoreCache;
+  })();
+  return _pumpPaperStoreLoadPromise;
+}
+
+let _topReversalDebounce = null;
+async function scheduleTopReversalScan() {
+  clearTimeout(_topReversalDebounce);
+  _topReversalDebounce = setTimeout(async () => {
+    try {
+      if (binanceRateGate.isBlocked?.() && !_snapshotCache) return;
+      const snapshot = await getSharedSnapshot();
+      const snapshotMap = new Map(snapshot.map((row) => [row.symbol, row]));
+      const topSymbols = snapshot
+        .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+        .slice(0, Number(process.env.TOP_REVERSAL_MAX_SYMBOLS ?? 400))
+        .map((row) => row.symbol);
+      const { signals, processed, diagnostics } = await runTopReversalScan(
+        topSymbols,
+        klineCache,
+        snapshotMap,
+      );
+      const result = {
+        signals,
+        processed,
+        total: topSymbols.length,
+        diagnostics,
+        scannedAt: Date.now(),
+        cacheStats: { m5: klineCache.stats('5m'), m15: klineCache.stats('15m') },
+      };
+      topReversalScanCache.data = result;
+      topReversalScanCache.expiresAt = Date.now() + 30_000;
+      pushSse(topReversalSseClients, result);
+      await createTopReversalPaperTrades(signals);
+      if (signals.length) {
+        console.log(`[TopReversal] ${signals.length} signal(s), processed=${processed}`);
+      }
+    } catch (err) {
+      console.error('[TopReversalScan] error:', err.message);
+    }
+  }, 3_500);
+}
+
+let topReversalPaperBroadcastTimer = null;
+function scheduleTopReversalPaperBroadcast(delayMs = 700) {
+  if (topReversalPaperSseClients.size === 0 || topReversalPaperBroadcastTimer) return;
+  topReversalPaperBroadcastTimer = setTimeout(async () => {
+    topReversalPaperBroadcastTimer = null;
+    if (topReversalPaperSseClients.size === 0) return;
+    try {
+      pushSse(topReversalPaperSseClients, await getTopReversalPaperTrades());
+    } catch (err) {
+      pushSse(topReversalPaperSseClients, { error: err.message, updatedAt: new Date().toISOString() });
+    }
+  }, delayMs);
+}
+
+let _pumpPaperStoreCache = null;
+let _pumpPaperStoreLoadPromise = null;
+let _pumpPaperWriteRunning = false;
+let _pumpPaperWritePending = false;
+let _pumpPaperWriteWaiters = [];
+
+async function drainPumpPaperWrites() {
+  if (_pumpPaperWriteRunning) return;
+  _pumpPaperWriteRunning = true;
   try {
-    const raw = await readFile(PUMP_PAPER_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
-    return parsed;
-  } catch (e) {
-    console.warn('[PumpPaper] Store read error, starting fresh:', e.message);
-    return { trades: [] };
+    while (_pumpPaperWritePending) {
+      _pumpPaperWritePending = false;
+      const waiters = _pumpPaperWriteWaiters.splice(0);
+      try {
+        // Compact JSON cuts both disk usage and temporary stringify memory substantially.
+        const tmp = `${PUMP_PAPER_FILE}.tmp`;
+        await writeFile(tmp, JSON.stringify(_pumpPaperStoreCache));
+        await rename(tmp, PUMP_PAPER_FILE);
+        waiters.forEach(({ resolve }) => resolve());
+      } catch (err) {
+        waiters.forEach(({ reject }) => reject(err));
+      }
+    }
+  } finally {
+    _pumpPaperWriteRunning = false;
+    if (_pumpPaperWritePending) setImmediate(() => drainPumpPaperWrites().catch(() => {}));
   }
 }
 
-let _pumpPaperWriteLock = Promise.resolve();
-async function writePumpPaperStore(store) {
-  _pumpPaperWriteLock = _pumpPaperWriteLock.then(() => atomicWriteJson(PUMP_PAPER_FILE, store));
-  return _pumpPaperWriteLock;
+function writePumpPaperStore(store) {
+  _pumpPaperStoreCache = store;
+  _pumpPaperWritePending = true;
+  const result = new Promise((resolve, reject) => {
+    _pumpPaperWriteWaiters.push({ resolve, reject });
+  });
+  drainPumpPaperWrites().catch(() => {});
+  return result;
 }
 
 function enrichPumpPaperTrade(t, markPrice) {
@@ -8048,6 +8298,7 @@ function enrichPumpPaperTrade(t, markPrice) {
     : (t.roe ?? null);
   return {
     ...t,
+    ...(isShakeoutBottomReboundTrade(t) && ['OPEN', 'PENDING'].includes(t.status) ? { sl: null } : {}),
     markPrice: mark,
     markUpdatedAt: isEmaSqueeze
       ? (emaSqueezeSocketMarkAt.get(String(t.symbol ?? '').toUpperCase()) ?? null)
@@ -8092,6 +8343,42 @@ async function getPumpPaperTrades() {
   return { trades, summary };
 }
 
+async function getEmaSqueezePaperTrades({ deltaOnly = false } = {}) {
+  const store = await readPumpPaperStore();
+  const allEmaTrades = store.trades.filter((t) => String(t.source ?? '').startsWith('emasq-'));
+  const deltaCutoff = Date.now() - 5 * 60_000;
+  const selectedTrades = deltaOnly
+    ? allEmaTrades.filter((t) =>
+      ['OPEN', 'PENDING'].includes(t.status)
+      || (Date.parse(t.closedAt ?? t.createdAt ?? 0) || 0) >= deltaCutoff)
+    : allEmaTrades;
+  const trades = selectedTrades
+    .map((t) => enrichPumpPaperTrade(t, emaSqueezeSocketMarks.get(t.symbol)));
+  const open = allEmaTrades.filter((t) => t.status !== 'CLOSED');
+  const closed = allEmaTrades.filter((t) => t.status === 'CLOSED');
+  const wins = closed.filter((t) => Number(t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const avgRoe = closed.length
+    ? closed.reduce((sum, t) => sum + Number(t.roe ?? 0), 0) / closed.length
+    : null;
+  return {
+    trades,
+    summary: {
+      total: trades.length,
+      open: open.length,
+      closed: closed.length,
+      wins,
+      losses: closed.length - wins,
+      tpHits,
+      slHits,
+      avgRoe: avgRoe == null ? null : +avgRoe.toFixed(1),
+    },
+    updatedAt: Date.now(),
+    partial: deltaOnly,
+  };
+}
+
 async function createPumpPaperTrade(payload) {
   const symbol = String(payload.symbol ?? '').toUpperCase().trim();
   const side = String(payload.side ?? '').toUpperCase();
@@ -8121,7 +8408,24 @@ async function createPumpPaperTrade(payload) {
 
   const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
   const source = String(payload.source ?? 'manual').slice(0, 80);
+  if (process.env.EMA_SQUEEZE_PAPER_BREAKOUT_QUALITY_GATE !== 'false'
+      && source.includes('-breakout')
+      && payload.breakoutPaperEligible === false) {
+    throw new Error(`BREAKOUT ${payload.breakoutQuality ?? 'REVIEW'} is not eligible for Paper`);
+  }
   const emaSqueezeSl = emaSqueezePaperStopLossFromRoe({ source, side, entryPrice, leverage });
+  if (source.includes('-breakout')) {
+    const minRr = Number(process.env.EMA_SQUEEZE_PAPER_BREAKOUT_MIN_RR ?? 1);
+    const tp = Number(payload.tp);
+    const risk = side === 'LONG'
+      ? entryPrice - Number(emaSqueezeSl)
+      : Number(emaSqueezeSl) - entryPrice;
+    const reward = side === 'LONG' ? tp - entryPrice : entryPrice - tp;
+    const rr = risk > 0 && reward > 0 ? reward / risk : null;
+    if (!Number.isFinite(rr) || rr < minRr) {
+      throw new Error(`BREAKOUT RR ${Number.isFinite(rr) ? rr.toFixed(2) : '?'} < ${minRr}`);
+    }
+  }
   const trade = {
     id: crypto.randomUUID(),
     signalId, variant,
@@ -8142,6 +8446,9 @@ async function createPumpPaperTrade(payload) {
     source,
     note: String(payload.note ?? '').slice(0, 500),
     btcHealth: payload.btcHealth ?? null, // snapshot BTC health lúc vào — để backtest gate
+    breakoutQuality: payload.breakoutQuality ?? null,
+    breakoutQualityReason: payload.breakoutQualityReason ?? null,
+    breakoutPaperEligible: payload.breakoutPaperEligible ?? null,
   };
   store.trades.unshift(trade);
   await writePumpPaperStore(store);
@@ -9209,10 +9516,11 @@ function enrichShakeoutPaperTrade(t, markPrice) {
   const entry = Number(t.entryPrice);
   const qty = Number(t.quantity);
   const margin = Number(t.marginUsdt);
+  const realizedPnl = Number(t.realizedPnl ?? 0);
   const sideMult = t.side === 'LONG' ? 1 : -1;
   const isActive = t.status === 'OPEN';
   const pnl = isActive
-    ? (hasLiveMark ? (liveMark - entry) * qty * sideMult : null)
+    ? (hasLiveMark ? realizedPnl + (liveMark - entry) * qty * sideMult : null)
     : (t.pnl ?? null);
   const roe = isActive && margin > 0
     ? (pnl == null ? null : (pnl / margin) * 100)
@@ -9239,13 +9547,22 @@ async function getShakeoutPaperTrades() {
     t,
     getShakeoutPaperMark(t.symbol),
   ));
-  const open = trades.filter((t) => t.status !== 'CLOSED');
+  const open = trades.filter((t) => ['OPEN', 'PENDING'].includes(t.status));
   const closed = trades.filter((t) => t.status === 'CLOSED');
+  const expired = trades.filter((t) => t.status === 'EXPIRED').length;
+  const cancelled = trades.filter((t) => t.status === 'CANCELLED').length;
   const invalid = closed.filter((t) => t.outcome === 'INVALID').length;
   const validClosed = closed.filter((t) => t.outcome !== 'INVALID');
   const wins = validClosed.filter((t) => (t.pnl ?? 0) > 0).length;
-  const tpHits = validClosed.filter((t) => t.outcome === 'TP').length;
+  const tpHits = validClosed.filter((t) => ['TP', 'RUNNER_TP'].includes(t.outcome)).length;
   const slHits = validClosed.filter((t) => t.outcome === 'SL').length;
+  const partialActive = trades.filter((t) => t.status === 'OPEN' && t.partialTpTaken).length;
+  const partialBreakeven = validClosed.filter((t) => t.outcome === 'PARTIAL_BE').length;
+  const partialTrail = validClosed.filter((t) => t.outcome === 'PARTIAL_TRAIL').length;
+  const runnerTpHits = validClosed.filter((t) => t.outcome === 'RUNNER_TP').length;
+  const recoveryActive = trades.filter((t) => t.status === 'OPEN' && t.recoveryMode).length;
+  const recoveryBreakeven = validClosed.filter((t) => t.outcome === 'RECOVERY_BE').length;
+  const recoverySl30 = validClosed.filter((t) => t.outcome === 'RECOVERY_SL30').length;
   const avgRoe = validClosed.length > 0 ? validClosed.reduce((s, t) => s + (t.roe ?? 0), 0) / validClosed.length : null;
 
   // Thống kê theo ngày (group theo closedAt, bỏ INVALID)
@@ -9260,10 +9577,25 @@ async function getShakeoutPaperTrades() {
     const pnl = Number(t.pnl ?? 0);
     d.orders += 1;
     if (pnl > 0) d.wins += 1; else d.losses += 1;
-    if (t.outcome === 'TP') d.tpHits += 1;
+    if (['TP', 'RUNNER_TP'].includes(t.outcome)) d.tpHits += 1;
     if (t.outcome === 'SL') d.slHits += 1;
     d.totalPnl = +(d.totalPnl + pnl).toFixed(4);
     d.totalRoe = +(d.totalRoe + Number(t.roe ?? 0)).toFixed(2);
+    dailyMap.set(date, d);
+  }
+  for (const t of trades) {
+    if (t.status !== 'OPEN' || !t.partialTpTaken) continue;
+    const realizedPnl = Number(t.realizedPnl ?? 0);
+    if (!Number.isFinite(realizedPnl) || realizedPnl === 0) continue;
+    const date = String(t.partialTpAt ?? t.openedAt ?? t.createdAt ?? '').slice(0, 10);
+    if (!date) continue;
+    const d = dailyMap.get(date) ?? {
+      date, orders: 0, wins: 0, losses: 0, tpHits: 0, slHits: 0,
+      totalPnl: 0, totalRoe: 0, winRate: 0, avgPnl: 0,
+    };
+    d.openPartialRealizedPnl = +(Number(d.openPartialRealizedPnl ?? 0) + realizedPnl).toFixed(4);
+    d.totalPnl = +(d.totalPnl + realizedPnl).toFixed(4);
+    d.totalRoe = +(d.totalRoe + realizedPnl / Math.max(Number(t.marginUsdt) || 1, 1) * 100).toFixed(2);
     dailyMap.set(date, d);
   }
   const daily = [...dailyMap.values()]
@@ -9303,11 +9635,20 @@ async function getShakeoutPaperTrades() {
       total: trades.length,
       open: open.length,
       closed: closed.length,
+      expired,
+      cancelled,
       invalid,
       wins,
       losses: validClosed.length - wins,
       tpHits,
       slHits,
+      recoveryActive,
+      recoveryBreakeven,
+      recoverySl30,
+      partialActive,
+      partialBreakeven,
+      partialTrail,
+      runnerTpHits,
       avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null,
     },
     daily,
@@ -9359,6 +9700,8 @@ async function createShakeoutPaperTrade(payload) {
     marginUsdt,
     leverage,
     quantity: (marginUsdt * leverage) / entryPrice,
+    originalQuantity: (marginUsdt * leverage) / entryPrice,
+    realizedPnl: 0,
     entryPrice,
     tp,
     sl,
@@ -9369,6 +9712,9 @@ async function createShakeoutPaperTrade(payload) {
     outcome: null,
     score: payload.score != null ? Number(payload.score) : null,
     signalType: String(payload.signalType ?? payload.type ?? '').slice(0, 80),
+    subtype: payload.subtype ? String(payload.subtype).toUpperCase().slice(0, 40) : null,
+    bottomRebound: Boolean(payload.bottomRebound),
+    noStopLoss: Boolean(payload.noStopLoss || payload.bottomRebound),
     stage: String(payload.stage ?? '').slice(0, 80),
     createdAt: new Date().toISOString(),
     openedAt: status === 'OPEN' ? new Date().toISOString() : null,
@@ -9377,6 +9723,18 @@ async function createShakeoutPaperTrade(payload) {
     note: String(payload.note ?? '').slice(0, 500),
     trapRisk: payload.trapRisk ? String(payload.trapRisk).toUpperCase().slice(0, 12) : null,
     warning: Array.isArray(payload.trapReasons) ? payload.trapReasons.join('; ').slice(0, 300) : null,
+    entryReference: Number.isFinite(Number(payload.entryReference)) ? Number(payload.entryReference) : null,
+    entryRaw: Number.isFinite(Number(payload.entryRaw)) ? Number(payload.entryRaw) : null,
+    entryDistancePct: Number.isFinite(Number(payload.entryDistancePct)) ? Number(payload.entryDistancePct) : null,
+    entryRawDistancePct: Number.isFinite(Number(payload.entryRawDistancePct)) ? Number(payload.entryRawDistancePct) : null,
+    entryWasClamped: Boolean(payload.entryWasClamped),
+    btcRegime: payload.btcRegime ? String(payload.btcRegime).toUpperCase().slice(0, 12) : null,
+    btcEntryClass: payload.btcEntryClass ? String(payload.btcEntryClass).toUpperCase().slice(0, 20) : null,
+    btcRelation: payload.btcRelation && typeof payload.btcRelation === 'object'
+      ? payload.btcRelation
+      : null,
+    btcIndependentShort: Boolean(payload.btcIndependentShort),
+    btcStrongShortEma99: Boolean(payload.btcStrongShortEma99),
   };
   store.trades.unshift(trade);
   await writeShakeoutPaperStore(store);
@@ -9399,7 +9757,8 @@ async function closeShakeoutPaperTrade(payload) {
     throw new Error(`Chưa có tick socket mới cho ${trade.symbol}; không thể đóng bằng giá cache/entry`);
   }
   const sideMult = trade.side === 'LONG' ? 1 : -1;
-  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+  const pnl = Number(trade.realizedPnl ?? 0)
+    + (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
   const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
   const outcome = payload.outcome ?? 'MANUAL';
   store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
@@ -9441,6 +9800,8 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
       entryPrice: fill,
       fillPrice: fill,
       quantity: qty,
+      originalQuantity: qty,
+      realizedPnl: Number(row.realizedPnl ?? 0),
       openedAt: new Date().toISOString(),
     };
     await writeShakeoutPaperStore(store);
@@ -9452,7 +9813,273 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
 }
 
 const shakeoutPaperTpSlLocks = new Set();
+const shakeoutPaperPartialLocks = new Set();
+const shakeoutPaperDcaLocks = new Set();
+
+function isShakeoutBottomReboundTrade(trade) {
+  return Boolean(trade?.bottomRebound)
+    || String(trade?.subtype ?? '').toUpperCase() === 'BOTTOM_REBOUND';
+}
+
+async function checkShakeoutBottomReboundDca(trade, markPrice) {
+  if (!isShakeoutBottomReboundTrade(trade) || trade.status !== 'OPEN' || trade.dcaTaken) return trade;
+  if (shakeoutPaperDcaLocks.has(trade.id)) return trade;
+
+  const entry = Number(trade.entryPrice);
+  const quantity = Number(trade.quantity);
+  const margin = Number(trade.marginUsdt);
+  const leverage = Math.max(1, Number(trade.leverage) || 1);
+  const mark = Number(markPrice);
+  if (![entry, quantity, margin, mark].every(Number.isFinite)
+      || entry <= 0 || quantity <= 0 || margin <= 0 || mark <= 0) return trade;
+
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = Number(trade.realizedPnl ?? 0) + (mark - entry) * quantity * sideMult;
+  const roe = pnl / margin * 100;
+  const triggerRoe = -Math.abs(
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_DCA_ROE ?? 25),
+  );
+  if (roe > triggerRoe) return trade;
+
+  const dcaMargin = Math.max(
+    0.01,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_DCA_MARGIN_USDT ?? 10),
+  );
+  shakeoutPaperDcaLocks.add(trade.id);
+  try {
+    const store = await readShakeoutPaperStore();
+    const idx = store.trades.findIndex((t) =>
+      t.id === trade.id && t.status === 'OPEN' && !t.dcaTaken);
+    if (idx < 0) return trade;
+
+    const row = store.trades[idx];
+    const oldQty = Number(row.quantity);
+    const oldMargin = Number(row.marginUsdt);
+    const oldEntry = Number(row.entryPrice);
+    const rowLeverage = Math.max(1, Number(row.leverage) || 1);
+    const addQty = dcaMargin * rowLeverage / mark;
+    const totalQty = oldQty + addQty;
+    const totalMargin = oldMargin + dcaMargin;
+    const averageEntry = totalQty > 0
+      ? (oldEntry * oldQty + mark * addQty) / totalQty
+      : oldEntry;
+    const dcaAt = new Date().toISOString();
+
+    store.trades[idx] = {
+      ...row,
+      entryPrice: averageEntry,
+      quantity: totalQty,
+      originalQuantity: totalQty,
+      marginUsdt: totalMargin,
+      sl: null,
+      dcaTaken: true,
+      dcaAt,
+      dcaPrice: mark,
+      dcaMarginUsdt: dcaMargin,
+      dcaTriggerRoe: triggerRoe,
+      entryBeforeDca: oldEntry,
+      marginBeforeDca: oldMargin,
+      note: [
+        String(row.note ?? ''),
+        `bottomReboundDca=${dcaMargin}USDT@${mark}`,
+        `triggerRoe=${roe.toFixed(1)}%`,
+        `avgEntry=${averageEntry}`,
+        'noSL=Y',
+      ].filter(Boolean).join(' | ').slice(0, 500),
+    };
+    await writeShakeoutPaperStore(store);
+    scheduleShakeoutPaperBroadcast(50);
+    console.log(
+      `[ShakeoutPaper] BOTTOM_REBOUND_DCA ${row.side} ${row.symbol}`
+      + ` add=$${dcaMargin} roe=${roe.toFixed(1)}% mark=${mark}`
+      + ` entry=${oldEntry}->${averageEntry} margin=${oldMargin}->${totalMargin}`,
+    );
+    return store.trades[idx];
+  } finally {
+    shakeoutPaperDcaLocks.delete(trade.id);
+  }
+}
+
+async function checkShakeoutPaperPartialTp(trade, markPrice) {
+  if (process.env.SHAKEOUT_RECLAIM_PAPER_PARTIAL_TP_ENABLED === 'false') return trade;
+  if (trade.status !== 'OPEN' || trade.partialTpTaken || trade.recoveryMode) return trade;
+  if (isShakeoutBottomReboundTrade(trade)) return trade;
+  if (shakeoutPaperPartialLocks.has(trade.id)) return trade;
+
+  const entry = Number(trade.entryPrice);
+  const target = Number(trade.tp);
+  const leverage = Math.max(1, Number(trade.leverage) || 1);
+  const quantity = Number(trade.quantity);
+  const margin = Number(trade.marginUsdt);
+  if (![entry, target, quantity, margin].every(Number.isFinite)
+      || entry <= 0 || target <= 0 || quantity <= 0 || margin <= 0) return trade;
+
+  const minTargetRoe = Math.max(
+    0,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_PARTIAL_MIN_TARGET_ROE ?? 40),
+  );
+  const triggerRoe = Math.max(
+    0,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_PARTIAL_TRIGGER_ROE ?? 30),
+  );
+  const closeRatio = Math.min(
+    0.95,
+    Math.max(0.01, Number(process.env.SHAKEOUT_RECLAIM_PAPER_PARTIAL_CLOSE_RATIO ?? 0.30)),
+  );
+  const targetRoe = Math.abs(target - entry) / entry * leverage * 100;
+  if (targetRoe < minTargetRoe) return trade;
+
+  const isLong = trade.side === 'LONG';
+  const triggerMove = triggerRoe / 100 / leverage;
+  const triggerPrice = isLong
+    ? entry * (1 + triggerMove)
+    : entry * (1 - triggerMove);
+  const triggerHit = isLong ? markPrice >= triggerPrice : markPrice <= triggerPrice;
+  if (!triggerHit) return trade;
+
+  shakeoutPaperPartialLocks.add(trade.id);
+  try {
+    const store = await readShakeoutPaperStore();
+    const idx = store.trades.findIndex((t) =>
+      t.id === trade.id && t.status === 'OPEN' && !t.partialTpTaken);
+    if (idx < 0) return trade;
+    const row = store.trades[idx];
+    const rowQty = Number(row.quantity);
+    if (!Number.isFinite(rowQty) || rowQty <= 0) return trade;
+
+    const closeQty = rowQty * closeRatio;
+    const remainingQty = rowQty - closeQty;
+    const sideMult = row.side === 'LONG' ? 1 : -1;
+    const realizedAdd = (triggerPrice - entry) * closeQty * sideMult;
+    const realizedPnl = Number(row.realizedPnl ?? 0) + realizedAdd;
+    const partialAt = new Date().toISOString();
+    store.trades[idx] = {
+      ...row,
+      originalQuantity: Number(row.originalQuantity ?? rowQty),
+      quantity: remainingQty,
+      realizedPnl,
+      partialTpTaken: true,
+      partialTpAt: partialAt,
+      partialTpPrice: triggerPrice,
+      partialTpRoe: triggerRoe,
+      partialCloseRatio: closeRatio,
+      runnerRatio: 1 - closeRatio,
+      runnerOriginalTp: Number(row.tp),
+      sl: entry,
+      slTrailLockRoe: 0,
+      dynamicRiskUpdatedAt: partialAt,
+      note: [
+        String(row.note ?? ''),
+        `partialTp=${(closeRatio * 100).toFixed(0)}%@${triggerRoe}%`,
+        `runner=${((1 - closeRatio) * 100).toFixed(0)}%`,
+        `runnerSl=entry@${entry}`,
+      ].filter(Boolean).join(' | ').slice(0, 500),
+    };
+    await writeShakeoutPaperStore(store);
+    scheduleShakeoutPaperBroadcast(50);
+    console.log(
+      `[ShakeoutPaper] PARTIAL_TP ${row.side} ${row.symbol}`
+      + ` close=${(closeRatio * 100).toFixed(0)}% roe=${triggerRoe}%`
+      + ` realized=${realizedAdd.toFixed(4)} runner=${remainingQty}`,
+    );
+    return store.trades[idx];
+  } finally {
+    shakeoutPaperPartialLocks.delete(trade.id);
+  }
+}
+
+function getShakeoutPaperRecoverySetup(trade) {
+  if (process.env.SHAKEOUT_RECLAIM_PAPER_RECOVERY_ENABLED === 'false') return null;
+  if (trade.recoveryMode || trade.status !== 'OPEN') return null;
+
+  const note = String(trade.note ?? '');
+  const emaDistance = Number(note.match(/emaDist=([\d.]+)%/i)?.[1]);
+  const confirmation = Number(note.match(/(?:reclaim|reject)=([\d.]+)%/i)?.[1]);
+  const maxEmaDistance = Math.max(
+    0,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_RECOVERY_MAX_EMA_DISTANCE_PCT ?? 1),
+  );
+  const minConfirmation = Math.max(
+    0,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_RECOVERY_MIN_CONFIRM_PCT ?? 5),
+  );
+  if (!Number.isFinite(emaDistance) || emaDistance > maxEmaDistance) return null;
+  if (!Number.isFinite(confirmation) || confirmation < minConfirmation) return null;
+
+  const entry = Number(trade.entryPrice);
+  const currentSl = Number(trade.sl);
+  const leverage = Math.max(1, Number(trade.leverage) || 1);
+  const hardSlRoe = Math.max(
+    1,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_RECOVERY_HARD_SL_ROE ?? 30),
+  );
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(currentSl) || currentSl <= 0) return null;
+
+  // Recovery is only for an original losing SL, never for a profit-lock/trailing SL.
+  const isLosingSl = trade.side === 'LONG' ? currentSl < entry : currentSl > entry;
+  if (!isLosingSl) return null;
+
+  const hardSlMove = hardSlRoe / 100 / leverage;
+  const hardSl = trade.side === 'LONG'
+    ? entry * (1 - hardSlMove)
+    : entry * (1 + hardSlMove);
+  if (!Number.isFinite(hardSl) || hardSl <= 0) return null;
+  return {
+    emaDistance,
+    confirmation,
+    hardSlRoe,
+    hardSl,
+    recoveryTp: entry,
+  };
+}
+
+async function activateShakeoutPaperRecovery(trade, setup, markPrice) {
+  const store = await readShakeoutPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'OPEN' && !t.recoveryMode);
+  if (idx < 0) return null;
+
+  const row = store.trades[idx];
+  const activatedAt = new Date().toISOString();
+  const recoveryNote = [
+    `shakeoutRecovery=ACTIVE`,
+    `triggerSl=${row.sl}`,
+    `tpEntry=${setup.recoveryTp}`,
+    `hardSl=${setup.hardSl}`,
+    `hardSlRoe=-${setup.hardSlRoe}%`,
+    `emaDist=${setup.emaDistance}%`,
+    `confirm=${setup.confirmation}%`,
+  ].join(' ');
+  store.trades[idx] = {
+    ...row,
+    recoveryMode: true,
+    recoveryTriggeredAt: activatedAt,
+    recoveryOriginalSl: Number(row.sl),
+    recoveryOriginalTp: Number(row.tp),
+    recoveryTriggerMark: Number(markPrice),
+    recoveryHardSlRoe: -setup.hardSlRoe,
+    sl: setup.hardSl,
+    tp: setup.recoveryTp,
+    note: [String(row.note ?? ''), recoveryNote].filter(Boolean).join(' | ').slice(0, 500),
+  };
+  await writeShakeoutPaperStore(store);
+  scheduleShakeoutPaperBroadcast(50);
+  console.log(
+    `[ShakeoutPaper] RECOVERY_ACTIVE ${row.side} ${row.symbol}`
+    + ` oldSl=${row.sl} tpEntry=${setup.recoveryTp} hardSl=${setup.hardSl}`,
+  );
+  return store.trades[idx];
+}
+
 async function checkShakeoutPaperTpSl(trade, markPrice) {
+  if (isShakeoutBottomReboundTrade(trade)) {
+    if (!trade.tp) return;
+    const tpHit = trade.side === 'LONG' ? markPrice >= trade.tp : markPrice <= trade.tp;
+    if (!tpHit) return;
+    const outcome = trade.lossTpMovedToEntry ? 'LOSS_RECOVERY_BE' : 'TP';
+    await closeShakeoutPaperTrade({ id: trade.id, exitPrice: trade.tp, outcome });
+    console.log(`[ShakeoutPaper] ${outcome} BOTTOM_REBOUND ${trade.side} ${trade.symbol} exit=${trade.tp}`);
+    return;
+  }
   if (!trade.tp && !trade.sl) return;
   if (shakeoutPaperTpSlLocks.has(trade.id)) return;
   const isLong = trade.side === 'LONG';
@@ -9461,7 +10088,39 @@ async function checkShakeoutPaperTpSl(trade, markPrice) {
   if (!tpHit && !slHit) return;
   shakeoutPaperTpSlLocks.add(trade.id);
   try {
-    const outcome = tpHit ? 'TP' : 'SL';
+    if (slHit && !trade.recoveryMode) {
+      const recoverySetup = getShakeoutPaperRecoverySetup(trade);
+      if (recoverySetup) {
+        const recoveryTrade = await activateShakeoutPaperRecovery(trade, recoverySetup, markPrice);
+        if (!recoveryTrade) return;
+
+        const hardSlHit = isLong
+          ? markPrice <= recoverySetup.hardSl
+          : markPrice >= recoverySetup.hardSl;
+        if (!hardSlHit) return;
+        await closeShakeoutPaperTrade({
+          id: trade.id,
+          exitPrice: recoverySetup.hardSl,
+          outcome: 'RECOVERY_SL30',
+        });
+        console.log(
+          `[ShakeoutPaper] RECOVERY_SL30 ${trade.side} ${trade.symbol}`
+          + ` exit=${recoverySetup.hardSl}`,
+        );
+        return;
+      }
+    }
+
+    const partialSlAtEntry = trade.partialTpTaken
+      && Math.abs(Number(trade.sl) - Number(trade.entryPrice))
+        / Math.max(Number(trade.entryPrice), 1e-9) < 0.0001;
+    const outcome = trade.lossTpMovedToEntry && tpHit
+      ? 'LOSS_RECOVERY_BE'
+      : trade.recoveryMode
+      ? (tpHit ? 'RECOVERY_BE' : 'RECOVERY_SL30')
+      : trade.partialTpTaken
+        ? (tpHit ? 'RUNNER_TP' : partialSlAtEntry ? 'PARTIAL_BE' : 'PARTIAL_TRAIL')
+        : (tpHit ? 'TP' : 'SL');
     const exitPrice = tpHit ? trade.tp : trade.sl;
     await closeShakeoutPaperTrade({ id: trade.id, exitPrice, outcome });
     console.log(`[ShakeoutPaper] ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
@@ -9471,9 +10130,66 @@ async function checkShakeoutPaperTpSl(trade, markPrice) {
 }
 
 const shakeoutPaperSlTrailLocks = new Set();
+const shakeoutPaperLossRecoveryLocks = new Set();
+
+async function checkShakeoutPaperLossRecovery(trade, markPrice) {
+  if (process.env.SHAKEOUT_RECLAIM_PAPER_LOSS_TP_ENTRY_ENABLED === 'false') return trade;
+  if (trade.status !== 'OPEN' || trade.lossTpMovedToEntry) return trade;
+  if (shakeoutPaperLossRecoveryLocks.has(trade.id)) return trade;
+
+  const entry = Number(trade.entryPrice);
+  const quantity = Number(trade.quantity);
+  const margin = Number(trade.marginUsdt);
+  const mark = Number(markPrice);
+  if (![entry, quantity, margin, mark].every(Number.isFinite)
+      || entry <= 0 || quantity <= 0 || margin <= 0 || mark <= 0) return trade;
+
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = Number(trade.realizedPnl ?? 0) + (mark - entry) * quantity * sideMult;
+  const roe = pnl / margin * 100;
+  const triggerRoe = -Math.abs(
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_LOSS_TP_ENTRY_ROE ?? 15),
+  );
+  if (roe > triggerRoe) return trade;
+
+  shakeoutPaperLossRecoveryLocks.add(trade.id);
+  try {
+    const store = await readShakeoutPaperStore();
+    const idx = store.trades.findIndex((row) =>
+      row.id === trade.id && row.status === 'OPEN' && !row.lossTpMovedToEntry);
+    if (idx < 0) return trade;
+    const row = store.trades[idx];
+    store.trades[idx] = {
+      ...row,
+      lossTpMovedToEntry: true,
+      lossTpTriggerRoe: triggerRoe,
+      lossTpTriggerMark: mark,
+      lossTpOriginalTp: Number(row.tp),
+      lossTpMovedAt: new Date().toISOString(),
+      tp: entry,
+      note: [
+        String(row.note ?? ''),
+        `lossTpToEntry=${triggerRoe}%@mark=${mark}`,
+        `oldTp=${row.tp}`,
+        `newTp=${entry}`,
+      ].filter(Boolean).join(' | ').slice(0, 500),
+    };
+    await writeShakeoutPaperStore(store);
+    scheduleShakeoutPaperBroadcast(50);
+    console.log(
+      `[ShakeoutPaper] LOSS_TP_TO_ENTRY ${row.side} ${row.symbol}`
+      + ` roe=${roe.toFixed(1)}% mark=${mark} tp=${row.tp}->${entry}`,
+    );
+    return store.trades[idx];
+  } finally {
+    shakeoutPaperLossRecoveryLocks.delete(trade.id);
+  }
+}
+
 async function checkShakeoutPaperSlTrail(trade, markPrice) {
   if (process.env.SHAKEOUT_RECLAIM_PAPER_SL_TRAIL_ENABLED === 'false') return;
   if (trade.status !== 'OPEN' || trade.outcome === 'INVALID') return;
+  if (isShakeoutBottomReboundTrade(trade)) return;
   if (shakeoutPaperSlTrailLocks.has(trade.id)) return;
 
   const sideMult = trade.side === 'LONG' ? 1 : -1;
@@ -9484,14 +10200,24 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
   if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(qty) || qty <= 0) return;
   if (!Number.isFinite(margin) || margin <= 0 || !Number.isFinite(mark) || mark <= 0) return;
 
-  const pnl = (mark - entry) * qty * sideMult;
+  const realizedPnl = Number(trade.realizedPnl ?? 0);
+  const pnl = realizedPnl + (mark - entry) * qty * sideMult;
   const roe = (pnl / margin) * 100;
   const prevPeak = shakeoutPaperPeakRoe.get(trade.id) ?? Number(trade.peakRoe ?? 0) ?? 0;
   const peakRoe = Math.max(prevPeak, roe);
   shakeoutPaperPeakRoe.set(trade.id, peakRoe);
 
+  const isShort = trade.side === 'SHORT';
+  const shortBreakevenRoe = Math.max(
+    0,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_SHORT_BREAKEVEN_ROE ?? 15),
+  );
   const trailStartRoe = Number(process.env.SHAKEOUT_RECLAIM_PAPER_TRAIL_START_ROE ?? 10);
-  const targetLockRoe = peakRoe >= trailStartRoe ? getTargetLockRoe(peakRoe) : null;
+  const targetLockRoe = trade.partialTpTaken
+    ? (peakRoe >= trailStartRoe ? getTargetLockRoe(peakRoe) : 0)
+    : isShort
+      ? (peakRoe >= shortBreakevenRoe ? 0 : null)
+      : (peakRoe >= trailStartRoe ? getTargetLockRoe(peakRoe) : null);
 
   const leverage = Math.max(1, Number(trade.leverage) || 1);
   const isLong = trade.side === 'LONG';
@@ -9499,8 +10225,10 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
   let improves = false;
   let crossedLock = false;
   if (targetLockRoe != null) {
-    const lockMove = targetLockRoe / 100 / leverage;
-    newSl = isLong ? entry * (1 + lockMove) : entry * (1 - lockMove);
+    const targetTotalPnl = margin * targetLockRoe / 100;
+    const runnerPnlNeeded = targetTotalPnl - realizedPnl;
+    const priceMove = runnerPnlNeeded / qty;
+    newSl = isLong ? entry + priceMove : entry - priceMove;
     if (Number.isFinite(newSl) && newSl > 0) {
       const curSl = Number(trade.sl ?? 0);
       improves = !Number.isFinite(curSl) || curSl <= 0
@@ -9520,7 +10248,11 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
     const row = store.trades[idx];
     const notes = [];
     if (targetLockRoe != null && improves && Number.isFinite(newSl) && newSl > 0) {
-      notes.push(`shakeoutPaperSlTrail=${targetLockRoe}%@${newSl}`);
+      notes.push(trade.partialTpTaken
+        ? `shakeoutRunnerSlTrail=${targetLockRoe}%@${newSl}`
+        : isShort
+          ? `shakeoutPaperShortBE=${shortBreakevenRoe}%@${newSl}`
+          : `shakeoutPaperSlTrail=${targetLockRoe}%@${newSl}`);
     }
     if (shouldPersistPeak && (targetLockRoe == null || !improves)) {
       notes.push(`shakeoutPaperPeak=${peakRoe.toFixed(1)}%`);
@@ -9536,8 +10268,13 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
     await writeShakeoutPaperStore(store);
     scheduleShakeoutPaperBroadcast(50);
     if (crossedLock) {
-      await closeShakeoutPaperTrade({ id: trade.id, exitPrice: newSl, outcome: 'SL' });
-      console.log(`[ShakeoutPaper] SL_LOCK_HIT ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% exit=${newSl}`);
+      const exitPrice = mark;
+      await closeShakeoutPaperTrade({
+        id: trade.id,
+        exitPrice,
+        outcome: trade.partialTpTaken ? 'PARTIAL_TRAIL' : 'SL',
+      });
+      console.log(`[ShakeoutPaper] SL_LOCK_HIT ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% exit=${exitPrice}`);
     } else if (targetLockRoe != null && improves && Number.isFinite(newSl) && newSl > 0) {
       console.log(`[ShakeoutPaper] SL_TRAIL ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% sl=${newSl}`);
     }
@@ -9547,13 +10284,70 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
 }
 
 async function processShakeoutPaperFills(symbol, markPrice) {
-  const store = await readShakeoutPaperStore();
+  let store = await readShakeoutPaperStore();
+  const cancelPendingRoe = -Math.abs(
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_CANCEL_PENDING_MARKET_ROE ?? 10),
+  );
+  let cancelled = 0;
+  for (const pendingTrade of store.trades.filter((t) =>
+    t.status === 'PENDING' && t.symbol === symbol && t.signalId)) {
+    const marketTrade = store.trades.find((t) =>
+      t.signalId === pendingTrade.signalId
+      && t.variant === 'MARKET'
+      && ['OPEN', 'CLOSED'].includes(t.status));
+    if (!marketTrade) continue;
+    let marketRoe;
+    if (marketTrade.status === 'CLOSED' && Number.isFinite(Number(marketTrade.roe))) {
+      marketRoe = Number(marketTrade.roe);
+    } else {
+      const entry = Number(marketTrade.entryPrice);
+      const qty = Number(marketTrade.quantity);
+      const margin = Number(marketTrade.marginUsdt);
+      if (![entry, qty, margin].every(Number.isFinite) || entry <= 0 || qty <= 0 || margin <= 0) continue;
+      const sideMult = marketTrade.side === 'LONG' ? 1 : -1;
+      const marketPnl = Number(marketTrade.realizedPnl ?? 0)
+        + (markPrice - entry) * qty * sideMult;
+      marketRoe = marketPnl / margin * 100;
+    }
+    if (marketRoe > cancelPendingRoe) continue;
+
+    const idx = store.trades.findIndex((t) => t.id === pendingTrade.id && t.status === 'PENDING');
+    if (idx < 0) continue;
+    store.trades[idx] = {
+      ...store.trades[idx],
+      status: 'CANCELLED',
+      outcome: 'CANCELLED_MARKET_LOSS',
+      cancelledAt: new Date().toISOString(),
+      cancelledByTradeId: marketTrade.id,
+      cancelledMarketRoe: marketRoe,
+      cancelledMarketStatus: marketTrade.status,
+      note: [
+        String(store.trades[idx].note ?? ''),
+        `pendingCancelled marketRoe=${marketRoe.toFixed(1)}% <= ${cancelPendingRoe.toFixed(1)}%`,
+      ].filter(Boolean).join(' | ').slice(0, 500),
+    };
+    cancelled++;
+    console.log(
+      `[ShakeoutPaper] CANCEL_PENDING ${pendingTrade.side} ${symbol}`
+      + ` marketRoe=${marketRoe.toFixed(1)}% threshold=${cancelPendingRoe.toFixed(1)}%`,
+    );
+  }
+  if (cancelled) {
+    await writeShakeoutPaperStore(store);
+    scheduleShakeoutPaperBroadcast(50);
+    syncShakeoutPaperTicker().catch(() => {});
+    store = await readShakeoutPaperStore();
+  }
+
   const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
   for (const t of pending) await fillShakeoutPendingTrade(t, markPrice);
   const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
   for (const t of open) {
-    await checkShakeoutPaperSlTrail(t, markPrice);
-    await checkShakeoutPaperTpSl(t, markPrice);
+    const dcaTrade = await checkShakeoutBottomReboundDca(t, markPrice);
+    const recoveryTrade = await checkShakeoutPaperLossRecovery(dcaTrade, markPrice);
+    const current = await checkShakeoutPaperPartialTp(recoveryTrade, markPrice);
+    await checkShakeoutPaperSlTrail(current, markPrice);
+    await checkShakeoutPaperTpSl(current, markPrice);
   }
   scheduleShakeoutPaperBroadcast();
 }
@@ -9596,18 +10390,77 @@ async function expireOldShakeoutPending() {
   const ttlMs = Number(process.env.SHAKEOUT_RECLAIM_PAPER_PENDING_TTL_MS ?? 4 * 3600 * 1000);
   const store = await readShakeoutPaperStore();
   const now = Date.now();
-  const keep = [];
-  let removed = 0;
-  for (const t of store.trades) {
+  let changed = 0;
+  for (let i = 0; i < store.trades.length; i++) {
+    let t = store.trades[i];
+    if (t.status === 'PENDING' && t.entryDistancePct == null) {
+      const mark = getShakeoutPaperMark(t.symbol);
+      const entry = Number(t.entryPrice);
+      const maxDistancePct = Math.max(
+        0,
+        Number(process.env.SHAKEOUT_RECLAIM_PENDING_MAX_DISTANCE_PCT ?? 5),
+      );
+      const distancePct = Number.isFinite(mark) && mark > 0 && Number.isFinite(entry) && entry > 0
+        ? Math.abs(entry - mark) / mark * 100
+        : 0;
+      if (maxDistancePct > 0 && distancePct > maxDistancePct) {
+        const newEntry = mark + Math.sign(entry - mark) * mark * maxDistancePct / 100;
+        const tp = Number(t.tp);
+        const geometryOk = t.side === 'LONG' ? newEntry < tp : newEntry > tp;
+        if (!geometryOk) {
+          store.trades[i] = {
+            ...t,
+            status: 'EXPIRED',
+            outcome: 'EXPIRED',
+            expiredAt: new Date().toISOString(),
+            note: [String(t.note ?? ''), 'pendingExpired=target-crossed-after-clamp']
+              .filter(Boolean).join(' | ').slice(0, 500),
+          };
+          changed++;
+          continue;
+        }
+        const leverage = Math.max(1, Number(t.leverage) || 1);
+        const oldSl = Number(t.sl);
+        const slRoe = Number.isFinite(oldSl) && oldSl > 0
+          ? Math.abs(entry - oldSl) / entry * leverage * 100
+          : 20;
+        const slMove = slRoe / 100 / leverage;
+        const newSl = t.side === 'LONG'
+          ? newEntry * (1 - slMove)
+          : newEntry * (1 + slMove);
+        store.trades[i] = {
+          ...t,
+          entryPrice: newEntry,
+          quantity: (Number(t.marginUsdt) * leverage) / newEntry,
+          sl: newSl,
+          entryReference: mark,
+          entryRaw: entry,
+          entryDistancePct: maxDistancePct,
+          entryRawDistancePct: distancePct,
+          entryWasClamped: true,
+          note: [
+            String(t.note ?? ''),
+            `legacyEntryClamped=${entry}->${newEntry} maxDistance=${maxDistancePct.toFixed(1)}%`,
+          ].filter(Boolean).join(' | ').slice(0, 500),
+        };
+        t = store.trades[i];
+        changed++;
+      }
+    }
     if (t.status === 'PENDING' && (now - (Date.parse(t.createdAt ?? 0) || now)) > ttlMs) {
       console.log(`[ShakeoutPaper] EXPIRE pending ${t.side} ${t.symbol} ${t.variant ?? ''} - >${(ttlMs / 3600000).toFixed(0)}h chưa khớp, xóa lệnh`);
-      removed++;
-      continue;
+      store.trades[i] = {
+        ...t,
+        status: 'EXPIRED',
+        outcome: 'EXPIRED',
+        expiredAt: new Date().toISOString(),
+        note: [String(t.note ?? ''), `pendingExpired>${(ttlMs / 3600000).toFixed(0)}h`]
+          .filter(Boolean).join(' | ').slice(0, 500),
+      };
+      changed++;
     }
-    keep.push(t);
   }
-  if (removed) {
-    store.trades = keep;
+  if (changed) {
     await writeShakeoutPaperStore(store);
     scheduleShakeoutPaperBroadcast(50);
     syncShakeoutPaperTicker().catch(() => {});
@@ -9628,6 +10481,7 @@ function startShakeoutPaperTicker() {
   console.log('[ShakeoutPaper] Dedicated socket-only aggTrade ticker started.');
   syncShakeoutPaperTicker().catch(() => {});
   setInterval(() => syncShakeoutPaperTicker().catch(() => {}), 30_000);
+  setTimeout(() => expireOldShakeoutPending().catch(() => {}), 3_000);
   setInterval(() => expireOldShakeoutPending().catch(() => {}), 60_000);
 }
 
@@ -9655,6 +10509,11 @@ async function createShakeoutPaperTrades(signals = []) {
   for (const sig of signals) {
     if (Number(sig?.score ?? 0) < minScore) continue;
     if (String(sig?.stage ?? '') !== 'RECLAIM_CONFIRMED') continue;
+    if (sig.bottomReboundRisk || sig.autoTradeBlocked
+        || String(sig.subtype ?? '') === 'BOTTOM_REBOUND_RISK') {
+      console.log(`[ShakeoutPaper] skip ${sig.symbol} BOTTOM_REBOUND_RISK - ${sig.autoTradeBlockReason ?? 'false-bottom risk'}`);
+      continue;
+    }
     const side = String(sig.action ?? '').toUpperCase();
     if (!['LONG', 'SHORT'].includes(side)) continue;
     if (noHedge) {
@@ -9676,7 +10535,12 @@ async function createShakeoutPaperTrades(signals = []) {
     const signalId = crypto.randomUUID();
     const marketEntry = Number(sig.entryReference ?? sig.markPrice ?? sig.entry);
     const pendingEntry = Number(sig.entry ?? sig.markPrice);
-    const marginUsdt = Number(process.env.SHAKEOUT_RECLAIM_PAPER_MARGIN_USDT ?? 10);
+    const btcStrongShortEma99 = side === 'SHORT' && Boolean(sig.btcStrongShortEma99);
+    const isBottomRebound = side === 'LONG'
+      && (sig.bottomRebound || String(sig.subtype ?? '') === 'BOTTOM_REBOUND');
+    const marginUsdt = isBottomRebound
+      ? Number(process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_MARGIN_USDT ?? 5)
+      : Number(process.env.SHAKEOUT_RECLAIM_PAPER_MARGIN_USDT ?? 10);
     const sc = sig.score;
     const sideL = side.toLowerCase();
     const marketThreshold = side === 'SHORT' ? shortMarketMinScore : marketMinScore;
@@ -9689,13 +10553,43 @@ async function createShakeoutPaperTrades(signals = []) {
     const rewardPct = Number.isFinite(referenceEntry) && referenceEntry > 0 && Number.isFinite(signalTp)
       ? Math.max(riskPct * 1.1, Math.abs(signalTp - referenceEntry) / referenceEntry)
       : riskPct * 2.2;
+    const nearEntryMaxPct = Math.max(
+      0,
+      Number(process.env.SHAKEOUT_RECLAIM_PAPER_NEAR_ENTRY_MAX_PCT ?? 1),
+    );
+    const entryDistancePct = Number.isFinite(marketEntry) && marketEntry > 0 && Number.isFinite(pendingEntry)
+      ? Math.abs(pendingEntry - marketEntry) / marketEntry * 100
+      : Infinity;
+    const nearMarketEntry = sc >= marketThreshold
+      && entryDistancePct <= nearEntryMaxPct;
+    const nearEntryNote = nearMarketEntry
+      ? `nearMarketEntry=${entryDistancePct.toFixed(2)}% <= ${nearEntryMaxPct.toFixed(2)}%; PENDING skipped, MARKET only`
+      : '';
+    const marketLeverage = calcAutoLeverage(marketEntry, signalSl);
+    const marketRewardRoe = Number.isFinite(marketEntry) && marketEntry > 0 && Number.isFinite(signalTp)
+      ? Math.abs(signalTp - marketEntry) / marketEntry * marketLeverage * 100
+      : 0;
+    const minMarketRewardRoe = Math.max(
+      0,
+      Number(process.env.SHAKEOUT_RECLAIM_PAPER_MARKET_MIN_TP_ROE ?? 20),
+    );
+    const marketRewardTooLow = marketRewardRoe < minMarketRewardRoe;
+    const marketRewardNote = marketRewardTooLow
+      ? `marketTpRoe=${marketRewardRoe.toFixed(1)}% < ${minMarketRewardRoe.toFixed(1)}%; MARKET skipped, PENDING only`
+      : '';
 
-    const variants = [
-      ...(sc >= marketThreshold
+    const variants = isBottomRebound
+      ? [{ variant: 'MARKET', status: 'OPEN', entryPrice: marketEntry, tag: 'mkt' }]
+      : btcStrongShortEma99
+        ? [{ variant: 'PENDING', status: 'PENDING', entryPrice: pendingEntry, tag: 'btc-strong-ema99' }]
+      : [
+      ...(sc >= marketThreshold && !marketRewardTooLow
         ? [{ variant: 'MARKET', status: 'OPEN', entryPrice: marketEntry, tag: 'mkt' }]
         : []),
-      { variant: 'PENDING', status: 'PENDING', entryPrice: pendingEntry, tag: 'pend' },
-    ];
+      ...(!nearMarketEntry || marketRewardTooLow
+        ? [{ variant: 'PENDING', status: 'PENDING', entryPrice: pendingEntry, tag: 'pend' }]
+        : []),
+      ];
     for (const v of variants) {
       if (!Number.isFinite(v.entryPrice) || v.entryPrice <= 0) continue;
       const geometryOk = side === 'LONG'
@@ -9712,6 +10606,42 @@ async function createShakeoutPaperTrades(signals = []) {
           ? v.entryPrice * (1 + rewardPct)
           : v.entryPrice * (1 - rewardPct);
       const lev = calcAutoLeverage(v.entryPrice, variantSl);
+      const pendingMinSlRoe = Math.max(
+        1,
+        Number(process.env.SHAKEOUT_RECLAIM_PAPER_PENDING_MIN_SL_ROE ?? 20),
+      );
+      const pendingMaxSlRoe = Math.max(
+        pendingMinSlRoe,
+        Number(process.env.SHAKEOUT_RECLAIM_PAPER_PENDING_MAX_SL_ROE ?? 30),
+      );
+      const rawSlRoe = Math.abs(v.entryPrice - variantSl) / v.entryPrice * lev * 100;
+      const adjustedSlRoe = v.variant === 'PENDING'
+        ? Math.min(pendingMaxSlRoe, Math.max(pendingMinSlRoe, rawSlRoe))
+        : rawSlRoe;
+      const adjustedSlMove = adjustedSlRoe / 100 / lev;
+      const finalVariantSl = v.variant === 'PENDING'
+        ? (side === 'LONG'
+          ? v.entryPrice * (1 - adjustedSlMove)
+          : v.entryPrice * (1 + adjustedSlMove))
+        : variantSl;
+      const maxPaperSlRoe = Math.max(
+        1,
+        Number(process.env.SHAKEOUT_RECLAIM_PAPER_MAX_SL_ROE ?? 40),
+      );
+      const finalSlRoe = Math.abs(v.entryPrice - finalVariantSl) / v.entryPrice * lev * 100;
+      const cappedSlRoe = Math.min(maxPaperSlRoe, finalSlRoe);
+      const cappedSlMove = cappedSlRoe / 100 / lev;
+      const cappedVariantSl = finalSlRoe > maxPaperSlRoe
+        ? (side === 'LONG'
+          ? v.entryPrice * (1 - cappedSlMove)
+          : v.entryPrice * (1 + cappedSlMove))
+        : finalVariantSl;
+      const pendingSlNote = v.variant === 'PENDING' && Math.abs(adjustedSlRoe - rawSlRoe) > 0.01
+        ? `pendingSlRoeAdjusted=${rawSlRoe.toFixed(1)}%->${adjustedSlRoe.toFixed(1)}% sl=${finalVariantSl}`
+        : '';
+      const maxSlNote = finalSlRoe > maxPaperSlRoe
+        ? `paperSlRoeCapped=${finalSlRoe.toFixed(1)}%->${maxPaperSlRoe.toFixed(1)}% sl=${cappedVariantSl}`
+        : '';
       await createShakeoutPaperTrade({
         symbol: sig.symbol,
         side,
@@ -9721,18 +10651,40 @@ async function createShakeoutPaperTrades(signals = []) {
         marginUsdt,
         leverage: lev,
         entryPrice: v.entryPrice,
-        sl: variantSl,
+        sl: isBottomRebound ? null : cappedVariantSl,
         tp: variantTp,
         score: sc,
         stage: sig.stage,
         signalType: sig.type,
+        subtype: sig.subtype,
+        bottomRebound: isBottomRebound,
+        noStopLoss: isBottomRebound,
         source: `shakeout-auto-${sideL}-${sc}-${v.tag}-${lev}x`,
         note: [
           sig.note ?? sig.reason ?? '',
+          nearEntryNote,
+          marketRewardNote,
           geometryOk ? '' : `variantGeometryAdjusted=${v.variant} sl=${variantSl} tp=${variantTp}`,
+          pendingSlNote,
+          maxSlNote,
+          btcStrongShortEma99 ? 'BTC STRONG: SHORT waits exact EMA99; MARKET disabled; no 5% clamp' : '',
+          sig.btcIndependentShort
+            ? `BTC STRONG but ${sig.btcEntryClass}: use coin structure entry`
+            : '',
+          isBottomRebound ? 'bottomRebound=MARKET_ONLY | noSL=Y | dca=$10@-25%ROE' : '',
         ].filter(Boolean).join(' | '),
         trapRisk: sig.riskFlags?.trapRisk ?? null,
         trapReasons: sig.riskFlags?.trapReasons ?? null,
+        entryReference: marketEntry,
+        entryRaw: sig.entryRaw,
+        entryDistancePct: sig.entryDistancePct,
+        entryRawDistancePct: sig.entryRawDistancePct,
+        entryWasClamped: sig.entryWasClamped,
+        btcRegime: sig.btcRegime,
+        btcEntryClass: sig.btcEntryClass,
+        btcRelation: sig.btcRelation,
+        btcIndependentShort: sig.btcIndependentShort,
+        btcStrongShortEma99,
       }).catch((e) => console.warn(`[ShakeoutPaper] auto-fire ${v.variant} ${sig.symbol}:`, e.message));
     }
     // đánh dấu side active để chặn chiều ngược trong cùng batch scan
@@ -9741,6 +10693,385 @@ async function createShakeoutPaperTrades(signals = []) {
       activeSide.get(sig.symbol).add(side);
     }
   }
+}
+
+// Top Reversal Paper Trades - isolated from Shakeout paper history.
+async function readTopReversalPaperStore() {
+  try {
+    const parsed = JSON.parse(await readFile(TOP_REVERSAL_PAPER_FILE, 'utf8'));
+    return Array.isArray(parsed?.trades) ? parsed : { trades: [] };
+  } catch {
+    return { trades: [] };
+  }
+}
+
+let _topReversalPaperWriteLock = Promise.resolve();
+async function writeTopReversalPaperStore(store) {
+  _topReversalPaperWriteLock = _topReversalPaperWriteLock
+    .then(() => atomicWriteJson(TOP_REVERSAL_PAPER_FILE, store));
+  return _topReversalPaperWriteLock;
+}
+
+function getTopReversalPaperMark(symbol) {
+  const mark = Number(topReversalSocketMarks.get(String(symbol ?? '').toUpperCase()));
+  return Number.isFinite(mark) && mark > 0 ? mark : null;
+}
+
+function enrichTopReversalPaperTrade(trade, markPrice) {
+  const mark = Number(markPrice);
+  const hasMark = Number.isFinite(mark) && mark > 0;
+  const entry = Number(trade.entryPrice);
+  const quantity = Number(trade.quantity);
+  const margin = Number(trade.marginUsdt);
+  const pnl = trade.status === 'OPEN' && hasMark
+    ? (entry - mark) * quantity
+    : trade.pnl ?? null;
+  const roe = trade.status === 'OPEN' && margin > 0 && pnl != null
+    ? pnl / margin * 100
+    : trade.roe ?? null;
+  return {
+    ...trade,
+    markPrice: trade.status === 'OPEN' ? (hasMark ? mark : null) : Number(trade.exitPrice ?? entry),
+    markUpdatedAt: topReversalSocketMarkAt.get(String(trade.symbol ?? '').toUpperCase()) ?? null,
+    pnl,
+    roe,
+  };
+}
+
+async function getTopReversalPaperTrades() {
+  const store = await readTopReversalPaperStore();
+  const trades = store.trades.map((trade) =>
+    enrichTopReversalPaperTrade(trade, getTopReversalPaperMark(trade.symbol)));
+  const closed = trades.filter((trade) => trade.status === 'CLOSED');
+  const wins = closed.filter((trade) => Number(trade.pnl) > 0).length;
+  const dailyMap = new Map();
+  for (const trade of closed) {
+    const date = String(trade.closedAt ?? trade.createdAt ?? '').slice(0, 10);
+    if (!date) continue;
+    const row = dailyMap.get(date) ?? { date, orders: 0, wins: 0, losses: 0, pnl: 0, roe: 0 };
+    row.orders++;
+    if (Number(trade.pnl) > 0) row.wins++;
+    else row.losses++;
+    row.pnl += Number(trade.pnl ?? 0);
+    row.roe += Number(trade.roe ?? 0);
+    dailyMap.set(date, row);
+  }
+  const daily = [...dailyMap.values()]
+    .map((row) => ({
+      ...row,
+      pnl: Number(row.pnl.toFixed(4)),
+      roe: Number(row.roe.toFixed(1)),
+      winRate: row.orders ? Number((row.wins / row.orders * 100).toFixed(1)) : 0,
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+  return {
+    trades,
+    summary: {
+      total: trades.length,
+      open: trades.filter((trade) => trade.status === 'OPEN').length,
+      closed: closed.length,
+      wins,
+      losses: closed.length - wins,
+      winRate: closed.length ? Number((wins / closed.length * 100).toFixed(1)) : 0,
+      pnl: Number(closed.reduce((sum, trade) => sum + Number(trade.pnl ?? 0), 0).toFixed(4)),
+      dcaActive: trades.filter((trade) => trade.status === 'OPEN' && trade.dcaTaken).length,
+      trailActive: trades.filter((trade) =>
+        trade.status === 'OPEN' && Number.isFinite(Number(trade.sl)) && Number(trade.sl) > 0).length,
+    },
+    daily,
+  };
+}
+
+async function createTopReversalPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase();
+  const entryPrice = Number(payload.entryPrice ?? payload.entry);
+  const marginUsdt = Number(payload.marginUsdt ?? process.env.TOP_REVERSAL_PAPER_MARGIN_USDT ?? 5);
+  const leverage = Math.max(1, Number(payload.leverage ?? process.env.TOP_REVERSAL_PAPER_LEVERAGE ?? 5));
+  if (!symbol || !Number.isFinite(entryPrice) || entryPrice <= 0) {
+    throw new Error('invalid top reversal paper entry');
+  }
+  const store = await readTopReversalPaperStore();
+  const duplicate = store.trades.find((trade) =>
+    trade.symbol === symbol && trade.status === 'OPEN');
+  if (duplicate) return { trade: enrichTopReversalPaperTrade(duplicate, getTopReversalPaperMark(symbol)) };
+
+  const trade = {
+    id: crypto.randomUUID(),
+    symbol,
+    side: 'SHORT',
+    status: 'OPEN',
+    marginUsdt,
+    leverage,
+    quantity: marginUsdt * leverage / entryPrice,
+    originalQuantity: marginUsdt * leverage / entryPrice,
+    entryPrice,
+    fillPrice: entryPrice,
+    sl: null,
+    tp: Number(payload.tp),
+    runnerTp: Number(payload.runnerTp ?? payload.tp),
+    score: Number(payload.score ?? 0),
+    stage: String(payload.stage ?? 'TOP_CONFIRMED'),
+    source: String(payload.source ?? 'top-reversal-auto').slice(0, 80),
+    note: String(payload.note ?? '').slice(0, 500),
+    dcaTaken: false,
+    peakRoe: 0,
+    slTrailLockRoe: null,
+    pnl: null,
+    roe: null,
+    outcome: null,
+    createdAt: new Date().toISOString(),
+    openedAt: new Date().toISOString(),
+    closedAt: null,
+  };
+  store.trades.unshift(trade);
+  await writeTopReversalPaperStore(store);
+  syncTopReversalPaperTicker().catch(() => {});
+  scheduleTopReversalPaperBroadcast(50);
+  console.log(`[TopReversalPaper] OPEN SHORT ${symbol} $${marginUsdt} entry=${entryPrice} score=${trade.score}`);
+  return { trade: enrichTopReversalPaperTrade(trade, getTopReversalPaperMark(symbol)) };
+}
+
+async function closeTopReversalPaperTrade(payload) {
+  const store = await readTopReversalPaperStore();
+  const idx = store.trades.findIndex((trade) => trade.id === payload.id);
+  if (idx < 0) throw new Error('Top reversal paper trade not found');
+  const trade = store.trades[idx];
+  if (trade.status === 'CLOSED') return { trade };
+  const exitPrice = Number(payload.exitPrice ?? getTopReversalPaperMark(trade.symbol));
+  if (!Number.isFinite(exitPrice) || exitPrice <= 0) throw new Error('socket price not ready');
+  const pnl = (Number(trade.entryPrice) - exitPrice) * Number(trade.quantity);
+  const roe = pnl / Number(trade.marginUsdt) * 100;
+  store.trades[idx] = {
+    ...trade,
+    status: 'CLOSED',
+    exitPrice,
+    pnl,
+    roe,
+    outcome: String(payload.outcome ?? 'MANUAL'),
+    closedAt: new Date().toISOString(),
+  };
+  await writeTopReversalPaperStore(store);
+  syncTopReversalPaperTicker().catch(() => {});
+  scheduleTopReversalPaperBroadcast(50);
+  return { trade: store.trades[idx] };
+}
+
+async function deleteTopReversalPaperTrade(payload) {
+  const store = await readTopReversalPaperStore();
+  store.trades = store.trades.filter((trade) => trade.id !== payload.id);
+  await writeTopReversalPaperStore(store);
+  syncTopReversalPaperTicker().catch(() => {});
+  scheduleTopReversalPaperBroadcast(50);
+  return { ok: true };
+}
+
+const topReversalDcaLocks = new Set();
+const topReversalTrailLocks = new Set();
+
+function getTopReversalTrailLockRoe(peakRoe) {
+  const startRoe = Math.max(
+    0,
+    Number(process.env.TOP_REVERSAL_PAPER_TRAIL_START_ROE ?? 15),
+  );
+  if (peakRoe < startRoe) return null;
+  if (peakRoe < 20) return 0;
+  return Math.max(0, Math.floor((peakRoe - 10) / 5) * 5);
+}
+
+async function updateTopReversalPaperTrail(trade, markPrice) {
+  if (process.env.TOP_REVERSAL_PAPER_TRAIL_ENABLED === 'false') return trade;
+  if (trade.status !== 'OPEN' || topReversalTrailLocks.has(trade.id)) return trade;
+  const entry = Number(trade.entryPrice);
+  const margin = Number(trade.marginUsdt);
+  const quantity = Number(trade.quantity);
+  const mark = Number(markPrice);
+  if (![entry, margin, quantity, mark].every(Number.isFinite)
+      || entry <= 0 || margin <= 0 || quantity <= 0 || mark <= 0) return trade;
+
+  const roe = ((entry - mark) * quantity / margin) * 100;
+  const peakRoe = Math.max(Number(trade.peakRoe ?? 0), roe);
+  const lockRoe = getTopReversalTrailLockRoe(peakRoe);
+  const currentLock = trade.slTrailLockRoe != null && Number.isFinite(Number(trade.slTrailLockRoe))
+    ? Number(trade.slTrailLockRoe)
+    : -Infinity;
+  const shouldMoveSl = lockRoe != null && lockRoe > currentLock;
+  const shouldPersistPeak = peakRoe > Number(trade.peakRoe ?? 0) + 0.05;
+  if (!shouldMoveSl && !shouldPersistPeak) return trade;
+
+  const newSl = shouldMoveSl
+    ? entry - (margin * lockRoe / 100) / quantity
+    : Number(trade.sl);
+  topReversalTrailLocks.add(trade.id);
+  try {
+    const latest = await readTopReversalPaperStore();
+    const idx = latest.trades.findIndex((row) => row.id === trade.id && row.status === 'OPEN');
+    if (idx < 0) return trade;
+    const row = latest.trades[idx];
+    latest.trades[idx] = {
+      ...row,
+      peakRoe,
+      ...(shouldMoveSl ? {
+        sl: newSl,
+        slTrailLockRoe: lockRoe,
+        slTrailUpdatedAt: new Date().toISOString(),
+      } : {}),
+      note: [
+        String(row.note ?? ''),
+        shouldMoveSl ? `topReversalTrail=${lockRoe}%@${newSl}` : '',
+        shouldPersistPeak && !shouldMoveSl ? `topReversalPeak=${peakRoe.toFixed(1)}%` : '',
+      ].filter(Boolean).join(' | ').slice(0, 500),
+    };
+    await writeTopReversalPaperStore(latest);
+    scheduleTopReversalPaperBroadcast(50);
+    if (shouldMoveSl) {
+      console.log(
+        `[TopReversalPaper] TRAIL SHORT ${row.symbol}`
+        + ` peak=${peakRoe.toFixed(1)}% lock=${lockRoe}% sl=${newSl}`,
+      );
+    }
+    return latest.trades[idx];
+  } finally {
+    topReversalTrailLocks.delete(trade.id);
+  }
+}
+
+async function processTopReversalPaperPrice(symbol, markPrice) {
+  const store = await readTopReversalPaperStore();
+  const openTrades = store.trades.filter((trade) =>
+    trade.status === 'OPEN' && trade.symbol === symbol);
+  for (const trade of openTrades) {
+    if (Number.isFinite(Number(trade.tp)) && markPrice <= Number(trade.tp)) {
+      await closeTopReversalPaperTrade({ id: trade.id, exitPrice: Number(trade.tp), outcome: 'TP' });
+      continue;
+    }
+    if (Number.isFinite(Number(trade.sl)) && Number(trade.sl) > 0
+        && markPrice >= Number(trade.sl)) {
+      await closeTopReversalPaperTrade({
+        id: trade.id,
+        exitPrice: Number(trade.sl),
+        outcome: Number(trade.slTrailLockRoe ?? 0) > 0 ? 'TRAIL_SL' : 'BREAKEVEN',
+      });
+      continue;
+    }
+    await updateTopReversalPaperTrail(trade, markPrice);
+    if (trade.dcaTaken || topReversalDcaLocks.has(trade.id)) continue;
+    const pnl = (Number(trade.entryPrice) - markPrice) * Number(trade.quantity);
+    const roe = pnl / Number(trade.marginUsdt) * 100;
+    const trigger = -Math.abs(Number(process.env.TOP_REVERSAL_PAPER_DCA_ROE ?? 25));
+    if (roe > trigger) continue;
+
+    topReversalDcaLocks.add(trade.id);
+    try {
+      const latest = await readTopReversalPaperStore();
+      const idx = latest.trades.findIndex((row) =>
+        row.id === trade.id && row.status === 'OPEN' && !row.dcaTaken);
+      if (idx < 0) continue;
+      const row = latest.trades[idx];
+      const dcaMargin = Number(process.env.TOP_REVERSAL_PAPER_DCA_MARGIN_USDT ?? 10);
+      const addQty = dcaMargin * Number(row.leverage) / markPrice;
+      const totalQty = Number(row.quantity) + addQty;
+      const totalMargin = Number(row.marginUsdt) + dcaMargin;
+      const averageEntry = (
+        Number(row.entryPrice) * Number(row.quantity) + markPrice * addQty
+      ) / totalQty;
+      latest.trades[idx] = {
+        ...row,
+        entryBeforeDca: row.entryPrice,
+        marginBeforeDca: row.marginUsdt,
+        entryPrice: averageEntry,
+        marginUsdt: totalMargin,
+        quantity: totalQty,
+        originalQuantity: totalQty,
+        dcaTaken: true,
+        dcaPrice: markPrice,
+        dcaMarginUsdt: dcaMargin,
+        dcaTriggerRoe: trigger,
+        dcaAt: new Date().toISOString(),
+        sl: null,
+        peakRoe: 0,
+        slTrailLockRoe: null,
+        note: [
+          String(row.note ?? ''),
+          `DCA=$${dcaMargin}@${markPrice}`,
+          `avgEntry=${averageEntry}`,
+          'initialNoSL=Y',
+          'trailFrom=15%ROE',
+        ].join(' | ').slice(0, 500),
+      };
+      await writeTopReversalPaperStore(latest);
+      scheduleTopReversalPaperBroadcast(50);
+      console.log(`[TopReversalPaper] DCA SHORT ${symbol} +$${dcaMargin} roe=${roe.toFixed(1)}% avg=${averageEntry}`);
+    } finally {
+      topReversalDcaLocks.delete(trade.id);
+    }
+  }
+}
+
+async function createTopReversalPaperTrades(signals = []) {
+  if (process.env.TOP_REVERSAL_PAPER_ENABLED === 'false') return;
+  const minScore = Number(process.env.TOP_REVERSAL_PAPER_MIN_SCORE ?? 55);
+  const cooldownMs = Number(process.env.TOP_REVERSAL_PAPER_COOLDOWN_MS ?? 4 * 3600_000);
+  for (const signal of signals) {
+    if (signal.stage !== 'TOP_CONFIRMED' || Number(signal.score) < minScore) continue;
+    const key = `${signal.symbol}|TOP_REVERSAL`;
+    const last = topReversalPaperAutoFired.get(key) ?? 0;
+    if (Date.now() - last < cooldownMs) continue;
+    topReversalPaperAutoFired.set(key, Date.now());
+    await createTopReversalPaperTrade({
+      symbol: signal.symbol,
+      entryPrice: signal.markPrice ?? signal.entry,
+      tp: signal.tp,
+      runnerTp: signal.runnerTp,
+      score: signal.score,
+      stage: signal.stage,
+      note: `${signal.note} | MARKET=$5 | DCA=$10@-25%ROE | initialNoSL=Y | trailFrom=15%ROE`,
+      source: `top-reversal-${signal.score}`,
+    }).catch((err) => console.warn(`[TopReversalPaper] ${signal.symbol}:`, err.message));
+  }
+}
+
+async function syncTopReversalPaperTicker() {
+  if (!topReversalPaperTicker) return;
+  const store = await readTopReversalPaperStore();
+  topReversalPaperTicker.setSymbols(
+    [...new Set(store.trades.filter((trade) => trade.status === 'OPEN').map((trade) => trade.symbol))],
+  );
+}
+
+function queueTopReversalPaperProcessing(symbol, markPrice) {
+  topReversalPendingProcess.set(symbol, markPrice);
+  if (topReversalProcessTimer || topReversalProcessRunning) return;
+  topReversalProcessTimer = setTimeout(async function drain() {
+    topReversalProcessTimer = null;
+    const next = topReversalPendingProcess.entries().next();
+    if (next.done) return;
+    const [nextSymbol, nextMark] = next.value;
+    topReversalPendingProcess.delete(nextSymbol);
+    topReversalProcessRunning = true;
+    try {
+      await processTopReversalPaperPrice(nextSymbol, Number(nextMark));
+    } finally {
+      topReversalProcessRunning = false;
+      if (topReversalPendingProcess.size) {
+        topReversalProcessTimer = setTimeout(drain, 250);
+      }
+    }
+  }, 250);
+}
+
+function startTopReversalPaperTicker() {
+  if (topReversalPaperTicker) return;
+  topReversalPaperTicker = createAggTradeTicker({
+    logLabel: 'TopReversalTick',
+    onPrice: ({ symbol, markPrice }) => {
+      topReversalSocketMarks.set(symbol, markPrice);
+      topReversalSocketMarkAt.set(symbol, Date.now());
+      queueTopReversalPaperProcessing(symbol, markPrice);
+      scheduleTopReversalPaperBroadcast();
+    },
+  });
+  syncTopReversalPaperTicker().catch(() => {});
+  setInterval(() => syncTopReversalPaperTicker().catch(() => {}), 30_000);
 }
 
 async function handleShakeoutReclaimRealOrders(signals = []) {
@@ -9765,6 +11096,8 @@ async function handleShakeoutReclaimRealOrders(signals = []) {
 
   const ordered = [...signals]
     .filter((sig) => Number(sig?.score ?? 0) >= minScore)
+    .filter((sig) => !sig.bottomReboundRisk && !sig.autoTradeBlocked)
+    .filter((sig) => String(sig?.subtype ?? '') !== 'BOTTOM_REBOUND_RISK')
     .filter((sig) => ['LONG', 'SHORT'].includes(String(sig?.action ?? '').toUpperCase()))
     .filter((sig) => Number.isFinite(Number(sig?.entry)) && Number(sig.entry) > 0)
     .filter((sig) => Number.isFinite(Number(sig?.sl)) && Number(sig.sl) > 0)
@@ -9836,15 +11169,16 @@ async function handleShakeoutReclaimRealOrders(signals = []) {
     const leverage = calcAutoLeverage(sig.entry, sig.sl, defaultLeverage);
     const notionalUsdt = Math.max(marginUsdt * leverage, minNotionalUsdt);
     const side = isLong ? 'BUY' : 'SELL';
+    const effectiveOrderType = isShort && sig.btcStrongShortEma99 ? 'LIMIT' : orderType;
 
     try {
       const result = await placeOrder({
         symbol,
         side,
-        orderType,
+        orderType: effectiveOrderType,
         notionalUsdt,
         leverage,
-        limitPrice: orderType === 'MARKET' ? undefined : sig.entry,
+        limitPrice: effectiveOrderType === 'MARKET' ? undefined : sig.entry,
         takeProfitPrice: sig.tp ?? undefined,
         stopLossPrice: sig.sl ?? undefined,
         protectionOnFill: true,
@@ -9857,17 +11191,18 @@ async function handleShakeoutReclaimRealOrders(signals = []) {
       shakeoutReclaimRealOrderFired.set(dedupKey, Date.now());
       invalidateOpenOrdersCache();
       const orderId = result?.orderResult?.orderId ?? '-';
-      console.log(`[ShakeoutReclaimOrder] REAL ${symbol} ${action} ${orderType} orderId=${orderId} margin=$${marginUsdt} score=${sig.score}`);
+      console.log(`[ShakeoutReclaimOrder] REAL ${symbol} ${action} ${effectiveOrderType} orderId=${orderId} margin=$${marginUsdt} score=${sig.score}`);
 
       const webhookUrl = process.env.SHAKEOUT_RECLAIM_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '';
       if (webhookUrl) {
         const fmt = (v) => v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toPrecision(8).replace(/\.?0+$/, '');
         const msg = [
-          `**[REAL ORDER] Shakeout Reclaim ${symbol} ${action} - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+          `**[REAL ORDER] Shakeout Reclaim ${symbol} ${action} - ${effectiveOrderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
           `OrderId: \`${orderId}\` | Margin: $${marginUsdt} x ${leverage}x | Notional: $${notionalUsdt}`,
           `Entry: \`${fmt(sig.entry)}\` | SL: \`${fmt(sig.sl)}\` | TP: \`${fmt(sig.tp)}\``,
           `Stage: ${sig.stage ?? '-'} | Type: ${sig.type ?? '-'}`,
-        ].join('\n');
+          sig.btcStrongShortEma99 ? 'BTC STRONG: SHORT LIMIT đặt đúng EMA99 5m, không clamp 5%.' : '',
+        ].filter(Boolean).join('\n');
         fetch(webhookUrl, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -12568,6 +13903,8 @@ async function sendStatic(pathname, response) {
           ? '/ema99-kill-reclaim.html'
         : pathname === '/shakeout-reclaim'
           ? '/shakeout-reclaim.html'
+        : pathname === '/top-reversal'
+          ? '/top-reversal.html'
         : pathname === '/edge-short'
           ? '/edge-short.html'
         : pathname === '/orders'

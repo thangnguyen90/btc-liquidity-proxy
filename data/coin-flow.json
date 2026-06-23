@@ -1,8 +1,8 @@
 {
   "rows": [],
-  "updatedAt": "2026-06-21T03:58:35.595Z",
+  "updatedAt": "2026-06-23T15:18:56.523Z",
   "configured": false,
   "error": "Missing COINGLASS_API_KEY or CG_API_KEY.",
   "sources": [],
-  "refreshReason": "startup"
+  "refreshReason": "batch"
 }

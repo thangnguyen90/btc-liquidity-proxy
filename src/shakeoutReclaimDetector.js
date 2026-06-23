@@ -81,6 +81,80 @@ function prep(candles) {
   };
 }
 
+function closeReturns(candles, bars) {
+  if (!Array.isArray(candles) || candles.length < bars + 2) return [];
+  const end = candles.length - 2;
+  const start = Math.max(1, end - bars + 1);
+  const out = [];
+  for (let i = start; i <= end; i++) {
+    const prev = Number(candles[i - 1]?.close);
+    const current = Number(candles[i]?.close);
+    if (!Number.isFinite(prev) || !Number.isFinite(current) || prev <= 0) return [];
+    out.push((current - prev) / prev);
+  }
+  return out;
+}
+
+function pearson(xs, ys) {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 8) return null;
+  const x = xs.slice(-n);
+  const y = ys.slice(-n);
+  const mx = x.reduce((sum, value) => sum + value, 0) / n;
+  const my = y.reduce((sum, value) => sum + value, 0) / n;
+  let covariance = 0;
+  let xVariance = 0;
+  let yVariance = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = x[i] - mx;
+    const dy = y[i] - my;
+    covariance += dx * dy;
+    xVariance += dx * dx;
+    yVariance += dy * dy;
+  }
+  const denominator = Math.sqrt(xVariance * yVariance);
+  return denominator > 1e-12 ? covariance / denominator : null;
+}
+
+function computeBtcRelation(coinCandles, btcCandles, bars = 30) {
+  const coinReturns = closeReturns(coinCandles, bars);
+  const btcReturns = closeReturns(btcCandles, bars);
+  const n = Math.min(coinReturns.length, btcReturns.length);
+  if (n < 8) return null;
+  const coin = coinReturns.slice(-n);
+  const btc = btcReturns.slice(-n);
+  const corr = pearson(coin, btc);
+  const coinMean = coin.reduce((sum, value) => sum + value, 0) / n;
+  const btcMean = btc.reduce((sum, value) => sum + value, 0) / n;
+  let covariance = 0;
+  let btcVariance = 0;
+  for (let i = 0; i < n; i++) {
+    covariance += (coin[i] - coinMean) * (btc[i] - btcMean);
+    btcVariance += (btc[i] - btcMean) ** 2;
+  }
+  const beta = btcVariance > 1e-12 ? covariance / btcVariance : null;
+  const coinMovePct = coinCandles.length > n
+    ? (Number(coinCandles[coinCandles.length - 2].close)
+      / Number(coinCandles[coinCandles.length - n - 2].close) - 1) * 100
+    : null;
+  const btcMovePct = btcCandles.length > n
+    ? (Number(btcCandles[btcCandles.length - 2].close)
+      / Number(btcCandles[btcCandles.length - n - 2].close) - 1) * 100
+    : null;
+  const opposed = Number.isFinite(coinMovePct) && Number.isFinite(btcMovePct)
+    && Math.abs(coinMovePct) >= 0.3
+    && Math.abs(btcMovePct) >= 0.15
+    && Math.sign(coinMovePct) !== Math.sign(btcMovePct);
+  return {
+    corr: corr == null ? null : Number(corr.toFixed(2)),
+    beta: beta == null ? null : Number(beta.toFixed(2)),
+    coinMovePct: Number.isFinite(coinMovePct) ? Number(coinMovePct.toFixed(2)) : null,
+    btcMovePct: Number.isFinite(btcMovePct) ? Number(btcMovePct.toFixed(2)) : null,
+    opposed,
+    bars: n,
+  };
+}
+
 function conflictStrength(signal) {
   const f = signal?.factors ?? {};
   return Number(signal?.score ?? 0)
@@ -272,6 +346,46 @@ function analyzeInterval(candles, opts = {}) {
   };
 }
 
+function assessBottomRebound(candles15m, m5, m15, snapshot = {}) {
+  if (!Array.isArray(candles15m) || candles15m.length < 80) return { pass: false };
+  const d = prep(candles15m);
+  const last = candles15m.length - 2;
+  const recentStart = Math.max(1, last - 16);
+  const low = extrema(d.L, recentStart, last, 'min');
+  const priorStart = Math.max(1, low.idx - 64);
+  const priorEnd = Math.max(priorStart, low.idx - 4);
+  const priorHigh = extrema(d.H, priorStart, priorEnd, 'max');
+  const declinePct = (priorHigh.val - low.val) / Math.max(priorHigh.val, 1e-9);
+  const reboundPct = (d.C[last] - low.val) / Math.max(low.val, 1e-9);
+  const lowAge = last - low.idx;
+  const change24h = Number(snapshot.change24hPct ?? snapshot.priceChangePercent ?? 0);
+  const vol5mX = Math.max(m5.volRatio, m5.pullVolRatio);
+  const vol15mX = Math.max(m15.volRatio, m15.pullVolRatio);
+  const structuralPass = declinePct >= 0.18
+    && reboundPct >= 0.08
+    && reboundPct <= 0.45
+    && lowAge <= 8
+    && vol5mX >= 3
+    && vol15mX >= 3
+    && m5.reclaimConfirmed
+    && (change24h <= -8 || declinePct >= 0.28);
+  const snapshotPass = change24h <= -12
+    && m5.movePct >= 0.10
+    && m15.movePct >= 0.10
+    && vol5mX >= 5
+    && vol15mX >= 5
+    && m5.reclaimConfirmed;
+  const pass = structuralPass || snapshotPass;
+  return {
+    pass,
+    declinePct: Math.max(declinePct, change24h < 0 ? Math.abs(change24h) / 100 : 0),
+    reboundPct: Math.max(reboundPct, m5.movePct),
+    lowAge,
+    lowPrice: low.val,
+    priorHigh: priorHigh.val,
+  };
+}
+
 export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts = {}) {
   const minScore = Number(opts.minScore ?? process.env.SHAKEOUT_RECLAIM_MIN_SCORE ?? 55);
   const side = String(opts.side ?? 'LONG').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
@@ -294,6 +408,28 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
     (confirmed ? 0.04 : 0)
   ));
   const trap = assessTrapRisk({ side, m5, m15 });
+  const bottomRebound = !isShort
+    ? assessBottomRebound(candles15m, m5, m15, snapshot)
+    : { pass: false };
+  const bottomRiskReasons = [];
+  if (bottomRebound.pass) {
+    const reclaimPct = m5.reclaimPct * 100;
+    const reboundPct = bottomRebound.reboundPct * 100;
+    const minReclaimPct = Number(process.env.SHAKEOUT_BOTTOM_RISK_MIN_RECLAIM_PCT ?? 3);
+    const hotRsiThreshold = Number(process.env.SHAKEOUT_BOTTOM_RISK_HOT_RSI ?? 68);
+    const minFailedReboundPct = Number(process.env.SHAKEOUT_BOTTOM_RISK_MIN_FAILED_REBOUND_PCT ?? 20);
+    const hotRsi = Number(m5.rsi14) >= hotRsiThreshold && Number(m15.rsi14) >= hotRsiThreshold;
+    const holdsFastEma = m5.close >= m5.ema13 && m5.close >= m5.ema25;
+    if (trap.risk === 'HIGH') bottomRiskReasons.push('trapRisk HIGH');
+    if (reclaimPct < minReclaimPct && hotRsi) {
+      bottomRiskReasons.push(`reclaim ${reclaimPct.toFixed(1)}% weak while RSI is hot`);
+    }
+    if (reboundPct >= minFailedReboundPct && !holdsFastEma) {
+      bottomRiskReasons.push(`rebound ${reboundPct.toFixed(1)}% failed to hold EMA13/25`);
+    }
+  }
+  const bottomReboundRisk = bottomRebound.pass && bottomRiskReasons.length > 0;
+  const bottomReboundQualified = bottomRebound.pass && !bottomReboundRisk;
   const score = Math.max(0, rawScore - trap.penalty);
   if (score < minScore) return { pass: false, reason: `score too low (${score})` };
 
@@ -305,8 +441,52 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
   }
 
   const ema99EntryMaxScore = Number(opts.ema99EntryMaxScore ?? process.env.SHAKEOUT_RECLAIM_EMA99_ENTRY_MAX_SCORE ?? 70);
-  const useEma99Entry = score <= ema99EntryMaxScore && Number.isFinite(m5.ema99) && m5.ema99 > 0;
-  const entry = useEma99Entry ? Number(m5.ema99) : markEntry;
+  const btcRegime = String(opts.btcRegime ?? 'FLAT').toUpperCase();
+  const btcRelation = opts.btcRelation ?? computeBtcRelation(candles5m, opts.btcCandles5m);
+  const btcFollowMinCorr = Number(
+    opts.btcFollowMinCorr ?? process.env.SHAKEOUT_BTC_FOLLOW_MIN_CORR ?? 0.45,
+  );
+  const btcIndependentMaxCorr = Number(
+    opts.btcIndependentMaxCorr ?? process.env.SHAKEOUT_BTC_INDEPENDENT_MAX_CORR ?? 0.15,
+  );
+  const btcHighBetaMin = Number(
+    opts.btcHighBetaMin ?? process.env.SHAKEOUT_BTC_HIGH_BETA_MIN ?? 2,
+  );
+  const corr = Number(btcRelation?.corr);
+  const beta = Number(btcRelation?.beta);
+  const btcEntryClass = !isShort || btcRegime !== 'STRONG'
+    ? 'NORMAL'
+    : !btcRelation || !Number.isFinite(corr)
+      ? 'BTC_UNKNOWN'
+      : btcRelation.opposed || corr < btcIndependentMaxCorr
+        ? 'INDEPENDENT'
+        : corr < btcFollowMinCorr && Number.isFinite(beta) && Math.abs(beta) >= btcHighBetaMin
+          ? 'HIGH_BETA'
+          : corr >= btcFollowMinCorr ? 'BTC_ALIGNED' : 'MIXED';
+  const btcIndependentShort = isShort
+    && btcRegime === 'STRONG'
+    && ['INDEPENDENT', 'HIGH_BETA'].includes(btcEntryClass);
+  const btcStrongShortEma99 = isShort
+    && btcRegime === 'STRONG'
+    && !btcIndependentShort
+    && Number.isFinite(m5.ema99)
+    && m5.ema99 > 0;
+  const useEma99Entry = (score <= ema99EntryMaxScore || btcStrongShortEma99)
+    && Number.isFinite(m5.ema99)
+    && m5.ema99 > 0;
+  const rawEntry = useEma99Entry ? Number(m5.ema99) : markEntry;
+  const maxPendingDistancePct = Math.max(
+    0,
+    Number(opts.maxPendingDistancePct ?? process.env.SHAKEOUT_RECLAIM_PENDING_MAX_DISTANCE_PCT ?? 5),
+  );
+  const rawEntryDistancePct = Math.abs(rawEntry - markEntry) / markEntry * 100;
+  const entryWasClamped = useEma99Entry
+    && !btcStrongShortEma99
+    && maxPendingDistancePct > 0
+    && rawEntryDistancePct > maxPendingDistancePct;
+  const entry = entryWasClamped
+    ? markEntry + Math.sign(rawEntry - markEntry) * markEntry * maxPendingDistancePct / 100
+    : rawEntry;
   const slBuffer = Math.max(m5.atr || 0, entry * 0.006) * 0.55;
   const structureSl = isShort
     ? m5.pullHigh + slBuffer
@@ -332,14 +512,37 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
 
   return {
     pass: true,
-    type: isShort ? 'shakeout_reject_short' : 'shakeout_reclaim_long',
+    type: isShort
+      ? 'shakeout_reject_short'
+      : bottomReboundRisk
+        ? 'shakeout_bottom_rebound_risk'
+        : bottomReboundQualified ? 'shakeout_bottom_rebound_long' : 'shakeout_reclaim_long',
+    subtype: bottomReboundRisk
+      ? 'BOTTOM_REBOUND_RISK'
+      : bottomReboundQualified ? 'BOTTOM_REBOUND' : null,
+    bottomRebound: bottomRebound.pass,
+    bottomReboundRisk,
+    bottomReboundQualified,
+    autoTradeBlocked: bottomReboundRisk,
+    autoTradeBlockReason: bottomReboundRisk ? bottomRiskReasons.join('; ') : null,
     stage,
     action: side,
     score,
     grade: gradeScore(score),
     entry: Number(entry.toFixed(10)),
-    entryMode: useEma99Entry ? 'EMA99_LOW_SCORE' : 'MARK',
+    entryMode: btcStrongShortEma99
+      ? 'EMA99_BTC_STRONG_SHORT'
+      : useEma99Entry ? 'EMA99_LOW_SCORE' : 'MARK',
+    btcRegime,
+    btcRelation,
+    btcEntryClass,
+    btcIndependentShort,
+    btcStrongShortEma99,
     entryReference: Number(markEntry.toFixed(10)),
+    entryRaw: Number(rawEntry.toFixed(10)),
+    entryDistancePct: Number((Math.abs(entry - markEntry) / markEntry * 100).toFixed(2)),
+    entryRawDistancePct: Number(rawEntryDistancePct.toFixed(2)),
+    entryWasClamped,
     sl: Number(sl.toFixed(10)),
     tp: Number(tp.toFixed(10)),
     tp1: Number(tp1.toFixed(10)),
@@ -352,6 +555,8 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
       ? (confirmed
         ? 'Dump volume 5m/15m expanded, pullback killed shorts near EMA zone, price rejected down again'
         : 'Dump volume 5m/15m expanded, price is pulling back to shake out weak shorts near EMA zone')
+      : bottomReboundRisk
+        ? `False-bottom risk: ${bottomRiskReasons.join('; ')}`
       : (confirmed
         ? 'Volume 5m/15m expanded, pullback shakeout hit EMA zone, price started reclaiming'
         : 'Volume 5m/15m expanded, price is pulling back to shake out weak longs near EMA zone'),
@@ -360,7 +565,18 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
       `15m ${isShort ? 'dump' : 'pump'}=${(m15.movePct * 100).toFixed(1)}% vol=${Math.max(m15.volRatio, m15.pullVolRatio).toFixed(1)}x`,
       `emaDist=${(m5.maDistPct * 100).toFixed(2)}%`,
       `${isShort ? 'reject' : 'reclaim'}=${(m5.reclaimPct * 100).toFixed(1)}%`,
-      useEma99Entry ? `entry=EMA99 because score<=${ema99EntryMaxScore}` : 'entry=mark',
+      btcStrongShortEma99
+        ? 'entry=EMA99 exact because BTC STRONG; no 5% clamp'
+        : btcIndependentShort
+          ? `entry=coin structure because ${btcEntryClass} vs BTC`
+        : useEma99Entry ? `entry=EMA99 because score<=${ema99EntryMaxScore}` : 'entry=mark',
+      entryWasClamped
+        ? `entryClamped=${rawEntry.toFixed(10)}->${entry.toFixed(10)} maxDistance=${maxPendingDistancePct.toFixed(1)}%`
+        : '',
+      bottomRebound.pass
+        ? `bottomRebound decline=${(bottomRebound.declinePct * 100).toFixed(1)}% rebound=${(bottomRebound.reboundPct * 100).toFixed(1)}% lowAge=${bottomRebound.lowAge}`
+        : '',
+      bottomReboundRisk ? `bottomReboundRisk=${bottomRiskReasons.join('; ')}` : '',
       tp1Adjusted ? `tp1 adjusted because raw target ${rawTp1.toFixed(10)} crossed entry` : '',
       trap.risk !== 'LOW' ? `trapRisk=${trap.risk}: ${trap.reasons.join('; ')}` : '',
     ].filter(Boolean).join(' | '),
@@ -369,6 +585,8 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
       trapPenalty: trap.penalty,
       trapReasons: trap.reasons,
       rawScore,
+      bottomReboundRisk,
+      bottomRiskReasons,
     },
     factors: {
       move5mPct: Number((m5.movePct * 100).toFixed(2)),
@@ -388,6 +606,14 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
       rsi5m: Number.isFinite(m5.rsi14) ? Number(m5.rsi14.toFixed(1)) : null,
       rsi15m: Number.isFinite(m15.rsi14) ? Number(m15.rsi14.toFixed(1)) : null,
       confirmed,
+      bottomDeclinePct: bottomRebound.pass ? Number((bottomRebound.declinePct * 100).toFixed(1)) : null,
+      bottomReboundPct: bottomRebound.pass ? Number((bottomRebound.reboundPct * 100).toFixed(1)) : null,
+      bottomLowAge15m: bottomRebound.pass ? bottomRebound.lowAge : null,
+      bottomLowPrice: bottomRebound.pass ? Number(bottomRebound.lowPrice.toFixed(10)) : null,
+      bottomReboundRisk,
+      btcCorr: Number.isFinite(corr) ? corr : null,
+      btcBeta: Number.isFinite(beta) ? beta : null,
+      btcEntryClass,
     },
   };
 }
@@ -399,6 +625,7 @@ export async function runShakeoutReclaimScan(symbols, klineCache, snapshotMap = 
   const failureReasons = new Map();
   let processed = 0;
   let evaluated = 0;
+  const btcCandles5m = klineCache.getIfCached('BTCUSDT', '5m', 180);
   const rememberFailure = (side, reason) => {
     const normalized = String(reason ?? 'unknown')
       .replace(/\d+(?:\.\d+)?%/g, 'N%')
@@ -415,7 +642,11 @@ export async function runShakeoutReclaimScan(symbols, klineCache, snapshotMap = 
     const snap = snapshotMap.get(symbol) || {};
     for (const side of ['LONG', 'SHORT']) {
       evaluated++;
-      const det = detectShakeoutReclaim(candles5m, candles15m, snap, { ...opts, side });
+      const det = detectShakeoutReclaim(candles5m, candles15m, snap, {
+        ...opts,
+        side,
+        btcCandles5m,
+      });
       if (!det.pass) {
         rememberFailure(side, det.reason);
         continue;

@@ -70,9 +70,39 @@
       .sr-card.confirmed::before { background: var(--green); }
       .sr-card.watch::before { background: var(--amber); }
       .sr-card.short::before { background: var(--red); }
+      .sr-card.bottom-rebound::before { background: #22d3ee; }
+      .sr-card.bottom-rebound-risk::before { background: #fb7185; }
       .sr-card.confirmed { box-shadow: inset 0 0 0 1px rgba(54, 211, 153, .16); }
       .sr-card.watch { box-shadow: inset 0 0 0 1px rgba(251, 191, 36, .16); }
       .sr-card.short { box-shadow: inset 0 0 0 1px rgba(251, 113, 133, .18); }
+      .sr-card.bottom-rebound {
+        background: #092d35;
+        box-shadow: inset 0 0 0 1px rgba(34, 211, 238, .55);
+      }
+      .sr-card.bottom-rebound-risk {
+        background: linear-gradient(135deg, rgba(127,29,29,.96), rgba(69,10,10,.94));
+        border-color: rgba(251,113,133,.8);
+        box-shadow: inset 0 0 0 1px rgba(251,113,133,.45), 0 10px 28px rgba(127,29,29,.28);
+      }
+      .sr-badge.bottom-rebound {
+        color: #a5f3fc;
+        border-color: rgba(34, 211, 238, .65);
+        background: #164e63;
+      }
+      .sr-badge.bottom-rebound-risk {
+        color: #fff;
+        border: 1px solid #fb7185;
+        background: #be123c;
+        box-shadow: 0 0 0 1px rgba(251,113,133,.25);
+      }
+      .sr-row-bottom-rebound {
+        background: rgba(8, 145, 178, .13) !important;
+        box-shadow: inset 3px 0 0 #22d3ee;
+      }
+      .sr-row-bottom-rebound-risk {
+        background: rgba(127, 29, 29, .32) !important;
+        box-shadow: inset 4px 0 0 #fb7185;
+      }
       .sr-top {
         display: flex;
         justify-content: space-between;
@@ -385,6 +415,7 @@
           <a class="nav-link" href="/ema-squeeze">EMA Squeeze</a>
           <a class="nav-link" href="/ema99-kill-reclaim">EMA99 Kill</a>
           <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
+          <a class="nav-link" href="/top-reversal">Top Reversal</a>
           <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
           <a class="nav-link" href="/orders">Orders</a>
         </div>
@@ -450,6 +481,7 @@
                 <th class="sr-sort" data-sort="entry">Entry <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="sl">SL <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="tp">TP <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="projectedPnl">PnL du kien <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="mark">Giá (last) <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="pnl">PnL <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="roe">ROE <span class="sr-sort-mark"></span></th>
@@ -461,7 +493,7 @@
               </tr>
             </thead>
             <tbody id="srPaperBody">
-              <tr><td colspan="14" style="text-align:center;color:var(--muted);padding:16px">Dang tai...</td></tr>
+              <tr><td colspan="15" style="text-align:center;color:var(--muted);padding:16px">Dang tai...</td></tr>
             </tbody>
           </table>
         </div>

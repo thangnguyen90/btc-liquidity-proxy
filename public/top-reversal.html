@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Top Reversal Board</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .tr-shell { width: min(1460px, calc(100vw - 32px)); }
+      .tr-summary { display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:10px;margin:14px 0; }
+      .tr-stat,.tr-controls,.tr-card,.tr-paper { border:1px solid var(--line);background:var(--panel);border-radius:8px; }
+      .tr-stat { padding:12px; }
+      .tr-stat span { display:block;color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase; }
+      .tr-stat strong { display:block;margin-top:6px;font-size:26px; }
+      .tr-controls { display:grid;grid-template-columns:minmax(220px,1fr) 150px 150px;gap:10px;padding:12px;margin-bottom:14px; }
+      .tr-controls input,.tr-controls select { width:100%;border:1px solid var(--line);background:var(--panel-2);color:var(--text);border-radius:6px;padding:10px; }
+      .tr-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px; }
+      .tr-card { position:relative;overflow:hidden;padding:14px;display:grid;gap:10px;background:linear-gradient(135deg,rgba(127,29,29,.22),rgba(28,32,31,.96) 46%); }
+      .tr-card::before { content:"";position:absolute;inset:0 0 auto;height:3px;background:#fb7185; }
+      .tr-card.confirmed { border-color:rgba(251,113,133,.7);box-shadow:0 0 0 1px rgba(251,113,133,.12); }
+      .tr-top { display:flex;justify-content:space-between;gap:12px; }
+      .tr-symbol { color:var(--text);font-size:20px;font-weight:900;text-decoration:none; }
+      .tr-symbol small { color:var(--muted);font-size:12px;font-weight:500; }
+      .tr-change { display:block;color:#fb7185;font-size:12px;font-weight:800;margin-top:3px; }
+      .tr-right { text-align:right; }
+      .tr-badge { display:inline-block;padding:3px 8px;border:1px solid rgba(251,113,133,.55);background:rgba(190,24,93,.18);color:#fda4af;border-radius:4px;font-size:10px;font-weight:900; }
+      .tr-score { margin-top:5px;font-size:27px;font-weight:900; }
+      .tr-reason { padding:10px;border:1px solid rgba(251,113,133,.3);background:rgba(127,29,29,.24);border-radius:6px;font-size:13px;line-height:1.45; }
+      .tr-prices { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px; }
+      .tr-price { padding:9px;background:var(--panel-2);border-radius:5px;min-width:0; }
+      .tr-price span { display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase; }
+      .tr-price strong { display:block;margin-top:5px;font-size:14px;overflow-wrap:anywhere; }
+      .tr-chips { display:flex;flex-wrap:wrap;gap:6px; }
+      .tr-chip { padding:3px 7px;border:1px solid rgba(251,113,133,.28);background:rgba(127,29,29,.18);color:#fecdd3;border-radius:4px;font-size:11px;font-weight:700; }
+      .tr-plan { padding:9px;border:1px solid #f59e0b;background:rgba(245,158,11,.09);color:#fcd34d;border-radius:6px;font-weight:900;font-size:12px; }
+      .tr-paper { margin-top:18px;padding:14px; }
+      .tr-paper-head { display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px; }
+      .tr-paper table { width:100%;border-collapse:collapse;white-space:nowrap; }
+      .tr-paper th,.tr-paper td { padding:9px;border-bottom:1px solid var(--line);font-size:12px;text-align:left; }
+      .tr-paper th { color:var(--muted);font-size:10px;text-transform:uppercase; }
+      .tr-dca { color:#fbbf24;font-weight:900; }
+      .tr-market { color:#67e8f9;font-weight:900; }
+      .tr-positive { color:#34d399;font-weight:900; }
+      .tr-negative { color:#fb7185;font-weight:900; }
+      .tr-btn { border:1px solid var(--line);background:var(--panel-2);color:var(--text);padding:4px 8px;border-radius:4px;cursor:pointer; }
+      .tr-btn.del { color:#fb7185;border-color:rgba(251,113,133,.4); }
+      @media (max-width:760px) {
+        .tr-shell { width:min(100% - 18px,1460px); }
+        .tr-summary { grid-template-columns:repeat(2,1fr); }
+        .tr-controls { grid-template-columns:1fr; }
+        .tr-grid { grid-template-columns:1fr; }
+        .tr-prices { grid-template-columns:repeat(2,1fr); }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page-shell tr-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" style="color:#fb7185">Distribution / recent top / EMA breakdown</p>
+          <h1>Top Reversal Board</h1>
+          <p class="muted" style="margin-top:8px">Coin tang manh, tao dinh gan, volume phan phoi va 5m gay EMA de tim SHORT dao chieu.</p>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/ema-squeeze">EMA Squeeze</a>
+          <a class="nav-link" href="/shakeout-reclaim">Shakeout</a>
+          <a class="nav-link" href="/top-reversal">Top Reversal</a>
+          <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
+          <a class="nav-link" href="/orders">Orders</a>
+        </div>
+      </header>
+
+      <section class="tr-summary">
+        <div class="tr-stat"><span>Confirmed</span><strong id="confirmedCount">-</strong></div>
+        <div class="tr-stat"><span>Watch</span><strong id="watchCount">-</strong></div>
+        <div class="tr-stat"><span>Scanned</span><strong id="scannedCount">-</strong></div>
+        <div class="tr-stat"><span>Updated</span><strong id="updatedAt">-</strong></div>
+      </section>
+
+      <section class="tr-controls">
+        <input id="searchInput" placeholder="Search symbol...">
+        <select id="stageFilter">
+          <option value="all">All stages</option>
+          <option value="TOP_CONFIRMED">Confirmed</option>
+          <option value="TOP_WATCH">Watch</option>
+        </select>
+        <select id="scoreFilter">
+          <option value="0">All scores</option>
+          <option value="55">Score >= 55</option>
+          <option value="70">Score >= 70</option>
+          <option value="85">Score >= 85</option>
+        </select>
+      </section>
+
+      <div class="status-bar">
+        <span>Cached <strong id="cachedCount">0</strong>/<strong id="totalCount">0</strong></span>
+        <span>Found <strong id="foundCount">0</strong></span>
+        <span id="scanStatus">Dang tai...</span>
+      </div>
+
+      <section id="signalGrid" class="tr-grid" style="margin-top:14px">
+        <div class="empty">Dang quet top reversal...</div>
+      </section>
+
+      <section class="tr-paper">
+        <div class="tr-paper-head">
+          <h2>Paper Trades - Top Reversal</h2>
+          <span id="paperSummary">Dang tai...</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr>
+                <th>Mode</th><th>Symbol</th><th>Entry</th><th>TP</th><th>SL / Peak</th><th>Mark</th>
+                <th>Margin</th><th>PnL</th><th>ROE</th><th>Status</th><th>Score</th><th>Time</th><th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="paperBody"><tr><td colspan="13">Dang tai...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="/top-reversal.js" type="module"></script>
+    <script src="/btcHealth.js"></script>
+  </body>
+</html>

@@ -306,6 +306,21 @@ function buildCard(sig) {
   const isPreBreakout = sig.stage === 'PRE_BREAKOUT' || sig.preBreakout;
   const isPreBreakdown = sig.stage === 'PRE_BREAKDOWN' || sig.preBreakdown;
   const isRunner      = !!sig.runnerCandidate;
+  const breakoutQuality = isBreakout && sig.stage === 'BREAKOUT'
+    ? String(sig.breakoutQuality ?? 'REVIEW').toUpperCase()
+    : null;
+  const breakoutQualityClass = breakoutQuality ? ` breakout-${breakoutQuality.toLowerCase()}` : '';
+  const breakoutQualityBanner = breakoutQuality
+    ? `<div class="breakout-quality-banner ${breakoutQuality.toLowerCase()}">${
+        breakoutQuality === 'PREMIUM'
+          ? 'PREMIUM BREAKOUT - Paper duoc phep'
+          : breakoutQuality === 'QUALITY'
+            ? 'QUALITY BREAKOUT - Paper duoc phep'
+            : breakoutQuality === 'EXHAUSTION'
+              ? 'EXHAUSTION - Canh bao nong, khong vao Paper'
+              : 'REVIEW - Ngoai tap chat luong, khong vao Paper'
+      }${sig.breakoutQualityReason ? ` · ${sig.breakoutQualityReason}` : ''}</div>`
+    : '';
   const stageClass    = sig.stage === 'BREAKOUT'
     ? 'stage-breakout'
     : sig.stage === 'PRE_BREAKOUT'
@@ -384,6 +399,14 @@ function buildCard(sig) {
   if (isBreakout && sig.pumpMovePct != null) {
     chips.push(`<span class="es-chip ok">${isShort ? 'Dump' : 'Pump'} ${Number(sig.pumpMovePct).toFixed(1)}%</span>`);
   }
+  if (breakoutQuality) {
+    const qualityChipClass = breakoutQuality === 'EXHAUSTION'
+      ? 'bad'
+      : breakoutQuality === 'REVIEW'
+        ? 'warn'
+        : 'runner';
+    chips.push(`<span class="es-chip ${qualityChipClass}">${breakoutQuality}</span>`);
+  }
   if (isRunner) {
     chips.push(`<span class="es-chip runner">RUNNER ${Number(sig.runnerScore ?? 0).toFixed(0)}</span>`);
     if (sig.runnerProjectedMovePct != null) {
@@ -413,10 +436,10 @@ function buildCard(sig) {
   const paperPayload = encodeURIComponent(JSON.stringify({
     symbol: sig.symbol,
     side: isShort ? 'SHORT' : 'LONG',
-    status: hasLiquidEntry ? 'PENDING' : (isBreakout ? 'OPEN' : 'PENDING'),
-    marginUsdt: 1,
+    status: isBreakout ? 'OPEN' : 'PENDING',
+    marginUsdt: sig.stage === 'BREAKOUT' ? 10 : 1,
     leverage: 10,
-    entryPrice: paperEntry,
+    entryPrice: isBreakout ? sig.entry : paperEntry,
     tp: paperTp ?? null,
     sl: paperSl ?? null,
     source: `emasq-${intervalName}-${String(sig.stage ?? '').toLowerCase()}${isRunner ? '-runner' : ''}-${sig.score}`,
@@ -431,10 +454,14 @@ function buildCard(sig) {
     runnerTp: isRunner ? Number(sig.runnerTp ?? 0) : null,
     runnerProjectedMovePct: isRunner ? Number(sig.runnerProjectedMovePct ?? 0) : null,
     runnerReason: isRunner ? (sig.runnerReason ?? null) : null,
+    breakoutQuality: breakoutQuality,
+    breakoutQualityReason: sig.breakoutQualityReason ?? null,
+    breakoutPaperEligible: sig.breakoutPaperEligible ?? null,
   }));
+  const paperBlocked = breakoutQuality && sig.breakoutPaperEligible !== true;
 
   return `
-    <article class="es-card ${stageClass}${isRunner ? ' runner' : ''}">
+    <article class="es-card ${stageClass}${isRunner ? ' runner' : ''}${breakoutQualityClass}">
       <div class="es-card-top">
         <div class="es-symbol-wrap">
           <a class="es-symbol" href="/?symbol=${sig.symbol}" target="_blank">
@@ -453,6 +480,7 @@ function buildCard(sig) {
       </div>
 
       ${btcBanner}
+      ${breakoutQualityBanner}
 
       <div class="es-compress-bar">
         <div class="es-compress-label">
@@ -495,7 +523,7 @@ function buildCard(sig) {
 
       <div class="es-footer">
         <span>${timeAgo(sig.scannedAt)}</span>
-        <button class="es-paper-btn ${isShort ? 'short' : 'long'}" onclick="createEmaSqueezePaper(this,'${paperPayload}')">+ Paper</button>
+        <button class="es-paper-btn ${isShort ? 'short' : 'long'}" ${paperBlocked ? 'disabled title="Breakout khong dat QUALITY/PREMIUM"' : `onclick="createEmaSqueezePaper(this,'${paperPayload}')"`}>${paperBlocked ? 'Paper blocked' : '+ Paper'}</button>
       </div>
     </article>
   `;
@@ -811,6 +839,7 @@ function renderEsPaperTable() {
     } else {
       variantBadge = '<span class="es-variant-badge none">-</span>';
     }
+    variantBadge += `<div style="margin-top:4px;color:${Number(t.leverage) === 5 ? '#fbbf24' : '#67e8f9'};font-size:10px;font-weight:900">${Number(t.leverage) || '-'}x</div>`;
     return `<tr class="${rowClass}">
       <td>${variantBadge}</td>
       <td><a class="es-symbol" href="/?symbol=${symbol}" target="_blank" rel="noopener">${symbol.replace(/USDT$/, '')}</a></td>
@@ -835,7 +864,7 @@ function renderEsPaperTable() {
 
 async function loadEsPaperTrades() {
   try {
-    const res = await fetch('/api/pump-paper-trades', { cache: 'no-store' });
+    const res = await fetch('/api/ema-squeeze-paper-trades', { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
     esPaperTrades = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('emasq-'));
@@ -850,7 +879,14 @@ let esPaperStream = null;
 let esPaperFallbackTimer = null;
 
 function applyEsPaperData(data) {
-  esPaperTrades = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('emasq-'));
+  const incoming = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('emasq-'));
+  if (data.partial) {
+    const merged = new Map(esPaperTrades.map((t) => [t.id, t]));
+    incoming.forEach((t) => merged.set(t.id, t));
+    esPaperTrades = [...merged.values()];
+  } else {
+    esPaperTrades = incoming;
+  }
   updateEsDayFilterOptions();
   renderEsPaperTable();
 }

@@ -6,6 +6,91 @@
 //   SQUEEZE   – EMA vẫn đang nén, chưa breakout — cảnh báo sớm để canh
 //   BREAKOUT  – Giá vừa vượt lên trên cụm EMA + vol spike — entry ngay
 
+export function classifyEmaBreakoutQuality(signal = {}) {
+  if (String(signal.stage ?? '').toUpperCase() !== 'BREAKOUT'
+      || String(signal.action ?? '').toUpperCase() !== 'LONG') {
+    return null;
+  }
+
+  const interval = String(signal.interval ?? '15m');
+  const rsi = signal.rsi == null ? NaN : Number(signal.rsi);
+  const pump = signal.pumpMovePct == null ? NaN : Number(signal.pumpMovePct);
+  const volumeRaw = signal.breakoutVolRatio ?? signal.volRatio;
+  const volume = volumeRaw == null ? NaN : Number(volumeRaw);
+  const base = signal.baseRangePct == null ? NaN : Number(signal.baseRangePct) * 100;
+  const age = signal.breakoutAge == null ? NaN : Number(signal.breakoutAge);
+  const hasCore = [rsi, pump, base].every(Number.isFinite);
+
+  if (!hasCore) {
+    return { tier: 'REVIEW', paperEligible: false, reason: 'Missing RSI, pump or base metrics' };
+  }
+
+  if (interval === '5m') {
+    const exhaustionReasons = [];
+    if (rsi >= 80) exhaustionReasons.push(`RSI ${rsi.toFixed(0)} >= 80`);
+    if (pump >= 35) exhaustionReasons.push(`pump ${pump.toFixed(1)}% >= 35%`);
+    if (Number.isFinite(age) && age <= 3) exhaustionReasons.push(`breakout age ${age} <= 3 bars`);
+    if (exhaustionReasons.length) {
+      return { tier: 'EXHAUSTION', paperEligible: false, reason: exhaustionReasons.join(', ') };
+    }
+
+    if (rsi < 70 && pump >= 5 && pump < 20 && volume >= 2 && volume <= 20) {
+      return {
+        tier: 'PREMIUM',
+        paperEligible: true,
+        reason: `5m RSI ${rsi.toFixed(0)}, pump ${pump.toFixed(1)}%, vol ${volume.toFixed(1)}x`,
+      };
+    }
+
+    if (rsi < 70 && pump < 20 && base >= 3 && base <= 12) {
+      return {
+        tier: 'QUALITY',
+        paperEligible: true,
+        reason: `5m RSI ${rsi.toFixed(0)}, pump ${pump.toFixed(1)}%, base ${base.toFixed(1)}%`,
+      };
+    }
+
+    return {
+      tier: 'REVIEW',
+      paperEligible: false,
+      reason: `5m outside quality set: RSI ${rsi.toFixed(0)}, pump ${pump.toFixed(1)}%, base ${base.toFixed(1)}%`,
+    };
+  }
+
+  if (interval === '15m') {
+    const exhaustionReasons = [];
+    if (rsi >= 70) exhaustionReasons.push(`RSI ${rsi.toFixed(0)} >= 70`);
+    if (pump >= 20) exhaustionReasons.push(`pump ${pump.toFixed(1)}% >= 20%`);
+    if (exhaustionReasons.length) {
+      return { tier: 'EXHAUSTION', paperEligible: false, reason: exhaustionReasons.join(', ') };
+    }
+
+    const premium = pump >= 5 && pump < 20;
+    const wideBaseQuality = base >= 12;
+    if (premium || wideBaseQuality) {
+      return {
+        tier: premium ? 'PREMIUM' : 'QUALITY',
+        paperEligible: true,
+        reason: premium
+          ? `15m RSI ${rsi.toFixed(0)}, pump ${pump.toFixed(1)}%`
+          : `15m RSI ${rsi.toFixed(0)}, base ${base.toFixed(1)}%`,
+      };
+    }
+
+    return {
+      tier: 'REVIEW',
+      paperEligible: false,
+      reason: `15m lacks pump 5-20% or base >= 12%: pump ${pump.toFixed(1)}%, base ${base.toFixed(1)}%`,
+    };
+  }
+
+  return {
+    tier: 'REVIEW',
+    paperEligible: false,
+    reason: `${interval} has no validated breakout quality model`,
+  };
+}
+
 export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
   // ── Config ──────────────────────────────────────────────────────────────────
   const C = Object.assign({
@@ -675,7 +760,7 @@ export async function runEmaSqueezeScan(symbols, klineCache, snapshotMap, opts =
           const isSetupStage = det.stage === 'SQUEEZE' || det.stage === 'SQUEEZE_SHORT';
           if (score < (isSetupStage ? 65 : 55)) continue;
 
-          results.push({
+          const signal = {
             symbol,
             interval,
             action:     det.action,
@@ -722,7 +807,14 @@ export async function runEmaSqueezeScan(symbols, klineCache, snapshotMap, opts =
             btcChartRelation,
             volume:     quoteVolume,
             scannedAt:  Date.now(),
-          });
+          };
+          const breakoutQuality = classifyEmaBreakoutQuality(signal);
+          if (breakoutQuality) {
+            signal.breakoutQuality = breakoutQuality.tier;
+            signal.breakoutPaperEligible = breakoutQuality.paperEligible;
+            signal.breakoutQualityReason = breakoutQuality.reason;
+          }
+          results.push(signal);
         }
       }
     } catch { /* skip */ }

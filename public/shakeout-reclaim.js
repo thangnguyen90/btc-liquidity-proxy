@@ -96,6 +96,18 @@ function buildFactors(sig) {
 
 function buildTrapAlert(sig) {
   const flags = sig.riskFlags || {};
+  if (sig.bottomReboundRisk || String(sig.subtype ?? '') === 'BOTTOM_REBOUND_RISK') {
+    const reasons = Array.isArray(flags.bottomRiskReasons) && flags.bottomRiskReasons.length
+      ? flags.bottomRiskReasons.join(' | ')
+      : sig.autoTradeBlockReason || 'False-bottom risk: rebound may be distribution.';
+    return `
+      <div class="sr-trap-alert">
+        <strong>FALSE BOTTOM / DISTRIBUTION RISK</strong>
+        <span>${escapeHtml(reasons)}</span>
+        <span style="margin-top:8px;font-weight:900">BLOCK PAPER + BINANCE AUTO</span>
+      </div>
+    `;
+  }
   const risk = String(flags.trapRisk || 'LOW').toUpperCase();
   if (!['MEDIUM', 'HIGH'].includes(risk)) return '';
   const isShort = sig.action === 'SHORT';
@@ -137,9 +149,21 @@ function buildEmaCompare(sig) {
 function buildCard(sig) {
   const confirmed = sig.stage === 'RECLAIM_CONFIRMED';
   const isShort = sig.action === 'SHORT';
-  const stageClass = isShort ? 'short' : (confirmed ? 'confirmed' : 'watch');
-  const badgeClass = isShort ? 'short' : stageClass;
-  const stageText = isShort
+  const isBottomReboundRisk = !isShort
+    && (sig.bottomReboundRisk || String(sig.subtype ?? '') === 'BOTTOM_REBOUND_RISK');
+  const isBottomRebound = !isShort
+    && !isBottomReboundRisk
+    && (sig.bottomReboundQualified || String(sig.subtype ?? '') === 'BOTTOM_REBOUND');
+  const stageClass = isBottomReboundRisk ? 'bottom-rebound-risk'
+    : isBottomRebound ? 'bottom-rebound'
+    : isShort ? 'short' : (confirmed ? 'confirmed' : 'watch');
+  const badgeClass = isBottomReboundRisk ? 'bottom-rebound-risk'
+    : isBottomRebound ? 'bottom-rebound' : isShort ? 'short' : stageClass;
+  const stageText = isBottomReboundRisk
+    ? 'FALSE BOTTOM · AUTO BLOCKED'
+    : isBottomRebound
+    ? 'BOTTOM REBOUND · MARKET $5'
+    : isShort
     ? (confirmed ? 'SHORT REJECT CONFIRMED' : 'SHORT PULLBACK WATCH')
     : (confirmed ? 'LONG RECLAIM CONFIRMED' : 'LONG SHAKEOUT WATCH');
   const detailUrl = `/?symbol=${encodeURIComponent(sig.symbol)}`;
@@ -158,11 +182,27 @@ function buildCard(sig) {
       </div>
 
       <div class="sr-pattern">${sig.reason || ''}</div>
+      ${isBottomRebound ? `<div style="margin-top:8px;padding:9px;border:1px solid #22d3ee;background:#083344;color:#a5f3fc;font-weight:900">
+        SONG HOI TU DAY · MARKET $5 · DCA +$10 KHI ROE ≤ -25% · NO SL<br>
+        drawdown ${fmtPct(sig.factors?.bottomDeclinePct)} · rebound ${fmtPct(sig.factors?.bottomReboundPct)}
+      </div>` : ''}
+      ${isBottomReboundRisk ? `<div style="margin-top:8px;padding:10px;border:2px solid #fb7185;background:#7f1d1d;color:#fff;font-weight:900">
+        HOI PHAN PHOI / DAY GIA · KHONG VAO LONG<br>
+        drawdown ${fmtPct(sig.factors?.bottomDeclinePct)} · rebound ${fmtPct(sig.factors?.bottomReboundPct)}
+      </div>` : ''}
+      ${sig.btcStrongShortEma99 ? `<div style="margin-top:8px;padding:10px;border:2px solid #fbbf24;background:#422006;color:#fde68a;font-weight:900">
+        BTC STRONG · SHORT CHO DUNG EMA99 5M<br>
+        Khong vao MARKET · khong clamp entry ve 5%
+      </div>` : ''}
+      ${sig.btcIndependentShort ? `<div style="margin-top:8px;padding:10px;border:2px solid #22d3ee;background:#083344;color:#a5f3fc;font-weight:900">
+        ${escapeHtml(sig.btcEntryClass)} · COIN KHONG THEO BTC<br>
+        Entry theo cau truc coin · corr ${sig.btcRelation?.corr ?? '-'} · beta ${sig.btcRelation?.beta ?? '-'}
+      </div>` : ''}
       ${buildTrapAlert(sig)}
 
       <div class="sr-prices">
         <div class="sr-price"><span>Entry</span><strong>${fmtPrice(sig.entry)}</strong></div>
-        <div class="sr-price"><span>SL</span><strong style="color:var(--red)">${fmtPrice(sig.sl)}</strong></div>
+        <div class="sr-price"><span>SL</span><strong style="color:${isBottomRebound ? '#67e8f9' : 'var(--red)'}">${isBottomRebound ? 'NO SL' : isBottomReboundRisk ? 'AUTO BLOCK' : fmtPrice(sig.sl)}</strong></div>
         <div class="sr-price"><span>${isShort ? 'TP1 low' : 'TP1 high'}</span><strong style="color:var(--amber)">${fmtPrice(sig.tp1)}</strong></div>
         <div class="sr-price"><span>Runner TP</span><strong style="color:var(--green)">${fmtPrice(sig.tp)}</strong></div>
       </div>
@@ -268,7 +308,12 @@ function renderDailyStats(daily) {
       <td class="sr-daily-neg">${d.losses ?? 0}</td>
       <td>${d.tpHits ?? 0} / ${d.slHits ?? 0}</td>
       <td>${d.winRate ?? 0}%</td>
-      <td class="${cls(d.totalPnl)}">${sign(d.totalPnl)}$${Number(d.totalPnl ?? 0).toFixed(2)}</td>
+      <td class="${cls(d.totalPnl)}">
+        ${sign(d.totalPnl)}$${Number(d.totalPnl ?? 0).toFixed(2)}
+        ${Number(d.openPartialRealizedPnl ?? 0) !== 0
+          ? `<small style="display:block;color:#67e8f9">+$${Number(d.openPartialRealizedPnl).toFixed(2)} đã chốt từ lệnh mở</small>`
+          : ''}
+      </td>
       <td class="${cls(d.totalRoe)}">${sign(d.totalRoe)}${Number(d.totalRoe ?? 0).toFixed(0)}%</td>
     </tr>
   `).join('');
@@ -293,6 +338,7 @@ function srPaperSortValue(t, key) {
     case 'entry': return Number(t.entryPrice);
     case 'sl': return t.sl == null ? null : Number(t.sl);
     case 'tp': return t.tp == null ? null : Number(t.tp);
+    case 'projectedPnl': return getSrProjectedPnl(t).roe;
     case 'mark': return Number(t.markPrice ?? t.exitPrice);
     case 'pnl': return t.pnl == null ? null : Number(t.pnl);
     case 'roe': return t.roe == null ? null : Number(t.roe);
@@ -305,6 +351,29 @@ function srPaperSortValue(t, key) {
     }
     default: return '';
   }
+}
+
+function getSrProjectedPnl(t) {
+  const entry = Number(t.entryPrice);
+  const tp = Number(t.tp);
+  const leverage = Number(t.leverage);
+  const margin = Number(t.marginUsdt);
+  if (![entry, tp, leverage, margin].every(Number.isFinite) || entry <= 0 || leverage <= 0 || margin <= 0) {
+    return { pnl: null, roe: null };
+  }
+  const sideMult = t.side === 'SHORT' ? -1 : 1;
+  if (t.partialTpTaken) {
+    const quantity = Number(t.quantity);
+    const realizedPnl = Number(t.realizedPnl ?? 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) return { pnl: null, roe: null };
+    const pnl = realizedPnl + (tp - entry) * quantity * sideMult;
+    return { pnl, roe: pnl / margin * 100 };
+  }
+  const roe = ((tp - entry) / entry) * leverage * 100 * sideMult;
+  return {
+    roe,
+    pnl: margin * roe / 100,
+  };
 }
 
 function compareSrValues(a, b, dir) {
@@ -344,6 +413,9 @@ document.querySelectorAll('.sr-sort').forEach((th) => {
     if (!key) return;
     if (srPaperSort.key === key) {
       srPaperSort.dir = srPaperSort.dir === 'asc' ? 'desc' : 'asc';
+      if (isCancelled) {
+        variantBadge = `<span class="sr-variant-badge pending" style="color:#fb7185;border-color:#fb7185" title="${escapeHtml(t.note)}">B · CANCELLED - MARKET ≤ -10%</span>`;
+      }
     } else {
       // số/giá mặc định desc, chữ mặc định asc
       srPaperSort = { key, dir: ['symbol', 'side', 'variant', 'source', 'status'].includes(key) ? 'asc' : 'desc' };
@@ -366,7 +438,15 @@ function renderPaperTrades(data) {
   const validClosed = Math.max(0, Number(summary.closed ?? 0) - Number(summary.invalid ?? 0));
   const winRate = validClosed > 0 ? Math.round(Number(summary.wins ?? 0) / validClosed * 100) : null;
   srPaperSummary.textContent = `${summary.open ?? 0} open - ${summary.closed ?? 0} closed`
+    + (summary.expired ? ` - ${summary.expired} expired` : '')
+    + (summary.cancelled ? ` - ${summary.cancelled} cancelled` : '')
     + (summary.invalid ? ` - ${summary.invalid} invalid` : '')
+    + ((summary.recoveryActive || summary.recoveryBreakeven || summary.recoverySl30)
+      ? ` - recovery ${summary.recoveryActive ?? 0} active / ${summary.recoveryBreakeven ?? 0} BE / ${summary.recoverySl30 ?? 0} SL30`
+      : '')
+    + ((summary.partialActive || summary.partialBreakeven || summary.partialTrail || summary.runnerTpHits)
+      ? ` - partial ${summary.partialActive ?? 0} active / ${summary.partialBreakeven ?? 0} BE / ${summary.partialTrail ?? 0} trail / ${summary.runnerTpHits ?? 0} runner TP`
+      : '')
     + (winRate != null ? ` - WR ${winRate}% - avg ROE ${summary.avgRoe ?? '-'}%` : ' - auto confirmed >=60');
 
   renderVariantCompare(Array.isArray(data?.variantCompare) ? data.variantCompare : []);
@@ -376,19 +456,31 @@ function renderPaperTrades(data) {
   updateSrSortHeaders();
 
   if (!rows.length) {
-    srPaperBody.innerHTML = '<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:16px">Chua co paper trade Shakeout nao.</td></tr>';
+    srPaperBody.innerHTML = '<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:16px">Chua co paper trade Shakeout nao.</td></tr>';
     return;
   }
 
   srPaperBody.innerHTML = rows.map((t) => {
     const isClosed = t.status === 'CLOSED';
     const sideClass = t.side === 'LONG' ? 'sr-paper-long' : 'sr-paper-short';
-    const action = isClosed
+    const isExpired = t.status === 'EXPIRED';
+    const isCancelled = t.status === 'CANCELLED';
+    const action = isClosed || isExpired || isCancelled
       ? `<button class="sr-paper-btn del" data-paper-delete="${escapeHtml(t.id)}">Del</button>`
       : `<button class="sr-paper-btn" data-paper-close="${escapeHtml(t.id)}">Close</button>`;
     const variant = String(t.variant ?? '').toUpperCase();
-    const rowClass = variant === 'MARKET' ? 'sr-row-market'
-      : variant === 'PENDING' ? 'sr-row-pending' : '';
+    const isLegacyBottomRisk = Boolean(t.bottomRebound)
+      && String(t.trapRisk ?? '').toUpperCase() === 'HIGH';
+    const isBottomRisk = Boolean(t.bottomReboundRisk)
+      || String(t.subtype ?? '') === 'BOTTOM_REBOUND_RISK'
+      || isLegacyBottomRisk;
+    const rowClass = isBottomRisk
+      ? 'sr-row-bottom-rebound-risk'
+      : t.bottomRebound || String(t.subtype ?? '') === 'BOTTOM_REBOUND'
+        ? 'sr-row-bottom-rebound'
+        : variant === 'MARKET' ? 'sr-row-market'
+          : variant === 'PENDING' ? 'sr-row-pending' : '';
+    const isNearMarketPending = String(t.note ?? '').includes('nearMarketEntry=');
     let variantBadge;
     if (variant === 'MARKET') {
       variantBadge = '<span class="sr-variant-badge market" title="Cách A: vào ngay theo giá market">A · MARKET</span>';
@@ -400,6 +492,55 @@ function renderPaperTrades(data) {
     } else {
       variantBadge = '<span class="sr-variant-badge none">-</span>';
     }
+    if (isCancelled) {
+      variantBadge = `<span class="sr-variant-badge pending" style="color:#fb7185;border-color:#fb7185" title="${escapeHtml(t.note)}">B · CANCELLED - MARKET ≤ -10%</span>`;
+    }
+    if (variant === 'PENDING' && isNearMarketPending && !isCancelled) {
+      variantBadge = `<span class="sr-variant-badge pending${t.status === 'PENDING' ? ' waiting' : ''}" title="${escapeHtml(t.note)}">B · LIMIT GẦN MARKET</span>`;
+    }
+    if (t.btcStrongShortEma99) {
+      variantBadge = `<span class="sr-variant-badge pending${t.status === 'PENDING' ? ' waiting' : ''}" style="color:#fde68a;border-color:#fbbf24;background:#422006" title="${escapeHtml(t.note)}">BTC STRONG · EMA99 EXACT</span>`;
+    }
+    if (t.btcIndependentShort) {
+      variantBadge += `<div style="margin-top:5px;color:#a5f3fc;font-size:10px;font-weight:900;line-height:1.35">`
+        + `${escapeHtml(t.btcEntryClass || 'INDEPENDENT')} · COIN STRUCTURE`
+        + `<br>corr ${t.btcRelation?.corr ?? '-'} · beta ${t.btcRelation?.beta ?? '-'}`
+        + `</div>`;
+    }
+    if (t.lossTpMovedToEntry) {
+      variantBadge += `<div style="margin-top:5px;padding:4px;color:#fde68a;background:#422006;border:1px solid #fbbf24;font-size:10px;font-weight:900;line-height:1.35">`
+        + `AM ${Math.abs(Number(t.lossTpTriggerRoe ?? 15)).toFixed(0)}% · TP VE ENTRY`
+        + `<br>old TP ${fmtPrice(t.lossTpOriginalTp)}`
+        + `</div>`;
+    }
+    if (t.partialTpTaken) {
+      const closedPct = Math.round(Number(t.partialCloseRatio ?? 0.3) * 100);
+      const runnerPct = Math.max(0, 100 - closedPct);
+      variantBadge += `<div style="margin-top:5px;color:#67e8f9;font-size:10px;font-weight:900;line-height:1.35">`
+        + `DA CAT ${closedPct}% · CON ${runnerPct}%`
+        + `<br>REALIZED ${fmtSigned(Number(t.realizedPnl ?? 0))}`
+        + `</div>`;
+    }
+    if (isBottomRisk) {
+      const riskReason = t.autoTradeBlockReason
+        || t.warning
+        || 'Historical bottom rebound with trapRisk HIGH';
+      variantBadge += `<div style="margin-top:5px;padding:5px;color:#fff;background:#9f1239;border:1px solid #fb7185;font-size:10px;font-weight:900;line-height:1.35">`
+        + `${isLegacyBottomRisk ? 'LEGACY ' : ''}FALSE BOTTOM · AUTO BLOCKED`
+        + `<br>${escapeHtml(riskReason)}`
+        + `</div>`;
+    } else if (t.bottomRebound || String(t.subtype ?? '') === 'BOTTOM_REBOUND') {
+      variantBadge += `<div style="margin-top:5px;color:#67e8f9;font-size:10px;font-weight:900;line-height:1.35">`
+        + `BOTTOM REBOUND · MARKET $${Number(t.marginBeforeDca ?? t.marginUsdt ?? 5).toFixed(0)} · NO SL`
+        + (t.dcaTaken
+          ? `<br>DCA +$${Number(t.dcaMarginUsdt ?? 10).toFixed(0)} @ ${fmtPrice(t.dcaPrice)} · AVG ${fmtPrice(t.entryPrice)}`
+          : '<br>DCA +$10 khi ROE ≤ -25%')
+        + `</div>`;
+    }
+    const projected = getSrProjectedPnl(t);
+    const projectedHtml = projected.roe == null
+      ? '-'
+      : `<strong style="color:${projected.roe >= 20 ? '#34d399' : '#fbbf24'}">${fmtSigned(projected.pnl)} / ${fmtSigned(projected.roe, '%')}</strong>`;
     return `
       <tr class="${rowClass}" style="${isClosed ? 'opacity:.55' : ''}">
         <td>${variantBadge}</td>
@@ -408,10 +549,25 @@ function renderPaperTrades(data) {
         <td>${fmtPrice(t.entryPrice)}</td>
         <td>${fmtPrice(t.sl)}</td>
         <td>${fmtPrice(t.tp)}</td>
+        <td title="PnL tai TP theo entry, margin va leverage">${projectedHtml}</td>
         <td data-srmark="${escapeHtml(t.id)}">${fmtPrice(t.markPrice)}</td>
         <td data-srpnl="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '<span style="color:var(--muted)">chưa khớp</span>' : fmtSigned(t.pnl)}</td>
         <td data-srroe="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '-' : fmtSigned(t.roe, '%')}</td>
-        <td>${escapeHtml(t.status)}</td>
+        <td>${t.partialTpTaken
+          ? `<span style="display:inline-block;padding:3px 7px;border:1px solid #22d3ee;color:#67e8f9;background:#083344;border-radius:4px;font-weight:900" title="${escapeHtml(t.note)}">${escapeHtml(
+            isClosed
+              ? (t.outcome === 'RUNNER_TP'
+                ? 'RUNNER TP'
+                : t.outcome === 'PARTIAL_TRAIL' ? 'PARTIAL TRAIL' : 'PARTIAL BE')
+              : '30% TP · 70% RUNNER',
+          )}</span>`
+          : t.recoveryMode
+          ? `<span style="display:inline-block;padding:3px 7px;border:1px solid #f59e0b;color:#fbbf24;background:#422006;border-radius:4px;font-weight:900" title="${escapeHtml(t.note)}">${escapeHtml(
+            isClosed
+              ? (t.outcome === 'RECOVERY_BE' ? 'RECOVERY BE' : 'RECOVERY SL30')
+              : 'RECOVERY',
+          )}</span>`
+          : escapeHtml(t.status)}</td>
         <td>${t.score ?? '-'}</td>
         <td>${escapeHtml(t.source)}</td>
         <td>${t.createdAt ? new Date(t.createdAt).toLocaleTimeString('vi-VN') : '-'}</td>
@@ -511,9 +667,10 @@ function applyLivePrices() {
     const entry = Number(t.entryPrice);
     const qty = Number(t.quantity);
     const margin = Number(t.marginUsdt);
+    const realizedPnl = Number(t.realizedPnl ?? 0);
     if (!Number.isFinite(entry) || !Number.isFinite(qty) || !Number.isFinite(margin) || margin <= 0) continue;
     const sideMult = t.side === 'LONG' ? 1 : -1;
-    const pnl = (p - entry) * qty * sideMult;
+    const pnl = realizedPnl + (p - entry) * qty * sideMult;
     const roe = (pnl / margin) * 100;
     const pnlCell = srPaperBody.querySelector(`[data-srpnl="${t.id}"]`);
     const roeCell = srPaperBody.querySelector(`[data-srroe="${t.id}"]`);
