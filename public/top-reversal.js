@@ -39,23 +39,39 @@ function renderSignals() {
   }
   grid.innerHTML = rows.map((signal) => {
     const f = signal.factors ?? {};
+    const isLong = signal.action === 'LONG' || signal.stage === 'FAIL_RECLAIM_LONG';
+    const isNear = signal.stage === 'TOP_NEAR_MISS' || signal.nearMiss || signal.watchOnly;
+    const isEarly = signal.stage === 'TOP_EARLY_CONFIRMED' || signal.earlyConfirmed;
+    const qualityTier = String(signal.qualityTier ?? f.qualityTier ?? (signal.qualityBreakdown || f.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')).toUpperCase();
+    const quality = qualityTier === 'QUALITY';
+    const volume = qualityTier === 'VOLUME_DISTRIBUTION';
+    const canDca = quality || volume;
+    const qualityLabel = quality
+      ? `QUALITY DCA $10 ${signal.hardBreakdownCount ?? f.hardBreakdownCount ?? 0}/3`
+      : volume ? 'VOLUME DISTRIBUTION DCA $5'
+      : isEarly ? 'EARLY CONFIRMED · WATCH ONLY'
+      : isNear ? 'NEAR MISS · WATCH ONLY'
+      : isLong ? 'FAIL RECLAIM LONG' : 'SCOUT ONLY';
+    const qualityReasons = Array.isArray(signal.qualityReasons)
+      ? signal.qualityReasons.join(', ')
+      : Array.isArray(f.qualityReasons) ? f.qualityReasons.join(', ') : '';
     return `
-      <article class="tr-card ${signal.confirmed ? 'confirmed' : ''}">
+      <article class="tr-card ${signal.confirmed ? 'confirmed' : ''} ${quality ? 'quality' : ''} ${volume ? 'volume' : ''} ${isEarly ? 'early' : ''} ${isNear && !isEarly ? 'near' : ''} ${isLong ? 'long' : ''}">
         <div class="tr-top">
           <div>
             <a class="tr-symbol" href="/?symbol=${encodeURIComponent(signal.symbol)}" target="_blank">${signal.symbol.replace(/USDT$/, '')}<small>USDT</small></a>
             <span class="tr-change">${signed(signal.change24h, '%')} 24h · ${price(signal.markPrice)}</span>
           </div>
           <div class="tr-right">
-            <span class="tr-badge">${signal.stage === 'TOP_CONFIRMED' ? 'TOP REVERSAL CONFIRMED' : 'TOP WATCH'}</span>
+            <span class="tr-badge">${isLong ? 'FAIL RECLAIM LONG' : isEarly ? 'EARLY CONFIRMED' : isNear ? 'NEAR MISS · WATCH ONLY' : signal.stage === 'TOP_CONFIRMED' ? 'TOP REVERSAL CONFIRMED' : 'TOP WATCH'}</span>
             <div class="tr-score">${signal.score} <small>${signal.grade}</small></div>
           </div>
         </div>
         <div class="tr-reason">${signal.reason}</div>
-        <div class="tr-plan">SHORT MARKET $5 · DCA +$10 khi ROE &lt;= -25% · trailing SL từ +15% ROE</div>
+        <div class="tr-plan">${isLong ? 'LONG WATCH: short fail + reclaim EMA13/25 + green volume' : isEarly ? 'EARLY CONFIRMED · drop 5-8% + EMA break + red bars + BTC not bullish · paper=NO' : isNear ? 'WATCH ONLY · chua vao paper · cho them xac nhan drop/EMA/volume' : `SHORT SCOUT $1 · ${canDca ? `DCA +$${volume ? 5 : 10} duoc phep khi ROE <= -25%` : 'DCA BI KHOA vi chua du quality'} · trailing SL tu +15% ROE`}</div>
         <div class="tr-prices">
           <div class="tr-price"><span>Entry</span><strong>${price(signal.entry)}</strong></div>
-          <div class="tr-price"><span>SL</span><strong style="color:#67e8f9">TRAIL +15%</strong></div>
+          <div class="tr-price"><span>SL</span><strong style="color:#67e8f9">${isLong ? price(signal.sl) : 'TRAIL +15%'}</strong></div>
           <div class="tr-price"><span>TP</span><strong style="color:#34d399">${price(signal.tp)}</strong></div>
           <div class="tr-price"><span>Runner TP</span><strong style="color:#34d399">${price(signal.runnerTp)}</strong></div>
         </div>
@@ -68,6 +84,7 @@ function renderSignals() {
           <span class="tr-chip">Red ${f.redBars5m}/5</span>
           <span class="tr-chip">RSI ${f.rsi5m ?? '-'}/${f.rsi15m ?? '-'}</span>
           <span class="tr-chip">EMA break ${signed(f.emaBreakPct, '%')}</span>
+          <span class="tr-chip ${quality ? 'quality' : volume ? 'volume' : isEarly ? 'early' : 'scout'}">${qualityLabel}${qualityReasons ? ` · ${qualityReasons}` : ''}</span>
         </div>
         <div class="muted" style="font-size:11px">${signal.note}</div>
       </article>`;
@@ -75,16 +92,20 @@ function renderSignals() {
 }
 
 function applySignalData(data) {
-  signals = Array.isArray(data?.signals) ? data.signals : [];
+  const passed = Array.isArray(data?.signals) ? data.signals : [];
+  const nearMisses = Array.isArray(data?.nearMisses) ? data.nearMisses : [];
+  signals = [...passed, ...nearMisses];
   document.getElementById('confirmedCount').textContent = signals.filter((s) => s.stage === 'TOP_CONFIRMED').length;
+  document.getElementById('earlyCount').textContent = signals.filter((s) => s.stage === 'TOP_EARLY_CONFIRMED').length;
   document.getElementById('watchCount').textContent = signals.filter((s) => s.stage === 'TOP_WATCH').length;
+  document.getElementById('nearCount').textContent = nearMisses.length;
   document.getElementById('scannedCount').textContent = data?.processed ?? '-';
   document.getElementById('updatedAt').textContent = data?.scannedAt
     ? new Date(data.scannedAt).toLocaleTimeString('vi-VN', { hour12: false })
     : '-';
   document.getElementById('cachedCount').textContent = data?.processed ?? 0;
   document.getElementById('totalCount').textContent = data?.total ?? 0;
-  document.getElementById('foundCount').textContent = signals.length;
+  document.getElementById('foundCount').textContent = `${passed.length} + ${nearMisses.length} near`;
   document.getElementById('scanStatus').textContent = data?.stale ? 'Cache cu' : 'Live 5m + 15m';
   renderSignals();
 }
@@ -96,9 +117,13 @@ function renderPaper(data) {
     `${summary.open ?? 0} open · ${summary.trailActive ?? 0} trailing · ${summary.closed ?? 0} closed · WR ${summary.winRate ?? 0}% · PnL ${signed(summary.pnl)}`;
   paperBody.innerHTML = rows.length ? rows.map((trade) => {
     const pnlClass = Number(trade.pnl) >= 0 ? 'tr-positive' : 'tr-negative';
+    const qualityTier = String(trade.qualityTier ?? (trade.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')).toUpperCase();
+    const quality = qualityTier === 'QUALITY';
+    const volume = qualityTier === 'VOLUME_DISTRIBUTION';
+    const canDca = quality || volume;
     const dca = trade.dcaTaken
       ? `<span class="tr-dca">DCA +$${Number(trade.dcaMarginUsdt || 10).toFixed(0)} @ ${price(trade.dcaPrice)}<br>AVG ${price(trade.entryPrice)}</span>`
-      : '<span class="tr-market">MARKET $5<br>DCA waiting</span>';
+      : `<span class="tr-market">SCOUT $${Number(trade.marginUsdt || 1).toFixed(0)}<br>${canDca ? `DCA allowed $${volume ? 5 : 10}` : 'DCA blocked'}</span>`;
     const action = trade.status === 'CLOSED'
       ? `<button class="tr-btn del" data-delete="${trade.id}">Del</button>`
       : `<button class="tr-btn" data-close="${trade.id}">Close</button>`;
@@ -110,7 +135,7 @@ function renderPaper(data) {
       <td>${price(trade.markPrice)}</td>
       <td>$${Number(trade.marginUsdt || 0).toFixed(0)} · ${trade.leverage}x</td>
       <td class="${pnlClass}">${signed(trade.pnl)}</td><td class="${pnlClass}">${signed(trade.roe, '%')}</td>
-      <td>${trade.status}${trade.outcome ? ` · ${trade.outcome}` : ''}</td><td>${trade.score}</td>
+      <td>${trade.status}${trade.outcome ? ` · ${trade.outcome}` : ''}<br><small class="${canDca ? 'tr-positive' : 'tr-negative'}">${quality ? 'QUALITY DCA' : volume ? 'VOLUME DCA' : 'SCOUT ONLY'}</small></td><td>${trade.score}</td>
       <td>${time(trade.createdAt)}</td><td>${action}</td>
     </tr>`;
   }).join('') : '<tr><td colspan="13">Chua co paper trade Top Reversal.</td></tr>';

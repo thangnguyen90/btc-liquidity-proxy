@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/styles.css">
     <style>
       .tr-shell { width: min(1460px, calc(100vw - 32px)); }
-      .tr-summary { display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:10px;margin:14px 0; }
+      .tr-summary { display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:10px;margin:14px 0; }
       .tr-stat,.tr-controls,.tr-card,.tr-paper { border:1px solid var(--line);background:var(--panel);border-radius:8px; }
       .tr-stat { padding:12px; }
       .tr-stat span { display:block;color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase; }
@@ -18,6 +18,16 @@
       .tr-card { position:relative;overflow:hidden;padding:14px;display:grid;gap:10px;background:linear-gradient(135deg,rgba(127,29,29,.22),rgba(28,32,31,.96) 46%); }
       .tr-card::before { content:"";position:absolute;inset:0 0 auto;height:3px;background:#fb7185; }
       .tr-card.confirmed { border-color:rgba(251,113,133,.7);box-shadow:0 0 0 1px rgba(251,113,133,.12); }
+      .tr-card.quality { border-color:rgba(34,211,238,.75);box-shadow:0 0 0 1px rgba(34,211,238,.16); }
+      .tr-card.quality::before { background:#22d3ee; }
+      .tr-card.volume { border-color:rgba(251,191,36,.75);box-shadow:0 0 0 1px rgba(251,191,36,.15); }
+      .tr-card.volume::before { background:#f59e0b; }
+      .tr-card.early { background:linear-gradient(135deg,rgba(190,24,93,.22),rgba(28,32,31,.96) 46%);border-color:rgba(244,114,182,.78);box-shadow:0 0 0 1px rgba(244,114,182,.16); }
+      .tr-card.early::before { background:#f472b6; }
+      .tr-card.near { background:linear-gradient(135deg,rgba(245,158,11,.18),rgba(28,32,31,.96) 46%);border-color:rgba(245,158,11,.65); }
+      .tr-card.near::before { background:#fbbf24; }
+      .tr-card.long { background:linear-gradient(135deg,rgba(6,95,70,.24),rgba(28,32,31,.96) 46%);border-color:rgba(52,211,153,.7); }
+      .tr-card.long::before { background:#34d399; }
       .tr-top { display:flex;justify-content:space-between;gap:12px; }
       .tr-symbol { color:var(--text);font-size:20px;font-weight:900;text-decoration:none; }
       .tr-symbol small { color:var(--muted);font-size:12px;font-weight:500; }
@@ -32,6 +42,10 @@
       .tr-price strong { display:block;margin-top:5px;font-size:14px;overflow-wrap:anywhere; }
       .tr-chips { display:flex;flex-wrap:wrap;gap:6px; }
       .tr-chip { padding:3px 7px;border:1px solid rgba(251,113,133,.28);background:rgba(127,29,29,.18);color:#fecdd3;border-radius:4px;font-size:11px;font-weight:700; }
+      .tr-chip.quality { border-color:rgba(34,211,238,.5);background:rgba(8,145,178,.18);color:#a5f3fc; }
+      .tr-chip.volume { border-color:rgba(251,191,36,.6);background:rgba(180,83,9,.2);color:#fde68a; }
+      .tr-chip.early { border-color:rgba(244,114,182,.65);background:rgba(190,24,93,.18);color:#fbcfe8; }
+      .tr-chip.scout { border-color:rgba(245,158,11,.55);background:rgba(245,158,11,.12);color:#fcd34d; }
       .tr-plan { padding:9px;border:1px solid #f59e0b;background:rgba(245,158,11,.09);color:#fcd34d;border-radius:6px;font-weight:900;font-size:12px; }
       .tr-paper { margin-top:18px;padding:14px; }
       .tr-paper-head { display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px; }
@@ -73,7 +87,9 @@
 
       <section class="tr-summary">
         <div class="tr-stat"><span>Confirmed</span><strong id="confirmedCount">-</strong></div>
+        <div class="tr-stat"><span>Early Confirmed</span><strong id="earlyCount">-</strong></div>
         <div class="tr-stat"><span>Watch</span><strong id="watchCount">-</strong></div>
+        <div class="tr-stat"><span>Near Miss</span><strong id="nearCount">-</strong></div>
         <div class="tr-stat"><span>Scanned</span><strong id="scannedCount">-</strong></div>
         <div class="tr-stat"><span>Updated</span><strong id="updatedAt">-</strong></div>
       </section>
@@ -83,7 +99,10 @@
         <select id="stageFilter">
           <option value="all">All stages</option>
           <option value="TOP_CONFIRMED">Confirmed</option>
+          <option value="TOP_EARLY_CONFIRMED">Early Confirmed</option>
           <option value="TOP_WATCH">Watch</option>
+          <option value="TOP_NEAR_MISS">Near Miss</option>
+          <option value="FAIL_RECLAIM_LONG">Fail Reclaim Long</option>
         </select>
         <select id="scoreFilter">
           <option value="0">All scores</option>

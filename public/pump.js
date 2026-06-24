@@ -595,6 +595,9 @@ const pumpPaperCount = document.getElementById('pumpPaperCount');
 let pumpPaperTradesCache  = [];
 let pumpPaperSummaryCache = null;
 let pumpPaperSort = { key: 'status', dir: 'asc' };
+let pumpPaperPage = 1;
+let pumpPaperLimit = 300;
+let pumpPaperPagination = null;
 
 document.addEventListener('click', (e) => {
   const th = e.target.closest('[data-paper-sort]');
@@ -664,6 +667,37 @@ function updatePumpPaperSortHeaders() {
   });
 }
 
+function ensurePumpPaperPager() {
+  let pager = document.getElementById('pumpPaperPager');
+  if (pager) return pager;
+  if (!pumpPaperCount?.parentElement) return null;
+  pager = document.createElement('div');
+  pager.id = 'pumpPaperPager';
+  pager.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:12px';
+  pumpPaperCount.insertAdjacentElement('afterend', pager);
+  return pager;
+}
+
+function renderPumpPaperPager() {
+  const pager = ensurePumpPaperPager();
+  if (!pager || !pumpPaperPagination) return;
+  const p = pumpPaperPagination;
+  pager.innerHTML = `
+    <button class="pump-paper-close-btn" data-pump-page="prev" ${p.hasPrev ? '' : 'disabled'}>Prev</button>
+    <span>Page <strong style="color:var(--text)">${p.page}</strong>/<strong style="color:var(--text)">${p.totalPages}</strong> · ${p.total} rows</span>
+    <button class="pump-paper-close-btn" data-pump-page="next" ${p.hasNext ? '' : 'disabled'}>Next</button>
+    <select id="pumpPaperLimitSelect" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px">
+      ${[100, 300, 500, 1000].map((n) => `<option value="${n}" ${n === pumpPaperLimit ? 'selected' : ''}>${n}/page</option>`).join('')}
+    </select>
+  `;
+  pager.querySelector('[data-pump-page="prev"]')?.addEventListener('click', () => loadPumpPaperTrades(Math.max(1, pumpPaperPage - 1), true));
+  pager.querySelector('[data-pump-page="next"]')?.addEventListener('click', () => loadPumpPaperTrades(pumpPaperPage + 1, true));
+  pager.querySelector('#pumpPaperLimitSelect')?.addEventListener('change', (event) => {
+    pumpPaperLimit = Number(event.target.value) || 300;
+    loadPumpPaperTrades(1, true);
+  });
+}
+
 function renderPumpPaperTrades(trades, summary) {
   pumpPaperTradesCache = trades;
   pumpPaperSummaryCache = summary;
@@ -671,12 +705,16 @@ function renderPumpPaperTrades(trades, summary) {
   const closed = trades.filter((t) => t.status === 'CLOSED');
   const all    = sortPumpPaperTrades([...open, ...closed]);
   let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
+  if (pumpPaperPagination) {
+    countTxt += ` · page ${pumpPaperPagination.page}/${pumpPaperPagination.totalPages} (${all.length}/${pumpPaperPagination.total})`;
+  }
   if (summary && summary.closed > 0) {
     const wr = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
     countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
     if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
   }
   pumpPaperCount.textContent = countTxt;
+  renderPumpPaperPager();
 
   if (!all.length) {
     pumpPaperBody.innerHTML = '<tr><td colspan="14" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
@@ -769,26 +807,33 @@ function refreshPumpPaperPnl(trades) {
   const closed = trades.filter((t) => t.status === 'CLOSED').length;
   const summary = pumpPaperSummaryCache;
   let countTxt = `${open} đang mở · ${closed} đã đóng`;
+  if (pumpPaperPagination) {
+    countTxt += ` · page ${pumpPaperPagination.page}/${pumpPaperPagination.totalPages} (${trades.length}/${pumpPaperPagination.total})`;
+  }
   if (summary && summary.closed > 0) {
     const wr = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
     countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
     if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
   }
   pumpPaperCount.textContent = countTxt;
+  renderPumpPaperPager();
 }
 
 let _pumpPaperFetching = false;
-async function loadPumpPaperTrades() {
+async function loadPumpPaperTrades(page = pumpPaperPage, forceRender = false) {
   if (_pumpPaperFetching) return;
   _pumpPaperFetching = true;
   try {
-    const res = await fetch('/api/pump-paper-trades');
+    const nextPage = Math.max(1, Number(page) || 1);
+    const res = await fetch(`/api/pump-paper-trades?page=${nextPage}&limit=${pumpPaperLimit}`);
     if (!res.ok) return;
     const data = await res.json();
+    pumpPaperPage = data.pagination?.page ?? nextPage;
+    pumpPaperPagination = data.pagination ?? null;
     const trades = data.trades ?? [];
     pumpPaperSummaryCache = data.summary;
     // Nếu bảng đã có rows → in-place update, ngược lại full render
-    if (pumpPaperTradesCache.length > 0) {
+    if (pumpPaperTradesCache.length > 0 && !forceRender) {
       pumpPaperTradesCache = trades;
       refreshPumpPaperPnl(trades);
     } else {

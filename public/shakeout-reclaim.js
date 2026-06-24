@@ -146,6 +146,87 @@ function buildEmaCompare(sig) {
   return `<div class="sr-ema-compare">${item('EMA99 5m', ema5)}${item('EMA99 15m', ema15)}</div>`;
 }
 
+function buildOrderDecision(sig) {
+  const symbol = String(sig.symbol ?? '').toUpperCase();
+  const side = String(sig.action ?? '').toUpperCase();
+  const opposite = side === 'LONG' ? 'SHORT' : 'LONG';
+  const now = Date.now();
+  const cooldownMs = 4 * 3600 * 1000;
+  const related = srPaperTrades.filter((t) =>
+    String(t.symbol ?? '').toUpperCase() === symbol
+    && String(t.source ?? '').startsWith('shakeout-auto'));
+  const sameSide = related.filter((t) => String(t.side ?? '').toUpperCase() === side);
+  const activeSame = sameSide.filter((t) => ['OPEN', 'PENDING'].includes(t.status));
+  const activeOpposite = related.find((t) =>
+    String(t.side ?? '').toUpperCase() === opposite
+    && ['OPEN', 'PENDING'].includes(t.status));
+  const latestSame = sameSide
+    .slice()
+    .sort((a, b) => Date.parse(b.createdAt ?? 0) - Date.parse(a.createdAt ?? 0))[0];
+  const trapRisk = String(sig.riskFlags?.trapRisk ?? 'LOW').toUpperCase();
+
+  let paperTone = '#34d399';
+  let paperTitle = 'PAPER: DU DIEU KIEN';
+  let paperReason = 'Dang cho backend xu ly o vong scan tiep theo.';
+
+  if (sig.stage !== 'RECLAIM_CONFIRMED') {
+    paperTone = '#fbbf24';
+    paperTitle = 'PAPER: CHUA VAO';
+    paperReason = 'Tin hieu moi o SHAKEOUT WATCH, paper chi vao RECLAIM_CONFIRMED.';
+  } else if (Number(sig.score ?? 0) < 55) {
+    paperTone = '#fb7185';
+    paperTitle = 'PAPER: KHONG DU DIEM';
+    paperReason = `Score ${sig.score ?? '-'} < 55.`;
+  } else if (sig.bottomReboundRisk || sig.autoTradeBlocked
+      || String(sig.subtype ?? '') === 'BOTTOM_REBOUND_RISK') {
+    paperTone = '#fb7185';
+    paperTitle = 'PAPER: BI BLOCK';
+    paperReason = sig.autoTradeBlockReason || 'False-bottom / distribution risk.';
+  } else if (activeOpposite) {
+    paperTone = '#fb7185';
+    paperTitle = 'PAPER: BLOCK HEDGE';
+    paperReason = `Dang co ${opposite} ${activeOpposite.status} tu ${activeOpposite.source}; khong mo ${side} cung symbol.`;
+  } else if (activeSame.length) {
+    const scout = activeSame.find((t) => String(t.source ?? '').includes('-scout-'));
+    const dynamic = activeSame.find((t) => t.btcDynamicEntry);
+    const regular = activeSame.find((t) =>
+      !String(t.source ?? '').includes('-scout-') && !t.btcDynamicEntry);
+    paperTitle = 'PAPER: DA VAO';
+    paperReason = [
+      scout ? `Scout $${Number(scout.marginUsdt ?? 1).toFixed(0)} ${scout.status}` : '',
+      dynamic
+        ? `BTC Dynamic ${dynamic.status}${dynamic.btcDynamicLocked ? ' / entry da khoa' : ' / dang bam BTC'} @ ${fmtPrice(dynamic.entryPrice)}`
+        : '',
+      regular ? `${regular.variant ?? 'ORDER'} ${regular.status} @ ${fmtPrice(regular.entryPrice)}` : '',
+    ].filter(Boolean).join(' | ');
+  } else if (latestSame) {
+    const ageMs = now - Date.parse(latestSame.createdAt ?? 0);
+    if (ageMs >= 0 && ageMs < cooldownMs) {
+      paperTone = '#fbbf24';
+      paperTitle = 'PAPER: COOLDOWN';
+      paperReason = `Da phat ${latestSame.status} luc ${new Date(latestSame.createdAt).toLocaleTimeString('vi-VN')}; con ${Math.ceil((cooldownMs - ageMs) / 60000)} phut cooldown.`;
+    } else {
+      paperTone = '#fbbf24';
+      paperTitle = 'PAPER: CHUA TAO LENH';
+      paperReason = 'Khong co lenh active; co the signal vua xuat hien sau batch paper hoac bi dedup backend.';
+    }
+  }
+
+  const realBlocked = ['MEDIUM', 'HIGH'].includes(trapRisk);
+  const realTone = realBlocked ? '#fb7185' : '#94a3b8';
+  const realText = realBlocked
+    ? `BINANCE: KHONG VAO - trapRisk ${trapRisk} hien van bi chan cho lenh that.`
+    : 'BINANCE: phu thuoc score, runtime Auto ON, vi the/open order, liquidity block va so du.';
+
+  return `
+    <div style="margin-top:9px;padding:9px 10px;border:2px solid ${paperTone};background:#111827;color:${paperTone};font-size:11px;font-weight:900;line-height:1.45">
+      <div style="font-size:12px">${escapeHtml(paperTitle)}</div>
+      <div style="color:#e5e7eb;font-weight:700">${escapeHtml(paperReason)}</div>
+      <div style="margin-top:5px;padding-top:5px;border-top:1px solid #374151;color:${realTone}">${escapeHtml(realText)}</div>
+    </div>
+  `;
+}
+
 function buildCard(sig) {
   const confirmed = sig.stage === 'RECLAIM_CONFIRMED';
   const isShort = sig.action === 'SHORT';
@@ -199,6 +280,7 @@ function buildCard(sig) {
         Entry theo cau truc coin · corr ${sig.btcRelation?.corr ?? '-'} · beta ${sig.btcRelation?.beta ?? '-'}
       </div>` : ''}
       ${buildTrapAlert(sig)}
+      ${buildOrderDecision(sig)}
 
       <div class="sr-prices">
         <div class="sr-price"><span>Entry</span><strong>${fmtPrice(sig.entry)}</strong></div>
@@ -431,6 +513,7 @@ let srPaperLastVariant = [];
 function renderPaperTrades(data) {
   const trades = Array.isArray(data?.trades) ? data.trades : [];
   srPaperTrades = trades;
+  if (allSignals.length) render();
   srPaperLastSummary = data?.summary ?? {};
   srPaperLastDaily = Array.isArray(data?.daily) ? data.daily : [];
   srPaperLastVariant = Array.isArray(data?.variantCompare) ? data.variantCompare : [];
@@ -500,6 +583,17 @@ function renderPaperTrades(data) {
     }
     if (t.btcStrongShortEma99) {
       variantBadge = `<span class="sr-variant-badge pending${t.status === 'PENDING' ? ' waiting' : ''}" style="color:#fde68a;border-color:#fbbf24;background:#422006" title="${escapeHtml(t.note)}">BTC STRONG · EMA99 EXACT</span>`;
+    }
+    if (String(t.source ?? '').includes('-scout-')) {
+      variantBadge = `<span class="sr-variant-badge market" style="color:#a5f3fc;border-color:#22d3ee;background:#083344" title="${escapeHtml(t.note)}">SCOUT · MARKET $${Number(t.marginUsdt ?? 1).toFixed(0)}</span>`;
+    }
+    if (t.btcDynamicEntry) {
+      const state = t.btcDynamicLocked ? 'LOCKED' : t.status === 'PENDING' ? 'FOLLOWING' : t.status;
+      variantBadge = `<span class="sr-variant-badge pending${t.status === 'PENDING' ? ' waiting' : ''}" style="color:#fef08a;border-color:#eab308;background:#422006" title="${escapeHtml(t.note)}">BTC DYNAMIC · ${escapeHtml(state)}</span>`
+        + `<div style="margin-top:5px;color:#fde68a;font-size:10px;font-weight:900;line-height:1.35">`
+        + `MAX ${Number(t.btcDynamicMaxPct ?? 0).toFixed(0)}% · beta ${Number(t.btcDynamicBeta ?? 1).toFixed(2)}`
+        + `<br>BTC ${fmtPrice(t.btcAnchorPrice)} → ${fmtPrice(t.btcLastPrice)}`
+        + `</div>`;
     }
     if (t.btcIndependentShort) {
       variantBadge += `<div style="margin-top:5px;color:#a5f3fc;font-size:10px;font-weight:900;line-height:1.35">`

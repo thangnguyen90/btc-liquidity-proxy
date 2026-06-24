@@ -4670,13 +4670,15 @@ const server = createServer(async (request, response) => {
         .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
         .slice(0, Number(process.env.TOP_REVERSAL_MAX_SYMBOLS ?? 400))
         .map((row) => row.symbol);
-      const { signals, processed, diagnostics } = await runTopReversalScan(
+      const { signals, nearMisses, processed, diagnostics } = await runTopReversalScan(
         topSymbols,
         klineCache,
         snapshotMap,
+        { btcBullBias: btcHealthCache.data?.bullBias ?? 'neutral' },
       );
       const result = {
         signals,
+        nearMisses,
         processed,
         total: topSymbols.length,
         diagnostics,
@@ -5063,7 +5065,7 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/pump-paper-trades') {
       if (request.method === 'GET') {
-        await sendJson(response, await getPumpPaperTrades());
+        await sendJson(response, await getPumpPaperTrades({ paging: parsePaperPaging(requestUrl) }));
         return;
       }
       if (request.method === 'POST') {
@@ -5086,7 +5088,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (requestUrl.pathname === '/api/ema-squeeze-paper-trades' && request.method === 'GET') {
-      await sendJson(response, await getEmaSqueezePaperTrades());
+      await sendJson(response, await getEmaSqueezePaperTrades({ paging: parsePaperPaging(requestUrl) }));
       return;
     }
     if (requestUrl.pathname === '/api/pump-paper-trades/close' && request.method === 'POST') {
@@ -8198,13 +8200,15 @@ async function scheduleTopReversalScan() {
         .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
         .slice(0, Number(process.env.TOP_REVERSAL_MAX_SYMBOLS ?? 400))
         .map((row) => row.symbol);
-      const { signals, processed, diagnostics } = await runTopReversalScan(
+      const { signals, nearMisses, processed, diagnostics } = await runTopReversalScan(
         topSymbols,
         klineCache,
         snapshotMap,
+        { btcBullBias: btcHealthCache.data?.bullBias ?? 'neutral' },
       );
       const result = {
         signals,
+        nearMisses,
         processed,
         total: topSymbols.length,
         diagnostics,
@@ -8308,6 +8312,45 @@ function enrichPumpPaperTrade(t, markPrice) {
   };
 }
 
+function parsePaperPaging(requestUrl, { defaultLimit = 300, maxLimit = 1000 } = {}) {
+  const rawPage = Number.parseInt(requestUrl.searchParams.get('page') ?? '1', 10);
+  const rawLimit = Number.parseInt(requestUrl.searchParams.get('limit') ?? String(defaultLimit), 10);
+  const page = Math.max(1, Number.isFinite(rawPage) ? rawPage : 1);
+  const limit = Math.max(25, Math.min(maxLimit, Number.isFinite(rawLimit) ? rawLimit : defaultLimit));
+  return { page, limit, offset: (page - 1) * limit };
+}
+
+function slicePaperPage(rows, paging) {
+  if (!paging) {
+    return {
+      rows,
+      pagination: {
+        page: 1,
+        limit: rows.length,
+        total: rows.length,
+        totalPages: 1,
+        hasPrev: false,
+        hasNext: false,
+      },
+    };
+  }
+  const total = rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / paging.limit));
+  const page = Math.min(paging.page, totalPages);
+  const offset = (page - 1) * paging.limit;
+  return {
+    rows: rows.slice(offset, offset + paging.limit),
+    pagination: {
+      page,
+      limit: paging.limit,
+      total,
+      totalPages,
+      hasPrev: page > 1,
+      hasNext: page < totalPages,
+    },
+  };
+}
+
 function emaSqueezePaperStopLossFromRoe({ source, side, entryPrice, leverage }) {
   if (!String(source ?? '').startsWith('emasq-')) return null;
   const stopLossRoe = Number(process.env.EMA_SQUEEZE_PAPER_STOP_LOSS_ROE ?? 30);
@@ -8320,30 +8363,32 @@ function emaSqueezePaperStopLossFromRoe({ source, side, entryPrice, leverage }) 
     : entry * (1 + priceMovePct);
 }
 
-async function getPumpPaperTrades() {
+async function getPumpPaperTrades({ paging = null } = {}) {
   const store = await readPumpPaperStore();
   const snapshotMarks = new Map((_snapshotCache ?? [])
     .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
     .filter(([, price]) => Number.isFinite(price) && price > 0));
-  const trades = store.trades.map((t) => enrichPumpPaperTrade(
+  const allStoredTrades = Array.isArray(store.trades) ? store.trades : [];
+  const { rows: selectedStoredTrades, pagination } = slicePaperPage(allStoredTrades, paging);
+  const trades = selectedStoredTrades.map((t) => enrichPumpPaperTrade(
     t,
     String(t.source ?? '').startsWith('emasq-')
       ? emaSqueezeSocketMarks.get(t.symbol)
       : (pumpMarkCache.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? snapshotMarks.get(t.symbol)),
   ));
-  const open = trades.filter((t) => t.status !== 'CLOSED');
-  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const open = allStoredTrades.filter((t) => t.status !== 'CLOSED');
+  const closed = allStoredTrades.filter((t) => t.status === 'CLOSED');
   const wins   = closed.filter((t) => (t.pnl ?? 0) > 0).length;
   const tpHits = closed.filter((t) => t.outcome === 'TP').length;
   const slHits = closed.filter((t) => t.outcome === 'SL').length;
   const avgRoe = closed.length > 0
     ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length
     : null;
-  const summary = { total: trades.length, open: open.length, closed: closed.length, wins, losses: closed.length - wins, tpHits, slHits, avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null };
-  return { trades, summary };
+  const summary = { total: allStoredTrades.length, pageTotal: trades.length, open: open.length, closed: closed.length, wins, losses: closed.length - wins, tpHits, slHits, avgRoe: avgRoe != null ? +avgRoe.toFixed(1) : null };
+  return { trades, summary, pagination, updatedAt: Date.now() };
 }
 
-async function getEmaSqueezePaperTrades({ deltaOnly = false } = {}) {
+async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null } = {}) {
   const store = await readPumpPaperStore();
   const allEmaTrades = store.trades.filter((t) => String(t.source ?? '').startsWith('emasq-'));
   const deltaCutoff = Date.now() - 5 * 60_000;
@@ -8352,7 +8397,8 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false } = {}) {
       ['OPEN', 'PENDING'].includes(t.status)
       || (Date.parse(t.closedAt ?? t.createdAt ?? 0) || 0) >= deltaCutoff)
     : allEmaTrades;
-  const trades = selectedTrades
+  const { rows: pagedTrades, pagination } = slicePaperPage(selectedTrades, deltaOnly ? null : paging);
+  const trades = pagedTrades
     .map((t) => enrichPumpPaperTrade(t, emaSqueezeSocketMarks.get(t.symbol)));
   const open = allEmaTrades.filter((t) => t.status !== 'CLOSED');
   const closed = allEmaTrades.filter((t) => t.status === 'CLOSED');
@@ -8365,7 +8411,9 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false } = {}) {
   return {
     trades,
     summary: {
-      total: trades.length,
+      total: allEmaTrades.length,
+      filteredTotal: selectedTrades.length,
+      pageTotal: trades.length,
       open: open.length,
       closed: closed.length,
       wins,
@@ -8374,6 +8422,7 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false } = {}) {
       slHits,
       avgRoe: avgRoe == null ? null : +avgRoe.toFixed(1),
     },
+    pagination,
     updatedAt: Date.now(),
     partial: deltaOnly,
   };
@@ -9735,6 +9784,26 @@ async function createShakeoutPaperTrade(payload) {
       : null,
     btcIndependentShort: Boolean(payload.btcIndependentShort),
     btcStrongShortEma99: Boolean(payload.btcStrongShortEma99),
+    btcDynamicEntry: Boolean(payload.btcDynamicEntry),
+    btcDynamicLocked: Boolean(payload.btcDynamicLocked),
+    btcAnchorPrice: Number.isFinite(Number(payload.btcAnchorPrice)) ? Number(payload.btcAnchorPrice) : null,
+    btcLastPrice: Number.isFinite(Number(payload.btcLastPrice)) ? Number(payload.btcLastPrice) : null,
+    btcDynamicBaseEntry: Number.isFinite(Number(payload.btcDynamicBaseEntry))
+      ? Number(payload.btcDynamicBaseEntry)
+      : null,
+    btcDynamicMaxPct: Number.isFinite(Number(payload.btcDynamicMaxPct))
+      ? Number(payload.btcDynamicMaxPct)
+      : null,
+    btcDynamicBeta: Number.isFinite(Number(payload.btcDynamicBeta))
+      ? Number(payload.btcDynamicBeta)
+      : null,
+    btcDynamicRiskPct: Number.isFinite(Number(payload.btcDynamicRiskPct))
+      ? Number(payload.btcDynamicRiskPct)
+      : null,
+    btcDynamicRr: Number.isFinite(Number(payload.btcDynamicRr))
+      ? Number(payload.btcDynamicRr)
+      : null,
+    btcDynamicUpdatedAt: payload.btcDynamicEntry ? new Date().toISOString() : null,
   };
   store.trades.unshift(trade);
   await writeShakeoutPaperStore(store);
@@ -9794,6 +9863,18 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
     const margin = Number(row.marginUsdt);
     const lev = Number(row.leverage);
     const qty = fill > 0 ? (margin * lev) / fill : row.quantity;
+    const dynamicRiskPct = Math.max(0.001, Number(row.btcDynamicRiskPct ?? 0.03));
+    const dynamicRr = Math.max(0.1, Number(row.btcDynamicRr ?? 2.2));
+    const filledSl = row.btcDynamicEntry
+      ? (side === 'LONG'
+        ? fill * (1 - dynamicRiskPct)
+        : fill * (1 + dynamicRiskPct))
+      : row.sl;
+    const filledTp = row.btcDynamicEntry
+      ? (side === 'LONG'
+        ? fill * (1 + dynamicRiskPct * dynamicRr)
+        : fill * (1 - dynamicRiskPct * dynamicRr))
+      : row.tp;
     store.trades[idx] = {
       ...row,
       status: 'OPEN',
@@ -9801,8 +9882,15 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
       fillPrice: fill,
       quantity: qty,
       originalQuantity: qty,
+      sl: filledSl,
+      tp: filledTp,
       realizedPnl: Number(row.realizedPnl ?? 0),
       openedAt: new Date().toISOString(),
+      btcDynamicLocked: row.btcDynamicEntry ? true : row.btcDynamicLocked,
+      note: row.btcDynamicEntry
+        ? [`btcDynamicFilled=${fill} sl=${filledSl} tp=${filledTp}`, String(row.note ?? '')]
+          .filter(Boolean).join(' | ').slice(0, 500)
+        : row.note,
     };
     await writeShakeoutPaperStore(store);
     scheduleShakeoutPaperBroadcast(50);
@@ -10291,6 +10379,7 @@ async function processShakeoutPaperFills(symbol, markPrice) {
   let cancelled = 0;
   for (const pendingTrade of store.trades.filter((t) =>
     t.status === 'PENDING' && t.symbol === symbol && t.signalId)) {
+    if (pendingTrade.btcDynamicEntry) continue;
     const marketTrade = store.trades.find((t) =>
       t.signalId === pendingTrade.signalId
       && t.variant === 'MARKET'
@@ -10386,6 +10475,188 @@ async function syncShakeoutPaperTicker() {
 }
 
 // Xóa lệnh PENDING quá TTL (mặc định 4h) chưa khớp
+function shakeoutBtcTrendSupportsSide(side, regime) {
+  const normalizedSide = String(side ?? '').toUpperCase();
+  const normalizedRegime = String(regime ?? 'FLAT').toUpperCase();
+  return (normalizedSide === 'LONG' && normalizedRegime === 'STRONG')
+    || (normalizedSide === 'SHORT' && normalizedRegime === 'WEAK');
+}
+
+function calcShakeoutPaperRoeAt(trade, markPrice) {
+  const entry = Number(trade?.entryPrice);
+  const quantity = Number(trade?.quantity);
+  const margin = Number(trade?.marginUsdt);
+  const mark = Number(markPrice);
+  if (![entry, quantity, margin, mark].every(Number.isFinite)
+      || entry <= 0 || quantity <= 0 || margin <= 0 || mark <= 0) return null;
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = Number(trade.realizedPnl ?? 0) + (mark - entry) * quantity * sideMult;
+  return pnl / margin * 100;
+}
+
+async function updateShakeoutDynamicBtcEntries() {
+  const health = await getBtcHealth();
+  const btcPrice = Number(health?.price);
+  if (!Number.isFinite(btcPrice) || btcPrice <= 0) return;
+
+  const btcRegime = emaSqueezeBtcRegime(health);
+  const store = await readShakeoutPaperStore();
+  const now = Date.now();
+  const ttlMs = Math.max(
+    60_000,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_TTL_MS ?? 60 * 60_000),
+  );
+  let changed = 0;
+
+  for (let i = 0; i < store.trades.length; i++) {
+    const row = store.trades[i];
+    if (row.status !== 'PENDING' || !row.btcDynamicEntry || row.btcDynamicLocked) continue;
+
+    const createdAt = Date.parse(row.createdAt ?? 0);
+    if (Number.isFinite(createdAt) && now - createdAt >= ttlMs) {
+      store.trades[i] = {
+        ...row,
+        status: 'EXPIRED',
+        outcome: 'EXPIRED_BTC_DYNAMIC_60M',
+        expiredAt: new Date().toISOString(),
+        note: [
+          `btcDynamicExpired>${Math.round(ttlMs / 60_000)}m`,
+          String(row.note ?? ''),
+        ].filter(Boolean).join(' | ').slice(0, 500),
+      };
+      changed++;
+      continue;
+    }
+
+    if (shakeoutBtcTrendSupportsSide(row.side, btcRegime)) {
+      const mark = getShakeoutPaperMark(row.symbol);
+      const scout = store.trades.find((t) =>
+        t.signalId === row.signalId
+        && t.variant === 'MARKET'
+        && String(t.source ?? '').includes('-scout-')
+        && ['OPEN', 'CLOSED'].includes(t.status));
+      const scoutRoe = scout
+        ? (scout.status === 'CLOSED' && Number.isFinite(Number(scout.roe))
+          ? Number(scout.roe)
+          : calcShakeoutPaperRoeAt(scout, mark))
+        : null;
+      const minScoutRoe = Number(
+        process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_MARKET_SCOUT_MIN_ROE ?? 5,
+      );
+      const maxChaseRoe = Number(
+        process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_MARKET_MAX_CHASE_ROE ?? 35,
+      );
+      const entry = Number(row.entryPrice);
+      const leverage = Math.max(1, Number(row.leverage) || 1);
+      const chaseRoe = Number.isFinite(mark) && mark > 0 && Number.isFinite(entry) && entry > 0
+        ? Math.abs(mark - entry) / entry * leverage * 100
+        : Infinity;
+      if (Number.isFinite(mark) && mark > 0
+          && Number.isFinite(scoutRoe) && scoutRoe >= minScoutRoe
+          && Number.isFinite(chaseRoe) && chaseRoe <= maxChaseRoe) {
+        const riskPct = Math.max(0.001, Number(row.btcDynamicRiskPct ?? 0.03));
+        const rr = Math.max(0.1, Number(row.btcDynamicRr ?? 2.2));
+        const nextSl = row.side === 'LONG'
+          ? mark * (1 - riskPct)
+          : mark * (1 + riskPct);
+        const nextTp = row.side === 'LONG'
+          ? mark * (1 + riskPct * rr)
+          : mark * (1 - riskPct * rr);
+        store.trades[i] = {
+          ...row,
+          status: 'OPEN',
+          entryPrice: mark,
+          fillPrice: mark,
+          quantity: Number(row.marginUsdt) * leverage / mark,
+          originalQuantity: Number(row.marginUsdt) * leverage / mark,
+          sl: nextSl,
+          tp: nextTp,
+          openedAt: new Date().toISOString(),
+          btcDynamicLocked: true,
+          btcLastPrice: btcPrice,
+          btcRegime,
+          btcDynamicUpdatedAt: new Date().toISOString(),
+          note: [
+            `btcDynamicMarketAdd=${mark} scoutRoe=${scoutRoe.toFixed(1)}% chase=${chaseRoe.toFixed(1)}% btc=${btcRegime}`,
+            String(row.note ?? ''),
+          ].filter(Boolean).join(' | ').slice(0, 500),
+        };
+        changed++;
+        continue;
+      }
+      store.trades[i] = {
+        ...row,
+        btcDynamicLocked: false,
+        btcLastPrice: btcPrice,
+        btcRegime,
+        btcDynamicUpdatedAt: new Date().toISOString(),
+        note: [
+          `btcDynamicGuard=${btcRegime}@${btcPrice}; wait scout/pullback`
+            + (Number.isFinite(scoutRoe) ? ` scoutRoe=${scoutRoe.toFixed(1)}%` : ' noScoutRoe')
+            + (Number.isFinite(chaseRoe) ? ` chase=${chaseRoe.toFixed(1)}%` : ''),
+          String(row.note ?? ''),
+        ].filter(Boolean).join(' | ').slice(0, 500),
+      };
+      changed++;
+      continue;
+    }
+
+    const anchor = Number(row.btcAnchorPrice);
+    const baseEntry = Number(row.btcDynamicBaseEntry ?? row.entryPrice);
+    const beta = Math.max(
+      0.25,
+      Math.min(5, Math.abs(Number(row.btcDynamicBeta ?? row.btcRelation?.beta ?? 1))),
+    );
+    const maxMovePct = Math.max(0, Number(row.btcDynamicMaxPct ?? 0));
+    const riskPct = Math.max(0.001, Number(row.btcDynamicRiskPct ?? 0.03));
+    const rr = Math.max(0.1, Number(row.btcDynamicRr ?? 2.2));
+    if (![anchor, baseEntry].every(Number.isFinite) || anchor <= 0 || baseEntry <= 0) continue;
+
+    const btcMove = btcPrice / anchor - 1;
+    const adverseMove = row.side === 'LONG'
+      ? Math.min(0, btcMove * beta)
+      : Math.max(0, btcMove * beta);
+    const cappedMove = Math.max(-maxMovePct / 100, Math.min(maxMovePct / 100, adverseMove));
+    const nextEntry = baseEntry * (1 + cappedMove);
+    const nextSl = row.side === 'LONG'
+      ? nextEntry * (1 - riskPct)
+      : nextEntry * (1 + riskPct);
+    const nextTp = row.side === 'LONG'
+      ? nextEntry * (1 + riskPct * rr)
+      : nextEntry * (1 - riskPct * rr);
+    if (![nextEntry, nextSl, nextTp].every(Number.isFinite)
+        || nextEntry <= 0 || nextSl <= 0 || nextTp <= 0) continue;
+
+    const oldEntry = Number(row.entryPrice);
+    if (Math.abs(nextEntry - oldEntry) / oldEntry < 0.0005
+        && Number(row.btcLastPrice) === btcPrice) continue;
+
+    const leverage = Math.max(1, Number(row.leverage) || 1);
+    store.trades[i] = {
+      ...row,
+      entryPrice: nextEntry,
+      quantity: Number(row.marginUsdt) * leverage / nextEntry,
+      originalQuantity: Number(row.marginUsdt) * leverage / nextEntry,
+      sl: nextSl,
+      tp: nextTp,
+      btcLastPrice: btcPrice,
+      btcRegime,
+      btcDynamicUpdatedAt: new Date().toISOString(),
+      note: [
+        `btcDynamic=${oldEntry}->${nextEntry} btc=${btcPrice} move=${(btcMove * 100).toFixed(2)}% beta=${beta.toFixed(2)}`,
+        String(row.note ?? ''),
+      ].filter(Boolean).join(' | ').slice(0, 500),
+    };
+    changed++;
+  }
+
+  if (changed) {
+    await writeShakeoutPaperStore(store);
+    scheduleShakeoutPaperBroadcast(50);
+    syncShakeoutPaperTicker().catch(() => {});
+  }
+}
+
 async function expireOldShakeoutPending() {
   const ttlMs = Number(process.env.SHAKEOUT_RECLAIM_PAPER_PENDING_TTL_MS ?? 4 * 3600 * 1000);
   const store = await readShakeoutPaperStore();
@@ -10447,14 +10718,17 @@ async function expireOldShakeoutPending() {
         changed++;
       }
     }
-    if (t.status === 'PENDING' && (now - (Date.parse(t.createdAt ?? 0) || now)) > ttlMs) {
+    const effectiveTtlMs = t.btcDynamicEntry
+      ? Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_TTL_MS ?? 60 * 60_000)
+      : ttlMs;
+    if (t.status === 'PENDING' && (now - (Date.parse(t.createdAt ?? 0) || now)) > effectiveTtlMs) {
       console.log(`[ShakeoutPaper] EXPIRE pending ${t.side} ${t.symbol} ${t.variant ?? ''} - >${(ttlMs / 3600000).toFixed(0)}h chưa khớp, xóa lệnh`);
       store.trades[i] = {
         ...t,
         status: 'EXPIRED',
         outcome: 'EXPIRED',
         expiredAt: new Date().toISOString(),
-        note: [String(t.note ?? ''), `pendingExpired>${(ttlMs / 3600000).toFixed(0)}h`]
+        note: [String(t.note ?? ''), `pendingExpired>${Math.round(effectiveTtlMs / 60_000)}m`]
           .filter(Boolean).join(' | ').slice(0, 500),
       };
       changed++;
@@ -10483,6 +10757,9 @@ function startShakeoutPaperTicker() {
   setInterval(() => syncShakeoutPaperTicker().catch(() => {}), 30_000);
   setTimeout(() => expireOldShakeoutPending().catch(() => {}), 3_000);
   setInterval(() => expireOldShakeoutPending().catch(() => {}), 60_000);
+  setInterval(() => updateShakeoutDynamicBtcEntries().catch((e) => {
+    console.warn('[ShakeoutPaper] BTC dynamic entry update failed:', e.message);
+  }), 30_000);
 }
 
 async function createShakeoutPaperTrades(signals = []) {
@@ -10536,6 +10813,12 @@ async function createShakeoutPaperTrades(signals = []) {
     const marketEntry = Number(sig.entryReference ?? sig.markPrice ?? sig.entry);
     const pendingEntry = Number(sig.entry ?? sig.markPrice);
     const btcStrongShortEma99 = side === 'SHORT' && Boolean(sig.btcStrongShortEma99);
+    const trapRisk = String(sig.riskFlags?.trapRisk ?? 'LOW').toUpperCase();
+    const useBtcDynamicEntry = ['MEDIUM', 'HIGH'].includes(trapRisk);
+    const btcAnchorPrice = Number(btcHealthCache.data?.price);
+    const btcDynamicMaxPct = trapRisk === 'HIGH'
+      ? Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_HIGH_MAX_PCT ?? 4)
+      : Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_MEDIUM_MAX_PCT ?? 8);
     const isBottomRebound = side === 'LONG'
       && (sig.bottomRebound || String(sig.subtype ?? '') === 'BOTTOM_REBOUND');
     const marginUsdt = isBottomRebound
@@ -10580,6 +10863,23 @@ async function createShakeoutPaperTrades(signals = []) {
 
     const variants = isBottomRebound
       ? [{ variant: 'MARKET', status: 'OPEN', entryPrice: marketEntry, tag: 'mkt' }]
+      : useBtcDynamicEntry
+        ? [
+          {
+            variant: 'MARKET',
+            status: 'OPEN',
+            entryPrice: marketEntry,
+            tag: 'scout',
+            marginUsdt: Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_SCOUT_MARGIN_USDT ?? 1),
+          },
+          {
+            variant: 'PENDING',
+            status: 'PENDING',
+            entryPrice: pendingEntry,
+            tag: 'btc-dynamic',
+            btcDynamicEntry: true,
+          },
+        ]
       : btcStrongShortEma99
         ? [{ variant: 'PENDING', status: 'PENDING', entryPrice: pendingEntry, tag: 'btc-strong-ema99' }]
       : [
@@ -10642,13 +10942,17 @@ async function createShakeoutPaperTrades(signals = []) {
       const maxSlNote = finalSlRoe > maxPaperSlRoe
         ? `paperSlRoeCapped=${finalSlRoe.toFixed(1)}%->${maxPaperSlRoe.toFixed(1)}% sl=${cappedVariantSl}`
         : '';
+      const finalRiskPct = Math.abs(v.entryPrice - cappedVariantSl) / v.entryPrice;
+      const finalRr = finalRiskPct > 0
+        ? Math.abs(variantTp - v.entryPrice) / v.entryPrice / finalRiskPct
+        : 2.2;
       await createShakeoutPaperTrade({
         symbol: sig.symbol,
         side,
         status: v.status,
         variant: v.variant,
         signalId,
-        marginUsdt,
+        marginUsdt: Number(v.marginUsdt ?? marginUsdt),
         leverage: lev,
         entryPrice: v.entryPrice,
         sl: isBottomRebound ? null : cappedVariantSl,
@@ -10672,6 +10976,10 @@ async function createShakeoutPaperTrades(signals = []) {
             ? `BTC STRONG but ${sig.btcEntryClass}: use coin structure entry`
             : '',
           isBottomRebound ? 'bottomRebound=MARKET_ONLY | noSL=Y | dca=$10@-25%ROE' : '',
+          v.tag === 'scout' ? 'BTC_DYNAMIC_SCOUT=MARKET $1' : '',
+          v.btcDynamicEntry
+            ? `BTC_DYNAMIC_LIMIT max=${btcDynamicMaxPct}% ttl=60m rr=${finalRr.toFixed(2)}`
+            : '',
         ].filter(Boolean).join(' | '),
         trapRisk: sig.riskFlags?.trapRisk ?? null,
         trapReasons: sig.riskFlags?.trapReasons ?? null,
@@ -10685,6 +10993,16 @@ async function createShakeoutPaperTrades(signals = []) {
         btcRelation: sig.btcRelation,
         btcIndependentShort: sig.btcIndependentShort,
         btcStrongShortEma99,
+        btcDynamicEntry: Boolean(v.btcDynamicEntry),
+        btcDynamicLocked: Boolean(v.btcDynamicEntry
+          && shakeoutBtcTrendSupportsSide(side, sig.btcRegime)),
+        btcAnchorPrice,
+        btcLastPrice: btcAnchorPrice,
+        btcDynamicBaseEntry: v.entryPrice,
+        btcDynamicMaxPct,
+        btcDynamicBeta: sig.btcRelation?.beta,
+        btcDynamicRiskPct: finalRiskPct,
+        btcDynamicRr: finalRr,
       }).catch((e) => console.warn(`[ShakeoutPaper] auto-fire ${v.variant} ${sig.symbol}:`, e.message));
     }
     // đánh dấu side active để chặn chiều ngược trong cùng batch scan
@@ -10813,6 +11131,16 @@ async function createTopReversalPaperTrade(payload) {
     stage: String(payload.stage ?? 'TOP_CONFIRMED'),
     source: String(payload.source ?? 'top-reversal-auto').slice(0, 80),
     note: String(payload.note ?? '').slice(0, 500),
+    qualityBreakdown: Boolean(payload.qualityBreakdown),
+    qualityTier: String(payload.qualityTier ?? (payload.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')).slice(0, 32),
+    qualityReasons: Array.isArray(payload.qualityReasons)
+      ? payload.qualityReasons.map((reason) => String(reason).slice(0, 48)).slice(0, 8)
+      : [],
+    hardBreakdownCount: Number.isFinite(Number(payload.hardBreakdownCount))
+      ? Number(payload.hardBreakdownCount)
+      : null,
+    blowoffTop: Boolean(payload.blowoffTop),
+    volumeDistribution: Boolean(payload.volumeDistribution),
     dcaTaken: false,
     peakRoe: 0,
     slTrailLockRoe: null,
@@ -10959,6 +11287,25 @@ async function processTopReversalPaperPrice(symbol, markPrice) {
     const roe = pnl / Number(trade.marginUsdt) * 100;
     const trigger = -Math.abs(Number(process.env.TOP_REVERSAL_PAPER_DCA_ROE ?? 25));
     if (roe > trigger) continue;
+    if (!trade.qualityBreakdown) {
+      const latest = await readTopReversalPaperStore();
+      const idx = latest.trades.findIndex((row) =>
+        row.id === trade.id && row.status === 'OPEN' && !row.dcaTaken);
+      if (idx >= 0 && latest.trades[idx].dcaBlockedReason !== 'qualityBreakdown=false') {
+        latest.trades[idx] = {
+          ...latest.trades[idx],
+          dcaBlockedAt: new Date().toISOString(),
+          dcaBlockedReason: 'qualityBreakdown=false',
+          note: [
+            String(latest.trades[idx].note ?? ''),
+            `DCA_BLOCKED=qualityBreakdown=false roe=${roe.toFixed(1)}%`,
+          ].filter(Boolean).join(' | ').slice(0, 500),
+        };
+        await writeTopReversalPaperStore(latest);
+        scheduleTopReversalPaperBroadcast(50);
+      }
+      continue;
+    }
 
     topReversalDcaLocks.add(trade.id);
     try {
@@ -10967,7 +11314,10 @@ async function processTopReversalPaperPrice(symbol, markPrice) {
         row.id === trade.id && row.status === 'OPEN' && !row.dcaTaken);
       if (idx < 0) continue;
       const row = latest.trades[idx];
-      const dcaMargin = Number(process.env.TOP_REVERSAL_PAPER_DCA_MARGIN_USDT ?? 10);
+      const qualityTier = String(row.qualityTier ?? (row.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')).toUpperCase();
+      const dcaMargin = qualityTier === 'VOLUME_DISTRIBUTION'
+        ? Number(process.env.TOP_REVERSAL_PAPER_VOLUME_DCA_MARGIN_USDT ?? 5)
+        : Number(process.env.TOP_REVERSAL_PAPER_DCA_MARGIN_USDT ?? 10);
       const addQty = dcaMargin * Number(row.leverage) / markPrice;
       const totalQty = Number(row.quantity) + addQty;
       const totalMargin = Number(row.marginUsdt) + dcaMargin;
@@ -10993,6 +11343,7 @@ async function processTopReversalPaperPrice(symbol, markPrice) {
         note: [
           String(row.note ?? ''),
           `DCA=$${dcaMargin}@${markPrice}`,
+          `qualityTier=${qualityTier}`,
           `avgEntry=${averageEntry}`,
           'initialNoSL=Y',
           'trailFrom=15%ROE',
@@ -11020,12 +11371,19 @@ async function createTopReversalPaperTrades(signals = []) {
     await createTopReversalPaperTrade({
       symbol: signal.symbol,
       entryPrice: signal.markPrice ?? signal.entry,
+      marginUsdt: Number(process.env.TOP_REVERSAL_PAPER_SCOUT_MARGIN_USDT ?? 1),
       tp: signal.tp,
       runnerTp: signal.runnerTp,
       score: signal.score,
       stage: signal.stage,
-      note: `${signal.note} | MARKET=$5 | DCA=$10@-25%ROE | initialNoSL=Y | trailFrom=15%ROE`,
+      note: `${signal.note} | SCOUT=$1 | DCA=${signal.qualityTier === 'VOLUME_DISTRIBUTION' ? '$5' : '$10'}@-25%ROE tier=${signal.qualityTier ?? (signal.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')} | initialNoSL=Y | trailFrom=15%ROE`,
       source: `top-reversal-${signal.score}`,
+      qualityBreakdown: signal.qualityBreakdown,
+      qualityTier: signal.qualityTier,
+      qualityReasons: signal.qualityReasons,
+      hardBreakdownCount: signal.hardBreakdownCount,
+      blowoffTop: signal.blowoffTop,
+      volumeDistribution: signal.volumeDistribution,
     }).catch((err) => console.warn(`[TopReversalPaper] ${signal.symbol}:`, err.message));
   }
 }

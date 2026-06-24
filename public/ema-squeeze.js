@@ -10,6 +10,9 @@ let esPaperSort = { key: 'status', dir: 'asc' };
 let esPaperTypeFilter = 'Breakout'; // mặc định Breakout để tránh render hết 8000+ lệnh gây đơ browser
 let esPaperDayFilter = 'all';
 let esPaperTfFilter = 'all';
+let esPaperPage = 1;
+let esPaperLimit = 300;
+let esPaperPagination = null;
 
 const grid          = document.getElementById('esGrid');
 const breakoutCount = document.getElementById('breakoutCount');
@@ -660,6 +663,38 @@ function updateEsSortHeaders() {
   });
 }
 
+function ensureEsPaperPager() {
+  let pager = document.getElementById('esPaperPager');
+  if (pager) return pager;
+  const summary = document.getElementById('esPaperSummary');
+  if (!summary?.parentElement) return null;
+  pager = document.createElement('div');
+  pager.id = 'esPaperPager';
+  pager.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:12px';
+  summary.insertAdjacentElement('afterend', pager);
+  return pager;
+}
+
+function renderEsPaperPager() {
+  const pager = ensureEsPaperPager();
+  if (!pager || !esPaperPagination) return;
+  const p = esPaperPagination;
+  pager.innerHTML = `
+    <button class="es-paper-close-btn" data-es-page="prev" ${p.hasPrev ? '' : 'disabled'}>Prev</button>
+    <span>Page <strong style="color:var(--text)">${p.page}</strong>/<strong style="color:var(--text)">${p.totalPages}</strong> · ${p.total} rows</span>
+    <button class="es-paper-close-btn" data-es-page="next" ${p.hasNext ? '' : 'disabled'}>Next</button>
+    <select id="esPaperLimitSelect" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px">
+      ${[100, 300, 500, 1000].map((n) => `<option value="${n}" ${n === esPaperLimit ? 'selected' : ''}>${n}/page</option>`).join('')}
+    </select>
+  `;
+  pager.querySelector('[data-es-page="prev"]')?.addEventListener('click', () => loadEsPaperTrades(Math.max(1, esPaperPage - 1)));
+  pager.querySelector('[data-es-page="next"]')?.addEventListener('click', () => loadEsPaperTrades(esPaperPage + 1));
+  pager.querySelector('#esPaperLimitSelect')?.addEventListener('change', (event) => {
+    esPaperLimit = Number(event.target.value) || 300;
+    loadEsPaperTrades(1);
+  });
+}
+
 function getEsStage(t) {
   const source = String(t.source ?? '');
   const note = String(t.note ?? '');
@@ -799,8 +834,10 @@ function renderEsPaperTable() {
     const scope = esPaperTypeFilter === 'all' ? 'All signals' : esPaperTypeFilter;
     const dayScope = esPaperDayFilter === 'all' ? '' : ` · ${esPaperDayFilter}`;
     const tfScope = esPaperTfFilter === 'all' ? '' : ` · ${esPaperTfFilter}`;
-    summary.textContent = `${scope}${dayScope}${tfScope} | ${open.length} open/pending | ${closed.length} closed | TP ${tpHits} | SL ${slHits} | WR ${wr}% | AvgROE ${avgRoe}%`;
+    const pageScope = esPaperPagination ? ` | page ${esPaperPagination.page}/${esPaperPagination.totalPages} (${filteredTrades.length}/${esPaperPagination.total} rows)` : '';
+    summary.textContent = `${scope}${dayScope}${tfScope}${pageScope} | ${open.length} open/pending | ${closed.length} closed | TP ${tpHits} | SL ${slHits} | WR ${wr}% | AvgROE ${avgRoe}%`;
   }
+  renderEsPaperPager();
   updateEsPaperStats(filteredTrades);
 
   if (filteredTrades.length === 0) {
@@ -862,11 +899,14 @@ function renderEsPaperTable() {
   updateEsSortHeaders();
 }
 
-async function loadEsPaperTrades() {
+async function loadEsPaperTrades(page = esPaperPage) {
   try {
-    const res = await fetch('/api/ema-squeeze-paper-trades', { cache: 'no-store' });
+    const nextPage = Math.max(1, Number(page) || 1);
+    const res = await fetch(`/api/ema-squeeze-paper-trades?page=${nextPage}&limit=${esPaperLimit}`, { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
+    esPaperPage = data.pagination?.page ?? nextPage;
+    esPaperPagination = data.pagination ?? null;
     esPaperTrades = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('emasq-'));
     updateEsDayFilterOptions();
     renderEsPaperTable();
@@ -885,6 +925,7 @@ function applyEsPaperData(data) {
     incoming.forEach((t) => merged.set(t.id, t));
     esPaperTrades = [...merged.values()];
   } else {
+    esPaperPagination = data.pagination ?? esPaperPagination;
     esPaperTrades = incoming;
   }
   updateEsDayFilterOptions();
