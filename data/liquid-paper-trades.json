@@ -1,6 +1,6 @@
 {
   "createdAt": "2026-05-25T04:20:33.080Z",
-  "updatedAt": "2026-06-23T12:30:04.420Z",
+  "updatedAt": "2026-06-24T16:54:17.539Z",
   "trades": [
     {
       "id": "bdd8f25c-c3fe-41a0-9d5c-a8c2bcf60421",
@@ -16375,15 +16375,15 @@
       "id": "d258375b-4887-4a80-bf4e-d408f7db7f25",
       "symbol": "AIGENSYNUSDT",
       "side": "LONG",
-      "status": "PENDING",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 421.1117822697116,
       "entryPrice": 0.023746664,
       "createdAt": "2026-06-09T13:10:34.984Z",
-      "openedAt": null,
+      "openedAt": "2026-06-23T16:04:26.319Z",
       "source": "liquid-scan-auto-89",
-      "note": "autoPaper point>75 | type=LIQUID_KILL_ZONE | sweepProb=89% |  | heavySide=above | target=0.0239052 | killZone=0.0240243-0.0240481 | farKill=0.0250005-0.0315721 | tp=0.0240362 | sl=0.023556690688",
+      "note": "autoPaper point>75 | type=LIQUID_KILL_ZONE | sweepProb=89% |  | heavySide=above | target=0.0239052 | killZone=0.0240243-0.0240481 | farKill=0.0250005-0.0315721 | tp=0.0240362 | sl=0.023556690688 | confirmation=entry touched by mark price (0.02369)",
       "takeProfitPrice": 0.0240362,
       "stopLossPrice": 0.023556690688,
       "signalType": "LIQUID_KILL_ZONE",
@@ -16646,7 +16646,31 @@
         "feasibilityScore": 39,
         "status": "ENTER_NOW",
         "note": "Thanh khoản trên một chiều: LONG theo lực hút, TP ưu tiên main kill zone."
-      }
+      },
+      "filledAt": "2026-06-23T16:04:26.319Z",
+      "fillPrice": 0.023746664,
+      "fillMarkPrice": 0.02369,
+      "openedSnapshot": {
+        "markPrice": 0.02369,
+        "entryPrice": 0.023746664,
+        "signalPoint": 89,
+        "signalType": "LIQUID_KILL_ZONE",
+        "signalMarkPrice": 0.02381,
+        "sweepTargetPrice": 0.0239052,
+        "sweepDistancePct": 0.9500209995800054,
+        "feasibleLeverage": 10,
+        "feasibilityScore": 39,
+        "rewardPct": 1.2192702099124322,
+        "riskPct": 0.8000000000000073,
+        "rr": 1.5240877623905265,
+        "heavySide": "above"
+      },
+      "exitPrice": 0.0240362,
+      "pnl": 0.12192702099124321,
+      "roe": 12.192702099124322,
+      "closedAt": "2026-06-23T16:10:23.756Z",
+      "outcome": "TP",
+      "closeNote": "Auto-closed: TP hit @ 0.024165"
     },
     {
       "id": "5215fe7c-0009-46cb-8b8c-04f7018c752e",
@@ -25394,7 +25418,7 @@
       "id": "c7421d2d-d238-4b8f-978e-c92985e41b62",
       "symbol": "LAUSDT",
       "side": "SHORT",
-      "status": "OPEN",
+      "status": "CLOSED",
       "marginUsdt": 1,
       "leverage": 10,
       "quantity": 146.6642212852171,
@@ -25683,7 +25707,13 @@
         "riskPct": 32.371939585193985,
         "rr": 0.10445541201364891,
         "heavySide": "below"
-      }
+      },
+      "exitPrice": 0.0658774,
+      "pnl": 0.33814242870523886,
+      "roe": 33.814242870523884,
+      "closedAt": "2026-06-24T16:54:17.538Z",
+      "outcome": "TP",
+      "closeNote": "Auto-closed: TP hit @ 0.065235"
     },
     {
       "id": "44ba652b-60aa-4adc-bb72-e00343f834cb",

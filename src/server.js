@@ -1899,6 +1899,7 @@ async function sendShakeoutReclaimDiscord(signals = []) {
       fields: [
         { name: 'Entry / SL / TP', value: `\`${fmt(sig.entry)}\` / \`${fmt(sig.sl)}\` / \`${fmt(sig.tp)}\``, inline: false },
         { name: 'Side / Stage', value: `${side} / ${confirmed ? 'CONFIRMED' : 'WATCH'}`, inline: true },
+        { name: 'Class', value: cleanText(`${sig.shakeoutClassLabel ?? sig.shakeoutClass ?? '-'} - ${sig.shakeoutClassReason ?? ''}`), inline: false },
         { name: 'Mark', value: fmt(sig.markPrice), inline: true },
         { name: '24h', value: pct(sig.change24h, 2), inline: true },
         { name: `${isShort ? 'Dump' : 'Pump'} 5m / 15m`, value: `${pct(f.move5mPct, 1)} / ${pct(f.move15mPct, 1)}`, inline: true },
@@ -2273,6 +2274,184 @@ function emaSqueezePreStageBtcGate(side, health = btcHealthCache.data) {
 }
 
 // Snapshot BTC health lúc vào lệnh — lưu per-trade để backtest regime/gate sau này
+function getEmaSqueezeBrLikeBtcGate(health = btcHealthCache.data) {
+  const regime = emaSqueezeBtcRegime(health);
+  if (!health || health.error) {
+    return { ok: false, regime, reason: 'BTC health not ready' };
+  }
+  if (health.bias === 'bearish' || health.bias === 'caution') {
+    return {
+      ok: false,
+      regime,
+      reason: `BTC ${health.bias} / yellow-red (bearPoints=${health.bearPoints ?? '-'})`,
+    };
+  }
+  if (regime === 'WEAK') {
+    return {
+      ok: false,
+      regime,
+      reason: `BTC_WEAK (RSI1h=${health.rsi1h ?? '-'} pct6h=${health.pct6h ?? '-'} EMA1h=${health.emaTrend1h ?? '-'})`,
+    };
+  }
+
+  const lookbackMs = Math.max(5 * 60_000, Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_RECOVERY_LOOKBACK_MS ?? 4 * 3600_000));
+  const cutoff = Date.now() - lookbackMs;
+  const recent = btcHealthHistory.filter((row) => Number(row.at) >= cutoff);
+  const hadWeak = recent.some((row) =>
+    row.regime === 'WEAK'
+    || row.bias === 'bearish'
+    || row.bias === 'caution'
+    || Number(row.bearPoints ?? 0) >= 2);
+  const improving = health.emaTrend1h === 'above'
+    && Number(health.rsi1h ?? 0) >= Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_MIN_RSI1H ?? 45)
+    && Number(health.pct6h ?? -999) >= Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_MIN_PCT6H ?? -0.2);
+  const allowStrongWithoutHistory = process.env.EMA_SQUEEZE_BR_LIKE_ALLOW_STRONG_WITHOUT_HISTORY === 'true'
+    && regime === 'STRONG'
+    && health.bullBias !== 'neutral';
+  if (!((hadWeak && improving) || allowStrongWithoutHistory)) {
+    return {
+      ok: false,
+      regime,
+      reason: `BR-like needs BTC red/weak -> flat/strong recovery (hadWeak=${hadWeak} improving=${improving} regime=${regime})`,
+    };
+  }
+  return {
+    ok: true,
+    regime,
+    reason: hadWeak
+      ? `BTC recovery ${recent.length}pts -> ${regime}`
+      : `BTC strong fallback ${health.bullBias}`,
+  };
+}
+
+function getEmaSqueezeBrLikePaperQualityGate(sig = {}) {
+  const interval = String(sig.interval ?? '15m');
+  const brLikeScore = Number(sig.brLikeScore ?? 0);
+  const minScore = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_MIN_SCORE ?? 90);
+  if (!Number.isFinite(brLikeScore) || brLikeScore < minScore) {
+    return {
+      ok: false,
+      reason: `BR-like score ${Number.isFinite(brLikeScore) ? brLikeScore.toFixed(0) : '?'} < ${minScore}`,
+    };
+  }
+
+  const basePct = Number(sig.baseRangePct) * 100;
+  const movePct = Number(sig.brLikeMovePct ?? sig.pumpMovePct);
+  const max15mBasePct = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_15M_MAX_BASE_PCT ?? 6);
+  const max15mMovePct = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_15M_MAX_MOVE_PCT ?? 5);
+  if (interval === '15m') {
+    if (Number.isFinite(basePct) && basePct >= max15mBasePct) {
+      return {
+        ok: false,
+        reason: `15m BR-like base ${basePct.toFixed(1)}% >= ${max15mBasePct}% (late/wide)`,
+      };
+    }
+    if (Number.isFinite(movePct) && movePct >= max15mMovePct) {
+      return {
+        ok: false,
+        reason: `15m BR-like move ${movePct.toFixed(1)}% >= ${max15mMovePct}% (market entry too chased)`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    reason: [
+      `BR-like quality score=${brLikeScore.toFixed(0)}`,
+      Number.isFinite(basePct) ? `base=${basePct.toFixed(1)}%` : '',
+      Number.isFinite(movePct) ? `move=${movePct.toFixed(1)}%` : '',
+      `tf=${interval}`,
+    ].filter(Boolean).join(' '),
+  };
+}
+
+function closeReturnsFromCandles(candles, bars) {
+  const rows = Array.isArray(candles) ? candles.slice(-(bars + 1)) : [];
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const prev = Number(rows[i - 1]?.close ?? rows[i - 1]?.[4]);
+    const curr = Number(rows[i]?.close ?? rows[i]?.[4]);
+    if (Number.isFinite(prev) && Number.isFinite(curr) && prev > 0) out.push((curr - prev) / prev);
+  }
+  return out;
+}
+
+function pearsonCorr(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (n < 6) return null;
+  const ax = a.slice(-n);
+  const bx = b.slice(-n);
+  const ma = ax.reduce((s, v) => s + v, 0) / n;
+  const mb = bx.reduce((s, v) => s + v, 0) / n;
+  let num = 0;
+  let da = 0;
+  let db = 0;
+  for (let i = 0; i < n; i++) {
+    const x = ax[i] - ma;
+    const y = bx[i] - mb;
+    num += x * y;
+    da += x * x;
+    db += y * y;
+  }
+  const den = Math.sqrt(da * db);
+  return den > 0 ? num / den : null;
+}
+
+function getTopReversalBtcRelation(symbol) {
+  const bars = Math.max(12, Number(process.env.TOP_REVERSAL_BTC_RELATION_BARS ?? 30));
+  const coin = klineCache.getIfCached(symbol, '5m', bars + 2);
+  const btc = klineCache.getIfCached('BTCUSDT', '5m', bars + 2);
+  if (!coin || !btc) return null;
+  const corr = pearsonCorr(closeReturnsFromCandles(coin, bars), closeReturnsFromCandles(btc, bars));
+  const firstCoin = Number(coin.at(-(Math.min(bars, coin.length - 1) + 1))?.close);
+  const lastCoin = Number(coin.at(-1)?.close);
+  const firstBtc = Number(btc.at(-(Math.min(bars, btc.length - 1) + 1))?.close);
+  const lastBtc = Number(btc.at(-1)?.close);
+  const coinMovePct = firstCoin > 0 ? ((lastCoin - firstCoin) / firstCoin) * 100 : null;
+  const btcMovePct = firstBtc > 0 ? ((lastBtc - firstBtc) / firstBtc) * 100 : null;
+  const minCorr = Number(process.env.TOP_REVERSAL_BTC_ALIGNED_MIN_CORR ?? 0.45);
+  return {
+    corr: corr == null ? null : Number(corr.toFixed(2)),
+    bars,
+    coinMovePct: coinMovePct == null ? null : Number(coinMovePct.toFixed(2)),
+    btcMovePct: btcMovePct == null ? null : Number(btcMovePct.toFixed(2)),
+    relation: corr != null && corr >= minCorr ? 'aligned' : 'mixed',
+  };
+}
+
+function attachTopReversalBtcRelation(signals = []) {
+  return signals.map((signal) => ({
+    ...signal,
+    btcRelation: signal.btcRelation ?? getTopReversalBtcRelation(signal.symbol),
+  }));
+}
+
+function getTopReversalBtcBearShiftGate(health = btcHealthCache.data) {
+  const regime = emaSqueezeBtcRegime(health);
+  if (!health || health.error) return { ok: false, regime, reason: 'BTC health not ready' };
+  const nowBad = health.bias === 'caution'
+    || health.bias === 'bearish'
+    || regime === 'WEAK'
+    || Number(health.bearPoints ?? 0) >= Number(process.env.TOP_REVERSAL_BTC_SHIFT_MIN_BEAR_POINTS ?? 2);
+  if (!nowBad) return { ok: false, regime, reason: `BTC not yellow/red yet (${health.bias ?? '-'} ${regime})` };
+  const lookbackMs = Math.max(10 * 60_000, Number(process.env.TOP_REVERSAL_BTC_SHIFT_LOOKBACK_MS ?? 6 * 3600_000));
+  const cutoff = Date.now() - lookbackMs;
+  const recent = btcHealthHistory.filter((row) => Number(row.at) >= cutoff);
+  const hadGreen = recent.some((row) =>
+    row.regime === 'STRONG'
+    || row.bullBias === 'bullish'
+    || row.bullBias === 'caution'
+    || Number(row.bullPoints ?? 0) >= 2);
+  if (!hadGreen) {
+    return { ok: false, regime, reason: `BTC yellow/red but no recent green phase (${recent.length}pts)` };
+  }
+  return {
+    ok: true,
+    regime,
+    reason: `BTC green->${health.bias ?? regime} shift (${recent.length}pts, bear=${health.bearPoints ?? '-'})`,
+  };
+}
+
 function buildBtcHealthSnapshot(health = btcHealthCache.data) {
   if (!health || health.error) return null;
   return {
@@ -2287,7 +2466,69 @@ function buildBtcHealthSnapshot(health = btcHealthCache.data) {
     obvTrend: health.obvTrend ?? null,
     fundingRate: health.fundingRate ?? null,
     longPct: health.longPct ?? null,
+    macroShock: health.macroShock ?? getBtcMacroShockGuard(),
     at: new Date().toISOString(),
+  };
+}
+
+function parseEmaSqueezeNoteNumber(note, regex) {
+  const text = String(note ?? '');
+  const m = text.match(regex);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function getEmaSqueezeBreakoutBtcRisk(sig, health = btcHealthCache.data) {
+  const stage = String(sig?.stage ?? '').toUpperCase();
+  const side = String(sig?.action ?? '').toUpperCase();
+  if (stage !== 'BREAKOUT' || side !== 'LONG') {
+    return { block: false, warn: false, regime: emaSqueezeBtcRegime(health), reason: 'not breakout long' };
+  }
+
+  const note = String(sig?.note ?? '');
+  const rawSpread = Number(sig?.spreadPct);
+  const spreadPct = Number.isFinite(rawSpread)
+    ? rawSpread * 100
+    : parseEmaSqueezeNoteNumber(note, /spread=([0-9.]+)%/);
+  const rawBreakoutBars = Number(sig?.breakoutAge);
+  const breakoutBars = Number.isFinite(rawBreakoutBars)
+    ? rawBreakoutBars
+    : parseEmaSqueezeNoteNumber(note, /breakout-(\d+)bars/);
+  const rawBreakVol = Number(sig?.breakoutVolRatio ?? sig?.volRatio);
+  const breakVol = Number.isFinite(rawBreakVol)
+    ? rawBreakVol
+    : parseEmaSqueezeNoteNumber(note, /breakVol=([0-9.]+)x/);
+  const rawPumpPct = Number(sig?.pumpMovePct);
+  const pumpPct = Number.isFinite(rawPumpPct)
+    ? rawPumpPct
+    : parseEmaSqueezeNoteNumber(note, /pump=([0-9.]+)%/);
+
+  const lateWide = Number.isFinite(breakoutBars)
+    && Number.isFinite(spreadPct)
+    && breakoutBars > 8
+    && spreadPct >= 5;
+  const exhaustion = Number.isFinite(breakVol)
+    && Number.isFinite(pumpPct)
+    && breakVol > 20
+    && pumpPct >= 8;
+  const regime = emaSqueezeBtcRegime(health);
+  const warn = lateWide || exhaustion;
+  const block = regime === 'WEAK' && warn;
+  const tags = [
+    lateWide ? `lateWide ${breakoutBars}bars/${spreadPct.toFixed(1)}% spread` : '',
+    exhaustion ? `exhaustion vol ${breakVol.toFixed(1)}x/pump ${pumpPct.toFixed(1)}%` : '',
+  ].filter(Boolean);
+  return {
+    block,
+    warn,
+    regime,
+    lateWide,
+    exhaustion,
+    metrics: { spreadPct, breakoutBars, breakVol, pumpPct },
+    reason: warn
+      ? `BTC_${regime} + ${tags.join(' + ')}`
+      : `BTC_${regime} breakout risk clear`,
   };
 }
 
@@ -2325,16 +2566,66 @@ async function createEmaSqueezePaperTrades(signals = []) {
     const side = String(sig?.action ?? '').toUpperCase();
     const interval = String(sig?.interval ?? '15m');
     const score = Number(sig.score ?? 0);
-    if (!allowedStages.has(stage)) continue;
-    if (!allowedSides.has(side)) continue;
+    const brLikeScore = Number(sig.brLikeScore ?? 0);
+    const brLikeMinScore = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_MIN_SCORE ?? 90);
+    const brLikeShortMinScore = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_SHORT_MIN_SCORE ?? brLikeMinScore);
+    const isBrLikePaper = process.env.EMA_SQUEEZE_PAPER_BR_LIKE_ENABLED !== 'false'
+      && ((side === 'LONG' && brLikeScore >= brLikeMinScore)
+        || (side === 'SHORT'
+          && process.env.EMA_SQUEEZE_PAPER_BR_LIKE_SHORT_ENABLED !== 'false'
+          && brLikeScore >= brLikeShortMinScore));
+    const isBrLikeShortPaper = isBrLikePaper && side === 'SHORT';
+    const brLikeBtcGate = isBrLikePaper ? getEmaSqueezeBrLikeBtcGate(btcSnap) : null;
+    let brLikeQualityGate = null;
+    if (isBrLikePaper) {
+      const macroShock = btcSnap?.macroShock ?? getBtcMacroShockGuard();
+      if (!isBrLikeShortPaper && process.env.EMA_SQUEEZE_PAPER_BR_LIKE_MACRO_SHOCK_GUARD !== 'false' && macroShock?.active) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BR-like ${interval} - ${macroShock.reason}`);
+        continue;
+      }
+      brLikeQualityGate = getEmaSqueezeBrLikePaperQualityGate(sig);
+      if (process.env.EMA_SQUEEZE_PAPER_BR_LIKE_QUALITY_GATE !== 'false' && !brLikeQualityGate.ok) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BR-like ${interval} - ${brLikeQualityGate.reason}`);
+        continue;
+      }
+    }
+    if (!isBrLikePaper && !allowedStages.has(stage)) continue;
+    if (!isBrLikePaper && !allowedSides.has(side)) continue;
     if (allowedIntervals.size && !allowedIntervals.has(interval)) continue;
-    if (score < minScore || score > maxScore) continue;
+    if (!isBrLikePaper && (score < minScore || score > maxScore)) continue;
     if (!Number.isFinite(Number(sig.entry)) || Number(sig.entry) <= 0) continue;
-    const paperMarginUsdt = stage === 'BREAKOUT'
+    const longRunnerBtcGateStages = new Set(String(process.env.EMA_SQUEEZE_PAPER_LONG_RUNNER_BTC_GATE_STAGES ?? 'PRE_BREAKOUT,SQUEEZE')
+      .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean));
+    const longRunnerBtcGateEnabled = process.env.EMA_SQUEEZE_PAPER_LONG_RUNNER_BTC_GATE !== 'false';
+    const usesLongRunnerBtcGate = !isBrLikePaper
+      && longRunnerBtcGateEnabled
+      && side === 'LONG'
+      && longRunnerBtcGateStages.has(stage);
+    if (usesLongRunnerBtcGate) {
+      const runnerMinScore = Number(process.env.EMA_SQUEEZE_PAPER_LONG_RUNNER_MIN_SCORE ?? 70);
+      const runnerScore = Number(sig.runnerScore ?? 0);
+      const isRunner = Boolean(sig.runnerCandidate) && runnerScore >= runnerMinScore;
+      const btcRegime = btcSnap?.regime ?? emaSqueezeBtcRegime();
+      if (!isRunner) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} ${stage} LONG - runner required (${runnerScore || 0} < ${runnerMinScore})`);
+        continue;
+      }
+      if (btcRegime === 'WEAK') {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} ${stage} LONG runner - BTC_WEAK`);
+        continue;
+      }
+    }
+    const paperMarginUsdt = isBrLikeShortPaper
+      ? Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_SHORT_MARGIN_USDT ?? process.env.EMA_SQUEEZE_PAPER_BR_LIKE_MARGIN_USDT ?? 10)
+      : isBrLikePaper
+      ? Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_MARGIN_USDT ?? 10)
+      : stage === 'BREAKOUT'
       ? Number(process.env.EMA_SQUEEZE_PAPER_BREAKOUT_MARGIN_USDT
         ?? process.env.EMA_SQUEEZE_PAPER_BREAKOUT_80_89_MARGIN_USDT
         ?? 10)
-      : marginUsdt;
+      : stage === 'PRE_BREAKOUT'
+        ? Number(process.env.EMA_SQUEEZE_PAPER_PRE_BREAKOUT_MARGIN_USDT ?? 10)
+        : marginUsdt;
 
     // Trần score cho 5m PRE_BREAKDOWN: score quá cao = dump over-extended/kiệt sức → dễ V-bounce → thua.
     // Backtest: score 80-83 exp +6..+9%, nhưng 86-89 exp -1.8% (net -211%). Bỏ ≥86.
@@ -2347,7 +2638,7 @@ async function createEmaSqueezePaperTrades(signals = []) {
     // Gate pre-stage theo xu hướng BTC: BTC yếu → cấm pre-long; BTC mạnh → cấm pre-short
     const btcGateStages = new Set(String(process.env.EMA_SQUEEZE_PAPER_BTC_GATE_STAGES ?? 'PRE_BREAKOUT,PRE_BREAKDOWN')
       .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean));
-    if (process.env.EMA_SQUEEZE_PAPER_BTC_GATE !== 'false' && btcGateStages.has(stage)) {
+    if (!isBrLikePaper && process.env.EMA_SQUEEZE_PAPER_BTC_GATE !== 'false' && btcGateStages.has(stage) && !usesLongRunnerBtcGate) {
       const gate = emaSqueezePreStageBtcGate(side);
       if (!gate.ok) {
         console.log(`[EmaSqueezePaper] skip ${sig.symbol} ${stage} ${side} - ${gate.reason}`);
@@ -2355,7 +2646,7 @@ async function createEmaSqueezePaperTrades(signals = []) {
       }
     }
 
-    const requiresLiquidEntry = stage === 'SQUEEZE' || stage === 'SQUEEZE_SHORT';
+    const requiresLiquidEntry = !isBrLikePaper && (stage === 'SQUEEZE' || stage === 'SQUEEZE_SHORT');
     const paperSignal = await refineEmaSqueezePaperSignal(sig, { allowFallback: !requiresLiquidEntry }).catch((err) => {
       console.warn(`[EmaSqueezePaper] liquidity refine ${sig?.symbol ?? '?'}:`, err.message);
       return null;
@@ -2364,8 +2655,20 @@ async function createEmaSqueezePaperTrades(signals = []) {
     if (requiresLiquidEntry && !paperSignal.liquidityEntry) continue;
     const runnerMeta = buildEmaSqueezeRunnerPaperMeta(paperSignal);
     let breakoutPaperRr = null;
+    let breakoutBtcRisk = null;
 
-    if (stage === 'BREAKOUT') {
+    if (!isBrLikePaper && stage === 'BREAKOUT') {
+      breakoutBtcRisk = getEmaSqueezeBreakoutBtcRisk(sig, btcSnap);
+      if (process.env.EMA_SQUEEZE_PAPER_BREAKOUT_BLOCK_BTC_WEAK !== 'false'
+          && breakoutBtcRisk.regime === 'WEAK') {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BREAKOUT ${interval} - BTC_WEAK blocks breakout long`);
+        continue;
+      }
+      if (process.env.EMA_SQUEEZE_PAPER_BREAKOUT_BTC_RISK_GATE !== 'false' && breakoutBtcRisk.block) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BREAKOUT ${interval} - ${breakoutBtcRisk.reason}`);
+        continue;
+      }
+
       const qualityGateEnabled = process.env.EMA_SQUEEZE_PAPER_BREAKOUT_QUALITY_GATE !== 'false';
       const qualityTier = String(sig.breakoutQuality ?? 'REVIEW').toUpperCase();
       if (qualityGateEnabled && sig.breakoutPaperEligible !== true) {
@@ -2407,7 +2710,7 @@ async function createEmaSqueezePaperTrades(signals = []) {
       }
     }
 
-    const key = `${paperSignal.symbol}|${paperSignal.interval ?? '15m'}|${stage}|${side}`;
+    const key = `${paperSignal.symbol}|${paperSignal.interval ?? '15m'}|${isBrLikePaper ? (isBrLikeShortPaper ? 'BR_LIKE_SHORT' : 'BR_LIKE') : stage}|${side}`;
     const last = emaSqueezePaperAutoFired.get(key) ?? 0;
     if (Date.now() - last < cooldownMs) continue;
     emaSqueezePaperAutoFired.set(key, Date.now());
@@ -2425,6 +2728,12 @@ async function createEmaSqueezePaperTrades(signals = []) {
           : '',
         stage === 'BREAKOUT' && Number.isFinite(breakoutPaperRr)
           ? `paperRR=${breakoutPaperRr.toFixed(2)} | entryMode=MARKET_ONLY`
+          : '',
+        stage === 'BREAKOUT' && breakoutBtcRisk?.warn
+          ? `btcBreakoutRisk=${breakoutBtcRisk.reason}`
+          : '',
+        isBrLikePaper
+          ? `${isBrLikeShortPaper ? 'brLikeShort=Y' : 'brLike=Y'} | brLikeScore=${brLikeScore.toFixed(0)} | brLikeVol=${Number(sig.brLikeVolRatio ?? 0).toFixed(1)}x | brLikeMove=${Number(sig.brLikeMovePct ?? 0).toFixed(1)}% | brLikeQuality=${brLikeQualityGate?.reason ?? 'n/a'} | brLikeBtc=${isBrLikeShortPaper ? 'macro shock allowed for short' : (brLikeBtcGate?.reason ?? 'n/a')}`
           : '',
         runnerMeta.noteSuffix,
       ].filter(Boolean).join(' | '),
@@ -2444,7 +2753,9 @@ async function createEmaSqueezePaperTrades(signals = []) {
       breakoutQualityReason: paperSignal.breakoutQualityReason ?? sig.breakoutQualityReason ?? null,
       breakoutPaperEligible: paperSignal.breakoutPaperEligible ?? sig.breakoutPaperEligible ?? null,
     };
-    const srcBase = `emasq-${paperSignal.interval ?? '15m'}-${stage.toLowerCase()}${runnerMeta.sourceSuffix}-${paperSignal.score}`;
+    const srcBase = isBrLikePaper
+      ? `emasq-${paperSignal.interval ?? '15m'}-${isBrLikeShortPaper ? 'br_like_short' : 'br_like'}-${brLikeScore.toFixed(0)}-${paperSignal.score}`
+      : `emasq-${paperSignal.interval ?? '15m'}-${stage.toLowerCase()}${runnerMeta.sourceSuffix}-${paperSignal.score}`;
     const fire = (extra) => {
       const entryPrice = Number(extra.entryPrice ?? paperSignal.entry);
       const autoLeverage = calcAutoLeverage(
@@ -2470,7 +2781,16 @@ async function createEmaSqueezePaperTrades(signals = []) {
       })
       .catch((e) => console.warn(`[EmaSqueezePaper] ${paperSignal.symbol}:`, e.message));
 
-    if (stage === 'BREAKOUT') {
+    if (isBrLikePaper) {
+      const signalId = crypto.randomUUID();
+      await fireLogged({
+        status: 'OPEN',
+        variant: 'MARKET',
+        signalId,
+        entryPrice: Number(sig.entry),
+        source: `${srcBase}-mkt`,
+      });
+    } else if (stage === 'BREAKOUT') {
       // Quality backtest: only one MARKET paper trade per breakout signal.
       const signalId = crypto.randomUUID();
       const marketEntry = Number(sig.entry);
@@ -2638,6 +2958,16 @@ function getEmaSqueezeRealOrderStatus(sig, rules = getEmaSqueezeRealOrderRules()
   if (stage === 'BREAKOUT' && rules.requireRunnerForBreakout && !isRunner) return { status: 'BLOCKED', code: 'RUNNER_REQUIRED', label: 'REAL BLOCK', reason: `BREAKOUT needs runner >= ${rules.squeezeRunnerMinScore}` };
   if (stage === 'PRE_BREAKOUT' && !isRunner) return { status: 'BLOCKED', code: 'RUNNER_REQUIRED', label: 'REAL BLOCK', reason: `PRE_BREAKOUT needs runner >= ${rules.squeezeRunnerMinScore}` };
 
+  const breakoutBtcRisk = getEmaSqueezeBreakoutBtcRisk(sig, btcHealthCache.data);
+  if (process.env.EMA_SQUEEZE_REAL_BREAKOUT_BTC_RISK_GATE !== 'false' && breakoutBtcRisk.block) {
+    return {
+      status: 'BLOCKED',
+      code: 'BTC_BREAKOUT_RISK',
+      label: 'BTC RISK',
+      reason: breakoutBtcRisk.reason,
+    };
+  }
+
   const btcChartGuard = emaSqueezeBtcChartAllowsOrder(sig);
   if (!btcChartGuard.ok) return {
     status: 'BLOCKED',
@@ -2757,6 +3087,11 @@ async function handleEmaSqueezeRealLongOrders(signals = []) {
     }
     if (stage === 'PRE_BREAKOUT' && !isRunner) {
       console.log(`[EmaSqueezeReal] skip ${sig.symbol} PRE_BREAKOUT - runner required`);
+      continue;
+    }
+    const breakoutBtcRisk = getEmaSqueezeBreakoutBtcRisk(sig, btcHealth);
+    if (process.env.EMA_SQUEEZE_REAL_BREAKOUT_BTC_RISK_GATE !== 'false' && breakoutBtcRisk.block) {
+      console.log(`[EmaSqueezeReal] skip ${sig.symbol} BREAKOUT - ${breakoutBtcRisk.reason}`);
       continue;
     }
     const btcChartGuard = emaSqueezeBtcChartAllowsOrder(sig);
@@ -4670,12 +5005,14 @@ const server = createServer(async (request, response) => {
         .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
         .slice(0, Number(process.env.TOP_REVERSAL_MAX_SYMBOLS ?? 400))
         .map((row) => row.symbol);
-      const { signals, nearMisses, processed, diagnostics } = await runTopReversalScan(
+      const scanResult = await runTopReversalScan(
         topSymbols,
         klineCache,
         snapshotMap,
         { btcBullBias: btcHealthCache.data?.bullBias ?? 'neutral' },
       );
+      const { nearMisses, processed, diagnostics } = scanResult;
+      const signals = attachTopReversalBtcRelation(scanResult.signals);
       const result = {
         signals,
         nearMisses,
@@ -5766,6 +6103,8 @@ server.listen(port, '127.0.0.1', () => {
 
 // ── BTC Health ────────────────────────────────────────────────────────────────
 let btcHealthCache = { data: null, expiresAt: 0 };
+const btcHealthHistory = [];
+let btcMacroShockState = { activeUntil: 0, reason: '', detectedAt: 0, metrics: null };
 let _btcHealthInflight = null; // dedup concurrent calls — only one REST fetch at a time
 let goldHealthCache = { data: null, expiresAt: 0 };
 let _goldHealthInflight = null;
@@ -5818,6 +6157,72 @@ function calcRsiSimple(closes, period = 14) {
   }
   if (avgLoss === 0) return 100;
   return 100 - 100 / (1 + avgGain / avgLoss);
+}
+
+function klineNum(k, key, idx) {
+  const value = Array.isArray(k) ? k[idx] : k?.[key];
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function analyzeBtcMacroShockKlines(interval, rows = []) {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (list.length < 12) return null;
+  const last = list[list.length - 1];
+  const prev = list[list.length - 2];
+  const open = klineNum(last, 'open', 1);
+  const close = klineNum(last, 'close', 4);
+  const high = klineNum(last, 'high', 2);
+  const low = klineNum(last, 'low', 3);
+  const vol = klineNum(last, 'volume', 5);
+  const prevClose = klineNum(prev, 'close', 4);
+  if (![open, close, high, low, vol, prevClose].every(Number.isFinite) || open <= 0 || prevClose <= 0) return null;
+  const bodyPct = (close - open) / open * 100;
+  const dropFromPrevPct = (close - prevClose) / prevClose * 100;
+  const rangePct = (high - low) / open * 100;
+  const vols = list.slice(Math.max(0, list.length - 31), list.length - 1)
+    .map((k) => klineNum(k, 'volume', 5))
+    .filter((v) => Number.isFinite(v) && v > 0);
+  const avgVol = vols.length ? vols.reduce((s, v) => s + v, 0) / vols.length : null;
+  const volRatio = avgVol ? vol / avgVol : null;
+  const closes = list.map((k) => klineNum(k, 'close', 4)).filter((v) => Number.isFinite(v) && v > 0);
+  const ema25 = closes.length >= 25 ? closes.slice(-25).reduce((s, v) => s + v, 0) / 25 : null;
+  const ema99 = closes.length >= 99 ? closes.slice(-99).reduce((s, v) => s + v, 0) / 99 : null;
+  const brokeEma25 = ema25 != null && open >= ema25 && close < ema25;
+  const belowEma99 = ema99 != null && close < ema99;
+  return { interval, bodyPct, dropFromPrevPct, rangePct, volRatio, brokeEma25, belowEma99, open, close };
+}
+
+function getBtcMacroShockGuard() {
+  const now = Date.now();
+  const k5 = analyzeBtcMacroShockKlines('5m', klineCache.getIfCached('BTCUSDT', '5m', 120));
+  const k15 = analyzeBtcMacroShockKlines('15m', klineCache.getIfCached('BTCUSDT', '15m', 120));
+  const min5mDrop = Number(process.env.BTC_MACRO_SHOCK_5M_DROP_PCT ?? 0.75);
+  const min15mDrop = Number(process.env.BTC_MACRO_SHOCK_15M_DROP_PCT ?? 1.2);
+  const minVolRatio = Number(process.env.BTC_MACRO_SHOCK_VOL_RATIO ?? 2);
+  const hit = [k5, k15].filter(Boolean).find((m) => {
+    const absDrop = Math.abs(Math.min(m.bodyPct, m.dropFromPrevPct, 0));
+    const minDrop = m.interval === '5m' ? min5mDrop : min15mDrop;
+    const volOk = Number.isFinite(m.volRatio) && m.volRatio >= minVolRatio;
+    const emaOk = m.brokeEma25 || m.belowEma99 || absDrop >= minDrop * 1.4;
+    return m.bodyPct < 0 && absDrop >= minDrop && volOk && emaOk;
+  });
+  if (hit) {
+    const cooldownMs = Math.max(5 * 60_000, Number(process.env.BTC_MACRO_SHOCK_COOLDOWN_MS ?? 45 * 60_000));
+    btcMacroShockState = {
+      activeUntil: Math.max(Number(btcMacroShockState.activeUntil ?? 0), now + cooldownMs),
+      detectedAt: now,
+      reason: `BTC ${hit.interval} shock ${hit.bodyPct.toFixed(2)}% vol ${Number(hit.volRatio ?? 0).toFixed(1)}x`,
+      metrics: hit,
+    };
+  }
+  return {
+    active: now < Number(btcMacroShockState.activeUntil ?? 0),
+    activeUntil: btcMacroShockState.activeUntil,
+    detectedAt: btcMacroShockState.detectedAt,
+    reason: btcMacroShockState.reason,
+    metrics: btcMacroShockState.metrics,
+  };
 }
 
 async function _fetchBtcHealth() {
@@ -5949,6 +6354,7 @@ async function _fetchBtcHealth() {
     if (rsi4h != null && rsi4h > 55 && rsi4h < 70) bullPoints++; // 4h bullish nhưng chưa overbought
     if (longPct != null && longPct < 42) bullPoints++;     // Short nhiều → short squeeze risk
     const bullBias = bullPoints >= 3 ? 'bullish' : bullPoints >= 2 ? 'caution' : 'neutral';
+    const macroShock = getBtcMacroShockGuard();
 
     const data = {
       price: markPrice,
@@ -5967,9 +6373,23 @@ async function _fetchBtcHealth() {
       bullBias,
       bullPoints,
       btcSpikeAlert,
+      macroShock,
       btcCandle1hPct: btcCandle1hPct != null ? +btcCandle1hPct.toFixed(3) : null,
       updatedAt: Date.now(),
     };
+
+    btcHealthHistory.push({
+      at: Date.now(),
+      regime: emaSqueezeBtcRegime(data),
+      bias: data.bias,
+      bullBias: data.bullBias,
+      bearPoints: data.bearPoints,
+      bullPoints: data.bullPoints,
+      rsi1h: data.rsi1h,
+      pct6h: data.pct6h,
+      emaTrend1h: data.emaTrend1h,
+    });
+    if (btcHealthHistory.length > 720) btcHealthHistory.splice(0, btcHealthHistory.length - 720);
 
     btcHealthCache = { data, expiresAt: Date.now() + 30_000 }; // 30s — klines từ WS, RSI đủ fresh
     return data;
@@ -8200,12 +8620,14 @@ async function scheduleTopReversalScan() {
         .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
         .slice(0, Number(process.env.TOP_REVERSAL_MAX_SYMBOLS ?? 400))
         .map((row) => row.symbol);
-      const { signals, nearMisses, processed, diagnostics } = await runTopReversalScan(
+      const scanResult = await runTopReversalScan(
         topSymbols,
         klineCache,
         snapshotMap,
         { btcBullBias: btcHealthCache.data?.bullBias ?? 'neutral' },
       );
+      const { nearMisses, processed, diagnostics } = scanResult;
+      const signals = attachTopReversalBtcRelation(scanResult.signals);
       const result = {
         signals,
         nearMisses,
@@ -8572,9 +8994,9 @@ async function processPumpPaperFills(symbol, markPrice) {
   for (const t of pending) await fillPumpPendingTrade(t, markPrice);
   const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
   for (const t of open) {
+    await checkEmaSqueezePaperProfit(t, markPrice);
     await checkPumpPaperTpSl(t, markPrice);
     await checkPumpPaperDynamicRisk(t, markPrice);
-    await checkEmaSqueezePaperProfit(t, markPrice);
     await checkPumpPaperTimeout(t, markPrice);
   }
 }
@@ -8594,9 +9016,9 @@ async function processPumpPaperCachedMarks() {
     if (!Number.isFinite(Number(markPrice)) || Number(markPrice) <= 0) continue;
     if (trade.status === 'PENDING') await fillPumpPendingTrade(trade, Number(markPrice));
     else {
+      await checkEmaSqueezePaperProfit(trade, Number(markPrice));
       await checkPumpPaperTpSl(trade, Number(markPrice));
       await checkPumpPaperDynamicRisk(trade, Number(markPrice));
-      await checkEmaSqueezePaperProfit(trade, Number(markPrice));
       await checkPumpPaperTimeout(trade, Number(markPrice));
     }
   }
@@ -8713,6 +9135,26 @@ async function checkEmaSqueezePaperProfit(trade, markPrice) {
   const prevPeak = emaSqueezePaperPeakRoe.get(trade.id) ?? Number(trade.peakRoe ?? 0) ?? 0;
   const peakRoe = Math.max(prevPeak, roe);
   emaSqueezePaperPeakRoe.set(trade.id, peakRoe);
+
+  const macroShock = getBtcMacroShockGuard();
+  const macroExitMinRoe = Number(process.env.EMA_SQUEEZE_PAPER_MACRO_SHOCK_EXIT_MIN_ROE ?? 1);
+  if (process.env.EMA_SQUEEZE_PAPER_MACRO_SHOCK_EXIT !== 'false'
+      && trade.side === 'LONG'
+      && macroShock.active
+      && roe >= macroExitMinRoe) {
+    emaSqueezeProfitLocks.add(trade.id);
+    try {
+      await closePumpPaperTrade({
+        id: trade.id,
+        exitPrice: Number(markPrice),
+        outcome: 'BTC_MACRO_EXIT',
+      });
+      console.log(`[EmaSqueezePaper] BTC_MACRO_EXIT ${trade.symbol} roe=${roe.toFixed(1)}% - ${macroShock.reason}`);
+    } finally {
+      emaSqueezeProfitLocks.delete(trade.id);
+    }
+    return;
+  }
 
   const trailStartRoe = Number(process.env.EMA_SQUEEZE_PAPER_TRAIL_START_ROE ?? 10);
   if (roe < trailStartRoe) return;
@@ -9761,9 +10203,16 @@ async function createShakeoutPaperTrade(payload) {
     outcome: null,
     score: payload.score != null ? Number(payload.score) : null,
     signalType: String(payload.signalType ?? payload.type ?? '').slice(0, 80),
+    shakeoutClass: payload.shakeoutClass ? String(payload.shakeoutClass).toUpperCase().slice(0, 40) : null,
+    shakeoutClassLabel: payload.shakeoutClassLabel ? String(payload.shakeoutClassLabel).slice(0, 80) : null,
+    shakeoutClassReason: payload.shakeoutClassReason ? String(payload.shakeoutClassReason).slice(0, 240) : null,
+    shakeoutClassColor: payload.shakeoutClassColor ? String(payload.shakeoutClassColor).slice(0, 20) : null,
     subtype: payload.subtype ? String(payload.subtype).toUpperCase().slice(0, 40) : null,
     bottomRebound: Boolean(payload.bottomRebound),
-    noStopLoss: Boolean(payload.noStopLoss || payload.bottomRebound),
+    noStopLoss: Boolean(payload.noStopLoss),
+    bottomReboundDcaAllowed: payload.bottomReboundDcaAllowed !== false,
+    bottomReboundScoutOnly: Boolean(payload.bottomReboundScoutOnly),
+    dcaBlocked: Boolean(payload.dcaBlocked),
     stage: String(payload.stage ?? '').slice(0, 80),
     createdAt: new Date().toISOString(),
     openedAt: status === 'OPEN' ? new Date().toISOString() : null,
@@ -9865,11 +10314,7 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
     const qty = fill > 0 ? (margin * lev) / fill : row.quantity;
     const dynamicRiskPct = Math.max(0.001, Number(row.btcDynamicRiskPct ?? 0.03));
     const dynamicRr = Math.max(0.1, Number(row.btcDynamicRr ?? 2.2));
-    const filledSl = row.btcDynamicEntry
-      ? (side === 'LONG'
-        ? fill * (1 - dynamicRiskPct)
-        : fill * (1 + dynamicRiskPct))
-      : row.sl;
+    const filledSl = row.btcDynamicEntry ? null : row.sl;
     const filledTp = row.btcDynamicEntry
       ? (side === 'LONG'
         ? fill * (1 + dynamicRiskPct * dynamicRr)
@@ -9888,7 +10333,7 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
       openedAt: new Date().toISOString(),
       btcDynamicLocked: row.btcDynamicEntry ? true : row.btcDynamicLocked,
       note: row.btcDynamicEntry
-        ? [`btcDynamicFilled=${fill} sl=${filledSl} tp=${filledTp}`, String(row.note ?? '')]
+        ? [`btcDynamicFilled=${fill} sl=OFF tp=${filledTp}`, String(row.note ?? '')]
           .filter(Boolean).join(' | ').slice(0, 500)
         : row.note,
     };
@@ -9909,8 +10354,61 @@ function isShakeoutBottomReboundTrade(trade) {
     || String(trade?.subtype ?? '').toUpperCase() === 'BOTTOM_REBOUND';
 }
 
+function notePercentValue(note, label) {
+  const escaped = String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(note ?? '').match(new RegExp(`${escaped}=([\\d.]+)%`, 'i'));
+  const value = match ? Number(match[1]) : null;
+  return Number.isFinite(value) ? value : null;
+}
+
+function getShakeoutBottomReboundPaperPolicy(sig = {}, trapRisk = 'LOW') {
+  const note = String(sig.note ?? sig.reason ?? '');
+  const trapReasons = Array.isArray(sig.riskFlags?.trapReasons) ? sig.riskFlags.trapReasons : [];
+  const hasWarning = trapReasons.length > 0 || Boolean(sig.warning);
+  const pump15m = notePercentValue(note, '15m pump');
+  const hardPump15m = Number(process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_MAX_15M_PUMP ?? 100);
+  const scoutPump15m = Number(process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_SCOUT_15M_PUMP ?? 80);
+  const risk = String(trapRisk ?? 'LOW').toUpperCase();
+  const reasons = [];
+
+  if (Number.isFinite(pump15m) && pump15m >= hardPump15m) {
+    reasons.push(`15m pump ${pump15m.toFixed(1)}% >= ${hardPump15m}%`);
+    return {
+      skip: true,
+      scoutOnly: false,
+      noStopLoss: false,
+      dcaAllowed: false,
+      marginUsdt: 0,
+      pump15m,
+      reasons,
+    };
+  }
+
+  if (['MEDIUM', 'HIGH'].includes(risk)) reasons.push(`trapRisk=${risk}`);
+  if (hasWarning) reasons.push('warning');
+  if (Number.isFinite(pump15m) && pump15m >= scoutPump15m) {
+    reasons.push(`15m pump ${pump15m.toFixed(1)}% >= ${scoutPump15m}%`);
+  }
+
+  const scoutOnly = reasons.length > 0;
+  return {
+    skip: false,
+    scoutOnly,
+    noStopLoss: !scoutOnly,
+    dcaAllowed: !scoutOnly,
+    marginUsdt: scoutOnly
+      ? Number(process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_SCOUT_MARGIN_USDT ?? 1)
+      : Number(process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_MARGIN_USDT ?? 5),
+    pump15m,
+    reasons,
+  };
+}
+
 async function checkShakeoutBottomReboundDca(trade, markPrice) {
   if (!isShakeoutBottomReboundTrade(trade) || trade.status !== 'OPEN' || trade.dcaTaken) return trade;
+  if (trade.bottomReboundDcaAllowed === false || trade.dcaBlocked || !trade.noStopLoss) return trade;
+  const risk = String(trade.trapRisk ?? '').toUpperCase();
+  if (['MEDIUM', 'HIGH'].includes(risk) || String(trade.warning ?? '').trim()) return trade;
   if (shakeoutPaperDcaLocks.has(trade.id)) return trade;
 
   const entry = Number(trade.entryPrice);
@@ -10494,6 +10992,36 @@ function calcShakeoutPaperRoeAt(trade, markPrice) {
   return pnl / margin * 100;
 }
 
+function shakeoutNoteNumber(note, regex) {
+  const m = String(note ?? '').match(regex);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function getShakeoutBottomFlushShortRisk(input = {}) {
+  const note = String(input.note ?? input.reason ?? '');
+  const side = String(input.side ?? input.action ?? '').toUpperCase();
+  if (side !== 'SHORT') return { block: false, reason: '' };
+  const dump5 = shakeoutNoteNumber(note, /5m dump=([0-9.]+)%/i);
+  const dump15 = shakeoutNoteNumber(note, /15m dump=([0-9.]+)%/i);
+  const bounce = shakeoutNoteNumber(note, /bounce=([0-9.]+)%/i);
+  const reject = shakeoutNoteNumber(note, /reject=([0-9.]+)%/i);
+  const trapRisk = String(input.trapRisk ?? input.riskFlags?.trapRisk ?? '').toUpperCase()
+    || (note.match(/trapRisk=(HIGH|MEDIUM|LOW)/i)?.[1] ?? '').toUpperCase();
+  const deepDump = Number(dump5) >= 30 || Number(dump15) >= 20;
+  const reboundTooLarge = Number(bounce) >= 20;
+  const trapWarn = ['MEDIUM', 'HIGH'].includes(trapRisk);
+  const rejectLarge = Number(reject) >= 10;
+  const block = deepDump && reboundTooLarge && (trapWarn || rejectLarge);
+  return {
+    block,
+    reason: block
+      ? `bottomFlushShortRisk dump5=${dump5 ?? '-'} dump15=${dump15 ?? '-'} bounce=${bounce ?? '-'} reject=${reject ?? '-'} trap=${trapRisk || '-'}`
+      : '',
+  };
+}
+
 async function updateShakeoutDynamicBtcEntries() {
   const health = await getBtcHealth();
   const btcPrice = Number(health?.price);
@@ -10540,6 +11068,34 @@ async function updateShakeoutDynamicBtcEntries() {
           ? Number(scout.roe)
           : calcShakeoutPaperRoeAt(scout, mark))
         : null;
+      const risk = getShakeoutBottomFlushShortRisk(row);
+      const scoutNote = String(scout?.note ?? '');
+      const scoutRecovery = Boolean(scout?.lossTpMovedToEntry)
+        || /lossTpToEntry/i.test(scoutNote)
+        || /shakeoutRecovery=ACTIVE/i.test(scoutNote);
+      const scoutDeepLoss = Number.isFinite(scoutRoe) && scoutRoe <= -15;
+      if (risk.block || scoutRecovery || scoutDeepLoss) {
+        store.trades[i] = {
+          ...row,
+          status: 'EXPIRED',
+          outcome: risk.block
+            ? 'EXPIRED_BOTTOM_FLUSH_SHORT_RISK'
+            : scoutRecovery ? 'EXPIRED_SCOUT_RECOVERY_ACTIVE' : 'EXPIRED_SCOUT_DEEP_LOSS',
+          expiredAt: new Date().toISOString(),
+          btcDynamicLocked: true,
+          btcLastPrice: btcPrice,
+          btcRegime,
+          btcDynamicUpdatedAt: new Date().toISOString(),
+          note: [
+            risk.block ? `btcDynamicBlocked=${risk.reason}` : '',
+            scoutRecovery ? 'btcDynamicBlocked=scoutRecoveryActive' : '',
+            scoutDeepLoss ? `btcDynamicBlocked=scoutRoe=${scoutRoe.toFixed(1)}%` : '',
+            String(row.note ?? ''),
+          ].filter(Boolean).join(' | ').slice(0, 500),
+        };
+        changed++;
+        continue;
+      }
       const minScoutRoe = Number(
         process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_MARKET_SCOUT_MIN_ROE ?? 5,
       );
@@ -10556,9 +11112,6 @@ async function updateShakeoutDynamicBtcEntries() {
           && Number.isFinite(chaseRoe) && chaseRoe <= maxChaseRoe) {
         const riskPct = Math.max(0.001, Number(row.btcDynamicRiskPct ?? 0.03));
         const rr = Math.max(0.1, Number(row.btcDynamicRr ?? 2.2));
-        const nextSl = row.side === 'LONG'
-          ? mark * (1 - riskPct)
-          : mark * (1 + riskPct);
         const nextTp = row.side === 'LONG'
           ? mark * (1 + riskPct * rr)
           : mark * (1 - riskPct * rr);
@@ -10569,7 +11122,7 @@ async function updateShakeoutDynamicBtcEntries() {
           fillPrice: mark,
           quantity: Number(row.marginUsdt) * leverage / mark,
           originalQuantity: Number(row.marginUsdt) * leverage / mark,
-          sl: nextSl,
+          sl: null,
           tp: nextTp,
           openedAt: new Date().toISOString(),
           btcDynamicLocked: true,
@@ -10577,7 +11130,7 @@ async function updateShakeoutDynamicBtcEntries() {
           btcRegime,
           btcDynamicUpdatedAt: new Date().toISOString(),
           note: [
-            `btcDynamicMarketAdd=${mark} scoutRoe=${scoutRoe.toFixed(1)}% chase=${chaseRoe.toFixed(1)}% btc=${btcRegime}`,
+            `btcDynamicMarketAdd=${mark} sl=OFF scoutRoe=${scoutRoe.toFixed(1)}% chase=${chaseRoe.toFixed(1)}% btc=${btcRegime}`,
             String(row.note ?? ''),
           ].filter(Boolean).join(' | ').slice(0, 500),
         };
@@ -10814,15 +11367,31 @@ async function createShakeoutPaperTrades(signals = []) {
     const pendingEntry = Number(sig.entry ?? sig.markPrice);
     const btcStrongShortEma99 = side === 'SHORT' && Boolean(sig.btcStrongShortEma99);
     const trapRisk = String(sig.riskFlags?.trapRisk ?? 'LOW').toUpperCase();
-    const useBtcDynamicEntry = ['MEDIUM', 'HIGH'].includes(trapRisk);
+    const bottomFlushShortRisk = getShakeoutBottomFlushShortRisk({
+      ...sig,
+      side,
+      trapRisk,
+      note: sig.note ?? sig.reason ?? '',
+    });
+    const useBtcDynamicEntry = ['MEDIUM', 'HIGH'].includes(trapRisk)
+      && !bottomFlushShortRisk.block;
     const btcAnchorPrice = Number(btcHealthCache.data?.price);
     const btcDynamicMaxPct = trapRisk === 'HIGH'
       ? Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_HIGH_MAX_PCT ?? 4)
       : Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_MEDIUM_MAX_PCT ?? 8);
     const isBottomRebound = side === 'LONG'
       && (sig.bottomRebound || String(sig.subtype ?? '') === 'BOTTOM_REBOUND');
+    const bottomReboundPolicy = isBottomRebound
+      ? getShakeoutBottomReboundPaperPolicy(sig, trapRisk)
+      : null;
+    if (bottomReboundPolicy?.skip) {
+      console.log(
+        `[ShakeoutPaper] skip ${sig.symbol} BOTTOM_REBOUND - ${bottomReboundPolicy.reasons.join('; ')}`,
+      );
+      continue;
+    }
     const marginUsdt = isBottomRebound
-      ? Number(process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_MARGIN_USDT ?? 5)
+      ? bottomReboundPolicy.marginUsdt
       : Number(process.env.SHAKEOUT_RECLAIM_PAPER_MARGIN_USDT ?? 10);
     const sc = sig.score;
     const sideL = side.toLowerCase();
@@ -10955,14 +11524,21 @@ async function createShakeoutPaperTrades(signals = []) {
         marginUsdt: Number(v.marginUsdt ?? marginUsdt),
         leverage: lev,
         entryPrice: v.entryPrice,
-        sl: isBottomRebound ? null : cappedVariantSl,
+        sl: isBottomRebound && bottomReboundPolicy.noStopLoss ? null : cappedVariantSl,
         tp: variantTp,
         score: sc,
         stage: sig.stage,
         signalType: sig.type,
+        shakeoutClass: sig.shakeoutClass,
+        shakeoutClassLabel: sig.shakeoutClassLabel,
+        shakeoutClassReason: sig.shakeoutClassReason,
+        shakeoutClassColor: sig.shakeoutClassColor,
         subtype: sig.subtype,
         bottomRebound: isBottomRebound,
-        noStopLoss: isBottomRebound,
+        noStopLoss: isBottomRebound ? bottomReboundPolicy.noStopLoss : false,
+        bottomReboundDcaAllowed: isBottomRebound ? bottomReboundPolicy.dcaAllowed : true,
+        bottomReboundScoutOnly: Boolean(isBottomRebound && bottomReboundPolicy.scoutOnly),
+        dcaBlocked: Boolean(isBottomRebound && !bottomReboundPolicy.dcaAllowed),
         source: `shakeout-auto-${sideL}-${sc}-${v.tag}-${lev}x`,
         note: [
           sig.note ?? sig.reason ?? '',
@@ -10975,7 +11551,13 @@ async function createShakeoutPaperTrades(signals = []) {
           sig.btcIndependentShort
             ? `BTC STRONG but ${sig.btcEntryClass}: use coin structure entry`
             : '',
-          isBottomRebound ? 'bottomRebound=MARKET_ONLY | noSL=Y | dca=$10@-25%ROE' : '',
+          isBottomRebound && bottomReboundPolicy?.scoutOnly
+            ? `bottomRebound=SCOUT_ONLY | noSL=OFF | noDCA=Y | reason=${bottomReboundPolicy.reasons.join(',')}`
+            : '',
+          isBottomRebound && !bottomReboundPolicy?.scoutOnly
+            ? 'bottomRebound=MARKET_ONLY | noSL=Y | dca=$10@-25%ROE'
+            : '',
+          bottomFlushShortRisk.block ? `BTC_DYNAMIC_BLOCKED=${bottomFlushShortRisk.reason}` : '',
           v.tag === 'scout' ? 'BTC_DYNAMIC_SCOUT=MARKET $1' : '',
           v.btcDynamicEntry
             ? `BTC_DYNAMIC_LIMIT max=${btcDynamicMaxPct}% ttl=60m rr=${finalRr.toFixed(2)}`
@@ -11056,6 +11638,17 @@ function enrichTopReversalPaperTrade(trade, markPrice) {
   };
 }
 
+function calcTopReversalPaperRoeAt(trade, markPrice) {
+  const entry = Number(trade?.entryPrice);
+  const quantity = Number(trade?.quantity);
+  const margin = Number(trade?.marginUsdt);
+  const mark = Number(markPrice);
+  if (![entry, quantity, margin, mark].every(Number.isFinite)
+      || entry <= 0 || quantity <= 0 || margin <= 0 || mark <= 0) return null;
+  const pnl = (entry - mark) * quantity;
+  return pnl / margin * 100;
+}
+
 async function getTopReversalPaperTrades() {
   const store = await readTopReversalPaperStore();
   const trades = store.trades.map((trade) =>
@@ -11132,6 +11725,7 @@ async function createTopReversalPaperTrade(payload) {
     source: String(payload.source ?? 'top-reversal-auto').slice(0, 80),
     note: String(payload.note ?? '').slice(0, 500),
     qualityBreakdown: Boolean(payload.qualityBreakdown),
+    qualityDcaEligible: Boolean(payload.qualityDcaEligible),
     qualityTier: String(payload.qualityTier ?? (payload.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')).slice(0, 32),
     qualityReasons: Array.isArray(payload.qualityReasons)
       ? payload.qualityReasons.map((reason) => String(reason).slice(0, 48)).slice(0, 8)
@@ -11141,6 +11735,14 @@ async function createTopReversalPaperTrade(payload) {
       : null,
     blowoffTop: Boolean(payload.blowoffTop),
     volumeDistribution: Boolean(payload.volumeDistribution),
+    strongCase: Boolean(payload.strongCase),
+    strongCaseType: String(payload.strongCaseType ?? '').slice(0, 40),
+    strongCaseScore: Number.isFinite(Number(payload.strongCaseScore))
+      ? Number(payload.strongCaseScore)
+      : null,
+    strongCaseReasons: Array.isArray(payload.strongCaseReasons)
+      ? payload.strongCaseReasons.map((reason) => String(reason).slice(0, 64)).slice(0, 8)
+      : [],
     dcaTaken: false,
     peakRoe: 0,
     slTrailLockRoe: null,
@@ -11193,6 +11795,103 @@ async function deleteTopReversalPaperTrade(payload) {
   return { ok: true };
 }
 
+async function applyTopReversalBtcShiftPaper(signal, btcGate, btcRelation) {
+  if (process.env.TOP_REVERSAL_BTC_SHIFT_PAPER_ENABLED === 'false') return false;
+  const symbol = String(signal?.symbol ?? '').toUpperCase();
+  const markPrice = Number(signal?.markPrice ?? signal?.entry);
+  if (!symbol || !Number.isFinite(markPrice) || markPrice <= 0) return false;
+  if (!btcGate?.ok || btcRelation?.relation !== 'aligned') return false;
+
+  const cooldownMs = Number(process.env.TOP_REVERSAL_BTC_SHIFT_PAPER_COOLDOWN_MS ?? 90 * 60_000);
+  const key = `${symbol}|BTC_SHIFT`;
+  const last = topReversalPaperAutoFired.get(key) ?? 0;
+  if (Date.now() - last < cooldownMs) return false;
+
+  const addMargin = Number(process.env.TOP_REVERSAL_BTC_SHIFT_PAPER_MARGIN_USDT ?? 10);
+  const store = await readTopReversalPaperStore();
+  const idx = store.trades.findIndex((trade) =>
+    trade.symbol === symbol
+    && trade.status === 'OPEN'
+    && trade.side === 'SHORT');
+  if (idx >= 0) {
+    const row = store.trades[idx];
+    if (row.btcShiftDcaTaken) return false;
+    const existingRoe = calcTopReversalPaperRoeAt(row, markPrice);
+    const maxRoe = Number(process.env.TOP_REVERSAL_BTC_SHIFT_DCA_MAX_ROE ?? 5);
+    const maxPeak = Number(process.env.TOP_REVERSAL_BTC_SHIFT_DCA_MAX_PEAK_ROE ?? 15);
+    if (Number.isFinite(existingRoe) && existingRoe > maxRoe) return false;
+    if (Number(row.peakRoe ?? 0) > maxPeak) return false;
+
+    const leverage = Math.max(1, Number(row.leverage ?? process.env.TOP_REVERSAL_PAPER_LEVERAGE ?? 5));
+    const oldQty = Number(row.quantity);
+    const addQty = addMargin * leverage / markPrice;
+    const nextQty = oldQty + addQty;
+    const nextMargin = Number(row.marginUsdt) + addMargin;
+    const avgEntry = nextQty > 0
+      ? ((Number(row.entryPrice) * oldQty) + (markPrice * addQty)) / nextQty
+      : Number(row.entryPrice);
+    store.trades[idx] = {
+      ...row,
+      marginUsdt: nextMargin,
+      quantity: nextQty,
+      originalQuantity: Number(row.originalQuantity ?? oldQty) + addQty,
+      entryPrice: avgEntry,
+      fillPrice: avgEntry,
+      tp: Number(signal.tp ?? row.tp),
+      runnerTp: Number(signal.runnerTp ?? row.runnerTp ?? signal.tp ?? row.tp),
+      dcaTaken: true,
+      dcaPrice: markPrice,
+      dcaMarginUsdt: addMargin,
+      dcaAt: new Date().toISOString(),
+      btcShiftDcaTaken: true,
+      btcShiftDcaAt: new Date().toISOString(),
+      btcRelation,
+      btcShiftGate: btcGate,
+      note: [
+        String(row.note ?? ''),
+        `BTC_SHIFT_DCA=$${addMargin}@${markPrice}`,
+        `avgEntry=${avgEntry}`,
+        btcGate.reason,
+        `btcCorr=${btcRelation.corr}`,
+      ].filter(Boolean).join(' | ').slice(0, 500),
+    };
+    await writeTopReversalPaperStore(store);
+    topReversalPaperAutoFired.set(key, Date.now());
+    syncTopReversalPaperTicker().catch(() => {});
+    scheduleTopReversalPaperBroadcast(50);
+    console.log(`[TopReversalPaper] BTC_SHIFT DCA SHORT ${symbol} +$${addMargin} mark=${markPrice} corr=${btcRelation.corr}`);
+    return true;
+  }
+
+  topReversalPaperAutoFired.set(key, Date.now());
+  await createTopReversalPaperTrade({
+    symbol,
+    entryPrice: markPrice,
+    marginUsdt: addMargin,
+    tp: signal.tp,
+    runnerTp: signal.runnerTp,
+    score: signal.score,
+    stage: 'BTC_SHIFT_SHORT',
+    source: `top-reversal-btc-shift-${signal.score}`,
+    note: [
+      String(signal.note ?? '').replace('paper=NO', 'paper=BTC_SHIFT'),
+      `BTC_SHIFT_MARKET=$${addMargin}`,
+      btcGate.reason,
+      `btcCorr=${btcRelation.corr}`,
+      `btcMove=${btcRelation.btcMovePct}%`,
+      `coinMove=${btcRelation.coinMovePct}%`,
+    ].filter(Boolean).join(' | '),
+    qualityBreakdown: signal.qualityBreakdown,
+    qualityDcaEligible: false,
+    qualityTier: 'BTC_SHIFT',
+    qualityReasons: signal.qualityReasons,
+    hardBreakdownCount: signal.hardBreakdownCount,
+    blowoffTop: signal.blowoffTop,
+    volumeDistribution: signal.volumeDistribution,
+  });
+  return true;
+}
+
 const topReversalDcaLocks = new Set();
 const topReversalTrailLocks = new Set();
 
@@ -11206,9 +11905,72 @@ function getTopReversalTrailLockRoe(peakRoe) {
   return Math.max(0, Math.floor((peakRoe - 10) / 5) * 5);
 }
 
+function getClosedCachedKlines(symbol, interval, limit) {
+  const now = Date.now();
+  const klines = klineCache.getIfCached(symbol, interval, limit);
+  if (!Array.isArray(klines) || klines.length === 0) return [];
+  return klines.filter((k) => Number(k?.closeTime ?? 0) <= now).slice(-limit);
+}
+
+function getTopReversalTrailConfirmation(symbol) {
+  const interval = String(process.env.TOP_REVERSAL_PAPER_TRAIL_CONFIRM_INTERVAL ?? '5m');
+  const klines = getClosedCachedKlines(symbol, interval, 80);
+  const closes = klines.map((k) => Number(k.close)).filter(Number.isFinite);
+  const last = klines.at(-1);
+  let closeBelowEma = false;
+  let redContinuation = false;
+  let ema13 = null;
+  let ema25 = null;
+  let redBars = 0;
+  let redWindow = 0;
+
+  if (closes.length >= 30 && last) {
+    ema13 = computeEMA(closes, 13);
+    ema25 = computeEMA(closes, 25);
+    const close = Number(last.close);
+    closeBelowEma = Number.isFinite(close)
+      && Number.isFinite(ema13)
+      && Number.isFinite(ema25)
+      && close < ema13
+      && close < ema25;
+
+    redWindow = Math.max(1, Number(process.env.TOP_REVERSAL_PAPER_TRAIL_CONFIRM_RED_WINDOW ?? 3));
+    const minRed = Math.max(1, Number(process.env.TOP_REVERSAL_PAPER_TRAIL_CONFIRM_RED_BARS ?? 2));
+    const recent = klines.slice(-redWindow);
+    redBars = recent.filter((k) => Number(k.close) < Number(k.open)).length;
+    redContinuation = recent.length >= redWindow && redBars >= minRed;
+  }
+
+  const btcRegime = emaSqueezeBtcRegime(btcHealthCache.data);
+  const btcNotBouncing = btcRegime !== 'STRONG';
+  const ok = closeBelowEma || redContinuation || btcNotBouncing;
+  return {
+    ok,
+    closeBelowEma,
+    redContinuation,
+    btcNotBouncing,
+    btcRegime,
+    interval,
+    redBars,
+    redWindow,
+    ema13,
+    ema25,
+    close: Number(last?.close),
+    reason: [
+      closeBelowEma ? `close<EMA13/25 ${interval}` : '',
+      redContinuation ? `red ${redBars}/${redWindow} ${interval}` : '',
+      btcNotBouncing ? `BTC_${btcRegime}` : '',
+    ].filter(Boolean).join('+') || `no confirm ${interval} BTC_${btcRegime}`,
+  };
+}
+
 async function updateTopReversalPaperTrail(trade, markPrice) {
   if (process.env.TOP_REVERSAL_PAPER_TRAIL_ENABLED === 'false') return trade;
   if (trade.status !== 'OPEN' || topReversalTrailLocks.has(trade.id)) return trade;
+  const qualityTier = String(trade.qualityTier ?? (trade.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')).toUpperCase();
+  if (trade.dcaTaken && ['QUALITY', 'VOLUME_DISTRIBUTION'].includes(qualityTier)) {
+    return trade;
+  }
   const entry = Number(trade.entryPrice);
   const margin = Number(trade.marginUsdt);
   const quantity = Number(trade.quantity);
@@ -11218,7 +11980,15 @@ async function updateTopReversalPaperTrail(trade, markPrice) {
 
   const roe = ((entry - mark) * quantity / margin) * 100;
   const peakRoe = Math.max(Number(trade.peakRoe ?? 0), roe);
-  const lockRoe = getTopReversalTrailLockRoe(peakRoe);
+  const rawLockRoe = getTopReversalTrailLockRoe(peakRoe);
+  const skipEarlyBreakeven = rawLockRoe === 0
+    && (trade.qualityDcaEligible === true || ['QUALITY', 'VOLUME_DISTRIBUTION'].includes(qualityTier));
+  const needsConfirmation = rawLockRoe != null && !skipEarlyBreakeven
+    && process.env.TOP_REVERSAL_PAPER_TRAIL_CONFIRM_ENABLED !== 'false';
+  const confirmation = needsConfirmation
+    ? getTopReversalTrailConfirmation(trade.symbol)
+    : { ok: true, reason: '' };
+  const lockRoe = skipEarlyBreakeven || !confirmation.ok ? null : rawLockRoe;
   const currentLock = trade.slTrailLockRoe != null && Number.isFinite(Number(trade.slTrailLockRoe))
     ? Number(trade.slTrailLockRoe)
     : -Infinity;
@@ -11246,6 +12016,9 @@ async function updateTopReversalPaperTrail(trade, markPrice) {
       note: [
         String(row.note ?? ''),
         shouldMoveSl ? `topReversalTrail=${lockRoe}%@${newSl}` : '',
+        shouldMoveSl && confirmation.reason ? `topReversalTrailConfirm=${confirmation.reason}` : '',
+        skipEarlyBreakeven && shouldPersistPeak ? `topReversalSkipBE=quality peak=${peakRoe.toFixed(1)}%` : '',
+        needsConfirmation && !confirmation.ok && shouldPersistPeak ? `topReversalWaitConfirm=${confirmation.reason} peak=${peakRoe.toFixed(1)}%` : '',
         shouldPersistPeak && !shouldMoveSl ? `topReversalPeak=${peakRoe.toFixed(1)}%` : '',
       ].filter(Boolean).join(' | ').slice(0, 500),
     };
@@ -11287,6 +12060,25 @@ async function processTopReversalPaperPrice(symbol, markPrice) {
     const roe = pnl / Number(trade.marginUsdt) * 100;
     const trigger = -Math.abs(Number(process.env.TOP_REVERSAL_PAPER_DCA_ROE ?? 25));
     if (roe > trigger) continue;
+    if (trade.strongCase) {
+      const latest = await readTopReversalPaperStore();
+      const idx = latest.trades.findIndex((row) =>
+        row.id === trade.id && row.status === 'OPEN' && !row.dcaTaken);
+      if (idx >= 0 && latest.trades[idx].dcaBlockedReason !== 'strongCase=$10-test') {
+        latest.trades[idx] = {
+          ...latest.trades[idx],
+          dcaBlockedAt: new Date().toISOString(),
+          dcaBlockedReason: 'strongCase=$10-test',
+          note: [
+            String(latest.trades[idx].note ?? ''),
+            `DCA_BLOCKED=strongCase $10 test roe=${roe.toFixed(1)}%`,
+          ].filter(Boolean).join(' | ').slice(0, 500),
+        };
+        await writeTopReversalPaperStore(latest);
+        scheduleTopReversalPaperBroadcast(50);
+      }
+      continue;
+    }
     if (!trade.qualityBreakdown) {
       const latest = await readTopReversalPaperStore();
       const idx = latest.trades.findIndex((row) =>
@@ -11305,6 +12097,37 @@ async function processTopReversalPaperPrice(symbol, markPrice) {
         scheduleTopReversalPaperBroadcast(50);
       }
       continue;
+    }
+    {
+      const latest = await readTopReversalPaperStore();
+      const idx = latest.trades.findIndex((row) =>
+        row.id === trade.id && row.status === 'OPEN' && !row.dcaTaken);
+      if (idx < 0) continue;
+      const row = latest.trades[idx];
+      const minScore = Number(process.env.TOP_REVERSAL_QUALITY_DCA_MIN_SCORE ?? 65);
+      const minPeakRoe = Number(process.env.TOP_REVERSAL_PAPER_DCA_MIN_PEAK_ROE ?? 5);
+      const blockReasons = [
+        row.qualityDcaEligible !== true ? 'qualityDcaEligible=false' : null,
+        Number(row.score ?? 0) < minScore ? `score<${minScore}` : null,
+        Number(row.peakRoe ?? 0) < minPeakRoe ? `peakRoe<${minPeakRoe}` : null,
+      ].filter(Boolean);
+      if (blockReasons.length) {
+        const reason = blockReasons.join('+');
+        if (row.dcaBlockedReason !== reason) {
+          latest.trades[idx] = {
+            ...row,
+            dcaBlockedAt: new Date().toISOString(),
+            dcaBlockedReason: reason,
+            note: [
+              String(row.note ?? ''),
+              `DCA_BLOCKED=${reason} roe=${roe.toFixed(1)}% peak=${Number(row.peakRoe ?? 0).toFixed(1)}%`,
+            ].filter(Boolean).join(' | ').slice(0, 500),
+          };
+          await writeTopReversalPaperStore(latest);
+          scheduleTopReversalPaperBroadcast(50);
+        }
+        continue;
+      }
     }
 
     topReversalDcaLocks.add(trade.id);
@@ -11346,7 +12169,9 @@ async function processTopReversalPaperPrice(symbol, markPrice) {
           `qualityTier=${qualityTier}`,
           `avgEntry=${averageEntry}`,
           'initialNoSL=Y',
-          'trailFrom=15%ROE',
+          ['QUALITY', 'VOLUME_DISTRIBUTION'].includes(qualityTier)
+            ? 'trailOffAfterQualityDca=Y'
+            : 'trailFrom=15%ROE',
         ].join(' | ').slice(0, 500),
       };
       await writeTopReversalPaperStore(latest);
@@ -11362,28 +12187,65 @@ async function createTopReversalPaperTrades(signals = []) {
   if (process.env.TOP_REVERSAL_PAPER_ENABLED === 'false') return;
   const minScore = Number(process.env.TOP_REVERSAL_PAPER_MIN_SCORE ?? 55);
   const cooldownMs = Number(process.env.TOP_REVERSAL_PAPER_COOLDOWN_MS ?? 4 * 3600_000);
+  const allowedStages = new Set(String(process.env.TOP_REVERSAL_PAPER_STAGES ?? 'TOP_CONFIRMED,TOP_EARLY_CONFIRMED')
+    .split(',')
+    .map((stage) => stage.trim().toUpperCase())
+    .filter(Boolean));
   for (const signal of signals) {
-    if (signal.stage !== 'TOP_CONFIRMED' || Number(signal.score) < minScore) continue;
-    const key = `${signal.symbol}|TOP_REVERSAL`;
+    const stage = String(signal.stage ?? '').toUpperCase();
+    if (!allowedStages.has(stage) || Number(signal.score) < minScore) continue;
+    const isEarlyConfirmed = stage === 'TOP_EARLY_CONFIRMED';
+    if (String(signal.action ?? '').toUpperCase() === 'SHORT') {
+      const btcRelation = signal.btcRelation ?? getTopReversalBtcRelation(signal.symbol);
+      const btcShiftGate = getTopReversalBtcBearShiftGate(btcHealthCache.data);
+      if (btcRelation?.relation === 'aligned' && btcShiftGate.ok) {
+        const handled = await applyTopReversalBtcShiftPaper(signal, btcShiftGate, btcRelation)
+          .catch((err) => {
+            console.warn(`[TopReversalPaper] BTC_SHIFT ${signal.symbol}:`, err.message);
+            return false;
+          });
+        if (handled) continue;
+      }
+    }
+    const key = `${signal.symbol}|${stage}`;
     const last = topReversalPaperAutoFired.get(key) ?? 0;
     if (Date.now() - last < cooldownMs) continue;
     topReversalPaperAutoFired.set(key, Date.now());
+    const isStrongCase = Boolean(signal.strongCase);
+    const strongMargin = Number(process.env.TOP_REVERSAL_PAPER_STRONG_CASE_MARGIN_USDT ?? 10);
+    const scoutMargin = isStrongCase
+      ? strongMargin
+      : Number(process.env.TOP_REVERSAL_PAPER_SCOUT_MARGIN_USDT ?? 1);
+    const minDcaScore = Number(process.env.TOP_REVERSAL_QUALITY_DCA_MIN_SCORE ?? 65);
+    const dcaAllowedBySignal = Boolean(signal.qualityDcaEligible) && Number(signal.score) >= minDcaScore;
+    const dcaText = isStrongCase
+      ? `STRONG_CASE=$${scoutMargin} | ${signal.strongCaseType ?? 'STRONG_PEAK_SIMILAR'} | DCA=NO`
+      : isEarlyConfirmed
+      ? 'EARLY_SCOUT=$1 | DCA=NO'
+      : dcaAllowedBySignal
+      ? `SCOUT=$1 | DCA=${signal.qualityTier === 'VOLUME_DISTRIBUTION' ? '$5' : '$10'}@-25%ROE tier=${signal.qualityTier ?? (signal.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')}`
+      : `SCOUT=$1 | DCA=BLOCKED_SETUP minScore=${minDcaScore} qualityDca=${Boolean(signal.qualityDcaEligible)}`;
     await createTopReversalPaperTrade({
       symbol: signal.symbol,
       entryPrice: signal.markPrice ?? signal.entry,
-      marginUsdt: Number(process.env.TOP_REVERSAL_PAPER_SCOUT_MARGIN_USDT ?? 1),
+      marginUsdt: scoutMargin,
       tp: signal.tp,
       runnerTp: signal.runnerTp,
       score: signal.score,
       stage: signal.stage,
-      note: `${signal.note} | SCOUT=$1 | DCA=${signal.qualityTier === 'VOLUME_DISTRIBUTION' ? '$5' : '$10'}@-25%ROE tier=${signal.qualityTier ?? (signal.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')} | initialNoSL=Y | trailFrom=15%ROE`,
-      source: `top-reversal-${signal.score}`,
+      note: `${String(signal.note ?? '').replace('paper=NO', isStrongCase ? 'paper=STRONG_CASE' : isEarlyConfirmed ? 'paper=EARLY_SCOUT' : 'paper=YES')} | ${dcaText} | initialNoSL=Y | trailFrom=15%ROE${dcaAllowedBySignal ? ' | skipEarlyBE=quality' : ''}`,
+      source: isStrongCase ? `top-reversal-strong-${signal.score}` : isEarlyConfirmed ? `top-reversal-early-${signal.score}` : `top-reversal-${signal.score}`,
       qualityBreakdown: signal.qualityBreakdown,
+      qualityDcaEligible: signal.qualityDcaEligible,
       qualityTier: signal.qualityTier,
       qualityReasons: signal.qualityReasons,
       hardBreakdownCount: signal.hardBreakdownCount,
       blowoffTop: signal.blowoffTop,
       volumeDistribution: signal.volumeDistribution,
+      strongCase: signal.strongCase,
+      strongCaseType: signal.strongCaseType,
+      strongCaseScore: signal.strongCaseScore,
+      strongCaseReasons: signal.strongCaseReasons,
     }).catch((err) => console.warn(`[TopReversalPaper] ${signal.symbol}:`, err.message));
   }
 }

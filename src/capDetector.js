@@ -357,6 +357,12 @@ function detectLiqFlush(candles, state = {}, cfg = {}) {
     confirmBars:     3,
     minScore:        50,
     ema99Thresh:     0.92,    // below this → flip to failed_bounce SHORT
+    blockDeepFlushShort: true,
+    blockDeepFlushEmaGapPct: 10,
+    blockDeepFlushBouncePct: 60,
+    blockDeepFlushVolX: 4,
+    blockDeepFlushEmaGapHardPct: 12,
+    blockDeepFlushBounceSoftPct: 50,
   }, cfg || {});
 
   const minLen = Math.max(C.volLB, C.atrPeriod) + C.scanTail + 5;
@@ -451,6 +457,23 @@ function detectLiqFlush(candles, state = {}, cfg = {}) {
   };
 
   if (inDowntrend) {
+    const bouncePct = rev.recovery * 100;
+    const bottomFlushShortRisk = C.blockDeepFlushShort && (
+      (flushVolX >= C.blockDeepFlushVolX
+        && bouncePct >= C.blockDeepFlushBouncePct
+        && ema99GapPct >= C.blockDeepFlushEmaGapPct)
+      || (ema99GapPct >= C.blockDeepFlushEmaGapHardPct
+        && (flushVolX >= C.blockDeepFlushVolX || bouncePct >= C.blockDeepFlushBounceSoftPct))
+    );
+    if (bottomFlushShortRisk) {
+      return {
+        pass: false,
+        action: null,
+        reason: `Bottom flush short blocked: bounce ${bouncePct.toFixed(0)}%, EMA99 gap ${ema99GapPct}%, flush vol ${flushVolX.toFixed(1)}x`,
+        blockedType: 'BOTTOM_FLUSH_SHORT_RISK',
+        factors: commonFactors,
+      };
+    }
     // ── Failed Bounce SHORT ────────────────────────────────────────────────────
     const entry    = +(rev.l * 0.999).toFixed(8);
     const altEntry = +(closes[n - 1] * 0.999).toFixed(8);

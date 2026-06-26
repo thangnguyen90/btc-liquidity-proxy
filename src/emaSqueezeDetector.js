@@ -505,35 +505,39 @@ export function detectEmaSqueeze(candles, state = {}, cfg = {}) {
   const brLikeVolRatio = isBreakout ? breakoutVolRatio : Math.max(rampVolRatio, pulseVolRatio);
   const brLikeMovePct = isBreakout
     ? eventMovePct
-    : (baseLow > 1e-12 ? Math.max(0, Cc[lastIdx] - baseLow) / baseLow : 0);
+    : isShortSide
+      ? (baseHigh > 1e-12 ? Math.max(0, baseHigh - Cc[lastIdx]) / baseHigh : 0)
+      : (baseLow > 1e-12 ? Math.max(0, Cc[lastIdx] - baseLow) / baseLow : 0);
   const brBaseShape = clamp(1 - Math.abs(baseRangePct - 0.045) / 0.07, 0, 1);
   const brCompression = clamp(tightRatioForRunner, 0, 1) * 0.55 + clamp(squeezeFillRatio, 0, 1) * 0.45;
   const brVolShape = clamp(Math.log1p(Math.max(0, brLikeVolRatio)) / Math.log1p(120), 0, 1);
   const brMoveShape = isBreakout
     ? clamp((brLikeMovePct - 0.08) / 0.32, 0, 1)
-    : clamp((emaBandPos - 0.62) / 0.38, 0, 1) * 0.55 + clamp((closeInBase - 0.55) / 0.45, 0, 1) * 0.45;
+    : isShortSide
+      ? clamp((0.38 - emaBandPos) / 0.38, 0, 1) * 0.55 + clamp((0.45 - closeInBase) / 0.45, 0, 1) * 0.45
+      : clamp((emaBandPos - 0.62) / 0.38, 0, 1) * 0.55 + clamp((closeInBase - 0.55) / 0.45, 0, 1) * 0.45;
   const brSpreadShape = isBreakout
     ? clamp((spreadNow - 0.025) / 0.13, 0, 1)
     : clamp((C.preBreakoutMaxSpreadPct - spreadNow) / C.preBreakoutMaxSpreadPct, 0, 1);
-  const brGreenShape = clamp(greenPulseBars / 4, 0, 1);
+  const brPulseShape = clamp((isShortSide ? redPulseBars : greenPulseBars) / 4, 0, 1);
   const brFreshShape = isBreakout && breakoutAge != null
     ? clamp((18 - breakoutAge) / 18, 0, 1)
     : 1;
-  const brLikeScore = isShortSide ? 0 : Math.round(100 * (
+  const brLikeScore = Math.round(100 * (
     brBaseShape * 0.16 +
     brCompression * 0.18 +
     brVolShape * 0.22 +
     brMoveShape * 0.20 +
     brSpreadShape * 0.10 +
-    brGreenShape * 0.08 +
+    brPulseShape * 0.08 +
     brFreshShape * 0.06
   ));
   const brLikeLabel = brLikeScore >= 82
-    ? 'BR very close'
+    ? (isShortSide ? 'BR-short very close' : 'BR very close')
     : brLikeScore >= 68
-      ? 'BR-like'
+      ? (isShortSide ? 'BR-like short' : 'BR-like')
       : brLikeScore >= 55
-        ? 'BR watch'
+        ? (isShortSide ? 'BR-short watch' : 'BR watch')
         : null;
 
   // ── Build output ─────────────────────────────────────────────────────────────

@@ -249,6 +249,19 @@ function buildCard(sig) {
     : (confirmed ? 'LONG RECLAIM CONFIRMED' : 'LONG SHAKEOUT WATCH');
   const detailUrl = `/?symbol=${encodeURIComponent(sig.symbol)}`;
   const changeColor = Number(sig.change24h ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
+  const classColor = {
+    red: ['#7f1d1d', '#fb7185', '#fff'],
+    amber: ['#422006', '#fbbf24', '#fde68a'],
+    cyan: ['#083344', '#22d3ee', '#a5f3fc'],
+    pink: ['#4c0519', '#f472b6', '#fce7f3'],
+    green: ['#052e1a', '#34d399', '#d1fae5'],
+  }[sig.shakeoutClassColor || ''] || ['#111827', '#38bdf8', '#e0f2fe'];
+  const classBadge = sig.shakeoutClass
+    ? `<div style="margin-top:8px;padding:8px;border:1px solid ${classColor[1]};background:${classColor[0]};color:${classColor[2]};font-weight:900;font-size:12px;line-height:1.35">
+        ${escapeHtml(sig.shakeoutClassLabel || sig.shakeoutClass)}
+        <span style="font-weight:700;color:${classColor[2]};opacity:.85"> · ${escapeHtml(sig.shakeoutClassReason || '')}</span>
+      </div>`
+    : '';
   return `
     <article class="sr-card ${stageClass}">
       <div class="sr-top">
@@ -263,6 +276,7 @@ function buildCard(sig) {
       </div>
 
       <div class="sr-pattern">${sig.reason || ''}</div>
+      ${classBadge}
       ${isBottomRebound ? `<div style="margin-top:8px;padding:9px;border:1px solid #22d3ee;background:#083344;color:#a5f3fc;font-weight:900">
         SONG HOI TU DAY · MARKET $5 · DCA +$10 KHI ROE ≤ -25% · NO SL<br>
         drawdown ${fmtPct(sig.factors?.bottomDeclinePct)} · rebound ${fmtPct(sig.factors?.bottomReboundPct)}
@@ -593,6 +607,24 @@ function renderPaperTrades(data) {
         + `<div style="margin-top:5px;color:#fde68a;font-size:10px;font-weight:900;line-height:1.35">`
         + `MAX ${Number(t.btcDynamicMaxPct ?? 0).toFixed(0)}% · beta ${Number(t.btcDynamicBeta ?? 1).toFixed(2)}`
         + `<br>BTC ${fmtPrice(t.btcAnchorPrice)} → ${fmtPrice(t.btcLastPrice)}`
+        + `</div>`;
+    }
+    if (t.shakeoutClass) {
+      const classTone = {
+        FALSE_RECLAIM: ['#9f1239', '#fb7185', '#fff'],
+        FALSE_REJECT: ['#9f1239', '#fb7185', '#fff'],
+        WEAK_RECLAIM: ['#422006', '#fbbf24', '#fde68a'],
+        WEAK_REJECT: ['#422006', '#fbbf24', '#fde68a'],
+        STRONG_RECLAIM: ['#083344', '#22d3ee', '#a5f3fc'],
+        STRONG_REJECT: ['#4c0519', '#f472b6', '#fce7f3'],
+        CLEAN_RECLAIM: ['#052e1a', '#34d399', '#d1fae5'],
+        CLEAN_REJECT: ['#3f1111', '#ef4444', '#fee2e2'],
+        BOTTOM_REBOUND: ['#083344', '#22d3ee', '#a5f3fc'],
+        TOP_REBOUND: ['#4c0519', '#f472b6', '#fce7f3'],
+      }[String(t.shakeoutClass)] || ['#111827', '#38bdf8', '#e0f2fe'];
+      variantBadge += `<div style="margin-top:5px;padding:4px;color:${classTone[2]};background:${classTone[0]};border:1px solid ${classTone[1]};font-size:10px;font-weight:900;line-height:1.35" title="${escapeHtml(t.shakeoutClassReason || '')}">`
+        + `${escapeHtml(t.shakeoutClassLabel || t.shakeoutClass)}`
+        + (t.shakeoutClassReason ? `<br>${escapeHtml(t.shakeoutClassReason)}` : '')
         + `</div>`;
     }
     if (t.btcIndependentShort) {

@@ -4,10 +4,10 @@ const API_URL = '/api/ema-squeeze-signals';
 let allSignals = [];
 let scannedAt  = null;
 let total      = 0;
-let activeStage = 'all';  // 'all' | 'BREAKOUT' | 'BREAKDOWN' | 'PRE_BREAKOUT' | 'PRE_BREAKDOWN' | 'SQUEEZE' | 'RUNNER' | 'SQUEEZE_SHORT'
+let activeStage = 'all';  // 'all' | 'BREAKOUT' | 'BREAKDOWN' | 'PRE_BREAKOUT' | 'PRE_BREAKDOWN' | 'SQUEEZE' | 'RUNNER' | 'BR_LIKE' | 'BR_LIKE_SHORT' | 'SQUEEZE_SHORT'
 let esPaperTrades = [];
 let esPaperSort = { key: 'status', dir: 'asc' };
-let esPaperTypeFilter = 'Breakout'; // mặc định Breakout để tránh render hết 8000+ lệnh gây đơ browser
+let esPaperTypeFilter = 'all';
 let esPaperDayFilter = 'all';
 let esPaperTfFilter = 'all';
 let esPaperPage = 1;
@@ -391,9 +391,9 @@ function buildCard(sig) {
     chips.push(`<span class="es-chip danger">Pre Vol ${pv.toFixed(1)}×</span>`);
     chips.push(`<span class="es-chip danger">Red ${sig.redPulseBars ?? '?'}</span>`);
   }
-  if (!isShort && Number(sig.brLikeScore ?? 0) >= 55) {
-    const cls = Number(sig.brLikeScore) >= 82 ? 'br-hot' : 'br-like';
-    chips.push(`<span class="es-chip ${cls}" title="Mức giống chart BRUSDT: EMA nén ở nền, volume xanh phình, rồi kéo mạnh">${sig.brLikeLabel ?? 'BR-like'} ${Number(sig.brLikeScore).toFixed(0)}</span>`);
+  if (Number(sig.brLikeScore ?? 0) >= 55) {
+    const cls = isShort ? 'danger' : (Number(sig.brLikeScore) >= 82 ? 'br-hot' : 'br-like');
+    chips.push(`<span class="es-chip ${cls}" title="${isShort ? 'BR-like SHORT: EMA nen o dinh/base, volume do phinh, roi gay xuong' : 'BR-like LONG: EMA nen o nen, volume xanh phinh, roi keo manh'}">${sig.brLikeLabel ?? (isShort ? 'BR-like short' : 'BR-like')} ${Number(sig.brLikeScore).toFixed(0)}</span>`);
   }
   if (sig.baseRangePct != null) {
     const b = Number(sig.baseRangePct) * 100;
@@ -698,6 +698,8 @@ function renderEsPaperPager() {
 function getEsStage(t) {
   const source = String(t.source ?? '');
   const note = String(t.note ?? '');
+  if (source.includes('br_like_short') || note.includes('brLikeShort=Y')) return 'BR-like Short';
+  if (source.includes('br_like') || note.includes('brLike=Y')) return 'BR-like';
   if (t.runnerCandidate || source.includes('runner') || note.includes('runner=Y')) return 'Runner';
   if (source.includes('pre_breakout')) return 'Pre Breakout';
   if (source.includes('pre_breakdown')) return 'Pre Breakdown';
@@ -988,6 +990,10 @@ function getFiltered() {
   let list = allSignals.filter((s) => {
     if (activeStage === 'RUNNER') {
       if (!s.runnerCandidate) return false;
+    } else if (activeStage === 'BR_LIKE') {
+      if (Number(s.brLikeScore ?? 0) <= 85 || s.action === 'SHORT') return false;
+    } else if (activeStage === 'BR_LIKE_SHORT') {
+      if (Number(s.brLikeScore ?? 0) <= 85 || s.action !== 'SHORT') return false;
     } else if (activeStage !== 'all' && s.stage !== activeStage) {
       return false;
     }
@@ -1029,6 +1035,8 @@ function render() {
         ? 'Không có coin nào đang nén EMA'
         : activeStage === 'RUNNER'
           ? 'Không có runner squeeze kiểu OPEN/OPN'
+        : activeStage === 'BR_LIKE'
+          ? 'Không có chart BR-like > 85'
         : activeStage === 'SQUEEZE_SHORT'
           ? 'Không có coin nào đang nén để short'
         : 'Không có signal nào';
@@ -1053,6 +1061,8 @@ function applyData(data) {
   const squeezes   = allSignals.filter((s) => s.stage === 'SQUEEZE');
   const squeezeShorts = allSignals.filter((s) => s.stage === 'SQUEEZE_SHORT');
   const runners    = allSignals.filter((s) => s.runnerCandidate);
+  const brLikes    = allSignals.filter((s) => Number(s.brLikeScore ?? 0) > 85 && s.action !== 'SHORT');
+  const brLikeShorts = allSignals.filter((s) => Number(s.brLikeScore ?? 0) > 85 && s.action === 'SHORT');
   const scores     = allSignals.map((s) => s.score);
   const avg        = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
 
@@ -1067,9 +1077,12 @@ function applyData(data) {
   scanMeta.style.display    = 'flex';
 
   scanStatus.textContent = allSignals.length > 0
-    ? `🟢 ${breakouts.length} Breakout · 🔴 ${breakdowns.length} Breakdown · 🟦 ${preBreakouts.length} Pre Long · 🟪 ${preBreakdowns.length} Pre Short · 🔶 ${squeezes.length} Squeeze · 💠 ${runners.length} Runner · 🟥 ${squeezeShorts.length} Short`
+    ? `🟢 ${breakouts.length} Breakout · 🔴 ${breakdowns.length} Breakdown · 🟦 ${preBreakouts.length} Pre Long · 🟪 ${preBreakdowns.length} Pre Short · 🔶 ${squeezes.length} Squeeze · BR ${brLikes.length} BR-like · 💠 ${runners.length} Runner · 🟥 ${squeezeShorts.length} Short`
     : `● Quét xong · Không có signal`;
   scanStatus.style.color = allSignals.length > 0 ? 'var(--green)' : 'var(--muted)';
+  scanStatus.textContent = allSignals.length > 0
+    ? `${breakouts.length} Breakout · ${breakdowns.length} Breakdown · ${preBreakouts.length} Pre Long · ${preBreakdowns.length} Pre Short · ${squeezes.length} Squeeze · BR ${brLikes.length} BR-like · BR Short ${brLikeShorts.length} · ${runners.length} Runner · ${squeezeShorts.length} Short`
+    : 'Scan done · No signal';
 
   render();
 }

@@ -45,30 +45,43 @@ function renderSignals() {
     const qualityTier = String(signal.qualityTier ?? f.qualityTier ?? (signal.qualityBreakdown || f.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')).toUpperCase();
     const quality = qualityTier === 'QUALITY';
     const volume = qualityTier === 'VOLUME_DISTRIBUTION';
-    const canDca = quality || volume;
-    const qualityLabel = quality
+    const strongCase = Boolean(signal.strongCase ?? f.strongCase);
+    const strongCaseType = String(signal.strongCaseType ?? f.strongCaseType ?? '');
+    const strongCaseScore = Number(signal.strongCaseScore ?? f.strongCaseScore ?? 0);
+    const canDca = !strongCase && (quality || volume);
+    const strongLabel = strongCase
+      ? `${strongCaseType === 'EARLY_PEAK_SIMILAR' ? 'EARLY PEAK SIMILAR' : 'STRONG PEAK SIMILAR'} ${strongCaseScore || ''}`.trim()
+      : '';
+    const qualityLabel = strongCase
+      ? strongLabel
+      : quality
       ? `QUALITY DCA $10 ${signal.hardBreakdownCount ?? f.hardBreakdownCount ?? 0}/3`
       : volume ? 'VOLUME DISTRIBUTION DCA $5'
-      : isEarly ? 'EARLY CONFIRMED · WATCH ONLY'
+      : isEarly ? 'EARLY CONFIRMED - SCOUT PAPER 1 USDT'
       : isNear ? 'NEAR MISS · WATCH ONLY'
       : isLong ? 'FAIL RECLAIM LONG' : 'SCOUT ONLY';
     const qualityReasons = Array.isArray(signal.qualityReasons)
       ? signal.qualityReasons.join(', ')
       : Array.isArray(f.qualityReasons) ? f.qualityReasons.join(', ') : '';
+    const btcRel = signal.btcRelation;
+    const btcAligned = btcRel?.relation === 'aligned';
+    const btcChip = btcRel
+      ? `<span class="tr-chip ${btcAligned ? 'quality' : 'scout'}">BTC ${btcAligned ? 'aligned' : 'mixed'} - corr ${btcRel.corr ?? '-'} - BTC ${signed(btcRel.btcMovePct, '%')}</span>`
+      : '';
     return `
-      <article class="tr-card ${signal.confirmed ? 'confirmed' : ''} ${quality ? 'quality' : ''} ${volume ? 'volume' : ''} ${isEarly ? 'early' : ''} ${isNear && !isEarly ? 'near' : ''} ${isLong ? 'long' : ''}">
+      <article class="tr-card ${signal.confirmed ? 'confirmed' : ''} ${strongCase ? 'strong-case' : ''} ${quality ? 'quality' : ''} ${volume ? 'volume' : ''} ${isEarly ? 'early' : ''} ${isNear && !isEarly ? 'near' : ''} ${isLong ? 'long' : ''}">
         <div class="tr-top">
           <div>
             <a class="tr-symbol" href="/?symbol=${encodeURIComponent(signal.symbol)}" target="_blank">${signal.symbol.replace(/USDT$/, '')}<small>USDT</small></a>
             <span class="tr-change">${signed(signal.change24h, '%')} 24h · ${price(signal.markPrice)}</span>
           </div>
           <div class="tr-right">
-            <span class="tr-badge">${isLong ? 'FAIL RECLAIM LONG' : isEarly ? 'EARLY CONFIRMED' : isNear ? 'NEAR MISS · WATCH ONLY' : signal.stage === 'TOP_CONFIRMED' ? 'TOP REVERSAL CONFIRMED' : 'TOP WATCH'}</span>
+            <span class="tr-badge">${strongCase ? 'STRONG CASE' : isLong ? 'FAIL RECLAIM LONG' : isEarly ? 'EARLY CONFIRMED' : isNear ? 'NEAR MISS · WATCH ONLY' : signal.stage === 'TOP_CONFIRMED' ? 'TOP REVERSAL CONFIRMED' : 'TOP WATCH'}</span>
             <div class="tr-score">${signal.score} <small>${signal.grade}</small></div>
           </div>
         </div>
         <div class="tr-reason">${signal.reason}</div>
-        <div class="tr-plan">${isLong ? 'LONG WATCH: short fail + reclaim EMA13/25 + green volume' : isEarly ? 'EARLY CONFIRMED · drop 5-8% + EMA break + red bars + BTC not bullish · paper=NO' : isNear ? 'WATCH ONLY · chua vao paper · cho them xac nhan drop/EMA/volume' : `SHORT SCOUT $1 · ${canDca ? `DCA +$${volume ? 5 : 10} duoc phep khi ROE <= -25%` : 'DCA BI KHOA vi chua du quality'} · trailing SL tu +15% ROE`}</div>
+        <div class="tr-plan">${isLong ? 'LONG WATCH: short fail + reclaim EMA13/25 + green volume' : strongCase ? 'STRONG CASE - paper $10 vao thang - DCA=NO - trailing tu +15% ROE' : isEarly ? 'EARLY CONFIRMED - drop 5-8% + EMA break + red bars + BTC not bullish - scout paper 1 USDT - DCA=NO' : isNear ? 'WATCH ONLY · chua vao paper · cho them xac nhan drop/EMA/volume' : `SHORT SCOUT $1 · ${canDca ? `DCA +$${volume ? 5 : 10} duoc phep khi ROE <= -25%` : 'DCA BI KHOA vi chua du quality'} · trailing SL tu +15% ROE`}</div>
         <div class="tr-prices">
           <div class="tr-price"><span>Entry</span><strong>${price(signal.entry)}</strong></div>
           <div class="tr-price"><span>SL</span><strong style="color:#67e8f9">${isLong ? price(signal.sl) : 'TRAIL +15%'}</strong></div>
@@ -84,7 +97,8 @@ function renderSignals() {
           <span class="tr-chip">Red ${f.redBars5m}/5</span>
           <span class="tr-chip">RSI ${f.rsi5m ?? '-'}/${f.rsi15m ?? '-'}</span>
           <span class="tr-chip">EMA break ${signed(f.emaBreakPct, '%')}</span>
-          <span class="tr-chip ${quality ? 'quality' : volume ? 'volume' : isEarly ? 'early' : 'scout'}">${qualityLabel}${qualityReasons ? ` · ${qualityReasons}` : ''}</span>
+          ${btcChip}
+          <span class="tr-chip ${strongCase ? 'strong-case' : quality ? 'quality' : volume ? 'volume' : isEarly ? 'early' : 'scout'}">${qualityLabel}${qualityReasons ? ` · ${qualityReasons}` : ''}</span>
         </div>
         <div class="muted" style="font-size:11px">${signal.note}</div>
       </article>`;
@@ -120,10 +134,24 @@ function renderPaper(data) {
     const qualityTier = String(trade.qualityTier ?? (trade.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')).toUpperCase();
     const quality = qualityTier === 'QUALITY';
     const volume = qualityTier === 'VOLUME_DISTRIBUTION';
-    const canDca = quality || volume;
+    const early = qualityTier === 'EARLY_CONFIRMED' || String(trade.stage ?? '').toUpperCase() === 'TOP_EARLY_CONFIRMED';
+    const strongCase = Boolean(trade.strongCase);
+    const btcShift = qualityTier === 'BTC_SHIFT' || String(trade.source ?? '').includes('btc-shift') || trade.btcShiftDcaTaken;
+    const canDca = !strongCase && (quality || volume);
+    const signalType = strongCase
+      ? String(trade.strongCaseType ?? 'STRONG_PEAK_SIMILAR')
+      : btcShift
+      ? 'BTC SHIFT'
+      : quality
+      ? 'QUALITY DCA'
+      : volume ? 'VOLUME DCA'
+      : early ? 'EARLY SCOUT'
+      : 'SCOUT ONLY';
     const dca = trade.dcaTaken
-      ? `<span class="tr-dca">DCA +$${Number(trade.dcaMarginUsdt || 10).toFixed(0)} @ ${price(trade.dcaPrice)}<br>AVG ${price(trade.entryPrice)}</span>`
-      : `<span class="tr-market">SCOUT $${Number(trade.marginUsdt || 1).toFixed(0)}<br>${canDca ? `DCA allowed $${volume ? 5 : 10}` : 'DCA blocked'}</span>`;
+      ? `<span class="tr-dca">DCA +$${Number(trade.dcaMarginUsdt || 10).toFixed(0)} @ ${price(trade.dcaPrice)}<br>AVG ${price(trade.entryPrice)}<br><small>${signalType}</small></span>`
+      : trade.btcShiftDcaTaken
+      ? `<span class="tr-dca">BTC SHIFT +$10<br>AVG ${price(trade.entryPrice)}<br><small>chart theo BTC</small></span>`
+      : `<span class="tr-market">SCOUT $${Number(trade.marginUsdt || 1).toFixed(0)}<br>${canDca ? `DCA allowed $${volume ? 5 : 10}` : 'DCA blocked'}<br><small>${signalType}</small></span>`;
     const action = trade.status === 'CLOSED'
       ? `<button class="tr-btn del" data-delete="${trade.id}">Del</button>`
       : `<button class="tr-btn" data-close="${trade.id}">Close</button>`;
@@ -135,7 +163,7 @@ function renderPaper(data) {
       <td>${price(trade.markPrice)}</td>
       <td>$${Number(trade.marginUsdt || 0).toFixed(0)} · ${trade.leverage}x</td>
       <td class="${pnlClass}">${signed(trade.pnl)}</td><td class="${pnlClass}">${signed(trade.roe, '%')}</td>
-      <td>${trade.status}${trade.outcome ? ` · ${trade.outcome}` : ''}<br><small class="${canDca ? 'tr-positive' : 'tr-negative'}">${quality ? 'QUALITY DCA' : volume ? 'VOLUME DCA' : 'SCOUT ONLY'}</small></td><td>${trade.score}</td>
+      <td>${trade.status}${trade.outcome ? ` · ${trade.outcome}` : ''}<br><small class="${btcShift || canDca ? 'tr-positive' : 'tr-negative'}">${btcShift ? 'BTC SHIFT' : quality ? 'QUALITY DCA' : volume ? 'VOLUME DCA' : 'SCOUT ONLY'}</small></td><td>${trade.score}</td>
       <td>${time(trade.createdAt)}</td><td>${action}</td>
     </tr>`;
   }).join('') : '<tr><td colspan="13">Chua co paper trade Top Reversal.</td></tr>';

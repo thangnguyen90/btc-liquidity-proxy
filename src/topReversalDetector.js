@@ -81,6 +81,10 @@ function getTopReversalQuality({ risePct, dropPct, rejectPct, emaBreakPct, redBa
     emaBreakPct >= 0.06,
   ].filter(Boolean).length;
   const blowoffTop = risePct >= 0.50 && rejectPct >= 0.12 && redBars >= 5;
+  const hardDcaEligible = hardFactors >= 2
+    && redBars >= 3
+    && vol5x >= Number(process.env.TOP_REVERSAL_QUALITY_DCA_MIN_VOL5X ?? 8)
+    && vol15x >= Number(process.env.TOP_REVERSAL_QUALITY_DCA_MIN_VOL15X ?? 8);
   const volumeDistribution = !blowoffTop
     && hardFactors < 2
     && risePct >= 0.30
@@ -90,6 +94,7 @@ function getTopReversalQuality({ risePct, dropPct, rejectPct, emaBreakPct, redBa
     && vol5x >= 100
     && vol15x >= 100;
   const qualityBreakdown = hardFactors >= 2 || blowoffTop || volumeDistribution;
+  const qualityDcaEligible = hardDcaEligible || blowoffTop || volumeDistribution;
   const qualityTier = hardFactors >= 2 || blowoffTop
     ? 'QUALITY'
     : volumeDistribution ? 'VOLUME_DISTRIBUTION' : 'SCOUT_ONLY';
@@ -99,14 +104,75 @@ function getTopReversalQuality({ risePct, dropPct, rejectPct, emaBreakPct, redBa
     emaBreakPct >= 0.06 ? 'emaBreak>=6%' : null,
     blowoffTop ? 'blowoffTop' : null,
     volumeDistribution ? `volumeDistribution vol=${vol5x.toFixed(0)}x/${vol15x.toFixed(0)}x` : null,
+    qualityBreakdown && !qualityDcaEligible ? `dcaWeakVol vol=${vol5x.toFixed(1)}x/${vol15x.toFixed(1)}x` : null,
   ].filter(Boolean);
   return {
     qualityBreakdown,
+    qualityDcaEligible,
     qualityTier,
     hardBreakdownCount: hardFactors,
     blowoffTop,
     volumeDistribution,
     reasons,
+  };
+}
+
+function getTopReversalStrongCase({
+  risePct,
+  dropPct,
+  rejectPct,
+  emaBreakPct,
+  peakAge,
+  redBars,
+  vol5x = 0,
+  vol15x = 0,
+  earlyConfirmed = false,
+}) {
+  const peakFresh = peakAge <= 4;
+  const distributionBand = risePct >= 0.30
+    && risePct <= 0.62
+    && dropPct >= 0.095
+    && dropPct <= 0.165
+    && rejectPct >= 0.095
+    && rejectPct <= 0.18
+    && emaBreakPct >= 0.01
+    && emaBreakPct <= 0.065
+    && peakFresh
+    && redBars >= 3
+    && vol5x >= 10
+    && vol15x >= 15;
+  const earlyPeakFade = earlyConfirmed
+    && risePct >= 0.20
+    && dropPct >= 0.055
+    && dropPct <= 0.075
+    && rejectPct >= 0.075
+    && peakAge <= 3
+    && redBars >= 3
+    && vol5x >= 4
+    && vol15x >= 4;
+  const score = Math.round(100 * (
+    clamp01((risePct - 0.20) / 0.35) * 0.18
+    + clamp01((dropPct - 0.055) / 0.095) * 0.22
+    + clamp01((rejectPct - 0.075) / 0.075) * 0.20
+    + clamp01((4 - peakAge) / 4) * 0.14
+    + clamp01((redBars - 2) / 3) * 0.10
+    + clamp01((vol5x - 4) / 60) * 0.08
+    + clamp01((vol15x - 4) / 80) * 0.08
+  ));
+  const pass = distributionBand || earlyPeakFade;
+  const type = distributionBand ? 'STRONG_PEAK_SIMILAR' : earlyPeakFade ? 'EARLY_PEAK_SIMILAR' : null;
+  const reasons = [
+    distributionBand ? 'rise/drop/reject giống nhóm peak cao' : null,
+    earlyPeakFade ? 'early fade giống nhóm scout thắng' : null,
+    peakFresh ? 'đỉnh còn mới' : null,
+    redBars >= 3 ? `redBars=${redBars}/5` : null,
+    vol5x >= 10 || vol15x >= 15 ? `vol=${vol5x.toFixed(1)}x/${vol15x.toFixed(1)}x` : null,
+  ].filter(Boolean);
+  return {
+    strongCase: pass,
+    strongCaseType: type,
+    strongCaseScore: pass ? Math.max(55, Math.min(99, score)) : score,
+    strongCaseReasons: reasons,
   };
 }
 
@@ -334,6 +400,17 @@ export function detectTopReversal(candles5m, candles15m, snapshot = {}, opts = {
     && Number.isFinite(rsi5)
     && rsi5 <= 72
     && btcBullBias !== 'bullish';
+  const strongCase = getTopReversalStrongCase({
+    risePct,
+    dropPct,
+    rejectPct,
+    emaBreakPct,
+    peakAge,
+    redBars,
+    vol5x,
+    vol15x,
+    earlyConfirmed,
+  });
   const score = Math.round(100 * (
     clamp01((risePct - 0.18) / 0.42) * 0.22
     + clamp01((dropPct - 0.08) / 0.22) * 0.20
@@ -466,11 +543,13 @@ export function detectTopReversal(candles5m, candles15m, snapshot = {}, opts = {
     earlyConfirmed,
     watchOnly: earlyConfirmed,
     qualityBreakdown: earlyConfirmed ? false : quality.qualityBreakdown,
+    qualityDcaEligible: earlyConfirmed ? false : quality.qualityDcaEligible,
     qualityTier: earlyConfirmed ? 'EARLY_CONFIRMED' : quality.qualityTier,
     hardBreakdownCount: quality.hardBreakdownCount,
     blowoffTop: quality.blowoffTop,
     volumeDistribution: quality.volumeDistribution,
     qualityReasons: quality.reasons,
+    ...strongCase,
     score: finalScore,
     grade: gradeScore(finalScore),
     entry: Number(entry.toFixed(10)),
@@ -493,8 +572,9 @@ export function detectTopReversal(candles5m, candles15m, snapshot = {}, opts = {
       `emaBreak=${(emaBreakPct * 100).toFixed(1)}%`,
       quality.qualityBreakdown ? `qualityDca=${quality.reasons.join('+')}` : 'qualityDca=NO',
       `qualityTier=${earlyConfirmed ? 'EARLY_CONFIRMED' : quality.qualityTier}`,
+      strongCase.strongCase ? `strongCase=${strongCase.strongCaseType}:${strongCase.strongCaseScore}` : null,
       earlyConfirmed ? `btcBullBias=${btcBullBias}` : null,
-      earlyConfirmed ? 'paper=NO' : null,
+      earlyConfirmed ? 'paper=EARLY_SCOUT' : null,
     ].join(' | '),
     factors: {
       risePct: Number((risePct * 100).toFixed(2)),
@@ -514,7 +594,9 @@ export function detectTopReversal(candles5m, candles15m, snapshot = {}, opts = {
       volumeDistribution: quality.volumeDistribution,
       qualityTier: earlyConfirmed ? 'EARLY_CONFIRMED' : quality.qualityTier,
       qualityBreakdown: earlyConfirmed ? false : quality.qualityBreakdown,
+      qualityDcaEligible: earlyConfirmed ? false : quality.qualityDcaEligible,
       qualityReasons: quality.reasons,
+      ...strongCase,
       ema13_5m: Number(d5.ema13[last5].toFixed(10)),
       ema25_5m: Number(d5.ema25[last5].toFixed(10)),
       ema99_5m: Number(d5.ema99[last5].toFixed(10)),

@@ -245,6 +245,110 @@ function assessTrapRisk({ side, m5, m15 }) {
   };
 }
 
+function classifyShakeoutSignal({ side, score, stage, m5, m15, trap, bottomRebound, bottomReboundRisk, btcRegime }) {
+  const isShort = String(side ?? 'LONG').toUpperCase() === 'SHORT';
+  const reasons = [];
+  const vol5mX = Math.max(Number(m5.volRatio ?? 0), Number(m5.pullVolRatio ?? 0));
+  const vol15mX = Math.max(Number(m15.volRatio ?? 0), Number(m15.pullVolRatio ?? 0));
+  const reclaimPct = Number(m5.reclaimPct ?? 0) * 100;
+  const move5mPct = Number(m5.movePct ?? 0) * 100;
+  const move15mPct = Number(m15.movePct ?? 0) * 100;
+  const drop5mPct = Number(m5.dropPct ?? 0) * 100;
+  const emaDistPct = Number(m5.maDistPct ?? 0) * 100;
+  const rsi5m = Number(m5.rsi14);
+  const rsi15m = Number(m15.rsi14);
+  const confirmed = stage === 'RECLAIM_CONFIRMED';
+  const btc = String(btcRegime ?? 'FLAT').toUpperCase();
+  const trapRisk = String(trap?.risk ?? 'LOW').toUpperCase();
+
+  if (bottomReboundRisk) {
+    return {
+      cls: 'FALSE_RECLAIM',
+      label: isShort ? 'FALSE REJECT' : 'FALSE RECLAIM',
+      reason: 'bottom rebound trap risk; auto blocked',
+      color: 'red',
+    };
+  }
+
+  if (bottomRebound?.pass) {
+    reasons.push(`bottom decline ${(Number(bottomRebound.declinePct ?? 0) * 100).toFixed(1)}%`);
+    reasons.push(`rebound ${(Number(bottomRebound.reboundPct ?? 0) * 100).toFixed(1)}%`);
+    return {
+      cls: isShort ? 'TOP_REBOUND' : 'BOTTOM_REBOUND',
+      label: isShort ? 'TOP REBOUND' : 'BOTTOM REBOUND',
+      reason: reasons.join('; '),
+      color: 'cyan',
+    };
+  }
+
+  const weakReclaim = reclaimPct < 2.2 || m5.pullbackAge >= 10 || trapRisk !== 'LOW';
+  const hotLong = !isShort && Number.isFinite(rsi5m) && Number.isFinite(rsi15m) && rsi5m >= 68 && rsi15m >= 68;
+  const coldShort = isShort && Number.isFinite(rsi5m) && Number.isFinite(rsi15m) && rsi5m <= 32 && rsi15m <= 32;
+  const overExtended = move15mPct >= 35 || drop5mPct >= 12 || hotLong || coldShort;
+  const strongReclaim = confirmed
+    && score >= 75
+    && reclaimPct >= 4.5
+    && vol5mX >= 4
+    && vol15mX >= 3
+    && emaDistPct <= 1.2
+    && m5.pullbackAge <= 6
+    && trapRisk === 'LOW'
+    && !overExtended;
+  const cleanReclaim = confirmed
+    && score >= 60
+    && reclaimPct >= 2.5
+    && vol5mX >= 2
+    && vol15mX >= 1.7
+    && emaDistPct <= 2.2
+    && trapRisk === 'LOW'
+    && !overExtended;
+
+  if (overExtended && weakReclaim) {
+    reasons.push(`${isShort ? 'dump' : 'pump'} extended ${move15mPct.toFixed(1)}%`);
+    reasons.push(`${isShort ? 'reject' : 'reclaim'} weak ${reclaimPct.toFixed(1)}%`);
+    if (trapRisk !== 'LOW') reasons.push(`trap ${trapRisk}`);
+    return {
+      cls: 'FALSE_RECLAIM',
+      label: isShort ? 'FALSE REJECT' : 'FALSE RECLAIM',
+      reason: reasons.join('; '),
+      color: 'red',
+    };
+  }
+
+  if (strongReclaim) {
+    reasons.push(`${isShort ? 'reject' : 'reclaim'} ${reclaimPct.toFixed(1)}%`);
+    reasons.push(`vol ${vol5mX.toFixed(1)}x/${vol15mX.toFixed(1)}x`);
+    return {
+      cls: isShort ? 'STRONG_REJECT' : 'STRONG_RECLAIM',
+      label: isShort ? 'STRONG REJECT' : 'STRONG RECLAIM',
+      reason: reasons.join('; '),
+      color: isShort ? 'pink' : 'cyan',
+    };
+  }
+
+  if (cleanReclaim) {
+    reasons.push(`${isShort ? 'reject' : 'reclaim'} ${reclaimPct.toFixed(1)}%`);
+    reasons.push(`emaDist ${emaDistPct.toFixed(2)}%`);
+    return {
+      cls: isShort ? 'CLEAN_REJECT' : 'CLEAN_RECLAIM',
+      label: isShort ? 'CLEAN REJECT' : 'CLEAN RECLAIM',
+      reason: reasons.join('; '),
+      color: isShort ? 'red' : 'green',
+    };
+  }
+
+  if (btc === 'WEAK' && !isShort) reasons.push('BTC weak vs long');
+  if (btc === 'STRONG' && isShort) reasons.push('BTC strong vs short');
+  if (weakReclaim) reasons.push(`${isShort ? 'reject' : 'reclaim'} weak/late`);
+  if (trapRisk !== 'LOW') reasons.push(`trap ${trapRisk}`);
+  return {
+    cls: isShort ? 'WEAK_REJECT' : 'WEAK_RECLAIM',
+    label: isShort ? 'WEAK REJECT' : 'WEAK RECLAIM',
+    reason: reasons.length ? reasons.join('; ') : 'setup passes but lacks strong confirmation',
+    color: 'amber',
+  };
+}
+
 function analyzeInterval(candles, opts = {}) {
   const cfg = {
     side: 'LONG',
@@ -509,6 +613,17 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
     return { pass: false, reason: `invalid ${side} geometry entry=${entry} sl=${sl} tp=${tp}` };
   }
   const stage = confirmed ? 'RECLAIM_CONFIRMED' : 'SHAKEOUT_WATCH';
+  const shakeoutClassInfo = classifyShakeoutSignal({
+    side,
+    score,
+    stage,
+    m5,
+    m15,
+    trap,
+    bottomRebound,
+    bottomReboundRisk,
+    btcRegime,
+  });
 
   return {
     pass: true,
@@ -529,6 +644,10 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
     action: side,
     score,
     grade: gradeScore(score),
+    shakeoutClass: shakeoutClassInfo.cls,
+    shakeoutClassLabel: shakeoutClassInfo.label,
+    shakeoutClassReason: shakeoutClassInfo.reason,
+    shakeoutClassColor: shakeoutClassInfo.color,
     entry: Number(entry.toFixed(10)),
     entryMode: btcStrongShortEma99
       ? 'EMA99_BTC_STRONG_SHORT'
@@ -587,6 +706,8 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
       rawScore,
       bottomReboundRisk,
       bottomRiskReasons,
+      shakeoutClass: shakeoutClassInfo.cls,
+      shakeoutClassReason: shakeoutClassInfo.reason,
     },
     factors: {
       move5mPct: Number((m5.movePct * 100).toFixed(2)),
