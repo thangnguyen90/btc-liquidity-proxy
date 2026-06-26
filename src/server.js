@@ -2532,6 +2532,45 @@ function getEmaSqueezeBreakoutBtcRisk(sig, health = btcHealthCache.data) {
   };
 }
 
+// Breadth đảo chiều: đếm số coin DISTINCT có tín hiệu br-like mỗi chiều trong cửa sổ trượt 30'.
+// 1 loạt br-like chiều ngược xuất hiện = thị trường đảo → khóa lời lệnh chiều cũ sớm (trước khi cây giảm SL).
+const brLikeBreadthLog = []; // {at, symbol, side}
+function recordBrLikeBreadth(symbol, side) {
+  if (!symbol || (side !== 'LONG' && side !== 'SHORT')) return;
+  brLikeBreadthLog.push({ at: Date.now(), symbol: String(symbol), side });
+}
+function brLikeBreadthCounts() {
+  const winMs = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_WINDOW_MS ?? 30 * 60_000);
+  const cutoff = Date.now() - winMs;
+  while (brLikeBreadthLog.length && brLikeBreadthLog[0].at < cutoff) brLikeBreadthLog.shift();
+  const longSet = new Set();
+  const shortSet = new Set();
+  for (const r of brLikeBreadthLog) (r.side === 'LONG' ? longSet : shortSet).add(r.symbol);
+  return { long: longSet.size, short: shortSet.size };
+}
+
+// Cắt lệnh br-like ĐANG LỜI của 1 chiều (khóa lời khi breadth đảo). Lệnh âm để SL/trailing lo.
+async function cutProfitableBrLikeBySide(side, reason) {
+  const store = await readPumpPaperStore();
+  const snapshotMarks = new Map((_snapshotCache ?? [])
+    .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
+    .filter(([, p]) => Number.isFinite(p) && p > 0));
+  const targets = store.trades.filter((t) =>
+    t.status === 'OPEN' && t.side === side && String(t.source ?? '').includes('-br_like'));
+  let cut = 0;
+  for (const t of targets) {
+    const mark = pumpMarkCache.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? snapshotMarks.get(t.symbol);
+    if (!Number.isFinite(Number(mark)) || Number(mark) <= 0) continue;
+    const sideMult = side === 'LONG' ? 1 : -1;
+    const pnl = (Number(mark) - Number(t.entryPrice)) * Number(t.quantity) * sideMult;
+    if (!(pnl > 0)) continue; // chỉ cắt lệnh đang LỜI
+    await closePumpPaperTrade({ id: t.id, exitPrice: Number(mark), outcome: 'BREADTH_REVERSAL' })
+      .then(() => { cut++; })
+      .catch((e) => console.warn(`[EmaSqueezePaper] breadth-lock ${t.symbol}:`, e.message));
+  }
+  if (cut) console.log(`[EmaSqueezePaper] BREADTH-LOCK ${side}: khóa lời ${cut} lệnh br-like (${reason})`);
+}
+
 async function createEmaSqueezePaperTrades(signals = []) {
   if (process.env.EMA_SQUEEZE_PAPER_ENABLED === 'false') return;
   const minScore = Number(process.env.EMA_SQUEEZE_PAPER_MIN_SCORE ?? 80);
@@ -2575,6 +2614,10 @@ async function createEmaSqueezePaperTrades(signals = []) {
           && process.env.EMA_SQUEEZE_PAPER_BR_LIKE_SHORT_ENABLED !== 'false'
           && brLikeScore >= brLikeShortMinScore));
     const isBrLikeShortPaper = isBrLikePaper && side === 'SHORT';
+    // Ghi breadth (theo score, độc lập enabled flags) — để phát hiện đảo chiều dù chiều đó bị tắt/gate
+    if ((side === 'LONG' && brLikeScore >= brLikeMinScore) || (side === 'SHORT' && brLikeScore >= brLikeShortMinScore)) {
+      recordBrLikeBreadth(sig.symbol, side);
+    }
     const brLikeBtcGate = isBrLikePaper ? getEmaSqueezeBrLikeBtcGate(btcSnap) : null;
     let brLikeQualityGate = null;
     if (isBrLikePaper) {
@@ -2582,6 +2625,26 @@ async function createEmaSqueezePaperTrades(signals = []) {
       if (!isBrLikeShortPaper && process.env.EMA_SQUEEZE_PAPER_BR_LIKE_MACRO_SHOCK_GUARD !== 'false' && macroShock?.active) {
         console.log(`[EmaSqueezePaper] skip ${sig.symbol} BR-like ${interval} - ${macroShock.reason}`);
         continue;
+      }
+      // Euphoria cap: chặn BR-like LONG khi BTC bơm mạnh (pct6h > max). Backtest: pct6h>1% → WR 58% net -1078%
+      // (vào đỉnh hưng phấn, BTC khựng → alt beta cao đảo chiều). Vùng 0-1% mới là vùng thắng.
+      if (!isBrLikeShortPaper && process.env.EMA_SQUEEZE_PAPER_BR_LIKE_EUPHORIA_GUARD !== 'false') {
+        const maxPct6h = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_MAX_PCT6H ?? 1.0);
+        const p6 = Number(btcSnap?.pct6h);
+        if (Number.isFinite(p6) && p6 > maxPct6h) {
+          console.log(`[EmaSqueezePaper] skip ${sig.symbol} BR-like ${interval} LONG - BTC bơm mạnh pct6h=${p6}% > ${maxPct6h}% (đỉnh hưng phấn, dễ mean-revert)`);
+          continue;
+        }
+      }
+      // Mirror cho SHORT: chặn khi BTC dump mạnh (pct6h < min) = short đáy capitulation → dễ V-bounce.
+      // (Logic đối xứng, br-like short mẫu còn ít — sẽ validate bằng btcHealth per-trade.)
+      if (isBrLikeShortPaper && process.env.EMA_SQUEEZE_PAPER_BR_LIKE_SHORT_CAPITULATION_GUARD !== 'false') {
+        const minPct6h = Number(process.env.EMA_SQUEEZE_BR_LIKE_SHORT_BTC_MIN_PCT6H ?? -1.0);
+        const p6 = Number(btcSnap?.pct6h);
+        if (Number.isFinite(p6) && p6 < minPct6h) {
+          console.log(`[EmaSqueezePaper] skip ${sig.symbol} BR-like ${interval} SHORT - BTC dump mạnh pct6h=${p6}% < ${minPct6h}% (capitulation, dễ V-bounce)`);
+          continue;
+        }
       }
       brLikeQualityGate = getEmaSqueezeBrLikePaperQualityGate(sig);
       if (process.env.EMA_SQUEEZE_PAPER_BR_LIKE_QUALITY_GATE !== 'false' && !brLikeQualityGate.ok) {
@@ -2801,6 +2864,19 @@ async function createEmaSqueezePaperTrades(signals = []) {
         entryPrice: paperSignal.entry,
         source: srcBase,
       });
+    }
+  }
+
+  // Đảo chiều theo breadth: 1 loạt br-like chiều ngược trong 30' → khóa lời lệnh chiều cũ.
+  // Ngưỡng (theo log 26/06): SHORT>=5 và SHORT>=1.3×LONG → cắt long lời; ngược lại cắt short lời.
+  if (process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_CUT !== 'false') {
+    const { long, short } = brLikeBreadthCounts();
+    const minSig = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_MIN ?? 5);
+    const ratio = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_RATIO ?? 1.3);
+    if (short >= minSig && short >= long * ratio) {
+      await cutProfitableBrLikeBySide('LONG', `breadth đảo xuống short=${short} long=${long} (30m)`).catch(() => {});
+    } else if (long >= minSig && long >= short * ratio) {
+      await cutProfitableBrLikeBySide('SHORT', `breadth đảo lên long=${long} short=${short} (30m)`).catch(() => {});
     }
   }
 }
@@ -9334,6 +9410,7 @@ function startPumpPaperTicker() {
     console.warn('[PumpPaper] Batch mark processing failed:', err.message);
   }), 1_000);
   setInterval(() => expireOldEmaSqueezePending().catch(() => {}), 60_000);
+  setInterval(() => exitEuphoriaBrLikeOnBtcReversal().catch(() => {}), 60_000);
   startEmaSqueezePaperTicker();
 }
 
@@ -9357,6 +9434,48 @@ async function expireOldEmaSqueezePending() {
     store.trades = keep;
     await writePumpPaperStore(store);
     syncEmaSqueezePaperTicker().catch(() => {});
+  }
+}
+
+// Cắt nhóm BR-like vào "sai đỉnh/đáy" KHI BTC đảo RÕ (không phải giảm/tăng nhẹ):
+//   LONG  vào lúc euphoria (pct6h>1%)      → cắt khi BTC đảo XUỐNG rõ (WEAK + EMA1h below / pct6h<-0.5)
+//   SHORT vào lúc capitulation (pct6h<-1%) → cắt khi BTC đảo LÊN  rõ (STRONG / EMA1h above + pct6h>+0.5)
+// Nhắm đúng nhóm nhờ btcHealth snapshot lúc entry; tránh cắt hàng loạt khi chỉ dao động nhẹ.
+async function exitEuphoriaBrLikeOnBtcReversal() {
+  if (process.env.EMA_SQUEEZE_PAPER_BR_LIKE_EUPHORIA_EXIT_ENABLED === 'false') return;
+  const health = btcHealthCache.data;
+  if (!health || health.error) return;
+  const regime = emaSqueezeBtcRegime(health);
+  const p6 = Number(health.pct6h ?? 0);
+
+  const longExitPct6h = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_EUPHORIA_EXIT_PCT6H ?? -0.5);
+  const longReversal = regime === 'WEAK' && (health.emaTrend1h === 'below' || p6 < longExitPct6h);
+  const shortExitPct6h = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_SHORT_EXIT_PCT6H ?? 0.5);
+  const shortReversal = regime === 'STRONG' || (health.emaTrend1h === 'above' && p6 > shortExitPct6h);
+  if (!longReversal && !shortReversal) return;
+
+  const euphoriaPct6h = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_MAX_PCT6H ?? 1.0);
+  const capitulationPct6h = Number(process.env.EMA_SQUEEZE_BR_LIKE_SHORT_BTC_MIN_PCT6H ?? -1.0);
+  const store = await readPumpPaperStore();
+  const targets = store.trades.filter((t) => {
+    if (t.status !== 'OPEN' || !String(t.source ?? '').includes('-br_like')) return false;
+    const ep = Number(t.btcHealth?.pct6h);
+    if (t.side === 'LONG') return longReversal && Number.isFinite(ep) && ep > euphoriaPct6h;
+    if (t.side === 'SHORT') return shortReversal && Number.isFinite(ep) && ep < capitulationPct6h;
+    return false;
+  });
+  if (!targets.length) return;
+
+  const snapshotMarks = new Map((_snapshotCache ?? [])
+    .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
+    .filter(([, p]) => Number.isFinite(p) && p > 0));
+  for (const t of targets) {
+    const mark = pumpMarkCache.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? snapshotMarks.get(t.symbol);
+    if (!Number.isFinite(Number(mark)) || Number(mark) <= 0) continue;
+    const dir = t.side === 'LONG' ? 'đảo xuống' : 'đảo lên';
+    await closePumpPaperTrade({ id: t.id, exitPrice: Number(mark), outcome: 'BTC_REVERSAL' })
+      .then(() => console.log(`[EmaSqueezePaper] BTC-REVERSAL-EXIT ${t.side} ${t.symbol} (vào pct6h=${t.btcHealth?.pct6h}%, BTC nay ${regime} ${dir} pct6h=${health.pct6h}% EMA1h=${health.emaTrend1h}) exit=${mark}`))
+      .catch((e) => console.warn(`[EmaSqueezePaper] btc-reversal-exit ${t.symbol}:`, e.message));
   }
 }
 
