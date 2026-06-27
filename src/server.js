@@ -5501,7 +5501,12 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (requestUrl.pathname === '/api/ema-squeeze-paper-trades' && request.method === 'GET') {
-      await sendJson(response, await getEmaSqueezePaperTrades({ paging: parsePaperPaging(requestUrl) }));
+      const filter = {
+        type: requestUrl.searchParams.get('type') || 'all',
+        tf: requestUrl.searchParams.get('tf') || 'all',
+        day: requestUrl.searchParams.get('day') || 'all',
+      };
+      await sendJson(response, await getEmaSqueezePaperTrades({ paging: parsePaperPaging(requestUrl), filter }));
       return;
     }
     if (requestUrl.pathname === '/api/pump-paper-trades/close' && request.method === 'POST') {
@@ -8886,9 +8891,39 @@ async function getPumpPaperTrades({ paging = null } = {}) {
   return { trades, summary, pagination, updatedAt: Date.now() };
 }
 
-async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null } = {}) {
+// Phân loại stage từ source (mirror getEsStage ở frontend) để lọc summary/pagination khớp filter
+function emaPaperStageOf(t) {
+  const s = String(t.source ?? '');
+  const n = String(t.note ?? '');
+  if (s.includes('br_like_short') || n.includes('brLikeShort=Y')) return 'BR-like Short';
+  if (s.includes('br_like') || n.includes('brLike=Y')) return 'BR-like';
+  if (t.runnerCandidate || s.includes('runner') || n.includes('runner=Y')) return 'Runner';
+  if (s.includes('pre_breakout')) return 'Pre Breakout';
+  if (s.includes('pre_breakdown')) return 'Pre Breakdown';
+  if (s.includes('breakout')) return 'Breakout';
+  if (s.includes('breakdown')) return 'Breakdown';
+  if (s.includes('squeeze_short')) return 'Squeeze Short';
+  if (s.includes('squeeze')) return 'Squeeze';
+  return 'Other';
+}
+function emaPaperMatchesFilter(t, filter) {
+  if (!filter) return true;
+  if (filter.type && filter.type !== 'all' && emaPaperStageOf(t) !== filter.type) return false;
+  if (filter.tf && filter.tf !== 'all') {
+    const m = String(t.source ?? '').match(/^emasq-(\d+[mh])-/);
+    if ((m ? m[1] : '') !== filter.tf) return false;
+  }
+  if (filter.day && filter.day !== 'all') {
+    if (String(t.createdAt ?? '').slice(0, 10) !== filter.day) return false;
+  }
+  return true;
+}
+
+async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filter = null } = {}) {
   const store = await readPumpPaperStore();
-  const allEmaTrades = store.trades.filter((t) => String(t.source ?? '').startsWith('emasq-'));
+  const baseEmaTrades = store.trades.filter((t) => String(t.source ?? '').startsWith('emasq-'));
+  // Lọc theo filter (type/tf/day) để summary + pagination khớp với view đang xem
+  const allEmaTrades = filter ? baseEmaTrades.filter((t) => emaPaperMatchesFilter(t, filter)) : baseEmaTrades;
   const deltaCutoff = Date.now() - 5 * 60_000;
   const selectedTrades = deltaOnly
     ? allEmaTrades.filter((t) =>
@@ -8906,6 +8941,11 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null } = {
   const avgRoe = closed.length
     ? closed.reduce((sum, t) => sum + Number(t.roe ?? 0), 0) / closed.length
     : null;
+  // Net PnL theo mark đang chạy: realized (closed) + unrealized (OPEN tính theo mark live)
+  const realizedPnl = closed.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+  const unrealizedPnl = allEmaTrades
+    .filter((t) => t.status === 'OPEN')
+    .reduce((sum, t) => sum + Number(enrichPumpPaperTrade(t, emaSqueezeSocketMarks.get(t.symbol)).pnl ?? 0), 0);
   return {
     trades,
     summary: {
@@ -8919,6 +8959,9 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null } = {
       tpHits,
       slHits,
       avgRoe: avgRoe == null ? null : +avgRoe.toFixed(1),
+      realizedPnl: +realizedPnl.toFixed(4),
+      unrealizedPnl: +unrealizedPnl.toFixed(4),
+      netPnl: +(realizedPnl + unrealizedPnl).toFixed(4),
     },
     pagination,
     updatedAt: Date.now(),
@@ -9155,7 +9198,11 @@ async function checkPumpPaperDynamicRisk(trade, markPrice) {
   }
 
   if (process.env.PUMP_PAPER_NEG_TP_ENABLED !== 'false') {
-    const negTpRoe = Number(process.env.PUMP_PAPER_NEG_TP_ROE ?? -30);
+    // br-like dời TP về entry sớm hơn (mặc định -10%) so với pump thường (-30%)
+    const isBrLike = String(trade.source ?? '').includes('br_like');
+    const negTpRoe = isBrLike
+      ? Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_NEG_TP_ROE ?? -10)
+      : Number(process.env.PUMP_PAPER_NEG_TP_ROE ?? -30);
     const alreadyMoved = trade.paperTpMovedToEntry === true || String(trade.note ?? '').includes('pumpPaperTpEntryGuard=');
     if (!alreadyMoved && roe <= negTpRoe) {
       const curTp = Number(trade.tp ?? 0);
@@ -11472,6 +11519,19 @@ async function createShakeoutPaperTrades(signals = []) {
         continue;
       }
     }
+    // FALSE_RECLAIM filter: bỏ khi vol cực cao (blow-off climax) HOẶC 15m pump quá extended — nhóm thua rõ.
+    // Backtest: loser vol ~104x vs winner ~62x; bucket pump15m>70% net âm. Giữ trap HIGH (vẫn dương).
+    if (String(sig.shakeoutClass ?? '') === 'FALSE_RECLAIM'
+        && process.env.SHAKEOUT_RECLAIM_PAPER_FALSE_RECLAIM_FILTER !== 'false') {
+      const maxVol = Number(process.env.SHAKEOUT_RECLAIM_PAPER_FALSE_RECLAIM_MAX_VOL ?? 100);
+      const maxMove15 = Number(process.env.SHAKEOUT_RECLAIM_PAPER_FALSE_RECLAIM_MAX_MOVE15 ?? 70);
+      const vol5 = Number(sig.factors?.vol5mX ?? 0);
+      const mv15 = Number(sig.factors?.move15mPct ?? 0);
+      if (vol5 > maxVol || mv15 > maxMove15) {
+        console.log(`[ShakeoutPaper] skip ${sig.symbol} FALSE_RECLAIM - vol=${vol5}x>${maxVol} hoặc 15m=${mv15}%>${maxMove15}% (blow-off/over-extended)`);
+        continue;
+      }
+    }
     const key = `${sig.symbol}|${side}|${sig.stage ?? ''}`;
     const last = shakeoutPaperAutoFired.get(key) ?? 0;
     if (now - last < cooldownMs) continue;
@@ -11503,6 +11563,19 @@ async function createShakeoutPaperTrades(signals = []) {
     const bottomReboundPolicy = isBottomRebound
       ? getShakeoutBottomReboundPaperPolicy(sig, trapRisk)
       : null;
+    // Gate BTC: không bắt đáy (bottom_rebound long, no-SL+DCA) khi BTC đảo XUỐNG rõ — cả market đang đổ
+    // thì "đáy" thường là dao rơi, DCA chỉ nhồi thêm lỗ. Chỉ chặn khi đảo rõ, không phải giảm nhẹ.
+    if (isBottomRebound && process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_BTC_GATE !== 'false') {
+      const h = btcHealthCache.data;
+      const reg = emaSqueezeBtcRegime(h);
+      const gatePct6h = Number(process.env.SHAKEOUT_RECLAIM_PAPER_BOTTOM_REBOUND_BTC_PCT6H ?? -0.5);
+      const btcFalling = h && !h.error && reg === 'WEAK'
+        && (h.emaTrend1h === 'below' || Number(h.pct6h ?? 0) < gatePct6h);
+      if (btcFalling) {
+        console.log(`[ShakeoutPaper] skip ${sig.symbol} BOTTOM_REBOUND - BTC đảo xuống rõ (regime=${reg} EMA1h=${h.emaTrend1h} pct6h=${h.pct6h}%) — không bắt đáy khi market đang đổ`);
+        continue;
+      }
+    }
     if (bottomReboundPolicy?.skip) {
       console.log(
         `[ShakeoutPaper] skip ${sig.symbol} BOTTOM_REBOUND - ${bottomReboundPolicy.reasons.join('; ')}`,
@@ -11558,7 +11631,11 @@ async function createShakeoutPaperTrades(signals = []) {
             status: 'OPEN',
             entryPrice: marketEntry,
             tag: 'scout',
-            marginUsdt: Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_SCOUT_MARGIN_USDT ?? 1),
+            // FALSE_RECLAIM test full margin ($10) thay vì scout $1 (theo yêu cầu test)
+            marginUsdt: (String(sig.shakeoutClass ?? '') === 'FALSE_RECLAIM'
+              && process.env.SHAKEOUT_RECLAIM_PAPER_FALSE_RECLAIM_FULL_MARGIN !== 'false')
+              ? marginUsdt
+              : Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_SCOUT_MARGIN_USDT ?? 1),
           },
           {
             variant: 'PENDING',

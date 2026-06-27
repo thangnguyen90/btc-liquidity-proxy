@@ -13,6 +13,7 @@ let esPaperTfFilter = 'all';
 let esPaperPage = 1;
 let esPaperLimit = 300;
 let esPaperPagination = null;
+let esPaperServerSummary = null; // summary tổng từ server (gồm net PnL realized+unrealized theo mark live)
 
 const grid          = document.getElementById('esGrid');
 const breakoutCount = document.getElementById('breakoutCount');
@@ -569,37 +570,34 @@ document.addEventListener('click', (e) => {
   renderEsPaperTable();
 });
 
+// Filter đổi -> reload từ server (server lọc + tính lại summary/pagination khớp filter), về trang 1
 if (esPaperTypeSelect) {
   esPaperTypeSelect.addEventListener('change', () => {
     esPaperTypeFilter = esPaperTypeSelect.value || 'all';
-    renderEsPaperTable();
+    loadEsPaperTrades(1);
   });
 }
 
 if (esPaperDaySelect) {
   esPaperDaySelect.addEventListener('change', () => {
     esPaperDayFilter = esPaperDaySelect.value || 'all';
-    renderEsPaperTable();
+    loadEsPaperTrades(1);
   });
 }
 
 if (esPaperTfSelect) {
   esPaperTfSelect.addEventListener('change', () => {
     esPaperTfFilter = esPaperTfSelect.value || 'all';
-    renderEsPaperTable();
+    loadEsPaperTrades(1);
   });
 }
 
 // Ngày local YYYY-MM-DD theo thời điểm tạo lệnh
 function getEsDay(t) {
+  // UTC date để khớp filter server (server lọc theo createdAt.slice(0,10) UTC)
   const ts = t.createdAt ?? t.closedAt;
   if (!ts) return '?';
-  const d = new Date(ts);
-  if (isNaN(d.getTime())) return '?';
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return String(ts).slice(0, 10);
 }
 
 // Cập nhật options ngày từ danh sách trades hiện có (giữ lựa chọn đang chọn)
@@ -679,16 +677,43 @@ function renderEsPaperPager() {
   const pager = ensureEsPaperPager();
   if (!pager || !esPaperPagination) return;
   const p = esPaperPagination;
+  const cur = Number(p.page) || 1;
+  const total = Math.max(1, Number(p.totalPages) || 1);
+
+  // Danh sách số trang dạng 1,2,3 ... với cửa sổ quanh trang hiện tại + dấu …
+  const pages = [];
+  if (total <= 7) {
+    for (let i = 1; i <= total; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    const s = Math.max(2, cur - 2);
+    const e = Math.min(total - 1, cur + 2);
+    if (s > 2) pages.push('...');
+    for (let i = s; i <= e; i++) pages.push(i);
+    if (e < total - 1) pages.push('...');
+    pages.push(total);
+  }
+  const numBtns = pages.map((n) => (n === '...'
+    ? '<span style="padding:0 4px;color:var(--muted)">…</span>'
+    : `<button class="es-paper-close-btn" data-es-page="${n}"${n === cur ? ' style="background:var(--blue);color:#fff;border-color:var(--blue)" disabled' : ''}>${n}</button>`)).join('');
+
   pager.innerHTML = `
-    <button class="es-paper-close-btn" data-es-page="prev" ${p.hasPrev ? '' : 'disabled'}>Prev</button>
-    <span>Page <strong style="color:var(--text)">${p.page}</strong>/<strong style="color:var(--text)">${p.totalPages}</strong> · ${p.total} rows</span>
-    <button class="es-paper-close-btn" data-es-page="next" ${p.hasNext ? '' : 'disabled'}>Next</button>
+    <button class="es-paper-close-btn" data-es-page="prev" ${cur > 1 ? '' : 'disabled'}>‹</button>
+    ${numBtns}
+    <button class="es-paper-close-btn" data-es-page="next" ${cur < total ? '' : 'disabled'}>›</button>
+    <span style="margin-left:6px">${p.total} rows</span>
     <select id="esPaperLimitSelect" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px">
       ${[100, 300, 500, 1000].map((n) => `<option value="${n}" ${n === esPaperLimit ? 'selected' : ''}>${n}/page</option>`).join('')}
     </select>
   `;
-  pager.querySelector('[data-es-page="prev"]')?.addEventListener('click', () => loadEsPaperTrades(Math.max(1, esPaperPage - 1)));
-  pager.querySelector('[data-es-page="next"]')?.addEventListener('click', () => loadEsPaperTrades(esPaperPage + 1));
+  pager.querySelectorAll('[data-es-page]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const v = btn.dataset.esPage;
+      if (v === 'prev') loadEsPaperTrades(Math.max(1, cur - 1));
+      else if (v === 'next') loadEsPaperTrades(cur + 1);
+      else loadEsPaperTrades(Number(v));
+    });
+  });
   pager.querySelector('#esPaperLimitSelect')?.addEventListener('change', (event) => {
     esPaperLimit = Number(event.target.value) || 300;
     loadEsPaperTrades(1);
@@ -785,8 +810,15 @@ function updateEsPaperStats(trades = esPaperTrades) {
 
   setText('esStatWr', wr);
   setText('esStatWinLoss', `${stats.wins} win / ${stats.losses} loss${stats.breakeven ? ` / ${stats.breakeven} BE` : ''}`);
-  setText('esStatPnl', formatEsMoney(stats.pnl));
-  setText('esStatAvgPnl', `Avg/trade ${stats.avgPnl == null ? '-' : formatEsMoney(stats.avgPnl)}`);
+  // Net PnL = tổng realized + unrealized (OPEN theo mark live) từ server summary; fallback về page nếu chưa có
+  const srv = esPaperServerSummary;
+  if (srv && srv.netPnl != null) {
+    setText('esStatPnl', formatEsMoney(srv.netPnl));
+    setText('esStatAvgPnl', `realized ${formatEsMoney(srv.realizedPnl)} · unreal ${formatEsMoney(srv.unrealizedPnl)} (mark live)`);
+  } else {
+    setText('esStatPnl', formatEsMoney(stats.pnl));
+    setText('esStatAvgPnl', `Avg/trade ${stats.avgPnl == null ? '-' : formatEsMoney(stats.avgPnl)}`);
+  }
   setText('esStatAvgRoe', stats.avgRoe == null ? '-' : `${stats.avgRoe >= 0 ? '+' : ''}${stats.avgRoe.toFixed(1)}%`);
   setText('esStatOpen', `${stats.open} open · ${stats.pending} pending · ${stats.closed} closed`);
 
@@ -879,9 +911,17 @@ function renderEsPaperTable() {
       variantBadge = '<span class="es-variant-badge none">-</span>';
     }
     variantBadge += `<div style="margin-top:4px;color:${Number(t.leverage) === 5 ? '#fbbf24' : '#67e8f9'};font-size:10px;font-weight:900">${Number(t.leverage) || '-'}x</div>`;
+    const tf = getEsTimeframe(t);
+    const stageLabel = getEsStage(t);
     return `<tr class="${rowClass}">
       <td>${variantBadge}</td>
-      <td><a class="es-symbol" href="/?symbol=${symbol}" target="_blank" rel="noopener">${symbol.replace(/USDT$/, '')}</a></td>
+      <td>
+        <a class="es-symbol" href="/?symbol=${symbol}" target="_blank" rel="noopener">${symbol.replace(/USDT$/, '')}</a>
+        <div style="margin-top:3px;display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:9px;font-weight:800;padding:1px 5px;border-radius:3px;background:rgba(96,165,250,.16);color:#93c5fd">${tf}</span>
+          <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(157,170,165,.14);color:var(--muted)">${stageLabel}</span>
+        </div>
+      </td>
       <td><span style="color:${sideColor}">${t.side}</span></td>
       <td>${fmtPrice(t.entryPrice)}</td>
       <td>${fmtPrice(t.sl)}</td>
@@ -904,11 +944,16 @@ function renderEsPaperTable() {
 async function loadEsPaperTrades(page = esPaperPage) {
   try {
     const nextPage = Math.max(1, Number(page) || 1);
-    const res = await fetch(`/api/ema-squeeze-paper-trades?page=${nextPage}&limit=${esPaperLimit}`, { cache: 'no-store' });
+    const q = `page=${nextPage}&limit=${esPaperLimit}`
+      + `&type=${encodeURIComponent(esPaperTypeFilter)}`
+      + `&day=${encodeURIComponent(esPaperDayFilter)}`
+      + `&tf=${encodeURIComponent(esPaperTfFilter)}`;
+    const res = await fetch(`/api/ema-squeeze-paper-trades?${q}`, { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
     esPaperPage = data.pagination?.page ?? nextPage;
     esPaperPagination = data.pagination ?? null;
+    if (data.summary) esPaperServerSummary = data.summary;
     esPaperTrades = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('emasq-'));
     updateEsDayFilterOptions();
     renderEsPaperTable();
@@ -922,6 +967,7 @@ let esPaperFallbackTimer = null;
 
 function applyEsPaperData(data) {
   const incoming = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('emasq-'));
+  // KHÔNG dùng summary từ stream (stream không lọc theo filter) — Net PnL lấy từ loadEsPaperTrades đã lọc
   if (data.partial) {
     const merged = new Map(esPaperTrades.map((t) => [t.id, t]));
     incoming.forEach((t) => merged.set(t.id, t));

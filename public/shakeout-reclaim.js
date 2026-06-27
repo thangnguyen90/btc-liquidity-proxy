@@ -27,6 +27,22 @@ const srPaperSummary = document.getElementById('srPaperSummary');
 
 let srPaperTrades = [];
 let srPaperSort = { key: 'status', dir: 'asc' };
+let srClassFilter = 'all';
+let srSideFilter = 'all';
+const srClassSelect = document.getElementById('srClassFilter');
+const srSideSelect = document.getElementById('srSideFilter');
+if (srClassSelect) srClassSelect.addEventListener('change', () => { srClassFilter = srClassSelect.value || 'all'; renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant }); });
+if (srSideSelect) srSideSelect.addEventListener('change', () => { srSideFilter = srSideSelect.value || 'all'; renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant }); });
+
+function populateSrClassOptions(trades) {
+  if (!srClassSelect) return;
+  const classes = [...new Set(trades.map((t) => String(t.shakeoutClass || 'UNKNOWN')))].sort();
+  const prev = srClassFilter;
+  srClassSelect.innerHTML = '<option value="all">Tất cả</option>'
+    + classes.map((c) => `<option value="${c}">${c}</option>`).join('');
+  srClassSelect.value = classes.includes(prev) || prev === 'all' ? prev : 'all';
+  if (srClassSelect.value !== prev) srClassFilter = 'all';
+}
 
 function fmtPrice(p) {
   if (p == null || p === '') return '-';
@@ -549,11 +565,15 @@ function renderPaperTrades(data) {
   renderVariantCompare(Array.isArray(data?.variantCompare) ? data.variantCompare : []);
   renderDailyStats(Array.isArray(data?.daily) ? data.daily : []);
 
-  const rows = sortSrPaperTrades(trades);
+  populateSrClassOptions(trades);
+  const filtered = trades.filter((t) =>
+    (srClassFilter === 'all' || String(t.shakeoutClass || 'UNKNOWN') === srClassFilter)
+    && (srSideFilter === 'all' || t.side === srSideFilter));
+  const rows = sortSrPaperTrades(filtered);
   updateSrSortHeaders();
 
   if (!rows.length) {
-    srPaperBody.innerHTML = '<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:16px">Chua co paper trade Shakeout nao.</td></tr>';
+    srPaperBody.innerHTML = '<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:16px">Khong co lenh khop filter (loại/side).</td></tr>';
     return;
   }
 
