@@ -147,12 +147,17 @@ function renderPaper(data) {
       : volume ? 'VOLUME DCA'
       : early ? 'EARLY SCOUT'
       : 'SCOUT ONLY';
+    const pendingLimit = trade.status === 'PENDING' || String(trade.orderType ?? '').includes('LIMIT');
+    const earlyBadges = early
+      ? `<br><small class="${pendingLimit ? 'tr-positive' : 'tr-negative'}">${pendingLimit ? 'PENDING LIMIT TEST' : 'FAIL FAST'}</small><br><small class="tr-negative">NO DCA</small><br><small class="tr-negative">EARLY NO BREAKDOWN</small>`
+      : '';
+    const modeLabel = pendingLimit ? 'LIMIT' : early || strongCase || btcShift ? 'SCOUT' : 'TEST';
     const dca = trade.dcaTaken
       ? `<span class="tr-dca">DCA +$${Number(trade.dcaMarginUsdt || 10).toFixed(0)} @ ${price(trade.dcaPrice)}<br>AVG ${price(trade.entryPrice)}<br><small>${signalType}</small></span>`
       : trade.btcShiftDcaTaken
       ? `<span class="tr-dca">BTC SHIFT +$10<br>AVG ${price(trade.entryPrice)}<br><small>chart theo BTC</small></span>`
-      : `<span class="tr-market">SCOUT $${Number(trade.marginUsdt || 1).toFixed(0)}<br>${canDca ? `DCA allowed $${volume ? 5 : 10}` : 'DCA blocked'}<br><small>${signalType}</small></span>`;
-    const action = trade.status === 'CLOSED'
+      : `<span class="tr-market">${modeLabel} $${Number(trade.marginUsdt || 1).toFixed(0)}<br>${canDca ? `DCA allowed $${volume ? 5 : 10}` : 'DCA blocked'}<br><small>${signalType}</small>${earlyBadges}</span>`;
+    const action = trade.status === 'CLOSED' || trade.status === 'EXPIRED'
       ? `<button class="tr-btn del" data-delete="${trade.id}">Del</button>`
       : `<button class="tr-btn" data-close="${trade.id}">Close</button>`;
     return `<tr>

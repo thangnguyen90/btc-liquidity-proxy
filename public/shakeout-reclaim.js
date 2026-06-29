@@ -85,6 +85,14 @@ function timeAgo(ts) {
   return `${Math.floor(sec / 3600)}h`;
 }
 
+const SR_PAPER_CANDLE_MS = 5 * 60 * 1000;
+
+function srPaperCandleStart(ts) {
+  const n = Number(ts);
+  const base = Number.isFinite(n) && n > 0 ? n : Date.now();
+  return Math.floor(base / SR_PAPER_CANDLE_MS) * SR_PAPER_CANDLE_MS;
+}
+
 function chip(label, cls = '') {
   return `<span class="sr-chip ${cls}">${label}</span>`;
 }
@@ -167,7 +175,7 @@ function buildOrderDecision(sig) {
   const side = String(sig.action ?? '').toUpperCase();
   const opposite = side === 'LONG' ? 'SHORT' : 'LONG';
   const now = Date.now();
-  const cooldownMs = 4 * 3600 * 1000;
+  const currentCandle = srPaperCandleStart(now);
   const related = srPaperTrades.filter((t) =>
     String(t.symbol ?? '').toUpperCase() === symbol
     && String(t.source ?? '').startsWith('shakeout-auto'));
@@ -216,15 +224,15 @@ function buildOrderDecision(sig) {
       regular ? `${regular.variant ?? 'ORDER'} ${regular.status} @ ${fmtPrice(regular.entryPrice)}` : '',
     ].filter(Boolean).join(' | ');
   } else if (latestSame) {
-    const ageMs = now - Date.parse(latestSame.createdAt ?? 0);
-    if (ageMs >= 0 && ageMs < cooldownMs) {
+    const latestCandle = srPaperCandleStart(Date.parse(latestSame.createdAt ?? 0));
+    if (latestCandle === currentCandle) {
       paperTone = '#fbbf24';
-      paperTitle = 'PAPER: COOLDOWN';
-      paperReason = `Da phat ${latestSame.status} luc ${new Date(latestSame.createdAt).toLocaleTimeString('vi-VN')}; con ${Math.ceil((cooldownMs - ageMs) / 60000)} phut cooldown.`;
+      paperTitle = 'PAPER: DA PHAT NEN NAY';
+      paperReason = `Da phat ${latestSame.status} luc ${new Date(latestSame.createdAt).toLocaleTimeString('vi-VN')}; se danh gia lai khi sang nen 5m moi.`;
     } else {
       paperTone = '#fbbf24';
       paperTitle = 'PAPER: CHUA TAO LENH';
-      paperReason = 'Khong co lenh active; co the signal vua xuat hien sau batch paper hoac bi dedup backend.';
+      paperReason = 'Khong co lenh active; backend co the danh gia lai o vong scan hoac nen 5m tiep theo.';
     }
   }
 
@@ -251,6 +259,8 @@ function buildCard(sig) {
   const isBottomRebound = !isShort
     && !isBottomReboundRisk
     && (sig.bottomReboundQualified || String(sig.subtype ?? '') === 'BOTTOM_REBOUND');
+  const isWeakClean = ['WEAK_RECLAIM', 'WEAK_REJECT'].includes(String(sig.shakeoutClass ?? ''))
+    && String(sig.shakeoutClassReason ?? '').includes('lacks strong confirmation');
   const stageClass = isBottomReboundRisk ? 'bottom-rebound-risk'
     : isBottomRebound ? 'bottom-rebound'
     : isShort ? 'short' : (confirmed ? 'confirmed' : 'watch');
@@ -265,7 +275,9 @@ function buildCard(sig) {
     : (confirmed ? 'LONG RECLAIM CONFIRMED' : 'LONG SHAKEOUT WATCH');
   const detailUrl = `/?symbol=${encodeURIComponent(sig.symbol)}`;
   const changeColor = Number(sig.change24h ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
-  const classColor = {
+  const classColor = isWeakClean
+    ? ['rgba(15, 118, 110, .24)', '#2dd4bf', '#ccfbf1']
+    : {
     red: ['#7f1d1d', '#fb7185', '#fff'],
     amber: ['#422006', '#fbbf24', '#fde68a'],
     cyan: ['#083344', '#22d3ee', '#a5f3fc'],
@@ -273,13 +285,13 @@ function buildCard(sig) {
     green: ['#052e1a', '#34d399', '#d1fae5'],
   }[sig.shakeoutClassColor || ''] || ['#111827', '#38bdf8', '#e0f2fe'];
   const classBadge = sig.shakeoutClass
-    ? `<div style="margin-top:8px;padding:8px;border:1px solid ${classColor[1]};background:${classColor[0]};color:${classColor[2]};font-weight:900;font-size:12px;line-height:1.35">
+    ? `<div class="sr-class-badge ${isWeakClean ? 'weak-clean' : ''}" style="border:${isWeakClean ? '' : `1px solid ${classColor[1]}`};background:${classColor[0]};color:${classColor[2]}">
         ${escapeHtml(sig.shakeoutClassLabel || sig.shakeoutClass)}
         <span style="font-weight:700;color:${classColor[2]};opacity:.85"> · ${escapeHtml(sig.shakeoutClassReason || '')}</span>
       </div>`
     : '';
   return `
-    <article class="sr-card ${stageClass}">
+    <article class="sr-card ${stageClass}${isWeakClean ? ' weak-clean' : ''}">
       <div class="sr-top">
         <div>
           <a class="sr-symbol" href="${detailUrl}" target="_blank">${sig.symbol.replace(/USDT$/, '')}<span>USDT</span></a>
@@ -591,7 +603,11 @@ function renderPaperTrades(data) {
     const isBottomRisk = Boolean(t.bottomReboundRisk)
       || String(t.subtype ?? '') === 'BOTTOM_REBOUND_RISK'
       || isLegacyBottomRisk;
-    const rowClass = isBottomRisk
+    const isWeakCleanTrade = ['WEAK_RECLAIM', 'WEAK_REJECT'].includes(String(t.shakeoutClass ?? ''))
+      && String(t.shakeoutClassReason ?? '').includes('lacks strong confirmation');
+    const rowClass = isWeakCleanTrade
+      ? 'sr-row-weak-clean'
+      : isBottomRisk
       ? 'sr-row-bottom-rebound-risk'
       : t.bottomRebound || String(t.subtype ?? '') === 'BOTTOM_REBOUND'
         ? 'sr-row-bottom-rebound'
@@ -630,7 +646,9 @@ function renderPaperTrades(data) {
         + `</div>`;
     }
     if (t.shakeoutClass) {
-      const classTone = {
+      const classTone = isWeakCleanTrade
+        ? ['rgba(15, 118, 110, .32)', '#2dd4bf', '#ccfbf1']
+        : {
         FALSE_RECLAIM: ['#9f1239', '#fb7185', '#fff'],
         FALSE_REJECT: ['#9f1239', '#fb7185', '#fff'],
         WEAK_RECLAIM: ['#422006', '#fbbf24', '#fde68a'],
@@ -642,7 +660,7 @@ function renderPaperTrades(data) {
         BOTTOM_REBOUND: ['#083344', '#22d3ee', '#a5f3fc'],
         TOP_REBOUND: ['#4c0519', '#f472b6', '#fce7f3'],
       }[String(t.shakeoutClass)] || ['#111827', '#38bdf8', '#e0f2fe'];
-      variantBadge += `<div style="margin-top:5px;padding:4px;color:${classTone[2]};background:${classTone[0]};border:1px solid ${classTone[1]};font-size:10px;font-weight:900;line-height:1.35" title="${escapeHtml(t.shakeoutClassReason || '')}">`
+      variantBadge += `<div style="margin-top:5px;padding:4px;color:${classTone[2]};background:${classTone[0]};border:${isWeakCleanTrade ? '2px' : '1px'} solid ${classTone[1]};font-size:10px;font-weight:900;line-height:1.35;box-shadow:${isWeakCleanTrade ? '0 0 16px rgba(45,212,191,.18)' : 'none'}" title="${escapeHtml(t.shakeoutClassReason || '')}">`
         + `${escapeHtml(t.shakeoutClassLabel || t.shakeoutClass)}`
         + (t.shakeoutClassReason ? `<br>${escapeHtml(t.shakeoutClassReason)}` : '')
         + `</div>`;

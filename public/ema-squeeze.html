@@ -332,6 +332,36 @@
         border: 1px solid rgba(248,113,113,.64);
         box-shadow: 0 0 0 1px rgba(248,113,113,.16), 0 0 14px rgba(239,68,68,.14);
       }
+      .es-br-quality {
+        display: inline-flex;
+        align-items: center;
+        min-height: 16px;
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-size: 9px;
+        line-height: 1;
+        font-weight: 900;
+        letter-spacing: 0;
+        white-space: nowrap;
+        border: 1px solid rgba(157,170,165,.24);
+        background: rgba(157,170,165,.12);
+        color: var(--muted);
+      }
+      .es-br-quality.high {
+        border-color: rgba(52,211,153,.45);
+        background: rgba(52,211,153,.16);
+        color: #86efac;
+      }
+      .es-br-quality.ok {
+        border-color: rgba(147,197,253,.35);
+        background: rgba(96,165,250,.14);
+        color: #bfdbfe;
+      }
+      .es-br-quality.low {
+        border-color: rgba(251,113,133,.48);
+        background: rgba(251,113,133,.16);
+        color: #fecdd3;
+      }
       .es-auto-toggle {
         height: 100%;
         min-height: 42px;
@@ -939,6 +969,13 @@
                 <th class="es-paper-sort" data-es-sort="entry">Entry <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="sl">SL <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="tp">TP <span class="sort-mark"></span></th>
+                <th>TP%</th>
+                <th>BTC?</th>
+                <th>BTC Trend</th>
+                <th>Real?</th>
+                <th>Real Gate</th>
+                <th>Short Gate</th>
+                <th>BTC Candle</th>
                 <th class="es-paper-sort" data-es-sort="mark">Mark <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="pnl">PnL <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="roe">ROE <span class="sort-mark"></span></th>
@@ -949,7 +986,7 @@
               </tr>
             </thead>
             <tbody id="esPaperBody">
-              <tr><td colspan="12" style="text-align:center;color:var(--muted);padding:16px">Loading...</td></tr>
+              <tr><td colspan="20" style="text-align:center;color:var(--muted);padding:16px">Loading...</td></tr>
             </tbody>
           </table>
         </div>
@@ -957,6 +994,6 @@
     </main>
 
     <script src="/btcHealth.js"></script>
-    <script src="/ema-squeeze.js?v=20260604-real-block-badge" type="module"></script>
+    <script src="/ema-squeeze.js?v=20260629-btc-candle-short-gate" type="module"></script>
   </body>
 </html>
