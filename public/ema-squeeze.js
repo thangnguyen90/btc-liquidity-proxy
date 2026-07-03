@@ -14,6 +14,7 @@ let esPaperPage = 1;
 let esPaperLimit = 300;
 let esPaperPagination = null;
 let esPaperServerSummary = null; // summary tổng từ server (gồm net PnL realized+unrealized theo mark live)
+let esPaperAvailableDays = [];
 
 const grid          = document.getElementById('esGrid');
 const breakoutCount = document.getElementById('breakoutCount');
@@ -612,17 +613,14 @@ function getEsDay(t) {
 // Cập nhật options ngày từ danh sách trades hiện có (giữ lựa chọn đang chọn)
 function updateEsDayFilterOptions() {
   if (!esPaperDaySelect) return;
-  const days = [...new Set(esPaperTrades.map(getEsDay).filter((d) => d && d !== '?'))]
+  const pageDays = esPaperTrades.map(getEsDay).filter((d) => d && d !== '?');
+  const days = [...new Set([...esPaperAvailableDays, ...pageDays, esPaperDayFilter !== 'all' ? esPaperDayFilter : ''])]
+    .filter((d) => d && d !== 'all')
     .sort((a, b) => b.localeCompare(a));
   const prev = esPaperDayFilter;
   esPaperDaySelect.innerHTML = '<option value="all">Tất cả</option>'
     + days.map((d) => `<option value="${d}">${d}</option>`).join('');
-  if (prev !== 'all' && days.includes(prev)) {
-    esPaperDaySelect.value = prev;
-  } else if (prev !== 'all' && !days.includes(prev)) {
-    esPaperDayFilter = 'all';
-    esPaperDaySelect.value = 'all';
-  }
+  esPaperDaySelect.value = prev !== 'all' ? prev : 'all';
 }
 
 function esPaperSortValue(t, key) {
@@ -749,6 +747,25 @@ function getEsTimeframe(t) {
   return match ? match[1] : 'Mixed';
 }
 
+function renderBtcTurnGateBanner(gates = []) {
+  const active = (gates ?? []).filter((g) => g?.blockMarket);
+  if (!active.length) return '';
+  return active.map((g) => {
+    const side = escapeHtml(g.side ?? '');
+    const label = escapeHtml(g.label ?? 'BTC_TURN_CLUSTER_BAD');
+    const reason = escapeHtml(g.reason ?? '');
+    const cluster = g.cluster ?? {};
+    return `
+      <div style="margin:8px 16px 0;padding:10px 12px;border:2px solid #ff4d6d;background:#3a0712;color:#ffb3c1;font-weight:900;font-size:18px;line-height:1.25">
+        BTC TURN WARNING - CHẶN BR-like ${side} MARKET: ${label}
+        <div style="font-size:12px;color:#ffd6de;margin-top:4px;font-weight:700">
+          open=${cluster.open ?? '-'} · pnl=${cluster.pnl ?? '-'} · losers=${cluster.losers ?? '-'} · fast=${cluster.fastLosers ?? '-'} · ${reason}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 function getEsBrQuality(t) {
   const stage = getEsStage(t);
   if (!stage.startsWith('BR-like')) return null;
@@ -768,6 +785,24 @@ function renderEsBrQualityBadge(t) {
   const text = q.label.replace(/^LOW_/, '').replaceAll('_', ' ');
   const title = q.reasons ? `BR_QUALITY=${q.label}: ${q.reasons}` : `BR_QUALITY=${q.label}`;
   return `<span class="es-br-quality ${cls}" title="${escapeHtml(title)}">${escapeHtml(text)}</span>`;
+}
+
+function renderEsShortEnvBadge(t) {
+  const label = String(t?.brShortEnvLabel ?? '').toUpperCase();
+  if (!label) return '';
+  const block = t?.brShortEnvBlockMarket === true || label === 'SHORT_ENV_BAD_STRICT' || label === 'SHORT_ENV_BTC_UP_BAD_STRICT';
+  const btcUpBlock = label === 'SHORT_ENV_BTC_UP_BAD_STRICT';
+  const recovery = label === 'SHORT_RECOVERY_60M';
+  const color = block ? '#fb7185' : recovery ? '#34d399' : '#93c5fd';
+  const text = btcUpBlock ? 'BTC UP SHORT BLOCK' : block ? 'SHORT ENV BLOCK' : recovery ? 'SHORT RECOVERY' : 'SHORT ENV OK';
+  const r2 = t?.brShortEnvRolling2h ?? {};
+  const r60 = t?.brShortRecovery60m ?? {};
+  const title = [
+    t?.brShortEnvReason ?? label,
+    `2h closed=${r2.closed ?? '-'} pnl=${r2.pnl ?? '-'} wr=${r2.wr ?? '-'} lossCut=${r2.breadthLossCut ?? '-'}`,
+    `60m closed=${r60.closed ?? '-'} pnl=${r60.pnl ?? '-'} wr=${r60.wr ?? '-'}`,
+  ].join(' | ');
+  return `<span title="${escapeHtml(title)}" style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;border:1px solid ${color};color:${color};background:rgba(15,23,42,.25)">${escapeHtml(text)}</span>`;
 }
 
 function renderEsBtcTrendBadge(t) {
@@ -1132,7 +1167,7 @@ function renderEsPaperTable() {
     const dayScope = esPaperDayFilter === 'all' ? '' : ` · ${esPaperDayFilter}`;
     const tfScope = esPaperTfFilter === 'all' ? '' : ` · ${esPaperTfFilter}`;
     const pageScope = esPaperPagination ? ` | page ${esPaperPagination.page}/${esPaperPagination.totalPages} (${filteredTrades.length}/${esPaperPagination.total} rows)` : '';
-    summary.textContent = `${scope}${dayScope}${tfScope}${pageScope} | ${open.length} open/pending | ${closed.length} closed | TP ${tpHits} | SL ${slHits} | WR ${wr}% | AvgROE ${avgRoe}%`;
+    summary.innerHTML = `${escapeHtml(`${scope}${dayScope}${tfScope}${pageScope} | ${open.length} open/pending | ${closed.length} closed | TP ${tpHits} | SL ${slHits} | WR ${wr}% | AvgROE ${avgRoe}%`)}${renderBtcTurnGateBanner(esPaperServerSummary?.btcTurnGates)}`;
   }
   renderEsPaperPager();
   updateEsPaperStats(filteredTrades);
@@ -1177,6 +1212,7 @@ function renderEsPaperTable() {
     const tf = getEsTimeframe(t);
     const stageLabel = getEsStage(t);
     const brQualityBadge = renderEsBrQualityBadge(t);
+    const shortEnvBadge = renderEsShortEnvBadge(t);
     return `<tr class="${rowClass}">
       <td>${variantBadge}</td>
       <td>
@@ -1185,6 +1221,7 @@ function renderEsPaperTable() {
 	          <span style="font-size:9px;font-weight:800;padding:1px 5px;border-radius:3px;background:rgba(96,165,250,.16);color:#93c5fd">${tf}</span>
 	          <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(157,170,165,.14);color:var(--muted)">${stageLabel}</span>
 	          ${brQualityBadge}
+	          ${shortEnvBadge}
 	        </div>
       </td>
       <td><span style="color:${sideColor}">${t.side}</span></td>
@@ -1237,6 +1274,7 @@ async function loadEsPaperTrades(page = esPaperPage) {
     esPaperPage = data.pagination?.page ?? nextPage;
     esPaperPagination = data.pagination ?? null;
     if (data.summary) esPaperServerSummary = data.summary;
+    if (Array.isArray(data.availableDays)) esPaperAvailableDays = data.availableDays;
     esPaperTrades = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('emasq-'));
     updateEsDayFilterOptions();
     renderEsPaperTable();
@@ -1257,6 +1295,7 @@ function applyEsPaperData(data) {
     esPaperTrades = [...merged.values()];
   } else {
     esPaperPagination = data.pagination ?? esPaperPagination;
+    if (Array.isArray(data.availableDays) && data.availableDays.length) esPaperAvailableDays = data.availableDays;
     esPaperTrades = incoming;
   }
   updateEsDayFilterOptions();

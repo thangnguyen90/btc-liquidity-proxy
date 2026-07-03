@@ -2138,6 +2138,7 @@ async function refineEmaSqueezePaperPayload(payload = {}) {
     return runnerMeta.isRunner ? {
       ...payload,
       ...runnerMeta.payload,
+      status: 'OPEN',
       source: String(payload.source ?? '').includes('runner') || !payload.source
         ? payload.source
         : String(payload.source).replace(/-(\d+)$/, `${runnerMeta.sourceSuffix}-$1`),
@@ -2147,7 +2148,7 @@ async function refineEmaSqueezePaperPayload(payload = {}) {
   return {
     ...payload,
     ...runnerMeta.payload,
-    status: refined.paperStatus ?? payload.status,
+    status: runnerMeta.isRunner ? 'OPEN' : (refined.paperStatus ?? payload.status),
     entryPrice: refined.entry,
     tp: refined.tp ?? payload.tp,
     sl: refined.sl ?? payload.sl,
@@ -2510,6 +2511,22 @@ function getTopReversalMomentumGate(symbol) {
   return { ok: true };
 }
 
+// Phân loại tín hiệu top-reversal TỐT vs KHÔNG TỐT (theo backtest 319 closed):
+//  - TỐT  = no-DCA scout (SCOUT_ONLY / TOP_CONFIRMED, không cho DCA)  → net +556% / +202%
+//  - XẤU  = tier cho DCA (QUALITY/VOLUME_DISTRIBUTION/qualityBreakdown/strongCase/dcaEligible)
+//           → net ÂM (-88 .. -375%) vì DCA nhồi vào reversal thất bại.
+// => tín hiệu tốt test margin lớn ($10), xấu test nhỏ ($1).
+function isGoodTopReversal(sig) {
+  if (!sig) return false;
+  const tier = String(sig.qualityTier ?? '');
+  const isDcaTier = Boolean(sig.strongCase)
+    || Boolean(sig.qualityBreakdown)
+    || Boolean(sig.qualityDcaEligible)
+    || tier === 'QUALITY'
+    || tier === 'VOLUME_DISTRIBUTION';
+  return !isDcaTier;
+}
+
 function attachTopReversalBtcRelation(signals = []) {
   return signals.map((signal) => ({
     ...signal,
@@ -2647,6 +2664,24 @@ function brLikeBreadthCounts() {
   return { long: longSet.size, short: shortSet.size };
 }
 
+// Clone riêng cho runner: không dùng chung breadth log với BR-like để tránh tín hiệu nhiễu nhau.
+const emaSqueezeRunnerBreadthLog = []; // {at, symbol, side}
+function recordEmaSqueezeRunnerBreadth(symbol, side) {
+  if (!symbol || (side !== 'LONG' && side !== 'SHORT')) return;
+  emaSqueezeRunnerBreadthLog.push({ at: Date.now(), symbol: String(symbol), side });
+}
+function emaSqueezeRunnerBreadthCounts() {
+  const winMs = Number(process.env.EMA_SQUEEZE_PAPER_RUNNER_REVERSAL_WINDOW_MS
+    ?? process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_WINDOW_MS
+    ?? 30 * 60_000);
+  const cutoff = Date.now() - winMs;
+  while (emaSqueezeRunnerBreadthLog.length && emaSqueezeRunnerBreadthLog[0].at < cutoff) emaSqueezeRunnerBreadthLog.shift();
+  const longSet = new Set();
+  const shortSet = new Set();
+  for (const r of emaSqueezeRunnerBreadthLog) (r.side === 'LONG' ? longSet : shortSet).add(r.symbol);
+  return { long: longSet.size, short: shortSet.size };
+}
+
 function getEmaSqueezeBrLikeQualityLabel(sig = {}, opts = {}) {
   const side = String(opts.side ?? sig.action ?? '').toUpperCase();
   const brScore = Number(opts.brLikeScore ?? sig.brLikeScore ?? 0);
@@ -2691,9 +2726,756 @@ function getEmaSqueezeBrLikeQualityLabel(sig = {}, opts = {}) {
   };
 }
 
+function isEmaBrLikeShortTrade(t) {
+  const source = String(t?.source ?? '').toLowerCase();
+  const note = String(t?.note ?? '').toLowerCase();
+  return String(t?.side ?? '').toUpperCase() === 'SHORT'
+    && (source.includes('br_like_short') || note.includes('brlikeshort=y') || note.includes('br-like short'));
+}
+
+function addBrLikeShortRollingStats(bucket, trade) {
+  const tradePnl = Number(trade?.pnl ?? 0);
+  const outcome = String(trade?.outcome ?? trade?.status ?? '').toUpperCase();
+  bucket.closed += 1;
+  bucket.pnl += Number.isFinite(tradePnl) ? tradePnl : 0;
+  if (Number.isFinite(tradePnl) && tradePnl > 0) bucket.wins += 1;
+  if (outcome === 'SL') bucket.sl += 1;
+  if (outcome === 'TP') bucket.tp += 1;
+  if (outcome === 'BREADTH_REVERSAL_LOSS_CUT') bucket.breadthLossCut += 1;
+}
+
+function finalizeBrLikeShortRollingStats(bucket) {
+  return {
+    ...bucket,
+    pnl: +bucket.pnl.toFixed(3),
+    wr: bucket.closed ? +((bucket.wins / bucket.closed) * 100).toFixed(1) : 0,
+  };
+}
+
+function getBrLikeShortRollingStatsFromStore(store, nowMs, windowMs) {
+  const bucket = { closed: 0, pnl: 0, wins: 0, sl: 0, tp: 0, breadthLossCut: 0 };
+  for (const t of store?.trades ?? []) {
+    if (!isEmaBrLikeShortTrade(t)) continue;
+    const closedAt = Date.parse(t.closedAt ?? '');
+    if (!Number.isFinite(closedAt) || closedAt >= nowMs || closedAt < nowMs - windowMs) continue;
+    addBrLikeShortRollingStats(bucket, t);
+  }
+  return finalizeBrLikeShortRollingStats(bucket);
+}
+
+async function getBrLikeShortEnvGate(nowMs = Date.now(), health = btcHealthCache.data) {
+  const store = await readPumpPaperStore();
+  const strictMinClosed = Number(process.env.EMA_SQUEEZE_BR_SHORT_ENV_STRICT_MIN_CLOSED ?? 20);
+  const strictMaxPnl = Number(process.env.EMA_SQUEEZE_BR_SHORT_ENV_STRICT_MAX_PNL ?? -10);
+  const strictMinLossCuts = Number(process.env.EMA_SQUEEZE_BR_SHORT_ENV_STRICT_MIN_LOSS_CUTS ?? 8);
+  const strictMaxWr = Number(process.env.EMA_SQUEEZE_BR_SHORT_ENV_STRICT_MAX_WR ?? 45);
+  const recoveryMinClosed = Number(process.env.EMA_SQUEEZE_BR_SHORT_RECOVERY_60M_MIN_CLOSED ?? 8);
+  const recoveryMinWr = Number(process.env.EMA_SQUEEZE_BR_SHORT_RECOVERY_60M_MIN_WR ?? 70);
+  const btcUpMinScore = Number(process.env.EMA_SQUEEZE_BR_SHORT_ENV_BTC_UP_MIN_SCORE ?? 55);
+  const btcTrendDir = String(health?.btcTrendDir ?? '').toLowerCase();
+  const btcTrendScore = Number(health?.btcTrendScore ?? 0);
+  const btcUpStrong = btcTrendDir === 'up' && btcTrendScore >= btcUpMinScore;
+  const rolling2h = getBrLikeShortRollingStatsFromStore(store, nowMs, 2 * 60 * 60 * 1000);
+  const rolling60m = getBrLikeShortRollingStatsFromStore(store, nowMs, 60 * 60 * 1000);
+  const strictReasons = [];
+  if (rolling2h.closed >= strictMinClosed) {
+    if (rolling2h.pnl <= strictMaxPnl) strictReasons.push(`2hPnL=${rolling2h.pnl}<=${strictMaxPnl}`);
+    if (rolling2h.breadthLossCut >= strictMinLossCuts) strictReasons.push(`2hLossCut=${rolling2h.breadthLossCut}>=${strictMinLossCuts}`);
+    if (rolling2h.wr < strictMaxWr) strictReasons.push(`2hWR=${rolling2h.wr}<${strictMaxWr}`);
+  }
+  const strict = rolling2h.closed >= strictMinClosed && strictReasons.length > 0;
+  const recovery60m = rolling60m.closed >= recoveryMinClosed
+    && (rolling60m.pnl > 0 || rolling60m.wr >= recoveryMinWr);
+  const blockMarket = strict && btcUpStrong && !recovery60m;
+  const label = blockMarket
+    ? 'SHORT_ENV_BTC_UP_BAD_STRICT'
+    : recovery60m
+      ? 'SHORT_RECOVERY_60M'
+      : strict
+        ? 'SHORT_ENV_BAD_BUT_BTC_NOT_UP'
+        : 'SHORT_ENV_OK';
+  const btcReason = `btcTrend=${btcTrendDir || '-'} score=${Number.isFinite(btcTrendScore) ? btcTrendScore : '-'} minUp=${btcUpMinScore}`;
+  return {
+    blockMarket,
+    label,
+    reason: strict
+      ? `${strictReasons.join(', ')}; ${btcReason}${recovery60m ? `; recovery60m PASS pnl=${rolling60m.pnl} wr=${rolling60m.wr}% closed=${rolling60m.closed}` : ''}${!btcUpStrong && !recovery60m ? '; BTC not strong-up => keep market/test' : ''}`
+      : `2h ok closed=${rolling2h.closed} pnl=${rolling2h.pnl} wr=${rolling2h.wr}% lossCut=${rolling2h.breadthLossCut}; ${btcReason}`,
+    strict,
+    btcUpStrong,
+    btcTrendDir,
+    btcTrendScore: Number.isFinite(btcTrendScore) ? btcTrendScore : null,
+    btcUpMinScore,
+    recovery60m,
+    rolling2h,
+    rolling60m,
+  };
+}
+
+function getBtcTrendSideForBrLikeCut(health = btcHealthCache.data) {
+  const dir = String(health?.btcTrendDir ?? '').toLowerCase();
+  if (dir === 'up') return { side: 'LONG', label: 'BTC_TREND_UP', reason: `btcTrendDir=up score=${health?.btcTrendScore ?? '-'}` };
+  if (dir === 'down') return { side: 'SHORT', label: 'BTC_TREND_DOWN', reason: `btcTrendDir=down score=${health?.btcTrendScore ?? '-'}` };
+
+  const pct6h = Number(health?.pct6h);
+  const candle1h = Number(health?.btcCandle1hPct);
+  const ema1h = String(health?.emaTrend1h ?? '').toLowerCase();
+  if ((Number.isFinite(pct6h) && pct6h >= 0.7) || (Number.isFinite(candle1h) && candle1h >= 0.25) || ema1h === 'above') {
+    return { side: 'LONG', label: 'BTC_DERIVED_UP', reason: `pct6h=${Number.isFinite(pct6h) ? pct6h : '-'} candle1h=${Number.isFinite(candle1h) ? candle1h : '-'} ema1h=${ema1h || '-'}` };
+  }
+  if ((Number.isFinite(pct6h) && pct6h <= -0.7) || (Number.isFinite(candle1h) && candle1h <= -0.25) || ema1h === 'below') {
+    return { side: 'SHORT', label: 'BTC_DERIVED_DOWN', reason: `pct6h=${Number.isFinite(pct6h) ? pct6h : '-'} candle1h=${Number.isFinite(candle1h) ? candle1h : '-'} ema1h=${ema1h || '-'}` };
+  }
+  return { side: null, label: 'BTC_FLAT_MIXED', reason: `pct6h=${Number.isFinite(pct6h) ? pct6h : '-'} candle1h=${Number.isFinite(candle1h) ? candle1h : '-'} ema1h=${ema1h || '-'}` };
+}
+
+function getBrLikeBreadthLossCutPolicy(side) {
+  const trend = getBtcTrendSideForBrLikeCut();
+  const againstRoe = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_LOSS_CUT_ROE ?? -6);
+  const mixedRoe = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_LOSS_CUT_MIXED_ROE ?? -12);
+  const alignedRoe = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_LOSS_CUT_ALIGNED_ROE ?? -20);
+  const disableAligned = process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_LOSS_CUT_ALIGNED === 'false';
+  const tradeSide = String(side ?? '').toUpperCase();
+  if (trend.side && tradeSide === trend.side) {
+    return {
+      regime: 'ALIGNED',
+      threshold: disableAligned ? null : alignedRoe,
+      trend,
+      reason: `aligned with ${trend.label}; ${trend.reason}`,
+    };
+  }
+  if (trend.side && tradeSide !== trend.side) {
+    return {
+      regime: 'AGAINST',
+      threshold: againstRoe,
+      trend,
+      reason: `against ${trend.label}; ${trend.reason}`,
+    };
+  }
+  return {
+    regime: 'MIXED',
+    threshold: mixedRoe,
+    trend,
+    reason: `mixed BTC trend; ${trend.reason}`,
+  };
+}
+
+function getEmaSqueezeRunnerBreadthLossCutPolicy(side) {
+  const trend = getBtcTrendSideForBrLikeCut();
+  const againstRoe = Number(process.env.EMA_SQUEEZE_PAPER_RUNNER_REVERSAL_LOSS_CUT_ROE
+    ?? process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_LOSS_CUT_ROE
+    ?? -6);
+  const mixedRoe = Number(process.env.EMA_SQUEEZE_PAPER_RUNNER_REVERSAL_LOSS_CUT_MIXED_ROE
+    ?? process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_LOSS_CUT_MIXED_ROE
+    ?? -12);
+  const alignedRoe = Number(process.env.EMA_SQUEEZE_PAPER_RUNNER_REVERSAL_LOSS_CUT_ALIGNED_ROE
+    ?? process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_LOSS_CUT_ALIGNED_ROE
+    ?? -20);
+  const disableAligned = process.env.EMA_SQUEEZE_PAPER_RUNNER_REVERSAL_LOSS_CUT_ALIGNED === 'false';
+  const tradeSide = String(side ?? '').toUpperCase();
+  if (trend.side && tradeSide === trend.side) {
+    return {
+      regime: 'ALIGNED',
+      threshold: disableAligned ? null : alignedRoe,
+      trend,
+      reason: `runner aligned with ${trend.label}; ${trend.reason}`,
+    };
+  }
+  if (trend.side && tradeSide !== trend.side) {
+    return {
+      regime: 'AGAINST',
+      threshold: againstRoe,
+      trend,
+      reason: `runner against ${trend.label}; ${trend.reason}`,
+    };
+  }
+  return {
+    regime: 'MIXED',
+    threshold: mixedRoe,
+    trend,
+    reason: `runner mixed BTC trend; ${trend.reason}`,
+  };
+}
+
+function isEmaSqueezeRunnerPaperTrade(t) {
+  const source = String(t?.source ?? '').toLowerCase();
+  const note = String(t?.note ?? '').toLowerCase();
+  return String(t?.status ?? '').toUpperCase() === 'OPEN'
+    && String(t?.source ?? '').startsWith('emasq-')
+    && !source.includes('br_like')
+    && (source.includes('-runner') || note.includes('runner=y') || t?.runnerCandidate === true);
+}
+
+function getBtcLocalTurnSignalForBrLike(side) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  const klines = getClosedCachedKlines('BTCUSDT', '5m', 80);
+  if (!Array.isArray(klines) || klines.length < 30) return { hit: false, label: 'BTC_NO_DATA', reason: 'BTC 5m no data' };
+  const last = klines.at(-1);
+  const window = Math.max(12, Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_WINDOW ?? 24));
+  const recent = klines.slice(-window);
+  const open = klineNum(last, 'open', 1);
+  const high = klineNum(last, 'high', 2);
+  const low = klineNum(last, 'low', 3);
+  const close = klineNum(last, 'close', 4);
+  if (![open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) {
+    return { hit: false, label: 'BTC_INVALID', reason: 'BTC 5m invalid candle' };
+  }
+  const range = Math.max(1e-12, high - low);
+  const closePos = (close - low) / range;
+  const lowerShare = (Math.min(open, close) - low) / range;
+  const upperShare = (high - Math.max(open, close)) / range;
+  const closeFromLowPct = (close - low) / low * 100;
+  const closeFromHighPct = (high - close) / high * 100;
+  const greenPct = (close - open) / open * 100;
+  const lowN = Math.min(...recent.map((k) => Number(k.low ?? k[3])).filter(Number.isFinite));
+  const highN = Math.max(...recent.map((k) => Number(k.high ?? k[2])).filter(Number.isFinite));
+  const lowTol = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_LOW_TOL_PCT ?? 0.08);
+  const highTol = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_HIGH_TOL_PCT ?? 0.08);
+  const localLow = Number.isFinite(lowN) && low <= lowN * (1 + lowTol / 100);
+  const localHigh = Number.isFinite(highN) && high >= highN * (1 - highTol / 100);
+
+  const minCloseFromLow = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_BOTTOM_CLOSE_FROM_LOW_PCT ?? 0.08);
+  const minGreen = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_BOTTOM_GREEN_PCT ?? 0.10);
+  const minLower = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_BOTTOM_LOWER_SHARE ?? 0.45);
+  const minBottomPos = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_BOTTOM_CLOSE_POS ?? 0.50);
+  const bottomBounce = localLow
+    && (
+      closeFromLowPct >= minCloseFromLow
+      || greenPct >= minGreen
+      || (lowerShare >= minLower && closePos >= minBottomPos)
+    );
+
+  const minCloseFromHigh = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_TOP_CLOSE_FROM_HIGH_PCT ?? 0.08);
+  const minRed = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_TOP_RED_PCT ?? 0.10);
+  const minUpper = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_TOP_UPPER_SHARE ?? 0.45);
+  const maxTopPos = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_TOP_CLOSE_POS ?? 0.50);
+  const topReject = localHigh
+    && (
+      closeFromHighPct >= minCloseFromHigh
+      || greenPct <= -minRed
+      || (upperShare >= minUpper && closePos <= maxTopPos)
+    );
+
+  const reason = `BTC5m localLow=${localLow} localHigh=${localHigh} cLow=${closeFromLowPct.toFixed(2)} cHigh=${closeFromHighPct.toFixed(2)} candle=${greenPct.toFixed(2)} lower=${lowerShare.toFixed(2)} upper=${upperShare.toFixed(2)} pos=${closePos.toFixed(2)}`;
+  if (tradeSide === 'SHORT') return { hit: bottomBounce, label: bottomBounce ? 'BTC_BOTTOM_BOUNCE' : 'BTC_OK_FOR_SHORT', reason };
+  if (tradeSide === 'LONG') return { hit: topReject, label: topReject ? 'BTC_TOP_REJECT' : 'BTC_OK_FOR_LONG', reason };
+  return { hit: false, label: 'BTC_SIDE_UNKNOWN', reason };
+}
+
+function getBtcLocalTurnRiskLogForShakeout(side) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  const klines = getClosedCachedKlines('BTCUSDT', '5m', 80);
+  if (!Array.isArray(klines) || klines.length < 30) {
+    return {
+      label: 'BTC_NO_DATA',
+      againstSide: false,
+      bottomBounce: false,
+      topReject: false,
+      reason: 'BTC 5m no data',
+    };
+  }
+  const last = klines.at(-1);
+  const window = Math.max(12, Number(process.env.SHAKEOUT_RECLAIM_BTC_TURN_LOG_WINDOW ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_WINDOW ?? 24));
+  const recent = klines.slice(-window);
+  const open = klineNum(last, 'open', 1);
+  const high = klineNum(last, 'high', 2);
+  const low = klineNum(last, 'low', 3);
+  const close = klineNum(last, 'close', 4);
+  if (![open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) {
+    return {
+      label: 'BTC_INVALID',
+      againstSide: false,
+      bottomBounce: false,
+      topReject: false,
+      reason: 'BTC 5m invalid candle',
+    };
+  }
+  const range = Math.max(1e-12, high - low);
+  const closePos = (close - low) / range;
+  const lowerShare = (Math.min(open, close) - low) / range;
+  const upperShare = (high - Math.max(open, close)) / range;
+  const closeFromLowPct = (close - low) / low * 100;
+  const closeFromHighPct = (high - close) / high * 100;
+  const candlePct = (close - open) / open * 100;
+  const lowN = Math.min(...recent.map((k) => Number(k.low ?? k[3])).filter(Number.isFinite));
+  const highN = Math.max(...recent.map((k) => Number(k.high ?? k[2])).filter(Number.isFinite));
+  const lowTol = Number(process.env.SHAKEOUT_RECLAIM_BTC_TURN_LOW_TOL_PCT ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_LOW_TOL_PCT ?? 0.08);
+  const highTol = Number(process.env.SHAKEOUT_RECLAIM_BTC_TURN_HIGH_TOL_PCT ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_HIGH_TOL_PCT ?? 0.08);
+  const localLow = Number.isFinite(lowN) && low <= lowN * (1 + lowTol / 100);
+  const localHigh = Number.isFinite(highN) && high >= highN * (1 - highTol / 100);
+
+  const minCloseFromLow = Number(process.env.SHAKEOUT_RECLAIM_BTC_BOTTOM_CLOSE_FROM_LOW_PCT ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_BOTTOM_CLOSE_FROM_LOW_PCT ?? 0.08);
+  const minGreen = Number(process.env.SHAKEOUT_RECLAIM_BTC_BOTTOM_GREEN_PCT ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_BOTTOM_GREEN_PCT ?? 0.10);
+  const minLower = Number(process.env.SHAKEOUT_RECLAIM_BTC_BOTTOM_LOWER_SHARE ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_BOTTOM_LOWER_SHARE ?? 0.45);
+  const minBottomPos = Number(process.env.SHAKEOUT_RECLAIM_BTC_BOTTOM_CLOSE_POS ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_BOTTOM_CLOSE_POS ?? 0.50);
+  const bottomBounce = localLow
+    && (
+      closeFromLowPct >= minCloseFromLow
+      || candlePct >= minGreen
+      || (lowerShare >= minLower && closePos >= minBottomPos)
+    );
+
+  const minCloseFromHigh = Number(process.env.SHAKEOUT_RECLAIM_BTC_TOP_CLOSE_FROM_HIGH_PCT ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_TOP_CLOSE_FROM_HIGH_PCT ?? 0.08);
+  const minRed = Number(process.env.SHAKEOUT_RECLAIM_BTC_TOP_RED_PCT ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_TOP_RED_PCT ?? 0.10);
+  const minUpper = Number(process.env.SHAKEOUT_RECLAIM_BTC_TOP_UPPER_SHARE ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_TOP_UPPER_SHARE ?? 0.45);
+  const maxTopPos = Number(process.env.SHAKEOUT_RECLAIM_BTC_TOP_CLOSE_POS ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_TOP_CLOSE_POS ?? 0.50);
+  const topReject = localHigh
+    && (
+      closeFromHighPct >= minCloseFromHigh
+      || candlePct <= -minRed
+      || (upperShare >= minUpper && closePos <= maxTopPos)
+    );
+
+  const againstSide = (tradeSide === 'SHORT' && bottomBounce)
+    || (tradeSide === 'LONG' && topReject);
+  const favorableSide = (tradeSide === 'LONG' && bottomBounce)
+    || (tradeSide === 'SHORT' && topReject);
+  const label = againstSide
+    ? (tradeSide === 'SHORT' ? 'BTC_BOTTOM_BOUNCE_RISK_FOR_SHORT' : 'BTC_TOP_REJECT_RISK_FOR_LONG')
+    : favorableSide
+      ? (tradeSide === 'LONG' ? 'BTC_BOTTOM_BOUNCE_OK_FOR_LONG' : 'BTC_TOP_REJECT_OK_FOR_SHORT')
+      : 'BTC_NO_LOCAL_TURN_RISK';
+  const reason = `BTC5m localLow=${localLow} localHigh=${localHigh} cLow=${closeFromLowPct.toFixed(2)} cHigh=${closeFromHighPct.toFixed(2)} candle=${candlePct.toFixed(2)} lower=${lowerShare.toFixed(2)} upper=${upperShare.toFixed(2)} pos=${closePos.toFixed(2)} window=${window}`;
+  return {
+    label,
+    againstSide,
+    favorableSide,
+    bottomBounce,
+    topReject,
+    localLow,
+    localHigh,
+    closeFromLowPct: +closeFromLowPct.toFixed(3),
+    closeFromHighPct: +closeFromHighPct.toFixed(3),
+    candlePct: +candlePct.toFixed(3),
+    lowerShare: +lowerShare.toFixed(3),
+    upperShare: +upperShare.toFixed(3),
+    closePos: +closePos.toFixed(3),
+    window,
+    price: close,
+    closeTime: last?.closeTime ?? last?.[6] ?? null,
+    reason,
+  };
+}
+
+async function getBrLikeOpenClusterStats(side) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  const store = await readPumpPaperStore();
+  const trades = (store?.trades ?? []).filter((t) =>
+    t.status === 'OPEN'
+    && t.side === tradeSide
+    && String(t.source ?? '').includes(tradeSide === 'SHORT' ? 'br_like_short' : 'br_like'));
+  let pnl = 0;
+  let losers = 0;
+  let fastLosers = 0;
+  let marked = 0;
+  const now = Date.now();
+  for (const t of trades) {
+    const mark = emaSqueezeSocketMarks.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? getSnapshotMarkPrice(t.symbol);
+    const m = Number(mark);
+    if (!Number.isFinite(m) || m <= 0) continue;
+    const sideMult = tradeSide === 'LONG' ? 1 : -1;
+    const rowPnl = (m - Number(t.entryPrice)) * Number(t.quantity) * sideMult;
+    const rowRoe = Number(t.marginUsdt) > 0 ? rowPnl / Number(t.marginUsdt) * 100 : 0;
+    pnl += rowPnl;
+    marked++;
+    if (rowPnl < 0) losers++;
+    const ageMs = now - Date.parse(t.openedAt ?? t.createdAt ?? '');
+    if (rowRoe <= Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_FAST_LOSS_ROE ?? -2)
+        && Number.isFinite(ageMs)
+        && ageMs <= Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_FAST_WINDOW_MS ?? 30 * 60_000)) {
+      fastLosers++;
+    }
+  }
+  return {
+    open: trades.length,
+    marked,
+    pnl: +pnl.toFixed(3),
+    losers,
+    fastLosers,
+  };
+}
+
+async function getEmaSqueezeRunnerOpenClusterStats(side) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  const store = await readPumpPaperStore();
+  const trades = (store?.trades ?? []).filter((t) =>
+    isEmaSqueezeRunnerPaperTrade(t)
+    && String(t.side ?? '').toUpperCase() === tradeSide);
+  let pnl = 0;
+  let losers = 0;
+  let fastLosers = 0;
+  let marked = 0;
+  const now = Date.now();
+  for (const t of trades) {
+    const mark = emaSqueezeSocketMarks.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? getSnapshotMarkPrice(t.symbol);
+    const m = Number(mark);
+    if (!Number.isFinite(m) || m <= 0) continue;
+    const sideMult = tradeSide === 'LONG' ? 1 : -1;
+    const rowPnl = (m - Number(t.entryPrice)) * Number(t.quantity) * sideMult;
+    const rowRoe = Number(t.marginUsdt) > 0 ? rowPnl / Number(t.marginUsdt) * 100 : 0;
+    pnl += rowPnl;
+    marked++;
+    if (rowPnl < 0) losers++;
+    const ageMs = now - Date.parse(t.openedAt ?? t.createdAt ?? '');
+    if (rowRoe <= Number(process.env.EMA_SQUEEZE_RUNNER_BTC_CLUSTER_FAST_LOSS_ROE
+        ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_FAST_LOSS_ROE
+        ?? -2)
+        && Number.isFinite(ageMs)
+        && ageMs <= Number(process.env.EMA_SQUEEZE_RUNNER_BTC_CLUSTER_FAST_WINDOW_MS
+          ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_FAST_WINDOW_MS
+          ?? 30 * 60_000)) {
+      fastLosers++;
+    }
+  }
+  return {
+    open: trades.length,
+    marked,
+    pnl: +pnl.toFixed(3),
+    losers,
+    fastLosers,
+  };
+}
+
+const brLikeBtcTurnPostCutPause = new Map(); // side -> { until, label, reason, setAt }
+const runnerBtcTurnPostCutPause = new Map(); // side -> { until, label, reason, setAt }
+
+function setBrLikeBtcTurnPostCutPause(side, gate) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  brLikeBtcTurnPostCutPause.set(tradeSide, {
+    setAt: Date.now(),
+    label: String(gate?.label ?? 'BTC_TURN_CLUSTER_BAD'),
+    reason: String(gate?.reason ?? '').slice(0, 800),
+  });
+}
+
+function getKlineCloseTimeMs(k) {
+  const closeTime = Number(Array.isArray(k) ? k[6] : (k?.closeTime ?? k?.closeAt ?? k?.endTime));
+  if (Number.isFinite(closeTime) && closeTime > 0) return closeTime;
+  const openTime = Number(Array.isArray(k) ? k[0] : (k?.openTime ?? k?.time ?? k?.startTime));
+  return Number.isFinite(openTime) && openTime > 0 ? openTime + 5 * 60_000 : null;
+}
+
+function getBtcPostCutResumeConfirmation(side, afterMs) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  const start = Number(afterMs);
+  const klines = getClosedCachedKlines('BTCUSDT', '5m', 80);
+  if (!Array.isArray(klines) || klines.length < 3 || !Number.isFinite(start)) {
+    return { confirmed: false, label: 'BTC_CONFIRM_NO_DATA', reason: 'BTC 5m closed candle no data after profit-cut' };
+  }
+  const minBodyPct = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_POST_CUT_CONFIRM_BODY_PCT ?? 0.03);
+  const shortMaxPos = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_POST_CUT_SHORT_MAX_POS ?? 0.40);
+  const longMinPos = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_POST_CUT_LONG_MIN_POS ?? 0.60);
+  for (let i = 1; i < klines.length; i++) {
+    const k = klines[i];
+    const closeTime = getKlineCloseTimeMs(k);
+    if (!Number.isFinite(closeTime) || closeTime <= start) continue;
+    const prev = klines[i - 1];
+    const open = klineNum(k, 'open', 1);
+    const high = klineNum(k, 'high', 2);
+    const low = klineNum(k, 'low', 3);
+    const close = klineNum(k, 'close', 4);
+    const prevClose = klineNum(prev, 'close', 4);
+    if (![open, high, low, close, prevClose].every((v) => Number.isFinite(v) && v > 0)) continue;
+    const bodyPct = (close - open) / open * 100;
+    const range = Math.max(1e-12, high - low);
+    const closePos = (close - low) / range;
+    const closeVsPrevPct = (close - prevClose) / prevClose * 100;
+    const shortConfirmed = bodyPct <= -minBodyPct && close <= prevClose && closePos <= shortMaxPos;
+    const longConfirmed = bodyPct >= minBodyPct && close >= prevClose && closePos >= longMinPos;
+    const reason = `BTC5m confirm candle=${new Date(closeTime).toISOString()} body=${bodyPct.toFixed(2)}% closeVsPrev=${closeVsPrevPct.toFixed(2)}% pos=${closePos.toFixed(2)} thresholds body>=${minBodyPct}% shortPos<=${shortMaxPos} longPos>=${longMinPos}`;
+    if (tradeSide === 'SHORT' && shortConfirmed) return { confirmed: true, label: 'BTC_SHORT_RESUME_CONFIRMED', reason };
+    if (tradeSide === 'LONG' && longConfirmed) return { confirmed: true, label: 'BTC_LONG_RESUME_CONFIRMED', reason };
+  }
+  const latest = klines.at(-1);
+  const latestClose = getKlineCloseTimeMs(latest);
+  return {
+    confirmed: false,
+    label: tradeSide === 'SHORT' ? 'BTC_WAIT_SHORT_CONFIRM' : 'BTC_WAIT_LONG_CONFIRM',
+    reason: `no BTC 5m resume candle after ${new Date(start).toISOString()} yet; latest=${latestClose ? new Date(latestClose).toISOString() : '-'}`,
+  };
+}
+
+function getBrLikeBtcTurnPostCutPause(side) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  const pause = brLikeBtcTurnPostCutPause.get(tradeSide);
+  if (!pause) return null;
+  const confirmation = getBtcPostCutResumeConfirmation(tradeSide, pause.setAt);
+  if (confirmation.confirmed) {
+    brLikeBtcTurnPostCutPause.delete(tradeSide);
+    return null;
+  }
+  return {
+    ...pause,
+    confirmation,
+  };
+}
+
+function setRunnerBtcTurnPostCutPause(side, gate) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  runnerBtcTurnPostCutPause.set(tradeSide, {
+    setAt: Date.now(),
+    label: String(gate?.label ?? 'RUNNER_BTC_TURN_CLUSTER_BAD'),
+    reason: String(gate?.reason ?? '').slice(0, 800),
+  });
+}
+
+function getRunnerBtcTurnPostCutPause(side) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  const pause = runnerBtcTurnPostCutPause.get(tradeSide);
+  if (!pause) return null;
+  const confirmation = getBtcPostCutResumeConfirmation(tradeSide, pause.setAt);
+  if (confirmation.confirmed) {
+    runnerBtcTurnPostCutPause.delete(tradeSide);
+    return null;
+  }
+  return {
+    ...pause,
+    confirmation,
+  };
+}
+
+async function getRecentBrLikeBtcTurnProfitCutPause(side) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  const expected = tradeSide === 'SHORT'
+    ? 'BTC_BOTTOM_BOUNCE_CLUSTER_BAD_PROFIT_CUT'
+    : 'BTC_TOP_REJECT_CLUSTER_BAD_PROFIT_CUT';
+  const rows = [];
+  const pumpStore = await readPumpPaperStore().catch(() => ({ trades: [] }));
+  rows.push(...(pumpStore.trades ?? []));
+  const limitStore = await readBrLikeLimitPaperStore().catch(() => ({ trades: [] }));
+  rows.push(...(limitStore.trades ?? []));
+  let latest = null;
+  for (const t of rows) {
+    if (t.side !== tradeSide || String(t.outcome ?? '') !== expected) continue;
+    const closedAt = Date.parse(t.closedAt ?? '');
+    if (!Number.isFinite(closedAt)) continue;
+    if (!latest || closedAt > latest.closedAt) latest = { closedAt, symbol: t.symbol, outcome: expected };
+  }
+  if (!latest) return null;
+  const confirmation = getBtcPostCutResumeConfirmation(tradeSide, latest.closedAt);
+  if (confirmation.confirmed) return null;
+  return {
+    setAt: latest.closedAt,
+    label: expected,
+    reason: `recent ${expected} ${latest.symbol ?? ''} at ${new Date(latest.closedAt).toISOString()}`,
+    confirmation,
+  };
+}
+
+async function getRecentRunnerBtcTurnProfitCutPause(side) {
+  const tradeSide = String(side ?? '').toUpperCase();
+  const expected = tradeSide === 'SHORT'
+    ? 'RUNNER_BTC_BOTTOM_BOUNCE_CLUSTER_BAD_PROFIT_CUT'
+    : 'RUNNER_BTC_TOP_REJECT_CLUSTER_BAD_PROFIT_CUT';
+  const pumpStore = await readPumpPaperStore().catch(() => ({ trades: [] }));
+  let latest = null;
+  for (const t of pumpStore.trades ?? []) {
+    if (t.side !== tradeSide || String(t.outcome ?? '') !== expected) continue;
+    const closedAt = Date.parse(t.closedAt ?? '');
+    if (!Number.isFinite(closedAt)) continue;
+    if (!latest || closedAt > latest.closedAt) latest = { closedAt, symbol: t.symbol, outcome: expected };
+  }
+  if (!latest) return null;
+  const confirmation = getBtcPostCutResumeConfirmation(tradeSide, latest.closedAt);
+  if (confirmation.confirmed) return null;
+  return {
+    setAt: latest.closedAt,
+    label: expected,
+    reason: `recent ${expected} ${latest.symbol ?? ''} at ${new Date(latest.closedAt).toISOString()}`,
+    confirmation,
+  };
+}
+
+async function getBrLikeBtcTurnClusterGate(side) {
+  if (process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_CLUSTER_GATE === 'false') return { blockMarket: false, label: 'BTC_TURN_GATE_OFF', reason: 'disabled' };
+  const btc = getBtcLocalTurnSignalForBrLike(side);
+  const cluster = await getBrLikeOpenClusterStats(side);
+  const postCutPause = getBrLikeBtcTurnPostCutPause(side)
+    ?? await getRecentBrLikeBtcTurnProfitCutPause(side);
+  if (postCutPause) {
+    return {
+      blockMarket: true,
+      label: `${postCutPause.label}_WAIT_BTC_CONFIRM`,
+      reason: `${btc.reason}; waitBtcConfirm=${postCutPause.confirmation?.label ?? '-'} (${postCutPause.confirmation?.reason ?? '-'}); original=${postCutPause.reason}; cluster open=${cluster.open} marked=${cluster.marked} pnl=${cluster.pnl} losers=${cluster.losers} fastLosers=${cluster.fastLosers}`,
+      btc,
+      cluster,
+      postCutPause,
+    };
+  }
+  const minOpen = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_MIN_OPEN ?? 8);
+  const maxPnl = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_MAX_PNL ?? -8);
+  const minLosers = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_MIN_LOSERS ?? 8);
+  const minFastLosers = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_MIN_FAST_LOSERS ?? 5);
+  const clusterBad = cluster.open >= minOpen
+    && (
+      cluster.pnl <= maxPnl
+      || cluster.losers >= minLosers
+      || cluster.fastLosers >= minFastLosers
+    );
+  const blockMarket = btc.hit && clusterBad;
+  return {
+    blockMarket,
+    label: blockMarket ? `${btc.label}_CLUSTER_BAD` : btc.label,
+    reason: `${btc.reason}; cluster open=${cluster.open} marked=${cluster.marked} pnl=${cluster.pnl} losers=${cluster.losers} fastLosers=${cluster.fastLosers}; thresholds open>=${minOpen} pnl<=${maxPnl} losers>=${minLosers} fastLosers>=${minFastLosers}`,
+    btc,
+    cluster,
+  };
+}
+
+async function getRunnerBtcTurnClusterGate(side) {
+  if (process.env.EMA_SQUEEZE_RUNNER_BTC_TURN_CLUSTER_GATE === 'false') {
+    return { blockMarket: false, label: 'RUNNER_BTC_TURN_GATE_OFF', reason: 'disabled' };
+  }
+  const btc = getBtcLocalTurnSignalForBrLike(side);
+  const cluster = await getEmaSqueezeRunnerOpenClusterStats(side);
+  const postCutPause = getRunnerBtcTurnPostCutPause(side)
+    ?? await getRecentRunnerBtcTurnProfitCutPause(side);
+  if (postCutPause) {
+    return {
+      blockMarket: true,
+      label: `${postCutPause.label}_WAIT_BTC_CONFIRM`,
+      reason: `${btc.reason}; waitBtcConfirm=${postCutPause.confirmation?.label ?? '-'} (${postCutPause.confirmation?.reason ?? '-'}); original=${postCutPause.reason}; runner cluster open=${cluster.open} marked=${cluster.marked} pnl=${cluster.pnl} losers=${cluster.losers} fastLosers=${cluster.fastLosers}`,
+      btc,
+      cluster,
+      postCutPause,
+    };
+  }
+  const minOpen = Number(process.env.EMA_SQUEEZE_RUNNER_BTC_CLUSTER_MIN_OPEN
+    ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_MIN_OPEN
+    ?? 8);
+  const maxPnl = Number(process.env.EMA_SQUEEZE_RUNNER_BTC_CLUSTER_MAX_PNL
+    ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_MAX_PNL
+    ?? -8);
+  const minLosers = Number(process.env.EMA_SQUEEZE_RUNNER_BTC_CLUSTER_MIN_LOSERS
+    ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_MIN_LOSERS
+    ?? 8);
+  const minFastLosers = Number(process.env.EMA_SQUEEZE_RUNNER_BTC_CLUSTER_MIN_FAST_LOSERS
+    ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_CLUSTER_MIN_FAST_LOSERS
+    ?? 5);
+  const clusterBad = cluster.open >= minOpen
+    && (
+      cluster.pnl <= maxPnl
+      || cluster.losers >= minLosers
+      || cluster.fastLosers >= minFastLosers
+    );
+  const blockMarket = btc.hit && clusterBad;
+  const btcLabel = btc.label === 'BTC_TOP_REJECT'
+    ? 'RUNNER_BTC_TOP_REJECT'
+    : btc.label === 'BTC_BOTTOM_BOUNCE'
+      ? 'RUNNER_BTC_BOTTOM_BOUNCE'
+      : `RUNNER_${btc.label}`;
+  return {
+    blockMarket,
+    label: blockMarket ? `${btcLabel}_CLUSTER_BAD` : btcLabel,
+    reason: `${btc.reason}; runner cluster open=${cluster.open} marked=${cluster.marked} pnl=${cluster.pnl} losers=${cluster.losers} fastLosers=${cluster.fastLosers}; thresholds open>=${minOpen} pnl<=${maxPnl} losers>=${minLosers} fastLosers>=${minFastLosers}`,
+    btc,
+    cluster,
+  };
+}
+
+function getBrLikeShortRecoveryBadCandleGate(brRealCandle, brShortEnvGate, brBtcTurnClusterGate) {
+  if (process.env.EMA_SQUEEZE_BR_LIKE_SHORT_RECOVERY_BAD_CANDLE_GATE === 'false') {
+    return { blockMarket: false, label: 'SHORT_RECOVERY_BAD_CANDLE_OFF', reason: 'disabled' };
+  }
+  const isRecovery = Boolean(brShortEnvGate?.recovery60m)
+    || String(brShortEnvGate?.label ?? '') === 'SHORT_RECOVERY_60M';
+  const isBadGreenBounce = String(brRealCandle?.label ?? '') === 'REAL_BAD_CANDLE'
+    && String(brRealCandle?.kind ?? '') === 'STRONG_GREEN_CLOSE';
+  const cluster = brBtcTurnClusterGate?.cluster ?? {};
+  const minOpen = Number(process.env.EMA_SQUEEZE_BR_LIKE_SHORT_RECOVERY_BAD_CANDLE_MIN_OPEN ?? 8);
+  const maxPnl = Number(process.env.EMA_SQUEEZE_BR_LIKE_SHORT_RECOVERY_BAD_CANDLE_MAX_PNL ?? -6);
+  const minLosers = Number(process.env.EMA_SQUEEZE_BR_LIKE_SHORT_RECOVERY_BAD_CANDLE_MIN_LOSERS ?? 6);
+  const minFastLosers = Number(process.env.EMA_SQUEEZE_BR_LIKE_SHORT_RECOVERY_BAD_CANDLE_MIN_FAST_LOSERS ?? 4);
+  const clusterBad = Number(cluster.open ?? 0) >= minOpen
+    && (
+      Number(cluster.pnl ?? 0) <= maxPnl
+      || Number(cluster.losers ?? 0) >= minLosers
+      || Number(cluster.fastLosers ?? 0) >= minFastLosers
+    );
+  const blockMarket = isRecovery && isBadGreenBounce && clusterBad;
+  return {
+    blockMarket,
+    label: blockMarket ? 'SHORT_RECOVERY_BAD_GREEN_CLUSTER_BLOCK' : 'SHORT_RECOVERY_BAD_GREEN_OK',
+    reason: `recovery=${isRecovery} candle=${brRealCandle?.label ?? '-'} kind=${brRealCandle?.kind ?? '-'}; cluster open=${cluster.open ?? 0} pnl=${cluster.pnl ?? 0} losers=${cluster.losers ?? 0} fastLosers=${cluster.fastLosers ?? 0}; thresholds open>=${minOpen} pnl<=${maxPnl} losers>=${minLosers} fastLosers>=${minFastLosers}`,
+    clusterBad,
+  };
+}
+
+async function getBrLikeBtcTurnGateSummary() {
+  return Promise.all(['LONG', 'SHORT'].map((side) =>
+    getBrLikeBtcTurnClusterGate(side)
+      .then((gate) => ({ side, ...gate }))
+      .catch((err) => ({
+        side,
+        blockMarket: false,
+        label: 'BTC_TURN_GATE_ERROR',
+        reason: err?.message ?? String(err),
+      }))));
+}
+
+function getSnapshotMarkPrice(symbol) {
+  const sym = String(symbol ?? '').toUpperCase();
+  const row = (_snapshotCache ?? []).find((r) => String(r?.symbol ?? '').toUpperCase() === sym);
+  const mark = Number(row?.markPrice ?? row?.lastPrice ?? row?.price);
+  return Number.isFinite(mark) && mark > 0 ? mark : null;
+}
+
+function resolveEmaSqueezeMarketEntry({ symbol, sig = {}, paperSignal = {} } = {}) {
+  const sym = String(symbol ?? paperSignal.symbol ?? sig.symbol ?? '').toUpperCase();
+  const freshMs = Number(process.env.EMA_SQUEEZE_PAPER_MARK_STALE_MS ?? 15_000);
+  const now = Date.now();
+  const socketMark = Number(emaSqueezeSocketMarks.get(sym));
+  const socketAt = Number(emaSqueezeSocketMarkAt.get(sym) ?? 0);
+  if (Number.isFinite(socketMark) && socketMark > 0 && socketAt && now - socketAt <= freshMs) {
+    return { entry: socketMark, source: 'socket', ageMs: now - socketAt };
+  }
+
+  const sharedInfo = sharedMarkTicker.getPriceInfo?.(sym);
+  const sharedMark = Number(sharedInfo?.markPrice);
+  const sharedAt = Number(sharedInfo?.at ?? 0);
+  if (Number.isFinite(sharedMark) && sharedMark > 0 && sharedAt && now - sharedAt <= freshMs) {
+    return { entry: sharedMark, source: 'sharedMarkTicker', ageMs: now - sharedAt };
+  }
+
+  const candidates = [
+    ['snapshot', getSnapshotMarkPrice(sym), _snapshotCacheAt],
+  ];
+  for (const [source, value, at] of candidates) {
+    const price = Number(value);
+    const ageMs = at ? now - Number(at) : Infinity;
+    if (Number.isFinite(price) && price > 0 && Number.isFinite(ageMs) && ageMs <= freshMs) {
+      return { entry: price, source, ageMs };
+    }
+  }
+  return null;
+}
+
 // Cắt lệnh br-like cùng chiều khi breadth đảo:
 // - lệnh đang lời: khóa lời sớm
 // - lệnh đang âm quá ngưỡng: cắt rủi ro, tránh để trôi tới SL khi breadth đã quay đầu
+async function movePumpPaperTpToEntry({ id, reason }) {
+  const store = await readPumpPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === id);
+  if (idx < 0) return false;
+  const row = store.trades[idx];
+  if (row.status !== 'OPEN') return false;
+  const entry = Number(row.entryPrice);
+  if (!Number.isFinite(entry) || entry <= 0) return false;
+  store.trades[idx] = {
+    ...row,
+    tp: entry,
+    breadthBreakevenTpAt: new Date().toISOString(),
+    breadthBreakevenTpReason: reason ? String(reason).slice(0, 500) : null,
+    tpMovedToEntryBy: 'BREADTH_REVERSAL',
+    note: [String(row.note ?? ''), `breadthBE_TP=entry@${entry}`, reason ? `breadthBEReason=${reason}` : '']
+      .filter(Boolean)
+      .join(' | ')
+      .slice(0, 500),
+  };
+  await writePumpPaperStore(store);
+  return true;
+}
+
 async function cutBrLikeBySideOnBreadth(side, reason) {
   const store = await readPumpPaperStore();
   const snapshotMarks = new Map((_snapshotCache ?? [])
@@ -2701,9 +3483,13 @@ async function cutBrLikeBySideOnBreadth(side, reason) {
     .filter(([, p]) => Number.isFinite(p) && p > 0));
   const targets = store.trades.filter((t) =>
 	    t.status === 'OPEN' && t.side === side && String(t.source ?? '').includes('-br_like'));
-  const lossCutRoe = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_LOSS_CUT_ROE ?? -6);
+  const lossCutPolicy = getBrLikeBreadthLossCutPolicy(side);
+  const lossCutRoe = lossCutPolicy.threshold;
+  const beTpEnabled = process.env.EMA_SQUEEZE_PAPER_BR_LIKE_BREADTH_BE_TP_ENABLED === 'true';
+  const beTpRoe = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_BREADTH_BE_TP_ROE ?? -6);
   let profitCut = 0;
   let lossCut = 0;
+  let breakevenTp = 0;
   for (const t of targets) {
     const mark = pumpMarkCache.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? snapshotMarks.get(t.symbol);
     if (!Number.isFinite(Number(mark)) || Number(mark) <= 0) continue;
@@ -2712,11 +3498,24 @@ async function cutBrLikeBySideOnBreadth(side, reason) {
     const roe = Number(t.marginUsdt) > 0 ? (pnl / Number(t.marginUsdt)) * 100 : 0;
     const shouldCutProfit = pnl > 0;
     const shouldCutLoss = Number.isFinite(lossCutRoe) && roe <= lossCutRoe;
-    if (!shouldCutProfit && !shouldCutLoss) continue;
+    const shouldMoveTpToEntry = beTpEnabled && Number.isFinite(beTpRoe) && pnl < 0 && roe >= beTpRoe;
+    if (!shouldCutProfit && !shouldCutLoss && !shouldMoveTpToEntry) continue;
+    if (shouldMoveTpToEntry && !shouldCutProfit && !shouldCutLoss) {
+      await movePumpPaperTpToEntry({
+        id: t.id,
+        reason: `breadth reversal; roe=${roe.toFixed(2)}% >= ${beTpRoe}%; ${reason}`,
+      })
+        .then((ok) => { if (ok) breakevenTp++; })
+        .catch((e) => console.warn(`[EmaSqueezePaper] breadth-BE-TP ${t.symbol}:`, e.message));
+      continue;
+    }
     await closePumpPaperTrade({
       id: t.id,
       exitPrice: Number(mark),
       outcome: shouldCutProfit ? 'BREADTH_REVERSAL' : 'BREADTH_REVERSAL_LOSS_CUT',
+      closeReason: shouldCutLoss
+        ? `breadth reversal loss cut ${lossCutPolicy.regime}: roe=${roe.toFixed(2)}% <= ${lossCutRoe}%; ${lossCutPolicy.reason}; ${reason}`
+        : undefined,
     })
       .then(() => {
         if (shouldCutProfit) profitCut++;
@@ -2725,12 +3524,306 @@ async function cutBrLikeBySideOnBreadth(side, reason) {
       .catch((e) => console.warn(`[EmaSqueezePaper] breadth-lock ${t.symbol}:`, e.message));
   }
   if (profitCut || lossCut) {
-    console.log(`[EmaSqueezePaper] BREADTH-LOCK ${side}: khóa lời ${profitCut}, cắt âm ${lossCut} lệnh br-like (${reason}; lossCutRoe<=${lossCutRoe}%)`);
+    console.log(`[EmaSqueezePaper] BREADTH-LOCK ${side}: khóa lời ${profitCut}, cắt âm ${lossCut}, BE-TP ${breakevenTp} lệnh br-like (${reason}; lossCut=${lossCutPolicy.regime} roe<=${Number.isFinite(lossCutRoe) ? lossCutRoe : 'OFF'}%; beTp>=${Number.isFinite(beTpRoe) ? beTpRoe : 'OFF'}%; ${lossCutPolicy.reason})`);
+  } else if (breakevenTp) {
+    console.log(`[EmaSqueezePaper] BREADTH-BE-TP ${side}: dời TP về entry ${breakevenTp} lệnh br-like (${reason}; beTp>=${beTpRoe}%)`);
   }
 }
 
-// Cùng symbol phát BR-like ngược hướng = setup cũ đã bị invalidation theo chính coin đó.
-// Backtest 27/06->29/06: cắt khi lệnh cũ đang âm <= -5% ROE cải thiện PnL tốt nhất.
+async function cutEmaSqueezeRunnerBySideOnBreadth(side, reason) {
+  const store = await readPumpPaperStore();
+  const snapshotMarks = new Map((_snapshotCache ?? [])
+    .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
+    .filter(([, p]) => Number.isFinite(p) && p > 0));
+  const targets = store.trades.filter((t) =>
+    isEmaSqueezeRunnerPaperTrade(t) && String(t.side ?? '').toUpperCase() === side);
+  const lossCutPolicy = getEmaSqueezeRunnerBreadthLossCutPolicy(side);
+  const lossCutRoe = lossCutPolicy.threshold;
+  const beTpEnabled = process.env.EMA_SQUEEZE_PAPER_RUNNER_BREADTH_BE_TP_ENABLED === 'true';
+  const beTpRoe = Number(process.env.EMA_SQUEEZE_PAPER_RUNNER_BREADTH_BE_TP_ROE
+    ?? process.env.EMA_SQUEEZE_PAPER_BR_LIKE_BREADTH_BE_TP_ROE
+    ?? -6);
+  let profitCut = 0;
+  let lossCut = 0;
+  let breakevenTp = 0;
+  for (const t of targets) {
+    const mark = emaSqueezeSocketMarks.get(t.symbol) ?? pumpMarkCache.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? snapshotMarks.get(t.symbol);
+    if (!Number.isFinite(Number(mark)) || Number(mark) <= 0) continue;
+    const sideMult = side === 'LONG' ? 1 : -1;
+    const pnl = (Number(mark) - Number(t.entryPrice)) * Number(t.quantity) * sideMult;
+    const roe = Number(t.marginUsdt) > 0 ? (pnl / Number(t.marginUsdt)) * 100 : 0;
+    const shouldCutProfit = pnl > 0;
+    const shouldCutLoss = Number.isFinite(lossCutRoe) && roe <= lossCutRoe;
+    const shouldMoveTpToEntry = beTpEnabled && Number.isFinite(beTpRoe) && pnl < 0 && roe >= beTpRoe;
+    if (!shouldCutProfit && !shouldCutLoss && !shouldMoveTpToEntry) continue;
+    if (shouldMoveTpToEntry && !shouldCutProfit && !shouldCutLoss) {
+      await movePumpPaperTpToEntry({
+        id: t.id,
+        reason: `runner breadth reversal; roe=${roe.toFixed(2)}% >= ${beTpRoe}%; ${reason}`,
+      })
+        .then((ok) => { if (ok) breakevenTp++; })
+        .catch((e) => console.warn(`[EmaSqueezeRunnerPaper] breadth-BE-TP ${t.symbol}:`, e.message));
+      continue;
+    }
+    await closePumpPaperTrade({
+      id: t.id,
+      exitPrice: Number(mark),
+      outcome: shouldCutProfit ? 'RUNNER_BREADTH_REVERSAL' : 'RUNNER_BREADTH_REVERSAL_LOSS_CUT',
+      closeReason: shouldCutLoss
+        ? `runner breadth reversal loss cut ${lossCutPolicy.regime}: roe=${roe.toFixed(2)}% <= ${lossCutRoe}%; ${lossCutPolicy.reason}; ${reason}`
+        : `runner breadth reversal profit cut: pnl=${pnl.toFixed(3)} roe=${roe.toFixed(2)}%; ${reason}`,
+    })
+      .then(() => {
+        if (shouldCutProfit) profitCut++;
+        else lossCut++;
+      })
+      .catch((e) => console.warn(`[EmaSqueezeRunnerPaper] breadth-lock ${t.symbol}:`, e.message));
+  }
+  if (profitCut || lossCut) {
+    console.log(`[EmaSqueezeRunnerPaper] RUNNER-BREADTH-LOCK ${side}: khóa lời ${profitCut}, cắt âm ${lossCut}, BE-TP ${breakevenTp} lệnh runner (${reason}; lossCut=${lossCutPolicy.regime} roe<=${Number.isFinite(lossCutRoe) ? lossCutRoe : 'OFF'}%; beTp>=${Number.isFinite(beTpRoe) ? beTpRoe : 'OFF'}%; ${lossCutPolicy.reason})`);
+  } else if (breakevenTp) {
+    console.log(`[EmaSqueezeRunnerPaper] RUNNER-BREADTH-BE-TP ${side}: dời TP về entry ${breakevenTp} lệnh runner (${reason}; beTp>=${beTpRoe}%)`);
+  }
+}
+
+const brLikeLimitBreadthPauseBySide = new Map();
+
+function getBrLikeLimitBreadthPauseMs() {
+  const value = Number(process.env.BR_LIKE_LIMIT_PAPER_BREADTH_PAUSE_MS ?? 30 * 60_000);
+  return Number.isFinite(value) && value > 0 ? value : 30 * 60_000;
+}
+
+function getBrLikeLimitBreadthSmallPnl() {
+  const value = Number(process.env.BR_LIKE_LIMIT_PAPER_BREADTH_SMALL_PNL ?? 0.25);
+  return Number.isFinite(value) && value >= 0 ? value : 0.25;
+}
+
+function getBrLikeLimitBreadthSmallRoe() {
+  const value = Number(process.env.BR_LIKE_LIMIT_PAPER_BREADTH_SMALL_ROE ?? 3);
+  return Number.isFinite(value) && value >= 0 ? value : 3;
+}
+
+function getBtcBrLikeLimitCandleUnlock(side, state) {
+  const key = String(side ?? '').toUpperCase();
+  const minWaitMs = Math.max(0, Number(process.env.BR_LIKE_LIMIT_PAPER_BTC_CONFIRM_MIN_MS ?? 5 * 60_000));
+  const at = Number(state?.at ?? 0);
+  if (at > 0 && Date.now() - at < minWaitMs) {
+    return { ok: false, reason: `wait first BTC 5m candle (${Math.ceil((minWaitMs - (Date.now() - at)) / 1000)}s left)` };
+  }
+
+  const k5 = getClosedCachedKlines('BTCUSDT', '5m', 4);
+  const last5 = k5.at(-1);
+  const prev5 = k5.at(-2);
+  if (!last5 || !prev5) return { ok: false, reason: 'BTC 5m no data' };
+
+  const open = klineNum(last5, 'open', 1);
+  const high = klineNum(last5, 'high', 2);
+  const low = klineNum(last5, 'low', 3);
+  const close = klineNum(last5, 'close', 4);
+  const prevHigh = klineNum(prev5, 'high', 2);
+  const prevLow = klineNum(prev5, 'low', 3);
+  if (![open, high, low, close, prevHigh, prevLow].every((v) => Number.isFinite(v) && v > 0)) {
+    return { ok: false, reason: 'BTC 5m invalid candle' };
+  }
+
+  const range = Math.max(1e-12, high - low);
+  const closePos = (close - low) / range;
+  const pct5 = (close - open) / open * 100;
+  const tolerance = Math.max(0, Number(process.env.BR_LIKE_LIMIT_PAPER_BTC_CONFIRM_BREAK_TOL ?? 0.001));
+
+  const k15 = getClosedCachedKlines('BTCUSDT', '15m', 2);
+  const last15 = k15.at(-1);
+  const open15 = klineNum(last15, 'open', 1);
+  const close15 = klineNum(last15, 'close', 4);
+  const pct15 = Number.isFinite(open15) && open15 > 0 && Number.isFinite(close15)
+    ? (close15 - open15) / open15 * 100
+    : null;
+  const maxBad15 = Math.max(0, Number(process.env.BR_LIKE_LIMIT_PAPER_BTC_CONFIRM_15M_BAD_PCT ?? 0.15));
+
+  if (key === 'LONG') {
+    const green = close > open;
+    const closeHealthy = closePos >= Number(process.env.BR_LIKE_LIMIT_PAPER_BTC_CONFIRM_LONG_CLOSE_POS ?? 0.55);
+    const notBreakPrevLow = low >= prevLow * (1 - tolerance);
+    const m15Ok = pct15 == null || pct15 >= -maxBad15;
+    return {
+      ok: green && closeHealthy && notBreakPrevLow && m15Ok,
+      reason: `BTC 5m ${pct5.toFixed(2)}% closePos=${closePos.toFixed(2)} prevLow=${notBreakPrevLow ? 'ok' : 'break'} 15m=${pct15 == null ? 'NA' : pct15.toFixed(2) + '%'}`,
+    };
+  }
+
+  if (key === 'SHORT') {
+    const red = close < open;
+    const closeHealthy = closePos <= Number(process.env.BR_LIKE_LIMIT_PAPER_BTC_CONFIRM_SHORT_CLOSE_POS ?? 0.45);
+    const notBreakPrevHigh = high <= prevHigh * (1 + tolerance);
+    const m15Ok = pct15 == null || pct15 <= maxBad15;
+    return {
+      ok: red && closeHealthy && notBreakPrevHigh && m15Ok,
+      reason: `BTC 5m ${pct5.toFixed(2)}% closePos=${closePos.toFixed(2)} prevHigh=${notBreakPrevHigh ? 'ok' : 'break'} 15m=${pct15 == null ? 'NA' : pct15.toFixed(2) + '%'}`,
+    };
+  }
+
+  return { ok: false, reason: 'invalid side' };
+}
+
+function getBrLikeLimitBreadthPause(side) {
+  const key = String(side ?? '').toUpperCase();
+  const state = brLikeLimitBreadthPauseBySide.get(key);
+  if (!state) return null;
+  if (Number(state.until) <= Date.now()) {
+    brLikeLimitBreadthPauseBySide.delete(key);
+    return null;
+  }
+  if (process.env.BR_LIKE_LIMIT_PAPER_BTC_CONFIRM_UNLOCK !== 'false') {
+    const confirm = getBtcBrLikeLimitCandleUnlock(key, state);
+    if (confirm.ok) {
+      brLikeLimitBreadthPauseBySide.delete(key);
+      console.log(`[BrLikeLimitPaper] BREADTH-PAUSE-UNLOCK ${key}: ${confirm.reason}`);
+      return null;
+    }
+    state.lastConfirmReason = confirm.reason;
+  }
+  return state;
+}
+
+function setBrLikeLimitBreadthPause(side, reason) {
+  const key = String(side ?? '').toUpperCase();
+  if (!['LONG', 'SHORT'].includes(key)) return null;
+  const until = Date.now() + getBrLikeLimitBreadthPauseMs();
+  const state = {
+    until,
+    reason: String(reason ?? '').slice(0, 300),
+    mode: process.env.BR_LIKE_LIMIT_PAPER_BTC_CONFIRM_UNLOCK === 'false' ? 'FIXED' : 'BTC_CANDLE_CONFIRM',
+    at: Date.now(),
+  };
+  brLikeLimitBreadthPauseBySide.set(key, state);
+  return state;
+}
+
+function hasOpenOppositeBrLikeLimit(store, side) {
+  const oldSide = side === 'LONG' ? 'SHORT' : 'LONG';
+  return store.trades.some((t) =>
+    t.status === 'OPEN'
+    && t.side === oldSide
+    && String(t.source ?? '').includes('br_like'));
+}
+
+async function cancelPendingBrLikeLimitBySide(side, reason) {
+  const store = await readBrLikeLimitPaperStore();
+  let cancelled = 0;
+  const nowIso = new Date().toISOString();
+  for (const row of store.trades) {
+    if (row.status !== 'PENDING') continue;
+    if (row.side !== side) continue;
+    if (!String(row.source ?? '').includes('br_like')) continue;
+    row.status = 'CLOSED';
+    row.outcome = 'BREADTH_REVERSAL_PAUSE_CANCEL';
+    row.pnl = 0;
+    row.roe = 0;
+    row.closedAt = nowIso;
+    row.closeReason = String(reason ?? '').slice(0, 500);
+    row.note = [String(row.note ?? ''), 'breadthPauseCancel=Y'].filter(Boolean).join(' | ').slice(0, 500);
+    cancelled++;
+  }
+  if (cancelled) {
+    await writeBrLikeLimitPaperStore(store);
+    console.log(`[BrLikeLimitPaper] BREADTH-PAUSE-CANCEL ${side}: cancel pending=${cancelled} (${reason})`);
+  }
+  return { cancelled };
+}
+
+async function moveBrLikeLimitPaperTpToEntry({ id, reason }) {
+  const store = await readBrLikeLimitPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === id);
+  if (idx < 0) return false;
+  const row = store.trades[idx];
+  if (row.status !== 'OPEN') return false;
+  const entry = Number(row.entryPrice);
+  if (!Number.isFinite(entry) || entry <= 0) return false;
+  store.trades[idx] = {
+    ...row,
+    tp: entry,
+    breadthBreakevenTpAt: new Date().toISOString(),
+    breadthBreakevenTpReason: reason ? String(reason).slice(0, 500) : null,
+    tpMovedToEntryBy: 'BREADTH_REVERSAL',
+    note: [String(row.note ?? ''), `breadthBE_TP=entry@${entry}`, reason ? `breadthBEReason=${reason}` : '']
+      .filter(Boolean)
+      .join(' | ')
+      .slice(0, 500),
+  };
+  await writeBrLikeLimitPaperStore(store);
+  return true;
+}
+
+async function cutBrLikeLimitBySideOnBreadth(side, reason, policy = getBrLikeBreadthLossCutPolicy(side)) {
+  const store = await readBrLikeLimitPaperStore();
+  const snapshotMarks = new Map((_snapshotCache ?? [])
+    .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
+    .filter(([, p]) => Number.isFinite(p) && p > 0));
+  const targets = store.trades.filter((t) =>
+    t.status === 'OPEN' && t.side === side && String(t.source ?? '').includes('br_like'));
+  const envLossCutRoe = Number(process.env.BR_LIKE_LIMIT_PAPER_BREADTH_LOSS_CUT_ROE);
+  const lossCutRoe = Number.isFinite(envLossCutRoe) ? envLossCutRoe : policy.threshold;
+  const smallPnl = getBrLikeLimitBreadthSmallPnl();
+  const smallRoe = getBrLikeLimitBreadthSmallRoe();
+  const beTpEnabled = process.env.BR_LIKE_LIMIT_PAPER_BREADTH_BE_TP_ENABLED === 'true';
+  const beTpRoe = Number(process.env.BR_LIKE_LIMIT_PAPER_BREADTH_BE_TP_ROE ?? -6);
+  const pauseEnabled = process.env.BR_LIKE_LIMIT_PAPER_BREADTH_PAUSE !== 'false';
+  let lossCut = 0;
+  let profitCut = 0;
+  let breakevenTp = 0;
+  let pauseTriggered = false;
+  for (const t of targets) {
+    const mark = emaSqueezeSocketMarks.get(t.symbol) ?? sharedMarkTicker.getPrice?.(t.symbol) ?? snapshotMarks.get(t.symbol);
+    if (!Number.isFinite(Number(mark)) || Number(mark) <= 0) continue;
+    const sideMult = side === 'LONG' ? 1 : -1;
+    const pnl = (Number(mark) - Number(t.entryPrice)) * Number(t.quantity) * sideMult;
+    const roe = Number(t.marginUsdt) > 0 ? pnl / Number(t.marginUsdt) * 100 : 0;
+    const shouldCutProfit = pnl > 0;
+    const shouldCutLoss = Number.isFinite(lossCutRoe) && roe <= lossCutRoe;
+    const shouldMoveTpToEntry = beTpEnabled && Number.isFinite(beTpRoe) && pnl < 0 && roe >= beTpRoe;
+    if (!shouldCutProfit && !shouldCutLoss && !shouldMoveTpToEntry) continue;
+    if (shouldMoveTpToEntry && !shouldCutProfit && !shouldCutLoss) {
+      await moveBrLikeLimitPaperTpToEntry({
+        id: t.id,
+        reason: `limit breadth reversal; roe=${roe.toFixed(2)}% >= ${beTpRoe}%; ${reason}`,
+      })
+        .then((ok) => { if (ok) breakevenTp++; })
+        .catch((e) => console.warn(`[BrLikeLimitPaper] breadth-BE-TP ${t.symbol}:`, e.message));
+      continue;
+    }
+    const outcome = shouldCutLoss ? 'LIMIT_BREADTH_REVERSAL_LOSS_CUT' : 'BREADTH_REVERSAL';
+    const smallBreadthReversal = shouldCutProfit
+      && Math.abs(pnl) <= smallPnl
+      && Math.abs(roe) <= smallRoe
+      && hasOpenOppositeBrLikeLimit(store, side);
+    await closeBrLikeLimitPaperTrade({
+      id: t.id,
+      exitPrice: Number(mark),
+      outcome,
+      closeReason: shouldCutLoss
+        ? `limit breadth reversal loss cut ${policy.regime}: roe=${roe.toFixed(2)}% <= ${lossCutRoe}%; ${policy.reason}; ${reason}`
+        : `limit breadth reversal small pnl: pnl=${pnl.toFixed(3)} roe=${roe.toFixed(2)}%; ${reason}`,
+    })
+      .then(async () => {
+        if (shouldCutLoss) lossCut++;
+        else profitCut++;
+        if (pauseEnabled && smallBreadthReversal && !pauseTriggered) {
+          pauseTriggered = true;
+          const pause = setBrLikeLimitBreadthPause(side, `small BREADTH_REVERSAL with opposite open; ${reason}`);
+          const untilText = pause ? new Date(pause.until).toISOString() : '-';
+          await cancelPendingBrLikeLimitBySide(side, `BREADTH_REVERSAL_SMALL_PNL_PAUSE until=${untilText}; trigger=${t.symbol}; pnl=${pnl.toFixed(3)} roe=${roe.toFixed(2)}%; ${reason}`);
+        }
+      })
+      .catch((e) => console.warn(`[BrLikeLimitPaper] breadth-lock ${t.symbol}:`, e.message));
+  }
+  if (profitCut || lossCut) {
+    console.log(`[BrLikeLimitPaper] BREADTH-LOCK ${side}: small/profit=${profitCut}, loss=${lossCut}, BE-TP=${breakevenTp} roe<=${lossCutRoe}% pause=${pauseTriggered ? 'Y' : 'N'} (${reason})`);
+  } else if (breakevenTp) {
+    console.log(`[BrLikeLimitPaper] BREADTH-BE-TP ${side}: dời TP về entry ${breakevenTp} lệnh (${reason}; beTp>=${beTpRoe}%)`);
+  }
+  return { profitCut, lossCut, breakevenTp, pauseTriggered };
+}
+
 async function cutOppositeBrLikeOnSymbol({ symbol, newSide, exitPrice, source }) {
   if (process.env.EMA_SQUEEZE_PAPER_BR_LIKE_OPPOSITE_CUT === 'false') return { cut: 0 };
   const side = String(newSide ?? '').toUpperCase();
@@ -2815,6 +3908,13 @@ async function createEmaSqueezePaperTrades(signals = []) {
     if ((side === 'LONG' && brLikeScore >= brLikeMinScore) || (side === 'SHORT' && brLikeScore >= brLikeShortMinScore)) {
       recordBrLikeBreadth(sig.symbol, side);
     }
+    const runnerBreadthMinScore = Number(process.env.EMA_SQUEEZE_PAPER_RUNNER_REVERSAL_MIN_SCORE
+      ?? process.env.EMA_SQUEEZE_PAPER_LONG_RUNNER_MIN_SCORE
+      ?? 70);
+    const runnerBreadthScore = Number(sig.runnerScore ?? 0);
+    if (!isBrLikePaper && Boolean(sig.runnerCandidate) && runnerBreadthScore >= runnerBreadthMinScore) {
+      recordEmaSqueezeRunnerBreadth(sig.symbol, side);
+    }
     const brLikeBtcGate = isBrLikePaper ? getEmaSqueezeBrLikeBtcGate(btcSnap) : null;
     let brLikeQualityGate = null;
     if (isBrLikePaper) {
@@ -2852,6 +3952,11 @@ async function createEmaSqueezePaperTrades(signals = []) {
       brLikeQualityGate = getEmaSqueezeBrLikePaperQualityGate(sig);
       if (process.env.EMA_SQUEEZE_PAPER_BR_LIKE_QUALITY_GATE !== 'false' && !brLikeQualityGate.ok) {
         console.log(`[EmaSqueezePaper] skip ${sig.symbol} BR-like ${interval} - ${brLikeQualityGate.reason}`);
+        continue;
+      }
+      const minSignalScore = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_MIN_SIGNAL_SCORE ?? 80);
+      if (Number.isFinite(minSignalScore) && score < minSignalScore) {
+        console.log(`[EmaSqueezePaper] skip ${sig.symbol} BR-like ${interval} - score ${score} < ${minSignalScore}`);
         continue;
       }
     }
@@ -2931,6 +4036,16 @@ async function createEmaSqueezePaperTrades(signals = []) {
     if (!paperSignal) continue;
     if (requiresLiquidEntry && !paperSignal.liquidityEntry) continue;
     const runnerMeta = buildEmaSqueezeRunnerPaperMeta(paperSignal);
+    const runnerBtcTurnClusterGate = !isBrLikePaper && runnerMeta.isRunner
+      ? await getRunnerBtcTurnClusterGate(side).catch((err) => {
+          console.warn(`[EmaSqueezeRunnerPaper] ${paperSignal.symbol} btc-turn-cluster gate:`, err.message);
+          return null;
+        })
+      : null;
+    if (runnerBtcTurnClusterGate?.blockMarket) {
+      console.log(`[EmaSqueezeRunnerPaper] skip ${paperSignal.symbol} ${side} runner - ${runnerBtcTurnClusterGate.label}: ${runnerBtcTurnClusterGate.reason}`);
+      continue;
+    }
     let breakoutPaperRr = null;
     let breakoutBtcRisk = null;
 
@@ -2995,6 +4110,18 @@ async function createEmaSqueezePaperTrades(signals = []) {
     const brRealCandle = isBrLikePaper
       ? getEmaBrRealCandleFit(paperSignal.symbol, paperSignal.interval ?? '15m', side)
       : null;
+    const brShortEnvGate = isBrLikeShortPaper
+      ? await getBrLikeShortEnvGate(Date.now(), btcSnap).catch((err) => {
+          console.warn(`[EmaSqueezePaper] ${paperSignal.symbol} short-env gate:`, err.message);
+          return null;
+        })
+      : null;
+    const brBtcTurnClusterGate = isBrLikePaper
+      ? await getBrLikeBtcTurnClusterGate(side).catch((err) => {
+          console.warn(`[EmaSqueezePaper] ${paperSignal.symbol} btc-turn-cluster gate:`, err.message);
+          return null;
+        })
+      : null;
     const basePayload = {
       symbol: paperSignal.symbol,
       side,
@@ -3015,6 +4142,15 @@ async function createEmaSqueezePaperTrades(signals = []) {
 	        isBrLikePaper
 	          ? `${isBrLikeShortPaper ? 'brLikeShort=Y' : 'brLike=Y'} | BR_QUALITY=${brLikeQualityLabel?.label ?? 'OK'} | brQualityReason=${(brLikeQualityLabel?.reasons ?? []).join(',')} | brLikeScore=${brLikeScore.toFixed(0)} | brLikeVol=${Number(sig.brLikeVolRatio ?? 0).toFixed(1)}x | brLikeMove=${Number(sig.brLikeMovePct ?? 0).toFixed(1)}% | brLikeQuality=${brLikeQualityGate?.reason ?? 'n/a'} | brLikeBtc=${brLikeBtcReason}`
 	          : '',
+        brShortEnvGate
+          ? `shortEnv=${brShortEnvGate.label} | binanceMarket=${brShortEnvGate.blockMarket ? 'BLOCK' : 'PASS'} | shortEnvReason=${brShortEnvGate.reason}`
+          : '',
+        brBtcTurnClusterGate
+          ? `btcTurnCluster=${brBtcTurnClusterGate.label} | btcTurnMarket=${brBtcTurnClusterGate.blockMarket ? 'BLOCK' : 'PASS'} | btcTurnReason=${brBtcTurnClusterGate.reason}`
+          : '',
+        runnerBtcTurnClusterGate
+          ? `runnerBtcTurnCluster=${runnerBtcTurnClusterGate.label} | runnerBtcTurnMarket=${runnerBtcTurnClusterGate.blockMarket ? 'BLOCK' : 'PASS'} | runnerBtcTurnReason=${runnerBtcTurnClusterGate.reason}`
+          : '',
         runnerMeta.noteSuffix,
       ].filter(Boolean).join(' | '),
       signalMarkPrice: paperSignal.markPrice ?? paperSignal.entryPlan?.signalMarkPrice ?? null,
@@ -3043,6 +4179,20 @@ async function createEmaSqueezePaperTrades(signals = []) {
 	      brCandleUpperShare: brRealCandle?.upperShare ?? null,
 	      brCandleLowerShare: brRealCandle?.lowerShare ?? null,
 	      brCandleVolRatio: brRealCandle?.volRatio ?? null,
+	      brShortEnvLabel: brShortEnvGate?.label ?? null,
+	      brShortEnvBlockMarket: brShortEnvGate?.blockMarket ?? null,
+	      binanceMarketEligible: brShortEnvGate ? !brShortEnvGate.blockMarket : null,
+	      brShortEnvReason: brShortEnvGate?.reason ?? null,
+	      brShortEnvRolling2h: brShortEnvGate?.rolling2h ?? null,
+	      brShortRecovery60m: brShortEnvGate?.rolling60m ?? null,
+	      brBtcTurnClusterLabel: brBtcTurnClusterGate?.label ?? null,
+	      brBtcTurnClusterBlockMarket: brBtcTurnClusterGate?.blockMarket ?? null,
+	      brBtcTurnClusterReason: brBtcTurnClusterGate?.reason ?? null,
+	      brBtcTurnCluster: brBtcTurnClusterGate?.cluster ?? null,
+	      runnerBtcTurnClusterLabel: runnerBtcTurnClusterGate?.label ?? null,
+	      runnerBtcTurnClusterBlockMarket: runnerBtcTurnClusterGate?.blockMarket ?? null,
+	      runnerBtcTurnClusterReason: runnerBtcTurnClusterGate?.reason ?? null,
+	      runnerBtcTurnCluster: runnerBtcTurnClusterGate?.cluster ?? null,
 	    };
     const srcBase = isBrLikePaper
       ? `emasq-${paperSignal.interval ?? '15m'}-${isBrLikeShortPaper ? 'br_like_short' : 'br_like'}-${brLikeScore.toFixed(0)}-${paperSignal.score}`
@@ -3093,6 +4243,7 @@ async function createEmaSqueezePaperTrades(signals = []) {
         tp: tpOverride,
         leverage: autoLeverage,
         note: [
+          extra.note,
           basePayload.note,
           `autoLeverage=${autoLeverage}x`,
           `structureSl=${Number(paperSignal.sl ?? sig.sl) || '-'}`,
@@ -3109,25 +4260,107 @@ async function createEmaSqueezePaperTrades(signals = []) {
 
     if (isBrLikePaper) {
       const signalId = crypto.randomUUID();
-      const marketEntry = Number(sig.entry ?? paperSignal.entry);
+      const marketEntryInfo = resolveEmaSqueezeMarketEntry({ symbol: paperSignal.symbol, sig, paperSignal });
+      if (!marketEntryInfo || !Number.isFinite(marketEntryInfo.entry) || marketEntryInfo.entry <= 0) {
+        console.warn(`[EmaSqueezePaper] skip ${paperSignal.symbol} BR-like MARKET - no fresh market price (socket/shared/snapshot <= ${Number(process.env.EMA_SQUEEZE_PAPER_MARK_STALE_MS ?? 15_000)}ms)`);
+        continue;
+      }
+      const marketEntry = marketEntryInfo.entry;
+      const limitEntry = Number(sig.entry ?? paperSignal.entry);
+      if (Number.isFinite(limitEntry) && limitEntry > 0) {
+        const limitLeverage = calcAutoLeverage(limitEntry, Number(paperSignal.sl ?? sig.sl), defaultLeverage);
+        const limitSl = emaSqueezePaperStopLossFromRoe({
+          source: `${srcBase}-limit`,
+          side,
+          entryPrice: limitEntry,
+          leverage: limitLeverage,
+        });
+        const limitTpRoe = brLikeLimitPaperTpRoe({
+          isBrLikeShortPaper,
+          brLikeQualityLabel,
+          btcSnap,
+          side,
+          leverage: limitLeverage,
+        });
+        const limitTp = side === 'LONG'
+          ? limitEntry * (1 + limitTpRoe / 100 / limitLeverage)
+          : limitEntry * (1 - limitTpRoe / 100 / limitLeverage);
+        await createBrLikeLimitPaperTrade({
+          symbol: paperSignal.symbol,
+          side,
+          signalId,
+          entryPrice: limitEntry,
+          tp: limitTp,
+          sl: limitSl,
+          leverage: limitLeverage,
+          marginUsdt: paperMarginUsdt,
+          source: `${srcBase}-limit`,
+          score: paperSignal.score,
+          interval: paperSignal.interval ?? '15m',
+          brLikeScore,
+          brQualityLabel: brLikeQualityLabel?.label ?? null,
+          btcHealth: btcSnap,
+          note: [
+            `LIMIT_ONLY expire=4h`,
+            `setupEntry=${limitEntry}`,
+            `tpRoe=${limitTpRoe}%`,
+            `${isBrLikeShortPaper ? 'brLikeShort=Y' : 'brLike=Y'}`,
+            `marketAtSignal=${marketEntry}`,
+            `marketEntrySource=${marketEntryInfo.source}`,
+          ].join(' | '),
+        }).catch((e) => console.warn(`[BrLikeLimitPaper] ${paperSignal.symbol}:`, e.message));
+      }
       await cutOppositeBrLikeOnSymbol({
         symbol: paperSignal.symbol,
         newSide: side,
         exitPrice: marketEntry,
         source: `${srcBase}-mkt`,
       }).catch((e) => console.warn(`[EmaSqueezePaper] ${paperSignal.symbol} opposite-cut:`, e.message));
+      if (brShortEnvGate?.blockMarket) {
+        console.log(`[EmaSqueezePaper] ${brShortEnvGate.label} ${paperSignal.symbol} - Binance market blocked, paper/test only (${brShortEnvGate.reason})`);
+      } else if (brShortEnvGate?.recovery60m) {
+        console.log(`[EmaSqueezePaper] SHORT_RECOVERY_60M ${paperSignal.symbol} - Binance market allowed (${brShortEnvGate.reason})`);
+      }
+      if (brBtcTurnClusterGate?.blockMarket) {
+        console.log(`[EmaSqueezePaper] ${brBtcTurnClusterGate.label} ${paperSignal.symbol} - BR-like market blocked, limit/test only (${brBtcTurnClusterGate.reason})`);
+        continue;
+      }
+      const brShortRecoveryBadCandleGate = isBrLikeShortPaper
+        ? getBrLikeShortRecoveryBadCandleGate(brRealCandle, brShortEnvGate, brBtcTurnClusterGate)
+        : null;
+      if (brShortRecoveryBadCandleGate?.blockMarket) {
+        console.log(`[EmaSqueezePaper] ${brShortRecoveryBadCandleGate.label} ${paperSignal.symbol} - BR-like short market blocked, limit/test only (${brShortRecoveryBadCandleGate.reason})`);
+        continue;
+      }
       await fireLogged({
         status: 'OPEN',
         variant: 'MARKET',
         signalId,
         entryPrice: marketEntry,
+        signalMarkPrice: marketEntry,
+        marketEntrySource: marketEntryInfo.source,
+        marketEntrySourceAgeMs: marketEntryInfo.ageMs ?? null,
         source: `${srcBase}-mkt`,
+        note: `marketEntrySource=${marketEntryInfo.source}${marketEntryInfo.ageMs != null ? ` ageMs=${marketEntryInfo.ageMs}` : ''} | setupEntry=${Number(sig.entry ?? paperSignal.entry) || '-'}`,
       });
     } else if (stage === 'BREAKOUT') {
       // Quality backtest: only one MARKET paper trade per breakout signal.
       const signalId = crypto.randomUUID();
       const marketEntry = Number(sig.entry);
       await fireLogged({ status: 'OPEN', variant: 'MARKET', signalId, entryPrice: marketEntry, source: `${srcBase}-mkt` });
+    } else if (runnerMeta.isRunner && process.env.EMA_SQUEEZE_PAPER_RUNNER_MARKET_ONLY !== 'false') {
+      const marketEntryInfo = resolveEmaSqueezeMarketEntry({ symbol: paperSignal.symbol, sig, paperSignal });
+      const marketEntry = marketEntryInfo?.entry ?? Number(paperSignal.markPrice ?? sig.markPrice ?? paperSignal.entry);
+      if (!Number.isFinite(marketEntry) || marketEntry <= 0) {
+        console.warn(`[EmaSqueezePaper] skip ${paperSignal.symbol} RUNNER MARKET - no market price`);
+        continue;
+      }
+      await fireLogged({
+        status: 'OPEN',
+        entryPrice: marketEntry,
+        source: `${srcBase}-mkt`,
+        note: `runnerMarketOnly=Y | marketEntrySource=${marketEntryInfo?.source ?? 'fallback'}${marketEntryInfo?.ageMs != null ? ` ageMs=${marketEntryInfo.ageMs}` : ''} | setupEntry=${Number(paperSignal.entry) || '-'}`,
+      });
     } else {
       await fireLogged({
         status: paperSignal.paperStatus ?? (confirmedStages.has(stage) ? 'OPEN' : 'PENDING'),
@@ -3144,9 +4377,32 @@ async function createEmaSqueezePaperTrades(signals = []) {
     const minSig = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_MIN ?? 5);
     const ratio = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_RATIO ?? 1.3);
     if (short >= minSig && short >= long * ratio) {
-      await cutBrLikeBySideOnBreadth('LONG', `breadth đảo xuống short=${short} long=${long} (30m)`).catch(() => {});
+      const reason = `breadth đảo xuống short=${short} long=${long} (30m)`;
+      await cutBrLikeBySideOnBreadth('LONG', reason).catch(() => {});
+      await cutBrLikeLimitBySideOnBreadth('LONG', reason).catch(() => {});
     } else if (long >= minSig && long >= short * ratio) {
-      await cutBrLikeBySideOnBreadth('SHORT', `breadth đảo lên long=${long} short=${short} (30m)`).catch(() => {});
+      const reason = `breadth đảo lên long=${long} short=${short} (30m)`;
+      await cutBrLikeBySideOnBreadth('SHORT', reason).catch(() => {});
+      await cutBrLikeLimitBySideOnBreadth('SHORT', reason).catch(() => {});
+    }
+  }
+
+  // Clone riêng cho runner: breadth runner chiều ngược → khóa/cắt runner chiều cũ,
+  // không dùng chung count với BR-like để tránh BR-like làm đóng runner sai ngữ cảnh.
+  if (process.env.EMA_SQUEEZE_PAPER_RUNNER_REVERSAL_CUT !== 'false') {
+    const { long, short } = emaSqueezeRunnerBreadthCounts();
+    const minSig = Number(process.env.EMA_SQUEEZE_PAPER_RUNNER_REVERSAL_MIN
+      ?? process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_MIN
+      ?? 5);
+    const ratio = Number(process.env.EMA_SQUEEZE_PAPER_RUNNER_REVERSAL_RATIO
+      ?? process.env.EMA_SQUEEZE_PAPER_BR_LIKE_REVERSAL_RATIO
+      ?? 1.3);
+    if (short >= minSig && short >= long * ratio) {
+      const reason = `runner breadth đảo xuống short=${short} long=${long} (runner window)`;
+      await cutEmaSqueezeRunnerBySideOnBreadth('LONG', reason).catch(() => {});
+    } else if (long >= minSig && long >= short * ratio) {
+      const reason = `runner breadth đảo lên long=${long} short=${short} (runner window)`;
+      await cutEmaSqueezeRunnerBySideOnBreadth('SHORT', reason).catch(() => {});
     }
   }
 }
@@ -4168,6 +5424,8 @@ const CAP_PAPER_FILE    = join(rootDir, 'data', 'cap-paper-trades.json');
 const DI_PAPER_FILE     = join(rootDir, 'data', 'di-paper-trades.json');
 const PI_PAPER_FILE     = join(rootDir, 'data', 'pi-paper-trades.json');
 const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
+const BR_LIKE_LIMIT_EVAL_FILE = join(rootDir, 'data', 'br-like-limit-eval.json');
+const BR_LIKE_LIMIT_PAPER_FILE = join(rootDir, 'data', 'br-like-limit-paper-trades.json');
 const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
 const SR_PAPER_FILE     = join(rootDir, 'data', 'sr-paper-trades.json');
 const PPKS_PAPER_FILE   = join(rootDir, 'data', 'ppks-paper-trades.json');
@@ -5788,6 +7046,28 @@ const server = createServer(async (request, response) => {
         day: requestUrl.searchParams.get('day') || 'all',
       };
       await sendJson(response, await getEmaSqueezePaperTrades({ paging: parsePaperPaging(requestUrl), filter }));
+      return;
+    }
+    if (requestUrl.pathname === '/api/br-like-limit-eval' && request.method === 'GET') {
+      await sendJson(response, await getBrLikeLimitEvalCache());
+      return;
+    }
+    if (requestUrl.pathname === '/api/br-like-limit-paper-trades' && request.method === 'GET') {
+      await sendJson(response, await getBrLikeLimitPaperTrades());
+      return;
+    }
+    if (requestUrl.pathname === '/api/br-like-limit-paper-trades/close' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const mark = Number(emaSqueezeSocketMarks.get(String(body.symbol ?? '').toUpperCase()));
+      await sendJson(response, await closeBrLikeLimitPaperTrade({
+        id: body.id,
+        exitPrice: Number(body.exitPrice ?? mark),
+        outcome: body.outcome ?? 'MANUAL',
+      }));
+      return;
+    }
+    if (requestUrl.pathname === '/api/br-like-limit-paper-trades/delete' && request.method === 'POST') {
+      await sendJson(response, await deleteBrLikeLimitPaperTrade(await readJsonBody(request)));
       return;
     }
     if (requestUrl.pathname === '/api/pump-paper-trades/close' && request.method === 'POST') {
@@ -8525,7 +9805,13 @@ async function closeCapPaperTrade(payload) {
   const sideMult = trade.side === 'LONG' ? 1 : -1;
   const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
   const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
-  const outcome = payload.outcome ?? 'MANUAL';
+  const rawOutcome = payload.outcome ?? 'MANUAL';
+  const closedAtEntry = Math.abs(exitPrice - Number(trade.entryPrice)) / Number(trade.entryPrice) < 1e-8;
+  const outcome = rawOutcome === 'TP' && closedAtEntry && trade.tpMovedToEntryBy === 'BREADTH_REVERSAL'
+    ? 'BREADTH_BE_TP'
+    : rawOutcome === 'TP' && closedAtEntry && trade.paperTpMovedToEntry === true
+      ? 'NEG_TP_ENTRY'
+      : rawOutcome;
   store.trades[idx] = {
     ...trade,
     status: 'CLOSED',
@@ -8736,7 +10022,16 @@ async function closeDiPaperTrade(payload) {
   const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
   const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
   const outcome = payload.outcome ?? 'MANUAL';
-  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  store.trades[idx] = {
+    ...trade,
+    status: 'CLOSED',
+    exitPrice,
+    pnl,
+    roe,
+    outcome,
+    closeReason: payload.closeReason ? String(payload.closeReason).slice(0, 500) : trade.closeReason,
+    closedAt: new Date().toISOString(),
+  };
   await writeDiPaperStore(store);
   return { trade: enrichDiPaperTrade(store.trades[idx], exitPrice) };
 }
@@ -8918,7 +10213,16 @@ async function closePiPaperTrade(payload) {
   const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
   const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
   const outcome = payload.outcome ?? 'MANUAL';
-  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  store.trades[idx] = {
+    ...trade,
+    status: 'CLOSED',
+    exitPrice,
+    pnl,
+    roe,
+    outcome,
+    closeReason: payload.closeReason ? String(payload.closeReason).slice(0, 500) : trade.closeReason,
+    closedAt: new Date().toISOString(),
+  };
   await writePiPaperStore(store);
   return { trade: enrichPiPaperTrade(store.trades[idx], exitPrice) };
 }
@@ -9137,7 +10441,6 @@ function enrichPumpPaperTrade(t, markPrice) {
     : (t.roe ?? null);
   return {
     ...t,
-    ...(isShakeoutBottomReboundTrade(t) && ['OPEN', 'PENDING'].includes(t.status) ? { sl: null } : {}),
     markPrice: mark,
     markUpdatedAt: isEmaSqueeze
       ? (emaSqueezeSocketMarkAt.get(String(t.symbol ?? '').toUpperCase()) ?? null)
@@ -9288,6 +10591,10 @@ function emaPaperMatchesFilter(t, filter) {
 async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filter = null } = {}) {
   const store = await readPumpPaperStore();
   const baseEmaTrades = store.trades.filter((t) => String(t.source ?? '').startsWith('emasq-'));
+  const availableDays = [...new Set(baseEmaTrades
+    .map((t) => String(t.createdAt ?? t.closedAt ?? '').slice(0, 10))
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))]
+    .sort((a, b) => b.localeCompare(a));
   // Lọc theo filter (type/tf/day) để summary + pagination khớp với view đang xem
   const allEmaTrades = filter ? baseEmaTrades.filter((t) => emaPaperMatchesFilter(t, filter)) : baseEmaTrades;
   const deltaCutoff = Date.now() - 5 * 60_000;
@@ -9312,6 +10619,7 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filt
   const unrealizedPnl = allEmaTrades
     .filter((t) => t.status === 'OPEN')
     .reduce((sum, t) => sum + Number(enrichPumpPaperTrade(t, emaSqueezeSocketMarks.get(t.symbol)).pnl ?? 0), 0);
+  const btcTurnGates = await getBrLikeBtcTurnGateSummary();
   return {
     trades,
     summary: {
@@ -9329,10 +10637,507 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filt
       unrealizedPnl: +unrealizedPnl.toFixed(4),
       netPnl: +(realizedPnl + unrealizedPnl).toFixed(4),
     },
+    availableDays,
     pagination,
     updatedAt: Date.now(),
     partial: deltaOnly,
   };
+}
+
+async function getBrLikeLimitEvalCache() {
+  try {
+    return JSON.parse(await readFile(BR_LIKE_LIMIT_EVAL_FILE, 'utf8'));
+  } catch (err) {
+    return {
+      generatedAt: null,
+      error: `Chưa có cache BR-like limit eval. Chạy: node scripts/refresh-br-like-limit-eval.js`,
+      windows: ['30m', '60m', '240m'],
+      recommendedWindow: '240m',
+      overall: {},
+      byDay: {},
+      records: [],
+    };
+  }
+}
+
+async function readBrLikeLimitPaperStore() {
+  try {
+    const raw = await readFile(BR_LIKE_LIMIT_PAPER_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return { trades: Array.isArray(parsed?.trades) ? parsed.trades : [] };
+  } catch {
+    return { trades: [] };
+  }
+}
+
+let _brLikeLimitPaperWriteLock = Promise.resolve();
+function writeBrLikeLimitPaperStore(store) {
+  _brLikeLimitPaperWriteLock = _brLikeLimitPaperWriteLock
+    .then(() => atomicWriteJson(BR_LIKE_LIMIT_PAPER_FILE, store));
+  return _brLikeLimitPaperWriteLock;
+}
+
+function enrichBrLikeLimitPaperTrade(t, markPrice = null) {
+  const mark = Number(markPrice ?? emaSqueezeSocketMarks.get(t.symbol));
+  const entry = Number(t.entryPrice);
+  const qty = Number(t.quantity);
+  const margin = Number(t.marginUsdt);
+  const sideMult = t.side === 'LONG' ? 1 : -1;
+  const isOpen = t.status === 'OPEN';
+  const pnl = isOpen && Number.isFinite(mark) && mark > 0
+    ? (mark - entry) * qty * sideMult
+    : t.pnl ?? null;
+  const roe = isOpen && margin > 0 && pnl != null ? pnl / margin * 100 : t.roe ?? null;
+  const distancePct = t.status === 'PENDING' && Number.isFinite(mark) && mark > 0 && entry > 0
+    ? (t.side === 'LONG' ? (mark - entry) / mark : (entry - mark) / mark) * 100
+    : null;
+  return {
+    ...t,
+    markPrice: Number.isFinite(mark) && mark > 0 ? mark : null,
+    pnl,
+    roe,
+    distancePct,
+  };
+}
+
+async function getBrLikeLimitPaperTrades() {
+  const store = await readBrLikeLimitPaperStore();
+  const trades = store.trades.map((t) => enrichBrLikeLimitPaperTrade(t));
+  const active = trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status));
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const filled = trades.filter((t) => t.openedAt);
+  const wins = closed.filter((t) => Number(t.pnl ?? 0) > 0).length;
+  const losses = closed.filter((t) => Number(t.pnl ?? 0) < 0).length;
+  const realizedPnl = closed.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+  const unrealizedPnl = trades
+    .filter((t) => t.status === 'OPEN')
+    .reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+  const btcTurnGates = await getBrLikeBtcTurnGateSummary();
+  return {
+    trades,
+    summary: {
+      total: trades.length,
+      pending: active.filter((t) => t.status === 'PENDING').length,
+      open: active.filter((t) => t.status === 'OPEN').length,
+      closed: closed.length,
+      filled: filled.length,
+      expired: closed.filter((t) => t.outcome === 'EXPIRED').length,
+      wins,
+      losses,
+      wr: wins + losses ? +((wins / (wins + losses)) * 100).toFixed(1) : 0,
+      realizedPnl: +realizedPnl.toFixed(4),
+      unrealizedPnl: +unrealizedPnl.toFixed(4),
+      netPnl: +(realizedPnl + unrealizedPnl).toFixed(4),
+      btcTurnGates,
+    },
+    updatedAt: Date.now(),
+  };
+}
+
+function brLikeLimitPaperTpRoe({ isBrLikeShortPaper, brLikeQualityLabel, btcSnap, side, leverage }) {
+  const ts = Number(btcSnap?.btcTrendScore ?? 0);
+  const dir = btcSnap?.btcTrendDir;
+  const spike = Boolean(btcSnap?.btcSpike);
+  const sideDir = side === 'LONG' ? 'up' : 'down';
+  const strongThr = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_TREND_STRONG ?? 60);
+  const shortSpecialThr = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_SHORT_TREND_SPECIAL ?? 75);
+  const tightRoe = isBrLikeShortPaper
+    ? Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_SHORT_TP_TIGHT_ROE ?? 20)
+    : Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_TP_TIGHT_ROE ?? 15);
+  const wideRoe = isBrLikeShortPaper
+    ? Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_SHORT_TP_WIDE_ROE ?? 35)
+    : Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_TP_WIDE_ROE ?? 35);
+  const qualityLabel = String(brLikeQualityLabel?.label ?? 'OK').toUpperCase();
+  const feeRiskLow = !qualityLabel.startsWith('LOW_');
+  const strongAligned = isBrLikeShortPaper
+    ? ts >= shortSpecialThr && dir === sideDir && !spike && feeRiskLow
+    : ts >= strongThr && dir === sideDir && !spike;
+  const fiveXMult = Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_TP_5X_MULT ?? 0.5);
+  const base = strongAligned ? wideRoe : tightRoe;
+  return leverage === 5 && Number.isFinite(fiveXMult) && fiveXMult > 0 ? base * fiveXMult : base;
+}
+
+async function createBrLikeLimitPaperTrade(payload) {
+  const symbol = String(payload.symbol ?? '').toUpperCase();
+  const side = String(payload.side ?? '').toUpperCase();
+  const entryPrice = Number(payload.entryPrice);
+  const marginUsdt = Number(payload.marginUsdt ?? process.env.BR_LIKE_LIMIT_PAPER_MARGIN_USDT ?? 10);
+  const leverage = Math.max(1, Number(payload.leverage ?? 10));
+  if (!symbol || !['LONG', 'SHORT'].includes(side) || !Number.isFinite(entryPrice) || entryPrice <= 0) {
+    throw new Error('invalid BR-like limit paper payload');
+  }
+  const pause = getBrLikeLimitBreadthPause(side);
+  if (pause && String(payload.source ?? '').includes('br_like')) {
+    const untilText = new Date(Number(pause.until)).toISOString();
+    const confirmText = pause.lastConfirmReason ? `; btcConfirm=${pause.lastConfirmReason}` : '';
+    console.log(`[BrLikeLimitPaper] SKIP ${side} ${symbol}: breadth small-pnl pause until ${untilText}${confirmText} (${pause.reason})`);
+    return {
+      skipped: true,
+      reason: 'BREADTH_REVERSAL_SMALL_PNL_PAUSE',
+      until: untilText,
+      btcConfirm: pause.lastConfirmReason ?? null,
+      trade: null,
+    };
+  }
+  if (String(payload.source ?? '').includes('br_like')) {
+    const btcTurnGate = await getBrLikeBtcTurnClusterGate(side).catch((err) => {
+      console.warn(`[BrLikeLimitPaper] ${symbol} btc-turn-cluster gate:`, err.message);
+      return null;
+    });
+    if (btcTurnGate?.blockMarket) {
+      console.log(`[BrLikeLimitPaper] SKIP ${side} ${symbol}: ${btcTurnGate.label} - limit pending blocked (${btcTurnGate.reason})`);
+      return {
+        skipped: true,
+        reason: btcTurnGate.label,
+        btcTurnCluster: btcTurnGate.cluster ?? null,
+        btcTurnReason: btcTurnGate.reason,
+        trade: null,
+      };
+    }
+  }
+  const store = await readBrLikeLimitPaperStore();
+  const dup = store.trades.find((t) =>
+    t.symbol === symbol
+    && t.side === side
+    && ['PENDING', 'OPEN'].includes(t.status)
+    && Math.abs(Number(t.entryPrice) - entryPrice) / entryPrice < 0.005);
+  if (dup) return { trade: enrichBrLikeLimitPaperTrade(dup) };
+  const nowIso = new Date().toISOString();
+  const expireMs = Number(process.env.BR_LIKE_LIMIT_PAPER_EXPIRE_MS ?? 4 * 3600_000);
+  const trade = {
+    id: crypto.randomUUID(),
+    signalId: payload.signalId ?? null,
+    symbol,
+    side,
+    status: 'PENDING',
+    variant: 'LIMIT',
+    marginUsdt,
+    leverage,
+    quantity: marginUsdt * leverage / entryPrice,
+    entryPrice,
+    tp: Number(payload.tp ?? 0) || null,
+    sl: Number(payload.sl ?? 0) || null,
+    fillPrice: null,
+    exitPrice: null,
+    pnl: null,
+    roe: null,
+    outcome: null,
+    createdAt: nowIso,
+    openedAt: null,
+    closedAt: null,
+    expiresAt: new Date(Date.now() + expireMs).toISOString(),
+    source: String(payload.source ?? 'br-like-limit').slice(0, 100),
+    note: String(payload.note ?? '').slice(0, 1000),
+    score: payload.score ?? null,
+    interval: payload.interval ?? null,
+    brLikeScore: payload.brLikeScore ?? null,
+    brQualityLabel: payload.brQualityLabel ?? null,
+    btcHealth: payload.btcHealth ?? null,
+  };
+  store.trades.unshift(trade);
+  await writeBrLikeLimitPaperStore(store);
+  syncEmaSqueezePaperTicker().catch(() => {});
+  console.log(`[BrLikeLimitPaper] PENDING ${side} ${symbol} entry=${entryPrice} tp=${trade.tp ?? '-'} sl=${trade.sl ?? '-'} exp=4h`);
+  return { trade: enrichBrLikeLimitPaperTrade(trade) };
+}
+
+const brLikeLimitPaperLocks = new Set();
+async function closeBrLikeLimitPaperTrade({ id, exitPrice, outcome = 'MANUAL', closeReason = null }) {
+  const store = await readBrLikeLimitPaperStore();
+  const idx = store.trades.findIndex((t) => t.id === id);
+  if (idx < 0) throw new Error('BR-like limit paper trade not found');
+  const row = store.trades[idx];
+  if (row.status === 'CLOSED') return { trade: enrichBrLikeLimitPaperTrade(row) };
+  const exit = Number(exitPrice);
+  const sideMult = row.side === 'LONG' ? 1 : -1;
+  const pnl = row.openedAt && Number.isFinite(exit) && exit > 0
+    ? (exit - Number(row.entryPrice)) * Number(row.quantity) * sideMult
+    : 0;
+  const roe = Number(row.marginUsdt) > 0 ? pnl / Number(row.marginUsdt) * 100 : 0;
+  store.trades[idx] = {
+    ...row,
+    status: 'CLOSED',
+    exitPrice: Number.isFinite(exit) && exit > 0 ? exit : null,
+    pnl,
+    roe,
+    outcome,
+    closeReason: closeReason ? String(closeReason).slice(0, 500) : row.closeReason,
+    closedAt: new Date().toISOString(),
+  };
+  await writeBrLikeLimitPaperStore(store);
+  return { trade: enrichBrLikeLimitPaperTrade(store.trades[idx], exit) };
+}
+
+async function deleteBrLikeLimitPaperTrade({ id }) {
+  const store = await readBrLikeLimitPaperStore();
+  store.trades = store.trades.filter((t) => t.id !== id);
+  await writeBrLikeLimitPaperStore(store);
+  syncEmaSqueezePaperTicker().catch(() => {});
+  return { ok: true };
+}
+
+async function processBrLikeLimitPaperSymbol(symbol, markPrice) {
+  const store = await readBrLikeLimitPaperStore();
+  let changed = false;
+  const now = Date.now();
+  for (const row of store.trades) {
+    if (row.symbol !== symbol || !['PENDING', 'OPEN'].includes(row.status)) continue;
+    const lockKey = row.id;
+    if (brLikeLimitPaperLocks.has(lockKey)) continue;
+    const entry = Number(row.entryPrice);
+    const mark = Number(markPrice);
+    if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(mark) || mark <= 0) continue;
+    if (row.status === 'PENDING') {
+      if (Date.parse(row.expiresAt ?? 0) <= now) {
+        row.status = 'CLOSED';
+        row.outcome = 'EXPIRED';
+        row.pnl = 0;
+        row.roe = 0;
+        row.closedAt = new Date().toISOString();
+        changed = true;
+        continue;
+      }
+      const touched = row.side === 'LONG' ? mark <= entry : mark >= entry;
+      if (touched) {
+        row.status = 'OPEN';
+        row.fillPrice = entry;
+        row.openedAt = new Date().toISOString();
+        row.fillMarkPrice = mark;
+        changed = true;
+      }
+      continue;
+    }
+    const isLong = row.side === 'LONG';
+    const sideMult = isLong ? 1 : -1;
+    const pnl = (mark - entry) * Number(row.quantity) * sideMult;
+    const roe = Number(row.marginUsdt) > 0 ? pnl / Number(row.marginUsdt) * 100 : 0;
+    row.peakRoe = Math.max(Number(row.peakRoe ?? 0), Number.isFinite(roe) ? roe : 0);
+    const trailStartRoe = Number(process.env.EMA_SQUEEZE_PAPER_TRAIL_START_ROE ?? 10);
+    if (roe >= trailStartRoe) {
+      const targetLockRoe = getTargetLockRoe(roe);
+      if (targetLockRoe != null) {
+        const lockMove = targetLockRoe / 100 / Math.max(1, Number(row.leverage ?? 1));
+        const newSl = isLong ? entry * (1 + lockMove) : entry * (1 - lockMove);
+        const curSl = Number(row.sl ?? 0);
+        const improves = !Number.isFinite(curSl) || curSl <= 0 || (isLong ? newSl > curSl : newSl < curSl);
+        if (Number.isFinite(newSl) && newSl > 0 && improves && (isLong ? newSl < mark : newSl > mark)) {
+          row.sl = newSl;
+          row.slTrailLockRoe = targetLockRoe;
+          row.note = [String(row.note ?? ''), `paperSlTrail=${targetLockRoe}%@${newSl}`].filter(Boolean).join(' | ').slice(0, 500);
+          changed = true;
+        }
+      }
+    }
+    const tpHit = row.tp != null && (isLong ? mark >= Number(row.tp) : mark <= Number(row.tp));
+    const slHit = row.sl != null && (isLong ? mark <= Number(row.sl) : mark >= Number(row.sl));
+    if (!tpHit && !slHit) continue;
+    brLikeLimitPaperLocks.add(lockKey);
+    try {
+      const exit = tpHit ? Number(row.tp) : Number(row.sl);
+      const exitPnl = (exit - entry) * Number(row.quantity) * (isLong ? 1 : -1);
+      row.status = 'CLOSED';
+      row.exitPrice = exit;
+      row.pnl = exitPnl;
+      row.roe = Number(row.marginUsdt) > 0 ? exitPnl / Number(row.marginUsdt) * 100 : 0;
+      const closedAtEntry = Math.abs(exit - Number(row.entryPrice)) / Number(row.entryPrice) < 1e-8;
+      row.outcome = tpHit && closedAtEntry && row.tpMovedToEntryBy === 'BREADTH_REVERSAL'
+        ? 'BREADTH_BE_TP'
+        : tpHit ? 'TP' : 'SL';
+      row.closedAt = new Date().toISOString();
+      changed = true;
+    } finally {
+      brLikeLimitPaperLocks.delete(lockKey);
+    }
+  }
+  if (changed) await writeBrLikeLimitPaperStore(store);
+}
+
+async function expireOldBrLikeLimitPaper() {
+  const store = await readBrLikeLimitPaperStore();
+  const now = Date.now();
+  let changed = false;
+  for (const row of store.trades) {
+    if (row.status !== 'PENDING') continue;
+    if (Date.parse(row.expiresAt ?? 0) > now) continue;
+    row.status = 'CLOSED';
+    row.outcome = 'EXPIRED';
+    row.pnl = 0;
+    row.roe = 0;
+    row.closedAt = new Date().toISOString();
+    changed = true;
+  }
+  if (changed) await writeBrLikeLimitPaperStore(store);
+}
+
+function isBrLikePaperSourceForSide(source, side) {
+  const s = String(source ?? '');
+  const tradeSide = String(side ?? '').toUpperCase();
+  if (!s.startsWith('emasq-') || !s.includes('br_like')) return false;
+  return tradeSide === 'SHORT' ? s.includes('br_like_short') : !s.includes('br_like_short');
+}
+
+function getFreshEmaSqueezeMark(symbol) {
+  const sym = String(symbol ?? '').toUpperCase();
+  const mark = Number(emaSqueezeSocketMarks.get(sym));
+  const at = Number(emaSqueezeSocketMarkAt.get(sym) ?? 0);
+  const freshMs = Number(process.env.EMA_SQUEEZE_PAPER_MARK_STALE_MS ?? 15_000);
+  if (Number.isFinite(mark) && mark > 0 && at && Date.now() - at <= freshMs) return mark;
+  return null;
+}
+
+function calcPaperPnlRoe(row, markPrice) {
+  const entry = Number(row.entryPrice);
+  const qty = Number(row.quantity);
+  const margin = Number(row.marginUsdt);
+  const mark = Number(markPrice);
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(qty) || qty <= 0 || !Number.isFinite(mark) || mark <= 0) {
+    return { pnl: null, roe: null };
+  }
+  const sideMult = row.side === 'LONG' ? 1 : -1;
+  const pnl = (mark - entry) * qty * sideMult;
+  const roe = Number.isFinite(margin) && margin > 0 ? pnl / margin * 100 : null;
+  return { pnl, roe };
+}
+
+let brLikeBtcTurnPositiveCutRunning = false;
+async function enforceBrLikeBtcTurnPositiveCuts() {
+  if (process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_POSITIVE_CUT === 'false') return;
+  if (brLikeBtcTurnPositiveCutRunning) return;
+  brLikeBtcTurnPositiveCutRunning = true;
+  try {
+    for (const side of ['LONG', 'SHORT']) {
+      const gate = await getBrLikeBtcTurnClusterGate(side).catch((err) => {
+        console.warn(`[EmaSqueezePaper] btc-turn positive-cut gate ${side}:`, err.message);
+        return null;
+      });
+      if (!gate?.blockMarket) continue;
+
+      const outcome = `${gate.label}_PROFIT_CUT`;
+      const cancelOutcome = `${gate.label}_PENDING_CANCEL`;
+      const minProfitCutPnl = Number(process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_PROFIT_CUT_MIN_PNL ?? 0.5);
+      const closeReason = `${gate.label}: cut BR-like ${side} profit > ${minProfitCutPnl}; ${gate.reason}`;
+      let marketCut = 0;
+      let limitCut = 0;
+      let limitCancelled = 0;
+
+      const pumpStore = await readPumpPaperStore();
+      const marketTargets = pumpStore.trades.filter((t) =>
+        t.status === 'OPEN'
+        && t.side === side
+        && isBrLikePaperSourceForSide(t.source, side));
+      for (const row of marketTargets) {
+        const mark = getFreshEmaSqueezeMark(row.symbol);
+        if (!mark) continue;
+        const { pnl } = calcPaperPnlRoe(row, mark);
+        if (!(Number(pnl) > minProfitCutPnl)) continue;
+        await closePumpPaperTrade({
+          id: row.id,
+          exitPrice: mark,
+          outcome,
+          closeReason,
+        }).catch((err) => console.warn(`[EmaSqueezePaper] ${outcome} ${row.symbol}:`, err.message));
+        marketCut++;
+      }
+
+      const limitStore = await readBrLikeLimitPaperStore();
+      let limitChanged = false;
+      const nowIso = new Date().toISOString();
+      for (let i = 0; i < limitStore.trades.length; i++) {
+        const row = limitStore.trades[i];
+        if (row.side !== side || !String(row.source ?? '').includes('br_like')) continue;
+        if (row.status === 'PENDING') {
+          limitStore.trades[i] = {
+            ...row,
+            status: 'CLOSED',
+            outcome: cancelOutcome,
+            pnl: 0,
+            roe: 0,
+            closeReason,
+            closedAt: nowIso,
+          };
+          limitCancelled++;
+          limitChanged = true;
+          continue;
+        }
+        if (row.status !== 'OPEN') continue;
+        const mark = getFreshEmaSqueezeMark(row.symbol);
+        if (!mark) continue;
+        const { pnl, roe } = calcPaperPnlRoe(row, mark);
+        if (!(Number(pnl) > minProfitCutPnl)) continue;
+        limitStore.trades[i] = {
+          ...row,
+          status: 'CLOSED',
+          exitPrice: mark,
+          pnl,
+          roe,
+          outcome,
+          closeReason,
+          closedAt: nowIso,
+        };
+        limitCut++;
+        limitChanged = true;
+      }
+      if (limitChanged) await writeBrLikeLimitPaperStore(limitStore);
+      if (marketCut || limitCut || limitCancelled) {
+        setBrLikeBtcTurnPostCutPause(side, gate);
+        console.log(`[EmaSqueezePaper] ${gate.label} ${side}: profit-cut market=${marketCut} limit=${limitCut} pendingCancel=${limitCancelled} minPnl>${minProfitCutPnl}`);
+        syncEmaSqueezePaperTicker().catch(() => {});
+        scheduleEmaSqueezePaperBroadcast(50);
+      }
+    }
+  } finally {
+    brLikeBtcTurnPositiveCutRunning = false;
+  }
+}
+
+let runnerBtcTurnPositiveCutRunning = false;
+async function enforceRunnerBtcTurnPositiveCuts() {
+  if (process.env.EMA_SQUEEZE_RUNNER_BTC_TURN_POSITIVE_CUT === 'false') return;
+  if (runnerBtcTurnPositiveCutRunning) return;
+  runnerBtcTurnPositiveCutRunning = true;
+  try {
+    for (const side of ['LONG', 'SHORT']) {
+      const gate = await getRunnerBtcTurnClusterGate(side).catch((err) => {
+        console.warn(`[EmaSqueezeRunnerPaper] btc-turn positive-cut gate ${side}:`, err.message);
+        return null;
+      });
+      if (!gate?.blockMarket) continue;
+
+      const outcome = `${gate.label}_PROFIT_CUT`;
+      const minProfitCutPnl = Number(process.env.EMA_SQUEEZE_RUNNER_BTC_TURN_PROFIT_CUT_MIN_PNL
+        ?? process.env.EMA_SQUEEZE_BR_LIKE_BTC_TURN_PROFIT_CUT_MIN_PNL
+        ?? 0.5);
+      const closeReason = `${gate.label}: cut runner ${side} profit > ${minProfitCutPnl}; ${gate.reason}`;
+      let marketCut = 0;
+
+      const pumpStore = await readPumpPaperStore();
+      const marketTargets = pumpStore.trades.filter((t) =>
+        isEmaSqueezeRunnerPaperTrade(t)
+        && String(t.side ?? '').toUpperCase() === side);
+      for (const row of marketTargets) {
+        const mark = getFreshEmaSqueezeMark(row.symbol);
+        if (!mark) continue;
+        const { pnl } = calcPaperPnlRoe(row, mark);
+        if (!(Number(pnl) > minProfitCutPnl)) continue;
+        await closePumpPaperTrade({
+          id: row.id,
+          exitPrice: mark,
+          outcome,
+          closeReason,
+        }).catch((err) => console.warn(`[EmaSqueezeRunnerPaper] ${outcome} ${row.symbol}:`, err.message));
+        marketCut++;
+      }
+
+      if (marketCut) {
+        setRunnerBtcTurnPostCutPause(side, gate);
+        console.log(`[EmaSqueezeRunnerPaper] ${gate.label} ${side}: profit-cut runner=${marketCut} minPnl>${minProfitCutPnl}`);
+        syncEmaSqueezePaperTicker().catch(() => {});
+        scheduleEmaSqueezePaperBroadcast(50);
+      }
+    }
+  } finally {
+    runnerBtcTurnPositiveCutRunning = false;
+  }
 }
 
 async function createPumpPaperTrade(payload) {
@@ -9364,6 +11169,7 @@ async function createPumpPaperTrade(payload) {
 
   const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
   const source = String(payload.source ?? 'manual').slice(0, 80);
+  const signalMarkPrice = Number(payload.signalMarkPrice);
   if (process.env.EMA_SQUEEZE_PAPER_BREAKOUT_QUALITY_GATE !== 'false'
       && source.includes('-breakout')
       && payload.breakoutPaperEligible === false) {
@@ -9392,6 +11198,9 @@ async function createPumpPaperTrade(payload) {
     tp: payload.tp != null ? Number(payload.tp) : null,
     sl: emaSqueezeSl ?? (payload.sl != null ? Number(payload.sl) : null),
     fillPrice: status === 'OPEN' ? entryPrice : null,
+    signalMarkPrice: Number.isFinite(signalMarkPrice) && signalMarkPrice > 0 ? signalMarkPrice : null,
+    marketEntrySource: payload.marketEntrySource ? String(payload.marketEntrySource).slice(0, 40) : null,
+    marketEntrySourceAgeMs: payload.marketEntrySourceAgeMs != null ? Number(payload.marketEntrySourceAgeMs) : null,
     exitPrice: null,
     pnl: null,
     roe: null,
@@ -9416,6 +11225,12 @@ async function createPumpPaperTrade(payload) {
     brCandleUpperShare: payload.brCandleUpperShare ?? null,
     brCandleLowerShare: payload.brCandleLowerShare ?? null,
     brCandleVolRatio: payload.brCandleVolRatio ?? null,
+    brShortEnvLabel: payload.brShortEnvLabel ?? null,
+    brShortEnvBlockMarket: payload.brShortEnvBlockMarket ?? null,
+    binanceMarketEligible: payload.binanceMarketEligible ?? null,
+    brShortEnvReason: payload.brShortEnvReason ?? null,
+    brShortEnvRolling2h: payload.brShortEnvRolling2h ?? null,
+    brShortRecovery60m: payload.brShortRecovery60m ?? null,
   };
   store.trades.unshift(trade);
   await writePumpPaperStore(store);
@@ -9449,7 +11264,19 @@ async function closePumpPaperTrade(payload) {
   const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
   const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
   const outcome = payload.outcome ?? 'MANUAL';
-  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  store.trades[idx] = {
+    ...trade,
+    status: 'CLOSED',
+    exitPrice,
+    pnl,
+    roe,
+    outcome,
+    closeReason: payload.closeReason ? String(payload.closeReason).slice(0, 500) : trade.closeReason,
+    note: payload.closeReason
+      ? [String(trade.note ?? ''), `closeReason=${payload.closeReason}`].filter(Boolean).join(' | ').slice(0, 500)
+      : trade.note,
+    closedAt: new Date().toISOString(),
+  };
   await writePumpPaperStore(store);
   if (String(trade.source ?? '').startsWith('emasq-')) syncEmaSqueezePaperTicker().catch(() => {});
   else syncPumpPaperTicker().catch(() => {});
@@ -9575,22 +11402,25 @@ async function checkPumpPaperDynamicRisk(trade, markPrice) {
   }
 
   if (process.env.PUMP_PAPER_NEG_TP_ENABLED !== 'false') {
-    // br-like dời TP về entry sớm hơn (mặc định -10%) so với pump thường (-30%)
     const isBrLike = String(trade.source ?? '').includes('br_like');
-    const negTpRoe = isBrLike
-      ? Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_NEG_TP_ROE ?? -10)
-      : Number(process.env.PUMP_PAPER_NEG_TP_ROE ?? -30);
-    const alreadyMoved = trade.paperTpMovedToEntry === true || String(trade.note ?? '').includes('pumpPaperTpEntryGuard=');
-    if (!alreadyMoved && roe <= negTpRoe) {
-      const curTp = Number(trade.tp ?? 0);
-      const improvesExit = !Number.isFinite(curTp) || curTp <= 0
-        || (isLong ? curTp > entry : curTp < entry);
-      const validSide = isLong ? entry > mark : entry < mark;
-      if (improvesExit && validSide) {
-        updates.tp = entry;
-        updates.paperTpMovedToEntry = true;
-        updates.paperTpMovedToEntryRoe = +roe.toFixed(2);
-        notes.push(`pumpPaperTpEntryGuard=${negTpRoe}%@${entry}`);
+    const brLikeNegTpEnabled = process.env.EMA_SQUEEZE_PAPER_BR_LIKE_NEG_TP_ENABLED === 'true';
+    if (!isBrLike || brLikeNegTpEnabled) {
+      const negTpRoe = isBrLike
+        ? Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_NEG_TP_ROE ?? -10)
+        : Number(process.env.PUMP_PAPER_NEG_TP_ROE ?? -30);
+      const alreadyMoved = trade.paperTpMovedToEntry === true || String(trade.note ?? '').includes('pumpPaperTpEntryGuard=');
+      if (!alreadyMoved && roe <= negTpRoe) {
+        const curTp = Number(trade.tp ?? 0);
+        const improvesExit = !Number.isFinite(curTp) || curTp <= 0
+          || (isLong ? curTp > entry : curTp < entry);
+        const validSide = isLong ? entry > mark : entry < mark;
+        if (improvesExit && validSide) {
+          updates.tp = entry;
+          updates.paperTpMovedToEntry = true;
+          updates.paperTpMovedToEntryRoe = +roe.toFixed(2);
+          updates.tpMovedToEntryBy = 'NEG_TP_ENTRY_GUARD';
+          notes.push(`pumpPaperTpEntryGuard=${negTpRoe}%@${entry}`);
+        }
       }
     }
   }
@@ -9731,12 +11561,131 @@ async function checkPumpPaperTpSl(trade, markPrice) {
   if (!tpHit && !slHit) return;
   pumpPaperTpSlLocks.add(trade.id);
   try {
-    const outcome = tpHit ? 'TP' : 'SL';
     const exitPrice = tpHit ? trade.tp : trade.sl;
-    await closePumpPaperTrade({ id: trade.id, exitPrice, outcome });
-    console.log(`[PumpPaper] 🎯 ${outcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
+    const entry = Number(trade.entryPrice);
+    const closedAtEntry = tpHit
+      && Number.isFinite(entry)
+      && entry > 0
+      && Math.abs(Number(exitPrice) - entry) / entry < 1e-8;
+    const outcome = tpHit
+      ? (closedAtEntry && trade.tpMovedToEntryBy === 'BR_LIKE_NEG_5' ? 'BR_LIKE_TP_ENTRY' : 'TP')
+      : 'SL';
+    const finalOutcome = tpHit && closedAtEntry && trade.tpMovedToEntryBy === 'RUNNER_NEG_5'
+      ? 'RUNNER_TP_ENTRY'
+      : outcome;
+    await closePumpPaperTrade({ id: trade.id, exitPrice, outcome: finalOutcome });
+    console.log(`[PumpPaper] 🎯 ${finalOutcome} hit ${trade.side} ${trade.symbol} exit=${exitPrice}`);
   } finally {
     pumpPaperTpSlLocks.delete(trade.id);
+  }
+}
+
+const emaSqueezeRunnerTpEntryLocks = new Set();
+async function checkEmaSqueezeRunnerTpToEntry(trade, markPrice) {
+  if (process.env.EMA_SQUEEZE_PAPER_RUNNER_TP_ENTRY_GUARD === 'false') return;
+  if (!isEmaSqueezeRunnerPaperTrade(trade)) return;
+  if (trade.status !== 'OPEN') return;
+  if (emaSqueezeRunnerTpEntryLocks.has(trade.id)) return;
+
+  const entry = Number(trade.entryPrice);
+  const qty = Number(trade.quantity);
+  const margin = Number(trade.marginUsdt);
+  const mark = Number(markPrice);
+  if (![entry, qty, margin, mark].every(Number.isFinite) || entry <= 0 || qty <= 0 || margin <= 0 || mark <= 0) return;
+
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (mark - entry) * qty * sideMult;
+  const roe = pnl / margin * 100;
+  const triggerRoe = -Math.abs(Number(process.env.EMA_SQUEEZE_PAPER_RUNNER_TP_ENTRY_ROE
+    ?? process.env.EMA_SQUEEZE_PAPER_BR_LIKE_TP_ENTRY_ROE
+    ?? 5));
+  if (!Number.isFinite(roe) || roe > triggerRoe) return;
+
+  const curTp = Number(trade.tp ?? 0);
+  const isLong = trade.side === 'LONG';
+  const improvesExit = !Number.isFinite(curTp) || curTp <= 0 || (isLong ? curTp > entry : curTp < entry);
+  const validSide = isLong ? entry > mark : entry < mark;
+  const alreadyMoved = trade.tpMovedToEntryBy === 'RUNNER_NEG_5'
+    || String(trade.note ?? '').includes('runnerTpEntryGuard=');
+  if (!improvesExit || !validSide || alreadyMoved) return;
+
+  emaSqueezeRunnerTpEntryLocks.add(trade.id);
+  try {
+    const store = await readPumpPaperStore();
+    const idx = store.trades.findIndex((row) => row.id === trade.id && row.status === 'OPEN');
+    if (idx < 0) return;
+    const row = store.trades[idx];
+    store.trades[idx] = {
+      ...row,
+      tp: entry,
+      paperTpMovedToEntry: true,
+      paperTpMovedToEntryRoe: +roe.toFixed(2),
+      tpMovedToEntryBy: 'RUNNER_NEG_5',
+      dynamicRiskUpdatedAt: new Date().toISOString(),
+      note: [String(row.note ?? ''), `runnerTpEntryGuard=${triggerRoe}%@${entry}; roe=${roe.toFixed(2)}%`]
+        .filter(Boolean)
+        .join(' | ')
+        .slice(0, 500),
+    };
+    await writePumpPaperStore(store);
+    scheduleEmaSqueezePaperBroadcast(50);
+    console.log(`[EmaSqueezeRunnerPaper] RUNNER-TP-ENTRY ${row.side} ${row.symbol}: roe=${roe.toFixed(1)}% <= ${triggerRoe}% tp=${entry}`);
+  } finally {
+    emaSqueezeRunnerTpEntryLocks.delete(trade.id);
+  }
+}
+
+const emaSqueezeBrLikeTpEntryLocks = new Set();
+async function checkEmaSqueezeBrLikeTpToEntry(trade, markPrice) {
+  if (process.env.EMA_SQUEEZE_PAPER_BR_LIKE_TP_ENTRY_GUARD === 'false') return;
+  const source = String(trade.source ?? '');
+  if (!source.startsWith('emasq-') || !source.includes('br_like')) return;
+  if (trade.status !== 'OPEN') return;
+  if (emaSqueezeBrLikeTpEntryLocks.has(trade.id)) return;
+
+  const entry = Number(trade.entryPrice);
+  const qty = Number(trade.quantity);
+  const margin = Number(trade.marginUsdt);
+  const mark = Number(markPrice);
+  if (![entry, qty, margin, mark].every(Number.isFinite) || entry <= 0 || qty <= 0 || margin <= 0 || mark <= 0) return;
+
+  const sideMult = trade.side === 'LONG' ? 1 : -1;
+  const pnl = (mark - entry) * qty * sideMult;
+  const roe = pnl / margin * 100;
+  const triggerRoe = -Math.abs(Number(process.env.EMA_SQUEEZE_PAPER_BR_LIKE_TP_ENTRY_ROE ?? 5));
+  if (!Number.isFinite(roe) || roe > triggerRoe) return;
+
+  const curTp = Number(trade.tp ?? 0);
+  const isLong = trade.side === 'LONG';
+  const improvesExit = !Number.isFinite(curTp) || curTp <= 0 || (isLong ? curTp > entry : curTp < entry);
+  const validSide = isLong ? entry > mark : entry < mark;
+  const alreadyMoved = trade.tpMovedToEntryBy === 'BR_LIKE_NEG_5'
+    || String(trade.note ?? '').includes('brLikeTpEntryGuard=');
+  if (!improvesExit || !validSide || alreadyMoved) return;
+
+  emaSqueezeBrLikeTpEntryLocks.add(trade.id);
+  try {
+    const store = await readPumpPaperStore();
+    const idx = store.trades.findIndex((row) => row.id === trade.id && row.status === 'OPEN');
+    if (idx < 0) return;
+    const row = store.trades[idx];
+    store.trades[idx] = {
+      ...row,
+      tp: entry,
+      paperTpMovedToEntry: true,
+      paperTpMovedToEntryRoe: +roe.toFixed(2),
+      tpMovedToEntryBy: 'BR_LIKE_NEG_5',
+      dynamicRiskUpdatedAt: new Date().toISOString(),
+      note: [String(row.note ?? ''), `brLikeTpEntryGuard=${triggerRoe}%@${entry}; roe=${roe.toFixed(2)}%`]
+        .filter(Boolean)
+        .join(' | ')
+        .slice(0, 500),
+    };
+    await writePumpPaperStore(store);
+    scheduleEmaSqueezePaperBroadcast(50);
+    console.log(`[EmaSqueezePaper] BR-LIKE-TP-ENTRY ${row.side} ${row.symbol}: roe=${roe.toFixed(1)}% <= ${triggerRoe}% tp=${entry}`);
+  } finally {
+    emaSqueezeBrLikeTpEntryLocks.delete(trade.id);
   }
 }
 
@@ -9760,9 +11709,12 @@ async function processEmaSqueezePaperSymbol(symbol, markPrice) {
       await fillPumpPendingTrade(trade, markPrice);
       continue;
     }
+    await checkEmaSqueezeBrLikeTpToEntry(trade, markPrice);
+    await checkEmaSqueezeRunnerTpToEntry(trade, markPrice);
     await checkPumpPaperTpSl(trade, markPrice);
     await checkEmaSqueezePaperProfit(trade, markPrice);
   }
+  await processBrLikeLimitPaperSymbol(symbol, markPrice);
 }
 
 function queueEmaSqueezePaperProcessing(symbol, markPrice) {
@@ -9796,11 +11748,17 @@ async function drainEmaSqueezePaperProcessing() {
 async function syncEmaSqueezePaperTicker() {
   if (!emaSqueezePaperTicker) return;
   const store = await readPumpPaperStore();
-  const symbols = [...new Set(store.trades
+  const brLimitStore = await readBrLikeLimitPaperStore().catch(() => ({ trades: [] }));
+  const symbols = [...new Set([
+    ...store.trades
     .filter((t) =>
       ['PENDING', 'OPEN'].includes(t.status)
       && String(t.source ?? '').startsWith('emasq-'))
-    .map((t) => t.symbol))];
+    .map((t) => t.symbol),
+    ...brLimitStore.trades
+      .filter((t) => ['PENDING', 'OPEN'].includes(t.status))
+      .map((t) => t.symbol),
+  ])];
   emaSqueezePaperTicker.setSymbols(symbols);
 }
 
@@ -9818,6 +11776,13 @@ function startEmaSqueezePaperTicker() {
   console.log('[EmaSqueezePaper] Dedicated socket-only last-price ticker started.');
   syncEmaSqueezePaperTicker().catch(() => {});
   setInterval(() => syncEmaSqueezePaperTicker().catch(() => {}), 30_000);
+  setInterval(() => expireOldBrLikeLimitPaper().catch(() => {}), 60_000);
+  setInterval(() => enforceBrLikeBtcTurnPositiveCuts().catch((err) => {
+    console.warn('[EmaSqueezePaper] btc-turn positive-cut failed:', err.message);
+  }), 15_000);
+  setInterval(() => enforceRunnerBtcTurnPositiveCuts().catch((err) => {
+    console.warn('[EmaSqueezeRunnerPaper] btc-turn positive-cut failed:', err.message);
+  }), 15_000);
 }
 
 function startPumpPaperTicker() {
@@ -10559,12 +12524,22 @@ function enrichShakeoutPaperTrade(t, markPrice) {
   const roe = isActive && margin > 0
     ? (pnl == null ? null : (pnl / margin) * 100)
     : (t.roe ?? null);
+  const realGate = t.shakeoutRealGateLabel
+    ? null
+    : getShakeoutRealGate({
+      ...t,
+      projectedRoe: getShakeoutProjectedRoe(t),
+    });
   return {
     ...t,
     markPrice: mark,
     markUpdatedAt: shakeoutSocketMarkAt.get(String(t.symbol ?? '').toUpperCase()) ?? null,
     pnl,
     roe,
+    shakeoutRealGateLabel: t.shakeoutRealGateLabel ?? realGate?.label ?? null,
+    shakeoutRealGateReason: t.shakeoutRealGateReason ?? realGate?.reasons?.join('; ') ?? null,
+    shakeoutRealGateAllow: t.shakeoutRealGateAllow ?? realGate?.allowReal ?? false,
+    shakeoutProjectedRoe: t.shakeoutProjectedRoe ?? realGate?.projectedRoe ?? getShakeoutProjectedRoe(t),
   };
 }
 
@@ -10662,6 +12637,26 @@ async function getShakeoutPaperTrades() {
     };
   };
   const variantCompare = [buildVariant('MARKET'), buildVariant('PENDING')];
+  const buildRealGate = (label) => {
+    const all = trades.filter((t) => String(t.shakeoutRealGateLabel ?? 'REAL_TEST') === label);
+    const vClosed = all.filter((t) => t.status === 'CLOSED' && t.outcome !== 'INVALID');
+    const w = vClosed.filter((t) => Number(t.pnl ?? 0) > 0).length;
+    const totalPnl = vClosed.reduce((s, t) => s + Number(t.pnl ?? 0), 0);
+    const totalRoe = vClosed.reduce((s, t) => s + Number(t.roe ?? 0), 0);
+    return {
+      label,
+      total: all.length,
+      open: all.filter((t) => t.status === 'OPEN').length,
+      pending: all.filter((t) => t.status === 'PENDING').length,
+      closed: vClosed.length,
+      wins: w,
+      losses: vClosed.length - w,
+      winRate: vClosed.length > 0 ? +((w / vClosed.length) * 100).toFixed(1) : 0,
+      totalPnl: +totalPnl.toFixed(4),
+      avgRoe: vClosed.length > 0 ? +(totalRoe / vClosed.length).toFixed(1) : null,
+    };
+  };
+  const realGateCompare = ['REAL_OK', 'REAL_TEST', 'REAL_BLOCK'].map(buildRealGate);
 
   return {
     trades,
@@ -10687,7 +12682,19 @@ async function getShakeoutPaperTrades() {
     },
     daily,
     variantCompare,
+    realGateCompare,
   };
+}
+
+function getShakeoutDefaultSlPrice(entryPrice, leverage, side) {
+  const entry = Number(entryPrice);
+  const lev = Number(leverage);
+  const slRoe = Math.abs(Number(process.env.SHAKEOUT_RECLAIM_PAPER_DEFAULT_SL_ROE ?? 20));
+  const tradeSide = String(side ?? '').toUpperCase();
+  if (![entry, lev, slRoe].every(Number.isFinite) || entry <= 0 || lev <= 0 || slRoe <= 0) return null;
+  if (tradeSide === 'LONG') return entry * (1 - slRoe / 100 / lev);
+  if (tradeSide === 'SHORT') return entry * (1 + slRoe / 100 / lev);
+  return null;
 }
 
 async function createShakeoutPaperTrade(payload) {
@@ -10700,7 +12707,10 @@ async function createShakeoutPaperTrade(payload) {
   if (!symbol) throw new Error('symbol required');
   if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
   if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice required');
-  const sl = payload.sl != null ? Number(payload.sl) : null;
+  const defaultSl = getShakeoutDefaultSlPrice(entryPrice, leverage, side);
+  const sl = process.env.SHAKEOUT_RECLAIM_PAPER_FORCE_DEFAULT_SL === 'false'
+    ? (payload.sl != null ? Number(payload.sl) : defaultSl)
+    : defaultSl;
   const tp = payload.tp != null ? Number(payload.tp) : null;
   if (Number.isFinite(sl) && Number.isFinite(tp)) {
     const validGeometry = side === 'LONG'
@@ -10746,13 +12756,18 @@ async function createShakeoutPaperTrade(payload) {
     outcome: null,
     score: payload.score != null ? Number(payload.score) : null,
     signalType: String(payload.signalType ?? payload.type ?? '').slice(0, 80),
+    shakeoutQuality: payload.shakeoutQuality ? String(payload.shakeoutQuality).toUpperCase().slice(0, 12) : null,
     shakeoutClass: payload.shakeoutClass ? String(payload.shakeoutClass).toUpperCase().slice(0, 40) : null,
     shakeoutClassLabel: payload.shakeoutClassLabel ? String(payload.shakeoutClassLabel).slice(0, 80) : null,
     shakeoutClassReason: payload.shakeoutClassReason ? String(payload.shakeoutClassReason).slice(0, 240) : null,
     shakeoutClassColor: payload.shakeoutClassColor ? String(payload.shakeoutClassColor).slice(0, 20) : null,
+    shakeoutRealGateLabel: payload.shakeoutRealGateLabel ? String(payload.shakeoutRealGateLabel).slice(0, 24) : null,
+    shakeoutRealGateReason: payload.shakeoutRealGateReason ? String(payload.shakeoutRealGateReason).slice(0, 300) : null,
+    shakeoutRealGateAllow: Boolean(payload.shakeoutRealGateAllow),
+    shakeoutProjectedRoe: Number.isFinite(Number(payload.shakeoutProjectedRoe)) ? Number(payload.shakeoutProjectedRoe) : null,
     subtype: payload.subtype ? String(payload.subtype).toUpperCase().slice(0, 40) : null,
     bottomRebound: Boolean(payload.bottomRebound),
-    noStopLoss: Boolean(payload.noStopLoss),
+    noStopLoss: false,
     bottomReboundDcaAllowed: payload.bottomReboundDcaAllowed !== false,
     bottomReboundScoutOnly: Boolean(payload.bottomReboundScoutOnly),
     dcaBlocked: Boolean(payload.dcaBlocked),
@@ -10761,7 +12776,10 @@ async function createShakeoutPaperTrade(payload) {
     openedAt: status === 'OPEN' ? new Date().toISOString() : null,
     closedAt: null,
     source: String(payload.source ?? 'manual').slice(0, 80),
-    note: String(payload.note ?? '').slice(0, 500),
+    note: [
+      String(payload.note ?? ''),
+      defaultSl ? `defaultSL=${Math.abs(Number(process.env.SHAKEOUT_RECLAIM_PAPER_DEFAULT_SL_ROE ?? 20))}%ROE@${defaultSl}` : '',
+    ].filter(Boolean).join(' | ').slice(0, 500),
     trapRisk: payload.trapRisk ? String(payload.trapRisk).toUpperCase().slice(0, 12) : null,
     warning: Array.isArray(payload.trapReasons) ? payload.trapReasons.join('; ').slice(0, 300) : null,
     entryReference: Number.isFinite(Number(payload.entryReference)) ? Number(payload.entryReference) : null,
@@ -10774,6 +12792,16 @@ async function createShakeoutPaperTrade(payload) {
     btcRelation: payload.btcRelation && typeof payload.btcRelation === 'object'
       ? payload.btcRelation
       : null,
+    btcTurnRisk: payload.btcTurnRisk && typeof payload.btcTurnRisk === 'object'
+      ? payload.btcTurnRisk
+      : null,
+    btcTurnRiskLabel: payload.btcTurnRiskLabel ? String(payload.btcTurnRiskLabel).slice(0, 60) : null,
+    btcTurnRiskAgainstSide: Boolean(payload.btcTurnRiskAgainstSide),
+    btcTurnRiskReason: payload.btcTurnRiskReason ? String(payload.btcTurnRiskReason).slice(0, 320) : null,
+    btcTurnRiskAt: payload.btcTurnRiskAt ? String(payload.btcTurnRiskAt).slice(0, 32) : null,
+    btcTurnRiskPrice: Number.isFinite(Number(payload.btcTurnRiskPrice)) ? Number(payload.btcTurnRiskPrice) : null,
+    btcTurnRiskBottomBounce: Boolean(payload.btcTurnRiskBottomBounce),
+    btcTurnRiskTopReject: Boolean(payload.btcTurnRiskTopReject),
     btcIndependentShort: Boolean(payload.btcIndependentShort),
     btcStrongShortEma99: Boolean(payload.btcStrongShortEma99),
     btcDynamicEntry: Boolean(payload.btcDynamicEntry),
@@ -10822,7 +12850,19 @@ async function closeShakeoutPaperTrade(payload) {
     + (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
   const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
   const outcome = payload.outcome ?? 'MANUAL';
-  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+  store.trades[idx] = {
+    ...trade,
+    status: 'CLOSED',
+    exitPrice,
+    pnl,
+    roe,
+    outcome,
+    closeReason: payload.closeReason ? String(payload.closeReason).slice(0, 500) : trade.closeReason,
+    note: payload.closeReason
+      ? [String(trade.note ?? ''), `closeReason=${payload.closeReason}`].filter(Boolean).join(' | ').slice(0, 500)
+      : trade.note,
+    closedAt: new Date().toISOString(),
+  };
   await writeShakeoutPaperStore(store);
   syncShakeoutPaperTicker().catch(() => {});
   scheduleShakeoutPaperBroadcast(50);
@@ -11226,15 +13266,6 @@ async function activateShakeoutPaperRecovery(trade, setup, markPrice) {
 }
 
 async function checkShakeoutPaperTpSl(trade, markPrice) {
-  if (isShakeoutBottomReboundTrade(trade)) {
-    if (!trade.tp) return;
-    const tpHit = trade.side === 'LONG' ? markPrice >= trade.tp : markPrice <= trade.tp;
-    if (!tpHit) return;
-    const outcome = trade.lossTpMovedToEntry ? 'LOSS_RECOVERY_BE' : 'TP';
-    await closeShakeoutPaperTrade({ id: trade.id, exitPrice: trade.tp, outcome });
-    console.log(`[ShakeoutPaper] ${outcome} BOTTOM_REBOUND ${trade.side} ${trade.symbol} exit=${trade.tp}`);
-    return;
-  }
   if (!trade.tp && !trade.sl) return;
   if (shakeoutPaperTpSlLocks.has(trade.id)) return;
   const isLong = trade.side === 'LONG';
@@ -11275,6 +13306,8 @@ async function checkShakeoutPaperTpSl(trade, markPrice) {
       ? (tpHit ? 'RECOVERY_BE' : 'RECOVERY_SL30')
       : trade.partialTpTaken
         ? (tpHit ? 'RUNNER_TP' : partialSlAtEntry ? 'PARTIAL_BE' : 'PARTIAL_TRAIL')
+        : slHit && Number(trade.slTrailLockRoe ?? 0) > 0
+          ? 'SL_TRAIL_LOCK'
         : (tpHit ? 'TP' : 'SL');
     const exitPrice = tpHit ? trade.tp : trade.sl;
     await closeShakeoutPaperTrade({ id: trade.id, exitPrice, outcome });
@@ -11362,17 +13395,10 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
   const peakRoe = Math.max(prevPeak, roe);
   shakeoutPaperPeakRoe.set(trade.id, peakRoe);
 
-  const isShort = trade.side === 'SHORT';
-  const shortBreakevenRoe = Math.max(
-    0,
-    Number(process.env.SHAKEOUT_RECLAIM_PAPER_SHORT_BREAKEVEN_ROE ?? 15),
-  );
-  const trailStartRoe = Number(process.env.SHAKEOUT_RECLAIM_PAPER_TRAIL_START_ROE ?? 10);
+  const trailStartRoe = Number(process.env.SHAKEOUT_RECLAIM_PAPER_TRAIL_START_ROE ?? 15);
   const targetLockRoe = trade.partialTpTaken
     ? (peakRoe >= trailStartRoe ? getTargetLockRoe(peakRoe) : 0)
-    : isShort
-      ? (peakRoe >= shortBreakevenRoe ? 0 : null)
-      : (peakRoe >= trailStartRoe ? getTargetLockRoe(peakRoe) : null);
+    : (peakRoe >= trailStartRoe ? getTargetLockRoe(peakRoe) : null);
 
   const leverage = Math.max(1, Number(trade.leverage) || 1);
   const isLong = trade.side === 'LONG';
@@ -11405,9 +13431,7 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
     if (targetLockRoe != null && improves && Number.isFinite(newSl) && newSl > 0) {
       notes.push(trade.partialTpTaken
         ? `shakeoutRunnerSlTrail=${targetLockRoe}%@${newSl}`
-        : isShort
-          ? `shakeoutPaperShortBE=${shortBreakevenRoe}%@${newSl}`
-          : `shakeoutPaperSlTrail=${targetLockRoe}%@${newSl}`);
+        : `shakeoutPaperSlTrail=${targetLockRoe}%@${newSl}`);
     }
     if (shouldPersistPeak && (targetLockRoe == null || !improves)) {
       notes.push(`shakeoutPaperPeak=${peakRoe.toFixed(1)}%`);
@@ -11435,6 +13459,43 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
     }
   } finally {
     shakeoutPaperSlTrailLocks.delete(trade.id);
+  }
+}
+
+const shakeoutPaperDefaultSlLocks = new Set();
+async function enforceShakeoutPaperDefaultSl(trade) {
+  if (process.env.SHAKEOUT_RECLAIM_PAPER_FORCE_DEFAULT_SL === 'false') return trade;
+  if (!['OPEN', 'PENDING'].includes(String(trade.status))) return trade;
+  if (trade.slTrailLockRoe != null) return trade;
+  if (shakeoutPaperDefaultSlLocks.has(trade.id)) return trade;
+  const sl = getShakeoutDefaultSlPrice(trade.entryPrice, trade.leverage, trade.side);
+  if (!Number.isFinite(sl) || sl <= 0) return trade;
+  const curSl = Number(trade.sl);
+  const needsUpdate = !Number.isFinite(curSl)
+    || Math.abs(curSl - sl) / sl > 1e-10
+    || trade.noStopLoss !== false;
+  if (!needsUpdate) return trade;
+
+  shakeoutPaperDefaultSlLocks.add(trade.id);
+  try {
+    const store = await readShakeoutPaperStore();
+    const idx = store.trades.findIndex((t) => t.id === trade.id && ['OPEN', 'PENDING'].includes(t.status));
+    if (idx < 0) return trade;
+    const row = store.trades[idx];
+    store.trades[idx] = {
+      ...row,
+      sl,
+      noStopLoss: false,
+      dynamicRiskUpdatedAt: new Date().toISOString(),
+      note: [String(row.note ?? ''), `forceDefaultSL=${Math.abs(Number(process.env.SHAKEOUT_RECLAIM_PAPER_DEFAULT_SL_ROE ?? 20))}%ROE@${sl}`]
+        .filter(Boolean)
+        .join(' | ')
+        .slice(0, 500),
+    };
+    await writeShakeoutPaperStore(store);
+    return store.trades[idx];
+  } finally {
+    shakeoutPaperDefaultSlLocks.delete(trade.id);
   }
 }
 
@@ -11499,11 +13560,13 @@ async function processShakeoutPaperFills(symbol, markPrice) {
   for (const t of pending) await fillShakeoutPendingTrade(t, markPrice);
   const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
   for (const t of open) {
+    if (await checkShakeoutBtcDynamicFailFast(t, markPrice)) continue;
     const dcaTrade = await checkShakeoutBottomReboundDca(t, markPrice);
     const recoveryTrade = await checkShakeoutPaperLossRecovery(dcaTrade, markPrice);
     const current = await checkShakeoutPaperPartialTp(recoveryTrade, markPrice);
     await checkShakeoutPaperSlTrail(current, markPrice);
-    await checkShakeoutPaperTpSl(current, markPrice);
+    const defaultSlTrade = await enforceShakeoutPaperDefaultSl(current);
+    await checkShakeoutPaperTpSl(defaultSlTrade, markPrice);
   }
   scheduleShakeoutPaperBroadcast();
 }
@@ -11559,6 +13622,58 @@ function calcShakeoutPaperRoeAt(trade, markPrice) {
   const sideMult = trade.side === 'LONG' ? 1 : -1;
   const pnl = Number(trade.realizedPnl ?? 0) + (mark - entry) * quantity * sideMult;
   return pnl / margin * 100;
+}
+
+async function checkShakeoutBtcDynamicFailFast(trade, markPrice) {
+  if (process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_FAIL_FAST === 'false') return false;
+  if (trade?.status !== 'OPEN') return false;
+  const note = String(trade.note ?? '');
+  const isDynamicLocked = Boolean(trade.btcDynamicLocked)
+    || /btcDynamicFilled=/i.test(note)
+    || (trade.btcDynamicEntry && trade.openedAt);
+  if (!isDynamicLocked) return false;
+
+  const mark = Number(markPrice);
+  const roe = calcShakeoutPaperRoeAt(trade, mark);
+  if (!Number.isFinite(roe)) return false;
+
+  const side = String(trade.side ?? '').toUpperCase();
+  const roeCut = side === 'SHORT'
+    ? -Math.abs(Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_FAIL_FAST_SHORT_ROE ?? 20))
+    : -Math.abs(Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_FAIL_FAST_LONG_ROE ?? 30));
+  const timeMs = Math.max(
+    60_000,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_FAIL_FAST_TIME_MS ?? 30 * 60_000),
+  );
+  const minPeakRoe = Math.max(
+    0,
+    Number(process.env.SHAKEOUT_RECLAIM_PAPER_BTC_DYNAMIC_FAIL_FAST_MIN_PEAK_ROE ?? 5),
+  );
+  const openedAt = Date.parse(trade.openedAt ?? trade.createdAt ?? '');
+  const ageMs = Number.isFinite(openedAt) ? Date.now() - openedAt : 0;
+  const prevPeak = shakeoutPaperPeakRoe.get(trade.id) ?? Number(trade.peakRoe ?? 0) ?? 0;
+  const peakRoe = Math.max(prevPeak, roe);
+  shakeoutPaperPeakRoe.set(trade.id, peakRoe);
+
+  let outcome = null;
+  let closeReason = null;
+  if (roe <= roeCut) {
+    outcome = 'BTC_DYNAMIC_FAIL_FAST_ROE';
+    closeReason = `BTC dynamic locked fail-fast: roe=${roe.toFixed(1)}% <= ${roeCut}% side=${side}`;
+  } else if (ageMs >= timeMs && peakRoe < minPeakRoe) {
+    outcome = 'BTC_DYNAMIC_FAIL_FAST_TIME';
+    closeReason = `BTC dynamic locked fail-fast: age=${Math.round(ageMs / 60_000)}m >= ${Math.round(timeMs / 60_000)}m and peakRoe=${peakRoe.toFixed(1)}% < ${minPeakRoe}%`;
+  }
+  if (!outcome) return false;
+
+  await closeShakeoutPaperTrade({
+    id: trade.id,
+    exitPrice: mark,
+    outcome,
+    closeReason,
+  });
+  console.log(`[ShakeoutPaper] ${outcome} ${side} ${trade.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% mark=${mark}`);
+  return true;
 }
 
 function shakeoutNoteNumber(note, regex) {
@@ -11618,6 +13733,120 @@ function getShakeoutWeakRejectShortSqueezeRisk(input = {}) {
     reason: block
       ? `weakRejectShortSqueezeRisk score=${score} bounce=${Number(bounce).toFixed(1)}>=${minBounce} reject=${Number(reject).toFixed(1)}<${maxReject} trap=${trapRisk}`
       : '',
+  };
+}
+
+function getShakeoutBtcDirectionalBias(health = btcHealthCache.data) {
+  if (!health || health.error) return { bias: 'FLAT', reason: 'btc health unavailable' };
+  const explicit = String(health.btcTrendDir ?? '').toLowerCase();
+  if (explicit === 'up') {
+    return { bias: 'LONG', reason: `btcTrendDir=up score=${health.btcTrendScore ?? '-'}` };
+  }
+  if (explicit === 'down') {
+    return { bias: 'SHORT', reason: `btcTrendDir=down score=${health.btcTrendScore ?? '-'}` };
+  }
+
+  const pct6h = Number(health.pct6h);
+  const candle1h = Number(health.btcCandle1hPct);
+  const rsi1h = Number(health.rsi1h);
+  const ema1h = String(health.emaTrend1h ?? '').toLowerCase();
+  const longScore = [
+    Number.isFinite(pct6h) && pct6h >= 0.25,
+    Number.isFinite(candle1h) && candle1h >= 0.2,
+    ema1h === 'above',
+    Number.isFinite(rsi1h) && rsi1h >= 50,
+  ].filter(Boolean).length;
+  const shortScore = [
+    Number.isFinite(pct6h) && pct6h <= -0.25,
+    Number.isFinite(candle1h) && candle1h <= -0.2,
+    ema1h === 'below',
+    Number.isFinite(rsi1h) && rsi1h <= 48,
+  ].filter(Boolean).length;
+  const reason = `pct6h=${Number.isFinite(pct6h) ? pct6h : '-'} candle1h=${Number.isFinite(candle1h) ? candle1h : '-'} ema1h=${ema1h || '-'} rsi1h=${Number.isFinite(rsi1h) ? rsi1h : '-'}`;
+  if (longScore >= 2 && longScore > shortScore) return { bias: 'LONG', reason };
+  if (shortScore >= 2 && shortScore > longScore) return { bias: 'SHORT', reason };
+  return { bias: 'FLAT', reason };
+}
+
+function getShakeoutHybridStructuralBlock(sig = {}, side, trapRisk, btcBias = getShakeoutBtcDirectionalBias()) {
+  if (process.env.SHAKEOUT_RECLAIM_PAPER_HYBRID_BTC_GATE === 'false') {
+    return { block: false, reasons: [], btcBias };
+  }
+  const note = String(sig.note ?? sig.reason ?? '');
+  const className = String(sig.shakeoutClass ?? '').toUpperCase();
+  const classReason = String(sig.shakeoutClassReason ?? '');
+  const normalizedSide = String(side ?? sig.action ?? '').toUpperCase();
+  const risk = String(trapRisk ?? sig.riskFlags?.trapRisk ?? '').toUpperCase();
+  const reject = shakeoutNoteNumber(note, /reject=([0-9.]+)%/i);
+  const bounce = shakeoutNoteNumber(note, /bounce=([0-9.]+)%/i);
+  const reasons = [];
+
+  if (normalizedSide === 'LONG'
+      && className === 'WEAK_RECLAIM'
+      && classReason.includes('BTC weak vs long')
+      && btcBias.bias === 'SHORT') {
+    reasons.push(`BTC_BIAS_SHORT blocks LONG_WEAK_BTC_WEAK (${btcBias.reason})`);
+  }
+  if (normalizedSide === 'LONG' && className === 'FALSE_RECLAIM' && risk === 'HIGH') {
+    reasons.push('LONG_FALSE_RECLAIM_TRAP_HIGH');
+  }
+  if (normalizedSide === 'SHORT'
+      && className === 'FALSE_RECLAIM'
+      && Number.isFinite(reject)
+      && Number.isFinite(bounce)
+      && reject < Number(process.env.SHAKEOUT_RECLAIM_PAPER_SHORT_FALSE_MAX_REJECT ?? 10)
+      && bounce >= Number(process.env.SHAKEOUT_RECLAIM_PAPER_SHORT_FALSE_MIN_BOUNCE ?? 20)) {
+    reasons.push(`SHORT_FALSE_RECLAIM_WEAK_REJECT_BIG_BOUNCE reject=${reject.toFixed(1)} bounce=${bounce.toFixed(1)}`);
+  }
+  return { block: reasons.length > 0, reasons, btcBias };
+}
+
+function getShakeoutProjectedRoe(input = {}) {
+  const side = String(input.side ?? input.action ?? '').toUpperCase();
+  const entry = Number(input.entryPrice ?? input.entry ?? input.markPrice);
+  const tp = Number(input.tp);
+  const sl = Number(input.sl);
+  const leverage = Number(input.leverage) || calcAutoLeverage(entry, sl);
+  if (!['LONG', 'SHORT'].includes(side) || !Number.isFinite(entry) || entry <= 0
+      || !Number.isFinite(tp) || tp <= 0 || !Number.isFinite(leverage) || leverage <= 0) return null;
+  return Math.abs(tp - entry) / entry * leverage * 100;
+}
+
+function getShakeoutRealGate(input = {}, opts = {}) {
+  const side = String(input.side ?? input.action ?? '').toUpperCase();
+  const score = Number(input.score ?? 0);
+  const cls = String(input.shakeoutClass ?? '').toUpperCase();
+  const reason = String(input.shakeoutClassReason ?? '');
+  const trap = String(input.trapRisk ?? input.riskFlags?.trapRisk ?? '').toUpperCase() || 'LOW';
+  const projectedRoe = Number(opts.projectedRoe ?? input.projectedRoe ?? getShakeoutProjectedRoe(input));
+  const btcBias = opts.btcBias ?? getShakeoutBtcDirectionalBias();
+  const reasons = [];
+  const warns = [];
+
+  if (trap === 'HIGH') reasons.push('trap HIGH');
+  if (side === 'LONG' && btcBias.bias === 'SHORT') reasons.push(`BTC bias SHORT (${btcBias.reason})`);
+  if (side === 'SHORT' && btcBias.bias === 'LONG') reasons.push(`BTC bias LONG (${btcBias.reason})`);
+  if (side === 'LONG' && cls === 'WEAK_RECLAIM' && reason.includes('BTC weak vs long')) reasons.push('WEAK_RECLAIM + BTC weak vs long');
+  if (side === 'SHORT' && cls === 'WEAK_REJECT' && reason.includes('BTC strong vs short')) reasons.push('WEAK_REJECT + BTC strong vs short');
+  if (cls === 'FALSE_RECLAIM' || cls === 'FALSE_REJECT') warns.push(cls.replace('_', ' '));
+  if (trap === 'MEDIUM') warns.push('trap MEDIUM');
+  if (score < Number(process.env.SHAKEOUT_REAL_OK_MIN_SCORE ?? 75)) warns.push(`score ${score}<75`);
+  if (Number.isFinite(projectedRoe) && projectedRoe < Number(process.env.SHAKEOUT_REAL_OK_MIN_TP_ROE ?? 10)) {
+    warns.push(`projectedRoe ${projectedRoe.toFixed(1)}%<10%`);
+  }
+
+  if (reasons.length) {
+    return { label: 'REAL_BLOCK', allowReal: false, color: 'red', reasons, projectedRoe: Number.isFinite(projectedRoe) ? +projectedRoe.toFixed(1) : null };
+  }
+  if (warns.length) {
+    return { label: 'REAL_TEST', allowReal: true, color: 'amber', reasons: warns, projectedRoe: Number.isFinite(projectedRoe) ? +projectedRoe.toFixed(1) : null };
+  }
+  return {
+    label: 'REAL_OK',
+    allowReal: true,
+    color: 'green',
+    reasons: [`score=${score}`, `trap=${trap}`, `btc=${btcBias.bias}`, Number.isFinite(projectedRoe) ? `tpRoe=${projectedRoe.toFixed(1)}%` : 'tpRoe=?'],
+    projectedRoe: Number.isFinite(projectedRoe) ? +projectedRoe.toFixed(1) : null,
   };
 }
 
@@ -11914,6 +14143,20 @@ function startShakeoutPaperTicker() {
   }), 30_000);
 }
 
+// Phân loại chất lượng tín hiệu shakeout theo backtest 1553 lệnh:
+//  TỐT   = RECLAIM/REBOUND phía LONG + RECLAIM_CONFIRMED SHORT (net +5k%)     -> giữ margin thường ($10/$20/rebound)
+//  XẤU   = FALSE_RECLAIM SHORT (-128%), CLEAN_REJECT (-37%), CLEAN_RECLAIM (-89%) -> $1 + ép SL
+//  BIÊN  = WEAK_REJECT SHORT (WR thấp nhưng net + nhờ R:R)                     -> giữ nguyên (đã có xử lý riêng)
+function classifyShakeoutPaperQuality(cls, side) {
+  const c = String(cls ?? '').toUpperCase();
+  const s = String(side ?? '').toUpperCase();
+  if (c === 'CLEAN_REJECT') return 'BAD';
+  if (c === 'CLEAN_RECLAIM') return 'BAD';
+  if (c === 'FALSE_RECLAIM' && s === 'SHORT') return 'BAD';
+  if (c === 'WEAK_REJECT' && s === 'SHORT') return 'MARGINAL';
+  return 'GOOD';
+}
+
 async function createShakeoutPaperTrades(signals = []) {
   if (process.env.SHAKEOUT_RECLAIM_PAPER_ENABLED === 'false') return;
   const minScore = Number(process.env.SHAKEOUT_RECLAIM_PAPER_MIN_SCORE ?? 55);
@@ -11944,6 +14187,7 @@ async function createShakeoutPaperTrades(signals = []) {
     }
     const side = String(sig.action ?? '').toUpperCase();
     if (!['LONG', 'SHORT'].includes(side)) continue;
+    const btcTurnRisk = getBtcLocalTurnRiskLogForShakeout(side);
     if (activeSide.get(sig.symbol)?.has(side)) {
       console.log(`[ShakeoutPaper] skip ${sig.symbol} ${side} - dang co lenh cung chieu active (OPEN/PENDING)`);
       continue;
@@ -11992,6 +14236,15 @@ async function createShakeoutPaperTrades(signals = []) {
     const pendingEntry = Number(sig.entry ?? sig.markPrice);
     const btcStrongShortEma99 = side === 'SHORT' && Boolean(sig.btcStrongShortEma99);
     const trapRisk = String(sig.riskFlags?.trapRisk ?? 'LOW').toUpperCase();
+    const hybridGate = getShakeoutHybridStructuralBlock(sig, side, trapRisk);
+    if (hybridGate.block) {
+      console.log(
+        `[ShakeoutPaper] skip ${sig.symbol} ${side} HYBRID_BTC_GATE`
+        + ` btc=${hybridGate.btcBias.bias} (${hybridGate.btcBias.reason})`
+        + ` - ${hybridGate.reasons.join('; ')}`,
+      );
+      continue;
+    }
     // FALSE_RECLAIM trap HIGH: chỉ giữ reclaim weak > 6% (vùng lời, lossRate 14%); skip còn lại.
     // Backtest: reclaim 3-6% lossRate 59% net -113%; <3% & pump>55% & vol>100x đều thua cao.
     const isFalseReclaimHigh = String(sig.shakeoutClass ?? '') === 'FALSE_RECLAIM' && trapRisk === 'HIGH';
@@ -12008,6 +14261,21 @@ async function createShakeoutPaperTrades(signals = []) {
     // reclaim weak/late...) KHÔNG tính, về $10 + cơ chế thường.
     const isWeakClean = ['WEAK_RECLAIM', 'WEAK_REJECT'].includes(String(sig.shakeoutClass ?? ''))
       && String(sig.shakeoutClassReason ?? '').includes('lacks strong confirmation');
+    const isCleanConfirmLong = isWeakClean
+      && side === 'LONG'
+      && String(sig.shakeoutClass ?? '') === 'WEAK_RECLAIM';
+    const isCleanConfirmShort = isWeakClean
+      && side === 'SHORT'
+      && String(sig.shakeoutClass ?? '') === 'WEAK_REJECT';
+    const isWeakReclaimBtcLateBad = side === 'LONG'
+      && String(sig.shakeoutClass ?? '') === 'WEAK_RECLAIM'
+      && String(sig.shakeoutClassReason ?? '').includes('BTC weak vs long')
+      && String(sig.shakeoutClassReason ?? '').includes('reclaim weak/late')
+      && trapRisk === 'MEDIUM'
+      && Number(sig.score ?? 0) < Number(process.env.SHAKEOUT_RECLAIM_WEAK_BTC_LATE_MAX_SCORE ?? 60);
+    const weakReclaimBtcLateNote = isWeakReclaimBtcLateBad
+      ? `WEAK_BTC_LATE_NO_DYNAMIC score=${sig.score}<${Number(process.env.SHAKEOUT_RECLAIM_WEAK_BTC_LATE_MAX_SCORE ?? 60)}; BTC weak vs long + reclaim weak/late + trap MEDIUM; PENDING/test only; SL required`
+      : '';
     const falseReclaimNoDynamicEnabled = process.env.SHAKEOUT_RECLAIM_PAPER_FALSE_RECLAIM_WEAK_HOT_NO_DYNAMIC !== 'false';
     const frWeakHotMinPump = Number(process.env.SHAKEOUT_RECLAIM_PAPER_FALSE_RECLAIM_WEAK_HOT_MIN_PUMP ?? 30);
     const frWeakHotMaxReclaim = Number(process.env.SHAKEOUT_RECLAIM_PAPER_FALSE_RECLAIM_WEAK_HOT_MAX_RECLAIM ?? 2);
@@ -12035,10 +14303,15 @@ async function createShakeoutPaperTrades(signals = []) {
       trapRisk,
       note: sig.note ?? sig.reason ?? '',
     });
+    const shakeoutQuality = classifyShakeoutPaperQuality(sig.shakeoutClass, side);
+    const isBadClass = shakeoutQuality === 'BAD'
+      && process.env.SHAKEOUT_RECLAIM_PAPER_BAD_CLASS_DOWNSIZE !== 'false';
     const useBtcDynamicEntry = ['MEDIUM', 'HIGH'].includes(trapRisk)
       && !bottomFlushShortRisk.block
       && !isFalseReclaimHigh // FR trap HIGH (giữ lại) dùng SL thường, KHÔNG noSL/dynamic
       && !isWeakClean        // WEAK sạch ($20) cũng ép SL thường, không noSL
+      && !isBadClass         // loại XẤU (FALSE_RECLAIM short, CLEAN_*): luôn ép SL, không noSL/dynamic
+      && !isWeakReclaimBtcLateBad // WEAK BTC yếu + reclaim late score thấp như ESPORTS: không noSL/dynamic
       && !falseReclaimWeakHotNoDynamic; // FR nóng + reclaim yếu như ACT: không noSL/dynamic
     const btcAnchorPrice = Number(btcHealthCache.data?.price);
     const btcDynamicMaxPct = trapRisk === 'HIGH'
@@ -12087,11 +14360,21 @@ async function createShakeoutPaperTrades(signals = []) {
       );
       continue;
     }
+    const cleanLongTestMarginUsdt = Number(process.env.SHAKEOUT_RECLAIM_PAPER_CLEAN_LONG_TEST_MARGIN_USDT ?? 1);
+    const cleanShortPendingMarginUsdt = Number(process.env.SHAKEOUT_RECLAIM_PAPER_CLEAN_SHORT_PENDING_MARGIN_USDT ?? 10);
     const marginUsdt = isBottomRebound
       ? bottomReboundPolicy.marginUsdt
+      : isBadClass
+        ? Number(process.env.SHAKEOUT_RECLAIM_PAPER_BAD_MARGIN_USDT ?? 1)
+      : isCleanConfirmLong && Number(sig.score ?? 0) < 60
+        ? cleanLongTestMarginUsdt
+      : isCleanConfirmShort
+        ? cleanShortPendingMarginUsdt
       : isWeakClean
         ? Number(process.env.SHAKEOUT_RECLAIM_PAPER_WEAK_MARGIN_USDT ?? 20)
-        : Number(process.env.SHAKEOUT_RECLAIM_PAPER_MARGIN_USDT ?? 10);
+        : isWeakReclaimBtcLateBad
+          ? Number(process.env.SHAKEOUT_RECLAIM_PAPER_WEAK_BTC_LATE_TEST_MARGIN_USDT ?? 1)
+          : Number(process.env.SHAKEOUT_RECLAIM_PAPER_MARGIN_USDT ?? 10);
     const sc = sig.score;
     const sideL = side.toLowerCase();
     const marketThreshold = side === 'SHORT' ? shortMarketMinScore : marketMinScore;
@@ -12132,10 +14415,46 @@ async function createShakeoutPaperTrades(signals = []) {
     const marketRewardNote = marketRewardTooLow
       ? `marketTpRoe=${marketRewardRoe.toFixed(1)}% < ${minMarketRewardRoe.toFixed(1)}%; MARKET skipped, PENDING only`
       : '';
+    const realGate = getShakeoutRealGate({
+      ...sig,
+      side,
+      trapRisk,
+      entry: marketEntry,
+      tp: signalTp,
+      sl: signalSl,
+      leverage: marketLeverage,
+    }, {
+      btcBias: hybridGate.btcBias,
+      projectedRoe: marketRewardRoe,
+    });
+    const realGateNote = `SHAKEOUT_${realGate.label}: ${realGate.reasons.join('; ')}${realGate.projectedRoe != null ? `; tpRoe=${realGate.projectedRoe}%` : ''}`;
     const allowBtcDynamicScout = marketScoreOk && !marketRewardTooLow && !suppressMarketByRiskGate;
 
+    const cleanConfirmNote = isCleanConfirmLong
+      ? Number(sig.score ?? 0) >= 70
+        ? 'CLEAN_CONFIRM_LONG_RULE score>=70: MARKET OK'
+        : Number(sig.score ?? 0) >= 60
+          ? 'CLEAN_CONFIRM_LONG_RULE score 60-69: PENDING only'
+          : `CLEAN_CONFIRM_LONG_RULE score<60: MARKET test small $${cleanLongTestMarginUsdt}`
+      : isCleanConfirmShort
+        ? 'CLEAN_CONFIRM_SHORT_RULE: PENDING preferred; MARKET disabled until more data'
+        : '';
     const variants = isBottomRebound
       ? [{ variant: 'MARKET', status: 'OPEN', entryPrice: marketEntry, tag: 'mkt' }]
+      : isCleanConfirmLong
+        ? Number(sig.score ?? 0) >= 70
+          ? [{ variant: 'MARKET', status: 'OPEN', entryPrice: marketEntry, tag: 'mkt' }]
+          : Number(sig.score ?? 0) >= 60
+            ? [{ variant: 'PENDING', status: 'PENDING', entryPrice: pendingEntry, tag: 'pend' }]
+            : [{
+              variant: 'MARKET',
+              status: 'OPEN',
+              entryPrice: marketEntry,
+              tag: 'mkt-test',
+              marginUsdt: cleanLongTestMarginUsdt,
+            }]
+      : isCleanConfirmShort
+        ? [{ variant: 'PENDING', status: 'PENDING', entryPrice: pendingEntry, tag: 'pend' }]
       : useBtcDynamicEntry
         ? (!allowBtcDynamicScout
           ? [
@@ -12242,18 +14561,23 @@ async function createShakeoutPaperTrades(signals = []) {
         marginUsdt: Number(v.marginUsdt ?? marginUsdt),
         leverage: lev,
         entryPrice: v.entryPrice,
-        sl: isBottomRebound && bottomReboundPolicy.noStopLoss ? null : cappedVariantSl,
+        sl: cappedVariantSl,
         tp: variantTp,
         score: sc,
         stage: sig.stage,
         signalType: sig.type,
+        shakeoutQuality,
         shakeoutClass: sig.shakeoutClass,
         shakeoutClassLabel: sig.shakeoutClassLabel,
         shakeoutClassReason: sig.shakeoutClassReason,
         shakeoutClassColor: sig.shakeoutClassColor,
+        shakeoutRealGateLabel: realGate.label,
+        shakeoutRealGateReason: realGate.reasons.join('; '),
+        shakeoutRealGateAllow: realGate.allowReal,
+        shakeoutProjectedRoe: realGate.projectedRoe,
         subtype: sig.subtype,
         bottomRebound: isBottomRebound,
-        noStopLoss: isBottomRebound ? bottomReboundPolicy.noStopLoss : false,
+        noStopLoss: false,
         bottomReboundDcaAllowed: isBottomRebound ? bottomReboundPolicy.dcaAllowed : true,
         bottomReboundScoutOnly: Boolean(isBottomRebound && bottomReboundPolicy.scoutOnly),
         dcaBlocked: Boolean(isBottomRebound && !bottomReboundPolicy.dcaAllowed),
@@ -12265,8 +14589,12 @@ async function createShakeoutPaperTrades(signals = []) {
 	          marketRewardNote,
 	          riskGateNote,
 	          falseReclaimWeakHotNote,
+	          weakReclaimBtcLateNote,
+	          cleanConfirmNote,
 	          marketScoreNote,
-	          geometryOk ? '' : `variantGeometryAdjusted=${v.variant} sl=${variantSl} tp=${variantTp}`,
+          realGateNote,
+          btcTurnRisk?.label ? `BTC_TURN_LOG=${btcTurnRisk.label}${btcTurnRisk.againstSide ? ' AGAINST_SIDE' : ''}` : '',
+          geometryOk ? '' : `variantGeometryAdjusted=${v.variant} sl=${variantSl} tp=${variantTp}`,
           pendingSlNote,
           maxSlNote,
           btcStrongShortEma99 ? 'BTC STRONG: SHORT waits exact EMA99; MARKET disabled; no 5% clamp' : '',
@@ -12295,6 +14623,14 @@ async function createShakeoutPaperTrades(signals = []) {
         btcRegime: sig.btcRegime,
         btcEntryClass: sig.btcEntryClass,
         btcRelation: sig.btcRelation,
+        btcTurnRisk,
+        btcTurnRiskLabel: btcTurnRisk?.label,
+        btcTurnRiskAgainstSide: Boolean(btcTurnRisk?.againstSide),
+        btcTurnRiskReason: btcTurnRisk?.reason,
+        btcTurnRiskAt: btcTurnRisk?.closeTime ? new Date(Number(btcTurnRisk.closeTime)).toISOString() : null,
+        btcTurnRiskPrice: btcTurnRisk?.price,
+        btcTurnRiskBottomBounce: Boolean(btcTurnRisk?.bottomBounce),
+        btcTurnRiskTopReject: Boolean(btcTurnRisk?.topReject),
         btcIndependentShort: sig.btcIndependentShort,
         btcStrongShortEma99,
         btcDynamicEntry: Boolean(v.btcDynamicEntry),
@@ -12369,6 +14705,14 @@ function calcTopReversalPaperRoeAt(trade, markPrice) {
   return pnl / margin * 100;
 }
 
+function getTopReversalDefaultSlPrice(entryPrice, leverage) {
+  const entry = Number(entryPrice);
+  const lev = Number(leverage);
+  const slRoe = Math.abs(Number(process.env.TOP_REVERSAL_PAPER_DEFAULT_SL_ROE ?? 20));
+  if (![entry, lev, slRoe].every(Number.isFinite) || entry <= 0 || lev <= 0 || slRoe <= 0) return null;
+  return entry * (1 + slRoe / 100 / lev);
+}
+
 function isTopReversalEarlyScout(trade) {
   return String(trade?.source ?? '').startsWith('top-reversal-early-')
     || String(trade?.qualityTier ?? '').toUpperCase() === 'EARLY_CONFIRMED'
@@ -12402,6 +14746,50 @@ function getTopReversalEarlyPendingConfig() {
       Number(process.env.TOP_REVERSAL_PAPER_EARLY_PENDING_BUFFER_PCT ?? 2),
     ),
     marginUsdt: Number(process.env.TOP_REVERSAL_PAPER_EARLY_PENDING_MARGIN_USDT ?? process.env.TOP_REVERSAL_PAPER_SCOUT_MARGIN_USDT ?? 1),
+  };
+}
+
+function getTopReversalBtcLog(signal = {}, health = btcHealthCache.data) {
+  const relation = signal.btcRelation ?? getTopReversalBtcRelation(signal.symbol);
+  const regime = emaSqueezeBtcRegime(health);
+  const bias = health?.bias ?? 'unknown';
+  const trendDir = health?.btcTrendDir ?? '-';
+  const trendScore = health?.btcTrendScore ?? '-';
+  const pct6h = Number(health?.pct6h);
+  const rsi1h = Number(health?.rsi1h);
+  const rel = relation?.relation ?? 'noRel';
+  const corr = relation?.corr ?? '-';
+  const btcMove = relation?.btcMovePct ?? '-';
+  const coinMove = relation?.coinMovePct ?? '-';
+  return {
+    note: [
+      `btcBias=${bias}`,
+      `btcRegime=${regime}`,
+      `btcTrend=${trendDir}:${trendScore}`,
+      `btcPct6h=${Number.isFinite(pct6h) ? pct6h.toFixed(2) : '-'}`,
+      `btcRsi1h=${Number.isFinite(rsi1h) ? rsi1h.toFixed(1) : '-'}`,
+      `btcRel=${rel}`,
+      `btcCorr=${corr}`,
+      `btcMove=${btcMove}`,
+      `coinMove=${coinMove}`,
+    ].join(' | '),
+    health: health && !health.error ? {
+      regime,
+      bias,
+      bearPoints: health.bearPoints ?? null,
+      bullBias: health.bullBias ?? null,
+      bullPoints: health.bullPoints ?? null,
+      rsi1h: health.rsi1h ?? null,
+      rsi4h: health.rsi4h ?? null,
+      pct6h: health.pct6h ?? null,
+      emaTrend1h: health.emaTrend1h ?? null,
+      obvTrend: health.obvTrend ?? null,
+      btcTrendScore: health.btcTrendScore ?? null,
+      btcTrendDir: health.btcTrendDir ?? null,
+      btcCandle1hPct: health.btcCandle1hPct ?? null,
+      at: health.at ?? null,
+    } : null,
+    relation,
   };
 }
 
@@ -12476,6 +14864,7 @@ async function createTopReversalPaperTrade(payload) {
       && trade.status === 'PENDING'
       && String(trade.source ?? '') === String(payload.source ?? 'top-reversal-auto').slice(0, 80));
   if (duplicate) return { trade: enrichTopReversalPaperTrade(duplicate, getTopReversalPaperMark(symbol)) };
+  const defaultSl = getTopReversalDefaultSlPrice(entryPrice, leverage);
 
   const trade = {
     id: crypto.randomUUID(),
@@ -12489,19 +14878,27 @@ async function createTopReversalPaperTrade(payload) {
     originalQuantity: marginUsdt * leverage / entryPrice,
     entryPrice,
     fillPrice: entryPrice,
-    sl: null,
+    sl: Number.isFinite(Number(payload.sl)) && Number(payload.sl) > 0 ? Number(payload.sl) : defaultSl,
     tp: Number(payload.tp),
     runnerTp: Number(payload.runnerTp ?? payload.tp),
     score: Number(payload.score ?? 0),
     stage: String(payload.stage ?? 'TOP_CONFIRMED'),
     source: String(payload.source ?? 'top-reversal-auto').slice(0, 80),
-    note: String(payload.note ?? '').slice(0, 500),
+    note: [
+      String(payload.note ?? ''),
+      defaultSl ? `defaultSL=${Math.abs(Number(process.env.TOP_REVERSAL_PAPER_DEFAULT_SL_ROE ?? 20))}%ROE@${defaultSl}` : '',
+    ].filter(Boolean).join(' | ').slice(0, 500),
+    signalGood: Boolean(payload.signalGood),
+    signalGoodStrong: Boolean(payload.signalGoodStrong),
     qualityBreakdown: Boolean(payload.qualityBreakdown),
     qualityDcaEligible: Boolean(payload.qualityDcaEligible),
     qualityTier: String(payload.qualityTier ?? (payload.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')).slice(0, 32),
     qualityReasons: Array.isArray(payload.qualityReasons)
       ? payload.qualityReasons.map((reason) => String(reason).slice(0, 48)).slice(0, 8)
       : [],
+    btcHealth: payload.btcHealth ?? null,
+    btcRelation: payload.btcRelation ?? null,
+    btcLog: payload.btcLog ? String(payload.btcLog).slice(0, 300) : null,
     hardBreakdownCount: Number.isFinite(Number(payload.hardBreakdownCount))
       ? Number(payload.hardBreakdownCount)
       : null,
@@ -12552,7 +14949,7 @@ async function expireTopReversalPendingTrade(trade, reason = 'EXPIRED') {
     note: [
       String(store.trades[idx].note ?? ''),
       `pendingExpired=${reason}`,
-    ].filter(Boolean).join(' | ').slice(0, 500),
+    ].filter(Boolean).join(' | ').slice(0, 1000),
   };
   await writeTopReversalPaperStore(store);
   scheduleTopReversalPaperBroadcast(50);
@@ -12691,7 +15088,7 @@ async function applyTopReversalBtcShiftPaper(signal, btcGate, btcRelation) {
         `avgEntry=${avgEntry}`,
         btcGate.reason,
         `btcCorr=${btcRelation.corr}`,
-      ].filter(Boolean).join(' | ').slice(0, 500),
+      ].filter(Boolean).join(' | ').slice(0, 1000),
     };
     await writeTopReversalPaperStore(store);
     topReversalPaperAutoFired.set(key, Date.now());
@@ -12702,6 +15099,7 @@ async function applyTopReversalBtcShiftPaper(signal, btcGate, btcRelation) {
   }
 
   topReversalPaperAutoFired.set(key, Date.now());
+  const btcLog = getTopReversalBtcLog(signal, btcHealthCache.data);
   await createTopReversalPaperTrade({
     symbol,
     entryPrice: markPrice,
@@ -12712,6 +15110,7 @@ async function applyTopReversalBtcShiftPaper(signal, btcGate, btcRelation) {
     stage: 'BTC_SHIFT_SHORT',
     source: `top-reversal-btc-shift-${signal.score}`,
     note: [
+      btcLog.note,
       String(signal.note ?? '').replace('paper=NO', 'paper=BTC_SHIFT'),
       `BTC_SHIFT_MARKET=$${addMargin}`,
       btcGate.reason,
@@ -12723,6 +15122,9 @@ async function applyTopReversalBtcShiftPaper(signal, btcGate, btcRelation) {
     qualityDcaEligible: false,
     qualityTier: 'BTC_SHIFT',
     qualityReasons: signal.qualityReasons,
+    btcHealth: btcLog.health,
+    btcRelation: btcLog.relation ?? btcRelation,
+    btcLog: btcLog.note,
     hardBreakdownCount: signal.hardBreakdownCount,
     blowoffTop: signal.blowoffTop,
     volumeDistribution: signal.volumeDistribution,
@@ -12900,7 +15302,9 @@ async function processTopReversalPaperPrice(symbol, markPrice) {
       await closeTopReversalPaperTrade({
         id: trade.id,
         exitPrice: Number(trade.sl),
-        outcome: Number(trade.slTrailLockRoe ?? 0) > 0 ? 'TRAIL_SL' : 'BREAKEVEN',
+        outcome: Number.isFinite(Number(trade.slTrailLockRoe))
+          ? (Number(trade.slTrailLockRoe) > 0 ? 'TRAIL_SL' : 'BREAKEVEN')
+          : 'SL',
       });
       continue;
     }
@@ -12943,6 +15347,19 @@ async function processTopReversalPaperPrice(symbol, markPrice) {
       if (capCurRoe <= capRoe) {
         await closeTopReversalPaperTrade({ id: trade.id, exitPrice: markPrice, outcome: 'HARD_SL' });
         console.log(`[TopReversalPaper] HARD_SL ${trade.symbol} roe=${capCurRoe.toFixed(0)}% <= ${capRoe}% (cap tail) exit=${markPrice}`);
+        continue;
+      }
+    }
+    // SL cho nhóm "loại tốt" (scout no-DCA): chặn bleed sớm thay vì để trôi tới hard-cap -100%.
+    // Vì nhóm này không cho DCA, không có lý do nhồi thêm — cắt lỗ ở mức cố định.
+    const isGoodTrade = trade.signalGood != null ? Boolean(trade.signalGood) : isGoodTopReversal(trade);
+    if (process.env.TOP_REVERSAL_PAPER_SCOUT_SL !== 'false' && isGoodTrade && !trade.dcaTaken) {
+      const scoutSlRoe = -Math.abs(Number(process.env.TOP_REVERSAL_PAPER_SCOUT_SL_ROE ?? 45));
+      const sPnl = (Number(trade.entryPrice) - markPrice) * Number(trade.quantity);
+      const sRoe = Number(trade.marginUsdt) > 0 ? sPnl / Number(trade.marginUsdt) * 100 : 0;
+      if (sRoe <= scoutSlRoe) {
+        await closeTopReversalPaperTrade({ id: trade.id, exitPrice: markPrice, outcome: 'SCOUT_SL' });
+        console.log(`[TopReversalPaper] SCOUT_SL ${trade.symbol} roe=${sRoe.toFixed(0)}% <= ${scoutSlRoe}% (loại tốt cắt lỗ) exit=${markPrice}`);
         continue;
       }
     }
@@ -13110,27 +15527,31 @@ async function createTopReversalPaperTrades(signals = []) {
     if (Date.now() - last < cooldownMs) continue;
     topReversalPaperAutoFired.set(key, Date.now());
     const isStrongCase = Boolean(signal.strongCase);
-    const strongMargin = Number(process.env.TOP_REVERSAL_PAPER_STRONG_CASE_MARGIN_USDT ?? 10);
-    const earlyScoutMargin = Number(process.env.TOP_REVERSAL_PAPER_SCOUT_MARGIN_USDT ?? 1);
-    const testMargin = Number(process.env.TOP_REVERSAL_PAPER_TEST_MARGIN_USDT ?? 10);
-    const scoutMargin = isStrongCase
-      ? strongMargin
-      : isEarlyConfirmed
-        ? earlyScoutMargin
-        : testMargin;
+    const isGoodSignal = isGoodTopReversal(signal);
+    // Trong nhóm TỐT còn phân tầng theo backtest:
+    //  TỐT MẠNH = TOP_CONFIRMED hoặc score>=60 (WR 82% / +686%) → $10
+    //  TỐT YẾU  = EARLY + score<60 (WR 67% / avgLoss -24%)      → $5
+    //  XẤU (DCA/quality/strongCase)                             → $1
+    const goodStrong = isGoodSignal
+      && (String(signal.stage ?? '') === 'TOP_CONFIRMED'
+        || Number(signal.score ?? 0) >= Number(process.env.TOP_REVERSAL_PAPER_GOOD_STRONG_MIN_SCORE ?? 60));
+    const goodMargin = Number(process.env.TOP_REVERSAL_PAPER_GOOD_MARGIN_USDT ?? 10);
+    const goodWeakMargin = Number(process.env.TOP_REVERSAL_PAPER_GOOD_WEAK_MARGIN_USDT ?? 5);
+    const badMargin = Number(process.env.TOP_REVERSAL_PAPER_BAD_MARGIN_USDT ?? 1);
+    const scoutMargin = !isGoodSignal ? badMargin : goodStrong ? goodMargin : goodWeakMargin;
     const minDcaScore = Number(process.env.TOP_REVERSAL_QUALITY_DCA_MIN_SCORE ?? 65);
     const dcaAllowedBySignal = Boolean(signal.qualityDcaEligible) && Number(signal.score) >= minDcaScore;
+    const qualLabel = isGoodSignal ? (goodStrong ? 'GOOD_STRONG' : 'GOOD_WEAK') : 'BAD';
     const dcaText = isStrongCase
-      ? `STRONG_CASE=$${scoutMargin} | ${signal.strongCaseType ?? 'STRONG_PEAK_SIMILAR'} | DCA=NO`
-      : isEarlyConfirmed
-      ? `EARLY_SCOUT=$${earlyScoutMargin} | DCA=NO`
+      ? `${qualLabel}=$${scoutMargin} | STRONG_CASE ${signal.strongCaseType ?? 'STRONG_PEAK_SIMILAR'} | DCA=NO`
       : dcaAllowedBySignal
-      ? `TEST=$${testMargin} | DCA=${signal.qualityTier === 'VOLUME_DISTRIBUTION' ? '$5' : '$10'}@-25%ROE tier=${signal.qualityTier ?? (signal.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')}`
-      : `TEST=$${testMargin} | DCA=BLOCKED_SETUP minScore=${minDcaScore} qualityDca=${Boolean(signal.qualityDcaEligible)}`;
+      ? `${qualLabel}=$${scoutMargin} | DCA=${signal.qualityTier === 'VOLUME_DISTRIBUTION' ? '$5' : '$10'}@-25%ROE tier=${signal.qualityTier ?? (signal.qualityBreakdown ? 'QUALITY' : 'SCOUT_ONLY')}`
+      : `${qualLabel}=$${scoutMargin} | DCA=BLOCKED tier=${signal.qualityTier ?? 'SCOUT_ONLY'}`;
     const earlyFailFast = isEarlyConfirmed ? getTopReversalEarlyFailFastConfig() : null;
     const earlyFailFastText = earlyFailFast?.enabled
       ? `failFast=${Math.round(earlyFailFast.maxAgeMs / 60_000)}m | failFastRoe=${earlyFailFast.maxLossRoe}% | minPeakRoe=${earlyFailFast.minPeakRoe}%`
       : '';
+    const btcLog = getTopReversalBtcLog(signal);
 	    await createTopReversalPaperTrade({
 	      symbol: signal.symbol,
       entryPrice: signal.markPrice ?? signal.entry,
@@ -13140,6 +15561,7 @@ async function createTopReversalPaperTrades(signals = []) {
       score: signal.score,
       stage: signal.stage,
       note: [
+        btcLog.note,
         String(signal.note ?? '').replace('paper=NO', isStrongCase ? 'paper=STRONG_CASE' : isEarlyConfirmed ? 'paper=EARLY_SCOUT' : 'paper=YES'),
         dcaText,
         earlyFailFastText,
@@ -13148,10 +15570,15 @@ async function createTopReversalPaperTrades(signals = []) {
         dcaAllowedBySignal ? 'skipEarlyBE=quality' : '',
       ].filter(Boolean).join(' | '),
       source: isStrongCase ? `top-reversal-strong-${signal.score}` : isEarlyConfirmed ? `top-reversal-early-${signal.score}` : `top-reversal-${signal.score}`,
+      signalGood: isGoodSignal,
+      signalGoodStrong: goodStrong,
       qualityBreakdown: signal.qualityBreakdown,
       qualityDcaEligible: signal.qualityDcaEligible,
       qualityTier: signal.qualityTier,
       qualityReasons: signal.qualityReasons,
+      btcHealth: btcLog.health,
+      btcRelation: btcLog.relation,
+      btcLog: btcLog.note,
       hardBreakdownCount: signal.hardBreakdownCount,
       blowoffTop: signal.blowoffTop,
       volumeDistribution: signal.volumeDistribution,
@@ -13175,6 +15602,7 @@ async function createTopReversalPaperTrades(signals = []) {
           score: signal.score,
           stage: signal.stage,
           note: [
+            btcLog.note,
             String(signal.note ?? '').replace('paper=NO', 'paper=EARLY_LIMIT_TEST'),
             `EARLY_PENDING_LIMIT=$${pendingCfg.marginUsdt}@${pendingEntry}`,
             `ttl=${Math.round(pendingCfg.ttlMs / 3600_000)}h`,
@@ -13185,10 +15613,15 @@ async function createTopReversalPaperTrades(signals = []) {
             'test=limit-entry',
           ].filter(Boolean).join(' | '),
           source: `top-reversal-early-limit-${signal.score}`,
+          signalGood: isGoodSignal,
+      signalGoodStrong: goodStrong,
           qualityBreakdown: signal.qualityBreakdown,
           qualityDcaEligible: false,
           qualityTier: signal.qualityTier ?? 'EARLY_CONFIRMED',
           qualityReasons: signal.qualityReasons,
+          btcHealth: btcLog.health,
+          btcRelation: btcLog.relation,
+          btcLog: btcLog.note,
           hardBreakdownCount: signal.hardBreakdownCount,
           blowoffTop: signal.blowoffTop,
           volumeDistribution: signal.volumeDistribution,
@@ -13300,7 +15733,24 @@ async function handleShakeoutReclaimRealOrders(signals = []) {
     if (!Number.isFinite(Number(sig.entry)) || Number(sig.entry) <= 0) continue;
     if (!Number.isFinite(Number(sig.sl)) || Number(sig.sl) <= 0) continue;
     const trapRisk = String(sig?.riskFlags?.trapRisk ?? 'LOW').toUpperCase();
-    if (trapRisk === 'MEDIUM' || trapRisk === 'HIGH') {
+    const realGate = getShakeoutRealGate({
+      ...sig,
+      side: action,
+      trapRisk,
+      entry: sig.entry,
+      tp: sig.tp,
+      sl: sig.sl,
+      leverage: calcAutoLeverage(sig.entry, sig.sl, defaultLeverage),
+    });
+    if (process.env.SHAKEOUT_REAL_GATE !== 'false') {
+      if (!realGate.allowReal) {
+        console.log(`[ShakeoutReclaimOrder] skip ${symbol} ${action} - ${realGate.label}: ${realGate.reasons.join('; ')}`);
+        continue;
+      }
+      if (realGate.label === 'REAL_TEST') {
+        console.log(`[ShakeoutReclaimOrder] allow ${symbol} ${action} - REAL_TEST: ${realGate.reasons.join('; ')}`);
+      }
+    } else if (trapRisk === 'MEDIUM' || trapRisk === 'HIGH') {
       console.log(`[ShakeoutReclaimOrder] skip ${symbol} ${action} - trapRisk=${trapRisk}`);
       continue;
     }
@@ -16067,6 +18517,8 @@ async function sendStatic(pathname, response) {
           ? '/pump-ignition.html'
         : pathname === '/ema-squeeze'
           ? '/ema-squeeze.html'
+        : pathname === '/br-like-limit'
+          ? '/br-like-limit.html'
         : pathname === '/ema99-kill-reclaim'
           ? '/ema99-kill-reclaim.html'
         : pathname === '/shakeout-reclaim'

@@ -29,10 +29,14 @@ let srPaperTrades = [];
 let srPaperSort = { key: 'status', dir: 'asc' };
 let srClassFilter = 'all';
 let srSideFilter = 'all';
+let srDayFilter = 'all';
 const srClassSelect = document.getElementById('srClassFilter');
 const srSideSelect = document.getElementById('srSideFilter');
-if (srClassSelect) srClassSelect.addEventListener('change', () => { srClassFilter = srClassSelect.value || 'all'; renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant }); });
-if (srSideSelect) srSideSelect.addEventListener('change', () => { srSideFilter = srSideSelect.value || 'all'; renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant }); });
+const srDaySelect = document.getElementById('srDayFilter');
+const rerenderPaper = () => renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant, realGateCompare: srPaperLastRealGate });
+if (srClassSelect) srClassSelect.addEventListener('change', () => { srClassFilter = srClassSelect.value || 'all'; rerenderPaper(); });
+if (srSideSelect) srSideSelect.addEventListener('change', () => { srSideFilter = srSideSelect.value || 'all'; rerenderPaper(); });
+if (srDaySelect) srDaySelect.addEventListener('change', () => { srDayFilter = srDaySelect.value || 'all'; rerenderPaper(); });
 
 function populateSrClassOptions(trades) {
   if (!srClassSelect) return;
@@ -42,6 +46,20 @@ function populateSrClassOptions(trades) {
     + classes.map((c) => `<option value="${c}">${c}</option>`).join('');
   srClassSelect.value = classes.includes(prev) || prev === 'all' ? prev : 'all';
   if (srClassSelect.value !== prev) srClassFilter = 'all';
+}
+
+function paperTradeDay(t) {
+  return String(t.createdAt ?? t.openedAt ?? t.closedAt ?? '').slice(0, 10);
+}
+
+function populateSrDayOptions(trades) {
+  if (!srDaySelect) return;
+  const days = [...new Set(trades.map(paperTradeDay).filter(Boolean))].sort().reverse();
+  const prev = srDayFilter;
+  srDaySelect.innerHTML = '<option value="all">Tất cả</option>'
+    + days.map((d) => `<option value="${d}">${d}</option>`).join('');
+  srDaySelect.value = days.includes(prev) || prev === 'all' ? prev : 'all';
+  if (srDaySelect.value !== prev) srDayFilter = 'all';
 }
 
 function fmtPrice(p) {
@@ -116,6 +134,127 @@ function buildFactors(sig) {
   if (f.rsi5m != null) chips.push(chip(`RSI5 ${Number(f.rsi5m).toFixed(0)}`));
   if (f.rsi15m != null) chips.push(chip(`RSI15 ${Number(f.rsi15m).toFixed(0)}`));
   return chips.join('');
+}
+
+function noteNumber(text, key) {
+  const re = new RegExp(`${key}=(-?\\d+(?:\\.\\d+)?)%?`, 'i');
+  const m = String(text ?? '').match(re);
+  return m ? Number(m[1]) : null;
+}
+
+function getShakeoutQuality(item = {}) {
+  const note = `${item.note ?? ''} ${item.reason ?? ''} ${item.shakeoutClassReason ?? ''}`;
+  const side = String(item.action ?? item.side ?? '').toUpperCase();
+  const score = Number(item.score ?? 0);
+  const cls = String(item.shakeoutClass ?? '').toUpperCase();
+  const reason = String(item.shakeoutClassReason ?? '');
+  const trap = String(item.trapRisk ?? item.riskFlags?.trapRisk ?? '').toUpperCase();
+  const f = item.factors ?? {};
+  const reclaim = Number(f.reclaimPct ?? noteNumber(note, side === 'SHORT' ? 'reject' : 'reclaim') ?? 0);
+  const move = Number(f.move5mPct ?? noteNumber(note, side === 'SHORT' ? 'dump' : 'pump') ?? 0);
+  const entryDist = Number(item.entryDistancePct ?? item.entryRawDistancePct ?? 0);
+  const clamped = Boolean(item.entryWasClamped);
+  const btcRegime = String(item.btcRegime ?? '').toUpperCase();
+  const btcOpposed = item.btcRelation?.opposed === true;
+  const weakClean = ['WEAK_RECLAIM', 'WEAK_REJECT'].includes(cls)
+    && reason.includes('lacks strong confirmation');
+  // Phân loại theo backtest (server lưu shakeoutQuality). Fallback tính client nếu trade cũ.
+  const backtestQuality = String(item.shakeoutQuality ?? '').toUpperCase()
+    || (['CLEAN_REJECT', 'CLEAN_RECLAIM'].includes(cls) || (cls === 'FALSE_RECLAIM' && side === 'SHORT')
+      ? 'BAD'
+      : (cls === 'WEAK_REJECT' && side === 'SHORT') ? 'MARGINAL' : 'GOOD');
+  const reasons = [];
+
+  // Loại XẤU theo backtest (net âm): FALSE_RECLAIM short, CLEAN_REJECT, CLEAN_RECLAIM.
+  if (backtestQuality === 'BAD') reasons.push('loại xấu (backtest net âm → $1)');
+  if (item.bottomReboundRisk || String(item.subtype ?? '') === 'BOTTOM_REBOUND_RISK') reasons.push('false bottom risk');
+  if (trap === 'HIGH') reasons.push('trap HIGH');
+  if (['FALSE_RECLAIM', 'FALSE_REJECT'].includes(cls) && ['MEDIUM', 'HIGH'].includes(trap) && reclaim < 5) {
+    reasons.push(`false + confirm ${reclaim.toFixed(1)}%`);
+  }
+  if (reason.includes('BTC weak vs long') || reason.includes('BTC strong vs short')) reasons.push('BTC ngược chiều');
+  if (reason.includes('weak/late')) reasons.push('confirm weak/late');
+  if (clamped && entryDist >= 5) reasons.push('entry clamp xa');
+  if (side === 'LONG' && btcRegime === 'WEAK' && !btcOpposed) reasons.push('BTC weak');
+  if (side === 'SHORT' && btcRegime === 'STRONG' && !btcOpposed) reasons.push('BTC strong');
+
+  // CLEAN_* bỏ khỏi goodClass — backtest cho thấy net âm. Reclaim/rebound LONG mới là tốt.
+  const goodClass = ['STRONG_RECLAIM', 'STRONG_REJECT', 'BOTTOM_REBOUND'].includes(cls);
+  const good = score >= 70
+    && (trap === '' || trap === 'LOW')
+    && !clamped
+    && entryDist <= 3
+    && reasons.length === 0
+    && backtestQuality === 'GOOD'
+    && (goodClass || weakClean || reclaim >= 3.5);
+
+  if (good) {
+    return {
+      tier: 'GOOD',
+      label: 'GOOD SHAKEOUT',
+      text: `score ${score} · trap ${trap || 'LOW'} · entry ${entryDist.toFixed(1)}% · confirm ${reclaim.toFixed(1)}%`,
+    };
+  }
+  if (reasons.length) {
+    return {
+      tier: 'BAD',
+      label: 'LOW QUALITY',
+      text: reasons.slice(0, 3).join(' · '),
+    };
+  }
+  return {
+    tier: 'TEST',
+    label: 'TEST / WATCH',
+    text: `score ${score} · trap ${trap || 'LOW'} · entry ${entryDist.toFixed(1)}% · move ${move.toFixed(1)}%`,
+  };
+}
+
+function shakeoutQualityBadge(item, compact = false) {
+  const q = getShakeoutQuality(item);
+  return `<div class="sr-quality-badge ${q.tier.toLowerCase()}" title="${escapeHtml(q.text)}">
+    ${escapeHtml(q.label)}${compact ? '' : `<span>${escapeHtml(q.text)}</span>`}
+  </div>`;
+}
+
+function getShakeoutRealGateDisplay(item = {}) {
+  const stored = String(item.shakeoutRealGateLabel ?? '').toUpperCase();
+  const reason = String(item.shakeoutRealGateReason ?? '');
+  if (stored) {
+    const isTest = stored === 'REAL_TEST';
+    return {
+      label: isTest ? 'REAL_TEST_OK' : stored,
+      cls: stored === 'REAL_OK' ? 'ok' : stored === 'REAL_BLOCK' ? 'block' : 'test',
+      text: isTest ? `cho market/test: ${reason || stored}` : (reason || stored),
+    };
+  }
+  const score = Number(item.score ?? 0);
+  const trap = String(item.trapRisk ?? item.riskFlags?.trapRisk ?? 'LOW').toUpperCase();
+  const clsName = String(item.shakeoutClass ?? '').toUpperCase();
+  const clsReason = String(item.shakeoutClassReason ?? '');
+  const projected = getSrProjectedPnl(item).roe;
+  const reasons = [];
+  const warns = [];
+  if (trap === 'HIGH') reasons.push('trap HIGH');
+  if (clsReason.includes('BTC weak vs long') || clsReason.includes('BTC strong vs short')) reasons.push('BTC conflict');
+  if (clsName === 'FALSE_RECLAIM' || clsName === 'FALSE_REJECT') warns.push(clsName.replace('_', ' '));
+  if (trap === 'MEDIUM') warns.push('trap MEDIUM');
+  if (score < 75) warns.push(`score ${score}<75`);
+  if (Number.isFinite(projected) && projected < 10) warns.push(`tpRoe ${projected.toFixed(1)}%<10%`);
+  if (reasons.length) return { label: 'REAL_BLOCK', cls: 'block', text: reasons.join(' · ') };
+  if (warns.length) return { label: 'REAL_TEST_OK', cls: 'test', text: `cho market/test: ${warns.join(' · ')}` };
+  return { label: 'REAL_OK', cls: 'ok', text: `score ${score} · trap ${trap}` };
+}
+
+function shakeoutRealGateBadge(item, compact = false) {
+  const g = getShakeoutRealGateDisplay(item);
+  const colors = {
+    ok: ['#052e1a', '#34d399', '#d1fae5'],
+    test: ['#422006', '#fbbf24', '#fde68a'],
+    block: ['#7f1d1d', '#fb7185', '#fff'],
+  }[g.cls] || ['#111827', '#38bdf8', '#e0f2fe'];
+  return `<div style="margin-top:5px;padding:5px;color:${colors[2]};background:${colors[0]};border:2px solid ${colors[1]};font-size:10px;font-weight:900;line-height:1.35" title="${escapeHtml(g.text)}">
+    ${escapeHtml(g.label)}${compact ? '' : `<br>${escapeHtml(g.text)}`}
+  </div>`;
 }
 
 function buildTrapAlert(sig) {
@@ -253,6 +392,7 @@ function buildOrderDecision(sig) {
 
 function buildCard(sig) {
   const confirmed = sig.stage === 'RECLAIM_CONFIRMED';
+  const quality = getShakeoutQuality(sig);
   const isShort = sig.action === 'SHORT';
   const isBottomReboundRisk = !isShort
     && (sig.bottomReboundRisk || String(sig.subtype ?? '') === 'BOTTOM_REBOUND_RISK');
@@ -291,7 +431,7 @@ function buildCard(sig) {
       </div>`
     : '';
   return `
-    <article class="sr-card ${stageClass}${isWeakClean ? ' weak-clean' : ''}">
+    <article class="sr-card ${stageClass}${isWeakClean ? ' weak-clean' : ''} sr-quality-${quality.tier.toLowerCase()}">
       <div class="sr-top">
         <div>
           <a class="sr-symbol" href="${detailUrl}" target="_blank">${sig.symbol.replace(/USDT$/, '')}<span>USDT</span></a>
@@ -304,6 +444,8 @@ function buildCard(sig) {
       </div>
 
       <div class="sr-pattern">${sig.reason || ''}</div>
+      ${shakeoutQualityBadge(sig)}
+      ${shakeoutRealGateBadge(sig)}
       ${classBadge}
       ${isBottomRebound ? `<div style="margin-top:8px;padding:9px;border:1px solid #22d3ee;background:#083344;color:#a5f3fc;font-weight:900">
         SONG HOI TU DAY · MARKET $5 · DCA +$10 KHI ROE ≤ -25% · NO SL<br>
@@ -379,6 +521,7 @@ function render() {
 
 const srDailyStats = document.getElementById('srDailyStats');
 const srVariantCompare = document.getElementById('srVariantCompare');
+const srRealGateCompare = document.getElementById('srRealGateCompare');
 
 function renderVariantCompare(vc) {
   if (!srVariantCompare) return;
@@ -408,6 +551,41 @@ function renderVariantCompare(vc) {
       <thead>
         <tr>
           <th>Cach vao</th><th>Tong</th><th>Closed</th><th>Open/Cho</th><th>Win</th><th>Loss</th><th>WR</th><th>PnL ($)</th><th>Avg ROE</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderRealGateCompare(rowsData) {
+  if (!srRealGateCompare) return;
+  if (!Array.isArray(rowsData) || !rowsData.length) {
+    srRealGateCompare.innerHTML = '';
+    return;
+  }
+  const cls = (v) => (Number(v) >= 0 ? 'sr-daily-pos' : 'sr-daily-neg');
+  const sign = (v) => (Number(v) >= 0 ? '+' : '');
+  const tone = { REAL_OK: 'color:#34d399', REAL_TEST: 'color:#fbbf24', REAL_BLOCK: 'color:#fb7185' };
+  const rows = rowsData.map((v) => `
+    <tr>
+      <td class="sr-daily-date" style="${tone[v.label] || ''}">${escapeHtml(v.label)}</td>
+      <td>${v.total ?? 0}</td>
+      <td>${v.closed ?? 0}</td>
+      <td>${v.open ?? 0}${v.pending ? ` / ${v.pending} chờ` : ''}</td>
+      <td class="sr-daily-pos">${v.wins ?? 0}</td>
+      <td class="sr-daily-neg">${v.losses ?? 0}</td>
+      <td>${v.winRate ?? 0}%</td>
+      <td class="${cls(v.totalPnl)}">${sign(v.totalPnl)}$${Number(v.totalPnl ?? 0).toFixed(2)}</td>
+      <td class="${cls(v.avgRoe)}">${v.avgRoe != null ? sign(v.avgRoe) + Number(v.avgRoe).toFixed(1) + '%' : '-'}</td>
+    </tr>
+  `).join('');
+  srRealGateCompare.innerHTML = `
+    <div class="sr-daily-title">Phan loai danh that Binance - REAL_OK / TEST / BLOCK</div>
+    <table class="sr-daily-table">
+      <thead>
+        <tr>
+          <th>Real gate</th><th>Tong</th><th>Closed</th><th>Open/Cho</th><th>Win</th><th>Loss</th><th>WR</th><th>PnL ($)</th><th>Avg ROE</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -454,6 +632,148 @@ function renderDailyStats(daily) {
   `;
 }
 
+function buildSrPaperStats(trades) {
+  const validClosed = trades.filter((t) => t.status === 'CLOSED' && t.outcome !== 'INVALID');
+  const open = trades.filter((t) => t.status === 'OPEN');
+  const pending = trades.filter((t) => t.status === 'PENDING');
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins = validClosed.filter((t) => Number(t.pnl ?? 0) > 0).length;
+  const livePnl = trades
+    .filter((t) => t.status === 'OPEN' || (t.status === 'CLOSED' && t.outcome !== 'INVALID'))
+    .reduce((s, t) => s + Number(t.pnl ?? 0), 0);
+  const liveRoe = trades
+    .filter((t) => t.status === 'OPEN' || (t.status === 'CLOSED' && t.outcome !== 'INVALID'))
+    .reduce((s, t) => s + Number(t.roe ?? 0), 0);
+  const tpHits = validClosed.filter((t) => ['TP', 'RUNNER_TP'].includes(t.outcome)).length;
+  const slHits = validClosed.filter((t) => t.outcome === 'SL').length;
+  return {
+    total: trades.length,
+    open: open.length,
+    pending: pending.length,
+    closed: closed.length,
+    invalid: closed.filter((t) => t.outcome === 'INVALID').length,
+    cancelled: trades.filter((t) => t.status === 'CANCELLED').length,
+    expired: trades.filter((t) => t.status === 'EXPIRED').length,
+    wins,
+    losses: validClosed.length - wins,
+    tpHits,
+    slHits,
+    livePnl: +livePnl.toFixed(4),
+    liveRoe: +liveRoe.toFixed(2),
+    avgRoe: validClosed.length ? +(validClosed.reduce((s, t) => s + Number(t.roe ?? 0), 0) / validClosed.length).toFixed(1) : null,
+  };
+}
+
+function buildSrPaperCompare(trades, key, labels) {
+  return labels.map((label) => {
+    const all = trades.filter((t) => key === 'variant'
+      ? String(t.variant ?? '') === label
+      : String(t.shakeoutRealGateLabel ?? 'REAL_TEST') === label);
+    const closed = all.filter((t) => t.status === 'CLOSED' && t.outcome !== 'INVALID');
+    const liveRows = all.filter((t) => t.status === 'OPEN' || (t.status === 'CLOSED' && t.outcome !== 'INVALID'));
+    const wins = closed.filter((t) => Number(t.pnl ?? 0) > 0).length;
+    const totalPnl = liveRows.reduce((s, t) => s + Number(t.pnl ?? 0), 0);
+    const totalRoe = liveRows.reduce((s, t) => s + Number(t.roe ?? 0), 0);
+    return {
+      [key]: label,
+      label,
+      total: all.length,
+      open: all.filter((t) => t.status === 'OPEN').length,
+      pending: all.filter((t) => t.status === 'PENDING').length,
+      closed: closed.length,
+      wins,
+      losses: closed.length - wins,
+      winRate: closed.length ? +((wins / closed.length) * 100).toFixed(1) : 0,
+      totalPnl: +totalPnl.toFixed(4),
+      totalRoe: +totalRoe.toFixed(2),
+      avgRoe: liveRows.length ? +(totalRoe / liveRows.length).toFixed(1) : null,
+    };
+  });
+}
+
+function buildSrDailyStats(trades) {
+  const map = new Map();
+  const getRow = (date) => {
+    if (!map.has(date)) {
+      map.set(date, {
+        date,
+        orders: 0,
+        wins: 0,
+        losses: 0,
+        tpHits: 0,
+        slHits: 0,
+        winRate: 0,
+        totalPnl: 0,
+        totalRoe: 0,
+        open: 0,
+        pending: 0,
+      });
+    }
+    return map.get(date);
+  };
+  for (const t of trades) {
+    const date = paperTradeDay(t);
+    if (!date) continue;
+    const row = getRow(date);
+    if (t.status === 'PENDING') {
+      row.pending += 1;
+      continue;
+    }
+    if (t.status === 'OPEN') {
+      row.open += 1;
+      row.totalPnl += Number(t.pnl ?? 0);
+      row.totalRoe += Number(t.roe ?? 0);
+      continue;
+    }
+    if (t.status !== 'CLOSED' || t.outcome === 'INVALID') continue;
+    row.orders += 1;
+    const pnl = Number(t.pnl ?? 0);
+    row.totalPnl += pnl;
+    row.totalRoe += Number(t.roe ?? 0);
+    if (pnl > 0) row.wins += 1;
+    else row.losses += 1;
+    if (['TP', 'RUNNER_TP'].includes(t.outcome)) row.tpHits += 1;
+    if (t.outcome === 'SL') row.slHits += 1;
+  }
+  return [...map.values()]
+    .map((row) => ({
+      ...row,
+      winRate: row.orders ? +((row.wins / row.orders) * 100).toFixed(1) : 0,
+      totalPnl: +row.totalPnl.toFixed(4),
+      totalRoe: +row.totalRoe.toFixed(2),
+    }))
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+function getSrFilteredTrades(trades = srPaperTrades) {
+  return trades.filter((t) =>
+    (srClassFilter === 'all' || String(t.shakeoutClass || 'UNKNOWN') === srClassFilter)
+    && (srSideFilter === 'all' || t.side === srSideFilter)
+    && (srDayFilter === 'all' || paperTradeDay(t) === srDayFilter));
+}
+
+function renderSrPaperComputedStats(filtered) {
+  const stats = buildSrPaperStats(filtered);
+  const validClosed = Math.max(0, Number(stats.closed ?? 0) - Number(stats.invalid ?? 0));
+  const winRate = validClosed > 0 ? Math.round(Number(stats.wins ?? 0) / validClosed * 100) : null;
+  const filterText = [
+    srDayFilter !== 'all' ? `ngày ${srDayFilter}` : '',
+    srClassFilter !== 'all' ? `loại ${srClassFilter}` : '',
+    srSideFilter !== 'all' ? srSideFilter : '',
+  ].filter(Boolean).join(' · ');
+  const liveText = `live PnL ${stats.livePnl >= 0 ? '+' : ''}$${Number(stats.livePnl ?? 0).toFixed(2)}`
+    + ` · live ROE ${stats.liveRoe >= 0 ? '+' : ''}${Number(stats.liveRoe ?? 0).toFixed(1)}%`;
+  srPaperSummary.textContent = `${filterText ? `${filterText} | ` : ''}${stats.open ?? 0} open - ${stats.pending ?? 0} pending - ${stats.closed ?? 0} closed`
+    + (stats.expired ? ` - ${stats.expired} expired` : '')
+    + (stats.cancelled ? ` - ${stats.cancelled} cancelled` : '')
+    + (stats.invalid ? ` - ${stats.invalid} invalid` : '')
+    + (winRate != null ? ` - WR ${winRate}% - avg ROE ${stats.avgRoe ?? '-'}%` : ' - auto confirmed >=60')
+    + ` - ${liveText}`;
+  renderVariantCompare(buildSrPaperCompare(filtered, 'variant', ['MARKET', 'PENDING']));
+  renderRealGateCompare(buildSrPaperCompare(filtered, 'realGate', ['REAL_OK', 'REAL_TEST', 'REAL_BLOCK']));
+  renderDailyStats(buildSrDailyStats(filtered));
+}
+
 function srPaperSortValue(t, key) {
   switch (key) {
     case 'variant': return String(t.variant ?? '');
@@ -478,7 +798,7 @@ function srPaperSortValue(t, key) {
 }
 
 function getSrProjectedPnl(t) {
-  const entry = Number(t.entryPrice);
+  const entry = Number(t.entryPrice ?? t.entry ?? t.markPrice);
   const tp = Number(t.tp);
   const leverage = Number(t.leverage);
   const margin = Number(t.marginUsdt);
@@ -537,20 +857,18 @@ document.querySelectorAll('.sr-sort').forEach((th) => {
     if (!key) return;
     if (srPaperSort.key === key) {
       srPaperSort.dir = srPaperSort.dir === 'asc' ? 'desc' : 'asc';
-      if (isCancelled) {
-        variantBadge = `<span class="sr-variant-badge pending" style="color:#fb7185;border-color:#fb7185" title="${escapeHtml(t.note)}">B · CANCELLED - MARKET ≤ -10%</span>`;
-      }
     } else {
       // số/giá mặc định desc, chữ mặc định asc
       srPaperSort = { key, dir: ['symbol', 'side', 'variant', 'source', 'status'].includes(key) ? 'asc' : 'desc' };
     }
-    renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant });
+    renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant, realGateCompare: srPaperLastRealGate });
   });
 });
 
 let srPaperLastSummary = {};
 let srPaperLastDaily = [];
 let srPaperLastVariant = [];
+let srPaperLastRealGate = [];
 
 function renderPaperTrades(data) {
   const trades = Array.isArray(data?.trades) ? data.trades : [];
@@ -559,33 +877,16 @@ function renderPaperTrades(data) {
   srPaperLastSummary = data?.summary ?? {};
   srPaperLastDaily = Array.isArray(data?.daily) ? data.daily : [];
   srPaperLastVariant = Array.isArray(data?.variantCompare) ? data.variantCompare : [];
-  const summary = data?.summary ?? {};
-  const validClosed = Math.max(0, Number(summary.closed ?? 0) - Number(summary.invalid ?? 0));
-  const winRate = validClosed > 0 ? Math.round(Number(summary.wins ?? 0) / validClosed * 100) : null;
-  srPaperSummary.textContent = `${summary.open ?? 0} open - ${summary.closed ?? 0} closed`
-    + (summary.expired ? ` - ${summary.expired} expired` : '')
-    + (summary.cancelled ? ` - ${summary.cancelled} cancelled` : '')
-    + (summary.invalid ? ` - ${summary.invalid} invalid` : '')
-    + ((summary.recoveryActive || summary.recoveryBreakeven || summary.recoverySl30)
-      ? ` - recovery ${summary.recoveryActive ?? 0} active / ${summary.recoveryBreakeven ?? 0} BE / ${summary.recoverySl30 ?? 0} SL30`
-      : '')
-    + ((summary.partialActive || summary.partialBreakeven || summary.partialTrail || summary.runnerTpHits)
-      ? ` - partial ${summary.partialActive ?? 0} active / ${summary.partialBreakeven ?? 0} BE / ${summary.partialTrail ?? 0} trail / ${summary.runnerTpHits ?? 0} runner TP`
-      : '')
-    + (winRate != null ? ` - WR ${winRate}% - avg ROE ${summary.avgRoe ?? '-'}%` : ' - auto confirmed >=60');
-
-  renderVariantCompare(Array.isArray(data?.variantCompare) ? data.variantCompare : []);
-  renderDailyStats(Array.isArray(data?.daily) ? data.daily : []);
-
+  srPaperLastRealGate = Array.isArray(data?.realGateCompare) ? data.realGateCompare : [];
   populateSrClassOptions(trades);
-  const filtered = trades.filter((t) =>
-    (srClassFilter === 'all' || String(t.shakeoutClass || 'UNKNOWN') === srClassFilter)
-    && (srSideFilter === 'all' || t.side === srSideFilter));
+  populateSrDayOptions(trades);
+  const filtered = getSrFilteredTrades(trades);
+  renderSrPaperComputedStats(filtered);
   const rows = sortSrPaperTrades(filtered);
   updateSrSortHeaders();
 
   if (!rows.length) {
-    srPaperBody.innerHTML = '<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:16px">Khong co lenh khop filter (loại/side).</td></tr>';
+    srPaperBody.innerHTML = '<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:16px">Khong co lenh khop filter (ngày/loại/side).</td></tr>';
     return;
   }
 
@@ -605,14 +906,15 @@ function renderPaperTrades(data) {
       || isLegacyBottomRisk;
     const isWeakCleanTrade = ['WEAK_RECLAIM', 'WEAK_REJECT'].includes(String(t.shakeoutClass ?? ''))
       && String(t.shakeoutClassReason ?? '').includes('lacks strong confirmation');
-    const rowClass = isWeakCleanTrade
+    const quality = getShakeoutQuality(t);
+    const rowClass = `${isWeakCleanTrade
       ? 'sr-row-weak-clean'
       : isBottomRisk
       ? 'sr-row-bottom-rebound-risk'
       : t.bottomRebound || String(t.subtype ?? '') === 'BOTTOM_REBOUND'
         ? 'sr-row-bottom-rebound'
         : variant === 'MARKET' ? 'sr-row-market'
-          : variant === 'PENDING' ? 'sr-row-pending' : '';
+          : variant === 'PENDING' ? 'sr-row-pending' : ''} sr-paper-quality-${quality.tier.toLowerCase()}`;
     const isNearMarketPending = String(t.note ?? '').includes('nearMarketEntry=');
     let variantBadge;
     if (variant === 'MARKET') {
@@ -665,6 +967,8 @@ function renderPaperTrades(data) {
         + (t.shakeoutClassReason ? `<br>${escapeHtml(t.shakeoutClassReason)}` : '')
         + `</div>`;
     }
+    variantBadge += shakeoutQualityBadge(t, true);
+    variantBadge += shakeoutRealGateBadge(t, true);
     if (t.btcIndependentShort) {
       variantBadge += `<div style="margin-top:5px;color:#a5f3fc;font-size:10px;font-weight:900;line-height:1.35">`
         + `${escapeHtml(t.btcEntryClass || 'INDEPENDENT')} · COIN STRUCTURE`
@@ -819,12 +1123,15 @@ const PRICE_URLS = [
 ];
 let priceUrlIdx = 0;
 const livePrices = new Map();
+let srPaperStatsLiveRefreshAt = 0;
 
 function applyLivePrices() {
   if (!Array.isArray(srPaperTrades) || !srPaperTrades.length) return;
+  let changed = false;
   for (const t of srPaperTrades) {
     const p = livePrices.get(t.symbol);
     if (!Number.isFinite(p) || p <= 0) continue;
+    t.markPrice = p;
     const markCell = srPaperBody.querySelector(`[data-srmark="${t.id}"]`);
     if (markCell) markCell.textContent = fmtPrice(p);
     if (t.status !== 'OPEN') continue; // PENDING chưa khớp / CLOSED đã chốt -> không tính lại PnL
@@ -836,10 +1143,17 @@ function applyLivePrices() {
     const sideMult = t.side === 'LONG' ? 1 : -1;
     const pnl = realizedPnl + (p - entry) * qty * sideMult;
     const roe = (pnl / margin) * 100;
+    t.pnl = +pnl.toFixed(6);
+    t.roe = +roe.toFixed(4);
+    changed = true;
     const pnlCell = srPaperBody.querySelector(`[data-srpnl="${t.id}"]`);
     const roeCell = srPaperBody.querySelector(`[data-srroe="${t.id}"]`);
     if (pnlCell) pnlCell.innerHTML = fmtSigned(pnl);
     if (roeCell) roeCell.innerHTML = fmtSigned(roe, '%');
+  }
+  if (changed && Date.now() - srPaperStatsLiveRefreshAt > 1500) {
+    srPaperStatsLiveRefreshAt = Date.now();
+    renderSrPaperComputedStats(getSrFilteredTrades());
   }
 }
 

@@ -81,6 +81,17 @@
         box-shadow: inset 0 0 0 1px rgba(45, 212, 191, .38), 0 12px 28px rgba(13, 148, 136, .16);
       }
       .sr-card.weak-clean::before { background: #2dd4bf; height: 4px; }
+      .sr-card.sr-quality-good {
+        border-color: rgba(52, 211, 153, .75);
+        box-shadow: inset 0 0 0 1px rgba(52, 211, 153, .42), 0 12px 30px rgba(16, 185, 129, .16);
+      }
+      .sr-card.sr-quality-good::before { background: #34d399; height: 5px; }
+      .sr-card.sr-quality-bad {
+        border-color: rgba(251, 113, 133, .75);
+        box-shadow: inset 0 0 0 1px rgba(251, 113, 133, .34), 0 10px 28px rgba(190, 18, 60, .18);
+      }
+      .sr-card.sr-quality-bad::before { background: #fb7185; height: 5px; }
+      .sr-card.sr-quality-test::before { background: #fbbf24; height: 4px; }
       .sr-card.bottom-rebound {
         background: #092d35;
         box-shadow: inset 0 0 0 1px rgba(34, 211, 238, .55);
@@ -197,6 +208,41 @@
         box-shadow: 0 0 0 1px rgba(45, 212, 191, .18), 0 0 22px rgba(45, 212, 191, .16);
       }
       .sr-class-badge.weak-clean span { color: #99f6e4; }
+      .sr-quality-badge {
+        margin-top: 7px;
+        padding: 7px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 950;
+        line-height: 1.35;
+        text-transform: uppercase;
+        border: 1px solid transparent;
+      }
+      .sr-quality-badge span {
+        display: block;
+        margin-top: 2px;
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: none;
+        opacity: .92;
+      }
+      .sr-quality-badge.good {
+        color: #d1fae5;
+        background: rgba(6, 78, 59, .85);
+        border-color: #34d399;
+        box-shadow: 0 0 18px rgba(52, 211, 153, .18);
+      }
+      .sr-quality-badge.test {
+        color: #fef3c7;
+        background: rgba(66, 32, 6, .9);
+        border-color: #fbbf24;
+      }
+      .sr-quality-badge.bad {
+        color: #fff1f2;
+        background: rgba(159, 18, 57, .92);
+        border-color: #fb7185;
+        box-shadow: 0 0 18px rgba(251, 113, 133, .16);
+      }
       .sr-trap-alert {
         border: 2px solid rgba(248, 113, 113, .85);
         background: linear-gradient(135deg, rgba(127, 29, 29, .96), rgba(185, 28, 28, .8));
@@ -389,6 +435,17 @@
       .sr-paper-table tr.sr-row-weak-clean td:first-child {
         border-left: 3px solid #2dd4bf;
       }
+      .sr-paper-table tr.sr-paper-quality-good {
+        background: rgba(16, 185, 129, .12) !important;
+        box-shadow: inset 4px 0 0 #34d399;
+      }
+      .sr-paper-table tr.sr-paper-quality-test {
+        box-shadow: inset 4px 0 0 #fbbf24;
+      }
+      .sr-paper-table tr.sr-paper-quality-bad {
+        background: rgba(159, 18, 57, .20) !important;
+        box-shadow: inset 4px 0 0 #fb7185;
+      }
 
       /* ── Daily stats ── */
       .sr-daily-wrap { margin: 4px 0 14px; overflow-x: auto; }
@@ -510,8 +567,14 @@
               <option value="SHORT">SHORT</option>
             </select>
           </label>
+          <label style="color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase">Ngày
+            <select id="srDayFilter" style="margin-left:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px">
+              <option value="all">Tất cả</option>
+            </select>
+          </label>
         </div>
         <div id="srVariantCompare" class="sr-daily-wrap"></div>
+        <div id="srRealGateCompare" class="sr-daily-wrap"></div>
         <div id="srDailyStats" class="sr-daily-wrap"></div>
         <div style="overflow-x:auto">
           <table class="sr-paper-table">

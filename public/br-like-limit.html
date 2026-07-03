@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BR-like Limit Paper</title>
+    <link rel="stylesheet" href="/styles.css">
+    <style>
+      .limit-shell { width: min(1540px, calc(100vw - 32px)); }
+      .limit-controls {
+        display: grid;
+        grid-template-columns: 170px 170px 170px 1fr auto;
+        gap: 12px;
+        align-items: end;
+        padding: 14px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 8px;
+        margin-bottom: 12px;
+      }
+      .limit-note { color: var(--muted); font-size: 12px; line-height: 1.45; }
+      .limit-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+      .limit-card { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 12px; }
+      .limit-card span { display: block; color: var(--muted); font-size: 11px; font-weight: 800; text-transform: uppercase; }
+      .limit-card strong { display: block; margin-top: 6px; font-size: 22px; font-weight: 900; }
+      .limit-card small { color: var(--muted); font-size: 12px; }
+      .limit-table-wrap { border: 1px solid var(--line); border-radius: 8px; overflow: auto; background: var(--panel); }
+      .limit-table { width: 100%; border-collapse: collapse; min-width: 1180px; font-size: 13px; }
+      .limit-table th, .limit-table td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+      .limit-table th:first-child, .limit-table td:first-child,
+      .limit-table th:nth-child(2), .limit-table td:nth-child(2),
+      .limit-table th:nth-child(13), .limit-table td:nth-child(13) { text-align: left; }
+      .limit-table th { color: #bfe8df; font-size: 11px; text-transform: uppercase; background: rgba(255,255,255,.02); }
+      .limit-pos { color: var(--green); font-weight: 900; }
+      .limit-neg { color: var(--red); font-weight: 900; }
+      .limit-muted { color: var(--muted); }
+      .badge { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; font-size: 11px; font-weight: 900; }
+      .badge.pending { color: var(--amber); border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.08); }
+      .badge.open { color: var(--green); border-color: rgba(54,211,153,.4); background: rgba(54,211,153,.08); }
+      .badge.closed { color: var(--muted); }
+      .action-btn { height: 28px; padding: 0 9px; border-radius: 5px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); cursor: pointer; }
+      .action-btn.danger { color: var(--red); border-color: rgba(251,113,133,.45); }
+      @media (max-width: 900px) {
+        .limit-controls { grid-template-columns: 1fr 1fr; }
+        .limit-grid { grid-template-columns: 1fr 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell limit-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">BR-like Limit Paper</p>
+          <h1>Pending limit only</h1>
+        </div>
+        <div class="top-actions">
+          <a class="nav-link" href="/ema-squeeze">EMA Squeeze</a>
+          <a class="nav-link" href="/">Dashboard</a>
+          <div class="status" id="status">Loading...</div>
+        </div>
+      </section>
+
+      <section class="limit-controls">
+        <label class="field">
+          <span>Status</span>
+          <select id="statusSelect">
+            <option value="active" selected>Active</option>
+            <option value="all">All</option>
+            <option value="PENDING">Pending</option>
+            <option value="OPEN">Open</option>
+            <option value="CLOSED">Closed</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Side</span>
+          <select id="sideSelect">
+            <option value="all" selected>All</option>
+            <option value="LONG">Long</option>
+            <option value="SHORT">Short</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Ngày UTC</span>
+          <select id="daySelect">
+            <option value="all" selected>All</option>
+          </select>
+        </label>
+        <p class="limit-note">Paper riêng từ BR-like signal: giữ rule BR-like cũ, nhưng entry là pending limit tại setup entry; tự hủy sau 4h và không ghi vào EMA Squeeze Paper Trades.</p>
+        <button id="reloadButton" class="primary" type="button">Reload</button>
+      </section>
+
+      <section class="limit-grid">
+        <article class="limit-card"><span>Net PnL</span><strong id="statNet">-</strong><small id="statRealized">-</small></article>
+        <article class="limit-card"><span>Active</span><strong id="statActive">-</strong><small id="statPending">-</small></article>
+        <article class="limit-card"><span>Closed WR</span><strong id="statWr">-</strong><small id="statWl">-</small></article>
+        <article class="limit-card"><span>Filled / Expired</span><strong id="statFilled">-</strong><small id="statExpired">-</small></article>
+      </section>
+
+      <section class="limit-table-wrap">
+        <table class="limit-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Status</th>
+              <th>Entry</th>
+              <th>Mark</th>
+              <th>TP</th>
+              <th>SL</th>
+              <th>PnL</th>
+              <th>ROE</th>
+              <th>Dist</th>
+              <th>Expire</th>
+              <th>Note</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="rowsBody"></tbody>
+        </table>
+      </section>
+    </main>
+    <script src="/br-like-limit.js?v=20260630-paper"></script>
+  </body>
+</html>

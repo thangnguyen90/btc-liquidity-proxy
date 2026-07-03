@@ -49,6 +49,11 @@ function renderSignals() {
     const strongCaseType = String(signal.strongCaseType ?? f.strongCaseType ?? '');
     const strongCaseScore = Number(signal.strongCaseScore ?? f.strongCaseScore ?? 0);
     const canDca = !strongCase && (quality || volume);
+    // Tín hiệu TỐT: short scout no-DCA (không near/long watch). XẤU: DCA/quality/strongCase.
+    const goodSignal = !isLong && !isNear
+      && !(strongCase || quality || volume || Boolean(signal.qualityDcaEligible ?? f.qualityDcaEligible) || Boolean(signal.qualityBreakdown ?? f.qualityBreakdown));
+    const goodSignalStrong = goodSignal
+      && (String(signal.stage ?? '') === 'TOP_CONFIRMED' || Number(signal.score ?? 0) >= 60);
     const strongLabel = strongCase
       ? `${strongCaseType === 'EARLY_PEAK_SIMILAR' ? 'EARLY PEAK SIMILAR' : 'STRONG PEAK SIMILAR'} ${strongCaseScore || ''}`.trim()
       : '';
@@ -69,7 +74,7 @@ function renderSignals() {
       ? `<span class="tr-chip ${btcAligned ? 'quality' : 'scout'}">BTC ${btcAligned ? 'aligned' : 'mixed'} - corr ${btcRel.corr ?? '-'} - BTC ${signed(btcRel.btcMovePct, '%')}</span>`
       : '';
     return `
-      <article class="tr-card ${signal.confirmed ? 'confirmed' : ''} ${strongCase ? 'strong-case' : ''} ${quality ? 'quality' : ''} ${volume ? 'volume' : ''} ${isEarly ? 'early' : ''} ${isNear && !isEarly ? 'near' : ''} ${isLong ? 'long' : ''}">
+      <article class="tr-card ${signal.confirmed ? 'confirmed' : ''} ${strongCase ? 'strong-case' : ''} ${quality ? 'quality' : ''} ${volume ? 'volume' : ''} ${isEarly ? 'early' : ''} ${isNear && !isEarly ? 'near' : ''} ${isLong ? 'long' : ''}" style="${goodSignal ? 'box-shadow:inset 4px 0 0 #34d399;background:rgba(52,211,153,.06)' : ''}">
         <div class="tr-top">
           <div>
             <a class="tr-symbol" href="/?symbol=${encodeURIComponent(signal.symbol)}" target="_blank">${signal.symbol.replace(/USDT$/, '')}<small>USDT</small></a>
@@ -77,6 +82,9 @@ function renderSignals() {
           </div>
           <div class="tr-right">
             <span class="tr-badge">${strongCase ? 'STRONG CASE' : isLong ? 'FAIL RECLAIM LONG' : isEarly ? 'EARLY CONFIRMED' : isNear ? 'NEAR MISS · WATCH ONLY' : signal.stage === 'TOP_CONFIRMED' ? 'TOP REVERSAL CONFIRMED' : 'TOP WATCH'}</span>
+            ${goodSignal ? (goodSignalStrong
+              ? '<span class="tr-chip quality" style="background:rgba(52,211,153,.2);color:#34d399;font-weight:800" title="TOP_CONFIRMED hoặc score>=60 — WR 82% / +686%">★★ TỐT MẠNH · $10</span>'
+              : '<span class="tr-chip quality" style="background:rgba(134,239,172,.15);color:#86efac;font-weight:700" title="EARLY + score<60 — WR 67% / avgLoss -24%">★ TỐT YẾU · $5</span>') : ''}
             <div class="tr-score">${signal.score} <small>${signal.grade}</small></div>
           </div>
         </div>
@@ -136,6 +144,14 @@ function renderPaper(data) {
     const volume = qualityTier === 'VOLUME_DISTRIBUTION';
     const early = qualityTier === 'EARLY_CONFIRMED' || String(trade.stage ?? '').toUpperCase() === 'TOP_EARLY_CONFIRMED';
     const strongCase = Boolean(trade.strongCase);
+    // Tín hiệu TỐT (backtest): no-DCA scout. XẤU: DCA/quality/strongCase (net âm).
+    const good = trade.signalGood != null
+      ? Boolean(trade.signalGood)
+      : !(strongCase || quality || volume || Boolean(trade.qualityDcaEligible) || Boolean(trade.qualityBreakdown));
+    // Phân tầng trong nhóm tốt: mạnh (TOP_CONFIRMED / score>=60) vs yếu (EARLY + score<60).
+    const goodStrong = good && (trade.signalGoodStrong != null
+      ? Boolean(trade.signalGoodStrong)
+      : (String(trade.stage ?? '').toUpperCase() === 'TOP_CONFIRMED' || Number(trade.score ?? 0) >= 60));
     const btcShift = qualityTier === 'BTC_SHIFT' || String(trade.source ?? '').includes('btc-shift') || trade.btcShiftDcaTaken;
     const canDca = !strongCase && (quality || volume);
     const signalType = strongCase
@@ -160,9 +176,14 @@ function renderPaper(data) {
     const action = trade.status === 'CLOSED' || trade.status === 'EXPIRED'
       ? `<button class="tr-btn del" data-delete="${trade.id}">Del</button>`
       : `<button class="tr-btn" data-close="${trade.id}">Close</button>`;
-    return `<tr>
+    const goodBadge = !good
+      ? '<br><small class="muted" title="Loại tín hiệu net âm (DCA/quality/strongCase)">loại xấu · $1</small>'
+      : goodStrong
+      ? '<br><small class="tr-positive" style="font-weight:800" title="TOP_CONFIRMED hoặc score>=60 — WR 82% / net +686%">★★ TỐT MẠNH · $10 · SL-45%</small>'
+      : '<br><small style="color:#86efac;font-weight:700" title="EARLY + score<60 — WR 67% / avgLoss -24%, low-conviction">★ TỐT YẾU · $5 · SL-45%</small>';
+    return `<tr style="${good ? `background:rgba(52,211,153,${goodStrong ? '.12' : '.05'});box-shadow:inset 3px 0 0 ${goodStrong ? '#34d399' : '#86efac'}` : ''}">
       <td>${dca}</td>
-      <td><a href="/?symbol=${encodeURIComponent(trade.symbol)}" target="_blank" style="color:var(--text);font-weight:900">${trade.symbol}</a></td>
+      <td><a href="/?symbol=${encodeURIComponent(trade.symbol)}" target="_blank" style="color:${good ? (goodStrong ? '#34d399' : '#86efac') : 'var(--text)'};font-weight:900">${trade.symbol}</a>${goodBadge}</td>
       <td>${price(trade.entryPrice)}</td><td>${price(trade.tp)}</td>
       <td>${trade.sl ? `${price(trade.sl)}<br><small>lock ${signed(trade.slTrailLockRoe, '%')} · peak ${signed(trade.peakRoe, '%')}</small>` : `<span class="muted">waiting +15%<br>peak ${signed(trade.peakRoe, '%')}</span>`}</td>
       <td>${price(trade.markPrice)}</td>
