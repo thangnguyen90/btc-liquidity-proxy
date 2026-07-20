@@ -357,6 +357,49 @@
         flex-shrink: 0;
       }
 
+      .edge-combo-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 8px;
+        padding: 10px 14px 4px;
+        border-top: 1px solid var(--line);
+      }
+      .edge-combo-card {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 9px 10px;
+        background: rgba(15,23,42,.18);
+      }
+      .edge-combo-card.good { border-color: rgba(45,212,191,.8); background: linear-gradient(115deg, rgba(20,184,166,.18), rgba(15,23,42,.16)); }
+      .edge-combo-card.bad { border-color: rgba(251,113,133,.8); background: linear-gradient(115deg, rgba(251,113,133,.20), rgba(15,23,42,.16)); }
+      .edge-combo-card.neutral { border-color: rgba(251,191,36,.75); }
+      .edge-combo-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:5px; }
+      .edge-combo-title { font-size: 12px; font-weight: 950; color: var(--text); }
+      .edge-combo-tags { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:7px; }
+      .edge-combo-tag { font-size:9px; font-weight:900; padding:2px 5px; border-radius:3px; border:1px solid rgba(148,163,184,.35); color:var(--muted); background:rgba(15,23,42,.25); max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .edge-combo-tag.hot { color:#34d399; border-color:rgba(52,211,153,.75); }
+      .edge-combo-tag.bad { color:#fb7185; border-color:rgba(251,113,133,.75); }
+      .edge-combo-stats { font-size:11px; color:var(--muted); line-height:1.5; }
+      .edge-combo-pnl.pos { color:var(--green); font-weight:950; }
+      .edge-combo-pnl.neg { color:var(--red); font-weight:950; }
+      .edge-chip {
+        display: inline-block;
+        max-width: 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: middle;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 2px 5px;
+        font-size: 10px;
+        font-weight: 900;
+        color: var(--muted);
+      }
+      .edge-chip.good { color: #34d399; border-color: rgba(52,211,153,.75); }
+      .edge-chip.bad { color: #fb7185; border-color: rgba(251,113,133,.75); }
+      .edge-chip.warn { color: #fbbf24; border-color: rgba(251,191,36,.75); }
+
       .edge-empty {
         grid-column: 1 / -1;
         text-align: center;
@@ -538,8 +581,25 @@
       <section class="panel edge-paper-section">
         <div class="panel-head">
           <h2>Paper Trades - Short Edge Signals</h2>
-          <span id="edgePaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);font-weight:800">
+              Ngày
+              <select id="edgePaperDayFilter" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;font-weight:800">
+                <option value="all">Tất cả</option>
+              </select>
+            </label>
+            <button id="edgePaperPrev" class="btn-small" type="button">Prev</button>
+            <span id="edgePaperPageLabel" style="font-size:12px;color:var(--muted);font-weight:800">Page 1/1</span>
+            <button id="edgePaperNext" class="btn-small" type="button">Next</button>
+            <select id="edgePaperPageSize" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;font-weight:800">
+              <option value="100">100/page</option>
+              <option value="300" selected>300/page</option>
+              <option value="500">500/page</option>
+            </select>
+            <span id="edgePaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+          </div>
         </div>
+        <div id="edgeComboStats" class="edge-combo-grid" style="display:none"></div>
         <div class="table-wrap">
           <table class="signal-table">
             <thead>
@@ -549,10 +609,14 @@
                 <th class="edge-paper-sort" data-edge-paper-sort="entry">Entry <span class="sort-mark"></span></th>
                 <th class="edge-paper-sort" data-edge-paper-sort="sl">SL <span class="sort-mark"></span></th>
                 <th class="edge-paper-sort" data-edge-paper-sort="tp">TP <span class="sort-mark"></span></th>
-                <th class="edge-paper-sort" data-edge-paper-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th>BTC?</th>
+                <th>BTC Trend</th>
+                <th>Gate</th>
+                <th class="edge-paper-sort" data-edge-paper-sort="mark">Last <span class="sort-mark"></span></th>
                 <th class="edge-paper-sort" data-edge-paper-sort="pnl">PnL <span class="sort-mark"></span></th>
                 <th class="edge-paper-sort" data-edge-paper-sort="roe">ROE <span class="sort-mark"></span></th>
                 <th class="edge-paper-sort active" data-edge-paper-sort="status">Status <span class="sort-mark">^</span></th>
+                <th>Combo</th>
                 <th class="edge-paper-sort" data-edge-paper-sort="source">Source <span class="sort-mark"></span></th>
                 <th class="edge-paper-sort" data-edge-paper-sort="time">Time <span class="sort-mark"></span></th>
                 <th></th>
@@ -560,7 +624,7 @@
               </tr>
             </thead>
             <tbody id="edgePaperBody">
-              <tr><td colspan="13" class="empty-cell">No paper trades from Short Edge yet.</td></tr>
+              <tr><td colspan="17" class="empty-cell">No paper trades from Short Edge yet.</td></tr>
             </tbody>
           </table>
         </div>

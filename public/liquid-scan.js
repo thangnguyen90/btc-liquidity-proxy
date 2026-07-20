@@ -25,6 +25,9 @@ const els = {
   closedPaperBody: document.getElementById('closedPaperBody'),
   closedPaperCount: document.getElementById('closedPaperCount'),
   liquidPaperStats: document.getElementById('liquidPaperStats'),
+  liquidPaperOverview: document.getElementById('liquidPaperOverview'),
+  liquidComboStats: document.getElementById('liquidComboStats'),
+  liquidPaperDayFilter: document.getElementById('liquidPaperDayFilter'),
   liquidPaperLiveStatus: document.getElementById('liquidPaperLiveStatus'),
   actionResult: document.getElementById('actionResult'),
 };
@@ -32,6 +35,10 @@ const els = {
 let scanData = null;
 let renderedRows = [];
 let paperTrades = [];
+let liquidPaperSummary = null;
+let liquidPaperComboStats = [];
+let liquidPaperAvailableDays = [];
+let liquidPaperDay = 'all';
 let autoPaperRunning = false;
 let liquidPaperStream = null;
 const paperSort = { key: 'opened', dir: 'desc' };
@@ -106,6 +113,8 @@ function liquidPaperSortValue(trade, key) {
   if (key === 'roe') return Number(trade.roe ?? 0);
   if (key === 'signalRoe') return Number(trade.signalRoe ?? -999);
   if (key === 'hunt') return Number(trade.huntScore ?? trade.huntSignal?.score ?? 0);
+  if (key === 'btcTrend') return Number(trade.btcHealth?.btcTrendScore ?? trade.btcTrendScore ?? -999);
+  if (key === 'combo') return liquidTradeCombo(trade);
   if (key === 'note') return trade.note ?? '';
   return Date.parse(trade.openedAt ?? trade.entryReadyAt ?? trade.createdAt ?? 0) || 0;
 }
@@ -488,19 +497,24 @@ function render() {
 
 async function createPaperFromRow(row, button) {
   const plan = row.entryPlan;
-  const marginUsdt = Number(els.marginInput.value || 1);
+  const marginUsdt = Number(els.marginInput.value || 10);
   const leverage = Number(els.leverageInput.value || 10);
   if (!plan?.entryPrice || !plan?.side) throw new Error('Entry plan missing.');
+  const marketEntry = Number(row.markPrice);
+  const paperEntry = Number.isFinite(marketEntry) && marketEntry > 0 ? marketEntry : Number(plan.entryPrice);
   button.disabled = true;
   const payload = {
     symbol: row.symbol,
     side: plan.side,
     marginUsdt,
     leverage,
-    entryPrice: plan.entryPrice,
-    status: 'PENDING',
+    entryPrice: paperEntry,
+    status: 'OPEN',
     source: 'liquid-scan',
     note: [
+      `marketPaper=1`,
+      `setupEntry=${plan.entryPrice}`,
+      `marketEntry=${paperEntry}`,
       `sweepProb=${row.sweepProb}%`,
       `type=${liquidSignalType(row)}`,
       huntNote(row.huntSignal),
@@ -514,6 +528,7 @@ async function createPaperFromRow(row, button) {
     takeProfitPrice: plan.takeProfitPrice,
     stopLossPrice: plan.stopLossPrice,
     signalType: liquidSignalType(row),
+    signalTimeframe: scanData?.interval ?? els.intervalInput.value ?? '15m',
     signalPoint: row.sweepProb,
     signalMarkPrice: row.markPrice,
     sweepTargetPrice: row.sweepTarget?.price ?? null,
@@ -537,7 +552,7 @@ async function createPaperFromRow(row, button) {
 
 async function placeBinanceFromRow(row, button) {
   const plan = row.entryPlan;
-  const marginUsdt = Number(els.marginInput.value || 1);
+  const marginUsdt = Number(els.marginInput.value || 10);
   const leverage = Number(els.leverageInput.value || 10);
   if (!plan?.entryPrice || !plan?.side) throw new Error('Entry plan missing.');
   const binanceSide = plan.side === 'LONG' ? 'BUY' : 'SELL';
@@ -584,7 +599,7 @@ async function autoCreatePaperTests({ silent = false } = {}) {
   }
 
   await loadAutoPaperTrades();
-  const marginUsdt = Number(els.marginInput.value || 1);
+  const marginUsdt = Number(els.marginInput.value || 10);
   const leverage = Number(els.leverageInput.value || 10);
   const toCreate = candidates.filter((row) => !paperTrades.some((trade) => isSamePlannedTrade(trade, row)));
   if (toCreate.length === 0) {
@@ -594,7 +609,7 @@ async function autoCreatePaperTests({ silent = false } = {}) {
 
   if (!silent) {
     const killCount = toCreate.filter(isKillZoneRow).length;
-    const ok = confirm(`Tạo ${toCreate.length} paper trade PENDING cho Liquid Scan (${killCount} kill-zone)?`);
+    const ok = confirm(`Tạo ${toCreate.length} paper trade MARKET/OPEN cho Liquid Scan (${killCount} kill-zone)?`);
     if (!ok) return;
   }
 
@@ -605,6 +620,8 @@ async function autoCreatePaperTests({ silent = false } = {}) {
     for (const row of toCreate) {
       const plan = row.entryPlan;
       try {
+        const marketEntry = Number(row.markPrice);
+        const paperEntry = Number.isFinite(marketEntry) && marketEntry > 0 ? marketEntry : Number(plan.entryPrice);
         const data = await api('/api/liquid-paper-trades', {
           method: 'POST',
           body: JSON.stringify({
@@ -612,11 +629,14 @@ async function autoCreatePaperTests({ silent = false } = {}) {
             side: plan.side,
             marginUsdt,
             leverage,
-            entryPrice: plan.entryPrice,
-            status: 'PENDING',
+            entryPrice: paperEntry,
+            status: 'OPEN',
             source: `liquid-scan-auto-${row.sweepProb}`,
             note: [
               `autoPaper point>${minPoint}`,
+              `marketPaper=1`,
+              `setupEntry=${plan.entryPrice}`,
+              `marketEntry=${paperEntry}`,
               `type=${liquidSignalType(row)}`,
               `sweepProb=${row.sweepProb}%`,
               huntNote(row.huntSignal),
@@ -630,6 +650,7 @@ async function autoCreatePaperTests({ silent = false } = {}) {
             takeProfitPrice: plan.takeProfitPrice,
             stopLossPrice: plan.stopLossPrice,
             signalType: liquidSignalType(row),
+            signalTimeframe: scanData?.interval ?? els.intervalInput.value ?? '15m',
             signalPoint: row.sweepProb,
             signalMarkPrice: row.markPrice,
             sweepTargetPrice: row.sweepTarget?.price ?? null,
@@ -661,13 +682,232 @@ async function autoCreatePaperTests({ silent = false } = {}) {
 
 async function loadAutoPaperTrades() {
   try {
-    const data = await api('/api/liquid-paper-trades');
+    const qs = new URLSearchParams();
+    if (liquidPaperDay && liquidPaperDay !== 'all') qs.set('day', liquidPaperDay);
+    const data = await api(`/api/liquid-paper-trades${qs.toString() ? `?${qs}` : ''}`);
     paperTrades = data.trades ?? [];
+    liquidPaperSummary = data.summary ?? null;
+    liquidPaperComboStats = data.comboStats ?? [];
+    liquidPaperAvailableDays = data.availableDays ?? liquidPaperAvailableDays;
+    renderLiquidPaperDayOptions();
     updateLiveStatus(data, 'poll');
     renderAutoPaperTrades();
   } catch (err) {
     els.openPaperBody.innerHTML = `<tr><td colspan="15" class="table-empty">Lỗi tải paper: ${escapeHtml(err.message)}</td></tr>`;
   }
+}
+
+function renderLiquidPaperDayOptions() {
+  const el = els.liquidPaperDayFilter;
+  if (!el) return;
+  const current = liquidPaperDay || el.value || 'all';
+  el.innerHTML = [
+    '<option value="all">Tat ca</option>',
+    ...liquidPaperAvailableDays.map((day) => `<option value="${escapeHtml(day)}">${escapeHtml(day)}</option>`),
+  ].join('');
+  el.value = liquidPaperAvailableDays.includes(current) ? current : 'all';
+  liquidPaperDay = el.value;
+}
+
+function liquidTradeCombo(t) {
+  return String(t.liquidCombo ?? '-');
+}
+
+function fmtMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(3)}`;
+}
+
+function renderLiquidBtcTrendBadge(t) {
+  const h = t?.btcHealth ?? {};
+  const dir = String(h.btcTrendDir ?? t?.btcTrendDir ?? '').toLowerCase();
+  const score = Number(h.btcTrendScore ?? t?.btcTrendScore);
+  const pct6h = Number(h.pct6h);
+  const side = String(t?.side ?? '').toUpperCase();
+  const corr = Number(t?.btcCorr);
+  if (!dir && !Number.isFinite(score)) {
+    return '<span title="Lenh cu chua luu BTC snapshot" style="font-size:10px;font-weight:900;color:var(--muted)">BTC NO DATA</span>';
+  }
+  const expected = side === 'LONG' ? 'up' : side === 'SHORT' ? 'down' : '';
+  const aligned = dir && expected ? dir === expected : null;
+  const trendText = dir ? `BTC ${dir.toUpperCase()}${Number.isFinite(score) ? ` ${score}` : ''}` : 'BTC ?';
+  const pctText = Number.isFinite(pct6h) ? `${pct6h >= 0 ? '+' : ''}${pct6h.toFixed(2)}%/6h` : '';
+  const color = dir === 'up' ? '#34d399' : dir === 'down' ? '#fb7185' : '#9daaa5';
+  const relColor = aligned == null ? 'var(--muted)' : aligned ? '#34d399' : '#fb7185';
+  const relText = aligned == null ? '-' : aligned ? 'THUAN BTC' : 'NGUOC BTC';
+  const title = [
+    `btcTrend=${dir || '-'}`,
+    Number.isFinite(score) ? `score=${score}` : '',
+    Number.isFinite(pct6h) ? `pct6h=${pct6h.toFixed(2)}%` : '',
+    Number.isFinite(corr) ? `corr=${corr.toFixed(2)}` : '',
+    `side=${side || '-'}`,
+  ].filter(Boolean).join(' | ');
+  return `<div title="${escapeHtml(title)}" style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">
+    <span style="display:inline-flex;gap:4px;align-items:center;padding:2px 6px;border-radius:4px;border:1px solid ${color};background:rgba(15,23,42,.25);color:${color};font-size:10px;font-weight:950;line-height:1.15">${escapeHtml(trendText)}${pctText ? `<small style="font-size:9px;font-weight:850;color:${color}">${escapeHtml(pctText)}</small>` : ''}</span>
+    <span style="font-size:10px;font-weight:950;color:${relColor}">${relText}</span>
+  </div>`;
+}
+
+function renderLiquidComboCell(t) {
+  const combo = liquidTradeCombo(t);
+  if (!combo || combo === '-') return '<span class="muted">-</span>';
+  const short = combo.length > 42 ? `${combo.slice(0, 42)}...` : combo;
+  return `<span class="pump-combo-tag" title="${escapeHtml(combo)}">${escapeHtml(short)}</span>`;
+}
+
+function summarizeLiquidPaperRows(rows) {
+  const pick = (margin) => {
+    const m = Number(margin);
+    if (Number.isFinite(m) && m <= 1.01) return 'test1';
+    if (Number.isFinite(m) && m >= 9.5 && m <= 10.5) return 'test10';
+    return 'other';
+  };
+  const makeGroup = (label) => ({
+    label, total: 0, open: 0, closed: 0, wins: 0, losses: 0,
+    realizedPnl: 0, unrealizedPnl: 0, roeSum: 0,
+  });
+  const byMargin = {
+    test10: makeGroup('TEST $10'),
+    test1: makeGroup('TEST $1'),
+    other: makeGroup('Other'),
+  };
+  const summary = {
+    total: rows.length, open: 0, pending: 0, closed: 0, wins: 0, losses: 0,
+    tpHits: 0, slHits: 0, realizedPnl: 0, unrealizedPnl: 0, roeSum: 0,
+    byMargin,
+  };
+  for (const row of rows) {
+    const status = String(row.status ?? '');
+    const pnl = Number(row.pnl ?? 0);
+    const roe = Number(row.roe ?? 0);
+    const group = byMargin[pick(row.marginUsdt)];
+    group.total += 1;
+    if (status === 'CLOSED') {
+      summary.closed += 1;
+      group.closed += 1;
+      summary.realizedPnl += pnl;
+      group.realizedPnl += pnl;
+      summary.roeSum += Number.isFinite(roe) ? roe : 0;
+      group.roeSum += Number.isFinite(roe) ? roe : 0;
+      if (pnl > 0) { summary.wins += 1; group.wins += 1; }
+      else { summary.losses += 1; group.losses += 1; }
+      const closeNote = String(row.closeNote ?? row.status ?? '').toUpperCase();
+      if (closeNote.includes('TP')) summary.tpHits += 1;
+      if (closeNote.includes('SL')) summary.slHits += 1;
+    } else {
+      if (status === 'PENDING' || status === 'ENTRY_READY') summary.pending += 1;
+      else summary.open += 1;
+      group.open += 1;
+      summary.unrealizedPnl += pnl;
+      group.unrealizedPnl += pnl;
+    }
+  }
+  const finishGroup = (group) => ({
+    ...group,
+    wr: group.closed ? +(group.wins / group.closed * 100).toFixed(1) : null,
+    avgRoe: group.closed ? +(group.roeSum / group.closed).toFixed(1) : null,
+    realizedPnl: +group.realizedPnl.toFixed(4),
+    unrealizedPnl: +group.unrealizedPnl.toFixed(4),
+    netPnl: +(group.realizedPnl + group.unrealizedPnl).toFixed(4),
+  });
+  return {
+    ...summary,
+    winRate: summary.closed ? +(summary.wins / summary.closed * 100).toFixed(1) : null,
+    avgRoe: summary.closed ? +(summary.roeSum / summary.closed).toFixed(1) : null,
+    realizedPnl: +summary.realizedPnl.toFixed(4),
+    unrealizedPnl: +summary.unrealizedPnl.toFixed(4),
+    totalPnl: +(summary.realizedPnl + summary.unrealizedPnl).toFixed(4),
+    byMargin: {
+      test10: finishGroup(byMargin.test10),
+      test1: finishGroup(byMargin.test1),
+      other: finishGroup(byMargin.other),
+    },
+  };
+}
+
+function renderLiquidPaperOverview() {
+  const el = els.liquidPaperOverview;
+  if (!el) return;
+  const visibleRows = paperTrades.filter((t) => String(t.source ?? '').startsWith('liquid-scan'));
+  const summary = liquidPaperDay && liquidPaperDay !== 'all'
+    ? summarizeLiquidPaperRows(visibleRows)
+    : liquidPaperSummary;
+  if (!summary) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const wr = summary.closed > 0 ? Math.round(summary.winRate ?? 0) : null;
+  const allCard = {
+    label: 'Tong filter',
+    title: `${summary.open ?? 0} open · ${summary.pending ?? 0} pending · ${summary.closed ?? 0} closed`,
+    detail: `WR ${wr == null ? '-' : `${wr}%`}`,
+    pnl: Number(summary.totalPnl),
+    realizedPnl: Number(summary.realizedPnl),
+    unrealizedPnl: Number(summary.unrealizedPnl),
+  };
+  const cards = [allCard, summary.byMargin?.test10, summary.byMargin?.test1, summary.byMargin?.other].filter(Boolean);
+  el.style.display = cards.length ? 'grid' : 'none';
+  el.innerHTML = cards.map((row) => {
+    const pnl = Number(row.pnl ?? row.netPnl ?? 0);
+    const cls = pnl > 0 ? 'good' : pnl < 0 ? 'bad' : 'neutral';
+    const detail = row.detail
+      ?? `WR ${row.wr == null ? '-' : `${row.wr}%`} · ${row.wins ?? 0}W/${row.losses ?? 0}L · AvgROE ${row.avgRoe == null ? '-' : `${row.avgRoe > 0 ? '+' : ''}${row.avgRoe}%`}`;
+    const sub = row.realizedPnl == null
+      ? detail
+      : `${detail}<br>real ${fmtMoney(row.realizedPnl)} · live ${fmtMoney(row.unrealizedPnl)}`;
+    return `<div class="pump-paper-metric ${cls}">
+      <span class="pump-paper-metric-label">${escapeHtml(row.label ?? 'Group')}</span>
+      <strong class="${pnl >= 0 ? 'positive' : 'negative'}">${fmtMoney(pnl)}</strong>
+      <small>${escapeHtml(row.title ?? `${row.open ?? 0} open · ${row.closed ?? 0} closed`)}<br>${sub}</small>
+    </div>`;
+  }).join('');
+}
+
+function renderLiquidComboStats() {
+  const el = els.liquidComboStats;
+  if (!el) return;
+  const rows = Array.isArray(liquidPaperComboStats) ? liquidPaperComboStats : [];
+  if (!rows.length) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = 'grid';
+  el.innerHTML = rows.map((row, index) => {
+    const key = String(row.key ?? '-');
+    const parts = key.split('|').map((p) => p.trim()).filter(Boolean);
+    const title = parts.slice(0, 3).join(' · ') || key;
+    const tags = parts.slice(3).map((part) => {
+      const upper = part.toUpperCase();
+      const cls = upper.includes('BAD') || upper.includes('BLOCK') || upper.includes('RAC') || upper.includes('COUNTER') ? 'bad'
+        : upper.includes('GOOD') || upper.includes('OK') || upper.includes('THUAN') || upper.includes('THEO') ? 'hot'
+          : '';
+      return `<span class="pump-combo-tag ${cls}" title="${escapeHtml(part)}">${escapeHtml(part)}</span>`;
+    }).join('');
+    const quality = String(row.quality ?? '').toLowerCase();
+    const cardCls = quality.includes('good') ? 'good' : quality.includes('bad') ? 'bad' : 'neutral';
+    const pnl = Number(row.pnl ?? 0);
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null ? '-' : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const plan = row.tradePlan ?? {};
+    const planLabel = String(plan.label ?? '').trim() || 'TEST $1';
+    const planMargin = Number(plan.marginUsdt);
+    const planCls = Number.isFinite(planMargin) && planMargin <= 1.01 ? 'bad' : 'hot';
+    const planTitle = plan.reason ? ` title="${escapeHtml(plan.reason)}"` : '';
+    return `<div class="pump-combo-card ${cardCls}">
+      <div class="pump-combo-head">
+        <div class="pump-combo-title">#${index + 1} ${escapeHtml(title)}</div>
+        <span class="pump-combo-tag ${planCls}"${planTitle}>${escapeHtml(planLabel)}</span>
+      </div>
+      <div class="pump-combo-tags">${tags}</div>
+      <div class="pump-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${wr} · Closed ${row.closed ?? 0}/${row.total ?? 0}</div>
+        <div class="pump-combo-pnl ${pnl >= 0 ? 'pos' : 'neg'}">PnL ${fmtMoney(pnl)} · AvgROE ${avgRoe}</div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function startLiquidPaperStream() {
@@ -680,7 +920,24 @@ function startLiquidPaperStream() {
         els.openPaperBody.innerHTML = `<tr><td colspan="15" class="table-empty">Stream lỗi: ${escapeHtml(data.error)}</td></tr>`;
         return;
       }
-      paperTrades = data.trades ?? [];
+      const incoming = data.trades ?? [];
+      if (liquidPaperDay && liquidPaperDay !== 'all') {
+        const currentIds = new Set(paperTrades.map((t) => t.id));
+        paperTrades = paperTrades.map((trade) => {
+          const live = incoming.find((row) => row.id === trade.id);
+          return live ? { ...trade, ...live } : trade;
+        });
+        incoming.forEach((trade) => {
+          const tradeDay = String(trade.createdAt ?? trade.openedAt ?? trade.closedAt ?? '').slice(0, 10);
+          if (!currentIds.has(trade.id) && tradeDay === liquidPaperDay) paperTrades.push(trade);
+        });
+      } else {
+        paperTrades = incoming;
+        liquidPaperSummary = data.summary ?? null;
+        liquidPaperComboStats = data.comboStats ?? [];
+      }
+      liquidPaperAvailableDays = data.availableDays ?? liquidPaperAvailableDays;
+      renderLiquidPaperDayOptions();
       updateLiveStatus(data, 'sse');
       renderAutoPaperTrades();
     } catch { /* ignore malformed SSE packet */ }
@@ -696,6 +953,8 @@ function startLiquidPaperStream() {
 function renderAutoPaperTrades() {
   const all = paperTrades.filter((t) => String(t.source ?? '').startsWith('liquid-scan'));
   updateLiquidPaperSortHeaders();
+  renderLiquidPaperOverview();
+  renderLiquidComboStats();
 
   const open = sortLiquidPaperRows(all.filter((t) => t.status !== 'CLOSED')).slice(0, 80);
   const closed = sortLiquidPaperRows(all.filter((t) => t.status === 'CLOSED')).slice(0, 200);
@@ -754,6 +1013,8 @@ function renderAutoPaperTrades() {
           <td class="${pnlClass}">${fmt(roe, 2)}%</td>
           <td class="${signalClass}">${fmt(signalPnl, 4)}<small>${fmt(signalRoe, 2)}%</small></td>
           <td>${huntTradeCell(trade)}</td>
+          <td>${renderLiquidBtcTrendBadge(trade)}</td>
+          <td>${renderLiquidComboCell(trade)}</td>
           <td>${escapeHtml(trade.note ?? '')}</td>
           <td>${fmtTime(trade.openedAt ?? trade.entryReadyAt ?? trade.createdAt)}</td>
         </tr>
@@ -787,6 +1048,8 @@ function renderAutoPaperTrades() {
           <td class="${pnlClass}">${fmt(pnl, 4)}</td>
           <td class="${pnlClass}">${fmt(roe, 2)}%</td>
           <td class="${signalClass}">${fmt(signalPnl, 4)}<small>${fmt(signalRoe, 2)}%</small></td>
+          <td>${renderLiquidBtcTrendBadge(trade)}</td>
+          <td>${renderLiquidComboCell(trade)}</td>
           <td>${escapeHtml(trade.note ?? '')}</td>
           <td>${fmtTime(trade.openedAt ?? trade.createdAt)}</td>
           <td>${fmtTime(trade.closedAt)}</td>
@@ -812,6 +1075,10 @@ els.scanBody.addEventListener('click', async (event) => {
   }
 });
 els.autoPaperButton.addEventListener('click', autoCreatePaperTests);
+els.liquidPaperDayFilter?.addEventListener('change', () => {
+  liquidPaperDay = els.liquidPaperDayFilter.value || 'all';
+  loadAutoPaperTrades();
+});
 document.querySelectorAll('[data-paper-sort]').forEach((th) => {
   th.addEventListener('click', () => {
     const key = th.dataset.paperSort;

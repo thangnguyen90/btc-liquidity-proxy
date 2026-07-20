@@ -3,6 +3,7 @@ const SSE_URL = '/api/cap-stream';
 let allSignals = [];
 let scannedAt  = null;
 let total      = 0;
+let capSignalByKey = new Map();
 
 const grid        = document.getElementById('capGrid');
 const longCount   = document.getElementById('longCount');
@@ -147,6 +148,18 @@ function buildFactors(sig) {
   return chips.map((c) => `<span class="cap-factor ${c.ok}">${c.label}</span>`).join('');
 }
 
+function makeCapSignalKey(sig, idx = 0) {
+  return [
+    idx,
+    sig.symbol,
+    sig.action,
+    sig.type,
+    sig.score,
+    sig.entry,
+    sig.scannedAt ?? scannedAt ?? '',
+  ].map((v) => String(v ?? '').replaceAll('|', '_')).join('|');
+}
+
 // ── Binance order placement ───────────────────────────────────────────────────
 
 let capOpenLimitSymbols = new Set();
@@ -180,7 +193,7 @@ async function loadCapOpenLimitOrders() {
 window.placeCapOrder = async function(btn, symbol, action, entry, sl, tp, score, type, forceMarket = false) {
   const row = btn.closest('.cap-order-row');
   const input = row?.querySelector('.cap-order-margin') ?? btn.closest('td')?.querySelector('.cap-order-margin');
-  const margin = Number(input?.value ?? 5);
+  const margin = Number(input?.value ?? 10);
   if (!margin || margin <= 0) { btn.textContent = 'Nhập margin!'; return; }
 
   const token = localStorage.getItem('orders_token') ?? '';
@@ -242,6 +255,10 @@ function buildCard(sig) {
   const slColor     = isLong ? 'negative' : 'positive';
   const tpColor     = isLong ? 'positive' : 'negative';
   const factors     = buildFactors(sig);
+  const btcCorrHtml = renderCapBtcCorrBadge(sig);
+  const btcTrendHtml = renderCapBtcTrendBadge(sig);
+  const gateHtml = renderCapGateBadge(sig);
+  const signalKey = sig._capKey ?? '';
 
   return `
     <article class="cap-card ${dirClass}">
@@ -283,6 +300,7 @@ function buildCard(sig) {
       </div>
 
       <div class="cap-factors">${factors}</div>
+      <div class="cap-factors">${btcCorrHtml}${btcTrendHtml}${gateHtml}</div>
       <div class="cap-note">${sig.note || ''}</div>
 
       <div class="cap-footer">
@@ -291,11 +309,11 @@ function buildCard(sig) {
           ${sig.blockShort ? '🔒 blocks short' : ''}
           ${sig.blockLong  ? '🔒 blocks long'  : ''}
         </span>
-        <button class="cap-paper-btn ${dirClass}" onclick="enterCapPaperTrade(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}')">+ Paper</button>
+        <button class="cap-paper-btn ${dirClass}" onclick="enterCapPaperTrade(this,'${signalKey}')">+ Paper</button>
       </div>
 
       <div class="cap-order-row">
-        <input class="cap-order-margin" type="number" value="5" min="1" max="10000" step="1" title="Margin (USDT)">
+        <input class="cap-order-margin" type="number" value="10" min="1" max="10000" step="1" title="Margin (USDT)">
         <span class="cap-order-label" style="font-size:11px;color:var(--muted);flex-shrink:0">USDT</span>
         <button class="cap-order-btn ${dirClass}" onclick="placeCapOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score},'${sig.type ?? ''}',false)">📥 LIMIT</button>
         <button class="cap-order-btn ${dirClass}" onclick="placeCapOrder(this,'${sig.symbol}','${sig.action}',${sig.entry},${sig.sl ?? 'null'},${sig.tp ?? 'null'},${sig.score},'${sig.type ?? ''}',true)" style="opacity:.8">⚡ MKT</button>
@@ -356,7 +374,11 @@ function render() {
 // ── Apply new data from SSE push ──────────────────────────────────────────────
 
 function applyData(data) {
-  allSignals = data.signals ?? [];
+  allSignals = (data.signals ?? []).map((sig, idx) => {
+    const key = makeCapSignalKey(sig, idx);
+    return { ...sig, _capKey: key };
+  });
+  capSignalByKey = new Map(allSignals.map((sig) => [sig._capKey, sig]));
   scannedAt  = data.scannedAt;
   total      = data.total ?? 0;
   const processed = data.processed ?? 0;
@@ -392,6 +414,7 @@ function applyData(data) {
   }
 
   render();
+  connectPriceSocket();
 }
 
 // ── SSE connection ────────────────────────────────────────────────────────────
@@ -437,35 +460,47 @@ scoreFilter.addEventListener('change', render);
 
 // ── Live price socket ─────────────────────────────────────────────────────────
 
-const PRICE_URLS = [
-  'wss://fstream.binance.com/ws/!markPrice@arr@1s',
-  'wss://fstream.binancefuture.com/ws/!markPrice@arr@1s',
+const PRICE_BASE_URLS = [
+  'wss://fstream.binance.com/stream?streams=',
+  'wss://fstream.binancefuture.com/stream?streams=',
 ];
 let priceUrlIdx = 0;
+let capPriceWs = null;
+let capPriceWsKey = '';
+let capPriceReconnectTimer = null;
 
 function connectPriceSocket() {
-  const ws = new WebSocket(PRICE_URLS[priceUrlIdx % PRICE_URLS.length]);
+  const symbols = [...new Set(allSignals.map((s) => String(s.symbol ?? '').toLowerCase()).filter(Boolean))].slice(0, 400);
+  const key = symbols.join(',');
+  if (!symbols.length || (capPriceWs && capPriceWs.readyState <= 1 && capPriceWsKey === key)) return;
+  capPriceWsKey = key;
+  clearTimeout(capPriceReconnectTimer);
+  if (capPriceWs) {
+    capPriceWs.onclose = null;
+    capPriceWs.close();
+  }
+  const streams = symbols.map((s) => `${s}@aggTrade`).join('/');
+  const ws = new WebSocket(`${PRICE_BASE_URLS[priceUrlIdx % PRICE_BASE_URLS.length]}${streams}`);
+  capPriceWs = ws;
 
   ws.onmessage = (e) => {
     try {
-      const rows = JSON.parse(e.data);
-      if (!Array.isArray(rows)) return;
-      rows.forEach((row) => {
-        if (row.e !== 'markPriceUpdate') return;
-        const p = Number(row.p);
-        if (!isFinite(p)) return;
-        document.querySelectorAll(`[data-price="${row.s}"]`).forEach((el) => {
-          const text = el.textContent;
-          const dot  = text.indexOf('·');
-          if (dot !== -1) el.textContent = text.slice(0, dot + 2) + fmtPrice(p);
-        });
+      const msg = JSON.parse(e.data);
+      const row = msg.data ?? msg;
+      if (row.e !== 'aggTrade') return;
+      const p = Number(row.p);
+      if (!isFinite(p)) return;
+      document.querySelectorAll(`[data-price="${row.s}"]`).forEach((el) => {
+        const text = el.textContent;
+        const dot  = text.indexOf('·');
+        if (dot !== -1) el.textContent = text.slice(0, dot + 2) + fmtPrice(p);
       });
     } catch {}
   };
 
   ws.onclose = () => {
     priceUrlIdx++;
-    setTimeout(connectPriceSocket, 3000);
+    capPriceReconnectTimer = setTimeout(connectPriceSocket, 3000);
   };
 }
 
@@ -473,9 +508,161 @@ function connectPriceSocket() {
 
 const capPaperBody  = document.getElementById('capPaperBody');
 const capPaperCount = document.getElementById('capPaperCount');
+const capPaperDayFilter = document.getElementById('capPaperDayFilter');
+const capComboStatsEl = document.getElementById('capComboStats');
 let capPaperTradesCache = [];
 let capPaperSummaryCache = null;
 let capPaperSort = { key: 'status', dir: 'asc' };
+let capPaperDay = 'all';
+let capPaperAvailableDays = [];
+
+function escapeCapHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function fmtCapMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(3)}`;
+}
+
+function capTradeDay(t) {
+  const d = new Date(t.createdAt ?? t.openedAt ?? t.closedAt ?? 0);
+  if (!Number.isFinite(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+function renderCapPaperDayOptions(days = capPaperAvailableDays) {
+  if (!capPaperDayFilter) return;
+  const normalized = Array.isArray(days) ? days : [];
+  const current = capPaperDayFilter.value || capPaperDay || 'all';
+  capPaperDayFilter.innerHTML = [
+    '<option value="all">Tất cả</option>',
+    ...normalized.map((day) => `<option value="${day}">${day}</option>`),
+  ].join('');
+  capPaperDayFilter.value = normalized.includes(current) ? current : 'all';
+  capPaperDay = capPaperDayFilter.value;
+}
+
+function getFilteredCapPaperTrades(trades = capPaperTradesCache) {
+  const rows = Array.isArray(trades) ? trades : [];
+  return capPaperDay && capPaperDay !== 'all'
+    ? rows.filter((t) => capTradeDay(t) === capPaperDay)
+    : rows;
+}
+
+function capSummaryOfTrades(trades = []) {
+  const active = trades.filter((t) => ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status));
+  const closed = trades.filter((t) => t.status === 'CLOSED');
+  const wins = closed.filter((t) => Number(t.pnl ?? 0) > 0).length;
+  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const realizedPnl = closed.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+  const unrealizedPnl = active.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+  const avgRoe = closed.length
+    ? closed.reduce((sum, t) => sum + Number(t.roe ?? 0), 0) / closed.length
+    : null;
+  return {
+    total: trades.length,
+    open: active.length,
+    closed: closed.length,
+    wins,
+    losses: closed.length - wins,
+    tpHits,
+    slHits,
+    realizedPnl,
+    unrealizedPnl,
+    netPnl: realizedPnl + unrealizedPnl,
+    avgRoe: avgRoe == null ? null : +avgRoe.toFixed(1),
+  };
+}
+
+function capScoreNum(t) {
+  const fromSource = Number(String(t.source ?? '').match(/(?:cap|pump)-(\d+)/)?.[1]);
+  return Number.isFinite(fromSource) ? fromSource : Number(t.score ?? t.pumpScore ?? 0);
+}
+
+function capCorrBucket(corr) {
+  const n = Number(corr);
+  if (!Number.isFinite(n)) return 'BTC_CORR_NO_DATA';
+  return n < 0.3 ? 'BTC_CORR_RAC' : n < 0.5 ? 'BTC_CORR_YEU' : 'BTC_CORR_THEO';
+}
+
+function capTrendBucket(t) {
+  const h = t?.btcHealth ?? {};
+  const dir = String(h.btcTrendDir ?? t?.btcTrendDir ?? '').toUpperCase();
+  const score = Number(h.btcTrendScore ?? t?.btcTrendScore);
+  if (!dir || !Number.isFinite(score)) return 'BTC_NO_DATA';
+  const strength = score < 45 ? 'WEAK' : score < 65 ? 'MID' : 'STRONG';
+  return `BTC_${dir}_${strength}`;
+}
+
+function capRelationBucket(t) {
+  const corr = Number(t?.btcCorr);
+  if (!Number.isFinite(corr)) return 'REL_NO_DATA';
+  if (corr < 0.3) return 'DOC_LAP';
+  if (corr < 0.5) return 'THEO_YEU';
+  const dir = String(t?.btcHealth?.btcTrendDir ?? t?.btcTrendDir ?? '').toUpperCase();
+  const side = String(t?.side ?? '').toUpperCase();
+  const expected = side === 'LONG' ? 'UP' : side === 'SHORT' ? 'DOWN' : '';
+  return dir && expected && dir === expected ? 'THUAN_BTC' : 'NGUOC_BTC';
+}
+
+function normalizeCapComboPart(value, fallback = '-') {
+  const text = String(value ?? fallback).trim().toUpperCase();
+  return text ? text.replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') : fallback;
+}
+
+function capGateBucket(t) {
+  const f = t?.pumpSignalFactors ?? t?.factors ?? {};
+  const explicit = t?.capGateLabel ?? f.capGateLabel;
+  if (explicit) return normalizeCapComboPart(explicit);
+  const blockLong = Boolean(t?.blockLong ?? f.blockLong);
+  const blockShort = Boolean(t?.blockShort ?? f.blockShort);
+  if (blockLong && blockShort) return 'BLOCKS_LONG_SHORT';
+  if (blockLong) return 'BLOCKS_LONG';
+  if (blockShort) return 'BLOCKS_SHORT';
+  const marketOk = t?.pumpSignalMarketOk ?? t?.marketOk ?? f.marketOk;
+  if (marketOk === false) return 'MARKET_FAR';
+  if (marketOk === true) return 'MARKET_OK';
+  return 'UNKNOWN';
+}
+
+function capTfBucket(t) {
+  return String(t.pumpSignalTimeframe ?? t.interval ?? String(t.source ?? '').match(/(\d+[mh])/i)?.[1] ?? '15m').toLowerCase();
+}
+
+function capTradeCombo(t) {
+  const type = String(t.pumpSignalType ?? t.type ?? capSignalType(t.note ?? '') ?? 'CAP').toUpperCase();
+  const side = String(t.side ?? 'SIDE').toUpperCase();
+  const tf = capTfBucket(t);
+  return [
+    type || 'CAP',
+    side,
+    tf,
+    capCorrBucket(t.btcCorr),
+    capTrendBucket(t),
+    capRelationBucket(t),
+    `GATE_${capGateBucket(t)}`,
+  ].join(' | ');
+}
+
+function capComboHasNoData(key) {
+  return /NO_DATA/.test(String(key ?? '').toUpperCase());
+}
+
+function capComboTradePlan(key) {
+  const compact = String(key ?? '').toUpperCase().replace(/\s+/g, '');
+  if (compact.includes('BC_UTAD|SHORT|15M|BTC_CORR_RAC|BTC_UP_MID|DOC_LAP|GATE_OK_CAP_BC_UTAD_SIDEWAY_UP')) {
+    return { label: 'TEST $1', marginUsdt: 1, reason: 'Cap bad-combo rule' };
+  }
+  return { label: 'TEST $10', marginUsdt: 10, reason: 'Cap default paper size' };
+}
 
 function fmtPnl(pnl, roe) {
   if (pnl == null) return '-';
@@ -490,10 +677,14 @@ function capPaperSortValue(t, key) {
   if (key === 'entry') return Number(t.entryPrice);
   if (key === 'sl') return t.sl == null ? null : Number(t.sl);
   if (key === 'tp') return t.tp == null ? null : Number(t.tp);
+  if (key === 'btcCorr') return t.btcCorr == null ? null : Number(t.btcCorr);
+  if (key === 'btcTrend') return Number(t.btcHealth?.btcTrendScore ?? t.btcTrendScore);
   if (key === 'mark') return Number(t.markPrice ?? t.exitPrice);
   if (key === 'pnl') return t.pnl == null ? null : Number(t.pnl);
   if (key === 'roe') return t.roe == null ? null : Number(t.roe);
   if (key === 'type') return capSignalType(t.note ?? '');
+  if (key === 'score') return capScoreNum(t);
+  if (key === 'combo') return capTradeCombo(t);
   if (key === 'source') return t.source ?? '';
   if (key === 'time') return Date.parse(t.createdAt ?? '') || 0;
   if (key === 'status') {
@@ -553,22 +744,165 @@ function capTypeHtml(note) {
   return `<span style="color:${color};font-weight:700;font-size:11px">${type}</span>`;
 }
 
-function renderCapPaperTrades(trades, summary) {
-  capPaperTradesCache = trades;
-  capPaperSummaryCache = summary;
-  const open   = trades.filter((t) => t.status === 'OPEN' || t.status === 'PENDING' || t.status === 'ENTRY_READY');
-  const closed = trades.filter((t) => t.status === 'CLOSED');
-  const all    = sortCapPaperTrades([...open, ...closed]);
-  let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
-  if (summary && summary.closed > 0) {
-    const wr = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
-    countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
-    if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
+function renderCapBtcCorrBadge(t) {
+  const corr = Number(t?.btcCorr);
+  if (!Number.isFinite(corr)) {
+    return '<span title="Lenh cu chua luu btcCorr hoac thieu BTC/coin kline" style="font-size:10px;font-weight:900;color:var(--muted)">BTC NO DATA</span>';
   }
+  const color = corr >= 0.5 ? '#34d399' : corr >= 0.3 ? '#fbbf24' : '#fb7185';
+  const label = corr >= 0.5 ? 'THEO' : corr >= 0.3 ? 'YEU' : 'DOC LAP';
+  return `<span title="corr coin vs BTC=${corr.toFixed(2)}" style="font-size:10px;font-weight:950;color:${color}">${label} ${corr.toFixed(2)}</span>`;
+}
+
+function renderCapBtcTrendBadge(t) {
+  const h = t?.btcHealth ?? {};
+  const dir = String(h.btcTrendDir ?? t?.btcTrendDir ?? '').toLowerCase();
+  const score = Number(h.btcTrendScore ?? t?.btcTrendScore);
+  const regime = String(h.regime ?? '').toUpperCase();
+  const pct6h = Number(h.pct6h);
+  const side = String(t?.side ?? '').toUpperCase();
+  const corr = Number(t?.btcCorr);
+  if (!dir && !regime && !Number.isFinite(score)) {
+    return '<span title="Lenh cu chua luu BTC snapshot" style="font-size:10px;font-weight:900;color:var(--muted)">BTC NO DATA</span>';
+  }
+  const expected = side === 'LONG' ? 'up' : side === 'SHORT' ? 'down' : '';
+  const aligned = dir && expected ? dir === expected : null;
+  const trendText = dir ? `BTC ${dir.toUpperCase()}${Number.isFinite(score) ? ` ${score}` : ''}` : (regime || 'BTC ?');
+  const pctText = Number.isFinite(pct6h) ? `${pct6h >= 0 ? '+' : ''}${pct6h.toFixed(2)}%/6h` : '';
+  const title = [
+    `btcTrend=${dir || '-'}`,
+    Number.isFinite(score) ? `score=${score}` : '',
+    regime ? `regime=${regime}` : '',
+    Number.isFinite(pct6h) ? `pct6h=${pct6h.toFixed(2)}%` : '',
+    `side=${side || '-'}`,
+    Number.isFinite(corr) ? `corr=${corr.toFixed(2)}` : '',
+    aligned == null ? '' : `relation=${aligned ? 'THUAN_BTC' : 'NGUOC_BTC'}`,
+  ].filter(Boolean).join(' | ');
+  let color = '#9daaa5';
+  let bg = 'rgba(157,170,165,.12)';
+  if (dir === 'up') {
+    color = Number.isFinite(score) && score < 45 ? '#fbbf24' : '#34d399';
+    bg = Number.isFinite(score) && score < 45 ? 'rgba(251,191,36,.18)' : 'rgba(52,211,153,.16)';
+  } else if (dir === 'down') {
+    color = Number.isFinite(score) && score < 45 ? '#fbbf24' : '#fb7185';
+    bg = Number.isFinite(score) && score < 45 ? 'rgba(251,191,36,.18)' : 'rgba(251,113,133,.16)';
+  }
+  const relColor = aligned == null ? 'var(--muted)' : aligned ? '#34d399' : '#fb7185';
+  const relText = aligned == null ? '-' : aligned ? 'THUAN BTC' : 'NGUOC BTC';
+  return `<div title="${escapeCapHtml(title)}" style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">
+    <span style="display:inline-flex;gap:4px;align-items:center;max-width:128px;padding:2px 6px;border-radius:4px;border:1px solid ${color};background:${bg};color:${color};font-size:10px;font-weight:950;line-height:1.15">${escapeCapHtml(trendText)}${pctText ? `<small style="font-size:9px;font-weight:850;color:${color}">${escapeCapHtml(pctText)}</small>` : ''}</span>
+    <span style="font-size:10px;font-weight:950;color:${relColor}">${relText}</span>
+  </div>`;
+}
+
+function renderCapGateBadge(t) {
+  const gate = capGateBucket(t);
+  const reason = t?.capGateReason ?? t?.pumpSignalFactors?.capGateReason ?? t?.factors?.capGateReason ?? `cap gate=${gate}`;
+  const isBad = gate.includes('BLOCK') || gate.includes('FAR');
+  const isOk = gate.includes('OK');
+  const color = isBad ? '#fb7185' : isOk ? '#34d399' : '#fbbf24';
+  const bg = isBad ? 'rgba(251,113,133,.14)' : isOk ? 'rgba(52,211,153,.13)' : 'rgba(251,191,36,.13)';
+  return `<span title="${escapeCapHtml(reason)}" style="display:inline-flex;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 6px;border-radius:4px;border:1px solid ${color};background:${bg};color:${color};font-size:10px;font-weight:950">GATE ${escapeCapHtml(gate)}</span>`;
+}
+
+function buildCapComboStats(trades = []) {
+  const groups = new Map();
+  for (const t of trades) {
+    if (t.status !== 'CLOSED') continue;
+    const key = capTradeCombo(t);
+    if (capComboHasNoData(key)) continue;
+    if (!groups.has(key)) groups.set(key, { key, total: 0, closed: 0, wins: 0, losses: 0, pnl: 0, roeSum: 0 });
+    const g = groups.get(key);
+    g.total += 1;
+    g.closed += 1;
+    const pnl = Number(t.pnl ?? 0);
+    const roe = Number(t.roe ?? 0);
+    g.pnl += pnl;
+    g.roeSum += roe;
+    if (pnl > 0) g.wins += 1;
+    else g.losses += 1;
+  }
+  return [...groups.values()].map((g) => {
+    const avgRoe = g.closed ? g.roeSum / g.closed : 0;
+    const wr = g.closed ? g.wins / g.closed * 100 : 0;
+    const quality = g.closed >= 10 && avgRoe > 0.5 && g.pnl > 0
+      ? 'good'
+      : avgRoe <= 0 || g.pnl <= 0
+        ? 'bad'
+        : 'neutral';
+    return { ...g, avgRoe, wr, quality };
+  }).sort((a, b) => {
+    const q = { good: 0, neutral: 1, bad: 2 };
+    const qa = q[a.quality] ?? 9;
+    const qb = q[b.quality] ?? 9;
+    if (qa !== qb) return qa - qb;
+    if ((b.closed >= 10) !== (a.closed >= 10)) return (b.closed >= 10 ? 1 : 0) - (a.closed >= 10 ? 1 : 0);
+    return b.avgRoe - a.avgRoe;
+  }).slice(0, 24);
+}
+
+function renderCapComboStats(trades = []) {
+  if (!capComboStatsEl) return;
+  const rows = buildCapComboStats(trades);
+  if (!rows.length) {
+    capComboStatsEl.style.display = 'none';
+    capComboStatsEl.innerHTML = '';
+    return;
+  }
+  capComboStatsEl.style.display = '';
+  capComboStatsEl.innerHTML = rows.map((row, index) => {
+    const parts = String(row.key ?? '-').split('|').map((p) => p.trim()).filter(Boolean);
+    const title = parts.slice(0, 3).join(' · ') || row.key;
+    const tags = parts.slice(3).map((part) => {
+      const upper = part.toUpperCase();
+      const cls = upper.includes('RAC') || upper.includes('BAD') || upper.includes('BLOCK') ? 'bad'
+        : upper.includes('THUAN') || upper.includes('THEO') || upper.includes('OK') ? 'hot'
+          : upper.includes('WEAK') || upper.includes('YEU') ? 'warn'
+            : '';
+      return `<span class="cap-combo-tag ${cls}" title="${escapeCapHtml(part)}">${escapeCapHtml(part)}</span>`;
+    }).join('');
+    const pnlCls = Number(row.pnl) >= 0 ? 'pos' : 'neg';
+    const badgeCls = row.quality === 'good' ? 'hot' : row.quality === 'bad' ? 'bad' : 'warn';
+    const tradePlan = capComboTradePlan(row.key);
+    const planCls = tradePlan.marginUsdt <= 1 ? 'bad' : 'hot';
+    return `<div class="cap-combo-card ${row.quality}">
+      <div class="cap-combo-head">
+        <div class="cap-combo-title">#${index + 1} ${escapeCapHtml(title)}</div>
+        <div style="display:flex;gap:4px;align-items:flex-start;flex-wrap:wrap;justify-content:flex-end">
+          <span class="cap-combo-tag ${planCls}" title="${escapeCapHtml(tradePlan.reason)}">${escapeCapHtml(tradePlan.label)}</span>
+          <span class="cap-combo-tag ${badgeCls}">${escapeCapHtml(row.quality.toUpperCase())}</span>
+        </div>
+      </div>
+      <div class="cap-combo-tags">${tags}</div>
+      <div class="cap-combo-stats">
+        <div>${row.wins}W/${row.losses}L · WR ${row.wr.toFixed(1)}% · Closed ${row.closed}/${row.total}</div>
+        <div class="cap-combo-pnl ${pnlCls}">PnL ${fmtCapMoney(row.pnl)} · AvgROE ${row.avgRoe >= 0 ? '+' : ''}${row.avgRoe.toFixed(1)}%</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderCapPaperTrades(trades, summary) {
+  capPaperTradesCache = Array.isArray(trades) ? trades : [];
+  const filteredTrades = getFilteredCapPaperTrades(capPaperTradesCache);
+  capPaperSummaryCache = capSummaryOfTrades(filteredTrades);
+  const open   = filteredTrades.filter((t) => t.status === 'OPEN' || t.status === 'PENDING' || t.status === 'ENTRY_READY');
+  const closed = filteredTrades.filter((t) => t.status === 'CLOSED');
+  const all    = sortCapPaperTrades([...open, ...closed]);
+  const summaryNow = capPaperSummaryCache;
+  const dayPrefix = capPaperDay && capPaperDay !== 'all' ? `${capPaperDay} · ` : '';
+  let countTxt = `${dayPrefix}${open.length} đang mở · ${closed.length} đã đóng`;
+  if (summaryNow && summaryNow.closed > 0) {
+    const wr = summaryNow.closed > 0 ? Math.round(summaryNow.wins / summaryNow.closed * 100) : 0;
+    countTxt += ` · ✅TP ${summaryNow.tpHits ?? 0} 🔴SL ${summaryNow.slHits ?? 0} · WR ${wr}%`;
+    if (summaryNow.avgRoe != null) countTxt += ` · AvgROE ${summaryNow.avgRoe > 0 ? '+' : ''}${summaryNow.avgRoe}%`;
+  }
+  countTxt += ` · PnL ${fmtCapMoney(summaryNow.netPnl)} (realized ${fmtCapMoney(summaryNow.realizedPnl)} · live ${fmtCapMoney(summaryNow.unrealizedPnl)})`;
   capPaperCount.textContent = countTxt;
+  renderCapComboStats(filteredTrades);
 
   if (!all.length) {
-    capPaperBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ cap signals.</td></tr>';
+    capPaperBody.innerHTML = '<tr><td colspan="18" class="empty-cell">Chưa có paper trade nào từ cap signals.</td></tr>';
     return;
   }
 
@@ -592,13 +926,15 @@ function renderCapPaperTrades(trades, summary) {
       : t.status === 'PENDING' ? '<span style="color:var(--amber);font-weight:700">⏳ PENDING</span>'
       : '<span style="color:var(--green)">OPEN</span>';
     const dirClass = isLong ? 'long' : 'short';
-    const scoreNum = Number((t.source ?? '').replace(/\D/g, '')) || 0;
+    const scoreNum = capScoreNum(t);
+    const combo = capTradeCombo(t);
+    const comboShort = combo.length > 42 ? `${combo.slice(0, 42)}...` : combo;
     const hasOrder = capOpenLimitSymbols.has(t.symbol);
     const orderCell = isClosed
       ? '<td></td>'
       : `<td>
           <div style="display:flex;align-items:center;gap:4px">
-            <input class="cap-order-margin" type="number" value="5" min="1" max="10000" step="1"
+            <input class="cap-order-margin" type="number" value="10" min="1" max="10000" step="1"
               style="width:46px;padding:3px 5px;border-radius:4px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font-size:12px;font-weight:700;text-align:right"
               title="Margin (USDT)">
             <button class="cap-order-btn ${dirClass}"
@@ -619,10 +955,14 @@ function renderCapPaperTrades(trades, summary) {
       <td>${fmtPrice(t.entryPrice)}</td>
       <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
       <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td>${renderCapBtcCorrBadge(t)}</td>
+      <td>${renderCapBtcTrendBadge(t)}</td>
       <td data-cell-mark="${t.id}">${fmtPrice(mark)}</td>
       <td data-cell-pnl="${t.id}">${fmtPnl(t.pnl, t.roe)}</td>
       <td data-cell-roe="${t.id}">${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
       <td style="font-size:11px">${outcomeHtml}</td>
+      <td style="font-size:11px;color:var(--text);font-weight:700">${scoreNum || '-'}</td>
+      <td style="font-size:10px;color:var(--cyan);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeCapHtml(combo)}">${escapeCapHtml(comboShort)}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
       <td>${actionBtns}</td>
@@ -634,12 +974,13 @@ function renderCapPaperTrades(trades, summary) {
 
 // In-place PNL/MARK update — không re-render cả bảng để tránh flicker
 function refreshCapPaperPnl(trades) {
+  const filteredTrades = getFilteredCapPaperTrades(trades);
   const currentIds = new Set([...capPaperBody.querySelectorAll('tr[data-id]')].map((r) => r.dataset.id));
-  const newIds = new Set(trades.map((t) => t.id));
+  const newIds = new Set(filteredTrades.map((t) => t.id));
   let needFull = currentIds.size !== newIds.size;
   if (!needFull) { for (const id of newIds) { if (!currentIds.has(id)) { needFull = true; break; } } }
   if (needFull) { renderCapPaperTrades(trades, capPaperSummaryCache); return; }
-  for (const t of trades) {
+  for (const t of filteredTrades) {
     if (t.status === 'CLOSED') continue;
     const mark = t.markPrice ?? t.exitPrice ?? '-';
     const markEl = capPaperBody.querySelector(`[data-cell-mark="${t.id}"]`);
@@ -649,16 +990,20 @@ function refreshCapPaperPnl(trades) {
     if (pnlEl)  pnlEl.innerHTML    = fmtPnl(t.pnl, t.roe);
     if (roeEl)  roeEl.textContent  = t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-';
   }
-  const open = trades.filter((t) => t.status !== 'CLOSED').length;
-  const closed = trades.filter((t) => t.status === 'CLOSED').length;
-  const summary = capPaperSummaryCache;
-  let countTxt = `${open} đang mở · ${closed} đã đóng`;
+  const open = filteredTrades.filter((t) => t.status !== 'CLOSED').length;
+  const closed = filteredTrades.filter((t) => t.status === 'CLOSED').length;
+  const summary = capSummaryOfTrades(filteredTrades);
+  capPaperSummaryCache = summary;
+  const dayPrefix = capPaperDay && capPaperDay !== 'all' ? `${capPaperDay} · ` : '';
+  let countTxt = `${dayPrefix}${open} đang mở · ${closed} đã đóng`;
   if (summary && summary.closed > 0) {
     const wr = Math.round(summary.wins / summary.closed * 100);
     countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
     if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
   }
+  countTxt += ` · PnL ${fmtCapMoney(summary.netPnl)} (realized ${fmtCapMoney(summary.realizedPnl)} · live ${fmtCapMoney(summary.unrealizedPnl)})`;
   capPaperCount.textContent = countTxt;
+  renderCapComboStats(filteredTrades);
 }
 
 let _capPaperFetching = false;
@@ -670,7 +1015,8 @@ async function loadCapPaperTrades() {
     if (!res.ok) return;
     const data = await res.json();
     const trades = data.trades ?? [];
-    capPaperSummaryCache = data.summary;
+    capPaperAvailableDays = [...new Set(trades.map(capTradeDay).filter(Boolean))].sort().reverse();
+    renderCapPaperDayOptions(capPaperAvailableDays);
     if (capPaperTradesCache.length > 0) {
       capPaperTradesCache = trades;
       refreshCapPaperPnl(trades);
@@ -692,15 +1038,44 @@ function scheduleCapPaperPoll() {
   }, hasOpen ? 3_000 : 15_000);
 }
 
-window.enterCapPaperTrade = async function(btn, symbol, side, entry, score, sl, tp, noteEncoded) {
+window.enterCapPaperTrade = async function(btn, signalKey) {
   btn.disabled = true;
   btn.textContent = '...';
-  const note = noteEncoded ? decodeURIComponent(noteEncoded) : '';
+  const sig = capSignalByKey.get(signalKey);
+  if (!sig) {
+    btn.textContent = 'NO SIG';
+    setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
+    return;
+  }
+  const note = sig.note ?? '';
+  const score = Number(sig.score ?? 0);
+  const combo = capTradeCombo(sig);
+  const tradePlan = capComboTradePlan(combo);
   try {
     const res = await fetch('/api/cap-paper-trades', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice: entry, tp: tp ?? null, sl: sl ?? null, source: `cap-${score}`, note }),
+      body: JSON.stringify({
+        symbol: sig.symbol,
+        side: sig.action,
+        marginUsdt: tradePlan.marginUsdt,
+        leverage: 10,
+        entryPrice: sig.entry,
+        tp: sig.tp ?? null,
+        sl: sig.sl ?? null,
+        source: `cap-${score}`,
+        pumpSignalType: sig.type ?? capSignalType(note) ?? 'CAP',
+        pumpSignalGrade: sig.grade ?? null,
+        pumpSignalMarketOk: sig.marketOk ?? null,
+        pumpSignalFactors: sig.factors ?? {},
+        pumpSignalTimeframe: sig.factors?.timeframe ?? sig.interval ?? '15m',
+        pumpCombo: combo,
+        capGateLabel: sig.capGateLabel ?? capGateBucket(sig),
+        capGateReason: sig.capGateReason ?? sig.factors?.capGateReason ?? null,
+        btcHealth: sig.btcHealth ?? null,
+        btcCorr: sig.btcCorr,
+        note,
+      }),
     });
     if (res.ok) {
       btn.textContent = '⏳';
@@ -751,6 +1126,11 @@ document.querySelectorAll('[data-paper-sort]').forEach((th) => {
     };
     renderCapPaperTrades(capPaperTradesCache, capPaperSummaryCache);
   });
+});
+
+capPaperDayFilter?.addEventListener('change', () => {
+  capPaperDay = capPaperDayFilter.value || 'all';
+  renderCapPaperTrades(capPaperTradesCache, capPaperSummaryCache);
 });
 
 async function fetchAndApply(attempt = 0) {

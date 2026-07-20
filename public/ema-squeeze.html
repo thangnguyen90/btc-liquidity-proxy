@@ -552,6 +552,44 @@
         padding: 8px 16px;
         border-bottom: 1px solid var(--line);
       }
+      .es-paper-overview {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        gap: 8px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255,255,255,.01);
+      }
+      .es-paper-margin-card {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel-2);
+        padding: 9px 10px;
+        min-width: 0;
+      }
+      .es-paper-margin-card.test10 { border-color: rgba(16,185,129,.45); background: rgba(16,185,129,.07); }
+      .es-paper-margin-card.test1 { border-color: rgba(251,113,133,.45); background: rgba(251,113,133,.07); }
+      .es-paper-margin-card strong {
+        display: block;
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 900;
+      }
+      .es-paper-margin-card .pnl {
+        margin-top: 3px;
+        font-size: 15px;
+        font-weight: 950;
+      }
+      .es-paper-margin-card small {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 800;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .es-paper-filters {
         display: flex;
         align-items: center;
@@ -663,6 +701,41 @@
       }
       .es-paper-table tr:last-child td { border-bottom: none; }
       .es-paper-table tr:hover td { background: var(--panel-2); }
+      .es-paper-gate-cell {
+        max-width: 170px;
+        min-width: 118px;
+        white-space: normal !important;
+      }
+      .es-paper-gate-pill {
+        display: inline-block;
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: middle;
+        padding: 2px 6px;
+        border-radius: 4px;
+        border: 1px solid rgba(157,170,165,.24);
+        background: rgba(157,170,165,.10);
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+      }
+      .es-paper-gate-pill.bad {
+        border-color: rgba(251,113,133,.52);
+        background: rgba(251,113,133,.14);
+        color: #fb7185;
+      }
+      .es-paper-gate-pill.warn {
+        border-color: rgba(251,191,36,.50);
+        background: rgba(251,191,36,.14);
+        color: #fbbf24;
+      }
+      .es-paper-gate-pill.ok {
+        border-color: rgba(52,211,153,.42);
+        background: rgba(52,211,153,.12);
+        color: #34d399;
+      }
 
       /* ── Variant (cách vào) badge ── */
       .es-variant-badge {
@@ -703,6 +776,7 @@
 
       @media (max-width: 760px) {
         .es-prices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .es-paper-overview,
         .es-paper-stats,
         .es-paper-breakdown { grid-template-columns: 1fr; }
       }
@@ -780,6 +854,7 @@
         </div>
         <div class="top-actions">
           <a class="nav-link" href="/">Dashboard</a>
+          <a class="nav-link" href="/ema-combo-stats.html">Combo Stats</a>
           <a class="nav-link" href="/pump">Pump</a>
           <a class="nav-link" href="/pump-ignition">Pump Ign</a>
           <a class="nav-link" href="/ema99-kill-reclaim">EMA99 Kill</a>
@@ -836,8 +911,8 @@
         <button class="es-tab" data-stage="PRE_BREAKOUT">🟦 Pre Breakout</button>
         <button class="es-tab" data-stage="PRE_BREAKDOWN">🟪 Pre Breakdown</button>
         <button class="es-tab" data-stage="SQUEEZE">🔶 Squeeze</button>
-        <button class="es-tab" data-stage="BR_LIKE">BR-like &gt;85</button>
-        <button class="es-tab" data-stage="BR_LIKE_SHORT">BR Short &gt;85</button>
+        <button class="es-tab" data-stage="BR_LIKE">BR-like ≥80</button>
+        <button class="es-tab" data-stage="BR_LIKE_SHORT">BR Short ≥80</button>
         <button class="es-tab" data-stage="RUNNER">💠 Runner</button>
         <button class="es-tab" data-stage="SQUEEZE_SHORT">🟥 Squeeze Short</button>
       </div>
@@ -903,6 +978,7 @@
       <section class="es-paper-section">
         <h2>Paper Trades <span>EMA Squeeze auto log</span></h2>
         <div id="esPaperSummary">Loading...</div>
+        <div id="esPaperOverview" class="es-paper-overview"></div>
         <div class="es-paper-filters">
           <label>
             Signal type
@@ -976,10 +1052,11 @@
                 <th>Real Gate</th>
                 <th>Short Gate</th>
                 <th>BTC Candle</th>
-                <th class="es-paper-sort" data-es-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="es-paper-sort" data-es-sort="mark">Last <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="pnl">PnL <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="roe">ROE <span class="sort-mark"></span></th>
                 <th class="es-paper-sort active" data-es-sort="status">Status <span class="sort-mark">^</span></th>
+                <th>Gate / Reason</th>
                 <th class="es-paper-sort" data-es-sort="source">Source <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="time">Time <span class="sort-mark"></span></th>
                 <th>Action</th>
@@ -994,6 +1071,6 @@
     </main>
 
     <script src="/btcHealth.js"></script>
-    <script src="/ema-squeeze.js?v=20260629-short-env-recovery-gate" type="module"></script>
+    <script src="/ema-squeeze.js?v=20260705-brlike-score75-log" type="module"></script>
   </body>
 </html>

@@ -1,44 +1,31 @@
 import WebSocket from 'ws';
 
-const WS_BASE = 'wss://fstream.binance.com/public/ws';
+// Binance Futures routed endpoint. The regular /ws mark-price stream is not
+// delivered consistently through every regional route, while the routed
+// all-market stream is. Filter it locally to the active paper symbols.
+const WS_BASE = 'wss://fstream.binance.com/market/ws/!markPrice@arr@1s';
 const BACKOFF_BASE_MS = 5_000;
 const BACKOFF_MAX_MS = 5 * 60_000;
+const STALE_RECONNECT_MS = 10_000;
 
 export function createMarkPriceTicker({ onPrice }) {
   let ws = null;
   let symbols = new Set();
-  let liveSymbols = new Set();
   let reconnectTimer = null;
-  let reconcileTimer = null;
-  let requestId = 1;
+  let watchdogTimer = null;
   let closed = false;
   let backoffMs = BACKOFF_BASE_MS;
+  let lastMessageAt = 0;
 
-  function sendControl(method, targetSymbols) {
-    if (ws?.readyState !== WebSocket.OPEN || targetSymbols.length === 0) return;
-    for (let i = 0; i < targetSymbols.length; i += 200) {
-      ws.send(JSON.stringify({
-        method,
-        params: targetSymbols.slice(i, i + 200).map((symbol) => `${symbol.toLowerCase()}@bookTicker`),
-        id: requestId++,
-      }));
-    }
-  }
-
-  function reconcile() {
-    reconcileTimer = null;
-    if (ws?.readyState !== WebSocket.OPEN) return;
-    const add = [...symbols].filter((symbol) => !liveSymbols.has(symbol));
-    const remove = [...liveSymbols].filter((symbol) => !symbols.has(symbol));
-    sendControl('SUBSCRIBE', add);
-    sendControl('UNSUBSCRIBE', remove);
-    for (const symbol of add) liveSymbols.add(symbol);
-    for (const symbol of remove) liveSymbols.delete(symbol);
-  }
-
-  function scheduleReconcile(delay = 100) {
-    clearTimeout(reconcileTimer);
-    reconcileTimer = setTimeout(reconcile, delay);
+  function startWatchdog() {
+    clearInterval(watchdogTimer);
+    watchdogTimer = setInterval(() => {
+      if (closed || ws?.readyState !== WebSocket.OPEN) return;
+      if (lastMessageAt && Date.now() - lastMessageAt <= STALE_RECONNECT_MS) return;
+      console.warn(`[MarkTick] stale stream >${STALE_RECONNECT_MS}ms, reconnecting.`);
+      ws.terminate();
+    }, 5_000);
+    watchdogTimer.unref?.();
   }
 
   function connect() {
@@ -46,26 +33,29 @@ export function createMarkPriceTicker({ onPrice }) {
     ws = new WebSocket(WS_BASE);
     ws.on('open', () => {
       backoffMs = BACKOFF_BASE_MS;
-      liveSymbols = new Set();
-      console.log('[MarkTick] Connected to Binance routed bookTicker stream.');
-      scheduleReconcile(0);
+      lastMessageAt = Date.now();
+      console.log('[MarkTick] Connected to Binance routed mark-price stream (1s).');
+      startWatchdog();
     });
     ws.on('message', (raw) => {
       try {
-        const row = JSON.parse(raw.toString());
-        if (row?.e !== 'bookTicker') return;
-        const symbol = String(row.s ?? '').toUpperCase();
-        if (!symbols.has(symbol)) return;
-        const bid = Number(row.b);
-        const ask = Number(row.a);
-        const markPrice = (bid + ask) / 2;
-        if (!Number.isFinite(markPrice) || markPrice <= 0) return;
-        onPrice({ symbol, markPrice, eventTime: Number(row.E ?? Date.now()) });
+        lastMessageAt = Date.now();
+        const rows = JSON.parse(raw.toString());
+        if (!Array.isArray(rows)) return;
+        for (const row of rows) {
+          if (row?.e !== 'markPriceUpdate') continue;
+          const symbol = String(row.s ?? '').toUpperCase();
+          if (!symbols.has(symbol)) continue;
+          const markPrice = Number(row.p);
+          if (!Number.isFinite(markPrice) || markPrice <= 0) continue;
+          onPrice({ symbol, markPrice, eventTime: Number(row.E ?? lastMessageAt) });
+        }
       } catch {}
     });
     ws.on('error', () => {});
     ws.on('close', () => {
       if (closed) return;
+      clearInterval(watchdogTimer);
       const delay = backoffMs;
       backoffMs = Math.min(backoffMs * 2, BACKOFF_MAX_MS);
       clearTimeout(reconnectTimer);
@@ -75,13 +65,12 @@ export function createMarkPriceTicker({ onPrice }) {
 
   function setSymbols(nextSymbols) {
     symbols = new Set(nextSymbols.map((symbol) => String(symbol).toUpperCase()));
-    scheduleReconcile();
   }
 
   function close() {
     closed = true;
     clearTimeout(reconnectTimer);
-    clearTimeout(reconcileTimer);
+    clearInterval(watchdogTimer);
     ws?.close();
   }
 

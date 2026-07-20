@@ -591,6 +591,9 @@ async function fetchAndApply(attempt = 0) {
 
 const pumpPaperBody  = document.getElementById('pumpPaperBody');
 const pumpPaperCount = document.getElementById('pumpPaperCount');
+const pumpPaperDayFilter = document.getElementById('pumpPaperDayFilter');
+const pumpComboStatsEl = document.getElementById('pumpComboStats');
+const pumpPaperOverview = document.getElementById('pumpPaperOverview');
 
 let pumpPaperTradesCache  = [];
 let pumpPaperSummaryCache = null;
@@ -598,6 +601,129 @@ let pumpPaperSort = { key: 'status', dir: 'asc' };
 let pumpPaperPage = 1;
 let pumpPaperLimit = 300;
 let pumpPaperPagination = null;
+let pumpPaperDay = 'all';
+let pumpPaperAvailableDays = [];
+let pumpPaperComboStats = [];
+
+function normalizePumpComboPart(value, fallback = '-') {
+  const text = String(value ?? fallback).trim();
+  return (text || fallback)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 48) || fallback;
+}
+
+function pumpSignalComboOf(sig = {}) {
+  const side = normalizePumpComboPart(sig.action ?? sig.side, 'SIDE');
+  const type = normalizePumpComboPart(sig.type ?? sig.pumpSignalType ?? sig.source, 'TYPE');
+  const grade = normalizePumpComboPart(sig.grade ?? sig.pumpSignalGrade, 'GRADE');
+  const score = Number(sig.score ?? sig.pumpScore);
+  const scoreBucket = Number.isFinite(score)
+    ? score >= 90 ? 'SCORE_90_PLUS'
+      : score >= 80 ? 'SCORE_80_89'
+        : score >= 70 ? 'SCORE_70_79'
+          : score >= 60 ? 'SCORE_60_69'
+            : 'SCORE_LT_60'
+    : 'SCORE_NO_DATA';
+  const f = sig.factors ?? sig.pumpSignalFactors ?? {};
+  const vol = Number(f.volRatio ?? f.volume ?? f.volNowX);
+  const volBucket = Number.isFinite(vol)
+    ? vol >= 5 ? 'VOL_5X_PLUS'
+      : vol >= 2 ? 'VOL_2_5X'
+        : 'VOL_LOW'
+    : 'VOL_NO_DATA';
+  const chase = Number(f.chasePct);
+  const chaseBucket = Number.isFinite(chase)
+    ? chase >= 0.45 ? 'CHASE_HIGH'
+      : chase >= 0.30 ? 'CHASE_MID'
+        : 'CHASE_OK'
+    : 'CHASE_NO_DATA';
+  const market = sig.marketOk === false || sig.pumpSignalMarketOk === false
+    ? 'MARKET_FAR'
+    : sig.marketOk === true || sig.pumpSignalMarketOk === true
+      ? 'MARKET_OK'
+      : 'MARKET_UNKNOWN';
+  return [type, side, grade, scoreBucket, volBucket, chaseBucket, market].join(' | ');
+}
+
+function pumpTradeCombo(t) {
+  if (t.pumpCombo) return String(t.pumpCombo);
+  if (t.pumpSignalType || String(t.source ?? '').startsWith('pump-')) {
+    const score = Number(String(t.source ?? '').match(/pump-(\d+)/)?.[1]);
+    return pumpSignalComboOf({
+      side: t.side,
+      type: t.pumpSignalType ?? t.source,
+      grade: t.pumpSignalGrade,
+      score,
+      marketOk: t.pumpSignalMarketOk,
+      factors: t.pumpSignalFactors,
+    });
+  }
+  return '-';
+}
+
+function renderPumpPaperDayOptions(days = pumpPaperAvailableDays) {
+  if (!pumpPaperDayFilter) return;
+  const normalized = Array.isArray(days) ? days : [];
+  const current = pumpPaperDayFilter.value || pumpPaperDay || 'all';
+  pumpPaperDayFilter.innerHTML = [
+    '<option value="all">Tất cả</option>',
+    ...normalized.map((day) => `<option value="${day}">${day}</option>`),
+  ].join('');
+  pumpPaperDayFilter.value = normalized.includes(current) ? current : 'all';
+  pumpPaperDay = pumpPaperDayFilter.value;
+}
+
+pumpPaperDayFilter?.addEventListener('change', () => {
+  pumpPaperDay = pumpPaperDayFilter.value || 'all';
+  loadPumpPaperTrades(1, true);
+});
+
+function renderPumpComboStats(rows = pumpPaperComboStats) {
+  if (!pumpComboStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    pumpComboStatsEl.style.display = 'none';
+    pumpComboStatsEl.innerHTML = '';
+    return;
+  }
+  pumpComboStatsEl.style.display = '';
+  pumpComboStatsEl.innerHTML = list.map((row, index) => {
+    const key = String(row.key ?? '-');
+    const parts = key.split('|').map((p) => p.trim()).filter(Boolean);
+    const title = parts.slice(0, 3).join(' · ') || key;
+    const tags = parts.slice(3).map((part) => {
+      const upper = part.toUpperCase();
+      const cls = upper.includes('BAD') || upper.includes('BLOCK') || upper.includes('RAC') ? 'bad'
+        : upper.includes('GOOD') || upper.includes('OK') || upper.includes('THUAN') || upper.includes('THEO') ? 'hot'
+          : '';
+      return `<span class="pump-combo-tag ${cls}" title="${escapePumpHtml(part)}">${escapePumpHtml(part)}</span>`;
+    }).join('');
+    const quality = String(row.quality ?? '').toLowerCase();
+    const cardCls = quality.includes('good') ? 'good' : quality.includes('bad') ? 'bad' : 'neutral';
+    const pnl = Number(row.pnl ?? 0);
+    const pnlCls = pnl >= 0 ? 'pos' : 'neg';
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null ? '-' : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const plan = row.tradePlan ?? {};
+    const planLabel = String(plan.label ?? '').trim() || 'TEST $1';
+    const planMargin = Number(plan.marginUsdt);
+    const planCls = Number.isFinite(planMargin) && planMargin <= 1.01 ? 'bad' : 'hot';
+    const planTitle = plan.reason ? ` title="${escapePumpHtml(plan.reason)}"` : '';
+    return `<div class="pump-combo-card ${cardCls}">
+      <div class="pump-combo-head">
+        <div class="pump-combo-title">#${index + 1} ${escapePumpHtml(title)}</div>
+        <span class="pump-combo-tag ${planCls}"${planTitle}>${escapePumpHtml(planLabel)}</span>
+      </div>
+      <div class="pump-combo-tags">${tags}</div>
+      <div class="pump-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${wr} · Closed ${row.closed ?? 0}/${row.total ?? 0}</div>
+        <div class="pump-combo-pnl ${pnlCls}">PnL ${fmtPumpMoney(pnl)} · AvgROE ${avgRoe}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
 
 document.addEventListener('click', (e) => {
   const th = e.target.closest('[data-paper-sort]');
@@ -618,16 +744,134 @@ function fmtPnlPump(pnl, roe) {
   return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)} (${sign}${Number(roe ?? 0).toFixed(1)}%)</span>`;
 }
 
+function escapePumpHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function renderPumpBtcCorrBadge(t) {
+  const corr = Number(t?.btcCorr);
+  if (!Number.isFinite(corr)) {
+    return '<span title="Lệnh cũ chưa lưu btcCorr hoặc thiếu kline BTC/coin" style="font-size:10px;font-weight:900;color:var(--muted)">BTC NO DATA</span>';
+  }
+  const color = corr >= 0.5 ? '#34d399' : corr >= 0.3 ? '#fbbf24' : '#fb7185';
+  const label = corr >= 0.5 ? '✓ THEO' : corr >= 0.3 ? '~ YẾU' : '✗ ĐỘC LẬP';
+  return `<span title="corr coin vs BTC=${corr.toFixed(2)}; >=0.5 theo BTC, <0.3 độc lập/rác" style="font-size:10px;font-weight:950;color:${color}">${label} ${corr.toFixed(2)}</span>`;
+}
+
+function renderPumpBtcTrendBadge(t) {
+  const h = t?.btcHealth ?? {};
+  const dir = String(h.btcTrendDir ?? t?.btcTrendDir ?? '').toLowerCase();
+  const score = Number(h.btcTrendScore ?? t?.btcTrendScore);
+  const regime = String(h.regime ?? '').toUpperCase();
+  const pct6h = Number(h.pct6h);
+  const ema1h = String(h.emaTrend1h ?? '').toLowerCase();
+  const side = String(t?.side ?? '').toUpperCase();
+  const corr = Number(t?.btcCorr);
+  if (!dir && !regime && !Number.isFinite(score)) {
+    return '<span title="Lệnh cũ chưa lưu BTC snapshot" style="font-size:10px;font-weight:900;color:var(--muted)">BTC NO DATA</span>';
+  }
+  const expected = side === 'LONG' ? 'up' : side === 'SHORT' ? 'down' : '';
+  const aligned = dir && expected ? dir === expected : null;
+  const trendText = dir ? `BTC ${dir.toUpperCase()}${Number.isFinite(score) ? ` ${score}` : ''}` : (regime || 'BTC ?');
+  const pctText = Number.isFinite(pct6h) ? `${pct6h >= 0 ? '+' : ''}${pct6h.toFixed(2)}%/6h` : '';
+  const title = [
+    `btcTrend=${dir || '-'}`,
+    Number.isFinite(score) ? `score=${score}` : '',
+    regime ? `regime=${regime}` : '',
+    Number.isFinite(pct6h) ? `pct6h=${pct6h.toFixed(2)}%` : '',
+    ema1h ? `ema1h=${ema1h}` : '',
+    `side=${side || '-'}`,
+    Number.isFinite(corr) ? `corr=${corr.toFixed(2)}` : '',
+    aligned == null ? '' : `relation=${aligned ? 'THUAN_BTC' : 'NGUOC_BTC'}`,
+  ].filter(Boolean).join(' | ');
+  let color = '#9daaa5';
+  let bg = 'rgba(157,170,165,.12)';
+  if (dir === 'up') {
+    color = Number.isFinite(score) && score < 45 ? '#fbbf24' : '#34d399';
+    bg = Number.isFinite(score) && score < 45 ? 'rgba(251,191,36,.18)' : 'rgba(52,211,153,.16)';
+  } else if (dir === 'down') {
+    color = Number.isFinite(score) && score < 45 ? '#fbbf24' : '#fb7185';
+    bg = Number.isFinite(score) && score < 45 ? 'rgba(251,191,36,.18)' : 'rgba(251,113,133,.16)';
+  }
+  const relColor = aligned == null ? 'var(--muted)' : aligned ? '#34d399' : '#fb7185';
+  const relText = aligned == null ? '-' : aligned ? 'THUẬN BTC' : 'NGƯỢC BTC';
+  return `<div title="${escapePumpHtml(title)}" style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">
+    <span style="display:inline-flex;gap:4px;align-items:center;max-width:128px;padding:2px 6px;border-radius:4px;border:1px solid ${color};background:${bg};color:${color};font-size:10px;font-weight:950;line-height:1.15">${escapePumpHtml(trendText)}${pctText ? `<small style="font-size:9px;font-weight:850;color:${color}">${escapePumpHtml(pctText)}</small>` : ''}</span>
+    <span style="font-size:10px;font-weight:950;color:${relColor}">${relText}</span>
+  </div>`;
+}
+
+function fmtPumpMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(3)}`;
+}
+
+function appendPumpSummaryPnl(countTxt, summary) {
+  if (!summary) return countTxt;
+  const net = Number(summary.netPnl);
+  const realized = Number(summary.realizedPnl);
+  const unreal = Number(summary.unrealizedPnl);
+  if (!Number.isFinite(net)) return countTxt;
+  return `${countTxt} · PnL ${fmtPumpMoney(net)} (realized ${fmtPumpMoney(realized)} · live ${fmtPumpMoney(unreal)})`;
+}
+
+function renderPumpPaperOverview(summary) {
+  if (!pumpPaperOverview) return;
+  if (!summary) {
+    pumpPaperOverview.innerHTML = '';
+    return;
+  }
+  const byMargin = summary.byMargin ?? {};
+  const wr = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : null;
+  const totalCard = {
+    label: 'Tổng filter',
+    title: `${summary.open ?? 0} open · ${summary.closed ?? 0} closed`,
+    detail: `WR ${wr == null ? '-' : `${wr}%`} · AvgROE ${summary.avgRoe == null ? '-' : `${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`}`,
+    pnl: Number(summary.netPnl),
+  };
+  const cards = [
+    totalCard,
+    byMargin.test10,
+    byMargin.test1,
+    byMargin.other,
+  ].filter(Boolean);
+  pumpPaperOverview.innerHTML = cards.map((row) => {
+    const pnl = Number(row.pnl ?? row.netPnl ?? totalCard.pnl);
+    const cls = pnl > 0 ? 'good' : pnl < 0 ? 'bad' : 'neutral';
+    const label = row.label ?? 'Group';
+    const title = row.title ?? `${row.open ?? 0} open · ${row.closed ?? 0} closed`;
+    const detail = row.detail
+      ?? `WR ${row.wr == null ? '-' : `${row.wr}%`} · ${row.wins ?? 0}W/${row.losses ?? 0}L · AvgROE ${row.avgRoe == null ? '-' : `${row.avgRoe > 0 ? '+' : ''}${row.avgRoe}%`}`;
+    const sub = row.realizedPnl == null
+      ? detail
+      : `${detail}<br>real ${fmtPumpMoney(row.realizedPnl)} · live ${fmtPumpMoney(row.unrealizedPnl)}`;
+    return `<div class="pump-paper-metric ${cls}">
+      <span class="pump-paper-metric-label">${escapePumpHtml(label)}</span>
+      <strong class="${pnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(pnl)}</strong>
+      <small>${escapePumpHtml(title)}<br>${sub}</small>
+    </div>`;
+  }).join('');
+}
+
 function pumpPaperSortValue(t, key) {
   if (key === 'symbol') return t.symbol ?? '';
   if (key === 'side') return t.side ?? '';
   if (key === 'entry') return Number(t.entryPrice);
   if (key === 'sl') return t.sl == null ? null : Number(t.sl);
   if (key === 'tp') return t.tp == null ? null : Number(t.tp);
+  if (key === 'btcCorr') return t.btcCorr == null ? null : Number(t.btcCorr);
+  if (key === 'btcTrend') return Number(t.btcHealth?.btcTrendScore ?? t.btcTrendScore);
   if (key === 'mark') return Number(t.markPrice ?? t.exitPrice);
   if (key === 'pnl') return t.pnl == null ? null : Number(t.pnl);
   if (key === 'roe') return t.roe == null ? null : Number(t.roe);
   if (key === 'source') return t.source ?? '';
+  if (key === 'combo') return pumpTradeCombo(t);
   if (key === 'score') return Number((t.source ?? '').replace(/\D/g, '')) || 0;
   if (key === 'time') return Date.parse(t.createdAt ?? '') || 0;
   if (key === 'status') {
@@ -704,7 +948,9 @@ function renderPumpPaperTrades(trades, summary) {
   const open   = trades.filter((t) => t.status === 'OPEN' || t.status === 'PENDING' || t.status === 'ENTRY_READY');
   const closed = trades.filter((t) => t.status === 'CLOSED');
   const all    = sortPumpPaperTrades([...open, ...closed]);
-  let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
+  const totalOpen = summary?.open ?? open.length;
+  const totalClosed = summary?.closed ?? closed.length;
+  let countTxt = `${pumpPaperDay && pumpPaperDay !== 'all' ? `${pumpPaperDay} · ` : ''}${totalOpen} đang mở · ${totalClosed} đã đóng`;
   if (pumpPaperPagination) {
     countTxt += ` · page ${pumpPaperPagination.page}/${pumpPaperPagination.totalPages} (${all.length}/${pumpPaperPagination.total})`;
   }
@@ -713,11 +959,14 @@ function renderPumpPaperTrades(trades, summary) {
     countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
     if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
   }
+  countTxt = appendPumpSummaryPnl(countTxt, summary);
   pumpPaperCount.textContent = countTxt;
+  renderPumpPaperOverview(summary);
+  renderPumpComboStats(pumpPaperComboStats);
   renderPumpPaperPager();
 
   if (!all.length) {
-    pumpPaperBody.innerHTML = '<tr><td colspan="14" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
+    pumpPaperBody.innerHTML = '<tr><td colspan="17" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
     return;
   }
 
@@ -732,6 +981,8 @@ function renderPumpPaperTrades(trades, summary) {
       ? `<button class="pump-paper-close-btn" style="opacity:.6;font-size:10px" onclick="deletePumpPaperTrade('${t.id}')">Del</button>`
       : `<button class="pump-paper-close-btn" onclick="closePumpPaperTrade('${t.id}')">Close</button>`;
     const rowStyle = isClosed ? 'opacity:.5' : '';
+    const combo = pumpTradeCombo(t);
+    const comboShort = combo.length > 42 ? `${combo.slice(0, 42)}...` : combo;
     const slColor = isLong ? 'var(--red)' : 'var(--green)';
     const tpColor = isLong ? 'var(--green)' : 'var(--red)';
     const outcomeHtml = isClosed
@@ -765,11 +1016,14 @@ function renderPumpPaperTrades(trades, summary) {
       <td>${fmtPrice(t.entryPrice)}</td>
       <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
       <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td>${renderPumpBtcCorrBadge(t)}</td>
+      <td>${renderPumpBtcTrendBadge(t)}</td>
       <td data-cell-mark="${t.id}">${fmtPrice(mark)}</td>
       <td data-cell-pnl="${t.id}">${fmtPnlPump(t.pnl, t.roe)}</td>
       <td data-cell-roe="${t.id}">${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
       <td style="font-size:11px">${outcomeHtml}</td>
       <td style="font-size:11px;color:var(--text);font-weight:700">${scoreNum || '-'}</td>
+      <td style="font-size:10px;color:var(--cyan);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${combo.replace(/"/g, '&quot;')}">${comboShort}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
       <td>${actionBtns}</td>
@@ -806,7 +1060,9 @@ function refreshPumpPaperPnl(trades) {
   const open   = trades.filter((t) => t.status !== 'CLOSED').length;
   const closed = trades.filter((t) => t.status === 'CLOSED').length;
   const summary = pumpPaperSummaryCache;
-  let countTxt = `${open} đang mở · ${closed} đã đóng`;
+  const totalOpen = summary?.open ?? open;
+  const totalClosed = summary?.closed ?? closed;
+  let countTxt = `${pumpPaperDay && pumpPaperDay !== 'all' ? `${pumpPaperDay} · ` : ''}${totalOpen} đang mở · ${totalClosed} đã đóng`;
   if (pumpPaperPagination) {
     countTxt += ` · page ${pumpPaperPagination.page}/${pumpPaperPagination.totalPages} (${trades.length}/${pumpPaperPagination.total})`;
   }
@@ -815,7 +1071,10 @@ function refreshPumpPaperPnl(trades) {
     countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
     if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
   }
+  countTxt = appendPumpSummaryPnl(countTxt, summary);
   pumpPaperCount.textContent = countTxt;
+  renderPumpPaperOverview(summary);
+  renderPumpComboStats(pumpPaperComboStats);
   renderPumpPaperPager();
 }
 
@@ -825,11 +1084,15 @@ async function loadPumpPaperTrades(page = pumpPaperPage, forceRender = false) {
   _pumpPaperFetching = true;
   try {
     const nextPage = Math.max(1, Number(page) || 1);
-    const res = await fetch(`/api/pump-paper-trades?page=${nextPage}&limit=${pumpPaperLimit}`);
+    const dayParam = encodeURIComponent(pumpPaperDay || 'all');
+    const res = await fetch(`/api/pump-paper-trades?page=${nextPage}&limit=${pumpPaperLimit}&day=${dayParam}`);
     if (!res.ok) return;
     const data = await res.json();
     pumpPaperPage = data.pagination?.page ?? nextPage;
     pumpPaperPagination = data.pagination ?? null;
+    pumpPaperAvailableDays = data.availableDays ?? pumpPaperAvailableDays;
+    pumpPaperComboStats = data.comboStats ?? [];
+    renderPumpPaperDayOptions(pumpPaperAvailableDays);
     const trades = data.trades ?? [];
     pumpPaperSummaryCache = data.summary;
     // Nếu bảng đã có rows → in-place update, ngược lại full render
@@ -859,10 +1122,27 @@ window.enterPumpPaperTrade = async function(btn, symbol, side, entry, score, sl,
   btn.disabled = true;
   btn.textContent = '...';
   try {
+    const sig = allSignals.find((row) => row.symbol === symbol && row.action === side)
+      ?? { symbol, action: side, score };
     const res = await fetch('/api/pump-paper-trades', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice: entry, tp: tp ?? null, sl: sl ?? null, source: `pump-${score}` }),
+      body: JSON.stringify({
+        symbol,
+        side,
+        marginUsdt: 1,
+        leverage: 10,
+        entryPrice: entry,
+        tp: tp ?? null,
+        sl: sl ?? null,
+        source: `pump-${score}`,
+        pumpSignalType: sig.type ?? null,
+        pumpSignalGrade: sig.grade ?? null,
+        pumpSignalMarketOk: sig.marketOk ?? null,
+        pumpSignalFactors: sig.factors ?? null,
+        pumpSignalTimeframe: sig.factors?.timeframe ?? sig.interval ?? null,
+        pumpCombo: pumpSignalComboOf(sig),
+      }),
     });
     if (res.ok) {
       btn.textContent = '⏳';

@@ -1,7 +1,8 @@
 /**
  * sharedMarkTicker.js
  *
- * Single bookTicker WebSocket connection shared by ALL paper trade systems.
+ * Single Binance Futures mark-price WebSocket connection shared by ALL paper
+ * trade systems. Prices come from !markPrice@arr@1s and are filtered locally.
  * Instead of 6 separate createMarkPriceTicker() instances, every system
  * registers its callback and symbols here.  Prices are dispatched to all
  * registered handlers whose symbol set matches the incoming symbol.

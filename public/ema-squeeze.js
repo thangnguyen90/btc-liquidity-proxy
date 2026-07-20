@@ -36,6 +36,7 @@ const sortSelect    = document.getElementById('sortSelect');
 const esPaperTypeSelect = document.getElementById('esPaperTypeFilter');
 const esPaperDaySelect = document.getElementById('esPaperDayFilter');
 const esPaperTfSelect = document.getElementById('esPaperTfFilter');
+const esPaperOverview = document.getElementById('esPaperOverview');
 const btcSqueezeContextEl = document.getElementById('btcSqueezeContext');
 const emaSqueezeAutoOrderChk = document.getElementById('emaSqueezeAutoOrderChk');
 const emaSqueezeAutoOrderWrap = document.getElementById('emaSqueezeAutoOrderWrap');
@@ -668,6 +669,70 @@ function updateEsSortHeaders() {
   });
 }
 
+function esPaperMarginBucket(trade) {
+  const margin = Number(trade?.marginUsdt ?? trade?.marginUsd ?? trade?.margin ?? trade?.orderUsdt);
+  if (Number.isFinite(margin) && margin >= 9.5 && margin <= 10.5) return 'test10';
+  if (Number.isFinite(margin) && margin > 0 && margin <= 1.01) return 'test1';
+  return 'other';
+}
+
+function summarizeEsPaperMarginBuckets(trades) {
+  const base = {
+    all: { label: 'Tổng filter', total: 0, open: 0, closed: 0, wins: 0, losses: 0, pnl: 0, roeSum: 0 },
+    test10: { label: 'TEST $10', total: 0, open: 0, closed: 0, wins: 0, losses: 0, pnl: 0, roeSum: 0 },
+    test1: { label: 'TEST $1', total: 0, open: 0, closed: 0, wins: 0, losses: 0, pnl: 0, roeSum: 0 },
+    other: { label: 'Other', total: 0, open: 0, closed: 0, wins: 0, losses: 0, pnl: 0, roeSum: 0 },
+  };
+  const add = (group, trade) => {
+    group.total += 1;
+    const status = String(trade?.status ?? '').toUpperCase();
+    if (status === 'CLOSED') {
+      group.closed += 1;
+      const pnl = Number(trade?.pnl);
+      if (Number.isFinite(pnl)) {
+        if (pnl > 0) group.wins += 1;
+        else if (pnl < 0) group.losses += 1;
+        group.pnl += pnl;
+      }
+      const roe = Number(trade?.roe);
+      if (Number.isFinite(roe)) group.roeSum += roe;
+    } else {
+      group.open += 1;
+      const pnl = Number(trade?.pnl);
+      if (Number.isFinite(pnl)) group.pnl += pnl;
+    }
+  };
+
+  trades.forEach((trade) => {
+    add(base.all, trade);
+    add(base[esPaperMarginBucket(trade)], trade);
+  });
+  Object.values(base).forEach((group) => {
+    group.wr = group.closed > 0 ? (group.wins / group.closed) * 100 : null;
+    group.avgRoe = group.closed > 0 ? group.roeSum / group.closed : null;
+  });
+  return base;
+}
+
+function renderEsPaperOverview(trades, serverSummary = null) {
+  if (!esPaperOverview) return;
+  const groups = serverSummary?.byMargin ?? summarizeEsPaperMarginBuckets(trades);
+  const cards = [groups.all, groups.test10, groups.test1, groups.other].filter(Boolean);
+  esPaperOverview.innerHTML = cards.map((group, index) => {
+    const pnl = Number(group.netPnl ?? group.pnl ?? 0);
+    const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const cls = index === 1 ? ' test10' : index === 2 ? ' test1' : '';
+    const wr = group.wr == null ? '-' : `${group.wr.toFixed(0)}%`;
+    const avgRoe = group.avgRoe == null ? '-' : fmtPct(group.avgRoe, 1);
+    return `<article class="es-paper-margin-card${cls}">
+      <strong>${escapeHtml(group.label)}</strong>
+      <div class="pnl" style="color:${pnlColor}">${formatEsMoney(pnl)}</div>
+      <small>${group.total} total · ${group.open} open · ${group.closed} closed</small>
+      <small>WR ${wr} · AvgROE ${avgRoe} · ${group.wins}W/${group.losses}L</small>
+    </article>`;
+  }).join('');
+}
+
 function ensureEsPaperPager() {
   let pager = document.getElementById('esPaperPager');
   if (pager) return pager;
@@ -747,17 +812,24 @@ function getEsTimeframe(t) {
   return match ? match[1] : 'Mixed';
 }
 
-function renderBtcTurnGateBanner(gates = []) {
-  const active = (gates ?? []).filter((g) => g?.blockMarket);
+function renderBtcTurnGateBanner(summary = {}) {
+  const groups = [
+    ['BR-like', summary?.btcTurnGates],
+    ['Runner', summary?.runnerBtcTurnGates],
+    ['Breakout', summary?.breakoutBtcTurnGates],
+  ];
+  const active = groups.flatMap(([kind, gates]) =>
+    (gates ?? []).filter((g) => g?.blockMarket).map((g) => ({ ...g, kind })));
   if (!active.length) return '';
   return active.map((g) => {
+    const kind = escapeHtml(g.kind ?? 'Gate');
     const side = escapeHtml(g.side ?? '');
     const label = escapeHtml(g.label ?? 'BTC_TURN_CLUSTER_BAD');
     const reason = escapeHtml(g.reason ?? '');
     const cluster = g.cluster ?? {};
     return `
       <div style="margin:8px 16px 0;padding:10px 12px;border:2px solid #ff4d6d;background:#3a0712;color:#ffb3c1;font-weight:900;font-size:18px;line-height:1.25">
-        BTC TURN WARNING - CHẶN BR-like ${side} MARKET: ${label}
+        BTC TURN WARNING - CHẶN ${kind} ${side} MARKET: ${label}
         <div style="font-size:12px;color:#ffd6de;margin-top:4px;font-weight:700">
           open=${cluster.open ?? '-'} · pnl=${cluster.pnl ?? '-'} · losers=${cluster.losers ?? '-'} · fast=${cluster.fastLosers ?? '-'} · ${reason}
         </div>
@@ -805,26 +877,110 @@ function renderEsShortEnvBadge(t) {
   return `<span title="${escapeHtml(title)}" style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;border:1px solid ${color};color:${color};background:rgba(15,23,42,.25)">${escapeHtml(text)}</span>`;
 }
 
+function renderEsBreakoutRuleBadge(t) {
+  if (!String(t?.source ?? '').includes('-breakout')) return '';
+  const badges = [];
+  const turnLabel = String(t?.breakoutBtcTurnClusterLabel ?? '').toUpperCase();
+  if (turnLabel) {
+    const blocked = t?.breakoutBtcTurnClusterBlockMarket === true;
+    const color = blocked ? '#fb7185' : '#34d399';
+    const text = blocked ? 'BREAKOUT BTC BLOCK' : 'BREAKOUT BTC OK';
+    badges.push(`<span title="${escapeHtml(t?.breakoutBtcTurnClusterReason ?? turnLabel)}" style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;border:1px solid ${color};color:${color};background:rgba(15,23,42,.25)">${text}</span>`);
+  }
+  const regimeLabel = String(t?.breakoutMarketRegimeLabel ?? '').toUpperCase();
+  if (regimeLabel) {
+    const blocked = t?.breakoutMarketRegimeBlockMarket === true;
+    const chop = regimeLabel.includes('CHOP');
+    const color = blocked ? '#fb7185' : chop ? '#fbbf24' : '#34d399';
+    const text = blocked ? 'BREAKOUT TEST ONLY' : chop ? 'BREAKOUT CHOP $3' : 'BREAKOUT REGIME OK';
+    badges.push(`<span title="${escapeHtml(t?.breakoutMarketRegimeReason ?? regimeLabel)}" style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;border:1px solid ${color};color:${color};background:rgba(15,23,42,.25)">${text}</span>`);
+  }
+  const chaseLabel = String(t?.breakoutChaseLabel ?? '').toUpperCase();
+  if (chaseLabel) {
+    const blocked = t?.breakoutChaseBlockMarket === true;
+    const color = blocked ? '#fb7185' : '#34d399';
+    const text = blocked ? 'CHASE TEST ONLY' : 'CHASE OK';
+    badges.push(`<span title="${escapeHtml(t?.breakoutChaseReason ?? chaseLabel)}" style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;border:1px solid ${color};color:${color};background:rgba(15,23,42,.25)">${text}</span>`);
+  }
+  return badges.join('');
+}
+
+function renderEsRunnerRuleBadge(t) {
+  const source = String(t?.source ?? '').toLowerCase();
+  const note = String(t?.note ?? '').toLowerCase();
+  if (!t?.runnerCandidate && !source.includes('runner') && !note.includes('runner=y')) return '';
+  const badges = [];
+  const preLabel = String(t?.runnerPreWeakLabel ?? '').toUpperCase();
+  if (preLabel) {
+    const blocked = t?.runnerPreWeakBlockMarket === true;
+    const color = blocked ? '#fb7185' : '#34d399';
+    const text = blocked ? 'RUNNER TEST ONLY' : 'RUNNER PRE OK';
+    badges.push(`<span title="${escapeHtml(t?.runnerPreWeakReason ?? preLabel)}" style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;border:1px solid ${color};color:${color};background:rgba(15,23,42,.25)">${text}</span>`);
+  }
+  const turnLabel = String(t?.runnerBtcTurnClusterLabel ?? '').toUpperCase();
+  if (turnLabel) {
+    const blocked = t?.runnerBtcTurnClusterBlockMarket === true;
+    const color = blocked ? '#fb7185' : '#34d399';
+    const text = blocked ? 'RUNNER BTC BLOCK' : 'RUNNER BTC OK';
+    badges.push(`<span title="${escapeHtml(t?.runnerBtcTurnClusterReason ?? turnLabel)}" style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;border:1px solid ${color};color:${color};background:rgba(15,23,42,.25)">${text}</span>`);
+  }
+  if (String(t?.status ?? '').toUpperCase() === 'RUNNER_TP_ENTRY_FAIL_FAST') {
+    badges.push('<span style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;border:1px solid #fb7185;color:#fb7185;background:rgba(15,23,42,.25)">RUNNER FAIL FAST</span>');
+  }
+  return badges.join('');
+}
+
 function renderEsBtcTrendBadge(t) {
   const corr = Number(t?.btcCorr);
   const dir = String(t?.btcHealth?.btcTrendDir ?? t?.btcTrendDir ?? '').toLowerCase();
+  const regime = String(t?.btcHealth?.regime ?? '').toUpperCase();
+  const score = Number(t?.btcHealth?.btcTrendScore ?? t?.btcTrendScore);
+  const pct6h = Number(t?.btcHealth?.pct6h);
+  const ema1h = String(t?.btcHealth?.emaTrend1h ?? '').toLowerCase();
+  const bullBias = String(t?.btcHealth?.bullBias ?? '').toLowerCase();
   const side = String(t?.side ?? '').toUpperCase();
   const expected = side === 'LONG' ? 'up' : side === 'SHORT' ? 'down' : '';
   const hasCorr = Number.isFinite(corr);
   const corrText = hasCorr ? corr.toFixed(2) : '-';
+  const trendLabel = dir ? `BTC ${dir.toUpperCase()}${Number.isFinite(score) ? ` ${score}` : ''}` : 'BTC NO DATA';
+  const pctText = Number.isFinite(pct6h) ? `${pct6h >= 0 ? '+' : ''}${pct6h.toFixed(2)}%/6h` : '';
+  const trendTitle = [
+    dir ? `btcTrend=${dir}` : 'btcTrend=?',
+    Number.isFinite(score) ? `score=${score}` : '',
+    regime ? `regime=${regime}` : '',
+    Number.isFinite(pct6h) ? `pct6h=${pct6h.toFixed(2)}%` : '',
+    ema1h ? `ema1h=${ema1h}` : '',
+    bullBias ? `bull=${bullBias}` : '',
+    `side=${side || '-'}`,
+    `corr=${corrText}`,
+  ].filter(Boolean).join(' | ');
+  let trendColor = 'var(--muted)';
+  let trendBg = 'rgba(157,170,165,.12)';
+  if (dir === 'up') {
+    trendColor = Number.isFinite(score) && score < 45 ? '#fbbf24' : '#34d399';
+    trendBg = Number.isFinite(score) && score < 45 ? 'rgba(251,191,36,.18)' : 'rgba(52,211,153,.16)';
+  } else if (dir === 'down') {
+    trendColor = Number.isFinite(score) && score < 45 ? '#fbbf24' : '#fb7185';
+    trendBg = Number.isFinite(score) && score < 45 ? 'rgba(251,191,36,.18)' : 'rgba(251,113,133,.16)';
+  } else if (regime === 'FLAT') {
+    trendColor = '#67e8f9';
+    trendBg = 'rgba(34,211,238,.16)';
+  }
+  const stateBadge = `<span title="${escapeHtml(trendTitle)}" style="display:inline-flex;align-items:center;gap:4px;width:max-content;max-width:120px;padding:2px 6px;border-radius:4px;border:1px solid ${trendColor};background:${trendBg};color:${trendColor};font-weight:950;font-size:10px;line-height:1.15">${escapeHtml(trendLabel)}${pctText ? `<small style="color:${trendColor};font-size:9px;font-weight:800">${escapeHtml(pctText)}</small>` : ''}</span>`;
+  let relationBadge;
   if (hasCorr && corr < 0.3) {
-    return `<span title="Coin khong di theo BTC ro: corr=${corrText}" style="font-weight:900;color:var(--red);font-size:11px">DOC LAP ${corrText}</span>`;
+    relationBadge = `<span title="Coin khong di theo BTC ro: corr=${corrText}" style="font-weight:900;color:var(--red);font-size:10px">DOC LAP ${corrText}</span>`;
+  } else if (hasCorr && corr < 0.5) {
+    relationBadge = `<span title="Coin theo BTC yeu: corr=${corrText}" style="font-weight:900;color:#fbbf24;font-size:10px">THEO YEU ${corrText}</span>`;
+  } else if (!dir || !expected) {
+    relationBadge = `<span title="Chua du du lieu BTC trend${hasCorr ? `, corr=${corrText}` : ''}" style="font-weight:800;color:var(--muted);font-size:10px">-</span>`;
+  } else {
+    const aligned = dir === expected;
+    const color = aligned ? '#34d399' : '#fb7185';
+    const label = aligned ? 'THUAN BTC' : 'NGUOC BTC';
+    relationBadge = `<span title="BTC trend=${dir}, side=${side}, corr=${corrText}" style="font-weight:900;color:${color};font-size:10px">${label} ${corrText}</span>`;
   }
-  if (hasCorr && corr < 0.5) {
-    return `<span title="Coin theo BTC yeu: corr=${corrText}" style="font-weight:900;color:#fbbf24;font-size:11px">THEO YEU ${corrText}</span>`;
-  }
-  if (!dir || !expected) {
-    return `<span title="Chua du du lieu BTC trend${hasCorr ? `, corr=${corrText}` : ''}" style="font-weight:800;color:var(--muted);font-size:11px">-</span>`;
-  }
-  const aligned = dir === expected;
-  const color = aligned ? '#34d399' : '#fb7185';
-  const label = aligned ? 'THUAN BTC' : 'NGUOC BTC';
-  return `<span title="BTC trend=${dir}, side=${side}, corr=${corrText}" style="font-weight:900;color:${color};font-size:11px">${label} ${corrText}</span>`;
+  return `<div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">${stateBadge}${relationBadge}</div>`;
 }
 
 function renderEsRealCandleFitBadge(t) {
@@ -1058,6 +1214,204 @@ function formatEsBucket(name, stats) {
   `;
 }
 
+function getEsComboTone(row) {
+  const pnl = Number(row?.pnl ?? 0);
+  const wr = Number(row?.wr ?? 0);
+  const avgRoe = Number(row?.avgRoe ?? 0);
+  const key = String(row?.key ?? '').toUpperCase();
+  const isLong = key.includes('LONG');
+  const isShort = key.includes('SHORT');
+  const side = isLong ? 'LONG' : isShort ? 'SHORT' : 'NEUTRAL';
+  const sideColor = isLong ? '#22c55e' : isShort ? '#fb7185' : '#94a3b8';
+  const sideBg = isLong ? 'rgba(34,197,94,.10)' : isShort ? 'rgba(251,113,133,.10)' : 'rgba(148,163,184,.08)';
+  const goodMinAvgRoe = 0.5;
+  const feeFloorAvgRoe = 0.2;
+  const strongSampleMinClosed = 80;
+  const strongSampleMinPnl = 10;
+  const strongSampleMinAvgRoe = 0.8;
+  const closed = Number(row?.closed ?? 0);
+  const strongSample = pnl >= strongSampleMinPnl
+    && closed >= strongSampleMinClosed
+    && wr >= 60
+    && avgRoe >= strongSampleMinAvgRoe;
+  let quality = 'neutral';
+  if (pnl > 0 && wr >= 60 && avgRoe >= goodMinAvgRoe) quality = 'good';
+  if (strongSample) quality = 'strong';
+  if (pnl < 0 || wr < 50 || avgRoe < feeFloorAvgRoe) quality = 'bad';
+  const tones = {
+    strong: {
+      bg: 'linear-gradient(135deg, rgba(20,83,45,.72), rgba(8,47,73,.50), rgba(15,23,42,.92))',
+      border: '#2dd4bf',
+      shadow: '0 0 0 1px rgba(45,212,191,.34), 0 14px 30px rgba(20,184,166,.16)',
+      label: 'STRONG SAMPLE',
+      labelColor: '#ccfbf1',
+    },
+    good: {
+      bg: 'linear-gradient(135deg, rgba(6,78,59,.48), rgba(15,23,42,.92))',
+      border: '#34d399',
+      shadow: '0 0 0 1px rgba(52,211,153,.24), 0 10px 22px rgba(16,185,129,.10)',
+      label: 'GOOD',
+      labelColor: '#d1fae5',
+    },
+    bad: {
+      bg: 'linear-gradient(135deg, rgba(127,29,29,.52), rgba(15,23,42,.92))',
+      border: '#fb7185',
+      shadow: '0 0 0 1px rgba(251,113,133,.25), 0 10px 22px rgba(190,18,60,.12)',
+      label: 'BAD',
+      labelColor: '#ffe4e6',
+    },
+    neutral: {
+      bg: 'linear-gradient(135deg, rgba(66,32,6,.34), rgba(15,23,42,.92))',
+      border: '#fbbf24',
+      shadow: '0 0 0 1px rgba(251,191,36,.18)',
+      label: 'NEUTRAL',
+      labelColor: '#fef3c7',
+    },
+  };
+  return {
+    ...tones[quality],
+    quality,
+    side,
+    sideColor,
+    sideBg,
+    feeFloorAvgRoe,
+    goodMinAvgRoe,
+    strongSample,
+    strongSampleMinClosed,
+    strongSampleMinPnl,
+    strongSampleMinAvgRoe,
+  };
+}
+
+function formatEsServerComboBucket(row) {
+  const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+  const pnlColor = Number(row.pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
+  const tone = getEsComboTone(row);
+  const plan = row.tradePlan ?? {};
+  const planLabel = String(plan.label ?? '').trim() || 'TEST $10';
+  const planMargin = Number(plan.marginUsdt);
+  const planColor = Number.isFinite(planMargin) && planMargin <= 1.01 ? '#fb7185' : '#34d399';
+  const planTitle = plan.reason ? ` title="${escapeHtml(plan.reason)}"` : '';
+  const parts = String(row.key ?? '').split('|').map((s) => s.trim());
+  const title = parts.slice(0, 2).join(' ');
+  const chips = parts.slice(2).map((p) => {
+    let color = 'var(--muted)';
+    if (/OK|PASS|THEO|THUAN|STRONG|MID/.test(p)) color = '#34d399';
+    if (/YEU|WEAK|LATE|TEST|CAUTION/.test(p)) color = '#fbbf24';
+    if (/RAC|BAD|BLOCK|NGUOC|DOC_LAP/.test(p)) color = '#fb7185';
+    return `<span style="display:inline-block;margin:2px 3px 0 0;padding:1px 5px;border-radius:3px;border:1px solid ${color};color:${color};font-size:9px;font-weight:900">${escapeHtml(p.replaceAll('_', ' '))}</span>`;
+  }).join('');
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <strong>COMBO ${escapeHtml(title)}</strong>
+      <span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end">
+        <span${planTitle} style="display:inline-flex;align-items:center;gap:5px;padding:2px 6px;border-radius:4px;border:1px solid ${planColor};background:rgba(15,23,42,.28);color:${planColor};font-size:9px;font-weight:950">${escapeHtml(planLabel)}</span>
+        <span style="display:inline-flex;align-items:center;gap:5px;padding:2px 6px;border-radius:4px;border:1px solid ${tone.sideColor};background:${tone.sideBg};color:${tone.sideColor};font-size:9px;font-weight:950">${tone.side}</span>
+      </span>
+    </div>
+    <div style="margin-top:3px">${chips}</div>
+    <div style="margin-top:5px">${row.wins}W/${row.losses}L · WR ${wr} · Closed ${row.closed}/${row.total}</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:3px">
+      <span style="color:${pnlColor};font-weight:900">PnL ${formatEsMoney(row.pnl)} · AvgROE ${row.avgRoe == null ? '-' : `${row.avgRoe >= 0 ? '+' : ''}${row.avgRoe}%`}</span>
+      <span style="padding:2px 6px;border-radius:4px;border:1px solid ${tone.border};color:${tone.labelColor};font-size:9px;font-weight:950">${tone.label}</span>
+    </div>
+    ${tone.strongSample ? `<div style="margin-top:3px;color:#ccfbf1;font-size:10px;font-weight:950">MẪU MẠNH: Closed ≥ ${tone.strongSampleMinClosed}, PnL ≥ +$${tone.strongSampleMinPnl}, AvgROE ≥ +${tone.strongSampleMinAvgRoe}%</div>` : ''}
+    <div style="margin-top:2px;color:var(--muted);font-size:9px;font-weight:800">GOOD cần AvgROE ≥ +${tone.goodMinAvgRoe}% · dưới +${tone.feeFloorAvgRoe}% coi như phí ăn hết</div>
+  `;
+}
+
+function renderEsBrLikeScore75Log(summary) {
+  const log = summary?.brLikeScore75Log;
+  if (!log) return [];
+  const scoreLine = log.netByScore
+    ? Object.entries(log.netByScore)
+      .sort(([a], [b]) => Number(b) - Number(a))
+      .map(([score, n]) => `${score}:${n}`)
+      .join(' ')
+    : '';
+  const tfLine = log.netByTf
+    ? Object.entries(log.netByTf)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([tf, n]) => `${tf}:${n}`)
+      .join(' ')
+    : '';
+  const sample = Array.isArray(log.samples) && log.samples.length
+    ? log.samples.slice(0, 10).map((s) => `${s.symbol} ${s.tf} ${s.score}`).join(', ')
+    : log.error ? `error: ${log.error}` : 'no net new sample';
+  return [
+    `<div class="es-paper-mini" style="border-color:rgba(96,165,250,.55);background:rgba(96,165,250,.08)">
+      <strong>BR-like hiện tại</strong><br>
+      Day ${escapeHtml(log.day)} Â· score >=${Number(log.thresholdNow ?? 80)}<br>
+      Raw skip rows ${Number(log.rawScoreSkipRows ?? 0)}
+    </div>`,
+    `<div class="es-paper-mini" style="border-color:rgba(251,191,36,.72);background:rgba(251,191,36,.10)">
+      <strong>TEST score >=75</strong><br>
+      +${Number(log.netNewPossible ?? 0)} net lệnh Â· unique ${Number(log.unique75to79 ?? 0)}<br>
+      ${escapeHtml([scoreLine, tfLine].filter(Boolean).join(' | ') || '-')}
+    </div>`,
+    `<div class="es-paper-mini" style="border-color:rgba(54,211,153,.58);background:rgba(54,211,153,.08)">
+      <strong>Đã có / trùng</strong><br>
+      ${Number(log.alreadyHadBr ?? 0)} signal đã vào BR-like sau đó<br>
+      raw add rows ${Number(log.rawAddRows ?? 0)}
+    </div>`,
+    `<div class="es-paper-mini" style="border-color:rgba(248,113,113,.62);background:rgba(248,113,113,.09)">
+      <strong>Chase skip</strong><br>
+      ${Number(log.chaseSkips ?? 0)} dòng market entry too chased<br>
+      <span title="${escapeHtml(sample)}">${escapeHtml(sample)}</span>
+    </div>`,
+  ];
+}
+
+function getEsPaperGateReason(t) {
+  const items = [];
+  const add = (label, reason, state = 'ok') => {
+    const l = String(label ?? '').trim();
+    const r = String(reason ?? '').trim();
+    if (!l && !r) return;
+    items.push({ label: l || r.slice(0, 42), reason: r || l, state });
+  };
+  const stateFrom = (label, block) => {
+    const text = String(label ?? '').toUpperCase();
+    if (block === true || /BLOCK|BAD|LOSS_CUT|FAIL_FAST|OPPOSITE|CUT|SL/.test(text)) return 'bad';
+    if (/WAIT|TEST|CHOP|LATE|WEAK|CAUTION|BOUNCE|REJECT/.test(text)) return 'warn';
+    return 'ok';
+  };
+  add(t.brMarketRegimeLabel, t.brMarketRegimeReason, stateFrom(t.brMarketRegimeLabel, t.brMarketRegimeBlockMarket));
+  add(t.brBtcTurnClusterLabel, t.brBtcTurnClusterReason, stateFrom(t.brBtcTurnClusterLabel, t.brBtcTurnClusterBlockMarket));
+  add(t.runnerPreWeakLabel, t.runnerPreWeakReason, stateFrom(t.runnerPreWeakLabel, t.runnerPreWeakBlockMarket));
+  add(t.runnerBtcTurnClusterLabel, t.runnerBtcTurnClusterReason, stateFrom(t.runnerBtcTurnClusterLabel, t.runnerBtcTurnClusterBlockMarket));
+  add(t.runnerSessionTestLabel, t.runnerSessionTestReason, 'warn');
+  add(t.shortSessionTestLabel, t.shortSessionTestReason, 'warn');
+  add(t.breakoutMarketRegimeLabel, t.breakoutMarketRegimeReason, stateFrom(t.breakoutMarketRegimeLabel, t.breakoutMarketRegimeBlockMarket));
+  add(t.breakoutBtcTurnClusterLabel, t.breakoutBtcTurnClusterReason, stateFrom(t.breakoutBtcTurnClusterLabel, t.breakoutBtcTurnClusterBlockMarket));
+  add(t.breakoutChaseLabel, t.breakoutChaseReason, stateFrom(t.breakoutChaseLabel, t.breakoutChaseBlockMarket));
+  add(t.emaStageGateLabel, t.emaStageGateReason, stateFrom(t.emaStageGateLabel, t.emaStageGateBlockMarket));
+  add(t.brShortEnvLabel, t.brShortEnvReason, stateFrom(t.brShortEnvLabel, t.brShortEnvBlockMarket));
+  if (t.closeReason) add('CLOSE_REASON', t.closeReason, 'bad');
+  const outcome = String(t.outcome ?? '').trim();
+  if (outcome && outcome !== 'TP' && outcome !== 'SL') {
+    add(outcome, t.closeReason ?? outcome, stateFrom(outcome, false));
+  }
+  const quality = getEsBrQuality(t);
+  if (quality?.label?.startsWith('LOW_')) add(quality.label, quality.reasons, 'warn');
+  if (!items.length) {
+    const note = String(t.note ?? '');
+    const m = note.match(/(?:closeReason|breadthBEReason|runnerTpEntryGuard|brLikeTpEntryGuard|breakoutTpEntryGuard|paperSlTrail)=([^|]+)/i);
+    if (m) add(m[0].split('=')[0], m[1], stateFrom(m[0], false));
+  }
+  if (!items.length) return null;
+  const worst = items.some((x) => x.state === 'bad') ? 'bad' : items.some((x) => x.state === 'warn') ? 'warn' : 'ok';
+  const primary = items.find((x) => x.state === worst) ?? items[0];
+  const title = items.map((x) => `${x.label}: ${x.reason}`).join(' | ');
+  return { label: primary.label, title, state: worst };
+}
+
+function renderEsPaperGateReason(t) {
+  const gate = getEsPaperGateReason(t);
+  if (!gate) return '<span style="color:var(--muted)">-</span>';
+  return `<span class="es-paper-gate-pill ${gate.state}" title="${escapeHtml(gate.title)}">${escapeHtml(gate.label.replaceAll('_', ' '))}</span>`;
+}
+
 function groupEsTrades(trades, keyFn) {
   const map = new Map();
   for (const trade of trades) {
@@ -1142,7 +1496,24 @@ function updateEsPaperStats(trades = esPaperTrades) {
     )
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([name, list]) => `<div class="es-paper-mini">${formatEsBucket(name, calcEsStats(list))}</div>`);
-    breakdown.innerHTML = [...sideRows, ...stageRows, ...tfRows, ...qualityRows, ...realCandleRows, ...realGateRows, ...shortGateRows, ...btcCandleRows].join('');
+    const serverCombos = esPaperTypeFilter === 'BR-like' || esPaperTypeFilter === 'BR-like Short'
+      ? esPaperServerSummary?.brLikeCombos
+      : esPaperServerSummary?.emaCombos;
+    const comboRows = Array.isArray(serverCombos)
+      ? serverCombos
+        .slice(0, 18)
+        .map((row) => {
+          const tone = getEsComboTone(row);
+          return `<div class="es-paper-mini" style="position:relative;overflow:hidden;border-color:${tone.border};background:${tone.bg};box-shadow:${tone.shadow};padding-left:13px">
+            <span style="position:absolute;left:0;top:0;bottom:0;width:4px;background:${tone.sideColor}"></span>
+            ${formatEsServerComboBucket(row)}
+          </div>`;
+        })
+      : [];
+    const score75Rows = (esPaperTypeFilter === 'all' || esPaperTypeFilter === 'BR-like')
+      ? renderEsBrLikeScore75Log(esPaperServerSummary)
+      : [];
+    breakdown.innerHTML = [...score75Rows, ...comboRows, ...sideRows, ...stageRows, ...tfRows, ...qualityRows, ...realCandleRows, ...realGateRows, ...shortGateRows, ...btcCandleRows].join('');
   }
 }
 
@@ -1153,8 +1524,9 @@ function renderEsPaperTable() {
   const filteredTrades = getFilteredEsPaperTrades();
   const open = filteredTrades.filter((t) => t.status !== 'CLOSED');
   const closed = filteredTrades.filter((t) => t.status === 'CLOSED');
-  const tpHits = closed.filter((t) => t.outcome === 'TP').length;
+  const tpHits = closed.filter((t) => ['TP', 'SQUEEZE_SHORT_TP2'].includes(t.outcome)).length;
   const slHits = closed.filter((t) => t.outcome === 'SL').length;
+  const partialBeHits = closed.filter((t) => t.outcome === 'SQUEEZE_SHORT_PARTIAL_BE').length;
   const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
   const wr = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(0) : '-';
   const avgRoe = closed.length > 0
@@ -1167,13 +1539,14 @@ function renderEsPaperTable() {
     const dayScope = esPaperDayFilter === 'all' ? '' : ` · ${esPaperDayFilter}`;
     const tfScope = esPaperTfFilter === 'all' ? '' : ` · ${esPaperTfFilter}`;
     const pageScope = esPaperPagination ? ` | page ${esPaperPagination.page}/${esPaperPagination.totalPages} (${filteredTrades.length}/${esPaperPagination.total} rows)` : '';
-    summary.innerHTML = `${escapeHtml(`${scope}${dayScope}${tfScope}${pageScope} | ${open.length} open/pending | ${closed.length} closed | TP ${tpHits} | SL ${slHits} | WR ${wr}% | AvgROE ${avgRoe}%`)}${renderBtcTurnGateBanner(esPaperServerSummary?.btcTurnGates)}`;
+    summary.innerHTML = `${escapeHtml(`${scope}${dayScope}${tfScope}${pageScope} | ${open.length} open/pending | ${closed.length} closed | TP ${tpHits} | SL ${slHits} | TP1-BE ${partialBeHits} | WR ${wr}% | AvgROE ${avgRoe}%`)}${renderBtcTurnGateBanner(esPaperServerSummary)}`;
   }
   renderEsPaperPager();
+  renderEsPaperOverview(filteredTrades, esPaperServerSummary);
   updateEsPaperStats(filteredTrades);
 
   if (filteredTrades.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="20" style="text-align:center;color:var(--muted);padding:16px">No EMA Squeeze paper trades yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:16px">No EMA Squeeze paper trades yet</td></tr>';
     updateEsSortHeaders();
     return;
   }
@@ -1189,7 +1562,11 @@ function renderEsPaperTable() {
     const pnlColor = pnlVal == null ? '' : pnlVal >= 0 ? 'color:var(--green)' : 'color:var(--red)';
     const statusBadge = t.status === 'OPEN' ? '<span style="color:var(--green)">OPEN</span>'
       : t.status === 'PENDING' ? '<span style="color:var(--amber)">PENDING</span>'
-      : `<span title="${escapeHtml(t.closeReason ?? '')}" style="color:var(--muted)">${t.outcome ?? 'CLOSED'}</span>`;
+      : (() => {
+        const outcomeText = String(t.outcome ?? 'CLOSED');
+        const title = [outcomeText, t.closeReason ?? ''].filter(Boolean).join(' | ');
+        return `<span title="${escapeHtml(title)}" style="display:inline-block;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;color:var(--muted)">${escapeHtml(outcomeText)}</span>`;
+      })();
     const canClose = t.status === 'OPEN' || t.status === 'PENDING';
     const actions = `
       ${canClose ? `<button class="es-paper-close-btn" onclick="closeEsPaperTrade('${t.id}')">Close</button>` : ''}
@@ -1211,8 +1588,18 @@ function renderEsPaperTable() {
     variantBadge += `<div style="margin-top:4px;color:${Number(t.leverage) === 5 ? '#fbbf24' : '#67e8f9'};font-size:10px;font-weight:900">${Number(t.leverage) || '-'}x</div>`;
     const tf = getEsTimeframe(t);
     const stageLabel = getEsStage(t);
+    const squeezeLongTier = String(t.squeezeLongEvalTier ?? '').toUpperCase();
+    const squeezeLongEvalBadge = squeezeLongTier
+      ? `<span title="${escapeHtml(t.squeezeLongEvalReason ?? t.squeezeLongEvalLabel ?? '')}" style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;background:${squeezeLongTier === 'A' ? 'rgba(52,211,153,.16)' : squeezeLongTier === 'B' ? 'rgba(251,191,36,.16)' : 'rgba(148,163,184,.14)'};color:${squeezeLongTier === 'A' ? '#34d399' : squeezeLongTier === 'B' ? '#fbbf24' : '#94a3b8'}">LONG ${escapeHtml(squeezeLongTier)} · $${Number(t.squeezeLongEvalMarginUsdt ?? t.marginUsdt ?? 1).toFixed(0)}</span>`
+      : '';
+    const emaBreakTier = String(t.emaBreakEvalTier ?? '').toUpperCase();
+    const emaBreakEvalBadge = emaBreakTier
+      ? `<span title="${escapeHtml(t.emaBreakEvalReason ?? t.emaBreakEvalLabel ?? '')}" style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:3px;background:${emaBreakTier === 'A' ? 'rgba(52,211,153,.16)' : emaBreakTier === 'B' ? 'rgba(251,191,36,.16)' : 'rgba(148,163,184,.14)'};color:${emaBreakTier === 'A' ? '#34d399' : emaBreakTier === 'B' ? '#fbbf24' : '#94a3b8'}">${escapeHtml(stageLabel)} ${escapeHtml(emaBreakTier)} · $${Number(t.emaBreakEvalMarginUsdt ?? t.marginUsdt ?? 1).toFixed(0)}</span>`
+      : '';
     const brQualityBadge = renderEsBrQualityBadge(t);
     const shortEnvBadge = renderEsShortEnvBadge(t);
+    const breakoutRuleBadge = renderEsBreakoutRuleBadge(t);
+    const runnerRuleBadge = renderEsRunnerRuleBadge(t);
     return `<tr class="${rowClass}">
       <td>${variantBadge}</td>
       <td>
@@ -1220,14 +1607,21 @@ function renderEsPaperTable() {
         <div style="margin-top:3px;display:flex;gap:5px;align-items:center;flex-wrap:wrap">
 	          <span style="font-size:9px;font-weight:800;padding:1px 5px;border-radius:3px;background:rgba(96,165,250,.16);color:#93c5fd">${tf}</span>
 	          <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(157,170,165,.14);color:var(--muted)">${stageLabel}</span>
+	          ${squeezeLongEvalBadge}
+	          ${emaBreakEvalBadge}
 	          ${brQualityBadge}
 	          ${shortEnvBadge}
+	          ${breakoutRuleBadge}
+	          ${runnerRuleBadge}
 	        </div>
       </td>
       <td><span style="color:${sideColor}">${t.side}</span></td>
       <td>${fmtPrice(t.entryPrice)}</td>
       <td>${fmtPrice(t.sl)}</td>
-      <td>${fmtPrice(t.tp)}</td>
+      <td>
+        ${fmtPrice(t.tp)}
+        ${t.partialTpTaken === true ? `<div title="Da chot ${(Number(t.partialTpCloseRatio ?? 0.5) * 100).toFixed(0)}% tai +${Number(t.partialTpRoe ?? 5).toFixed(0)}% ROE" style="margin-top:3px;color:#34d399;font-size:9px;font-weight:900">TP1 ${(Number(t.partialTpCloseRatio ?? 0.5) * 100).toFixed(0)}% OK</div>` : ''}
+      </td>
       <td>${(() => {
         const e = Number(t.entryPrice); const tp = Number(t.tp); const lev = Number(t.leverage) || 1;
         if (!Number.isFinite(e) || e <= 0 || !Number.isFinite(tp) || tp <= 0) return '-';
@@ -1250,13 +1644,14 @@ function renderEsPaperTable() {
       <td style="${pnlColor}">${fmtPnl(pnlVal, roeVal)}</td>
       <td style="${pnlColor}">${roeVal != null ? fmtPct(roeVal) : '-'}</td>
       <td>${statusBadge}</td>
+      <td class="es-paper-gate-cell">${renderEsPaperGateReason(t)}</td>
       <td style="color:var(--muted);font-size:11px">${t.source ?? '-'}</td>
       <td style="color:var(--muted);font-size:11px">${t.createdAt ? new Date(t.createdAt).toLocaleTimeString('vi') : '-'}</td>
       <td>${actions}</td>
     </tr>`;
   }).join('');
   if (sortedAll.length > RENDER_CAP) {
-    tbody.innerHTML += `<tr><td colspan="20" style="text-align:center;color:var(--muted);padding:10px;font-size:11px">Hiển thị ${RENDER_CAP}/${sortedAll.length} lệnh (đã lọc) — lọc thêm theo ngày/khung nến/type để xem hết. Thống kê tính trên toàn bộ.</td></tr>`;
+    tbody.innerHTML += `<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:10px;font-size:11px">Hiển thị ${RENDER_CAP}/${sortedAll.length} lệnh (đã lọc) — lọc thêm theo ngày/khung nến/type để xem hết. Thống kê tính trên toàn bộ.</td></tr>`;
   }
   updateEsSortHeaders();
 }
@@ -1359,9 +1754,9 @@ function getFiltered() {
     if (activeStage === 'RUNNER') {
       if (!s.runnerCandidate) return false;
     } else if (activeStage === 'BR_LIKE') {
-      if (Number(s.brLikeScore ?? 0) <= 85 || s.action === 'SHORT') return false;
+      if (Number(s.brLikeScore ?? 0) < 80 || s.action === 'SHORT') return false;
     } else if (activeStage === 'BR_LIKE_SHORT') {
-      if (Number(s.brLikeScore ?? 0) <= 85 || s.action !== 'SHORT') return false;
+      if (Number(s.brLikeScore ?? 0) < 80 || s.action !== 'SHORT') return false;
     } else if (activeStage !== 'all' && s.stage !== activeStage) {
       return false;
     }
@@ -1404,7 +1799,7 @@ function render() {
         : activeStage === 'RUNNER'
           ? 'Không có runner squeeze kiểu OPEN/OPN'
         : activeStage === 'BR_LIKE'
-          ? 'Không có chart BR-like > 85'
+          ? 'Không có chart BR-like ≥ 80'
         : activeStage === 'SQUEEZE_SHORT'
           ? 'Không có coin nào đang nén để short'
         : 'Không có signal nào';
@@ -1429,8 +1824,8 @@ function applyData(data) {
   const squeezes   = allSignals.filter((s) => s.stage === 'SQUEEZE');
   const squeezeShorts = allSignals.filter((s) => s.stage === 'SQUEEZE_SHORT');
   const runners    = allSignals.filter((s) => s.runnerCandidate);
-  const brLikes    = allSignals.filter((s) => Number(s.brLikeScore ?? 0) > 85 && s.action !== 'SHORT');
-  const brLikeShorts = allSignals.filter((s) => Number(s.brLikeScore ?? 0) > 85 && s.action === 'SHORT');
+  const brLikes    = allSignals.filter((s) => Number(s.brLikeScore ?? 0) >= 80 && s.action !== 'SHORT');
+  const brLikeShorts = allSignals.filter((s) => Number(s.brLikeScore ?? 0) >= 80 && s.action === 'SHORT');
   const scores     = allSignals.map((s) => s.score);
   const avg        = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
 
@@ -1537,3 +1932,5 @@ renderBtcSqueezeContext();
 loadBtcSqueezeContext();
 setInterval(loadBtcSqueezeContext, 120_000);
 loadEsPaperTrades();
+
+

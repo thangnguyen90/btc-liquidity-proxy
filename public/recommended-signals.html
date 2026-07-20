@@ -1,0 +1,795 @@
+﻿<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Daily Signal Picks</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0c1110;
+        --panel: #171d1b;
+        --line: #34413d;
+        --text: #f4f7f5;
+        --muted: #9aaca6;
+        --green: #32e3ad;
+        --yellow: #ffc94a;
+        --red: #ff637d;
+        --blue: #63a8ff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.4 system-ui,
+          sans-serif;
+        letter-spacing: 0;
+      }
+      .wrap {
+        width: min(1540px, calc(100% - 32px));
+        margin: 24px auto 60px;
+      }
+      .top {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 16px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 18px;
+      }
+      .eyebrow {
+        color: var(--green);
+        font-weight: 800;
+        font-size: 12px;
+      }
+      .top h1 {
+        font-size: 30px;
+        margin: 3px 0 0;
+      }
+      .top a {
+        color: var(--blue);
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .toolbar {
+        display: flex;
+        align-items: end;
+        gap: 12px;
+        padding: 18px 0;
+      }
+      .load-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 38px;
+        margin-left: auto;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 0 11px;
+        color: var(--muted);
+        background: #171d1b;
+        font-size: 11px;
+        font-weight: 900;
+      }
+      .load-status.loading {
+        border-color: var(--yellow);
+        color: var(--yellow);
+      }
+      .load-status.done {
+        border-color: #2a8d70;
+        color: var(--green);
+      }
+      .load-status.error {
+        border-color: var(--red);
+        color: var(--red);
+      }
+      .loading-spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 50%;
+        animation: loading-spin 0.7s linear infinite;
+      }
+      .load-status:not(.loading) .loading-spinner {
+        display: none;
+      }
+      .load-progress {
+        position: fixed;
+        z-index: 50;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 3px;
+        overflow: hidden;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s ease;
+      }
+      .load-progress::after {
+        content: "";
+        display: block;
+        width: 38%;
+        height: 100%;
+        background: var(--yellow);
+        transform: translateX(-110%);
+      }
+      body.is-loading .load-progress {
+        opacity: 1;
+      }
+      body.is-loading .load-progress::after {
+        animation: loading-bar 1s ease-in-out infinite;
+      }
+      body.is-loading .pager,
+      body.is-loading .sort-btn {
+        pointer-events: none;
+      }
+      @keyframes loading-spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes loading-bar {
+        to { transform: translateX(285%); }
+      }
+      .control {
+        display: grid;
+        gap: 5px;
+      }
+      .control label {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .control select,
+      .control button {
+        height: 38px;
+        border: 1px solid var(--line);
+        background: #202725;
+        color: var(--text);
+        padding: 0 12px;
+        border-radius: 5px;
+      }
+      .control button {
+        background: #173a31;
+        border-color: #2a8d70;
+        cursor: pointer;
+        font-weight: 800;
+      }
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        border-block: 1px solid var(--line);
+        margin-bottom: 20px;
+      }
+      .metric {
+        padding: 15px;
+        border-right: 1px solid var(--line);
+      }
+      .metric:last-child {
+        border: 0;
+      }
+      .metric small {
+        display: block;
+        color: var(--muted);
+        font-weight: 800;
+      }
+      .metric strong {
+        display: block;
+        font-size: 22px;
+        margin-top: 5px;
+      }
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 22px 0 10px;
+      }
+      .section-head h2 {
+        font-size: 18px;
+        margin: 0;
+      }
+      .section-head span {
+        color: var(--muted);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 9px;
+      }
+      .pick {
+        border: 1px solid #23896e;
+        border-left: 5px solid var(--green);
+        background: #102520;
+        padding: 13px;
+        border-radius: 6px;
+        min-width: 0;
+      }
+      .pick.strong {
+        border-color: var(--yellow);
+        border-left-color: var(--yellow);
+        background: #27220f;
+      }
+      .pick-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .pick h3 {
+        font-size: 14px;
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      .badge {
+        border: 1px solid currentColor;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-size: 10px;
+        font-weight: 900;
+        color: var(--green);
+        white-space: nowrap;
+      }
+      .strong .badge {
+        color: var(--yellow);
+      }
+      .tokens {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin: 10px 0;
+      }
+      .token {
+        border: 1px solid #45544f;
+        background: #1c2422;
+        padding: 2px 5px;
+        border-radius: 3px;
+        font-size: 10px;
+        color: #c8d2cf;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 6px;
+      }
+      .paper-live {
+        display: grid;
+        grid-template-columns: auto auto 1fr;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+        padding-top: 9px;
+        border-top: 1px solid color-mix(in srgb, var(--green) 35%, transparent);
+        color: var(--green);
+      }
+      .paper-live span {
+        font-size: 10px;
+        font-weight: 900;
+      }
+      .paper-live b {
+        font-size: 12px;
+      }
+      .paper-live small {
+        color: var(--muted);
+        text-align: right;
+      }
+      .paper-live.paper-empty {
+        color: var(--muted);
+      }
+      .sample-update {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 10px;
+        align-items: center;
+        margin-top: 10px;
+        padding: 8px 9px;
+        border: 1px solid color-mix(in srgb, var(--yellow) 55%, transparent);
+        background: color-mix(in srgb, var(--yellow) 7%, transparent);
+        color: var(--yellow);
+      }
+      .sample-update span {
+        font-size: 10px;
+        font-weight: 900;
+      }
+      .sample-update b {
+        color: var(--text);
+        font-size: 12px;
+      }
+      .sample-update small {
+        grid-column: 1 / -1;
+        color: var(--muted);
+      }
+      .sample-update.sample-update-empty {
+        border-color: #394540;
+        background: transparent;
+        color: var(--muted);
+      }
+      .stat {
+        border-top: 1px solid #394540;
+        padding-top: 7px;
+      }
+      .stat small {
+        display: block;
+        color: var(--muted);
+        font-size: 9px;
+      }
+      .stat b {
+        font-size: 13px;
+      }
+      .score-cell b {
+        display: block;
+      }
+      .score-cell small {
+        color: var(--muted);
+        font-size: 9px;
+      }
+      .signal-label {
+        display: block;
+        max-width: 270px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: var(--blue);
+        font-weight: 800;
+      }
+      .paper-band {
+        margin-top: 28px;
+        border-top: 1px solid var(--line);
+        padding-top: 4px;
+      }
+      .combo-summary-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 4px 0 10px;
+      }
+      .combo-summary-head h3 {
+        margin: 0;
+        font-size: 15px;
+      }
+      .combo-summary-head span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .combo-stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .rule-size-stats {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+      .combo-stat-card {
+        min-width: 0;
+        border: 1px solid var(--line);
+        border-left: 4px solid var(--yellow);
+        border-radius: 6px;
+        background: #18201e;
+        padding: 10px;
+      }
+      .combo-stat-card.good {
+        border-left-color: var(--green);
+        background: #10231f;
+      }
+      .combo-stat-card.bad {
+        border-left-color: var(--red);
+        background: #28171c;
+      }
+      .combo-stat-title {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+        margin-bottom: 7px;
+      }
+      .combo-stat-title b {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--blue);
+      }
+      .combo-verdict {
+        flex: 0 0 auto;
+        font-size: 9px;
+        font-weight: 900;
+      }
+      .combo-stat-badges {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 5px;
+      }
+      .combo-win-badge {
+        border: 1px solid #3f6258;
+        border-radius: 4px;
+        background: #101917;
+        color: #d8e8e2;
+        padding: 2px 5px;
+        font-size: 9px;
+        font-weight: 900;
+        white-space: nowrap;
+      }
+      .combo-stat-card.good .combo-win-badge {
+        border-color: var(--green);
+        color: var(--green);
+      }
+      .combo-stat-card.bad .combo-win-badge {
+        border-color: var(--red);
+        color: #ff9caf;
+      }
+      .combo-stat-line {
+        color: #bdd0c9;
+        font-size: 11px;
+        line-height: 1.55;
+      }
+      .combo-stat-line strong {
+        color: #fff;
+      }
+      .combo-stat-card.good .combo-verdict,
+      .combo-stat-card.good .combo-pnl {
+        color: var(--green);
+      }
+      .combo-stat-card.bad .combo-verdict,
+      .combo-stat-card.bad .combo-pnl {
+        color: var(--red);
+      }
+      .table-wrap {
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 1780px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 10px;
+        border-bottom: 1px solid #2d3935;
+        white-space: nowrap;
+      }
+      th {
+        position: sticky;
+        top: 0;
+        background: #171d1b;
+        color: #a9beb7;
+        font-size: 10px;
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      .sort-btn {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-weight: 800;
+        padding: 0;
+        cursor: pointer;
+      }
+      .sort-btn.active {
+        color: var(--blue);
+      }
+      .exit,
+      .risk-badge,
+      .trend-badge {
+        display: inline-block;
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        padding: 2px 6px;
+        font-size: 10px;
+        font-weight: 900;
+      }
+      .risk-badge {
+        color: var(--red);
+        border-color: var(--red);
+        background: #3b1720;
+      }
+      .risk-ok {
+        color: var(--green);
+        border-color: #278c70;
+        background: #102520;
+      }
+      .risk-unknown {
+        color: var(--muted);
+        border-color: #45544f;
+        background: #1c2422;
+      }
+      .trend-badge {
+        display: block;
+      }
+      .trend-up {
+        color: var(--green);
+        border-color: #278c70;
+      }
+      .trend-down {
+        color: var(--red);
+        border-color: #9c4253;
+      }
+      .trend-flat,
+      .trend-no_data {
+        color: var(--yellow);
+        border-color: #8d7425;
+      }
+      .trend-weak_up,
+      .trend-sideway_up,
+      .trend-strong_up {
+        color: var(--green);
+        border-color: #278c70;
+        background: #102520;
+      }
+      .trend-weak_down,
+      .trend-sideway_down,
+      .trend-strong_down {
+        color: var(--red);
+        border-color: #9c4253;
+        background: #2b1720;
+      }
+      .trend-chop {
+        color: var(--yellow);
+        border-color: #8d7425;
+        background: #2a2412;
+      }
+      .trend-detail {
+        display: block;
+        color: var(--muted);
+        font-size: 9px;
+        margin-top: 3px;
+      }
+      .exit-SL_MOVED,
+      .exit-TP_REAL {
+        color: var(--green);
+        border-color: #278c70;
+      }
+      .exit-SL_REAL {
+        color: var(--red);
+        border-color: #9c4253;
+      }
+      .exit-RULE_CLOSE,
+      .exit-ENTRY_LOCK,
+      .exit-TIMEOUT {
+        color: var(--yellow);
+        border-color: #8d7425;
+      }
+      .long {
+        color: var(--green);
+      }
+      .short,
+      .negative {
+        color: var(--red);
+      }
+      .positive {
+        color: var(--green);
+      }
+      .recommend {
+        color: var(--yellow);
+        font-weight: 800;
+      }
+      @media (max-width: 1000px) {
+        .combo-stats {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 650px) {
+        .combo-stats {
+          grid-template-columns: 1fr;
+        }
+      }
+      .pager {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        align-items: center;
+        justify-content: flex-end;
+      }
+      .table-pager {
+        margin: 4px 0 10px;
+      }
+      .page-button {
+        border: 1px solid var(--line);
+        background: #202725;
+        color: var(--text);
+        width: 32px;
+        height: 30px;
+        padding: 0;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: 800;
+      }
+      .page-button:hover {
+        border-color: var(--blue);
+        color: var(--blue);
+      }
+      .page-button.active {
+        border-color: var(--blue);
+        background: #245da6;
+        color: #fff;
+      }
+      .page-ellipsis {
+        min-width: 24px;
+        text-align: center;
+        color: var(--muted);
+      }
+      .page-meta {
+        margin-left: 5px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .empty {
+        color: var(--muted);
+        padding: 28px;
+        border: 1px dashed var(--line);
+        text-align: center;
+      }
+      .error {
+        color: var(--red);
+      }
+      @media (max-width: 1000px) {
+        .grid {
+          grid-template-columns: 1fr 1fr;
+        }
+        .summary {
+          grid-template-columns: 1fr 1fr;
+        }
+        .top {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+      @media (max-width: 650px) {
+        .wrap {
+          width: min(100% - 18px, 1540px);
+        }
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        .toolbar {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .summary {
+          grid-template-columns: 1fr;
+        }
+        .metric {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="load-progress" aria-hidden="true"></div>
+    <main class="wrap" id="app" aria-busy="true">
+      <header class="top">
+        <div>
+          <div class="eyebrow">DAILY COMBO WHITELIST</div>
+          <h1>Signal Picks</h1>
+        </div>
+        <div><a href="/intraday-combos">Intraday Forecast</a> · <a href="/">Dashboard</a></div>
+      </header>
+      <div class="toolbar">
+        <div class="control">
+          <label for="day">NGÀY ĐỀ XUẤT UTC</label
+          ><select id="day"></select>
+        </div>
+        <div class="control">
+          <label for="combo-window">CỬA SỔ COMBO</label>
+          <select id="combo-window">
+            <option value="1">Trong ngày</option>
+            <option value="3">3 ngày</option>
+            <option value="5">5 ngày</option>
+            <option value="7">7 ngày</option>
+            <option value="all">Tổng thể</option>
+          </select>
+        </div>
+        <div class="control">
+          <label>&nbsp;</label><button id="reload">Reload</button>
+        </div>
+        <span id="updated"></span>
+        <div class="load-status loading" id="load-status" role="status" aria-live="polite">
+          <span class="loading-spinner" aria-hidden="true"></span>
+          <span id="load-status-text">ĐANG TẢI DỮ LIỆU...</span>
+        </div>
+      </div>
+      <section class="summary" id="summary"></section>
+      <div class="section-head">
+        <h2 id="recommendation-heading">Đề xuất trong ngày</h2>
+        <span id="basis"></span>
+      </div>
+      <section class="grid" id="recommendations"></section>
+      <section class="paper-band">
+        <div class="section-head">
+          <h2>Recommended Paper</h2>
+        </div>
+        <div class="combo-summary-head">
+          <h3>Thống kê theo rule size</h3>
+          <span id="rule-size-stats-meta"></span>
+        </div>
+        <section class="combo-stats rule-size-stats" id="rule-size-stats"></section>
+        <div class="combo-summary-head">
+          <h3>Thống kê combo đã mở lệnh</h3>
+          <span id="combo-stats-meta"></span>
+        </div>
+        <section class="combo-stats" id="combo-stats"></section>
+        <div
+          class="pager table-pager"
+          id="pagination"
+          aria-label="Phân trang Recommended Paper"
+        ></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>
+                  <button class="sort-btn" data-sort="sourcePage">
+                    SOURCE
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="recommendation">
+                    TÍN HIỆU ĐỀ XUẤT
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="symbol">SYMBOL</button>
+                </th>
+                <th><button class="sort-btn" data-sort="side">SIDE</button></th>
+                <th>
+                  <button class="sort-btn" data-sort="score">SCORE</button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="tradePlan">
+                    RULE SIZE
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="entry">ENTRY</button>
+                </th>
+                <th><button class="sort-btn" data-sort="mark">LAST</button></th>
+                <th><button class="sort-btn" data-sort="pnl">PNL</button></th>
+                <th><button class="sort-btn" data-sort="roe">ROE</button></th>
+                <th>
+                  <button class="sort-btn" data-sort="status">STATUS</button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="exitType">
+                    LOẠI ĐÓNG
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="highJumpRisk">
+                    JUMP RISK
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="btcPhase">
+                    BTC PHASE
+                  </button>
+                </th>
+                <th>BTC KIỂU</th>
+                <th>
+                  <button class="sort-btn" data-sort="btcTrend">
+                    BTC TREND
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="combo">COMBO</button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="time">TIME UTC</button>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="trades"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/recommended-signals.js"></script>
+  </body>
+</html>

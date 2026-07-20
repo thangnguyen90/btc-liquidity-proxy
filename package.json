@@ -7,7 +7,11 @@
     "start": "node src/index.js",
     "web": "node src/server.js",
     "btc": "node src/index.js BTC",
-    "watch": "node src/index.js --watch"
+    "watch": "node src/index.js --watch",
+    "combo-stats": "node scripts/combo-stats-by-day.js",
+    "signal-eval": "node scripts/signal-eval-by-day.js",
+    "daily-signal-report": "node scripts/daily-signal-report.js",
+    "intraday-combos": "python3 scripts/intraday_combo_predictor.py --pretty"
   },
   "engines": {
     "node": ">=20"

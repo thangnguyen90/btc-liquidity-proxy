@@ -67,6 +67,31 @@ function filteredTrades() {
   });
 }
 
+function calcFilteredSummary(rows) {
+  const active = rows.filter((t) => ['PENDING', 'OPEN'].includes(t.status));
+  const closed = rows.filter((t) => t.status === 'CLOSED');
+  const filled = rows.filter((t) => t.openedAt);
+  const wins = closed.filter((t) => Number(t.pnl ?? 0) > 0).length;
+  const losses = closed.filter((t) => Number(t.pnl ?? 0) < 0).length;
+  const realizedPnl = closed.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+  const unrealizedPnl = rows
+    .filter((t) => t.status === 'OPEN')
+    .reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+  return {
+    pending: active.filter((t) => t.status === 'PENDING').length,
+    open: active.filter((t) => t.status === 'OPEN').length,
+    closed: closed.length,
+    filled: filled.length,
+    expired: closed.filter((t) => t.outcome === 'EXPIRED').length,
+    wins,
+    losses,
+    wr: wins + losses ? (wins / (wins + losses)) * 100 : 0,
+    realizedPnl,
+    unrealizedPnl,
+    netPnl: realizedPnl + unrealizedPnl,
+  };
+}
+
 function renderDays() {
   const select = $('daySelect');
   const current = select.value || 'all';
@@ -76,7 +101,7 @@ function renderDays() {
 }
 
 function renderStats() {
-  const s = state.data?.summary ?? {};
+  const s = calcFilteredSummary(filteredTrades());
   $('statNet').textContent = fmtNum(s.netPnl);
   $('statNet').className = cls(s.netPnl);
   $('statRealized').textContent = `realized ${fmtNum(s.realizedPnl)} · unreal ${fmtNum(s.unrealizedPnl)}`;
@@ -116,7 +141,10 @@ function renderBtcTurnGateBanner() {
 
 function rowHtml(t) {
   const statusCls = String(t.status || '').toLowerCase();
-  const note = String(t.note || '').replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const esc = (s) => String(s || '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+  const note = esc(t.note);
+  const outcomeFull = String(t.outcome || '');
+  const outcomeShort = outcomeFull.length > 16 ? `${outcomeFull.slice(0, 16)}…` : outcomeFull;
   const canClose = t.status === 'OPEN';
   const canDelete = true;
   return `
@@ -124,7 +152,7 @@ function rowHtml(t) {
       <td>${shortTime(t.createdAt)}</td>
       <td><strong>${t.symbol}</strong><br><span class="limit-muted">${t.interval ?? ''} ${t.brLikeScore ?? ''}</span></td>
       <td class="${t.side === 'LONG' ? 'limit-pos' : 'limit-neg'}">${t.side}</td>
-      <td><span class="badge ${statusCls}">${t.status}${t.outcome ? ` · ${t.outcome}` : ''}</span></td>
+      <td><span class="badge ${statusCls}" title="${esc(`${t.status}${outcomeFull ? ` · ${outcomeFull}` : ''}`)}" style="max-width:150px;display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${t.status}${outcomeShort ? ` · ${esc(outcomeShort)}` : ''}</span></td>
       <td>${fmtPrice(t.entryPrice)}</td>
       <td>${fmtPrice(t.markPrice)}</td>
       <td>${fmtPrice(t.tp)}</td>
@@ -154,13 +182,14 @@ function render() {
   renderStats();
   renderBtcTurnGateBanner();
   renderRows();
+  $('status').textContent = `Rows ${filteredTrades().length}/${state.data?.summary?.total ?? 0}`;
 }
 
 async function load() {
   $('status').textContent = 'Loading...';
   const res = await fetch('/api/br-like-limit-paper-trades', { cache: 'no-store' });
   state.data = await res.json();
-  $('status').textContent = `Rows ${state.data?.summary?.total ?? 0}`;
+  $('status').textContent = `Rows ${filteredTrades().length}/${state.data?.summary?.total ?? 0}`;
   render();
 }
 
@@ -174,7 +203,7 @@ async function postJson(url, payload) {
   return res.json();
 }
 
-for (const id of ['statusSelect', 'sideSelect', 'daySelect']) $(id).addEventListener('change', renderRows);
+for (const id of ['statusSelect', 'sideSelect', 'daySelect']) $(id).addEventListener('change', render);
 $('reloadButton').addEventListener('click', load);
 $('rowsBody').addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');

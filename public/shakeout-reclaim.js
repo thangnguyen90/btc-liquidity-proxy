@@ -24,6 +24,9 @@ const scoreFilter = document.getElementById('scoreFilter');
 const sortSelect = document.getElementById('sortSelect');
 const srPaperBody = document.getElementById('srPaperBody');
 const srPaperSummary = document.getElementById('srPaperSummary');
+const srSignalScoreStats = document.getElementById('srSignalScoreStats');
+const srChaseStats = document.getElementById('srChaseStats');
+const srComboStats = document.getElementById('srComboStats');
 
 let srPaperTrades = [];
 let srPaperSort = { key: 'status', dir: 'asc' };
@@ -95,6 +98,43 @@ function fmtSigned(v, suffix = '') {
   return `<span style="color:${cls};font-weight:800">${n >= 0 ? '+' : ''}${n.toFixed(2)}${suffix}</span>`;
 }
 
+function srFeeRate(t) {
+  const n = Number(t?.feeRate ?? 0.0004);
+  return Number.isFinite(n) && n >= 0 ? n : 0.0004;
+}
+
+function srEstimatedFee(t, markPrice = null) {
+  if (!t || t.status === 'PENDING') return null;
+  const entry = Number(t.entryPrice);
+  const exit = Number(markPrice ?? t.markPrice ?? t.exitPrice ?? t.entryPrice);
+  const qty = Math.abs(Number(t.originalQuantity ?? t.quantity));
+  if (![entry, exit, qty].every(Number.isFinite) || entry <= 0 || exit <= 0 || qty <= 0) return null;
+  return (Math.abs(entry * qty) + Math.abs(exit * qty)) * srFeeRate(t);
+}
+
+function srNetPnlValue(t) {
+  const gross = Number(t?.grossPnl ?? t?.pnl);
+  if (!Number.isFinite(gross)) return null;
+  const fee = Number.isFinite(Number(t?.feeUsdt)) ? Number(t.feeUsdt) : Number(srEstimatedFee(t) ?? 0);
+  return Number.isFinite(Number(t?.netPnl)) ? Number(t.netPnl) : gross - fee;
+}
+
+function srNetRoeValue(t) {
+  if (Number.isFinite(Number(t?.netRoe))) return Number(t.netRoe);
+  const net = srNetPnlValue(t);
+  const margin = Number(t?.marginUsdt);
+  if (net == null || !Number.isFinite(margin) || margin <= 0) return null;
+  return (net / margin) * 100;
+}
+
+function formatSrNetPnl(t) {
+  const net = srNetPnlValue(t);
+  if (net == null) return '-';
+  const gross = Number(t?.grossPnl ?? t?.pnl ?? net);
+  const fee = Number.isFinite(Number(t?.feeUsdt)) ? Number(t.feeUsdt) : Number(srEstimatedFee(t) ?? 0);
+  return `${fmtSigned(net)}<small style="display:block;color:var(--muted);font-size:10px;line-height:1.25">gross ${gross >= 0 ? '+' : ''}$${gross.toFixed(2)} Â· fee -$${fee.toFixed(3)}</small>`;
+}
+
 function timeAgo(ts) {
   if (!ts) return '-';
   const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -142,6 +182,18 @@ function noteNumber(text, key) {
   return m ? Number(m[1]) : null;
 }
 
+function shakeoutPaperMarginLabel(item, fallback = 2) {
+  const text = `${item?.note ?? ''} ${item?.source ?? ''}`;
+  const match = text.match(/margin=\$(\d+(?:\.\d+)?)/i)
+    || text.match(/test \$(\d+(?:\.\d+)?)/i)
+    || text.match(/paper \$(\d+(?:\.\d+)?)/i);
+  const value = match
+    ? Number(match[1])
+    : Number(item?.marginUsdt ?? item?.margin ?? item?.orderMarginUsdt);
+  if (!Number.isFinite(value) || value <= 0) return `$${fallback}`;
+  return `$${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}`;
+}
+
 function getShakeoutQuality(item = {}) {
   const note = `${item.note ?? ''} ${item.reason ?? ''} ${item.shakeoutClassReason ?? ''}`;
   const side = String(item.action ?? item.side ?? '').toUpperCase();
@@ -158,6 +210,25 @@ function getShakeoutQuality(item = {}) {
   const btcOpposed = item.btcRelation?.opposed === true;
   const weakClean = ['WEAK_RECLAIM', 'WEAK_REJECT'].includes(cls)
     && reason.includes('lacks strong confirmation');
+  const storedQuality = String(item.shakeoutQuality ?? '').toUpperCase();
+  if (['GOOD', 'BAD', 'TEST', 'CHASE'].includes(storedQuality)) {
+    const qualityNote = String(item.note ?? '').match(/SHAKEOUT_QUALITY=([^|]+)/i)?.[1]?.trim();
+    const isBadChaseGroup = /CHASE_BAD_GROUP_TEST_1/i.test(note);
+    const isBtcUpShortBadGroup = /BTC_UP_SHORT_BAD_GROUP_TEST_1/i.test(note);
+    return {
+      tier: storedQuality,
+      label: isBtcUpShortBadGroup
+        ? 'BTC UP SHORT WEAK $1'
+        : storedQuality === 'GOOD'
+        ? 'GOOD SHAKEOUT $10'
+        : storedQuality === 'BAD'
+          ? 'LOW QUALITY $1'
+          : storedQuality === 'CHASE'
+            ? (isBadChaseGroup ? 'CHASE WEAK GROUP $1' : `CHASE CANDLE TEST ${shakeoutPaperMarginLabel(item, 2)}`)
+            : 'TEST / WATCH $1',
+      text: qualityNote || `server quality=${storedQuality}`,
+    };
+  }
   // Phân loại theo backtest (server lưu shakeoutQuality). Fallback tính client nếu trade cũ.
   const backtestQuality = String(item.shakeoutQuality ?? '').toUpperCase()
     || (['CLEAN_REJECT', 'CLEAN_RECLAIM'].includes(cls) || (cls === 'FALSE_RECLAIM' && side === 'SHORT')
@@ -191,21 +262,94 @@ function getShakeoutQuality(item = {}) {
   if (good) {
     return {
       tier: 'GOOD',
-      label: 'GOOD SHAKEOUT',
-      text: `score ${score} · trap ${trap || 'LOW'} · entry ${entryDist.toFixed(1)}% · confirm ${reclaim.toFixed(1)}%`,
+      label: 'GOOD SHAKEOUT $10',
+      text: `paper $10 · score ${score} · trap ${trap || 'LOW'} · entry ${entryDist.toFixed(1)}% · confirm ${reclaim.toFixed(1)}%`,
     };
   }
   if (reasons.length) {
     return {
       tier: 'BAD',
-      label: 'LOW QUALITY',
-      text: reasons.slice(0, 3).join(' · '),
+      label: 'LOW QUALITY $1',
+      text: `paper $1 · ${reasons.slice(0, 3).join(' · ')}`,
     };
   }
   return {
     tier: 'TEST',
-    label: 'TEST / WATCH',
-    text: `score ${score} · trap ${trap || 'LOW'} · entry ${entryDist.toFixed(1)}% · move ${move.toFixed(1)}%`,
+    label: 'TEST / WATCH $1',
+    text: `paper $1 · score ${score} · trap ${trap || 'LOW'} · entry ${entryDist.toFixed(1)}% · move ${move.toFixed(1)}%`,
+  };
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    if (value == null || value === '') continue;
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function btcDetailForShakeout(item = {}) {
+  const rawPhase = String(
+    item.btcPhase
+      ?? item.btcPhaseLabel
+      ?? item.btcRegimeAtEntry
+      ?? item.btcRegime
+      ?? item.btcTrendLabel
+      ?? item.btcHealth?.phase
+      ?? '',
+  ).toUpperCase().replace(/\s+/g, '_');
+  const gate = String(item.btcGate ?? item.realGate ?? item.autoTradeBlockReason ?? item.note ?? '').toUpperCase();
+  const score = firstFiniteNumber(
+    item.btcTrendScore,
+    item.btcScore,
+    item.btcTrend?.score,
+    item.btcHealth?.score,
+  );
+  const pct6h = firstFiniteNumber(
+    item.btcChange6hPct,
+    item.btcPct6h,
+    item.btcTrend?.pct6h,
+    item.btcHealth?.pct6h,
+    item.btc6hPct,
+  );
+  const regime = String(item.btcRegime ?? item.btcRegimeAtEntry ?? item.btcTrend?.regime ?? '').toUpperCase();
+  const phase = rawPhase || (regime ? `BTC_${regime}` : '');
+  const hasData = phase || score != null || pct6h != null || regime;
+  if (!hasData) {
+    return { label: 'BTC_NO_DATA', sub: 'khong co snapshot', tone: '#94a3b8', title: 'BTC detail: no data', sort: -999 };
+  }
+
+  let label = phase || 'BTC_DATA';
+  if (phase.includes('UP_MID')) {
+    if (regime.includes('STRONG') || (score != null && score >= 60) || (pct6h != null && pct6h >= 0.25)) label = 'UP_MID_STRONG';
+    else if (regime.includes('WEAK') || gate.includes('WEAK_UP') || (score != null && score <= 55) || (pct6h != null && pct6h <= 0.10)) label = 'UP_MID_WEAK';
+    else label = 'UP_MID_MID';
+  } else if (phase.includes('DOWN_MID')) {
+    if (regime.includes('STRONG') || (score != null && score >= 60) || (pct6h != null && pct6h <= -0.25)) label = 'DOWN_MID_STRONG';
+    else if (regime.includes('WEAK') || gate.includes('WEAK_DOWN') || (score != null && score <= 55) || (pct6h != null && pct6h >= -0.10)) label = 'DOWN_MID_WEAK';
+    else label = 'DOWN_MID_MID';
+  } else if (phase.includes('UP_WEAK')) {
+    label = 'UP_WEAK';
+  } else if (phase.includes('DOWN_WEAK')) {
+    label = 'DOWN_WEAK';
+  } else if (phase.includes('UP_STRONG')) {
+    label = 'UP_STRONG';
+  } else if (phase.includes('DOWN_STRONG')) {
+    label = 'DOWN_STRONG';
+  }
+
+  const scoreText = score == null ? 'score -' : `score ${score.toFixed(0)}`;
+  const pctText = pct6h == null ? '6h -' : `${fmtSigned(pct6h, '%')}/6h`;
+  const regimeText = regime ? regime.replace(/^BTC_/, '') : phase.replace(/^BTC_/, '') || '-';
+  const isBadTone = label.includes('DOWN') || label.includes('WEAK');
+  const tone = label.includes('NO_DATA') ? '#94a3b8' : isBadTone ? '#fbbf24' : '#34d399';
+  return {
+    label,
+    sub: `${scoreText} · ${pctText}`,
+    tone,
+    title: `BTC detail=${label}; phase=${phase || '-'}; regime=${regimeText}; ${scoreText}; ${pctText}; gate=${gate || '-'}`,
+    sort: score ?? (pct6h == null ? 0 : Math.round(pct6h * 10)),
   };
 }
 
@@ -213,6 +357,14 @@ function shakeoutQualityBadge(item, compact = false) {
   const q = getShakeoutQuality(item);
   return `<div class="sr-quality-badge ${q.tier.toLowerCase()}" title="${escapeHtml(q.text)}">
     ${escapeHtml(q.label)}${compact ? '' : `<span>${escapeHtml(q.text)}</span>`}
+  </div>`;
+}
+
+function shakeoutHighJumpRiskBadge(item, compact = false) {
+  if (!item?.highJumpRisk) return '';
+  const reason = String(item.highJumpRiskReason ?? 'Biên độ nến 5m quá lớn so với leverage dự kiến.');
+  return `<div class="sr-jump-risk-badge" title="${escapeHtml(reason)}">
+    HIGH JUMP RISK${compact ? '' : `<span>${escapeHtml(reason)} · paper ${shakeoutPaperMarginLabel(item, 10)} · 5x, không chặn</span>`}
   </div>`;
 }
 
@@ -336,6 +488,10 @@ function buildOrderDecision(sig) {
     paperTone = '#fbbf24';
     paperTitle = 'PAPER: CHUA VAO';
     paperReason = 'Tin hieu moi o SHAKEOUT WATCH, paper chi vao RECLAIM_CONFIRMED.';
+  } else if (sig.paperTradeBlocked) {
+    paperTone = '#fb7185';
+    paperTitle = 'PAPER: TAM CHAN NHOM XAU';
+    paperReason = sig.paperTradeBlockReason || sig.paperTradeBlockCode || 'Bi chan boi cohort gate.';
   } else if (Number(sig.score ?? 0) < 55) {
     paperTone = '#fb7185';
     paperTitle = 'PAPER: KHONG DU DIEM';
@@ -431,7 +587,7 @@ function buildCard(sig) {
       </div>`
     : '';
   return `
-    <article class="sr-card ${stageClass}${isWeakClean ? ' weak-clean' : ''} sr-quality-${quality.tier.toLowerCase()}">
+    <article class="sr-card ${stageClass}${isWeakClean ? ' weak-clean' : ''}${sig.highJumpRisk ? ' sr-high-jump-risk' : ''} sr-quality-${quality.tier.toLowerCase()}">
       <div class="sr-top">
         <div>
           <a class="sr-symbol" href="${detailUrl}" target="_blank">${sig.symbol.replace(/USDT$/, '')}<span>USDT</span></a>
@@ -444,6 +600,7 @@ function buildCard(sig) {
       </div>
 
       <div class="sr-pattern">${sig.reason || ''}</div>
+      ${shakeoutHighJumpRiskBadge(sig)}
       ${shakeoutQualityBadge(sig)}
       ${shakeoutRealGateBadge(sig)}
       ${classBadge}
@@ -593,13 +750,245 @@ function renderRealGateCompare(rowsData) {
   `;
 }
 
+function getShakeoutComboKey(t) {
+  const stored = String(t?.shakeoutCombo ?? t?.combo ?? '').trim();
+  if (stored && stored !== '-') return stored;
+  const type = getShakeoutSignalType(t).toUpperCase();
+  const side = String(t?.side ?? '-').toUpperCase();
+  const timeframe = String(t?.signalTimeframe ?? t?.timeframe ?? t?.interval ?? '-');
+  const score = Number(t?.score);
+  const scoreBucket = Number.isFinite(score) ? `SCORE_${getShakeoutScoreBucket(t)}` : 'SCORE_NO_DATA';
+  const btcGate = String(t?.shakeoutBtcGateLabel ?? t?.btcGateLabel ?? t?.btcPhaseLabel ?? t?.btcPhase ?? 'BTC_NO_DATA').toUpperCase();
+  const realGate = String(t?.shakeoutRealGateLabel ?? t?.realGate ?? 'REAL_NO_DATA').toUpperCase();
+  const quality = String(getShakeoutQuality(t).tier ?? t?.shakeoutQuality ?? 'QUALITY_UNKNOWN').toUpperCase();
+  return [type, side, timeframe, btcGate, realGate, quality, scoreBucket].join(' | ');
+}
+
+function isShakeoutChaseTrade(t) {
+  const quality = String(t?.shakeoutQuality ?? '').toUpperCase();
+  const variant = String(t?.variant ?? '').toUpperCase();
+  const tag = String(t?.tag ?? '').toUpperCase();
+  const note = String(t?.note ?? '');
+  return quality === 'CHASE'
+    || variant === 'CHASE'
+    || tag.includes('CHASE')
+    || /CHASE_CANDLE_TEST/i.test(note)
+    || /pending missed but candle turned/i.test(note);
+}
+
+function buildShakeoutGroupStats(trades, keyFn) {
+  const map = new Map();
+  for (const t of trades) {
+    const key = keyFn(t);
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        total: 0,
+        open: 0,
+        pending: 0,
+        closed: 0,
+        wins: 0,
+        losses: 0,
+        tpHits: 0,
+        slHits: 0,
+        pnl: 0,
+        roeSum: 0,
+      });
+    }
+    const row = map.get(key);
+    row.total += 1;
+    if (t.status === 'OPEN') row.open += 1;
+    if (t.status === 'PENDING') row.pending += 1;
+    if (t.status !== 'CLOSED' || t.outcome === 'INVALID') continue;
+    row.closed += 1;
+    const pnl = Number(srNetPnlValue(t) ?? t.pnl ?? 0);
+    row.pnl += pnl;
+    row.roeSum += Number(srNetRoeValue(t) ?? t.roe ?? 0);
+    if (pnl > 0) row.wins += 1;
+    else if (pnl < 0) row.losses += 1;
+    if (['TP', 'RUNNER_TP'].includes(t.outcome)) row.tpHits += 1;
+    if (t.outcome === 'SL') row.slHits += 1;
+  }
+  return [...map.values()].map((row) => {
+    const avgRoe = row.closed ? +(row.roeSum / row.closed).toFixed(1) : null;
+    const winRate = row.wins + row.losses ? +((row.wins / (row.wins + row.losses)) * 100).toFixed(1) : 0;
+    return {
+      ...row,
+      pnl: +row.pnl.toFixed(4),
+      avgRoe,
+      winRate,
+    };
+  }).sort((a, b) =>
+    b.closed - a.closed
+    || Number(b.avgRoe ?? -999) - Number(a.avgRoe ?? -999)
+    || b.pnl - a.pnl);
+}
+
+function renderShakeoutChaseStats(trades) {
+  if (!srChaseStats) return;
+  const chaseTrades = trades.filter(isShakeoutChaseTrade);
+  if (!chaseTrades.length) {
+    srChaseStats.innerHTML = '';
+    return;
+  }
+  const groups = buildShakeoutGroupStats(chaseTrades, (t) => [
+    getShakeoutSignalType(t).toUpperCase(),
+    String(t?.side ?? '-').toUpperCase(),
+    String(t?.signalTimeframe ?? t?.timeframe ?? t?.interval ?? '-'),
+    `SCORE_${getShakeoutScoreBucket(t)}`,
+    String(t?.shakeoutBtcGateLabel ?? t?.btcGateLabel ?? t?.btcPhaseLabel ?? t?.btcPhase ?? 'BTC_NO_DATA').toUpperCase(),
+  ].join(' | ')).slice(0, 20);
+  const total = buildShakeoutGroupStats(chaseTrades, () => 'ALL CHASE')[0];
+  const sideRows = buildShakeoutGroupStats(chaseTrades, (t) => `CHASE ${String(t?.side ?? '-').toUpperCase()}`);
+  const cls = (v) => (Number(v) >= 0 ? 'sr-daily-pos' : 'sr-daily-neg');
+  const sign = (v) => (Number(v) >= 0 ? '+' : '');
+  const rowHtml = (row) => `
+    <tr class="${Number(row.pnl) >= 0 ? 'sr-score-good' : 'sr-score-bad'}">
+      <td class="sr-daily-date" title="${escapeHtml(row.key)}">${escapeHtml(row.key)}</td>
+      <td>${row.total}</td>
+      <td>${row.closed}</td>
+      <td>${row.open}${row.pending ? ` / ${row.pending} cho` : ''}</td>
+      <td class="sr-daily-pos">${row.wins}</td>
+      <td class="sr-daily-neg">${row.losses}</td>
+      <td>${row.winRate}%</td>
+      <td>${row.tpHits} / ${row.slHits}</td>
+      <td class="${cls(row.pnl)}">${sign(row.pnl)}$${Number(row.pnl ?? 0).toFixed(2)}</td>
+      <td class="${cls(row.avgRoe)}">${row.avgRoe != null ? sign(row.avgRoe) + Number(row.avgRoe).toFixed(1) + '%' : '-'}</td>
+    </tr>
+  `;
+  srChaseStats.innerHTML = `
+    <div class="sr-daily-title">Thong ke rieng lenh duoi gia / CHASE CANDLE TEST $2</div>
+    <div class="sr-chase-summary">
+      ${[total, ...sideRows].filter(Boolean).map((row) => `
+        <div class="sr-chase-card ${Number(row.pnl) >= 0 ? 'good' : 'bad'}">
+          <div>${escapeHtml(row.key)}</div>
+          <strong class="${cls(row.pnl)}">${sign(row.pnl)}$${Number(row.pnl ?? 0).toFixed(2)}</strong>
+          <span>${row.total} lenh · ${row.closed} closed · WR ${row.winRate}% · AvgROE ${row.avgRoe != null ? sign(row.avgRoe) + row.avgRoe + '%' : '-'}</span>
+        </div>
+      `).join('')}
+    </div>
+    <table class="sr-daily-table sr-score-stats-table sr-combo-stats-table">
+      <thead>
+        <tr>
+          <th>Nhom chase</th><th>Tong</th><th>Closed</th><th>Open/Cho</th><th>Win</th><th>Loss</th><th>WR</th><th>TP/SL</th><th>PnL ($)</th><th>Avg ROE</th>
+        </tr>
+      </thead>
+      <tbody>${groups.map(rowHtml).join('')}</tbody>
+    </table>
+  `;
+}
+
+function buildShakeoutComboStats(trades) {
+  const map = new Map();
+  for (const t of trades) {
+    const key = getShakeoutComboKey(t);
+    if (!map.has(key)) {
+      map.set(key, {
+        combo: key,
+        total: 0,
+        open: 0,
+        pending: 0,
+        closed: 0,
+        wins: 0,
+        losses: 0,
+        tpHits: 0,
+        slHits: 0,
+        pnl: 0,
+        roeSum: 0,
+      });
+    }
+    const row = map.get(key);
+    row.total += 1;
+    if (t.status === 'OPEN') row.open += 1;
+    if (t.status === 'PENDING') row.pending += 1;
+    if (t.status !== 'CLOSED' || t.outcome === 'INVALID') continue;
+    row.closed += 1;
+    const pnl = Number(srNetPnlValue(t) ?? t.pnl ?? 0);
+    row.pnl += pnl;
+    row.roeSum += Number(srNetRoeValue(t) ?? t.roe ?? 0);
+    if (pnl > 0) row.wins += 1;
+    else if (pnl < 0) row.losses += 1;
+    if (['TP', 'RUNNER_TP'].includes(t.outcome)) row.tpHits += 1;
+    if (t.outcome === 'SL') row.slHits += 1;
+  }
+  return [...map.values()]
+    .filter((row) => row.closed > 0 || row.open > 0 || row.pending > 0)
+    .map((row) => {
+      const avgRoe = row.closed ? +(row.roeSum / row.closed).toFixed(1) : null;
+      const wr = row.wins + row.losses ? +((row.wins / (row.wins + row.losses)) * 100).toFixed(1) : 0;
+      let verdict = 'NEUTRAL';
+      if (row.closed >= 8 && wr >= 80 && Number(avgRoe ?? 0) >= 3) verdict = 'STRONG';
+      else if (row.closed >= 5 && row.pnl > 0 && Number(avgRoe ?? 0) >= 1) verdict = 'GOOD';
+      else if (row.closed >= 5 && (row.pnl < 0 || Number(avgRoe ?? 0) < 0)) verdict = 'BAD';
+      return {
+        ...row,
+        winRate: wr,
+        pnl: +row.pnl.toFixed(4),
+        avgRoe,
+        verdict,
+      };
+    })
+    .sort((a, b) => {
+      const rank = { STRONG: 0, GOOD: 1, NEUTRAL: 2, BAD: 3 };
+      return (rank[a.verdict] ?? 9) - (rank[b.verdict] ?? 9)
+        || Number(b.closed >= 8) - Number(a.closed >= 8)
+        || Number(b.avgRoe ?? -999) - Number(a.avgRoe ?? -999)
+        || b.pnl - a.pnl
+        || b.closed - a.closed;
+    });
+}
+
+function renderShakeoutComboStats(trades) {
+  if (!srComboStats) return;
+  const rowsData = buildShakeoutComboStats(trades).slice(0, 40);
+  if (!rowsData.length) {
+    srComboStats.innerHTML = '';
+    return;
+  }
+  const cls = (v) => (Number(v) >= 0 ? 'sr-daily-pos' : 'sr-daily-neg');
+  const sign = (v) => (Number(v) >= 0 ? '+' : '');
+  const rowClass = (v) => (
+    v.verdict === 'STRONG' || v.verdict === 'GOOD'
+      ? 'sr-score-good'
+      : v.verdict === 'BAD'
+        ? 'sr-score-bad'
+        : 'sr-score-watch'
+  );
+  const rows = rowsData.map((row) => `
+    <tr class="${rowClass(row)}">
+      <td class="sr-daily-date" title="${escapeHtml(row.combo)}">${escapeHtml(row.combo)}</td>
+      <td>${row.total}</td>
+      <td>${row.closed}</td>
+      <td>${row.open}${row.pending ? ` / ${row.pending} cho` : ''}</td>
+      <td class="sr-daily-pos">${row.wins}</td>
+      <td class="sr-daily-neg">${row.losses}</td>
+      <td>${row.winRate}%</td>
+      <td>${row.tpHits} / ${row.slHits}</td>
+      <td class="${cls(row.pnl)}">${sign(row.pnl)}$${Number(row.pnl ?? 0).toFixed(2)}</td>
+      <td class="${cls(row.avgRoe)}">${row.avgRoe != null ? sign(row.avgRoe) + Number(row.avgRoe).toFixed(1) + '%' : '-'}</td>
+      <td><span class="sr-combo-verdict sr-combo-${row.verdict.toLowerCase()}">${escapeHtml(row.verdict)}</span></td>
+    </tr>
+  `).join('');
+  srComboStats.innerHTML = `
+    <div class="sr-daily-title">Thong ke combo Shakeout - theo filter hien tai</div>
+    <table class="sr-daily-table sr-score-stats-table sr-combo-stats-table">
+      <thead>
+        <tr>
+          <th>Combo</th><th>Tong</th><th>Closed</th><th>Open/Cho</th><th>Win</th><th>Loss</th><th>WR</th><th>TP/SL</th><th>PnL ($)</th><th>Avg ROE</th><th>Danh gia</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
 function renderDailyStats(daily) {
   if (!srDailyStats) return;
   if (!Array.isArray(daily) || !daily.length) {
     srDailyStats.innerHTML = '';
     return;
   }
-  const totPnl = daily.reduce((s, d) => s + Number(d.totalPnl ?? 0), 0);
+  const totPnl = daily.reduce((s, d) => s + Number(d.netPnl ?? d.totalPnl ?? 0), 0);
   const cls = (v) => (Number(v) >= 0 ? 'sr-daily-pos' : 'sr-daily-neg');
   const sign = (v) => (Number(v) >= 0 ? '+' : '');
   const rows = daily.map((d) => `
@@ -610,17 +999,20 @@ function renderDailyStats(daily) {
       <td class="sr-daily-neg">${d.losses ?? 0}</td>
       <td>${d.tpHits ?? 0} / ${d.slHits ?? 0}</td>
       <td>${d.winRate ?? 0}%</td>
-      <td class="${cls(d.totalPnl)}">
-        ${sign(d.totalPnl)}$${Number(d.totalPnl ?? 0).toFixed(2)}
+      <td class="${cls(d.netPnl ?? d.totalPnl)}">
+        ${sign(d.netPnl ?? d.totalPnl)}$${Number(d.netPnl ?? d.totalPnl ?? 0).toFixed(2)}
+        ${Number(d.feeUsdt ?? 0) > 0
+          ? `<small style="display:block;color:var(--muted)">gross ${sign(d.grossPnl ?? d.totalPnl)}$${Number(d.grossPnl ?? d.totalPnl ?? 0).toFixed(2)} - fee $${Number(d.feeUsdt ?? 0).toFixed(2)}</small>`
+          : ''}
         ${Number(d.openPartialRealizedPnl ?? 0) !== 0
           ? `<small style="display:block;color:#67e8f9">+$${Number(d.openPartialRealizedPnl).toFixed(2)} đã chốt từ lệnh mở</small>`
           : ''}
       </td>
-      <td class="${cls(d.totalRoe)}">${sign(d.totalRoe)}${Number(d.totalRoe ?? 0).toFixed(0)}%</td>
+      <td class="${cls(d.totalNetRoe ?? d.totalRoe)}">${sign(d.totalNetRoe ?? d.totalRoe)}${Number(d.totalNetRoe ?? d.totalRoe ?? 0).toFixed(0)}%</td>
     </tr>
   `).join('');
   srDailyStats.innerHTML = `
-    <div class="sr-daily-title">Thong ke theo ngay - tong PnL <span class="${cls(totPnl)}">${sign(totPnl)}$${totPnl.toFixed(2)}</span></div>
+    <div class="sr-daily-title">Thong ke theo ngay - net PnL sau phi <span class="${cls(totPnl)}">${sign(totPnl)}$${totPnl.toFixed(2)}</span></div>
     <table class="sr-daily-table">
       <thead>
         <tr>
@@ -637,13 +1029,19 @@ function buildSrPaperStats(trades) {
   const open = trades.filter((t) => t.status === 'OPEN');
   const pending = trades.filter((t) => t.status === 'PENDING');
   const closed = trades.filter((t) => t.status === 'CLOSED');
-  const wins = validClosed.filter((t) => Number(t.pnl ?? 0) > 0).length;
+  const wins = validClosed.filter((t) => Number(srNetPnlValue(t) ?? t.pnl ?? 0) > 0).length;
   const livePnl = trades
     .filter((t) => t.status === 'OPEN' || (t.status === 'CLOSED' && t.outcome !== 'INVALID'))
-    .reduce((s, t) => s + Number(t.pnl ?? 0), 0);
+    .reduce((s, t) => s + Number(srNetPnlValue(t) ?? t.pnl ?? 0), 0);
+  const grossPnl = trades
+    .filter((t) => t.status === 'OPEN' || (t.status === 'CLOSED' && t.outcome !== 'INVALID'))
+    .reduce((s, t) => s + Number(t.grossPnl ?? t.pnl ?? 0), 0);
+  const feeUsdt = trades
+    .filter((t) => t.status === 'OPEN' || (t.status === 'CLOSED' && t.outcome !== 'INVALID'))
+    .reduce((s, t) => s + Number(t.feeUsdt ?? srEstimatedFee(t) ?? 0), 0);
   const liveRoe = trades
     .filter((t) => t.status === 'OPEN' || (t.status === 'CLOSED' && t.outcome !== 'INVALID'))
-    .reduce((s, t) => s + Number(t.roe ?? 0), 0);
+    .reduce((s, t) => s + Number(srNetRoeValue(t) ?? t.roe ?? 0), 0);
   const tpHits = validClosed.filter((t) => ['TP', 'RUNNER_TP'].includes(t.outcome)).length;
   const slHits = validClosed.filter((t) => t.outcome === 'SL').length;
   return {
@@ -659,8 +1057,10 @@ function buildSrPaperStats(trades) {
     tpHits,
     slHits,
     livePnl: +livePnl.toFixed(4),
+    grossPnl: +grossPnl.toFixed(4),
+    feeUsdt: +feeUsdt.toFixed(4),
     liveRoe: +liveRoe.toFixed(2),
-    avgRoe: validClosed.length ? +(validClosed.reduce((s, t) => s + Number(t.roe ?? 0), 0) / validClosed.length).toFixed(1) : null,
+    avgRoe: validClosed.length ? +(validClosed.reduce((s, t) => s + Number(srNetRoeValue(t) ?? t.roe ?? 0), 0) / validClosed.length).toFixed(1) : null,
   };
 }
 
@@ -671,9 +1071,9 @@ function buildSrPaperCompare(trades, key, labels) {
       : String(t.shakeoutRealGateLabel ?? 'REAL_TEST') === label);
     const closed = all.filter((t) => t.status === 'CLOSED' && t.outcome !== 'INVALID');
     const liveRows = all.filter((t) => t.status === 'OPEN' || (t.status === 'CLOSED' && t.outcome !== 'INVALID'));
-    const wins = closed.filter((t) => Number(t.pnl ?? 0) > 0).length;
-    const totalPnl = liveRows.reduce((s, t) => s + Number(t.pnl ?? 0), 0);
-    const totalRoe = liveRows.reduce((s, t) => s + Number(t.roe ?? 0), 0);
+    const wins = closed.filter((t) => Number(srNetPnlValue(t) ?? t.pnl ?? 0) > 0).length;
+    const totalPnl = liveRows.reduce((s, t) => s + Number(srNetPnlValue(t) ?? t.pnl ?? 0), 0);
+    const totalRoe = liveRows.reduce((s, t) => s + Number(srNetRoeValue(t) ?? t.roe ?? 0), 0);
     return {
       [key]: label,
       label,
@@ -704,7 +1104,11 @@ function buildSrDailyStats(trades) {
         slHits: 0,
         winRate: 0,
         totalPnl: 0,
+        grossPnl: 0,
+        feeUsdt: 0,
+        netPnl: 0,
         totalRoe: 0,
+        totalNetRoe: 0,
         open: 0,
         pending: 0,
       });
@@ -721,15 +1125,28 @@ function buildSrDailyStats(trades) {
     }
     if (t.status === 'OPEN') {
       row.open += 1;
-      row.totalPnl += Number(t.pnl ?? 0);
+      const gross = Number(t.grossPnl ?? t.pnl ?? 0);
+      const fee = Number(t.feeUsdt ?? srEstimatedFee(t) ?? 0);
+      const net = Number(srNetPnlValue(t) ?? t.pnl ?? 0);
+      row.grossPnl += gross;
+      row.feeUsdt += fee;
+      row.netPnl += net;
+      row.totalPnl += net;
       row.totalRoe += Number(t.roe ?? 0);
+      row.totalNetRoe += Number(srNetRoeValue(t) ?? t.roe ?? 0);
       continue;
     }
     if (t.status !== 'CLOSED' || t.outcome === 'INVALID') continue;
     row.orders += 1;
-    const pnl = Number(t.pnl ?? 0);
+    const gross = Number(t.grossPnl ?? t.pnl ?? 0);
+    const fee = Number(t.feeUsdt ?? srEstimatedFee(t) ?? 0);
+    const pnl = Number(srNetPnlValue(t) ?? t.pnl ?? 0);
+    row.grossPnl += gross;
+    row.feeUsdt += fee;
+    row.netPnl += pnl;
     row.totalPnl += pnl;
     row.totalRoe += Number(t.roe ?? 0);
+    row.totalNetRoe += Number(srNetRoeValue(t) ?? t.roe ?? 0);
     if (pnl > 0) row.wins += 1;
     else row.losses += 1;
     if (['TP', 'RUNNER_TP'].includes(t.outcome)) row.tpHits += 1;
@@ -740,9 +1157,137 @@ function buildSrDailyStats(trades) {
       ...row,
       winRate: row.orders ? +((row.wins / row.orders) * 100).toFixed(1) : 0,
       totalPnl: +row.totalPnl.toFixed(4),
+      grossPnl: +row.grossPnl.toFixed(4),
+      feeUsdt: +row.feeUsdt.toFixed(4),
+      netPnl: +row.netPnl.toFixed(4),
       totalRoe: +row.totalRoe.toFixed(2),
+      totalNetRoe: +row.totalNetRoe.toFixed(2),
     }))
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+function getShakeoutScoreBucket(t) {
+  const score = Number(t?.score ?? 0);
+  if (score >= 90) return '90+';
+  if (score >= 85) return '85-89';
+  if (score >= 80) return '80-84';
+  if (score >= 75) return '75-79';
+  if (score >= 70) return '70-74';
+  if (score >= 65) return '65-69';
+  if (score >= 60) return '60-64';
+  if (score >= 55) return '55-59';
+  return '<55';
+}
+
+function getShakeoutSignalType(t) {
+  return String(t?.signalType || t?.shakeoutClassLabel || t?.shakeoutClass || 'UNKNOWN');
+}
+
+function getLatestSrPaperDays(trades, count = 5) {
+  return [...new Set(trades.map(paperTradeDay).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))]
+    .sort()
+    .slice(-count);
+}
+
+function buildSrSignalScoreStats(trades) {
+  const map = new Map();
+  for (const t of trades) {
+    const key = [getShakeoutSignalType(t), String(t.side ?? '-'), getShakeoutScoreBucket(t)].join('|');
+    if (!map.has(key)) {
+      map.set(key, {
+        signalType: getShakeoutSignalType(t),
+        side: String(t.side ?? '-'),
+        scoreBucket: getShakeoutScoreBucket(t),
+        total: 0,
+        closed: 0,
+        open: 0,
+        pending: 0,
+        wins: 0,
+        losses: 0,
+        tpHits: 0,
+        slHits: 0,
+        pnl: 0,
+        roeSum: 0,
+      });
+    }
+    const row = map.get(key);
+    row.total += 1;
+    if (t.status === 'OPEN') row.open += 1;
+    if (t.status === 'PENDING') row.pending += 1;
+    if (t.status !== 'CLOSED' || t.outcome === 'INVALID') continue;
+    row.closed += 1;
+    const pnl = Number(srNetPnlValue(t) ?? t.pnl ?? 0);
+    row.pnl += pnl;
+    row.roeSum += Number(srNetRoeValue(t) ?? t.roe ?? 0);
+    if (pnl > 0) row.wins += 1;
+    else if (pnl < 0) row.losses += 1;
+    if (['TP', 'RUNNER_TP'].includes(t.outcome)) row.tpHits += 1;
+    if (t.outcome === 'SL') row.slHits += 1;
+  }
+  const bucketOrder = ['<55', '55-59', '60-64', '65-69', '70-74', '75-79', '80-84', '85-89', '90+'];
+  return [...map.values()]
+    .filter((row) => row.closed > 0 || row.open > 0 || row.pending > 0)
+    .map((row) => ({
+      ...row,
+      winRate: row.wins + row.losses ? +((row.wins / (row.wins + row.losses)) * 100).toFixed(1) : 0,
+      pnl: +row.pnl.toFixed(4),
+      avgRoe: row.closed ? +(row.roeSum / row.closed).toFixed(1) : null,
+    }))
+    .sort((a, b) =>
+      a.signalType.localeCompare(b.signalType)
+      || a.side.localeCompare(b.side)
+      || bucketOrder.indexOf(a.scoreBucket) - bucketOrder.indexOf(b.scoreBucket));
+}
+
+function renderSignalScoreStats(trades) {
+  if (!srSignalScoreStats) return;
+  const latestDays = getLatestSrPaperDays(trades, 5);
+  const scoped = srDayFilter === 'all'
+    ? trades.filter((t) => latestDays.includes(paperTradeDay(t)))
+    : trades;
+  const rowsData = buildSrSignalScoreStats(scoped);
+  if (!rowsData.length) {
+    srSignalScoreStats.innerHTML = '';
+    return;
+  }
+  const cls = (v) => (Number(v) >= 0 ? 'sr-daily-pos' : 'sr-daily-neg');
+  const sign = (v) => (Number(v) >= 0 ? '+' : '');
+  const qualityClass = (row) => {
+    if (row.closed < 3) return 'sr-score-watch';
+    if (row.pnl > 0 && row.winRate >= 55) return 'sr-score-good';
+    if (row.pnl < 0 || row.winRate < 45) return 'sr-score-bad';
+    return 'sr-score-watch';
+  };
+  const rows = rowsData.map((row) => `
+    <tr class="${qualityClass(row)}">
+      <td class="sr-daily-date">${escapeHtml(row.signalType)}</td>
+      <td class="${row.side === 'LONG' ? 'sr-paper-long' : row.side === 'SHORT' ? 'sr-paper-short' : ''}">${escapeHtml(row.side)}</td>
+      <td>${escapeHtml(row.scoreBucket)}</td>
+      <td>${row.total}</td>
+      <td>${row.closed}</td>
+      <td>${row.open}${row.pending ? ` / ${row.pending} cho` : ''}</td>
+      <td class="sr-daily-pos">${row.wins}</td>
+      <td class="sr-daily-neg">${row.losses}</td>
+      <td>${row.winRate}%</td>
+      <td>${row.tpHits} / ${row.slHits}</td>
+      <td class="${cls(row.pnl)}">${sign(row.pnl)}$${Number(row.pnl ?? 0).toFixed(2)}</td>
+      <td class="${cls(row.avgRoe)}">${row.avgRoe != null ? sign(row.avgRoe) + Number(row.avgRoe).toFixed(1) + '%' : '-'}</td>
+    </tr>
+  `).join('');
+  const scopeText = srDayFilter === 'all'
+    ? `5 ngay gan nhat UTC (${latestDays.join(', ') || '-'})`
+    : `ngay ${srDayFilter}`;
+  srSignalScoreStats.innerHTML = `
+    <div class="sr-daily-title">Thong ke signal type x side x score bucket - ${escapeHtml(scopeText)}</div>
+    <table class="sr-daily-table sr-score-stats-table">
+      <thead>
+        <tr>
+          <th>Signal type</th><th>Side</th><th>Score</th><th>Tong</th><th>Closed</th><th>Open/Cho</th><th>Win</th><th>Loss</th><th>WR</th><th>TP/SL</th><th>PnL ($)</th><th>Avg ROE</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
 }
 
 function getSrFilteredTrades(trades = srPaperTrades) {
@@ -771,6 +1316,9 @@ function renderSrPaperComputedStats(filtered) {
     + ` - ${liveText}`;
   renderVariantCompare(buildSrPaperCompare(filtered, 'variant', ['MARKET', 'PENDING']));
   renderRealGateCompare(buildSrPaperCompare(filtered, 'realGate', ['REAL_OK', 'REAL_TEST', 'REAL_BLOCK']));
+  renderShakeoutChaseStats(filtered);
+  renderShakeoutComboStats(filtered);
+  renderSignalScoreStats(filtered);
   renderDailyStats(buildSrDailyStats(filtered));
 }
 
@@ -783,9 +1331,10 @@ function srPaperSortValue(t, key) {
     case 'sl': return t.sl == null ? null : Number(t.sl);
     case 'tp': return t.tp == null ? null : Number(t.tp);
     case 'projectedPnl': return getSrProjectedPnl(t).roe;
+    case 'btcDetail': return btcDetailForShakeout(t).sort;
     case 'mark': return Number(t.markPrice ?? t.exitPrice);
-    case 'pnl': return t.pnl == null ? null : Number(t.pnl);
-    case 'roe': return t.roe == null ? null : Number(t.roe);
+    case 'pnl': return srNetPnlValue(t);
+    case 'roe': return srNetRoeValue(t);
     case 'score': return t.score == null ? null : Number(t.score);
     case 'source': return String(t.source ?? '');
     case 'time': return Date.parse(t.createdAt ?? '') || 0;
@@ -859,7 +1408,7 @@ document.querySelectorAll('.sr-sort').forEach((th) => {
       srPaperSort.dir = srPaperSort.dir === 'asc' ? 'desc' : 'asc';
     } else {
       // số/giá mặc định desc, chữ mặc định asc
-      srPaperSort = { key, dir: ['symbol', 'side', 'variant', 'source', 'status'].includes(key) ? 'asc' : 'desc' };
+      srPaperSort = { key, dir: ['symbol', 'side', 'variant', 'source', 'status', 'btcDetail'].includes(key) ? 'asc' : 'desc' };
     }
     renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant, realGateCompare: srPaperLastRealGate });
   });
@@ -886,7 +1435,7 @@ function renderPaperTrades(data) {
   updateSrSortHeaders();
 
   if (!rows.length) {
-    srPaperBody.innerHTML = '<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:16px">Khong co lenh khop filter (ngày/loại/side).</td></tr>';
+    srPaperBody.innerHTML = '<tr><td colspan="16" style="text-align:center;color:var(--muted);padding:16px">Khong co lenh khop filter (ngày/loại/side).</td></tr>';
     return;
   }
 
@@ -914,7 +1463,7 @@ function renderPaperTrades(data) {
       : t.bottomRebound || String(t.subtype ?? '') === 'BOTTOM_REBOUND'
         ? 'sr-row-bottom-rebound'
         : variant === 'MARKET' ? 'sr-row-market'
-          : variant === 'PENDING' ? 'sr-row-pending' : ''} sr-paper-quality-${quality.tier.toLowerCase()}`;
+          : variant === 'PENDING' ? 'sr-row-pending' : ''}${t.highJumpRisk ? ' sr-row-high-jump-risk' : ''} sr-paper-quality-${quality.tier.toLowerCase()}`;
     const isNearMarketPending = String(t.note ?? '').includes('nearMarketEntry=');
     let variantBadge;
     if (variant === 'MARKET') {
@@ -924,6 +1473,8 @@ function renderPaperTrades(data) {
       variantBadge = t.status === 'PENDING'
         ? '<span class="sr-variant-badge pending waiting" title="Cách B: CHƯA khớp - đang chờ giá chạm entry, chưa có vị thế">B · CHỜ KHỚP</span>'
         : '<span class="sr-variant-badge pending" title="Cách B: ĐÃ khớp khi giá chạm entry">B · ĐÃ KHỚP</span>';
+    } else if (variant === 'CHASE') {
+      variantBadge = '<span class="sr-variant-badge pending" style="color:#fde68a;border-color:#fbbf24;background:#422006" title="CHASE: không chạm pending entry nhưng giá đã quay đầu từ hỗ trợ/kháng cự, vào paper test $2">CHASE · TEST $2</span>';
     } else {
       variantBadge = '<span class="sr-variant-badge none">-</span>';
     }
@@ -968,6 +1519,7 @@ function renderPaperTrades(data) {
         + `</div>`;
     }
     variantBadge += shakeoutQualityBadge(t, true);
+    variantBadge += shakeoutHighJumpRiskBadge(t, true);
     variantBadge += shakeoutRealGateBadge(t, true);
     if (t.btcIndependentShort) {
       variantBadge += `<div style="margin-top:5px;color:#a5f3fc;font-size:10px;font-weight:900;line-height:1.35">`
@@ -1009,6 +1561,9 @@ function renderPaperTrades(data) {
     const projectedHtml = projected.roe == null
       ? '-'
       : `<strong style="color:${projected.roe >= 20 ? '#34d399' : '#fbbf24'}">${fmtSigned(projected.pnl)} / ${fmtSigned(projected.roe, '%')}</strong>`;
+    const btcDetail = btcDetailForShakeout(t);
+    const btcDetailHtml = `<span style="display:inline-block;padding:3px 7px;border:1px solid ${btcDetail.tone};color:${btcDetail.tone};background:rgba(15,23,42,.55);border-radius:4px;font-weight:900;white-space:nowrap">${escapeHtml(btcDetail.label)}</span>`
+      + `<div style="margin-top:3px;color:#94a3b8;font-size:10px;line-height:1.25;white-space:nowrap">${escapeHtml(btcDetail.sub)}</div>`;
     return `
       <tr class="${rowClass}" style="${isClosed ? 'opacity:.55' : ''}">
         <td>${variantBadge}</td>
@@ -1018,9 +1573,10 @@ function renderPaperTrades(data) {
         <td>${fmtPrice(t.sl)}</td>
         <td>${fmtPrice(t.tp)}</td>
         <td title="PnL tai TP theo entry, margin va leverage">${projectedHtml}</td>
+        <td title="${escapeHtml(btcDetail.title)}">${btcDetailHtml}</td>
         <td data-srmark="${escapeHtml(t.id)}">${fmtPrice(t.markPrice)}</td>
-        <td data-srpnl="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '<span style="color:var(--muted)">chưa khớp</span>' : fmtSigned(t.pnl)}</td>
-        <td data-srroe="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '-' : fmtSigned(t.roe, '%')}</td>
+        <td data-srpnl="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '<span style="color:var(--muted)">chưa khớp</span>' : formatSrNetPnl(t)}</td>
+        <td data-srroe="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '-' : fmtSigned(srNetRoeValue(t), '%')}</td>
         <td>${t.partialTpTaken
           ? `<span style="display:inline-block;padding:3px 7px;border:1px solid #22d3ee;color:#67e8f9;background:#083344;border-radius:4px;font-weight:900" title="${escapeHtml(t.note)}">${escapeHtml(
             isClosed
@@ -1143,13 +1699,20 @@ function applyLivePrices() {
     const sideMult = t.side === 'LONG' ? 1 : -1;
     const pnl = realizedPnl + (p - entry) * qty * sideMult;
     const roe = (pnl / margin) * 100;
+    const feeUsdt = srEstimatedFee({ ...t, grossPnl: pnl, pnl, markPrice: p }, p) ?? 0;
+    const netPnl = pnl - feeUsdt;
+    const netRoe = (netPnl / margin) * 100;
+    t.grossPnl = +pnl.toFixed(6);
     t.pnl = +pnl.toFixed(6);
     t.roe = +roe.toFixed(4);
+    t.feeUsdt = +feeUsdt.toFixed(6);
+    t.netPnl = +netPnl.toFixed(6);
+    t.netRoe = +netRoe.toFixed(4);
     changed = true;
     const pnlCell = srPaperBody.querySelector(`[data-srpnl="${t.id}"]`);
     const roeCell = srPaperBody.querySelector(`[data-srroe="${t.id}"]`);
-    if (pnlCell) pnlCell.innerHTML = fmtSigned(pnl);
-    if (roeCell) roeCell.innerHTML = fmtSigned(roe, '%');
+    if (pnlCell) pnlCell.innerHTML = formatSrNetPnl(t);
+    if (roeCell) roeCell.innerHTML = fmtSigned(netRoe, '%');
   }
   if (changed && Date.now() - srPaperStatsLiveRefreshAt > 1500) {
     srPaperStatsLiveRefreshAt = Date.now();

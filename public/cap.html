@@ -229,6 +229,36 @@
       }
       .cap-paper-sort.active { color: var(--text); }
       .cap-paper-sort .sort-mark { color: var(--muted); font-size: 10px; margin-left: 3px; }
+      .cap-paper-head-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+      .cap-day-filter {
+        background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+        border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 800;
+      }
+      .cap-combo-grid {
+        display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+        gap:10px; margin:12px 0 14px;
+      }
+      .cap-combo-card {
+        border:1px solid var(--line); border-radius:8px; background:var(--panel-2);
+        padding:10px; display:grid; gap:7px; min-height:108px;
+      }
+      .cap-combo-card.good { border-color:var(--green); background:linear-gradient(135deg,rgba(16,185,129,.15),rgba(15,23,42,.25)); }
+      .cap-combo-card.bad { border-color:var(--red); background:linear-gradient(135deg,rgba(244,63,94,.18),rgba(15,23,42,.25)); }
+      .cap-combo-card.neutral { border-color:var(--amber); background:linear-gradient(135deg,rgba(245,158,11,.12),rgba(15,23,42,.25)); }
+      .cap-combo-head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; }
+      .cap-combo-title { color:var(--text); font-size:12px; font-weight:950; line-height:1.25; }
+      .cap-combo-tags { display:flex; flex-wrap:wrap; gap:4px; }
+      .cap-combo-tag {
+        display:inline-flex; max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+        padding:2px 6px; border-radius:4px; border:1px solid rgba(157,170,165,.35);
+        color:var(--muted); font-size:10px; font-weight:900;
+      }
+      .cap-combo-tag.hot { color:var(--green); border-color:var(--green); }
+      .cap-combo-tag.bad { color:var(--red); border-color:var(--red); }
+      .cap-combo-tag.warn { color:var(--amber); border-color:var(--amber); }
+      .cap-combo-stats { font-size:11px; color:var(--muted); display:grid; gap:3px; }
+      .cap-combo-pnl.pos { color:var(--green); font-weight:900; }
+      .cap-combo-pnl.neg { color:var(--red); font-weight:900; }
 
       /* ── Cap order row (Binance LIMIT) ── */
       .cap-order-row {
@@ -379,8 +409,17 @@
       <section class="panel cap-paper-section">
         <div class="panel-head">
           <h2>Paper Trades — Cap Signals</h2>
-          <span id="capPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+          <div class="cap-paper-head-actions">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);font-weight:800">
+              Ngày
+              <select id="capPaperDayFilter" class="cap-day-filter">
+                <option value="all">Tất cả</option>
+              </select>
+            </label>
+            <span id="capPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+          </div>
         </div>
+        <div id="capComboStats" class="cap-combo-grid" style="display:none"></div>
         <div class="table-wrap">
           <table class="signal-table">
             <thead>
@@ -391,10 +430,14 @@
                 <th class="cap-paper-sort" data-paper-sort="entry">Entry <span class="sort-mark"></span></th>
                 <th class="cap-paper-sort" data-paper-sort="sl">SL <span class="sort-mark"></span></th>
                 <th class="cap-paper-sort" data-paper-sort="tp">TP <span class="sort-mark"></span></th>
-                <th class="cap-paper-sort" data-paper-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="btcCorr">BTC? <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="btcTrend">BTC Trend <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="mark">Last <span class="sort-mark"></span></th>
                 <th class="cap-paper-sort" data-paper-sort="pnl">PnL <span class="sort-mark"></span></th>
                 <th class="cap-paper-sort" data-paper-sort="roe">ROE <span class="sort-mark"></span></th>
                 <th class="cap-paper-sort active" data-paper-sort="status">Status <span class="sort-mark">^</span></th>
+                <th class="cap-paper-sort" data-paper-sort="score">Score <span class="sort-mark"></span></th>
+                <th class="cap-paper-sort" data-paper-sort="combo">Combo <span class="sort-mark"></span></th>
                 <th class="cap-paper-sort" data-paper-sort="source">Source <span class="sort-mark"></span></th>
                 <th class="cap-paper-sort" data-paper-sort="time">Time <span class="sort-mark"></span></th>
                 <th></th>
@@ -402,7 +445,7 @@
               </tr>
             </thead>
             <tbody id="capPaperBody">
-              <tr><td colspan="14" class="empty-cell">Chưa có paper trade nào từ cap signals.</td></tr>
+              <tr><td colspan="18" class="empty-cell">Chưa có paper trade nào từ cap signals.</td></tr>
             </tbody>
           </table>
         </div>
@@ -410,6 +453,6 @@
     </main>
 
     <script src="/btcHealth.js"></script>
-    <script src="/cap.js" type="module"></script>
+    <script src="/cap.js?v=20260712-cap-combo12" type="module"></script>
   </body>
 </html>

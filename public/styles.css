@@ -1488,6 +1488,69 @@ pre {
 .lp-stats .lp-stat strong.negative { color: var(--red); }
 .lp-stats .lp-divider { width: 1px; background: var(--line); align-self: stretch; }
 
+.pump-paper-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+.pump-paper-metric {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: rgba(15, 23, 42, .18);
+}
+.pump-paper-metric.good { border-color: rgba(45,212,191,.70); }
+.pump-paper-metric.bad { border-color: rgba(251,113,133,.70); }
+.pump-paper-metric.neutral { border-color: rgba(251,191,36,.55); }
+.pump-paper-metric-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.pump-paper-metric strong { font-size: 18px; font-weight: 950; }
+.pump-paper-metric small { display: block; margin-top: 3px; color: var(--muted); line-height: 1.35; }
+
+.pump-combo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+.pump-combo-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: rgba(15, 23, 42, .18);
+}
+.pump-combo-card.good { border-color: rgba(45,212,191,.8); background: linear-gradient(115deg, rgba(20,184,166,.18), rgba(15,23,42,.16)); }
+.pump-combo-card.bad { border-color: rgba(251,113,133,.8); background: linear-gradient(115deg, rgba(251,113,133,.20), rgba(15,23,42,.16)); }
+.pump-combo-card.neutral { border-color: rgba(251,191,36,.75); }
+.pump-combo-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:5px; }
+.pump-combo-title { font-size: 12px; font-weight: 950; color: var(--text); }
+.pump-combo-tags { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:7px; }
+.pump-combo-tag {
+  font-size:9px;
+  font-weight:900;
+  padding:2px 5px;
+  border-radius:3px;
+  border:1px solid rgba(148,163,184,.35);
+  color:var(--muted);
+  background:rgba(15,23,42,.25);
+  max-width:160px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.pump-combo-tag.hot { color:#34d399; border-color:rgba(52,211,153,.75); }
+.pump-combo-tag.bad { color:#fb7185; border-color:rgba(251,113,133,.75); }
+.pump-combo-stats { font-size:11px; color:var(--muted); line-height:1.5; }
+.pump-combo-pnl.pos { color:var(--green); font-weight:950; }
+.pump-combo-pnl.neg { color:var(--red); font-weight:950; }
+
 .lp-closed-head {
   display: flex;
   align-items: center;

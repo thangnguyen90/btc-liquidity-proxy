@@ -8,6 +8,9 @@ let total = 0;
 let ppksPaperTrades      = [];
 let ppksPaperOpenSymbols = new Set();
 let ppksPaperSummaryCache = null;
+let ppksPaperAvailableDays = [];
+let ppksPaperSelectedDay = '';
+let ppksPaperComboStats = [];
 
 const grid = document.getElementById('ppksGrid');
 const watchCount = document.getElementById('watchCount');
@@ -26,6 +29,9 @@ const searchClear = document.getElementById('searchClear');
 const scoreFilter = document.getElementById('scoreFilter');
 const stageFilter = document.getElementById('stageFilter');
 const symbolTest = document.getElementById('symbolTest');
+const ppksPaperDayFilter = document.getElementById('ppksPaperDayFilter');
+const ppksPaperOverview = document.getElementById('ppksPaperOverview');
+const ppksComboStatsEl = document.getElementById('ppksComboStats');
 
 function fmtPrice(p) {
   if (p == null || isNaN(p)) return '-';
@@ -154,7 +160,7 @@ function buildCard(sig) {
         <span>${timeAgo(sig.scannedAt)}</span>
         <div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:11px;color:var(--muted)">${escapeHtml(sig.reason)}</span>
-          <button class="ppks-paper-btn ${isLongType ? 'long' : 'short'}" onclick="enterPpksPaperTrade(this,'${escapeHtml(sig.symbol)}','${isLongType ? 'LONG' : 'SHORT'}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}')">+ Paper</button>
+          <button class="ppks-paper-btn ${isLongType ? 'long' : 'short'}" onclick="enterPpksPaperTrade(this,'${escapeHtml(sig.symbol)}','${isLongType ? 'LONG' : 'SHORT'}',${sig.entry},${sig.score},${sig.sl ?? 'null'},${sig.tp ?? 'null'},'${encodeURIComponent(sig.note ?? '')}','${escapeHtml(sig.type ?? '')}','${escapeHtml(sig.grade ?? '')}')">+ Paper</button>
         </div>
       </div>
     </article>
@@ -293,9 +299,12 @@ function ppksPaperSortValue(t, key) {
   if (key === 'entry')  return Number(t.entryPrice);
   if (key === 'sl')     return t.sl == null ? null : Number(t.sl);
   if (key === 'tp')     return t.tp == null ? null : Number(t.tp);
+  if (key === 'btcCorr') return t.btcCorr == null ? null : Number(t.btcCorr);
+  if (key === 'btcTrend') return t.btcHealth?.btcTrendScore ?? t.btcTrendScore ?? null;
   if (key === 'mark')   return Number(t.markPrice ?? t.exitPrice);
   if (key === 'pnl')    return t.pnl == null ? null : Number(t.pnl);
   if (key === 'roe')    return t.roe == null ? null : Number(t.roe);
+  if (key === 'combo')  return t.ppksCombo ?? t.pumpCombo ?? '';
   if (key === 'source') return t.source ?? '';
   if (key === 'time')   return Date.parse(t.createdAt ?? '') || 0;
   if (key === 'status') return ({ OPEN: 0, PENDING: 1, CLOSED: 2 })[t.status] ?? 9;
@@ -336,6 +345,119 @@ function fmtPpksPnl(pnl, roe) {
   return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)} (${sign}${Number(roe ?? 0).toFixed(1)}%)</span>`;
 }
 
+function fmtPpksMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '-';
+  return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(3)}`;
+}
+
+function ppksTradeCombo(t) {
+  return String(t.ppksCombo ?? t.pumpCombo ?? '-');
+}
+
+function renderPpksBtcCorrBadge(t) {
+  const corr = Number(t?.btcCorr);
+  if (!Number.isFinite(corr)) {
+    return '<span title="Lệnh cũ chưa lưu btcCorr" style="font-size:10px;font-weight:900;color:var(--muted)">BTC NO DATA</span>';
+  }
+  const color = corr >= 0.5 ? '#34d399' : corr >= 0.3 ? '#fbbf24' : '#fb7185';
+  const label = corr >= 0.5 ? '✓ THEO' : corr >= 0.3 ? '~ YẾU' : '✗ ĐỘC LẬP';
+  return `<span title="corr coin vs BTC=${corr.toFixed(2)}" style="font-size:10px;font-weight:950;color:${color}">${label} ${corr.toFixed(2)}</span>`;
+}
+
+function renderPpksBtcTrendBadge(t) {
+  const h = t?.btcHealth ?? {};
+  const dir = String(h.btcTrendDir ?? t?.btcTrendDir ?? '').toLowerCase();
+  const score = Number(h.btcTrendScore ?? t?.btcTrendScore);
+  const pct6h = Number(h.pct6h);
+  const side = String(t?.side ?? '').toUpperCase();
+  if (!dir && !Number.isFinite(score)) {
+    return '<span title="Lệnh cũ chưa lưu BTC snapshot" style="font-size:10px;font-weight:900;color:var(--muted)">BTC NO DATA</span>';
+  }
+  const expected = side === 'LONG' ? 'up' : side === 'SHORT' ? 'down' : '';
+  const aligned = dir && expected ? dir === expected : null;
+  const trendText = dir ? `BTC ${dir.toUpperCase()}${Number.isFinite(score) ? ` ${score}` : ''}` : 'BTC ?';
+  const pctText = Number.isFinite(pct6h) ? `${pct6h >= 0 ? '+' : ''}${pct6h.toFixed(2)}%/6h` : '';
+  const color = dir === 'up' ? (Number.isFinite(score) && score < 45 ? '#fbbf24' : '#34d399')
+    : dir === 'down' ? (Number.isFinite(score) && score < 45 ? '#fbbf24' : '#fb7185')
+      : '#9daaa5';
+  const relColor = aligned == null ? 'var(--muted)' : aligned ? '#34d399' : '#fb7185';
+  const relText = aligned == null ? '-' : aligned ? 'THUẬN BTC' : 'NGƯỢC BTC';
+  return `<div title="${escapeHtml([trendText, pctText, relText].filter(Boolean).join(' | '))}" style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">
+    <span style="display:inline-flex;gap:4px;align-items:center;max-width:128px;padding:2px 6px;border-radius:4px;border:1px solid ${color};background:rgba(15,23,42,.22);color:${color};font-size:10px;font-weight:950;line-height:1.15">${escapeHtml(trendText)}${pctText ? `<small style="font-size:9px;font-weight:850;color:${color}">${escapeHtml(pctText)}</small>` : ''}</span>
+    <span style="font-size:10px;font-weight:950;color:${relColor}">${relText}</span>
+  </div>`;
+}
+
+function renderPpksOverview(summary) {
+  if (!ppksPaperOverview || !summary) return;
+  const byMargin = summary.byMargin ?? {};
+  const wr = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : null;
+  const cards = [{
+    label: 'Tổng filter',
+    title: `${summary.open ?? 0} open · ${summary.closed ?? 0} closed`,
+    detail: `WR ${wr == null ? '-' : `${wr}%`} · AvgROE ${summary.avgRoe == null ? '-' : `${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`}`,
+    netPnl: summary.netPnl,
+  }, byMargin.test10, byMargin.test1, byMargin.other].filter(Boolean);
+  ppksPaperOverview.innerHTML = cards.map((row) => {
+    const pnl = Number(row.netPnl ?? row.pnl ?? 0);
+    const cls = pnl > 0 ? 'good' : pnl < 0 ? 'bad' : '';
+    const title = row.title ?? `${row.open ?? 0} open · ${row.closed ?? 0} closed`;
+    const detail = row.detail ?? `WR ${row.wr == null ? '-' : `${row.wr}%`} · ${row.wins ?? 0}W/${row.losses ?? 0}L · AvgROE ${row.avgRoe == null ? '-' : `${row.avgRoe > 0 ? '+' : ''}${row.avgRoe}%`}`;
+    return `<div class="ppks-overview-card ${cls}">
+      <span>${escapeHtml(row.label ?? 'Group')}</span>
+      <strong>${fmtPpksMoney(pnl)}</strong>
+      <div>${escapeHtml(title)}</div>
+      <div>${escapeHtml(detail)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderPpksComboStats(rows = ppksPaperComboStats) {
+  if (!ppksComboStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    ppksComboStatsEl.style.display = 'none';
+    ppksComboStatsEl.innerHTML = '';
+    return;
+  }
+  ppksComboStatsEl.style.display = '';
+  ppksComboStatsEl.innerHTML = list.map((row, index) => {
+    const key = String(row.key ?? '-');
+    const parts = key.split('|').map((p) => p.trim()).filter(Boolean);
+    const title = parts.slice(0, 3).join(' · ') || key;
+    const tags = parts.slice(3).map((part) => {
+      const upper = part.toUpperCase();
+      const cls = upper.includes('BAD') || upper.includes('BLOCK') || upper.includes('RAC') ? 'bad'
+        : upper.includes('GOOD') || upper.includes('OK') || upper.includes('THUAN') || upper.includes('THEO') ? 'hot'
+          : '';
+      return `<span class="ppks-combo-tag ${cls}" title="${escapeHtml(part)}">${escapeHtml(part)}</span>`;
+    }).join('');
+    const quality = String(row.quality ?? '').toLowerCase();
+    const cardCls = quality.includes('good') ? 'good' : quality.includes('bad') ? 'bad' : 'neutral';
+    const pnl = Number(row.pnl ?? 0);
+    const pnlCls = pnl >= 0 ? 'pos' : 'neg';
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null ? '-' : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const plan = row.tradePlan ?? {};
+    const planLabel = String(plan.label ?? '').trim() || 'TEST $10';
+    const planMargin = Number(plan.marginUsdt);
+    const planCls = Number.isFinite(planMargin) && planMargin <= 1.01 ? 'bad' : 'hot';
+    const planTitle = plan.reason ? ` title="${escapeHtml(plan.reason)}"` : '';
+    return `<div class="ppks-combo-card ${cardCls}">
+      <div class="ppks-combo-head">
+        <div class="ppks-combo-title">#${index + 1} ${escapeHtml(title)}</div>
+        <span class="ppks-combo-tag ${planCls}"${planTitle}>${escapeHtml(planLabel)}</span>
+      </div>
+      <div class="ppks-combo-tags">${tags}</div>
+      <div class="ppks-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${wr} · Closed ${row.closed ?? 0}/${row.total ?? 0}</div>
+        <div class="ppks-combo-pnl ${pnlCls}">PnL ${fmtPpksMoney(pnl)} · AvgROE ${avgRoe}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 function renderPpksPaperTable() {
   const tbody   = document.getElementById('ppksPaperBody');
   const countEl = document.getElementById('ppksPaperCount');
@@ -343,19 +465,30 @@ function renderPpksPaperTable() {
 
   const trades  = ppksPaperTrades;
   const summary = ppksPaperSummaryCache;
+  renderPpksOverview(summary);
+  renderPpksComboStats();
   const open    = trades.filter((t) => t.status !== 'CLOSED');
   const closed  = trades.filter((t) => t.status === 'CLOSED');
 
   let countTxt = `${open.length} đang mở · ${closed.length} đã đóng`;
+  if (summary?.day) countTxt = `${summary.day} · ${countTxt}`;
   if (summary && summary.closed > 0) {
     const wr = Math.round(summary.wins / summary.closed * 100);
     countTxt += ` · ✅TP ${summary.tpHits ?? 0} 🔴SL ${summary.slHits ?? 0} · WR ${wr}%`;
     if (summary.avgRoe != null) countTxt += ` · AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
   }
+  if (summary) {
+    const net = Number(summary.netPnl ?? 0);
+    const realized = Number(summary.realizedPnl ?? 0);
+    const unrealized = Number(summary.unrealizedPnl ?? 0);
+    countTxt += ` · PnL ${net >= 0 ? '+' : ''}${net.toFixed(3)}`
+      + ` (real ${realized >= 0 ? '+' : ''}${realized.toFixed(3)}`
+      + ` · live ${unrealized >= 0 ? '+' : ''}${unrealized.toFixed(3)})`;
+  }
   if (countEl) countEl.textContent = countTxt;
 
   if (!trades.length) {
-    tbody.innerHTML = '<tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ post-pump kill-short signals.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="16" class="empty-cell">Chưa có paper trade nào từ post-pump kill-short signals.</td></tr>';
     updatePpksSortHeaders();
     return;
   }
@@ -386,12 +519,16 @@ function renderPpksPaperTable() {
       <td>${fmtPrice(t.entryPrice)}</td>
       <td style="font-size:11px;color:${slColor}">${t.sl != null ? fmtPrice(t.sl) : '<span style="color:var(--muted)">–</span>'}</td>
       <td style="font-size:11px;color:${tpColor}">${t.tp != null ? fmtPrice(t.tp) : '<span style="color:var(--muted)">–</span>'}</td>
+      <td>${renderPpksBtcCorrBadge(t)}</td>
+      <td>${renderPpksBtcTrendBadge(t)}</td>
       <td>${fmtPrice(mark)}</td>
       <td>${fmtPpksPnl(t.pnl, t.roe)}</td>
       <td>${t.roe != null ? (t.roe >= 0 ? '+' : '') + Number(t.roe).toFixed(1) + '%' : '-'}</td>
       <td style="font-size:11px">${outcomeHtml}</td>
+      <td style="font-size:10px;color:var(--muted);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(ppksTradeCombo(t))}">${escapeHtml(ppksTradeCombo(t))}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
+      <td><span class="ppks-combo-tag ${Number(t.marginUsdt) <= 1.01 ? 'bad' : 'hot'}">TEST $${Number(t.marginUsdt ?? 0).toFixed(Number.isInteger(Number(t.marginUsdt ?? 0)) ? 0 : 2)}</span></td>
       <td>${actionBtns}</td>
     </tr>`;
   }).join('');
@@ -403,11 +540,16 @@ async function loadPpksPaperTrades() {
   if (_ppksPaperFetching) return;
   _ppksPaperFetching = true;
   try {
-    const res = await fetch('/api/ppks-paper-trades');
+    const params = new URLSearchParams();
+    if (ppksPaperSelectedDay) params.set('day', ppksPaperSelectedDay);
+    const res = await fetch(`/api/ppks-paper-trades${params.toString() ? `?${params}` : ''}`, { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
     ppksPaperTrades = data.trades ?? [];
     ppksPaperSummaryCache = data.summary;
+    ppksPaperComboStats = data.comboStats ?? [];
+    ppksPaperAvailableDays = data.availableDays ?? ppksPaperAvailableDays;
+    renderPpksPaperDayFilter();
     ppksPaperOpenSymbols = new Set(
       ppksPaperTrades.filter((t) => ['PENDING', 'OPEN'].includes(t.status)).map((t) => t.symbol),
     );
@@ -415,6 +557,18 @@ async function loadPpksPaperTrades() {
   } catch {} finally {
     _ppksPaperFetching = false;
   }
+}
+
+function renderPpksPaperDayFilter() {
+  if (!ppksPaperDayFilter) return;
+  const current = ppksPaperDayFilter.value;
+  const nextValue = ppksPaperSelectedDay || current;
+  ppksPaperDayFilter.innerHTML = [
+    '<option value="">Tất cả</option>',
+    ...ppksPaperAvailableDays.map((day) => `<option value="${escapeHtml(day)}">${escapeHtml(day)}</option>`),
+  ].join('');
+  ppksPaperDayFilter.value = ppksPaperAvailableDays.includes(nextValue) ? nextValue : '';
+  ppksPaperSelectedDay = ppksPaperDayFilter.value;
 }
 
 let _ppksPaperPollTimer = null;
@@ -427,7 +581,7 @@ function schedulePpksPaperPoll() {
   }, hasOpen ? 3_000 : 15_000);
 }
 
-window.enterPpksPaperTrade = async function(btn, symbol, side, entryPrice, score, sl, tp, noteEncoded) {
+window.enterPpksPaperTrade = async function(btn, symbol, side, entryPrice, score, sl, tp, noteEncoded, signalType, grade) {
   btn.disabled = true;
   btn.textContent = '...';
   const note = noteEncoded ? decodeURIComponent(noteEncoded) : '';
@@ -435,7 +589,19 @@ window.enterPpksPaperTrade = async function(btn, symbol, side, entryPrice, score
     const res = await fetch('/api/ppks-paper-trades', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ symbol, side, marginUsdt: 1, leverage: 10, entryPrice, tp: tp ?? null, sl: sl ?? null, source: `ppks-${score}`, note }),
+      body: JSON.stringify({
+        symbol,
+        side,
+        leverage: 10,
+        entryPrice,
+        tp: tp ?? null,
+        sl: sl ?? null,
+        source: `ppks-${score}`,
+        ppksSignalType: signalType || 'PPKS',
+        ppksSignalGrade: grade || null,
+        ppksSignalTimeframe: '15m',
+        note,
+      }),
     });
     if (res.ok) {
       btn.textContent = '⏳';
@@ -450,6 +616,12 @@ window.enterPpksPaperTrade = async function(btn, symbol, side, entryPrice, score
     setTimeout(() => { btn.textContent = '+ Paper'; btn.disabled = false; }, 2000);
   }
 };
+
+ppksPaperDayFilter?.addEventListener('change', async () => {
+  ppksPaperSelectedDay = ppksPaperDayFilter.value;
+  await loadPpksPaperTrades();
+  schedulePpksPaperPoll();
+});
 
 window.closePpksPaperTrade = async function(id) {
   try {

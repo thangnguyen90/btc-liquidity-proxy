@@ -132,6 +132,10 @@ export class BinanceClient {
     return this.get('/fapi/v1/ticker/24hr', {}, options);
   }
 
+  async getTicker24hrSymbol(symbol, options = {}) {
+    return this.get('/fapi/v1/ticker/24hr', { symbol }, options);
+  }
+
   async setLeverage({ symbol, leverage, apiKey, apiSecret, recvWindow = 5000 }) {
     return this.signedRequest('POST', '/fapi/v1/leverage', {
       symbol,

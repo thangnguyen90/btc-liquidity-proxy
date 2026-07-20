@@ -91,7 +91,36 @@
         box-shadow: inset 0 0 0 1px rgba(251, 113, 133, .34), 0 10px 28px rgba(190, 18, 60, .18);
       }
       .sr-card.sr-quality-bad::before { background: #fb7185; height: 5px; }
+      .sr-card.sr-quality-chase {
+        border-color: rgba(251, 191, 36, .85);
+        background: linear-gradient(135deg, rgba(120, 53, 15, .34), rgba(15, 23, 42, .96));
+        box-shadow: inset 0 0 0 1px rgba(251, 191, 36, .34), 0 10px 28px rgba(217, 119, 6, .14);
+      }
+      .sr-card.sr-quality-chase::before { background: #fbbf24; height: 5px; }
       .sr-card.sr-quality-test::before { background: #fbbf24; height: 4px; }
+      .sr-card.sr-high-jump-risk {
+        border-color: #facc15;
+        background: rgba(113, 63, 18, .22);
+        box-shadow: inset 0 0 0 1px rgba(250, 204, 21, .28);
+      }
+      .sr-card.sr-high-jump-risk::before { background: #facc15; height: 6px; }
+      .sr-jump-risk-badge {
+        margin-top: 8px;
+        padding: 7px 9px;
+        border: 2px solid #facc15;
+        background: #422006;
+        color: #fef08a;
+        font-size: 11px;
+        font-weight: 900;
+        line-height: 1.35;
+      }
+      .sr-jump-risk-badge span {
+        display: block;
+        margin-top: 2px;
+        color: #fde68a;
+        font-size: 10px;
+        font-weight: 700;
+      }
       .sr-card.bottom-rebound {
         background: #092d35;
         box-shadow: inset 0 0 0 1px rgba(34, 211, 238, .55);
@@ -236,6 +265,12 @@
         color: #fef3c7;
         background: rgba(66, 32, 6, .9);
         border-color: #fbbf24;
+      }
+      .sr-quality-badge.chase {
+        color: #fde68a;
+        background: rgba(120, 53, 15, .92);
+        border-color: #fbbf24;
+        box-shadow: 0 0 18px rgba(251, 191, 36, .18);
       }
       .sr-quality-badge.bad {
         color: #fff1f2;
@@ -442,9 +477,18 @@
       .sr-paper-table tr.sr-paper-quality-test {
         box-shadow: inset 4px 0 0 #fbbf24;
       }
+      .sr-paper-table tr.sr-paper-quality-chase {
+        background: rgba(120, 53, 15, .16) !important;
+        box-shadow: inset 4px 0 0 #fbbf24;
+      }
       .sr-paper-table tr.sr-paper-quality-bad {
         background: rgba(159, 18, 57, .20) !important;
         box-shadow: inset 4px 0 0 #fb7185;
+      }
+      .sr-paper-table tr.sr-row-high-jump-risk > td {
+        background: rgba(113, 63, 18, .24);
+        border-top-color: rgba(250, 204, 21, .55);
+        border-bottom-color: rgba(250, 204, 21, .35);
       }
 
       /* ── Daily stats ── */
@@ -479,6 +523,66 @@
         text-transform: uppercase; letter-spacing: .05em;
         margin: 0 0 6px;
       }
+      .sr-score-stats-table tr.sr-score-good td { background: rgba(16, 185, 129, .07); }
+      .sr-score-stats-table tr.sr-score-bad td { background: rgba(159, 18, 57, .13); }
+      .sr-score-stats-table tr.sr-score-watch td { background: rgba(251, 191, 36, .06); }
+      .sr-combo-stats-table td:first-child {
+        max-width: 520px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sr-chase-summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 8px;
+        margin: 0 0 8px;
+      }
+      .sr-chase-card {
+        border: 1px solid rgba(251, 191, 36, .6);
+        border-radius: 6px;
+        padding: 8px 10px;
+        background: rgba(120, 53, 15, .18);
+        box-shadow: inset 3px 0 0 #fbbf24;
+      }
+      .sr-chase-card.good {
+        border-color: rgba(16, 185, 129, .65);
+        background: rgba(6, 78, 59, .18);
+        box-shadow: inset 3px 0 0 #10b981;
+      }
+      .sr-chase-card.bad {
+        border-color: rgba(244, 63, 94, .65);
+        background: rgba(76, 5, 25, .22);
+        box-shadow: inset 3px 0 0 #fb7185;
+      }
+      .sr-chase-card div {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+        text-transform: uppercase;
+        margin-bottom: 3px;
+      }
+      .sr-chase-card strong {
+        display: block;
+        font-size: 16px;
+        margin-bottom: 2px;
+      }
+      .sr-chase-card span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .sr-combo-verdict {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        padding: 2px 6px;
+        font-size: 10px;
+        font-weight: 900;
+      }
+      .sr-combo-strong,
+      .sr-combo-good { color: var(--green); border-color: var(--green); }
+      .sr-combo-bad { color: var(--red); border-color: var(--red); }
+      .sr-combo-neutral { color: #fbbf24; border-color: #fbbf24; }
       @media (max-width: 780px) {
         .sr-summary, .sr-controls { grid-template-columns: 1fr 1fr; }
         .sr-prices { grid-template-columns: 1fr 1fr; }
@@ -575,6 +679,9 @@
         </div>
         <div id="srVariantCompare" class="sr-daily-wrap"></div>
         <div id="srRealGateCompare" class="sr-daily-wrap"></div>
+        <div id="srChaseStats" class="sr-daily-wrap"></div>
+        <div id="srComboStats" class="sr-daily-wrap"></div>
+        <div id="srSignalScoreStats" class="sr-daily-wrap"></div>
         <div id="srDailyStats" class="sr-daily-wrap"></div>
         <div style="overflow-x:auto">
           <table class="sr-paper-table">
@@ -587,6 +694,7 @@
                 <th class="sr-sort" data-sort="sl">SL <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="tp">TP <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="projectedPnl">PnL du kien <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="btcDetail">BTC detail <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="mark">Giá (last) <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="pnl">PnL <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="roe">ROE <span class="sr-sort-mark"></span></th>
@@ -598,14 +706,14 @@
               </tr>
             </thead>
             <tbody id="srPaperBody">
-              <tr><td colspan="15" style="text-align:center;color:var(--muted);padding:16px">Dang tai...</td></tr>
+              <tr><td colspan="16" style="text-align:center;color:var(--muted);padding:16px">Dang tai...</td></tr>
             </tbody>
           </table>
         </div>
       </section>
     </main>
 
-    <script src="/shakeout-reclaim.js?v=20260628-candle-lock" type="module"></script>
+    <script src="/shakeout-reclaim.js?v=20260718-btc-detail" type="module"></script>
   <script src="/btcHealth.js"></script>
 </body>
 </html>

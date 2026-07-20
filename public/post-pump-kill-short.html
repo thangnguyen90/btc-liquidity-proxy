@@ -68,6 +68,26 @@
       .ppks-paper-sort:hover { color: var(--text); }
       .ppks-paper-sort.active { color: var(--blue); }
       .ppks-paper-sort .sort-mark { font-size: 9px; margin-left: 3px; opacity: .7; }
+      .ppks-paper-overview { display:grid; grid-template-columns:repeat(4,minmax(150px,1fr)); gap:8px; margin-top:8px; }
+      .ppks-overview-card { border:1px solid var(--line); border-radius:6px; padding:9px 11px; background:var(--panel-2); font-size:11px; color:var(--muted); }
+      .ppks-overview-card.good { border-color:rgba(45,212,191,.55); background:rgba(20,184,166,.10); }
+      .ppks-overview-card.bad { border-color:rgba(251,113,133,.55); background:rgba(251,113,133,.10); }
+      .ppks-overview-card strong { display:block; color:var(--text); font-size:16px; margin:2px 0; }
+      .ppks-overview-card.good strong { color:var(--green); }
+      .ppks-overview-card.bad strong { color:var(--red); }
+      .ppks-combo-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:8px; margin:10px 0 14px; }
+      .ppks-combo-card { border:1px solid rgba(45,212,191,.65); border-left-width:3px; border-radius:7px; padding:9px 10px; background:linear-gradient(115deg,rgba(20,184,166,.12),rgba(15,23,42,.12)); }
+      .ppks-combo-card.bad { border-color:rgba(251,113,133,.75); background:linear-gradient(115deg,rgba(251,113,133,.16),rgba(15,23,42,.12)); }
+      .ppks-combo-card.neutral { border-color:rgba(251,191,36,.75); }
+      .ppks-combo-head { display:flex; justify-content:space-between; gap:8px; align-items:flex-start; margin-bottom:5px; }
+      .ppks-combo-title { font-size:12px; font-weight:950; color:var(--text); }
+      .ppks-combo-tags { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:7px; }
+      .ppks-combo-tag { font-size:9px; font-weight:900; padding:2px 5px; border-radius:3px; border:1px solid rgba(148,163,184,.35); color:var(--muted); background:rgba(15,23,42,.25); max-width:175px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .ppks-combo-tag.hot { color:var(--green); border-color:rgba(52,211,153,.75); }
+      .ppks-combo-tag.bad { color:var(--red); border-color:rgba(251,113,133,.75); }
+      .ppks-combo-stats { font-size:11px; color:var(--muted); line-height:1.5; }
+      .ppks-combo-pnl.pos { color:var(--green); font-weight:950; }
+      .ppks-combo-pnl.neg { color:var(--red); font-weight:950; }
 
       @media (max-width:640px) {
         .ppks-controls { grid-template-columns:1fr 1fr; }
@@ -181,8 +201,18 @@
       <section class="panel ppks-paper-section">
         <div class="panel-head">
           <h2>Paper Trades — Post Pump Kill Short</h2>
-          <span id="ppksPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <label class="field" style="min-width:170px;margin:0">
+              <span>Theo ngày</span>
+              <select id="ppksPaperDayFilter">
+                <option value="">Tất cả</option>
+              </select>
+            </label>
+            <span id="ppksPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+          </div>
         </div>
+        <div id="ppksPaperOverview" class="ppks-paper-overview"></div>
+        <div id="ppksComboStats" class="ppks-combo-grid" style="display:none"></div>
         <div class="table-wrap">
           <table class="signal-table">
             <thead>
@@ -192,17 +222,21 @@
                 <th class="ppks-paper-sort" data-ppks-sort="entry">Entry <span class="sort-mark"></span></th>
                 <th class="ppks-paper-sort" data-ppks-sort="sl">SL <span class="sort-mark"></span></th>
                 <th class="ppks-paper-sort" data-ppks-sort="tp">TP <span class="sort-mark"></span></th>
-                <th class="ppks-paper-sort" data-ppks-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="btcCorr">BTC? <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="btcTrend">BTC Trend <span class="sort-mark"></span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="mark">Last <span class="sort-mark"></span></th>
                 <th class="ppks-paper-sort" data-ppks-sort="pnl">PnL <span class="sort-mark"></span></th>
                 <th class="ppks-paper-sort" data-ppks-sort="roe">ROE <span class="sort-mark"></span></th>
                 <th class="ppks-paper-sort active" data-ppks-sort="status">Status <span class="sort-mark">^</span></th>
+                <th class="ppks-paper-sort" data-ppks-sort="combo">Combo <span class="sort-mark"></span></th>
                 <th class="ppks-paper-sort" data-ppks-sort="source">Source <span class="sort-mark"></span></th>
                 <th class="ppks-paper-sort" data-ppks-sort="time">Time <span class="sort-mark"></span></th>
+                <th>Order</th>
                 <th></th>
               </tr>
             </thead>
             <tbody id="ppksPaperBody">
-              <tr><td colspan="12" class="empty-cell">Chưa có paper trade nào từ post-pump kill-short signals.</td></tr>
+              <tr><td colspan="16" class="empty-cell">Chưa có paper trade nào từ post-pump kill-short signals.</td></tr>
             </tbody>
           </table>
         </div>
@@ -210,6 +244,6 @@
     </main>
 
     <script src="/btcHealth.js"></script>
-    <script src="/post-pump-kill-short.js" type="module"></script>
+    <script src="/post-pump-kill-short.js?v=20260712-ppks-combo" type="module"></script>
   </body>
 </html>

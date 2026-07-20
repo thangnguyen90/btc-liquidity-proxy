@@ -40,10 +40,22 @@ const visibleCount = document.getElementById('visibleCount');
 const metaSources = document.getElementById('metaSources');
 const edgePaperBody = document.getElementById('edgePaperBody');
 const edgePaperCount = document.getElementById('edgePaperCount');
+const edgePaperDayFilter = document.getElementById('edgePaperDayFilter');
+const edgePaperPrev = document.getElementById('edgePaperPrev');
+const edgePaperNext = document.getElementById('edgePaperNext');
+const edgePaperPageLabel = document.getElementById('edgePaperPageLabel');
+const edgePaperPageSizeSelect = document.getElementById('edgePaperPageSize');
+const edgeComboStatsEl = document.getElementById('edgeComboStats');
 
 let edgePaperTradesCache = [];
 let edgePaperSummaryCache = null;
 let edgePaperSort = { key: 'status', dir: 'asc' };
+let edgePaperDay = 'all';
+let edgePaperAvailableDays = [];
+let edgePaperComboStats = [];
+let edgePaperPage = 1;
+let edgePaperPageSize = Number(edgePaperPageSizeSelect?.value || 300);
+let edgePaperPagination = { page: 1, pageSize: 300, totalRows: 0, totalPages: 1 };
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -458,6 +470,155 @@ function fmtPnlEdge(pnl) {
   return `<span class="${cls}">${sign}$${Math.abs(pnl).toFixed(3)}</span>`;
 }
 
+function fmtEdgeMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '$0.000';
+  return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(3)}`;
+}
+
+function normalizeEdgeComboPart(value, fallback = '-') {
+  const text = String(value ?? fallback).trim();
+  return (text || fallback).toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || fallback;
+}
+
+function edgeTradeCombo(t = {}) {
+  if (t.pumpCombo) return String(t.pumpCombo);
+  const side = normalizeEdgeComboPart(t.side, 'SIDE');
+  const type = normalizeEdgeComboPart(t.pumpSignalType ?? t.source, 'EDGE');
+  const tf = normalizeEdgeComboPart(t.pumpSignalTimeframe ?? String(t.source ?? '').match(/(\d+[mh])/)?.[1], '-');
+  const corr = Number(t.btcCorr);
+  const corrBucket = Number.isFinite(corr)
+    ? corr < 0.3 ? 'BTC_CORR_RAC' : corr < 0.5 ? 'BTC_CORR_YEU' : 'BTC_CORR_THEO'
+    : 'BTC_CORR_NO_DATA';
+  const h = t.btcHealth ?? {};
+  const dir = normalizeEdgeComboPart(h.btcTrendDir ?? t.btcTrendDir, 'BTC_NO_DATA');
+  const score = Number(h.btcTrendScore ?? t.btcTrendScore);
+  const trend = dir === 'BTC_NO_DATA'
+    ? dir
+    : `BTC_${dir}_${Number.isFinite(score) ? (score < 45 ? 'WEAK' : score < 65 ? 'MID' : 'STRONG') : 'NO_SCORE'}`;
+  const gate = normalizeEdgeComboPart(t.capGateLabel ?? t.emaStageGateLabel ?? '-', '-');
+  return [type, side, tf, corrBucket, trend, `GATE_${gate}`].join(' | ');
+}
+
+function renderEdgeBtcCorrBadge(t) {
+  const corr = Number(t?.btcCorr);
+  if (!Number.isFinite(corr)) return '<span class="edge-chip" title="Lệnh cũ chưa lưu btcCorr">BTC NO DATA</span>';
+  const cls = corr >= 0.5 ? 'good' : corr >= 0.3 ? 'warn' : 'bad';
+  const label = corr >= 0.5 ? `✓ theo ${corr.toFixed(2)}` : corr >= 0.3 ? `~ yếu ${corr.toFixed(2)}` : `✗ rác ${corr.toFixed(2)}`;
+  return `<span class="edge-chip ${cls}" title="Correlation coin/BTC lúc vào">${escapeHtml(label)}</span>`;
+}
+
+function renderEdgeBtcTrendBadge(t) {
+  const h = t?.btcHealth ?? {};
+  const dir = String(h.btcTrendDir ?? t?.btcTrendDir ?? h.regime ?? t?.btcRegime ?? '').toUpperCase();
+  const score = Number(h.btcTrendScore ?? t?.btcTrendScore);
+  if (!dir) return '<span class="edge-chip" title="Lệnh cũ chưa lưu BTC trend">BTC NO DATA</span>';
+  const cls = dir.includes('UP') ? 'good' : dir.includes('DOWN') ? 'bad' : 'warn';
+  const move = Number(h.btcMove6hPct);
+  const tail = Number.isFinite(move) ? ` · ${move >= 0 ? '+' : ''}${move.toFixed(2)}%/6h` : '';
+  return `<span class="edge-chip ${cls}" title="BTC trend lúc vào">${escapeHtml(`BTC ${dir} ${Number.isFinite(score) ? score.toFixed(0) : '-'}${tail}`)}</span>`;
+}
+
+function renderEdgeGateBadge(t) {
+  const gate = String(t.capGateLabel ?? t.emaStageGateLabel ?? '-');
+  if (!gate || gate === '-') return '<span class="edge-chip">GATE -</span>';
+  const upper = gate.toUpperCase();
+  const cls = upper.includes('BLOCK') || upper.includes('BAD') ? 'bad' : upper.includes('OK') || upper.includes('ALIGNED') ? 'good' : 'warn';
+  const title = t.capGateReason ? ` title="${escapeHtml(t.capGateReason)}"` : ` title="${escapeHtml(gate)}"`;
+  return `<span class="edge-chip ${cls}"${title}>${escapeHtml(gate)}</span>`;
+}
+
+function renderEdgePaperDayOptions(days = edgePaperAvailableDays) {
+  if (!edgePaperDayFilter) return;
+  const normalized = Array.isArray(days) ? days : [];
+  const current = edgePaperDayFilter.value || edgePaperDay || 'all';
+  edgePaperDayFilter.innerHTML = [
+    '<option value="all">Tất cả</option>',
+    ...normalized.map((day) => `<option value="${escapeHtml(day)}">${escapeHtml(day)}</option>`),
+  ].join('');
+  edgePaperDayFilter.value = normalized.includes(current) ? current : 'all';
+  edgePaperDay = edgePaperDayFilter.value;
+}
+
+edgePaperDayFilter?.addEventListener('change', () => {
+  edgePaperDay = edgePaperDayFilter.value || 'all';
+  edgePaperPage = 1;
+  loadEdgePaperTrades(true);
+});
+
+function renderEdgePaperPager(pagination = edgePaperPagination) {
+  edgePaperPagination = pagination || edgePaperPagination;
+  const page = Number(edgePaperPagination.page || 1);
+  const totalPages = Math.max(1, Number(edgePaperPagination.totalPages || 1));
+  const totalRows = Number(edgePaperPagination.totalRows || 0);
+  if (edgePaperPageLabel) edgePaperPageLabel.textContent = `Page ${page}/${totalPages} - ${totalRows} rows`;
+  if (edgePaperPrev) edgePaperPrev.disabled = page <= 1;
+  if (edgePaperNext) edgePaperNext.disabled = page >= totalPages;
+  if (edgePaperPageSizeSelect) edgePaperPageSizeSelect.value = String(edgePaperPagination.pageSize || edgePaperPageSize);
+}
+
+edgePaperPrev?.addEventListener('click', () => {
+  if (edgePaperPage <= 1) return;
+  edgePaperPage -= 1;
+  loadEdgePaperTrades(true);
+});
+
+edgePaperNext?.addEventListener('click', () => {
+  const totalPages = Math.max(1, Number(edgePaperPagination.totalPages || 1));
+  if (edgePaperPage >= totalPages) return;
+  edgePaperPage += 1;
+  loadEdgePaperTrades(true);
+});
+
+edgePaperPageSizeSelect?.addEventListener('change', () => {
+  edgePaperPageSize = Number(edgePaperPageSizeSelect.value || 300);
+  edgePaperPage = 1;
+  loadEdgePaperTrades(true);
+});
+
+function renderEdgeComboStats(rows = edgePaperComboStats) {
+  if (!edgeComboStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    edgeComboStatsEl.style.display = 'none';
+    edgeComboStatsEl.innerHTML = '';
+    return;
+  }
+  edgeComboStatsEl.style.display = '';
+  edgeComboStatsEl.innerHTML = list.map((row, index) => {
+    const key = String(row.key ?? '-');
+    const parts = key.split('|').map((p) => p.trim()).filter(Boolean);
+    const title = parts.slice(0, 3).join(' · ') || key;
+    const tags = parts.slice(3).map((part) => {
+      const upper = part.toUpperCase();
+      const cls = upper.includes('BAD') || upper.includes('BLOCK') || upper.includes('RAC') ? 'bad'
+        : upper.includes('GOOD') || upper.includes('OK') || upper.includes('THUAN') || upper.includes('THEO') ? 'hot'
+          : '';
+      return `<span class="edge-combo-tag ${cls}" title="${escapeHtml(part)}">${escapeHtml(part)}</span>`;
+    }).join('');
+    const quality = String(row.quality ?? '').toLowerCase();
+    const cardCls = quality.includes('good') ? 'good' : quality.includes('bad') ? 'bad' : 'neutral';
+    const pnl = Number(row.pnl ?? 0);
+    const avgRoe = row.avgRoe == null ? '-' : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const plan = row.tradePlan ?? {};
+    const planLabel = String(plan.label ?? '').trim() || 'TEST $1';
+    const planMargin = Number(plan.marginUsdt);
+    const planCls = Number.isFinite(planMargin) && planMargin <= 1.01 ? 'bad' : 'hot';
+    const planTitle = plan.reason ? ` title="${escapeHtml(plan.reason)}"` : '';
+    return `<div class="edge-combo-card ${cardCls}">
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">#${index + 1} ${escapeHtml(title)}</div>
+        <span class="edge-combo-tag ${planCls}"${planTitle}>${escapeHtml(planLabel)}</span>
+      </div>
+      <div class="edge-combo-tags">${tags}</div>
+      <div class="edge-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · Closed ${row.closed ?? 0}/${row.total ?? 0}</div>
+        <div class="edge-combo-pnl ${pnl >= 0 ? 'pos' : 'neg'}">PnL ${fmtEdgeMoney(pnl)} · AvgROE ${avgRoe}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 function edgePaperSortValue(trade, key) {
   if (key === 'symbol') return trade.symbol ?? '';
   if (key === 'side') return trade.side ?? '';
@@ -512,16 +673,23 @@ function renderEdgePaperTrades(trades, summary) {
   const open = trades.filter((trade) => trade.status === 'OPEN' || trade.status === 'PENDING' || trade.status === 'ENTRY_READY');
   const closed = trades.filter((trade) => trade.status === 'CLOSED');
   const all = sortEdgePaperTrades([...open, ...closed]);
-  let countText = `${open.length} open - ${closed.length} closed`;
+  let countText = `${edgePaperDay && edgePaperDay !== 'all' ? `${edgePaperDay} · ` : ''}${open.length} open - ${closed.length} closed`;
+  const totalRows = Number(edgePaperPagination?.totalRows ?? summary?.total ?? trades.length);
+  countText = `${edgePaperDay && edgePaperDay !== 'all' ? `${edgePaperDay} · ` : ''}${summary?.open ?? open.length} open - ${summary?.closed ?? closed.length} closed · page ${edgePaperPagination.page || 1}/${edgePaperPagination.totalPages || 1} (${all.length}/${totalRows} rows)`;
   if (summary && summary.closed > 0) {
     const winRate = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
     countText += ` - TP ${summary.tpHits ?? 0} SL ${summary.slHits ?? 0} - WR ${winRate}%`;
     if (summary.avgRoe != null) countText += ` - AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
   }
+  if (summary?.netPnl != null) {
+    const net = Number(summary.netPnl);
+    countText += ` - PnL ${net >= 0 ? '+' : ''}$${net.toFixed(3)}`;
+  }
   edgePaperCount.textContent = countText;
+  renderEdgeComboStats(edgePaperComboStats);
 
   if (!all.length) {
-    edgePaperBody.innerHTML = '<tr><td colspan="13" class="empty-cell">No paper trades from Short Edge yet.</td></tr>';
+    edgePaperBody.innerHTML = '<tr><td colspan="17" class="empty-cell">No paper trades from Short Edge yet.</td></tr>';
     updateEdgePaperSortHeaders();
     return;
   }
@@ -576,10 +744,14 @@ function renderEdgePaperTrades(trades, summary) {
       <td>${fmtPrice(trade.entryPrice)}</td>
       <td style="font-size:11px;color:${slColor}">${trade.sl != null ? fmtPrice(trade.sl) : '<span style="color:var(--muted)">-</span>'}</td>
       <td style="font-size:11px;color:${tpColor}">${trade.tp != null ? fmtPrice(trade.tp) : '<span style="color:var(--muted)">-</span>'}</td>
+      <td>${renderEdgeBtcCorrBadge(trade)}</td>
+      <td>${renderEdgeBtcTrendBadge(trade)}</td>
+      <td>${renderEdgeGateBadge(trade)}</td>
       <td data-cell-mark="${trade.id}">${fmtPrice(mark)}</td>
       <td data-cell-pnl="${trade.id}">${fmtPnlEdge(trade.pnl)}</td>
       <td data-cell-roe="${trade.id}">${trade.roe != null ? `<span style="color:${Number(trade.roe)>=0?'var(--green)':'var(--red)'}">${Number(trade.roe)>=0?'+':''}${Number(trade.roe).toFixed(1)}%</span>` : '-'}</td>
       <td style="font-size:11px">${outcomeHtml}</td>
+      <td><span class="edge-chip" title="${escapeHtml(edgeTradeCombo(trade))}">${escapeHtml(edgeTradeCombo(trade))}</span></td>
       <td style="font-size:10px;color:var(--muted)">${escapeHtml(trade.source ?? '-')}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(trade.createdAt).toLocaleTimeString('vi')}</td>
       <td>${actionButtons}</td>
@@ -612,25 +784,42 @@ function refreshEdgePaperPnl(trades) {
   const closed = trades.filter((t) => t.status === 'CLOSED').length;
   const summary = edgePaperSummaryCache;
   let countText = `${open} open - ${closed} closed`;
+  const totalRows = Number(edgePaperPagination?.totalRows ?? summary?.total ?? trades.length);
+  countText = `${edgePaperDay && edgePaperDay !== 'all' ? `${edgePaperDay} · ` : ''}${summary?.open ?? open} open - ${summary?.closed ?? closed} closed · page ${edgePaperPagination.page || 1}/${edgePaperPagination.totalPages || 1} (${trades.length}/${totalRows} rows)`;
   if (summary && summary.closed > 0) {
     const wr = Math.round(summary.wins / summary.closed * 100);
     countText += ` - TP ${summary.tpHits ?? 0} SL ${summary.slHits ?? 0} - WR ${wr}%`;
     if (summary.avgRoe != null) countText += ` - AvgROE ${summary.avgRoe > 0 ? '+' : ''}${summary.avgRoe}%`;
   }
+  if (summary?.netPnl != null) {
+    const net = Number(summary.netPnl);
+    countText += ` - PnL ${net >= 0 ? '+' : ''}$${net.toFixed(3)}`;
+  }
   edgePaperCount.textContent = countText;
+  renderEdgeComboStats(edgePaperComboStats);
 }
 
 let _edgePaperFetching = false;
-async function loadEdgePaperTrades() {
+async function loadEdgePaperTrades(forceRender = false) {
   if (_edgePaperFetching) return;
   _edgePaperFetching = true;
   try {
-    const response = await fetch('/api/edge-paper-trades', { cache: 'no-store' });
+    const dayParam = encodeURIComponent(edgePaperDay || 'all');
+    const pageParam = encodeURIComponent(edgePaperPage || 1);
+    const pageSizeParam = encodeURIComponent(edgePaperPageSize || 300);
+    const response = await fetch(`/api/edge-paper-trades?day=${dayParam}&page=${pageParam}&pageSize=${pageSizeParam}`, { cache: 'no-store' });
     if (!response.ok) { console.warn('[EdgePaper] Load failed HTTP', response.status); return; }
     const data = await response.json();
     const trades = data.trades ?? [];
     edgePaperSummaryCache = data.summary;
-    if (edgePaperTradesCache.length > 0) {
+    edgePaperAvailableDays = data.availableDays ?? edgePaperAvailableDays;
+    edgePaperComboStats = data.comboStats ?? [];
+    edgePaperPagination = data.pagination ?? edgePaperPagination;
+    edgePaperPage = Number(edgePaperPagination.page || edgePaperPage || 1);
+    edgePaperPageSize = Number(edgePaperPagination.pageSize || edgePaperPageSize || 300);
+    renderEdgePaperDayOptions(edgePaperAvailableDays);
+    renderEdgePaperPager(edgePaperPagination);
+    if (edgePaperTradesCache.length > 0 && !forceRender) {
       edgePaperTradesCache = trades;
       refreshEdgePaperPnl(trades);
     } else {
@@ -678,7 +867,7 @@ async function enterEdgePaperTrade(btn) {
       body: JSON.stringify({
         symbol,
         side,
-        marginUsdt: 1,
+        marginUsdt: 10,
         leverage: 10,
         entryPrice: entry,
         tp,

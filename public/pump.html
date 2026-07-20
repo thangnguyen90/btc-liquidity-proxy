@@ -370,6 +370,65 @@
 
       /* ── Paper trades section ── */
       .pump-paper-section { margin-top: 20px; }
+      .pump-paper-header {
+        display: grid;
+        grid-template-columns: minmax(180px, 240px) 1fr;
+        gap: 14px;
+        align-items: stretch;
+        padding: 14px;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(135deg, rgba(20,184,166,.08), rgba(15,23,42,.10));
+      }
+      .pump-paper-title {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 8px;
+      }
+      .pump-paper-title h2 { margin: 0; }
+      .pump-paper-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .pump-paper-overview {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .pump-paper-metric {
+        border: 1px solid rgba(148,163,184,.22);
+        border-radius: 6px;
+        padding: 9px 10px;
+        background: rgba(15,23,42,.22);
+        min-height: 64px;
+      }
+      .pump-paper-metric strong {
+        display: block;
+        font-size: 17px;
+        color: var(--text);
+        margin-top: 3px;
+      }
+      .pump-paper-metric small {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.45;
+        margin-top: 3px;
+      }
+      .pump-paper-metric-label {
+        font-size: 10px;
+        color: var(--muted);
+        font-weight: 950;
+        text-transform: uppercase;
+        letter-spacing: .02em;
+      }
+      .pump-paper-metric.good { border-color: rgba(45,212,191,.55); }
+      .pump-paper-metric.bad { border-color: rgba(251,113,133,.55); }
+      .pump-paper-metric.neutral { border-color: rgba(251,191,36,.50); }
       .pump-paper-close-btn {
         font-size: 10px; padding: 2px 8px; border-radius: 4px;
         border: 1px solid var(--line); background: var(--panel-2);
@@ -384,6 +443,35 @@
       .cap-order-btn.loading { opacity: .6; }
       .cap-order-btn.success { background: rgba(54,211,153,.3); color: var(--green); }
       .cap-order-btn.error   { background: rgba(251,113,133,.3); color: var(--red); }
+      .pump-combo-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 8px;
+        padding: 10px 14px 4px;
+        border-top: 1px solid var(--line);
+      }
+      .pump-combo-card {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 9px 10px;
+        background: rgba(15,23,42,.18);
+      }
+      .pump-combo-card.good { border-color: rgba(45,212,191,.8); background: linear-gradient(115deg, rgba(20,184,166,.18), rgba(15,23,42,.16)); }
+      .pump-combo-card.bad { border-color: rgba(251,113,133,.8); background: linear-gradient(115deg, rgba(251,113,133,.20), rgba(15,23,42,.16)); }
+      .pump-combo-card.neutral { border-color: rgba(251,191,36,.75); }
+      .pump-combo-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:5px; }
+      .pump-combo-title { font-size: 12px; font-weight: 950; color: var(--text); }
+      .pump-combo-tags { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:7px; }
+      .pump-combo-tag { font-size:9px; font-weight:900; padding:2px 5px; border-radius:3px; border:1px solid rgba(148,163,184,.35); color:var(--muted); background:rgba(15,23,42,.25); max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .pump-combo-tag.hot { color:#34d399; border-color:rgba(52,211,153,.75); }
+      .pump-combo-tag.bad { color:#fb7185; border-color:rgba(251,113,133,.75); }
+      .pump-combo-stats { font-size:11px; color:var(--muted); line-height:1.5; }
+      .pump-combo-pnl.pos { color:var(--green); font-weight:950; }
+      .pump-combo-pnl.neg { color:var(--red); font-weight:950; }
+      @media (max-width: 900px) {
+        .pump-paper-header { grid-template-columns: 1fr; }
+        .pump-paper-overview { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+      }
     </style>
   </head>
   <body>
@@ -531,10 +619,36 @@
       </div>
 
       <section class="panel pump-paper-section">
-        <div class="panel-head">
-          <h2>Paper Trades — Pump Signals</h2>
-          <span id="pumpPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+        <div class="pump-paper-header">
+          <div class="pump-paper-title">
+            <h2>Paper Trades — Pump Signals</h2>
+            <span id="pumpPaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
+          </div>
+          <div>
+            <div class="pump-paper-controls">
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);font-weight:800">
+                Ngày
+              <select id="pumpPaperDayFilter" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;font-weight:800">
+                  <option value="all">Tất cả</option>
+                </select>
+              </label>
+              <div id="pumpPaperPager" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:12px"></div>
+            </div>
+            <div id="pumpPaperOverview" class="pump-paper-overview"></div>
+          </div>
         </div>
+        <div class="pump-combo-toolbar">
+          <label>
+            <span>Combo filter</span>
+            <select id="pumpComboQualityFilter">
+              <option value="all">Tat ca combo</option>
+              <option value="good">GOOD: >=8 lenh | WR >=80% | AvgROE >=3%</option>
+              <option value="strong">STRONG: >=8 lenh | WR >=90% | AvgROE >=5%</option>
+            </select>
+          </label>
+          <span id="pumpComboQualityMeta" class="pump-combo-quality-meta"></span>
+        </div>
+        <div id="pumpComboStats" class="pump-combo-grid" style="display:none"></div>
         <div class="table-wrap">
           <table class="signal-table">
             <thead>
@@ -544,11 +658,14 @@
                 <th class="pump-paper-sort" data-paper-sort="entry">Entry <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="sl">SL <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="tp">TP <span class="sort-mark"></span></th>
-                <th class="pump-paper-sort" data-paper-sort="mark">Mark <span class="sort-mark"></span></th>
+                <th class="pump-paper-sort" data-paper-sort="btcCorr">BTC? <span class="sort-mark"></span></th>
+                <th class="pump-paper-sort" data-paper-sort="btcTrend">BTC Trend <span class="sort-mark"></span></th>
+                <th class="pump-paper-sort" data-paper-sort="mark">Last <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="pnl">PnL <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="roe">ROE <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort active" data-paper-sort="status">Status <span class="sort-mark">^</span></th>
                 <th class="pump-paper-sort" data-paper-sort="score">Score <span class="sort-mark"></span></th>
+                <th class="pump-paper-sort" data-paper-sort="combo">Combo <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="source">Source <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="time">Time <span class="sort-mark"></span></th>
                 <th></th>
@@ -556,7 +673,7 @@
               </tr>
             </thead>
             <tbody id="pumpPaperBody">
-              <tr><td colspan="14" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>
+              <tr><td colspan="17" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>
             </tbody>
           </table>
         </div>

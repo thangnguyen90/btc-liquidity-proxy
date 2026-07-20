@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Trend Decision Paper</title>
+    <link rel="stylesheet" href="/decision-paper.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div><a href="/intraday-combos">← Intraday Combos</a><p class="eyebrow">1H / 4H TREND COMMITTEE</p><h1>Trend Decision <em>Paper</em></h1><p class="lede">Một lần mỗi chu kỳ: gom toàn bộ tín hiệu đã nhận, kiểm tra combo lịch sử và trend BTC rồi mới quyết định vào paper.</p></div>
+        <div id="status" class="status">Đang tải…</div>
+      </header>
+      <section class="controls">
+        <label><span>CHU KỲ QUYẾT ĐỊNH</span><select id="timeframe"><option value="1h">Mỗi 1 giờ</option><option value="4h">Mỗi 4 giờ</option></select></label>
+        <label><span>TỰ ĐỘNG ĐÁNH GIÁ</span><select id="decisionEvery"><option value="5">Mỗi 5 phút</option><option value="15">Mỗi 15 phút</option><option value="30">Mỗi 30 phút</option><option value="60">Mỗi 60 phút</option></select></label>
+        <label><span>LOOKBACK</span><select id="lookback"><option value="14">14 ngày</option><option value="30">30 ngày</option><option value="60">60 ngày</option><option value="90">90 ngày</option></select></label>
+        <label><span>MIN CLOSED</span><select id="minClosed"><option value="5">5 lệnh</option><option value="8">8 lệnh</option><option value="12">12 lệnh</option></select></label>
+        <button id="save">Lưu cấu hình</button><button id="run" class="primary">Quyết định ngay</button>
+      </section>
+      <div id="error" class="error" hidden></div>
+      <section id="overview" class="overview"></section>
+      <section class="panel">
+        <div class="panel-head"><div><p class="eyebrow">ACTIVE BOOK</p><h2>Paper đang quản lý</h2></div><span id="tradeMeta"></span></div>
+        <div id="trades" class="trade-grid"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><p class="eyebrow">CLOSED BOOK</p><h2>Lịch sử lệnh đã đóng</h2></div><div class="panel-actions"><span id="closedMeta"></span><select id="closedFilter"><option value="ALL">Tất cả</option><option value="WIN">Thắng</option><option value="LOSS">Thua</option><option value="FLAT">Hòa</option></select><select id="closedPageSize"><option value="10">10 dòng</option><option value="25" selected>25 dòng</option><option value="50">50 dòng</option><option value="100">100 dòng</option></select><button id="closedPrev" type="button">Trước</button><span id="closedPageInfo">1/1</span><button id="closedNext" type="button">Sau</button></div></div>
+        <div class="table-wrap"><table class="closed-table"><thead><tr><th>Thời gian</th><th>Kết quả</th><th>Tín hiệu</th><th>Giá vào</th><th>Entry / Exit</th><th>ROE / PnL</th><th>Peak / SL</th><th>Combo</th><th>Lý do đóng</th></tr></thead><tbody id="closedTrades"></tbody></table></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><p class="eyebrow">DECISION LOG</p><h2>Tín hiệu đã đánh giá</h2></div><select id="decisionFilter"><option value="ALL">Tất cả</option><option value="ENTER">ENTER</option><option value="WATCH">WATCH</option><option value="REJECT">REJECT</option></select></div>
+        <div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Quyết định</th><th>Tín hiệu</th><th>Trend</th><th>Combo stats</th><th>Phân tích</th></tr></thead><tbody id="decisions"></tbody></table></div>
+      </section>
+    </main>
+    <script src="/decision-paper.js"></script>
+  </body>
+</html>
