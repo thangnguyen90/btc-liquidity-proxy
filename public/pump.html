@@ -429,6 +429,29 @@
       .pump-paper-metric.good { border-color: rgba(45,212,191,.55); }
       .pump-paper-metric.bad { border-color: rgba(251,113,133,.55); }
       .pump-paper-metric.neutral { border-color: rgba(251,191,36,.50); }
+      .pump-stage2-grid {
+        margin: 0;
+        padding: 10px 14px 4px;
+        border-top: 1px solid var(--line);
+      }
+      .pump-stage2-grid .pump-paper-metric { min-height: 76px; }
+      .pump-stage2-badge {
+        display: inline-flex;
+        flex-direction: column;
+        gap: 2px;
+        max-width: 150px;
+        padding: 4px 6px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font-size: 9px;
+        font-weight: 950;
+        line-height: 1.15;
+        white-space: normal;
+      }
+      .pump-stage2-badge.watch-plus { color: #34d399; border-color: #34d399; background: rgba(52,211,153,.12); }
+      .pump-stage2-badge.watch { color: #fbbf24; border-color: #fbbf24; background: rgba(251,191,36,.12); }
+      .pump-stage2-badge.risk { color: #fb7185; border-color: #fb7185; background: rgba(251,113,133,.13); }
+      .pump-stage2-badge small { color: inherit; opacity: .8; font-size: 8px; }
       .pump-paper-close-btn {
         font-size: 10px; padding: 2px 8px; border-radius: 4px;
         border: 1px solid var(--line); background: var(--panel-2);
@@ -646,8 +669,18 @@
               <option value="strong">STRONG: >=8 lenh | WR >=90% | AvgROE >=5%</option>
             </select>
           </label>
+          <label>
+            <span>Pump Combo Stage 2</span>
+            <select id="pumpStage2Filter">
+              <option value="all">Tất cả nhãn</option>
+              <option value="WATCH_PLUS">WATCH+</option>
+              <option value="WATCH">WATCH</option>
+              <option value="RISK">RISK</option>
+            </select>
+          </label>
           <span id="pumpComboQualityMeta" class="pump-combo-quality-meta"></span>
         </div>
+        <div id="pumpStage2Stats" class="pump-paper-overview pump-stage2-grid"></div>
         <div id="pumpComboStats" class="pump-combo-grid" style="display:none"></div>
         <div class="table-wrap">
           <table class="signal-table">
@@ -666,6 +699,7 @@
                 <th class="pump-paper-sort active" data-paper-sort="status">Status <span class="sort-mark">^</span></th>
                 <th class="pump-paper-sort" data-paper-sort="score">Score <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="combo">Combo <span class="sort-mark"></span></th>
+                <th class="pump-paper-sort" data-paper-sort="stage2">Pump Stage 2 <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="source">Source <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="time">Time <span class="sort-mark"></span></th>
                 <th></th>
@@ -673,7 +707,7 @@
               </tr>
             </thead>
             <tbody id="pumpPaperBody">
-              <tr><td colspan="17" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>
+              <tr><td colspan="18" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>
             </tbody>
           </table>
         </div>

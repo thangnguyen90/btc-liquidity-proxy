@@ -10,6 +10,8 @@ let esPaperSort = { key: 'status', dir: 'asc' };
 let esPaperTypeFilter = 'all';
 let esPaperDayFilter = 'all';
 let esPaperTfFilter = 'all';
+let esPaperCandleFlagFilter = 'all';
+let esStageCandleFilter = 'all';
 let esPaperPage = 1;
 let esPaperLimit = 300;
 let esPaperPagination = null;
@@ -36,6 +38,8 @@ const sortSelect    = document.getElementById('sortSelect');
 const esPaperTypeSelect = document.getElementById('esPaperTypeFilter');
 const esPaperDaySelect = document.getElementById('esPaperDayFilter');
 const esPaperTfSelect = document.getElementById('esPaperTfFilter');
+const esPaperCandleFlagSelect = document.getElementById('esPaperCandleFlagFilter');
+const esStageCandleSelect = document.getElementById('esStageCandleFilter');
 const esPaperOverview = document.getElementById('esPaperOverview');
 const btcSqueezeContextEl = document.getElementById('btcSqueezeContext');
 const emaSqueezeAutoOrderChk = document.getElementById('emaSqueezeAutoOrderChk');
@@ -88,6 +92,37 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function renderEsCandlePattern(t = {}) {
+  const raw = t.candlePatternAtEntry;
+  const name = String(raw?.name ?? raw ?? t.brCandleKind ?? 'NO_DATA').toUpperCase();
+  const labels = {
+    BULLISH_ENGULFING: 'Bullish Engulfing', BEARISH_ENGULFING: 'Bearish Engulfing',
+    SHOOTING_STAR: 'Shooting Star', BULLISH_PIN_BAR: 'Bullish Pin Bar',
+    BEARISH_PIN_BAR: 'Bearish Pin Bar', BULLISH_MARUBOZU: 'Bullish Marubozu',
+    BEARISH_MARUBOZU: 'Bearish Marubozu', BULLISH_CANDLE: 'Bullish Candle',
+    BEARISH_CANDLE: 'Bearish Candle', DOJI: 'Doji', HAMMER: 'Hammer',
+    NO_DATA: 'No data', UNKNOWN: 'No data',
+  };
+  const direction = String(raw?.direction ?? t.brCandleDir ?? 'NEUTRAL').toUpperCase();
+  const tone = direction.includes('BULL') || direction === 'GREEN'
+    ? '#34d399'
+    : direction.includes('BEAR') || direction === 'RED' ? '#fb7185' : '#fbbf24';
+  const timeframe = String(raw?.timeframe ?? t.candlePatternTimeframe ?? getEsTimeframe(t) ?? '-').toUpperCase();
+  return `<span style="display:inline-block;min-width:116px;color:${tone};font-weight:900">${escapeHtml(labels[name] ?? name.replaceAll('_', ' '))}<small style="display:block;margin-top:3px;color:var(--muted);font-size:9px">${escapeHtml(timeframe)} · lúc vào lệnh</small></span>`;
+}
+
+function renderEsBtcCandlePattern(t = {}) {
+  return renderEsCandlePattern({
+    ...t,
+    candlePatternAtEntry: t.btcCandlePatternAtEntry ?? t.btcCandlePattern5m ?? null,
+    candlePatternTimeframe: t.btcCandlePatternAtEntry?.timeframe
+      ?? t.btcCandlePattern5m?.timeframe
+      ?? '5m',
+    brCandleKind: null,
+    brCandleDir: null,
+  });
 }
 
 function zoneText(zone) {
@@ -576,7 +611,7 @@ document.addEventListener('click', (e) => {
   if (esPaperSort.key === key) {
     esPaperSort.dir = esPaperSort.dir === 'asc' ? 'desc' : 'asc';
   } else {
-    esPaperSort = { key, dir: key === 'status' ? 'asc' : 'desc' };
+    esPaperSort = { key, dir: key === 'status' || key === 'candleFlag' ? 'asc' : 'desc' };
   }
   renderEsPaperTable();
 });
@@ -624,6 +659,20 @@ function updateEsDayFilterOptions() {
   esPaperDaySelect.value = prev !== 'all' ? prev : 'all';
 }
 
+if (esPaperCandleFlagSelect) {
+  esPaperCandleFlagSelect.addEventListener('change', () => {
+    esPaperCandleFlagFilter = esPaperCandleFlagSelect.value || 'all';
+    renderEsPaperTable();
+  });
+}
+
+if (esStageCandleSelect) {
+  esStageCandleSelect.addEventListener('change', () => {
+    esStageCandleFilter = esStageCandleSelect.value || 'all';
+    loadEsPaperTrades(1);
+  });
+}
+
 function esPaperSortValue(t, key) {
   if (key === 'symbol') return t.symbol ?? '';
   if (key === 'side') return t.side ?? '';
@@ -631,14 +680,16 @@ function esPaperSortValue(t, key) {
   if (key === 'sl') return t.sl == null ? null : Number(t.sl);
   if (key === 'tp') return t.tp == null ? null : Number(t.tp);
   if (key === 'mark') return Number(t.markPrice ?? t.exitPrice);
-  if (key === 'pnl') return t.pnl == null ? null : Number(t.pnl);
-  if (key === 'roe') return t.roe == null ? null : Number(t.roe);
+  if (key === 'pnl') return (t.netPnl ?? t.pnl) == null ? null : Number(t.netPnl ?? t.pnl);
+  if (key === 'roe') return (t.netRoe ?? t.roe) == null ? null : Number(t.netRoe ?? t.roe);
   if (key === 'source') return t.source ?? '';
   if (key === 'time') return Date.parse(t.createdAt ?? '') || 0;
   if (key === 'status') {
     const order = { OPEN: 0, PENDING: 1, CLOSED: 2 };
     return order[t.status] ?? 9;
   }
+  if (key === 'candleFlag') return getEsCandleFlagRank(t);
+  if (key === 'stageCandle') return getEsStageCandleRank(t);
   return '';
 }
 
@@ -720,6 +771,8 @@ function renderEsPaperOverview(trades, serverSummary = null) {
   const cards = [groups.all, groups.test10, groups.test1, groups.other].filter(Boolean);
   esPaperOverview.innerHTML = cards.map((group, index) => {
     const pnl = Number(group.netPnl ?? group.pnl ?? 0);
+    const gross = Number(group.grossPnl ?? group.pnl ?? pnl);
+    const fee = Number(group.estimatedFeeUsdt ?? 0);
     const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
     const cls = index === 1 ? ' test10' : index === 2 ? ' test1' : '';
     const wr = group.wr == null ? '-' : `${group.wr.toFixed(0)}%`;
@@ -729,6 +782,7 @@ function renderEsPaperOverview(trades, serverSummary = null) {
       <div class="pnl" style="color:${pnlColor}">${formatEsMoney(pnl)}</div>
       <small>${group.total} total · ${group.open} open · ${group.closed} closed</small>
       <small>WR ${wr} · AvgROE ${avgRoe} · ${group.wins}W/${group.losses}L</small>
+      <small>Gross ${formatEsMoney(gross)} · Fee -${Math.abs(fee).toFixed(3)} · Net ${formatEsMoney(pnl)}</small>
     </article>`;
   }).join('');
 }
@@ -1169,19 +1223,101 @@ function getFilteredEsPaperTrades() {
   if (esPaperTypeFilter !== 'all') list = list.filter((t) => getEsStage(t) === esPaperTypeFilter);
   if (esPaperDayFilter !== 'all') list = list.filter((t) => getEsDay(t) === esPaperDayFilter);
   if (esPaperTfFilter !== 'all') list = list.filter((t) => getEsTimeframe(t) === esPaperTfFilter);
+  if (esPaperCandleFlagFilter !== 'all') list = list.filter((t) => getEsCandleFlagCode(t) === esPaperCandleFlagFilter);
+  if (esStageCandleFilter !== 'all') list = list.filter((t) => getEsStageCandleCode(t) === esStageCandleFilter);
   return list;
+}
+
+function getEsCandleFlag(t) {
+  const evaluate = window.PaperCandleColumns?.evaluate;
+  if (typeof evaluate === 'function') return evaluate(t);
+  const tier = String(t.sideCandleTier ?? 'WATCH').toUpperCase();
+  return {
+    tier: ['GOOD', 'RISK', 'WATCH'].includes(tier) ? tier : 'WATCH',
+    label: String(t.sideCandleLabel ?? tier),
+    regime: String(t.sideCandleContext ?? '-'),
+    side: String(t.side ?? '-'),
+    reason: String(t.sideCandleReason ?? 'Display only'),
+  };
+}
+
+function getEsCandleFlagCode(t) {
+  const label = String(getEsCandleFlag(t)?.label ?? 'WATCH').toUpperCase();
+  if (label.includes('NO DATA')) return 'NO_DATA';
+  if (label.startsWith('GOOD-TEST')) return 'GOOD_TEST';
+  if (label.startsWith('WATCH+')) return 'WATCH_PLUS';
+  if (label.startsWith('GOOD')) return 'GOOD';
+  if (label.startsWith('RISK')) return 'RISK';
+  return 'WATCH';
+}
+
+function getEsCandleFlagRank(t) {
+  return { GOOD: 0, GOOD_TEST: 1, WATCH_PLUS: 2, WATCH: 3, RISK: 4, NO_DATA: 5 }[getEsCandleFlagCode(t)] ?? 9;
+}
+
+function renderEsCandleFlag(t) {
+  const evaluation = getEsCandleFlag(t);
+  const render = window.PaperCandleColumns?.renderEvaluation;
+  if (typeof render === 'function') return render(evaluation);
+  return `<span title="${escapeHtml(evaluation.reason ?? '')}">${escapeHtml(evaluation.label ?? 'WATCH')}</span>`;
+}
+
+function getEsStageCandleCode(t = {}) {
+  const saved = String(t.emaStageCandleFilterCode ?? '').toUpperCase();
+  if (['GOOD', 'GOOD_TEST', 'WATCH_PLUS', 'WATCH', 'RISK', 'NO_DATA'].includes(saved)) return saved;
+  if (String(t.emaStageCandleCode ?? '').includes('PAIR_MISSING')) return 'NO_DATA';
+  const tier = String(t.emaStageCandleTier ?? 'WATCH').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+  return ['GOOD', 'GOOD_TEST', 'WATCH_PLUS', 'WATCH', 'RISK'].includes(tier) ? tier : 'WATCH';
+}
+
+function getEsStageCandleRank(t) {
+  return { GOOD: 0, GOOD_TEST: 1, WATCH_PLUS: 2, WATCH: 3, RISK: 4, NO_DATA: 5 }[getEsStageCandleCode(t)] ?? 9;
+}
+
+function renderEsStageCandleFlag(t = {}) {
+  const code = getEsStageCandleCode(t);
+  const label = code === 'GOOD_TEST'
+    ? 'GOOD-TEST'
+    : code === 'WATCH_PLUS'
+      ? 'WATCH+'
+      : code === 'NO_DATA'
+        ? 'NO DATA'
+        : code;
+  const colors = {
+    GOOD: ['#34d399', 'rgba(52,211,153,.13)'],
+    GOOD_TEST: ['#67e8f9', 'rgba(34,211,238,.12)'],
+    WATCH_PLUS: ['#a7f3d0', 'rgba(16,185,129,.10)'],
+    WATCH: ['#fbbf24', 'rgba(251,191,36,.11)'],
+    RISK: ['#fb7185', 'rgba(251,113,133,.13)'],
+    NO_DATA: ['var(--muted)', 'rgba(148,163,184,.10)'],
+  };
+  const [color, background] = colors[code] ?? colors.WATCH;
+  const title = [
+    t.emaStageCandleReason,
+    `stage=${t.emaStageCandleStage ?? getEsStage(t)}`,
+    `ALT=${t.emaStageCandleAltPattern ?? 'NO_DATA'}`,
+    `BTC=${t.emaStageCandleBtcPattern ?? 'NO_DATA'}`,
+    t.emaStageCandleDerived ? 'derived from saved entry snapshot' : 'saved at entry',
+    'observe only',
+  ].filter(Boolean).join(' | ');
+  return `<span title="${escapeHtml(title)}" style="display:inline-flex;flex-direction:column;gap:2px;min-width:94px;padding:4px 6px;border-radius:4px;border:1px solid ${color};background:${background};color:${color};font-size:9px;font-weight:950">
+    <span>${escapeHtml(label)}</span>
+    <small style="font-size:8px;color:inherit;opacity:.86">${escapeHtml(String(t.emaStageCandleStage ?? getEsStage(t)).replaceAll('_', ' '))}</small>
+  </span>`;
 }
 
 function calcEsStats(trades) {
   const list = trades ?? [];
   const closed = list.filter((t) => t.status === 'CLOSED');
-  const wins = closed.filter((t) => Number(t.pnl ?? 0) > 0).length;
-  const losses = closed.filter((t) => Number(t.pnl ?? 0) < 0).length;
+  const wins = closed.filter((t) => Number(t.netPnl ?? t.pnl ?? 0) > 0).length;
+  const losses = closed.filter((t) => Number(t.netPnl ?? t.pnl ?? 0) < 0).length;
   const breakeven = closed.length - wins - losses;
-  const pnl = closed.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
-  const avgPnl = closed.length ? pnl / closed.length : null;
+  const grossPnl = closed.reduce((sum, t) => sum + Number(t.grossPnl ?? t.pnl ?? 0), 0);
+  const estimatedFeeUsdt = closed.reduce((sum, t) => sum + Number(t.estimatedFeeUsdt ?? 0), 0);
+  const netPnl = closed.reduce((sum, t) => sum + Number(t.netPnl ?? t.pnl ?? 0), 0);
+  const avgPnl = closed.length ? netPnl / closed.length : null;
   const avgRoe = closed.length
-    ? closed.reduce((sum, t) => sum + Number(t.roe ?? 0), 0) / closed.length
+    ? closed.reduce((sum, t) => sum + Number(t.netRoe ?? t.roe ?? 0), 0) / closed.length
     : null;
 
   return {
@@ -1193,7 +1329,10 @@ function calcEsStats(trades) {
     losses,
     breakeven,
     winRate: closed.length ? (wins / closed.length) * 100 : null,
-    pnl,
+    grossPnl,
+    estimatedFeeUsdt,
+    netPnl,
+    pnl: netPnl,
     avgPnl,
     avgRoe,
   };
@@ -1210,7 +1349,8 @@ function formatEsBucket(name, stats) {
   return `
     <strong>${name}</strong>
     ${stats.wins}W/${stats.losses}L · WR ${wr}<br>
-    Closed ${stats.closed}/${stats.total} · PnL ${formatEsMoney(stats.pnl)}
+    Closed ${stats.closed}/${stats.total} · Net ${formatEsMoney(stats.netPnl)}<br>
+    Gross ${formatEsMoney(stats.grossPnl)} · Fee -${Math.abs(Number(stats.estimatedFeeUsdt ?? 0)).toFixed(3)}
   `;
 }
 
@@ -1235,9 +1375,11 @@ function getEsComboTone(row) {
     && wr >= 60
     && avgRoe >= strongSampleMinAvgRoe;
   let quality = 'neutral';
-  if (pnl > 0 && wr >= 60 && avgRoe >= goodMinAvgRoe) quality = 'good';
-  if (strongSample) quality = 'strong';
-  if (pnl < 0 || wr < 50 || avgRoe < feeFloorAvgRoe) quality = 'bad';
+  if (closed > 0) {
+    if (pnl > 0 && wr >= 60 && avgRoe >= goodMinAvgRoe) quality = 'good';
+    if (strongSample) quality = 'strong';
+    if (pnl < 0 || wr < 50 || avgRoe < feeFloorAvgRoe) quality = 'bad';
+  }
   const tones = {
     strong: {
       bg: 'linear-gradient(135deg, rgba(20,83,45,.72), rgba(8,47,73,.50), rgba(15,23,42,.92))',
@@ -1287,6 +1429,9 @@ function formatEsServerComboBucket(row) {
   const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
   const pnlColor = Number(row.pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
   const tone = getEsComboTone(row);
+  const grossPnl = Number(row.grossPnl ?? row.pnl ?? 0);
+  const estimatedFeeUsdt = Number(row.estimatedFeeUsdt ?? 0);
+  const netPnl = Number(row.netPnl ?? row.pnl ?? 0);
   const plan = row.tradePlan ?? {};
   const planLabel = String(plan.label ?? '').trim() || 'TEST $10';
   const planMargin = Number(plan.marginUsdt);
@@ -1310,9 +1455,10 @@ function formatEsServerComboBucket(row) {
       </span>
     </div>
     <div style="margin-top:3px">${chips}</div>
-    <div style="margin-top:5px">${row.wins}W/${row.losses}L · WR ${wr} · Closed ${row.closed}/${row.total}</div>
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:3px">
-      <span style="color:${pnlColor};font-weight:900">PnL ${formatEsMoney(row.pnl)} · AvgROE ${row.avgRoe == null ? '-' : `${row.avgRoe >= 0 ? '+' : ''}${row.avgRoe}%`}</span>
+    <div style="margin-top:5px">${row.wins}W/${row.losses}L · WR ${wr} · ${row.open ?? Math.max(0, Number(row.total ?? 0) - Number(row.closed ?? 0))} open · ${row.closed} closed</div>
+    <div style="margin-top:3px;font-size:10px;font-weight:850;color:var(--muted)">Gross ${formatEsMoney(grossPnl)} · Fee -${Math.abs(estimatedFeeUsdt).toFixed(3)}</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px">
+      <span style="color:${pnlColor};font-weight:900">Net ${formatEsMoney(netPnl)} · AvgNetROE ${row.avgRoe == null ? '-' : `${row.avgRoe >= 0 ? '+' : ''}${row.avgRoe}%`}</span>
       <span style="padding:2px 6px;border-radius:4px;border:1px solid ${tone.border};color:${tone.labelColor};font-size:9px;font-weight:950">${tone.label}</span>
     </div>
     ${tone.strongSample ? `<div style="margin-top:3px;color:#ccfbf1;font-size:10px;font-weight:950">MẪU MẠNH: Closed ≥ ${tone.strongSampleMinClosed}, PnL ≥ +$${tone.strongSampleMinPnl}, AvgROE ≥ +${tone.strongSampleMinAvgRoe}%</div>` : ''}
@@ -1422,6 +1568,69 @@ function groupEsTrades(trades, keyFn) {
   return Array.from(map.entries());
 }
 
+function renderEsStageCandleStatCard(row = {}) {
+  const pnl = Number(row.closedNetPnl ?? 0);
+  const color = pnl > 0 ? '#34d399' : pnl < 0 ? '#fb7185' : 'var(--muted)';
+  return `<div class="es-paper-mini">
+    <strong>${escapeHtml(row.label ?? row.key ?? '-')}</strong><br>
+    ${Number(row.total ?? 0)} total · ${Number(row.open ?? 0)} open · ${Number(row.pending ?? 0)} pending · ${Number(row.closed ?? 0)} closed<br>
+    ${Number(row.wins ?? 0)}W/${Number(row.losses ?? 0)}L${Number(row.breakeven ?? 0) ? `/${Number(row.breakeven)}BE` : ''} · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`}<br>
+    <span style="color:${color};font-weight:900">Net ${formatEsMoney(pnl)} · AvgROE ${row.avgRoe == null ? '-' : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(2)}%`}</span>
+  </div>`;
+}
+
+function renderEmaStageCandleStats(stats) {
+  const el = document.getElementById('esStageCandleStats');
+  if (!el) return;
+  if (!stats) {
+    el.innerHTML = '<div class="es-paper-mini" style="grid-column:1/-1;color:var(--muted)">EMA Stage Candle: chưa có thống kê.</div>';
+    return;
+  }
+  const tiers = Array.isArray(stats.byTier) ? stats.byTier : [];
+  const stageTiers = Array.isArray(stats.byStageTier) ? stats.byStageTier : [];
+  const contexts = Array.isArray(stats.byContext) ? stats.byContext : [];
+  const contextRows = contexts.slice(0, 100).map((row) => {
+    const pnl = Number(row.closedNetPnl ?? 0);
+    const pnlColor = pnl > 0 ? '#34d399' : pnl < 0 ? '#fb7185' : 'var(--muted)';
+    return `<tr>
+      <td style="min-width:420px;font-weight:800">${escapeHtml(row.label ?? row.key ?? '-')}</td>
+      <td>${Number(row.total ?? 0)}</td>
+      <td>${Number(row.open ?? 0)}/${Number(row.pending ?? 0)}/${Number(row.closed ?? 0)}</td>
+      <td>${Number(row.wins ?? 0)}/${Number(row.losses ?? 0)}</td>
+      <td>${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`}</td>
+      <td style="color:${pnlColor};font-weight:900">${formatEsMoney(pnl)}</td>
+      <td>${row.avgRoe == null ? '-' : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(2)}%`}</td>
+    </tr>`;
+  }).join('');
+  const legacyNote = esPaperCandleFlagFilter === 'all'
+    ? ''
+    : ' · Legacy candle filter không trộn vào bảng thống kê mới';
+  el.innerHTML = `
+    <div style="grid-column:1/-1;border:1px solid rgba(34,211,238,.24);border-radius:8px;padding:12px;background:rgba(34,211,238,.045)">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+        <div>
+          <strong style="color:#67e8f9">EMA Stage Candle · lớp quan sát riêng theo từng loại</strong>
+          <div style="margin-top:4px;color:var(--muted);font-size:10px">Stage → ALT candle → BTC candle · PnL chỉ tính lệnh đã đóng, net sau phí · không đổi entry/size/SL/TP${escapeHtml(legacyNote)}</div>
+        </div>
+        <span style="color:var(--muted);font-size:10px">${escapeHtml(stats.version ?? '-')}</span>
+      </div>
+      <div class="es-paper-breakdown" style="margin-top:10px">${tiers.map(renderEsStageCandleStatCard).join('')}</div>
+      <details open style="margin-top:10px">
+        <summary style="cursor:pointer;color:var(--text);font-weight:900">Theo stage × nhãn (${stageTiers.length})</summary>
+        <div class="es-paper-breakdown" style="margin-top:8px">${stageTiers.map(renderEsStageCandleStatCard).join('')}</div>
+      </details>
+      <details style="margin-top:10px">
+        <summary style="cursor:pointer;color:var(--text);font-weight:900">Chi tiết stage × ALT candle × BTC candle (${Math.min(contexts.length, 100)}/${Number(stats.contextTotal ?? contexts.length)})</summary>
+        <div style="overflow-x:auto;margin-top:8px">
+          <table class="es-paper-table" style="min-width:940px">
+            <thead><tr><th>Context</th><th>Total</th><th>O/P/C</th><th>W/L</th><th>WR</th><th>Net PnL</th><th>AvgROE</th></tr></thead>
+            <tbody>${contextRows || '<tr><td colspan="7" style="text-align:center;color:var(--muted)">Chưa có context</td></tr>'}</tbody>
+          </table>
+        </div>
+      </details>
+    </div>`;
+}
+
 function updateEsPaperStats(trades = esPaperTrades) {
   const stats = calcEsStats(trades);
   const wr = stats.closed ? `${stats.winRate.toFixed(0)}%` : '-';
@@ -1433,10 +1642,10 @@ function updateEsPaperStats(trades = esPaperTrades) {
   setText('esStatWr', wr);
   setText('esStatWinLoss', `${stats.wins} win / ${stats.losses} loss${stats.breakeven ? ` / ${stats.breakeven} BE` : ''}`);
   // Net PnL = tổng realized + unrealized (OPEN theo mark live) từ server summary; fallback về page nếu chưa có
-  const srv = esPaperServerSummary;
+  const srv = esPaperCandleFlagFilter === 'all' ? esPaperServerSummary : null;
   if (srv && srv.netPnl != null) {
     setText('esStatPnl', formatEsMoney(srv.netPnl));
-    setText('esStatAvgPnl', `realized ${formatEsMoney(srv.realizedPnl)} · unreal ${formatEsMoney(srv.unrealizedPnl)} (mark live)`);
+    setText('esStatAvgPnl', `gross ${formatEsMoney(srv.grossPnl)} · fee -${Math.abs(Number(srv.estimatedFeeUsdt ?? 0)).toFixed(3)} · net ${formatEsMoney(srv.netPnl)} (mark live)`);
   } else {
     setText('esStatPnl', formatEsMoney(stats.pnl));
     setText('esStatAvgPnl', `Avg/trade ${stats.avgPnl == null ? '-' : formatEsMoney(stats.avgPnl)}`);
@@ -1496,9 +1705,11 @@ function updateEsPaperStats(trades = esPaperTrades) {
     )
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([name, list]) => `<div class="es-paper-mini">${formatEsBucket(name, calcEsStats(list))}</div>`);
-    const serverCombos = esPaperTypeFilter === 'BR-like' || esPaperTypeFilter === 'BR-like Short'
-      ? esPaperServerSummary?.brLikeCombos
-      : esPaperServerSummary?.emaCombos;
+    const serverCombos = esPaperCandleFlagFilter !== 'all'
+      ? null
+      : esPaperTypeFilter === 'BR-like' || esPaperTypeFilter === 'BR-like Short'
+        ? esPaperServerSummary?.brLikeCombos
+        : esPaperServerSummary?.emaCombos;
     const comboRows = Array.isArray(serverCombos)
       ? serverCombos
         .slice(0, 18)
@@ -1527,10 +1738,10 @@ function renderEsPaperTable() {
   const tpHits = closed.filter((t) => ['TP', 'SQUEEZE_SHORT_TP2'].includes(t.outcome)).length;
   const slHits = closed.filter((t) => t.outcome === 'SL').length;
   const partialBeHits = closed.filter((t) => t.outcome === 'SQUEEZE_SHORT_PARTIAL_BE').length;
-  const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+  const wins = closed.filter((t) => Number(t.netPnl ?? t.pnl ?? 0) > 0).length;
   const wr = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(0) : '-';
   const avgRoe = closed.length > 0
-    ? (closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length).toFixed(1)
+    ? (closed.reduce((s, t) => s + Number(t.netRoe ?? t.roe ?? 0), 0) / closed.length).toFixed(1)
     : '-';
 
   const summary = document.getElementById('esPaperSummary');
@@ -1538,15 +1749,18 @@ function renderEsPaperTable() {
     const scope = esPaperTypeFilter === 'all' ? 'All signals' : esPaperTypeFilter;
     const dayScope = esPaperDayFilter === 'all' ? '' : ` · ${esPaperDayFilter}`;
     const tfScope = esPaperTfFilter === 'all' ? '' : ` · ${esPaperTfFilter}`;
+    const flagScope = esPaperCandleFlagFilter === 'all' ? '' : ` · legacy ${esPaperCandleFlagFilter.replaceAll('_', '+').replace('GOOD+TEST', 'GOOD-TEST')}`;
+    const stageCandleScope = esStageCandleFilter === 'all' ? '' : ` · stage candle ${esStageCandleFilter.replaceAll('_', '+').replace('GOOD+TEST', 'GOOD-TEST')}`;
     const pageScope = esPaperPagination ? ` | page ${esPaperPagination.page}/${esPaperPagination.totalPages} (${filteredTrades.length}/${esPaperPagination.total} rows)` : '';
-    summary.innerHTML = `${escapeHtml(`${scope}${dayScope}${tfScope}${pageScope} | ${open.length} open/pending | ${closed.length} closed | TP ${tpHits} | SL ${slHits} | TP1-BE ${partialBeHits} | WR ${wr}% | AvgROE ${avgRoe}%`)}${renderBtcTurnGateBanner(esPaperServerSummary)}`;
+    summary.innerHTML = `${escapeHtml(`${scope}${dayScope}${tfScope}${flagScope}${stageCandleScope}${pageScope} | ${open.length} open/pending | ${closed.length} closed | TP ${tpHits} | SL ${slHits} | TP1-BE ${partialBeHits} | WR ${wr}% | AvgROE ${avgRoe}%`)}${renderBtcTurnGateBanner(esPaperServerSummary)}`;
   }
   renderEsPaperPager();
-  renderEsPaperOverview(filteredTrades, esPaperServerSummary);
+  renderEsPaperOverview(filteredTrades, esPaperCandleFlagFilter === 'all' ? esPaperServerSummary : null);
+  renderEmaStageCandleStats(esPaperServerSummary?.emaStageCandleStats);
   updateEsPaperStats(filteredTrades);
 
   if (filteredTrades.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:16px">No EMA Squeeze paper trades yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="25" style="text-align:center;color:var(--muted);padding:16px">No EMA Squeeze paper trades yet</td></tr>';
     updateEsSortHeaders();
     return;
   }
@@ -1555,8 +1769,10 @@ function renderEsPaperTable() {
   const sortedAll = sortEsPaperTrades([...open, ...closed]);
   const sorted = sortedAll.slice(0, RENDER_CAP);
   tbody.innerHTML = sorted.map((t) => {
-    const pnlVal = t.pnl ?? null;
-    const roeVal = t.roe ?? null;
+    const pnlVal = t.netPnl ?? t.pnl ?? null;
+    const roeVal = t.netRoe ?? t.roe ?? null;
+    const grossPnlVal = t.grossPnl ?? t.pnl ?? null;
+    const estimatedFee = Number(t.estimatedFeeUsdt ?? 0);
     const isShort = t.side === 'SHORT';
     const sideColor = isShort ? 'var(--red)' : 'var(--green)';
     const pnlColor = pnlVal == null ? '' : pnlVal >= 0 ? 'color:var(--green)' : 'color:var(--red)';
@@ -1616,6 +1832,10 @@ function renderEsPaperTable() {
 	        </div>
       </td>
       <td><span style="color:${sideColor}">${t.side}</span></td>
+      <td>${renderEsCandlePattern(t)}</td>
+      <td>${renderEsBtcCandlePattern(t)}</td>
+      <td data-paper-side-candle-cell="true">${renderEsCandleFlag(t)}</td>
+      <td>${renderEsStageCandleFlag(t)}</td>
       <td>${fmtPrice(t.entryPrice)}</td>
       <td>${fmtPrice(t.sl)}</td>
       <td>
@@ -1641,7 +1861,7 @@ function renderEsPaperTable() {
       <td>${renderEsShortGateBadge(t)}</td>
       <td>${renderEsBtcCandleShortBadge(t)}</td>
       <td>${fmtPrice(t.markPrice)}</td>
-      <td style="${pnlColor}">${fmtPnl(pnlVal, roeVal)}</td>
+      <td style="${pnlColor}">${fmtPnl(pnlVal, roeVal)}<div style="margin-top:2px;color:var(--muted);font-size:9px">gross ${formatEsMoney(grossPnlVal)} · fee -${Math.abs(estimatedFee).toFixed(3)}</div></td>
       <td style="${pnlColor}">${roeVal != null ? fmtPct(roeVal) : '-'}</td>
       <td>${statusBadge}</td>
       <td class="es-paper-gate-cell">${renderEsPaperGateReason(t)}</td>
@@ -1651,7 +1871,7 @@ function renderEsPaperTable() {
     </tr>`;
   }).join('');
   if (sortedAll.length > RENDER_CAP) {
-    tbody.innerHTML += `<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:10px;font-size:11px">Hiển thị ${RENDER_CAP}/${sortedAll.length} lệnh (đã lọc) — lọc thêm theo ngày/khung nến/type để xem hết. Thống kê tính trên toàn bộ.</td></tr>`;
+    tbody.innerHTML += `<tr><td colspan="25" style="text-align:center;color:var(--muted);padding:10px;font-size:11px">Hiển thị ${RENDER_CAP}/${sortedAll.length} lệnh (đã lọc) — lọc thêm theo ngày/khung nến/type để xem hết. Thống kê tính trên toàn bộ.</td></tr>`;
   }
   updateEsSortHeaders();
 }
@@ -1662,7 +1882,8 @@ async function loadEsPaperTrades(page = esPaperPage) {
     const q = `page=${nextPage}&limit=${esPaperLimit}`
       + `&type=${encodeURIComponent(esPaperTypeFilter)}`
       + `&day=${encodeURIComponent(esPaperDayFilter)}`
-      + `&tf=${encodeURIComponent(esPaperTfFilter)}`;
+      + `&tf=${encodeURIComponent(esPaperTfFilter)}`
+      + `&stageCandle=${encodeURIComponent(esStageCandleFilter)}`;
     const res = await fetch(`/api/ema-squeeze-paper-trades?${q}`, { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();

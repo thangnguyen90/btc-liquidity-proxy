@@ -12,14 +12,20 @@ const DEFAULT_STORE = {
     minClosed: 8,
     minPredictionScore: 78,
     minSignalScore: 60,
+    comboStatsValidFrom: process.env.INTRADAY_DECISION_COMBO_STATS_VALID_FROM ?? '2026-07-20T05:40:00.000Z',
     maxOpenPositions: null,
     maxEntriesPerRun: null,
     maxEntriesPerComboPerRun: Math.max(1, Number(process.env.INTRADAY_DECISION_MAX_ENTRIES_PER_COMBO_PER_RUN ?? 5)),
     maxOpenPerCombo: Math.max(1, Number(process.env.INTRADAY_DECISION_MAX_OPEN_PER_COMBO ?? 10)),
+    maxSignalAgeSeconds: Math.max(15, Number(process.env.INTRADAY_DECISION_MAX_SIGNAL_AGE_SECONDS ?? 90)),
+    maxAdverseEntryDriftPct: Math.max(0, Number(process.env.INTRADAY_DECISION_MAX_ADVERSE_ENTRY_DRIFT_PCT ?? 0.15)),
+    maxBreakoutAgeBars: Math.max(0, Number(process.env.INTRADAY_DECISION_MAX_BREAKOUT_AGE_BARS ?? 2)),
     marginUsdt: 10,
     leverage: 10,
     takeProfitRoe: 15,
     stopLossRoe: 15,
+    breakEvenTriggerRoe: 7,
+    breakEvenLockRoe: 0,
     trailingEarlyTriggerRoe: null,
     trailingEarlyLockRoe: null,
     trailingStartRoe: 15,
@@ -46,8 +52,105 @@ function directionForSide(side) {
   return side === 'LONG' ? 'UP' : side === 'SHORT' ? 'DOWN' : 'FLAT';
 }
 
+function candleName(value) {
+  const raw = value && typeof value === 'object'
+    ? (value.name ?? value.pattern ?? value.label ?? value.direction)
+    : value;
+  return normalize(raw || 'NO_DATA');
+}
+
+function btcCandleOf(candidate = {}) {
+  return candidate.btcCandlePatternAtEntry
+    ?? candidate.btcCandlePattern5m
+    ?? candidate.btcCandlePattern
+    ?? candidate.btcCandle
+    ?? null;
+}
+
+export function btcRegimeGate({ side, trend = {}, btcCandlePattern = null, signalScore = 0 } = {}) {
+  const direction = normalize(trend.direction);
+  const normalizedSide = normalize(side);
+  const regime = direction === 'UP' ? 'SW_UP' : direction === 'DOWN' ? 'SW_DOWN' : 'SW_FLAT';
+  const pattern = candleName(btcCandlePattern);
+  const bearish = pattern.includes('BEARISH') || pattern === 'SHOOTING_STAR';
+  const bullish = pattern.includes('BULLISH') || pattern === 'HAMMER';
+  const aligned = directionForSide(normalizedSide) === direction && direction !== 'FLAT';
+  const confirmsRegime = direction === 'UP' ? bullish : direction === 'DOWN' ? bearish : false;
+  const reversesRegime = direction === 'UP' ? bearish : direction === 'DOWN' ? bullish : false;
+
+  let tier = 'NEUTRAL';
+  let label = `${regime}_NEUTRAL`;
+  let marginCapUsdt = null;
+  let minSignalScore = null;
+  let reason = `${regime}; nến BTC ${pattern}`;
+
+  if (direction === 'FLAT' || !['LONG', 'SHORT'].includes(normalizedSide)) {
+    reason = `BTC chưa có hướng sideway rõ; nến ${pattern}`;
+  } else if (!aligned) {
+    marginCapUsdt = 1;
+    if (confirmsRegime) {
+      tier = 'RISK';
+      label = `${regime}_${normalizedSide}_RISK`;
+      reason = `${normalizedSide} ngược ${regime}, nến BTC ${pattern} xác nhận hướng BTC; chỉ TEST $1`;
+    } else if (reversesRegime) {
+      tier = 'WATCH';
+      label = `${regime}_${normalizedSide}_REVERSAL_WATCH`;
+      minSignalScore = 80;
+      reason = `${normalizedSide} ngược ${regime} nhưng nến BTC ${pattern} có dấu hiệu đảo; cần signal >= 80 và chỉ TEST $1`;
+    } else {
+      tier = 'WATCH';
+      label = `${regime}_${normalizedSide}_COUNTER_TEST`;
+      reason = `${normalizedSide} ngược ${regime}; chưa có nến BTC đảo chiều rõ, chỉ TEST $1`;
+    }
+  } else if (confirmsRegime) {
+    tier = 'GOOD';
+    label = `${regime}_${normalizedSide}_GOOD`;
+    reason = `${normalizedSide} thuận ${regime}, nến BTC ${pattern} xác nhận; giữ size rule gốc`;
+  } else if (reversesRegime) {
+    tier = 'WATCH';
+    label = `${regime}_${normalizedSide}_REVERSAL_WATCH`;
+    marginCapUsdt = 1;
+    reason = `${normalizedSide} thuận ${regime} nhưng nến BTC ${pattern} báo đảo; giảm còn TEST $1`;
+  } else {
+    label = `${regime}_${normalizedSide}_ALIGNED`;
+    reason = `${normalizedSide} thuận ${regime}; nến BTC ${pattern} trung tính, giữ size rule gốc`;
+  }
+
+  return {
+    version: 'BTC_REGIME_GATE_V1',
+    tier,
+    label,
+    regime,
+    trendDirection: direction || 'FLAT',
+    trendStrength: normalize(trend.strength) || 'UNKNOWN',
+    macro4hDirection: normalize(trend.macro4h?.direction) || 'FLAT',
+    macro4hStrength: normalize(trend.macro4h?.strength) || 'UNKNOWN',
+    btcCandle: pattern,
+    aligned,
+    marginCapUsdt,
+    minSignalScore,
+    signalScore: number(signalScore, 0),
+    reason,
+  };
+}
+
 function validTimeframe(value) {
   return String(value).toLowerCase() === '4h' ? '4h' : '1h';
+}
+
+function timestamp(value) {
+  if (value == null || value === '') return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function timeframeMs(value) {
+  const match = String(value ?? '').toLowerCase().match(/^(\d+)(m|h)$/);
+  if (!match) return 15 * 60_000;
+  const amount = Math.max(1, Number(match[1]));
+  return amount * (match[2] === 'h' ? 60 * 60_000 : 60_000);
 }
 
 function tradeRoe(trade, mark) {
@@ -73,12 +176,15 @@ function fixedStopLoss(entry, side, leverage, stopLossRoe) {
   );
 }
 
-function progressiveLockedStopRoe(peakRoe, settings) {
+export function progressiveLockedStopRoe(peakRoe, settings) {
   const peak = number(peakRoe, 0);
+  const breakEvenTrigger = number(settings?.breakEvenTriggerRoe, 7);
+  const breakEvenLock = number(settings?.breakEvenLockRoe, 0);
   const start = number(settings?.trailingStartRoe, 15);
   const startLock = number(settings?.trailingStartLockRoe, 5);
   const step = Math.max(1, number(settings?.trailingStepRoe, 5));
-  if (peak < start) return null;
+  if (peak < breakEvenTrigger) return null;
+  if (peak < start) return breakEvenLock;
   return startLock + (Math.floor((peak - start) / step) * step);
 }
 
@@ -138,6 +244,62 @@ function canonicalSignalStage(value) {
   return orderedStages.find(([token]) => text.includes(token))?.[1] ?? text;
 }
 
+export function decisionSignalFingerprint(candidate = {}) {
+  const observedAt = timestamp(candidate.observedAt ?? candidate.scannedAt) ?? Date.now();
+  const interval = String(candidate.timeframe ?? candidate.interval ?? '15m').toLowerCase();
+  const intervalMs = timeframeMs(interval);
+  const stage = canonicalSignalStage(candidate.decisionStage ?? candidate.signalType ?? candidate.stage);
+  const rawAge = number(candidate.breakoutAge);
+  const eventAt = /BREAKOUT|BREAKDOWN/.test(stage) && rawAge != null
+    ? observedAt - (Math.max(0, rawAge) * intervalMs)
+    : observedAt;
+  const eventBucket = Math.floor(eventAt / intervalMs);
+  return [
+    normalize(candidate.source),
+    normalize(candidate.symbol),
+    candidateSide(candidate),
+    stage,
+    normalize(interval),
+    eventBucket,
+  ].join('|');
+}
+
+export function decisionEntryTiming(candidate = {}, marketPrice, settings = {}, now = Date.now()) {
+  const signalEntry = number(candidate.entry ?? candidate.entryPrice ?? candidate.markPrice);
+  const observedAt = timestamp(candidate.observedAt ?? candidate.scannedAt);
+  const signalAgeMs = observedAt == null ? null : Math.max(0, now - observedAt);
+  const entryVsSignalPct = signalEntry && marketPrice
+    ? ((marketPrice - signalEntry) / signalEntry) * 100
+    : null;
+  const side = candidateSide(candidate);
+  const adverseChasePct = entryVsSignalPct == null
+    ? null
+    : side === 'SHORT' ? -entryVsSignalPct : entryVsSignalPct;
+  const breakoutAge = number(candidate.breakoutAge);
+  const stage = canonicalSignalStage(candidate.decisionStage ?? candidate.signalType ?? candidate.stage);
+  const maxSignalAgeMs = Math.max(15, number(settings.maxSignalAgeSeconds, 90)) * 1000;
+  const maxChase = Math.max(0, number(settings.maxAdverseEntryDriftPct, 0.15));
+  const maxBreakoutAge = Math.max(0, number(settings.maxBreakoutAgeBars, 2));
+  let blockReason = null;
+  if (!signalEntry) blockReason = 'Thiếu entry gốc nên không thể kiểm tra chase';
+  else if (signalAgeMs == null) blockReason = 'Thiếu thời gian phát tín hiệu';
+  else if (signalAgeMs > maxSignalAgeMs) blockReason = `Tín hiệu đã cũ ${(signalAgeMs / 1000).toFixed(0)}s > ${maxSignalAgeMs / 1000}s`;
+  else if (/BREAKOUT|BREAKDOWN/.test(stage) && breakoutAge != null && breakoutAge > maxBreakoutAge) {
+    blockReason = `${stage} đã qua ${breakoutAge} nến > ${maxBreakoutAge} nến`;
+  } else if (adverseChasePct != null && adverseChasePct > maxChase) {
+    blockReason = `Market đã chase ${adverseChasePct.toFixed(3)}% > ${maxChase}% so với entry gốc`;
+  }
+  return {
+    signalEntry,
+    observedAt,
+    signalAgeMs,
+    entryVsSignalPct,
+    adverseChasePct,
+    breakoutAge,
+    blockReason,
+  };
+}
+
 function comboContextKey(value) {
   const parts = String(value ?? '').split('|').map((part) => normalize(part)).filter(Boolean);
   if (parts.length < 3) return '';
@@ -181,7 +343,7 @@ function bestCatalogMatch(candidate, catalog = []) {
 }
 
 export class IntradayDecisionPaper {
-  constructor({ file, evaluationFile, getCandidates, getCatalog, getTrend, getMark, getMarkInfo, setSymbols, onStateChange, logger = console }) {
+  constructor({ file, evaluationFile, getCandidates, getCatalog, getTrend, getMark, getMarkInfo, getSignalVersion, setSymbols, onStateChange, enrichTradeForLog, logger = console }) {
     this.file = file;
     this.evaluationFile = evaluationFile;
     this.getCandidates = getCandidates;
@@ -189,8 +351,10 @@ export class IntradayDecisionPaper {
     this.getTrend = getTrend;
     this.getMark = getMark;
     this.getMarkInfo = getMarkInfo;
+    this.getSignalVersion = getSignalVersion;
     this.setSymbols = setSymbols;
     this.onStateChange = onStateChange;
+    this.enrichTradeForLog = enrichTradeForLog;
     this.logger = logger;
     this.store = structuredClone(DEFAULT_STORE);
     this.running = false;
@@ -198,6 +362,10 @@ export class IntradayDecisionPaper {
     this.timer = null;
     this.tickFlushTimer = null;
     this.lastTickBroadcastAt = 0;
+    this.signalVersion = null;
+    this.signalVersionTimer = null;
+    this.queuedRun = null;
+    this.queuedRunTimer = null;
   }
 
   async init() {
@@ -244,7 +412,38 @@ export class IntradayDecisionPaper {
     await this.persist();
     this.timer = setInterval(() => this.tick().catch((error) => this.logger.warn('[DecisionPaper]', error.message)), 60_000);
     this.timer.unref?.();
+    this.signalVersion = String(this.getSignalVersion?.() ?? '');
+    this.signalVersionTimer = setInterval(() => this.checkSignalVersion(), 2_000);
+    this.signalVersionTimer.unref?.();
     return this.getState();
+  }
+
+  checkSignalVersion() {
+    const next = String(this.getSignalVersion?.() ?? '');
+    if (!next || next === this.signalVersion) return;
+    this.signalVersion = next;
+    this.queueRun({ trigger: 'signal-live' });
+  }
+
+  queueRun({ trigger = 'signal-live', timeframe = null } = {}) {
+    this.queuedRun = { trigger, timeframe };
+    if (this.queuedRunTimer) return;
+    this.queuedRunTimer = setTimeout(async () => {
+      this.queuedRunTimer = null;
+      if (this.running) {
+        this.queueRun(this.queuedRun ?? { trigger, timeframe });
+        return;
+      }
+      const queued = this.queuedRun ?? { trigger, timeframe };
+      this.queuedRun = null;
+      try {
+        await this.runNow(queued);
+      } catch (error) {
+        this.logger.warn('[DecisionPaper:SignalLive]', error.message);
+      }
+      if (this.queuedRun) this.queueRun(this.queuedRun);
+    }, 350);
+    this.queuedRunTimer.unref?.();
   }
 
   refreshSymbols() {
@@ -276,6 +475,9 @@ export class IntradayDecisionPaper {
 
   async persist() {
     this.writeChain = this.writeChain.then(async () => {
+      if (typeof this.enrichTradeForLog === 'function') {
+        this.store.trades = this.store.trades.map((trade) => this.enrichTradeForLog(trade));
+      }
       await mkdir(dirname(this.file), { recursive: true });
       const temporary = `${this.file}.${process.pid}.tmp`;
       await writeFile(temporary, `${JSON.stringify(this.store, null, 2)}\n`, 'utf8');
@@ -371,6 +573,9 @@ export class IntradayDecisionPaper {
       maxOpenPerCombo: Math.max(1, Math.min(50, number(input.maxOpenPerCombo, current.maxOpenPerCombo ?? 10))),
       decisionEveryMinutes: Math.max(5, Math.min(240, number(input.decisionEveryMinutes, current.decisionEveryMinutes))),
       repeatCooldownMinutes: Math.max(15, Math.min(1440, number(input.repeatCooldownMinutes, current.repeatCooldownMinutes))),
+      maxSignalAgeSeconds: Math.max(15, Math.min(600, number(input.maxSignalAgeSeconds, current.maxSignalAgeSeconds ?? 90))),
+      maxAdverseEntryDriftPct: Math.max(0, Math.min(5, number(input.maxAdverseEntryDriftPct, current.maxAdverseEntryDriftPct ?? 0.15))),
+      maxBreakoutAgeBars: Math.max(0, Math.min(20, number(input.maxBreakoutAgeBars, current.maxBreakoutAgeBars ?? 2))),
     };
     await this.persist();
     this.emitState('settings');
@@ -444,9 +649,14 @@ export class IntradayDecisionPaper {
       });
       const catalog = catalogPayload.recommendations ?? [];
       const rawCandidates = await this.getCandidates(tf);
+      const alreadyProcessed = new Set(this.store.decisions
+        .filter((decision) => decision.signalFingerprint
+          && !String(decision.reason ?? '').startsWith('Chưa có Binance Last Price'))
+        .map((decision) => decision.signalFingerprint));
       const seen = new Set();
       const candidates = rawCandidates.filter((candidate) => {
-        const key = `${candidate.source}|${candidate.symbol}|${candidateSide(candidate)}|${candidateType(candidate)}`;
+        const key = decisionSignalFingerprint(candidate);
+        if (alreadyProcessed.has(key)) return false;
         if (!candidate.symbol || seen.has(key)) return false;
         seen.add(key);
         return true;
@@ -470,6 +680,12 @@ export class IntradayDecisionPaper {
           && macro.direction !== 'FLAT'
           && !independent;
         const signalScore = number(candidate.score, 0);
+        const regimeGate = btcRegimeGate({
+          side: candidate.side,
+          trend,
+          btcCandlePattern: btcCandleOf(candidate),
+          signalScore,
+        });
         let decision = 'REJECT';
         let reason = 'Không có combo lịch sử đủ tin cậy';
         if (decisionRule && decisionRule.allow === false) {
@@ -488,12 +704,20 @@ export class IntradayDecisionPaper {
         const signalEntry = number(candidate.entry ?? candidate.entryPrice ?? candidate.markPrice);
         const marketEntry = this.freshMarketEntry(candidate.symbol);
         const entry = marketEntry?.price ?? null;
+        const timing = decisionEntryTiming(candidate, entry, this.store.settings);
         if (decision === 'ENTER' && !entry) {
           decision = 'WATCH';
           reason = 'Chưa có Binance Last Price mới trong 5 giây';
+        } else if (decision === 'ENTER' && timing.blockReason) {
+          decision = 'WATCH';
+          reason = `LIVE ENTRY BLOCK: ${timing.blockReason}`;
+        } else if (decision === 'ENTER' && regimeGate.minSignalScore != null && signalScore < regimeGate.minSignalScore) {
+          decision = 'WATCH';
+          reason = `BTC REGIME GATE: ${regimeGate.reason}; signal ${signalScore} < ${regimeGate.minSignalScore}`;
         }
+        reason = `${reason} · BTC ${regimeGate.label}`;
         const decisionScore = (number(stats?.predictionScore, 0) * 0.75) + (signalScore * 0.25);
-        return { candidate, stats, decisionRule, matchScore: match?.matchScore ?? null, decision, reason, entry, signalEntry, marketEntry, decisionScore, aligned, independent };
+        return { candidate, stats, decisionRule, regimeGate, matchScore: match?.matchScore ?? null, decision, reason, entry, signalEntry, marketEntry, timing, decisionScore, aligned, independent };
       }).sort((a, b) => b.decisionScore - a.decisionScore);
 
       const active = this.store.trades.filter((trade) => trade.status === 'OPEN');
@@ -541,11 +765,21 @@ export class IntradayDecisionPaper {
           matchScore: number(row.matchScore),
           decisionStage: row.candidate.decisionStage ?? canonicalSignalStage(row.candidate.signalType),
           decisionRule: row.decisionRule ? { ...row.decisionRule } : null,
+          btcRegimeGate: { ...row.regimeGate },
+          btcRegimeGateLabel: row.regimeGate.label,
+          btcRegimeAtEntry: row.regimeGate.regime,
+          btcCandleAtDecision: row.regimeGate.btcCandle,
           candidateCombo: row.candidate.combo ?? null,
           trend: { ...trend }, entry: row.entry, signalEntry: row.signalEntry,
           marketEntryAt: row.marketEntry?.at ? new Date(row.marketEntry.at).toISOString() : null,
           marketEntryAgeMs: row.marketEntry?.ageMs ?? null,
           marketEntrySource: row.entry ? 'BINANCE_LAST_SOCKET' : null,
+          signalFingerprint: decisionSignalFingerprint(row.candidate),
+          signalObservedAt: row.timing?.observedAt ? new Date(row.timing.observedAt).toISOString() : null,
+          signalAgeMs: row.timing?.signalAgeMs ?? null,
+          breakoutAge: row.timing?.breakoutAge ?? null,
+          entryVsSignalPct: row.timing?.entryVsSignalPct == null ? null : +row.timing.entryVsSignalPct.toFixed(4),
+          adverseChasePct: row.timing?.adverseChasePct == null ? null : +row.timing.adverseChasePct.toFixed(4),
         };
         decisions.push(decision);
         if (row.decision !== 'ENTER') continue;
@@ -563,17 +797,28 @@ export class IntradayDecisionPaper {
           leverage,
           this.store.settings.stopLossRoe,
         );
+        const baseMarginUsdt = number(row.decisionRule?.marginUsdt, this.store.settings.marginUsdt);
+        const marginUsdt = row.regimeGate.marginCapUsdt == null
+          ? baseMarginUsdt
+          : Math.min(baseMarginUsdt, row.regimeGate.marginCapUsdt);
         this.store.trades.unshift({
           id: crypto.randomUUID(), decisionId: decision.id, status: 'OPEN', outcome: null,
           symbol: row.candidate.symbol, side: row.candidate.side, source: row.candidate.source,
           signalType: row.candidate.signalType, combo: decision.combo, comboGrade: decision.comboGrade,
           predictionScore: decision.predictionScore, signalScore: decision.signalScore,
           decisionTimeframe: tf, trendAtEntry: { ...trend }, analysis: { ...decision },
-          marginUsdt: number(row.decisionRule?.marginUsdt, this.store.settings.marginUsdt), leverage, entryPrice: row.entry,
+          btcRegimeGate: { ...row.regimeGate },
+          btcRegimeGateLabel: row.regimeGate.label,
+          btcRegimeAtEntry: row.regimeGate.regime,
+          btcCandleAtDecision: row.regimeGate.btcCandle,
+          marginUsdt, leverage, entryPrice: row.entry,
           signalEntry: row.signalEntry,
-          entryVsSignalPct: row.signalEntry
-            ? +((row.entry - row.signalEntry) / row.signalEntry * 100).toFixed(4)
-            : null,
+          signalFingerprint: decision.signalFingerprint,
+          signalObservedAt: decision.signalObservedAt,
+          signalAgeMs: decision.signalAgeMs,
+          breakoutAge: decision.breakoutAge,
+          entryVsSignalPct: decision.entryVsSignalPct,
+          adverseChasePct: decision.adverseChasePct,
           marketEntryAt: decision.marketEntryAt,
           marketEntryAgeMs: decision.marketEntryAgeMs,
           marketEntrySource: decision.marketEntrySource,
@@ -585,7 +830,7 @@ export class IntradayDecisionPaper {
       }
       this.store.decisions = [...decisions, ...this.store.decisions].slice(0, 2000);
       this.store.lastRun = {
-        ranAt: nowIso, trigger, timeframe: tf, trend, received: candidates.length,
+        ranAt: nowIso, trigger, timeframe: tf, trend, scanned: rawCandidates.length, received: candidates.length,
         entered: decisions.filter((row) => row.decision === 'ENTER').length,
         watched: decisions.filter((row) => row.decision === 'WATCH').length,
         rejected: decisions.filter((row) => row.decision === 'REJECT').length,
@@ -600,7 +845,7 @@ export class IntradayDecisionPaper {
     }
   }
 
-  getState() {
+  getState({ decisionLimit = 500 } = {}) {
     const trades = this.store.trades.map((trade) => ({ ...trade }));
     const closed = trades.filter((trade) => trade.status === 'CLOSED');
     const wins = closed.filter((trade) => number(trade.pnl, 0) > 0).length;
@@ -612,7 +857,10 @@ export class IntradayDecisionPaper {
         wr: closed.length ? +(wins / closed.length * 100).toFixed(2) : null,
         pnl: +closed.reduce((sum, trade) => sum + number(trade.pnl, 0), 0).toFixed(4),
       },
-      trades, decisions: this.store.decisions.slice(0, 500), running: this.running,
+      trades,
+      decisions: this.store.decisions.slice(0, Math.max(1, Math.min(2000, number(decisionLimit, 500)))),
+      decisionRetention: 2000,
+      running: this.running,
     };
   }
 }

@@ -8,6 +8,7 @@ const state = {
   sortBy: "time",
   sortDir: "desc",
   loading: false,
+  learning: null,
 };
 const fmt = (value, digits = 2) =>
   Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "-";
@@ -75,6 +76,90 @@ function btcRegimeBadge(trade) {
   return `<span class="trend-badge trend-${esc(label.toLowerCase())}">${esc(label)}</span>`;
 }
 
+function candlePatternCell(trade) {
+  const raw = trade?.candlePatternAtEntry;
+  const name = String(typeof raw === "object" ? raw?.name : raw ?? "NO_DATA")
+    .trim()
+    .toUpperCase();
+  const labels = {
+    BULLISH_ENGULFING: "Bullish Engulfing",
+    BEARISH_ENGULFING: "Bearish Engulfing",
+    DOJI: "Doji",
+    HAMMER: "Hammer",
+    SHOOTING_STAR: "Shooting Star",
+    BULLISH_PIN_BAR: "Bullish Pin Bar",
+    BEARISH_PIN_BAR: "Bearish Pin Bar",
+    BULLISH_MARUBOZU: "Bullish Marubozu",
+    BEARISH_MARUBOZU: "Bearish Marubozu",
+    BULLISH_CANDLE: "Bullish Candle",
+    BEARISH_CANDLE: "Bearish Candle",
+    STRONG_RED_CLOSE: "Strong Red Close",
+    STRONG_GREEN_CLOSE: "Strong Green Close",
+    NO_DATA: "No data",
+    UNKNOWN: "No data",
+  };
+  const label = labels[name] ?? name.replaceAll("_", " ");
+  const timeframe = String(
+    (typeof raw === "object" ? raw?.timeframe : "")
+      || trade?.candlePatternTimeframe
+      || "-",
+  ).toUpperCase();
+  return `<span class="candle-pattern">${esc(label)}<small>${esc(timeframe)} · tại lúc nhận tín hiệu</small></span>`;
+}
+
+function btcCandlePatternCell(trade) {
+  return candlePatternCell({
+    ...trade,
+    candlePatternAtEntry: trade?.btcCandlePatternAtEntry ?? trade?.btcCandlePattern5m ?? null,
+    candlePatternTimeframe: trade?.btcCandlePatternAtEntry?.timeframe
+      ?? trade?.btcCandlePattern5m?.timeframe
+      ?? "5m",
+  });
+}
+
+function pythonFlag(flag, compact = false) {
+  if (state.learning?.enabled === false) {
+    return '<span class="py-flag py-no_data" title="Python model đã tắt để giảm tải máy">PY OFF</span>';
+  }
+  const value = flag ?? {
+    label: "PY NO DATA",
+    tier: "NO_DATA",
+    confidence: 0,
+    reason: "Lệnh nằm ngoài cửa sổ học hoặc chưa có đánh giá Python.",
+  };
+  const tier = String(value.tier ?? "NO_DATA").toLowerCase();
+  const details = value.reason ?? "Chưa có đánh giá Python.";
+  return `<span class="py-flag py-${esc(tier)}" title="${esc(details)}">${esc(value.label ?? "PY NO DATA")}${compact ? "" : `<small>${esc(value.samples ?? 0)} mẫu · ${esc(value.confidence ?? 0)}% tin cậy</small>`}</span>`;
+}
+
+function pythonModelRank(flag) {
+  const value = String(flag?.label ?? flag?.flag ?? flag?.tier ?? "").toUpperCase();
+  if (value.includes("GOOD") || value.includes("VERIFIED")) return 4;
+  if (value.includes("WATCH")) return 3;
+  if (value.includes("RISK")) return 2;
+  if (value.includes("NO OOS")) return 1;
+  return 0;
+}
+
+function renderPythonSummary(learning) {
+  const training = learning?.training;
+  const target = $("python-summary");
+  if (!target) return;
+  if (learning?.enabled === false) {
+    target.className = "python-summary";
+    target.innerHTML = "<b>PY MODEL OFF</b><span>Đã tắt train và chấm Python để giảm tải máy.</span><small>Signal Picks và paper vẫn chạy bình thường.</small>";
+    return;
+  }
+  if (!training) {
+    target.className = "python-summary py-error";
+    target.innerHTML = "PY MODEL · chưa tải được dữ liệu đánh giá";
+    return;
+  }
+  const global = training.global ?? {};
+  target.className = "python-summary";
+  target.innerHTML = `<b>${esc(learning.model)}</b><span>${training.closedSamples ?? 0} lệnh đóng sau baseline · ${training.learnedGroups ?? 0} nhóm đủ mẫu · Global AdjWR ${fmt(global.adjustedWr, 1)}% · AvgROE ${global.avgRoe >= 0 ? "+" : ""}${fmt(global.avgRoe, 1)}%</span><small>Walk-forward nhân quả · chỉ đánh giá, không can thiệp whitelist / entry / size / SL / TP</small>`;
+}
+
 function effectiveStrength({ closed, wr, avgRoe, pnl, fallback = "NEUTRAL" }) {
   if (!closed) return fallback;
   if (closed >= 8 && wr != null && wr >= 80 && avgRoe != null && avgRoe >= 3 && pnl > 0)
@@ -122,6 +207,7 @@ function renderRecommendations(
   data,
   paperComboStats = [],
   postBaselineComboStats = [],
+  learning = null,
 ) {
   const recommendationWindowLabel = state.window === "all"
     ? "tổng thể (nguồn 30D)"
@@ -149,6 +235,9 @@ function renderRecommendations(
   );
   const postBaselineByCombo = new Map(
     postBaselineComboStats.map((group) => [String(group.key ?? ""), group]),
+  );
+  const pythonById = new Map(
+    (learning?.signalFlags ?? []).map((flag) => [String(flag.id ?? ""), flag]),
   );
   let effectiveCount = 0;
   const recommendationHtml = rows.length
@@ -184,6 +273,7 @@ function renderRecommendations(
             pnl: combinedPnl,
             fallback: row.strength ?? "NEUTRAL",
           });
+          const pyFlag = pythonById.get(String(row.id ?? ""));
           if (!["STRONG", "GOOD"].includes(displayStrength)) return "";
           effectiveCount += 1;
           const strengthTitle =
@@ -193,6 +283,7 @@ function renderRecommendations(
           return `<article class="pick ${displayStrength === "STRONG" ? "strong" : ""}">
       <div class="pick-head"><h3>#${effectiveCount} ${esc(row.page.toUpperCase())} · ${esc(row.signalType)} ${esc(row.side)} · ${esc(row.timeframe)}</h3><span class="badge" title="${esc(strengthTitle)}">${esc(displayStrength)}</span></div>
       <div class="tokens"><span class="token">${esc(row.btcPhase)}</span><span class="token">${esc(row.scoreBucket)}</span><span class="token">${esc(row.relation)}</span><span class="token">${esc(state.window === "all" ? "TỔNG THỂ 30D" : `${state.window}D`)}</span></div>
+      <div class="python-card">${pythonFlag(pyFlag)}<span>${esc(pyFlag?.reason ?? "Chưa có mẫu paper độc lập phù hợp để model kết luận.")}</span></div>
       <div class="stats"><div class="stat"><small>MẪU HIỆU LỰC</small><b>${combinedClosed}</b></div><div class="stat"><small>WR</small><b>${combinedWr == null ? "-" : `${fmt(combinedWr)}%`}</b></div><div class="stat"><small>AVG ROE</small><b>${combinedAvgRoe == null ? "-" : `${fmt(combinedAvgRoe)}%`}</b></div><div class="stat"><small>PNL</small><b>${combinedPnl >= 0 ? "+" : ""}${fmt(combinedPnl, 3)}</b></div></div>
       <div class="sample-update ${freshClosed ? "" : "sample-update-empty"}">
         <span>CẬP NHẬT · ${freshLabel}</span>
@@ -315,7 +406,7 @@ function renderRuleSizeStats(rows, windowInfo = {}) {
     : '<div class="empty">Chưa có rule size nào trong filter hiện tại.</div>';
 }
 
-function renderPaper(data) {
+function renderPaper(data, learning = null) {
   const summary = data.summary ?? {};
   $("summary").innerHTML = [
     ["COMBO ĐỀ XUẤT", window.effectiveRecommendationCount ?? 0],
@@ -343,7 +434,18 @@ function renderPaper(data) {
     const label = button.textContent.replace(/\s[▲▼]$/, "");
     button.textContent = `${label}${active ? (state.sortDir === "asc" ? " ▲" : " ▼") : ""}`;
   });
-  const trades = data.trades ?? [];
+  const pythonByTradeId = learning?.tradeFlags ?? {};
+  const trades = [...(data.trades ?? [])];
+  if (state.sortBy === "pythonModel") {
+    const factor = state.sortDir === "asc" ? 1 : -1;
+    trades.sort((left, right) => {
+      const rankLeft = pythonModelRank(pythonByTradeId[String(left.id ?? "")]);
+      const rankRight = pythonModelRank(pythonByTradeId[String(right.id ?? "")]);
+      const rankDiff = (rankLeft - rankRight) * factor;
+      if (rankDiff) return rankDiff;
+      return Date.parse(right.createdAt ?? right.openedAt ?? 0) - Date.parse(left.createdAt ?? left.openedAt ?? 0);
+    });
+  }
   $("trades").innerHTML = trades.length
     ? trades
         .map((trade) => {
@@ -377,10 +479,10 @@ function renderPaper(data) {
               ? `FULL $${fmt(trade.marginUsdt, 0)}`
               : "FULL SIZE");
           const tradePlan = `<span class="risk-badge ${String(planLabel).includes("TEST $1") ? "" : "risk-ok"}" title="${esc(trade.recommendedTradePlanReason ?? "")}">${esc(planLabel)}</span>`;
-          return `<tr><td class="recommend">${esc(trade.sourcePage)}</td><td><span class="signal-label" title="${esc(recommendationTitle)}">${esc(trade.recommendationLabel)}</span></td><td><b>${esc(trade.symbol)}</b></td><td class="${side === "LONG" ? "long" : "short"}">${esc(side)}</td><td class="score-cell"><b>${esc(trade.score)}</b><small>${esc(trade.scoreBucket)}</small></td><td>${tradePlan}</td><td>${esc(field(trade, "entryPrice", "entry"))}</td><td>${esc(field(trade, "markPrice", "lastPrice", "exitPrice"))}</td><td class="${pnl >= 0 ? "positive" : "negative"}">${fmt(pnl, 3)}</td><td>${fmt(field(trade, "roe", "roePct"))}%</td><td>${esc(trade.status)}</td><td><span class="exit exit-${esc(trade.exitType)}" title="${esc(exitTitle)}">${esc(trade.exitTypeLabel)}</span></td><td>${jumpRisk}</td><td>${esc(trade.recommendationBtcPhase)}</td><td>${btcRegimeBadge(trade)}</td><td>${btcTrend}</td><td title="${esc(trade.recommendationCombo)}">${esc(String(trade.recommendationCombo ?? "-").slice(0, 48))}</td><td>${time ? esc(new Date(time).toISOString().slice(0, 16).replace("T", " ")) : "-"}</td></tr>`;
+          return `<tr><td class="recommend">${esc(trade.sourcePage)}</td><td><span class="signal-label" title="${esc(recommendationTitle)}">${esc(trade.recommendationLabel)}</span></td><td><b>${esc(trade.symbol)}</b></td><td class="${side === "LONG" ? "long" : "short"}">${esc(side)}</td><td class="score-cell"><b>${esc(trade.score)}</b><small>${esc(trade.scoreBucket)}</small></td><td>${tradePlan}</td><td>${candlePatternCell(trade)}</td><td>${btcCandlePatternCell(trade)}</td><td>${pythonFlag(pythonByTradeId[String(trade.id ?? "")], true)}</td><td>${esc(field(trade, "entryPrice", "entry"))}</td><td>${esc(field(trade, "markPrice", "lastPrice", "exitPrice"))}</td><td class="${pnl >= 0 ? "positive" : "negative"}">${fmt(pnl, 3)}</td><td>${fmt(field(trade, "roe", "roePct"))}%</td><td>${esc(trade.status)}</td><td><span class="exit exit-${esc(trade.exitType)}" title="${esc(exitTitle)}">${esc(trade.exitTypeLabel)}</span></td><td>${jumpRisk}</td><td>${esc(trade.recommendationBtcPhase)}</td><td>${btcRegimeBadge(trade)}</td><td>${btcTrend}</td><td title="${esc(trade.recommendationCombo)}">${esc(String(trade.recommendationCombo ?? "-").slice(0, 48))}</td><td>${time ? esc(new Date(time).toISOString().slice(0, 16).replace("T", " ")) : "-"}</td></tr>`;
         })
         .join("")
-    : '<tr><td colspan="18" class="empty">Chưa có trade nguồn nào khớp whitelist trong ngày.</td></tr>';
+    : '<tr><td colspan="20" class="empty">Chưa có trade nguồn nào khớp whitelist trong ngày.</td></tr>';
 }
 
 async function load() {
@@ -393,16 +495,21 @@ async function load() {
     window.catalog = catalog;
     if (catalog.error) throw new Error(catalog.error);
     renderDays(catalog.availableDays ?? [], catalog.selectedDay ?? "");
-    const paper = await fetchJson(
-      `/api/recommended-paper-trades?day=${encodeURIComponent(catalog.selectedDay ?? "")}&window=${encodeURIComponent(state.window)}&page=${state.page}&pageSize=${PAPER_PAGE_SIZE}&sortBy=${encodeURIComponent(state.sortBy)}&sortDir=${encodeURIComponent(state.sortDir)}`,
-    );
+    const [paper, learning] = await Promise.all([
+      fetchJson(`/api/recommended-paper-trades?day=${encodeURIComponent(catalog.selectedDay ?? "")}&window=${encodeURIComponent(state.window)}&page=${state.page}&pageSize=${PAPER_PAGE_SIZE}&sortBy=${encodeURIComponent(state.sortBy)}&sortDir=${encodeURIComponent(state.sortDir)}`),
+      fetchJson(`/api/recommended-signal-learning?day=${encodeURIComponent(catalog.selectedDay ?? "")}`),
+    ]);
     if (paper.error) throw new Error(paper.error);
+    if (learning.error) throw new Error(learning.error);
+    state.learning = learning;
+    renderPythonSummary(learning);
     renderRecommendations(
       catalog,
       paper.comboStats ?? [],
       paper.postBaselineComboStats ?? [],
+      learning,
     );
-    renderPaper(paper);
+    renderPaper(paper, learning);
   } catch (error) {
     loadError = error;
     $("recommendations").innerHTML =

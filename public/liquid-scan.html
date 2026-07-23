@@ -189,6 +189,32 @@
 
         <div id="liquidPaperStats" class="lp-stats" style="display:none"></div>
         <div id="liquidPaperOverview" class="pump-paper-overview" style="display:none"></div>
+        <div id="liquidStage2Section" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <h3>Liquid Stage 2</h3>
+            <span>Chỉ phân loại để đánh giá · không đổi entry hoặc size</span>
+          </div>
+          <div id="liquidStage2Stats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidStage3Section" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Liquid Combo Stage 3</h3>
+              <span>Combo chronological · chỉ gắn nhãn quan sát, không đổi entry hoặc size</span>
+            </div>
+            <label class="field short">
+              <span>Lọc nhãn</span>
+              <select id="liquidStage3Filter">
+                <option value="all">Tất cả</option>
+                <option value="GOOD_PLUS">GOOD+</option>
+                <option value="GOOD">GOOD</option>
+                <option value="WATCH">WATCH</option>
+                <option value="RISK">RISK</option>
+              </select>
+            </label>
+          </div>
+          <div id="liquidStage3Stats" class="pump-paper-overview"></div>
+        </div>
         <div id="liquidComboStats" class="pump-combo-grid" style="display:none"></div>
 
         <div class="table-wrap">
@@ -197,8 +223,12 @@
               <tr>
                 <th class="liquid-paper-sort" data-paper-sort="symbol">Symbol <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="side">Side <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="eval">Liquid Rule <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="stage2">Liquid Stage 2 <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="stage3">Combo Stage 3 <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="status">Status <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="tp">TP <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="mark">Last <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="toEntry">To Entry <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="sweepDistance">Sweep Dist <span class="sort-mark"></span></th>
@@ -215,7 +245,7 @@
               </tr>
             </thead>
             <tbody id="openPaperBody">
-              <tr><td colspan="15" class="table-empty">Chưa có paper test từ Liquid Scan.</td></tr>
+              <tr><td colspan="21" class="table-empty">Chưa có paper test từ Liquid Scan.</td></tr>
             </tbody>
           </table>
         </div>
@@ -230,8 +260,12 @@
               <tr>
                 <th class="liquid-paper-sort" data-paper-sort="symbol">Symbol <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="side">Side <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="eval">Liquid Rule <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="stage2">Liquid Stage 2 <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="stage3">Combo Stage 3 <span class="sort-mark"></span></th>
                 <th>Outcome</th>
                 <th class="liquid-paper-sort" data-paper-sort="entry">Entry <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="tp">TP <span class="sort-mark"></span></th>
                 <th>Exit</th>
                 <th class="liquid-paper-sort" data-paper-sort="margin">Margin <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="pnl">P&amp;L <span class="sort-mark"></span></th>
@@ -245,7 +279,7 @@
               </tr>
             </thead>
             <tbody id="closedPaperBody">
-              <tr><td colspan="12" class="table-empty">Chưa có closed trade.</td></tr>
+              <tr><td colspan="18" class="table-empty">Chưa có closed trade.</td></tr>
             </tbody>
           </table>
         </div>

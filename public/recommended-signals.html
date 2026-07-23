@@ -305,6 +305,87 @@
         background: transparent;
         color: var(--muted);
       }
+      .python-summary {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 12px;
+        align-items: center;
+        margin: -8px 0 18px;
+        border: 1px solid #356a94;
+        border-left: 5px solid var(--blue);
+        border-radius: 6px;
+        background: #101b25;
+        padding: 10px 12px;
+        color: #cde4ff;
+      }
+      .python-summary b {
+        color: var(--blue);
+        font-size: 11px;
+      }
+      .python-summary span {
+        font-weight: 800;
+      }
+      .python-summary small {
+        color: var(--muted);
+      }
+      .python-summary.py-error {
+        border-color: var(--red);
+        color: var(--red);
+      }
+      .python-card {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 0 10px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .python-card > span:last-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .py-flag {
+        display: inline-block;
+        min-width: 86px;
+        border: 1px solid #52615c;
+        border-radius: 4px;
+        background: #1c2422;
+        color: var(--muted);
+        padding: 3px 6px;
+        font-size: 9px;
+        font-weight: 900;
+        text-align: center;
+        white-space: nowrap;
+      }
+      .py-flag small {
+        display: block;
+        margin-top: 2px;
+        color: inherit;
+        font-size: 8px;
+        font-weight: 700;
+      }
+      .py-good {
+        border-color: var(--green);
+        background: #102520;
+        color: var(--green);
+      }
+      .py-risk {
+        border-color: var(--red);
+        background: #351720;
+        color: #ff8ba0;
+      }
+      .py-watch {
+        border-color: var(--yellow);
+        background: #2a2412;
+        color: var(--yellow);
+      }
+      .py-prior,
+      .py-no_data {
+        border-color: #52615c;
+        color: var(--muted);
+      }
       .stat {
         border-top: 1px solid #394540;
         padding-top: 7px;
@@ -323,6 +404,19 @@
       .score-cell small {
         color: var(--muted);
         font-size: 9px;
+      }
+      .candle-pattern {
+        display: block;
+        min-width: 132px;
+        color: var(--text);
+        font-weight: 800;
+      }
+      .candle-pattern small {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 600;
       }
       .signal-label {
         display: block;
@@ -443,7 +537,7 @@
       table {
         width: 100%;
         border-collapse: collapse;
-        min-width: 1780px;
+        min-width: 1900px;
       }
       th,
       td {
@@ -659,6 +753,9 @@
           border-right: 0;
           border-bottom: 1px solid var(--line);
         }
+        .python-summary {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -697,6 +794,9 @@
         </div>
       </div>
       <section class="summary" id="summary"></section>
+      <section class="python-summary" id="python-summary" aria-live="polite">
+        PY MODEL · đang tải đánh giá walk-forward...
+      </section>
       <div class="section-head">
         <h2 id="recommendation-heading">Đề xuất trong ngày</h2>
         <span id="basis"></span>
@@ -745,6 +845,13 @@
                 <th>
                   <button class="sort-btn" data-sort="tradePlan">
                     RULE SIZE
+                  </button>
+                </th>
+                <th>MẪU NẾN</th>
+                <th>NẾN BTC</th>
+                <th>
+                  <button class="sort-btn" data-sort="pythonModel">
+                    PY MODEL
                   </button>
                 </th>
                 <th>

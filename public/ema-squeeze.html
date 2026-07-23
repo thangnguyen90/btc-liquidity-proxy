@@ -1011,6 +1011,30 @@
               <option value="1h">1h</option>
             </select>
           </label>
+          <label>
+            Legacy candle flag
+            <select id="esPaperCandleFlagFilter">
+              <option value="all">Tất cả</option>
+              <option value="GOOD">GOOD</option>
+              <option value="GOOD_TEST">GOOD-TEST</option>
+              <option value="WATCH_PLUS">WATCH+</option>
+              <option value="WATCH">WATCH</option>
+              <option value="RISK">RISK</option>
+              <option value="NO_DATA">NO DATA</option>
+            </select>
+          </label>
+          <label>
+            Stage candle
+            <select id="esStageCandleFilter">
+              <option value="all">Tất cả</option>
+              <option value="GOOD">GOOD</option>
+              <option value="GOOD_TEST">GOOD-TEST</option>
+              <option value="WATCH_PLUS">WATCH+</option>
+              <option value="WATCH">WATCH</option>
+              <option value="RISK">RISK</option>
+              <option value="NO_DATA">NO DATA</option>
+            </select>
+          </label>
         </div>
         <div class="es-paper-stats" id="esPaperStats">
           <article class="es-paper-stat">
@@ -1034,6 +1058,7 @@
             <small id="esStatWorst">-</small>
           </article>
         </div>
+        <div class="es-paper-breakdown" id="esStageCandleStats"></div>
         <div class="es-paper-breakdown" id="esPaperBreakdown"></div>
         <div style="overflow-x:auto">
           <table class="es-paper-table">
@@ -1041,7 +1066,11 @@
               <tr>
                 <th>Cách vào</th>
                 <th class="es-paper-sort" data-es-sort="symbol">Symbol <span class="sort-mark"></span></th>
-                <th class="es-paper-sort" data-es-sort="side">Side <span class="sort-mark"></span></th>
+          <th class="es-paper-sort" data-es-sort="side">Side <span class="sort-mark"></span></th>
+                <th>Mẫu nến</th>
+                <th>Nến BTC</th>
+                <th class="es-paper-sort" data-es-sort="candleFlag">Legacy candle <span class="sort-mark"></span></th>
+                <th class="es-paper-sort" data-es-sort="stageCandle">Stage candle <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="entry">Entry <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="sl">SL <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="tp">TP <span class="sort-mark"></span></th>
@@ -1051,7 +1080,7 @@
                 <th>Real?</th>
                 <th>Real Gate</th>
                 <th>Short Gate</th>
-                <th>BTC Candle</th>
+                <th>BTC Gate</th>
                 <th class="es-paper-sort" data-es-sort="mark">Last <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="pnl">PnL <span class="sort-mark"></span></th>
                 <th class="es-paper-sort" data-es-sort="roe">ROE <span class="sort-mark"></span></th>
@@ -1063,7 +1092,7 @@
               </tr>
             </thead>
             <tbody id="esPaperBody">
-              <tr><td colspan="20" style="text-align:center;color:var(--muted);padding:16px">Loading...</td></tr>
+              <tr><td colspan="25" style="text-align:center;color:var(--muted);padding:16px">Loading...</td></tr>
             </tbody>
           </table>
         </div>
@@ -1071,6 +1100,6 @@
     </main>
 
     <script src="/btcHealth.js"></script>
-    <script src="/ema-squeeze.js?v=20260705-brlike-score75-log" type="module"></script>
+    <script src="/ema-squeeze.js?v=20260723-ema-stage-candle1" type="module"></script>
   </body>
 </html>

@@ -1,5 +1,8 @@
 # BTC Liquidity Proxy
 
+Shakeout có bộ Python self-learning chỉ để gắn cờ phân tích, không can thiệp logic
+giao dịch: [docs/SHAKEOUT_SELF_LEARNING.md](docs/SHAKEOUT_SELF_LEARNING.md).
+
 Free liquidation heatmap proxy using Binance Futures public data.
 
 It does not reproduce CoinGlass paid heatmap data. Instead, it estimates likely liquidation/liquidity zones from recent futures candles, common leverage levels, order book depth, open interest, funding, and long/short ratios.

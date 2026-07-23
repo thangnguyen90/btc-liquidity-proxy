@@ -1488,6 +1488,15 @@ pre {
 .lp-stats .lp-stat strong.negative { color: var(--red); }
 .lp-stats .lp-divider { width: 1px; background: var(--line); align-self: stretch; }
 
+.liquid-stage2-head {
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+.liquid-stage2-head span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .pump-paper-overview {
   display: grid;
   grid-template-columns: repeat(4, minmax(160px, 1fr));

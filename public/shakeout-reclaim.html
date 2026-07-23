@@ -393,8 +393,44 @@
       }
       .sr-paper-head h2 { margin: 0; font-size: 18px; }
       .sr-paper-head span { color: var(--muted); font-size: 12px; }
+      .sr-paper-scroll {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: visible;
+        scrollbar-gutter: stable;
+        overscroll-behavior-inline: contain;
+        padding-bottom: 6px;
+      }
+      .sr-paper-scroll-top {
+        width: 100%;
+        max-width: 100%;
+        height: 18px;
+        margin-bottom: 5px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-gutter: stable;
+        overscroll-behavior-inline: contain;
+      }
+      .sr-paper-scroll-top-spacer { height: 1px; }
+      .sr-paper-scroll::-webkit-scrollbar,
+      .sr-paper-scroll-top::-webkit-scrollbar { height: 12px; }
+      .sr-paper-scroll::-webkit-scrollbar-track,
+      .sr-paper-scroll-top::-webkit-scrollbar-track {
+        background: var(--panel-2);
+        border-radius: 999px;
+      }
+      .sr-paper-scroll::-webkit-scrollbar-thumb,
+      .sr-paper-scroll-top::-webkit-scrollbar-thumb {
+        background: #475569;
+        border: 2px solid var(--panel-2);
+        border-radius: 999px;
+      }
+      .sr-paper-scroll::-webkit-scrollbar-thumb:hover,
+      .sr-paper-scroll-top::-webkit-scrollbar-thumb:hover { background: #64748b; }
       .sr-paper-table {
         width: 100%;
+        min-width: 2300px;
         border-collapse: collapse;
         font-size: 12px;
       }
@@ -583,10 +619,34 @@
       .sr-combo-good { color: var(--green); border-color: var(--green); }
       .sr-combo-bad { color: var(--red); border-color: var(--red); }
       .sr-combo-neutral { color: #fbbf24; border-color: #fbbf24; }
+      .sr-ml-panel {
+        margin-top: 14px;
+        padding: 14px;
+        border: 1px solid #334155;
+        background: linear-gradient(135deg, rgba(30, 41, 59, .95), rgba(15, 23, 42, .98));
+        border-radius: 8px;
+      }
+      .sr-ml-head { display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap; }
+      .sr-ml-head h2 { margin:0;font-size:18px; }
+      .sr-ml-summary { display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:8px;margin-top:12px; }
+      .sr-ml-stat { padding:9px;border:1px solid #334155;background:#0b1220;border-radius:6px; }
+      .sr-ml-stat span { display:block;color:#94a3b8;font-size:10px;font-weight:900;text-transform:uppercase; }
+      .sr-ml-stat strong { display:block;margin-top:4px;font-size:18px; }
+      .sr-ml-flag { display:inline-block;padding:4px 7px;border:1px solid #64748b;background:#111827;color:#cbd5e1;border-radius:4px;font-size:10px;font-weight:950;white-space:nowrap; }
+      .sr-ml-flag.good { color:#d1fae5;border-color:#34d399;background:#052e1a; }
+      .sr-ml-flag.watch { color:#fde68a;border-color:#fbbf24;background:#422006; }
+      .sr-ml-flag.risk { color:#fff1f2;border-color:#fb7185;background:#7f1d1d; }
+      .sr-ml-flag.muted { color:#cbd5e1;border-color:#64748b;background:#1e293b; }
+      .sr-ml-groups { display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px; }
+      .sr-ml-group { border:1px solid #334155;background:#0b1220;padding:9px;border-radius:6px;min-width:0; }
+      .sr-ml-group strong { display:block;margin-bottom:4px;font-size:11px; }
+      .sr-ml-group div { color:#94a3b8;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
       @media (max-width: 780px) {
         .sr-summary, .sr-controls { grid-template-columns: 1fr 1fr; }
         .sr-prices { grid-template-columns: 1fr 1fr; }
         .sr-ema-compare { grid-template-columns: 1fr; }
+        .sr-ml-summary { grid-template-columns:1fr 1fr; }
+        .sr-ml-groups { grid-template-columns:1fr; }
       }
     </style>
   </head>
@@ -653,6 +713,19 @@
         <div class="empty">Dang quet shakeout reclaim pattern...</div>
       </section>
 
+      <section class="sr-ml-panel">
+        <div class="sr-ml-head">
+          <div>
+            <h2>Python Candle + BTC Evaluation</h2>
+            <div id="srMlStatus" style="margin-top:4px;color:var(--muted);font-size:11px">Dang hoc tu paper da dong...</div>
+          </div>
+          <button id="srMlRefresh" class="sr-paper-btn" type="button">Hoc lai ngay</button>
+        </div>
+        <div id="srMlSummary" class="sr-ml-summary"></div>
+        <div id="srMlGroups" class="sr-ml-groups"></div>
+        <div style="margin-top:9px;color:#94a3b8;font-size:10px;font-weight:800">ANALYSIS ONLY - flag không can thiệp entry, gate, margin, SL, TP hoặc lệnh thật.</div>
+      </section>
+
       <section class="sr-paper-section">
         <div class="sr-paper-head">
           <h2>Paper Trades - Shakeout Reclaim</h2>
@@ -676,18 +749,34 @@
               <option value="all">Tất cả</option>
             </select>
           </label>
+          <label style="color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase">Stage 2
+            <select id="srStage2Filter" style="margin-left:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px">
+              <option value="all">Tất cả</option>
+              <option value="WATCH_PLUS">WATCH+</option>
+              <option value="WATCH">WATCH</option>
+              <option value="RISK">RISK</option>
+            </select>
+          </label>
         </div>
         <div id="srVariantCompare" class="sr-daily-wrap"></div>
         <div id="srRealGateCompare" class="sr-daily-wrap"></div>
         <div id="srChaseStats" class="sr-daily-wrap"></div>
+        <div id="srStage2Stats" class="sr-daily-wrap"></div>
         <div id="srComboStats" class="sr-daily-wrap"></div>
         <div id="srSignalScoreStats" class="sr-daily-wrap"></div>
         <div id="srDailyStats" class="sr-daily-wrap"></div>
-        <div style="overflow-x:auto">
+        <div id="srPaperScrollTop" class="sr-paper-scroll-top" aria-label="Cuộn ngang phía trên bảng Shakeout Paper">
+          <div id="srPaperScrollTopSpacer" class="sr-paper-scroll-top-spacer"></div>
+        </div>
+        <div id="srPaperScroll" class="sr-paper-scroll" aria-label="Cuộn ngang bảng Shakeout Paper">
           <table class="sr-paper-table">
             <thead>
               <tr>
                 <th class="sr-sort" data-sort="variant">Cach vao <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="pythonLegacy" title="Walk-forward: mỗi lệnh chỉ được chấm bằng các lệnh đã đóng trước thời điểm vào">Python OLD OOS <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="pythonCandle">Python mau nen <span class="sr-sort-mark"></span></th>
+                <th>Mau nen</th>
+                <th>Nen BTC</th>
                 <th class="sr-sort" data-sort="symbol">Symbol <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="side">Side <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="entry">Entry <span class="sr-sort-mark"></span></th>
@@ -697,6 +786,8 @@
                 <th class="sr-sort" data-sort="btcDetail">BTC detail <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="mark">Giá (last) <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="pnl">PnL <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="sideCandle" title="Danh gia rieng theo side, xu huong BTC va nen BTC tai luc vao">Side x BTC <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="stage2" title="L1 Side × BTC; L2 setup + variant + chất lượng fill. Duplicate/stale/conflict/drift chỉ là audit.">Stage 2 <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="roe">ROE <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="status">Status <span class="sr-sort-mark">^</span></th>
                 <th class="sr-sort" data-sort="score">Score <span class="sr-sort-mark"></span></th>
@@ -706,14 +797,14 @@
               </tr>
             </thead>
             <tbody id="srPaperBody">
-              <tr><td colspan="16" style="text-align:center;color:var(--muted);padding:16px">Dang tai...</td></tr>
+              <tr><td colspan="22" style="text-align:center;color:var(--muted);padding:16px">Dang tai...</td></tr>
             </tbody>
           </table>
         </div>
       </section>
     </main>
 
-    <script src="/shakeout-reclaim.js?v=20260718-btc-detail" type="module"></script>
+    <script src="/shakeout-reclaim.js?v=20260723-stage2-v4-breakdown" type="module"></script>
   <script src="/btcHealth.js"></script>
 </body>
 </html>

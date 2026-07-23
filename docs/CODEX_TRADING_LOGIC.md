@@ -535,6 +535,14 @@ Before major edits:
 - Regular Shakeout paper trades keep their existing trailing thresholds.
 - Config: `SHAKEOUT_RECLAIM_CHASE_TRAIL_START_ROE`, `SHAKEOUT_RECLAIM_CHASE_TRAIL_FIRST_LOCK_ROE`, `SHAKEOUT_RECLAIM_CHASE_TRAIL_STEP_ROE`.
 
+## CHASE CHOP shadow cohort (2026-07-22)
+
+- Only new Shakeout paper rows with `variant=CHASE` and `btcMarketRegimeAtEntry=CHOP` are capped at `$1` margin.
+- When that cohort reaches `peakRoe >= 7%`, SL moves to the exact fee-adjusted break-even price (entry plus estimated entry/exit taker fees). Existing CHASE trail remains unchanged outside this cohort.
+- Every new Shakeout entry snapshots `btcTrendDir4hAtEntry`, `btcTrendScore4hAtEntry`, `btcPct24hAtEntry`, and BTC 5m flip-rate fields. PENDING rows receive the snapshot only when actually filled.
+- BTC 5m flip-rate is `direction changes / valid transitions` over the latest 12 fully closed candles; flat-candle transitions are excluded. The window, sample count, flip count, and transition count are stored with the rate.
+- These 4h/flip fields are observation-only and do not gate entry.
+
 # Shakeout high-jump risk warning
 
 - Evaluated before creating each new Shakeout `MARKET`, `PENDING`, or `CHASE` paper trade.
@@ -676,11 +684,32 @@ Before major edits:
 - ENV:
   - `SHAKEOUT_RECLAIM_PAPER_BTC_UP_SHORT_BAD_SIZE_TEST=false` de tat rule.
   - `SHAKEOUT_RECLAIM_PAPER_BTC_UP_SHORT_BAD_MARGIN_USDT=1` de doi size test.
+
 - Nhom dang ep `$1`:
   - `FALSE_RECLAIM | SHORT | SCORE_60_69 | MEDIUM | BTC_UP_WEAK`
   - `FALSE_RECLAIM | SHORT | SCORE_60_69 | LOW | BTC_UP_MID`
   - `WEAK_REJECT | SHORT | SCORE_70_79 | MEDIUM | BTC_UP_MID`
   - `WEAK_REJECT | SHORT | SCORE_70_79 | MEDIUM | BTC_UP_WEAK`
+
+## 2026-07-22 - Shakeout Side x BTC Candle V1
+
+- Shakeout Paper co them cot doc lap `Side x BTC`, khong dung ket qua Python va khong thay the combo/quality gate cu.
+- Rule moi duoc dong dau tai luc vao lenh bang `ruleVersion=SHAKEOUT_SIDE_BTC_CANDLE_V1`, `regimeAtEntry`, `btcCandleAtEntry` va `symbolCandleAtEntry`.
+- Lenh cu van duoc cot UI suy ra `GOOD/RISK/WATCH` tu snapshot san co de danh gia; chi phan execution/size la khong hoi to va khong sua paper log cu.
+- `SW_DOWN + LONG + BTC bearish`: `RISK`, cap tat ca bien the paper toi da `$1`.
+- `SW_DOWN + SHORT + BTC bearish`: `GOOD`, giu size cua rule Shakeout hien tai.
+- `SW_UP + SHORT + BTC bullish`: `RISK`, cap tat ca bien the paper toi da `$1`.
+- `SW_UP + LONG + BTC bullish`: `GOOD`, giu size cua rule Shakeout hien tai.
+- Cac truong hop con lai: `WATCH`, giu rule combo va size hien tai.
+- Rule ap cho ca auto paper va lenh tao qua API; khong block tin hieu de tiep tuc thu thap du lieu.
+
+## 2026-07-22 - Side x BTC display column for all paper tables
+
+- Cac table paper con lai duoc them cot hien thi `Side x BTC` ngay sau cot `Nen BTC` qua `public/paper-candle-columns.js`.
+- Cot suy ra `GOOD`, `RISK` hoac `WATCH` tu side, BTC regime snapshot va nen BTC da co trong paper response.
+- Neu API page khong ghep duoc object snapshot theo symbol, cot fallback doc truc tiep `Side`, `Nen BTC` va `BTC phase/trend` tren chinh dong; thieu xac nhan thi hien `WATCH`, khong hien `No data`.
+- Day chi la cot hien thi: khong ghi de paper log, khong doi entry, size, gate, SL/TP hoac trang thai lenh.
+- Shakeout giu cot native va stored V1; script dung chung nhan dien cot san co de khong chen trung.
 
 ## 2026-07-19 - Combo Gate Normalization
 
@@ -692,3 +721,14 @@ Before major edits:
   - `src/recommendedSignals.js`
   - `scripts/combo-stats-by-day.js`
   - `public/ema-combo-stats.js`
+# Liquid Scan shadow V2 (2026-07-22)
+
+- Paper Liquid Scan mới mặc định bị cap ở `$1`; không sửa size hoặc kết quả của lệnh lịch sử/đang mở.
+- Hai cohort backtest được TEST `$5`: `SHORT + btcCorr >= 0.5`, và nhãn mạnh riêng `SHORT + btcCorr >= 0.5 + abs(sweepDistance) < 1%`. Cohort thứ hai là tập con để tiếp tục so sánh, không cộng size hai lần.
+- Dedupe `symbol + side` trong 4 giờ tính cả lệnh đã đóng, tránh tái vào liên tục sau TP/SL.
+- Nhãn `GOOD / WATCH / RISK` chỉ để quan sát, không block tín hiệu và không tự nâng size.
+- `RISK`: thiếu BTC correlation, correlation `< 0.5`, `BTC_UP_STRONG`, LONG score `80-89`, hoặc SHORT score `60-69`.
+- `GOOD · TEST $5`: SHORT có BTC correlation `>= 0.5`; nếu sweep `<1%` hiển thị `GOOD+ · TEST $5`. Các trường hợp còn lại giữ `$1` và nhãn `WATCH/RISK`.
+- Lệnh V2 mới dùng SL lũy tiến theo peak ROE: `10→+1`, `15→+5`, `20→+10`, `25→+15`, sau đó tăng theo bước 5 điểm ROE. SL chỉ được dời theo hướng có lợi và không hạ ngược.
+- PnL Liquid hiển thị và thống kê theo net: gross trừ phí Binance dự tính hai chiều; mặc định `0.04%` mỗi chiều.
+- Rule version lưu trên lệnh mới: `LIQUID_SHADOW_V2_20260722`.

@@ -26,6 +26,11 @@ const els = {
   closedPaperCount: document.getElementById('closedPaperCount'),
   liquidPaperStats: document.getElementById('liquidPaperStats'),
   liquidPaperOverview: document.getElementById('liquidPaperOverview'),
+  liquidStage2Section: document.getElementById('liquidStage2Section'),
+  liquidStage2Stats: document.getElementById('liquidStage2Stats'),
+  liquidStage3Section: document.getElementById('liquidStage3Section'),
+  liquidStage3Stats: document.getElementById('liquidStage3Stats'),
+  liquidStage3Filter: document.getElementById('liquidStage3Filter'),
   liquidComboStats: document.getElementById('liquidComboStats'),
   liquidPaperDayFilter: document.getElementById('liquidPaperDayFilter'),
   liquidPaperLiveStatus: document.getElementById('liquidPaperLiveStatus'),
@@ -39,6 +44,7 @@ let liquidPaperSummary = null;
 let liquidPaperComboStats = [];
 let liquidPaperAvailableDays = [];
 let liquidPaperDay = 'all';
+let liquidStage3Filter = 'all';
 let autoPaperRunning = false;
 let liquidPaperStream = null;
 const paperSort = { key: 'opened', dir: 'desc' };
@@ -102,15 +108,19 @@ function distanceToEntry(trade) {
 function liquidPaperSortValue(trade, key) {
   if (key === 'symbol') return trade.symbol ?? '';
   if (key === 'side') return trade.side ?? '';
+  if (key === 'eval') return trade.liquidEvalTier ?? 'WATCH';
+  if (key === 'stage2') return ({ RISK: 1, WATCH: 2, A: 3, A_PLUS: 4 })[trade.liquidStage2Tier] ?? 0;
+  if (key === 'stage3') return ({ RISK: 1, WATCH: 2, GOOD: 3, GOOD_PLUS: 4 })[trade.liquidStage3Tier] ?? 0;
   if (key === 'status') return trade.status ?? '';
   if (key === 'entry') return Number(trade.entryPrice ?? 0);
+  if (key === 'tp') return liquidTakeProfitPrice(trade) ?? 0;
   if (key === 'mark') return Number(trade.markPrice ?? 0);
   if (key === 'toEntry') return distanceToEntry(trade) ?? Number.POSITIVE_INFINITY;
   if (key === 'sweepDistance') return Number(trade.sweepDistancePct ?? trade.entryPlan?.targetDistancePct ?? 0);
   if (key === 'feasibleLeverage') return Number(trade.feasibleLeverage ?? trade.entryPlan?.feasibleLeverage ?? 0);
   if (key === 'margin') return Number(trade.marginUsdt ?? 0);
-  if (key === 'pnl') return Number(trade.pnl ?? 0);
-  if (key === 'roe') return Number(trade.roe ?? 0);
+  if (key === 'pnl') return Number(trade.netPnl ?? trade.pnl ?? 0);
+  if (key === 'roe') return Number(trade.netRoe ?? trade.roe ?? 0);
   if (key === 'signalRoe') return Number(trade.signalRoe ?? -999);
   if (key === 'hunt') return Number(trade.huntScore ?? trade.huntSignal?.score ?? 0);
   if (key === 'btcTrend') return Number(trade.btcHealth?.btcTrendScore ?? trade.btcTrendScore ?? -999);
@@ -693,7 +703,7 @@ async function loadAutoPaperTrades() {
     updateLiveStatus(data, 'poll');
     renderAutoPaperTrades();
   } catch (err) {
-    els.openPaperBody.innerHTML = `<tr><td colspan="15" class="table-empty">Lỗi tải paper: ${escapeHtml(err.message)}</td></tr>`;
+    els.openPaperBody.innerHTML = `<tr><td colspan="21" class="table-empty">Lỗi tải paper: ${escapeHtml(err.message)}</td></tr>`;
   }
 }
 
@@ -756,6 +766,68 @@ function renderLiquidComboCell(t) {
   return `<span class="pump-combo-tag" title="${escapeHtml(combo)}">${escapeHtml(short)}</span>`;
 }
 
+function renderLiquidEvalBadge(t) {
+  const tier = String(t.liquidEvalTier ?? 'WATCH').toUpperCase();
+  const color = tier === 'GOOD' ? '#34d399' : tier === 'RISK' ? '#fb7185' : '#fbbf24';
+  const label = String(t.liquidEvalLabel ?? tier);
+  const title = [t.liquidEvalReason, t.liquidEvalVersion].filter(Boolean).join(' | ');
+  return `<span title="${escapeHtml(title)}" style="display:inline-flex;padding:3px 6px;border:1px solid ${color};border-radius:4px;color:${color};font-size:10px;font-weight:900;white-space:nowrap">${escapeHtml(label)}</span>`;
+}
+
+function renderLiquidStage2Badge(t) {
+  const tier = String(t.liquidStage2Tier ?? 'WATCH').toUpperCase();
+  const color = tier === 'A_PLUS' ? '#2dd4bf' : tier === 'A' ? '#34d399' : tier === 'RISK' ? '#fb7185' : '#fbbf24';
+  const label = String(t.liquidStage2Label ?? t.liquidStage2Code ?? tier.replace('_PLUS', '+'));
+  const title = [t.liquidStage2Reason, t.liquidStage2TargetKind, t.liquidStage2Version].filter(Boolean).join(' | ');
+  return `<span title="${escapeHtml(title)}" style="display:inline-flex;padding:3px 6px;border:1px solid ${color};border-radius:4px;color:${color};font-size:10px;font-weight:950;white-space:nowrap">${escapeHtml(label)}</span>`;
+}
+
+function renderLiquidStage3Badge(t) {
+  const tier = String(t.liquidStage3Tier ?? 'WATCH').toUpperCase();
+  const color = tier === 'GOOD_PLUS' ? '#2dd4bf' : tier === 'GOOD' ? '#34d399' : tier === 'RISK' ? '#fb7185' : '#fbbf24';
+  const label = String(t.liquidStage3Label ?? t.liquidStage3Code ?? tier.replace('_PLUS', '+'));
+  const title = [t.liquidStage3Reason, t.liquidStage3ComboKey, t.liquidStage3Version].filter(Boolean).join(' | ');
+  return `<span title="${escapeHtml(title)}" style="display:inline-flex;padding:3px 6px;border:1px solid ${color};border-radius:4px;color:${color};font-size:10px;font-weight:950;white-space:nowrap">${escapeHtml(label)}</span>`;
+}
+
+function liquidNetPnl(t) {
+  return Number(t.netPnl ?? t.pnl ?? 0);
+}
+
+function liquidNetRoe(t) {
+  return Number(t.netRoe ?? t.roe ?? 0);
+}
+
+function liquidTakeProfitPrice(t) {
+  const value = Number(t.takeProfitPrice ?? t.tp ?? t.entryPlan?.takeProfitPrice);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function liquidTakeProfitRoe(t) {
+  const entry = Number(t.entryPrice);
+  const tp = liquidTakeProfitPrice(t);
+  const leverage = Number(t.leverage);
+  if (!(entry > 0) || !(tp > 0) || !(leverage > 0)) return null;
+  const movePct = String(t.side ?? '').toUpperCase() === 'SHORT'
+    ? ((entry - tp) / entry) * 100
+    : ((tp - entry) / entry) * 100;
+  return movePct * leverage;
+}
+
+function renderLiquidTakeProfit(t) {
+  const tp = liquidTakeProfitPrice(t);
+  const tpRoe = liquidTakeProfitRoe(t);
+  if (tp == null) return '<span class="muted">-</span>';
+  return `<span class="positive">${fmtPrice(tp)}</span><small>${tpRoe == null ? '-' : `${fmtPct(tpRoe, 1)} ROE`}</small>`;
+}
+
+function renderLiquidNetPnl(t) {
+  const net = liquidNetPnl(t);
+  const gross = Number(t.grossPnl ?? t.pnl ?? 0);
+  const fee = Number(t.estimatedFeeUsdt ?? t.feeUsdt ?? 0);
+  return `${fmt(net, 4)}<small title="Gross trừ phí Binance dự tính">gross ${fmt(gross, 4)} · fee ${fmt(fee, 4)}</small>`;
+}
+
 function summarizeLiquidPaperRows(rows) {
   const pick = (margin) => {
     const m = Number(margin);
@@ -779,8 +851,8 @@ function summarizeLiquidPaperRows(rows) {
   };
   for (const row of rows) {
     const status = String(row.status ?? '');
-    const pnl = Number(row.pnl ?? 0);
-    const roe = Number(row.roe ?? 0);
+    const pnl = liquidNetPnl(row);
+    const roe = liquidNetRoe(row);
     const group = byMargin[pick(row.marginUsdt)];
     group.total += 1;
     if (status === 'CLOSED') {
@@ -850,7 +922,7 @@ function renderLiquidPaperOverview() {
   const cards = [allCard, summary.byMargin?.test10, summary.byMargin?.test1, summary.byMargin?.other].filter(Boolean);
   el.style.display = cards.length ? 'grid' : 'none';
   el.innerHTML = cards.map((row) => {
-    const pnl = Number(row.pnl ?? row.netPnl ?? 0);
+    const pnl = Number(row.netPnl ?? row.pnl ?? 0);
     const cls = pnl > 0 ? 'good' : pnl < 0 ? 'bad' : 'neutral';
     const detail = row.detail
       ?? `WR ${row.wr == null ? '-' : `${row.wr}%`} · ${row.wins ?? 0}W/${row.losses ?? 0}L · AvgROE ${row.avgRoe == null ? '-' : `${row.avgRoe > 0 ? '+' : ''}${row.avgRoe}%`}`;
@@ -861,6 +933,118 @@ function renderLiquidPaperOverview() {
       <span class="pump-paper-metric-label">${escapeHtml(row.label ?? 'Group')}</span>
       <strong class="${pnl >= 0 ? 'positive' : 'negative'}">${fmtMoney(pnl)}</strong>
       <small>${escapeHtml(row.title ?? `${row.open ?? 0} open · ${row.closed ?? 0} closed`)}<br>${sub}</small>
+    </div>`;
+  }).join('');
+}
+
+function summarizeLiquidStage2(rows) {
+  const order = ['A_PLUS', 'A', 'WATCH', 'RISK'];
+  const groups = new Map(order.map((tier) => [tier, {
+    tier, total: 0, open: 0, closed: 0, wins: 0, losses: 0,
+    realizedPnl: 0, unrealizedPnl: 0, roeSum: 0,
+  }]));
+  for (const trade of rows) {
+    const tier = String(trade.liquidStage2Tier ?? 'WATCH').toUpperCase();
+    const group = groups.get(tier) ?? groups.get('WATCH');
+    const pnl = liquidNetPnl(trade);
+    const roe = liquidNetRoe(trade);
+    group.total += 1;
+    if (trade.status === 'CLOSED') {
+      group.closed += 1;
+      group.realizedPnl += pnl;
+      group.roeSum += Number.isFinite(roe) ? roe : 0;
+      if (pnl > 0) group.wins += 1;
+      else if (pnl < 0) group.losses += 1;
+    } else {
+      group.open += 1;
+      group.unrealizedPnl += pnl;
+    }
+  }
+  return order.map((tier) => {
+    const row = groups.get(tier);
+    return {
+      ...row,
+      wr: row.closed ? (row.wins / row.closed) * 100 : null,
+      avgRoe: row.closed ? row.roeSum / row.closed : null,
+      netPnl: row.realizedPnl + row.unrealizedPnl,
+    };
+  });
+}
+
+function renderLiquidStage2Stats() {
+  const section = els.liquidStage2Section;
+  const el = els.liquidStage2Stats;
+  if (!section || !el) return;
+  const rows = paperTrades.filter((t) => String(t.source ?? '').startsWith('liquid-scan'));
+  const stats = summarizeLiquidStage2(rows);
+  section.style.display = rows.length ? 'block' : 'none';
+  if (!rows.length) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = stats.map((row) => {
+    const labels = { A_PLUS: 'A+ · GOOD+', A: 'A · GOOD', WATCH: 'WATCH', RISK: 'RISK' };
+    const cls = row.tier === 'A_PLUS' || row.tier === 'A' ? 'good' : row.tier === 'RISK' ? 'bad' : 'neutral';
+    return `<div class="pump-paper-metric ${cls}">
+      <span class="pump-paper-metric-label">${labels[row.tier]}</span>
+      <strong class="${row.netPnl >= 0 ? 'positive' : 'negative'}">${fmtMoney(row.netPnl)}</strong>
+      <small>${row.total} lệnh · ${row.open} mở · ${row.closed} đóng<br>WR ${row.wr == null ? '-' : `${row.wr.toFixed(1)}%`} · ${row.wins}W/${row.losses}L · AvgROE ${row.avgRoe == null ? '-' : fmtPct(row.avgRoe, 1)}</small>
+    </div>`;
+  }).join('');
+}
+
+function summarizeLiquidStage3(rows) {
+  const order = ['GOOD_PLUS', 'GOOD', 'WATCH', 'RISK'];
+  const groups = new Map(order.map((tier) => [tier, {
+    tier, total: 0, open: 0, closed: 0, wins: 0, losses: 0,
+    realizedPnl: 0, unrealizedPnl: 0, roeSum: 0,
+  }]));
+  for (const trade of rows) {
+    const tier = String(trade.liquidStage3Tier ?? 'WATCH').toUpperCase();
+    const group = groups.get(tier) ?? groups.get('WATCH');
+    const pnl = liquidNetPnl(trade);
+    const roe = liquidNetRoe(trade);
+    group.total += 1;
+    if (trade.status === 'CLOSED') {
+      group.closed += 1;
+      group.realizedPnl += pnl;
+      group.roeSum += Number.isFinite(roe) ? roe : 0;
+      if (pnl > 0) group.wins += 1;
+      else if (pnl < 0) group.losses += 1;
+    } else {
+      group.open += 1;
+      group.unrealizedPnl += pnl;
+    }
+  }
+  return order.map((tier) => {
+    const row = groups.get(tier);
+    return {
+      ...row,
+      wr: row.closed ? (row.wins / row.closed) * 100 : null,
+      avgRoe: row.closed ? row.roeSum / row.closed : null,
+      netPnl: row.realizedPnl + row.unrealizedPnl,
+    };
+  });
+}
+
+function renderLiquidStage3Stats() {
+  const section = els.liquidStage3Section;
+  const el = els.liquidStage3Stats;
+  if (!section || !el) return;
+  const rows = paperTrades.filter((t) => String(t.source ?? '').startsWith('liquid-scan'));
+  const stats = summarizeLiquidStage3(rows);
+  section.style.display = rows.length ? 'block' : 'none';
+  if (!rows.length) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = stats.map((row) => {
+    const labels = { GOOD_PLUS: 'GOOD+ · COMBO', GOOD: 'GOOD', WATCH: 'WATCH', RISK: 'RISK' };
+    const cls = row.tier === 'GOOD_PLUS' || row.tier === 'GOOD' ? 'good' : row.tier === 'RISK' ? 'bad' : 'neutral';
+    return `<div class="pump-paper-metric ${cls}">
+      <span class="pump-paper-metric-label">${labels[row.tier]}</span>
+      <strong class="${row.netPnl >= 0 ? 'positive' : 'negative'}">${fmtMoney(row.netPnl)}</strong>
+      <small>${row.total} lệnh · ${row.open} mở · ${row.closed} đóng<br>WR ${row.wr == null ? '-' : `${row.wr.toFixed(1)}%`} · ${row.wins}W/${row.losses}L · AvgROE ${row.avgRoe == null ? '-' : fmtPct(row.avgRoe, 1)}</small>
     </div>`;
   }).join('');
 }
@@ -917,7 +1101,7 @@ function startLiquidPaperStream() {
     try {
       const data = JSON.parse(event.data);
       if (data.error) {
-        els.openPaperBody.innerHTML = `<tr><td colspan="15" class="table-empty">Stream lỗi: ${escapeHtml(data.error)}</td></tr>`;
+        els.openPaperBody.innerHTML = `<tr><td colspan="21" class="table-empty">Stream lỗi: ${escapeHtml(data.error)}</td></tr>`;
         return;
       }
       const incoming = data.trades ?? [];
@@ -951,18 +1135,23 @@ function startLiquidPaperStream() {
 }
 
 function renderAutoPaperTrades() {
-  const all = paperTrades.filter((t) => String(t.source ?? '').startsWith('liquid-scan'));
+  const sourceRows = paperTrades.filter((t) => String(t.source ?? '').startsWith('liquid-scan'));
+  const all = liquidStage3Filter === 'all'
+    ? sourceRows
+    : sourceRows.filter((t) => String(t.liquidStage3Tier ?? 'WATCH').toUpperCase() === liquidStage3Filter);
   updateLiquidPaperSortHeaders();
   renderLiquidPaperOverview();
+  renderLiquidStage2Stats();
+  renderLiquidStage3Stats();
   renderLiquidComboStats();
 
   const open = sortLiquidPaperRows(all.filter((t) => t.status !== 'CLOSED')).slice(0, 80);
   const closed = sortLiquidPaperRows(all.filter((t) => t.status === 'CLOSED')).slice(0, 200);
 
   // ── Stats bar ──
-  const realizedPnl = closed.reduce((s, t) => s + Number(t.pnl ?? 0), 0);
-  const unrealizedPnl = open.filter((t) => t.status === 'OPEN').reduce((s, t) => s + Number(t.pnl ?? 0), 0);
-  const wins = closed.filter((t) => Number(t.pnl ?? 0) > 0).length;
+  const realizedPnl = closed.reduce((s, t) => s + liquidNetPnl(t), 0);
+  const unrealizedPnl = open.filter((t) => t.status === 'OPEN').reduce((s, t) => s + liquidNetPnl(t), 0);
+  const wins = closed.filter((t) => liquidNetPnl(t) > 0).length;
   const winRate = closed.length > 0 ? (wins / closed.length * 100) : null;
   const statsEl = els.liquidPaperStats;
   if (statsEl) {
@@ -981,11 +1170,11 @@ function renderAutoPaperTrades() {
 
   // ── Open / Pending table ──
   if (open.length === 0) {
-    els.openPaperBody.innerHTML = '<tr><td colspan="15" class="table-empty">Không có trade đang mở.</td></tr>';
+    els.openPaperBody.innerHTML = '<tr><td colspan="21" class="table-empty">Không có trade đang mở trong nhãn đã chọn.</td></tr>';
   } else {
     els.openPaperBody.innerHTML = open.map((trade) => {
-      const pnl = Number(trade.pnl ?? 0);
-      const roe = Number(trade.roe ?? 0);
+      const pnl = liquidNetPnl(trade);
+      const roe = liquidNetRoe(trade);
       const signalPnl = Number(trade.signalPnl ?? 0);
       const signalRoe = Number(trade.signalRoe ?? 0);
       const sweepDistance = Number(trade.sweepDistancePct ?? trade.entryPlan?.targetDistancePct ?? 0);
@@ -1002,14 +1191,18 @@ function renderAutoPaperTrades() {
         <tr class="${rowClass}">
           <td><a class="symbol-link" href="/?symbol=${encodeURIComponent(trade.symbol)}">${escapeHtml(trade.symbol)}</a></td>
           <td><span class="liq-side ${trade.side === 'LONG' ? 'liquid-long' : 'liquid-short'}">${escapeHtml(trade.side)}</span></td>
+          <td>${renderLiquidEvalBadge(trade)}</td>
+          <td>${renderLiquidStage2Badge(trade)}</td>
+          <td>${renderLiquidStage3Badge(trade)}</td>
           <td class="${statusCls}">${escapeHtml(trade.status)}</td>
           <td>${fmtPrice(trade.entryPrice)}</td>
+          <td>${renderLiquidTakeProfit(trade)}</td>
           <td>${fmtPrice(trade.markPrice)}</td>
           <td class="${entryClass}">${toEntry == null ? '-' : `${fmt(toEntry, 2)}%`}</td>
           <td class="${Math.abs(sweepDistance) >= 1 ? 'positive' : 'neutral'}">${fmt(Math.abs(sweepDistance), 2)}%</td>
           <td>${feasibleLev ? `${fmt(feasibleLev, 0)}x` : '-'}<small>score ${fmt(feasibility, 0)} · RR ${fmt(rr, 2)}</small></td>
           <td>${fmt(trade.marginUsdt, 2)} / ${fmt(trade.leverage, 0)}x</td>
-          <td class="${pnlClass}">${fmt(pnl, 4)}</td>
+          <td class="${pnlClass}">${renderLiquidNetPnl(trade)}</td>
           <td class="${pnlClass}">${fmt(roe, 2)}%</td>
           <td class="${signalClass}">${fmt(signalPnl, 4)}<small>${fmt(signalRoe, 2)}%</small></td>
           <td>${huntTradeCell(trade)}</td>
@@ -1025,11 +1218,11 @@ function renderAutoPaperTrades() {
   // ── Closed table ──
   if (els.closedPaperCount) els.closedPaperCount.textContent = `${closed.length} closed`;
   if (closed.length === 0) {
-    els.closedPaperBody.innerHTML = '<tr><td colspan="12" class="table-empty">Chưa có closed trade.</td></tr>';
+    els.closedPaperBody.innerHTML = '<tr><td colspan="18" class="table-empty">Chưa có closed trade trong nhãn đã chọn.</td></tr>';
   } else {
     els.closedPaperBody.innerHTML = closed.map((trade) => {
-      const pnl = Number(trade.pnl ?? 0);
-      const roe = Number(trade.roe ?? 0);
+      const pnl = liquidNetPnl(trade);
+      const roe = liquidNetRoe(trade);
       const signalPnl = Number(trade.signalPnl ?? 0);
       const signalRoe = Number(trade.signalRoe ?? 0);
       const pnlClass = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '';
@@ -1041,11 +1234,15 @@ function renderAutoPaperTrades() {
         <tr class="${rowClass}">
           <td><a class="symbol-link" href="/?symbol=${encodeURIComponent(trade.symbol)}">${escapeHtml(trade.symbol)}</a></td>
           <td><span class="liq-side ${trade.side === 'LONG' ? 'liquid-long' : 'liquid-short'}">${escapeHtml(trade.side)}</span></td>
+          <td>${renderLiquidEvalBadge(trade)}</td>
+          <td>${renderLiquidStage2Badge(trade)}</td>
+          <td>${renderLiquidStage3Badge(trade)}</td>
           <td class="${outcomeCls}"><strong>${escapeHtml(outcome)}</strong></td>
           <td>${fmtPrice(trade.entryPrice)}</td>
+          <td>${renderLiquidTakeProfit(trade)}</td>
           <td>${fmtPrice(trade.exitPrice ?? trade.markPrice)}</td>
           <td>${fmt(trade.marginUsdt, 2)} / ${fmt(trade.leverage, 0)}x</td>
-          <td class="${pnlClass}">${fmt(pnl, 4)}</td>
+          <td class="${pnlClass}">${renderLiquidNetPnl(trade)}</td>
           <td class="${pnlClass}">${fmt(roe, 2)}%</td>
           <td class="${signalClass}">${fmt(signalPnl, 4)}<small>${fmt(signalRoe, 2)}%</small></td>
           <td>${renderLiquidBtcTrendBadge(trade)}</td>
@@ -1078,6 +1275,11 @@ els.autoPaperButton.addEventListener('click', autoCreatePaperTests);
 els.liquidPaperDayFilter?.addEventListener('change', () => {
   liquidPaperDay = els.liquidPaperDayFilter.value || 'all';
   loadAutoPaperTrades();
+});
+els.liquidStage3Filter?.addEventListener('change', () => {
+  liquidStage3Filter = String(els.liquidStage3Filter.value || 'all').toUpperCase();
+  if (liquidStage3Filter === 'ALL') liquidStage3Filter = 'all';
+  renderAutoPaperTrades();
 });
 document.querySelectorAll('[data-paper-sort]').forEach((th) => {
   th.addEventListener('click', () => {

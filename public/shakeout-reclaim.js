@@ -2,6 +2,7 @@ const SSE_URL = '/api/shakeout-reclaim-stream';
 const API_URL = '/api/shakeout-reclaim-signals';
 const PAPER_API_URL = '/api/shakeout-paper-trades';
 const PAPER_SSE_URL = '/api/shakeout-paper-trades-stream';
+const SELF_LEARNING_API_URL = '/api/shakeout-self-learning';
 
 let allSignals = [];
 let total = 0;
@@ -26,20 +27,54 @@ const srPaperBody = document.getElementById('srPaperBody');
 const srPaperSummary = document.getElementById('srPaperSummary');
 const srSignalScoreStats = document.getElementById('srSignalScoreStats');
 const srChaseStats = document.getElementById('srChaseStats');
+const srStage2Stats = document.getElementById('srStage2Stats');
 const srComboStats = document.getElementById('srComboStats');
+const srMlStatus = document.getElementById('srMlStatus');
+const srMlSummary = document.getElementById('srMlSummary');
+const srMlGroups = document.getElementById('srMlGroups');
+const srMlRefresh = document.getElementById('srMlRefresh');
+const srPaperScrollTop = document.getElementById('srPaperScrollTop');
+const srPaperScrollTopSpacer = document.getElementById('srPaperScrollTopSpacer');
+const srPaperScroll = document.getElementById('srPaperScroll');
+const srPaperTable = srPaperScroll?.querySelector('.sr-paper-table');
+
+if (srPaperScrollTop && srPaperScrollTopSpacer && srPaperScroll && srPaperTable) {
+  let syncingPaperScroll = false;
+  const syncScroll = (source, target) => {
+    if (syncingPaperScroll) return;
+    syncingPaperScroll = true;
+    target.scrollLeft = source.scrollLeft;
+    requestAnimationFrame(() => { syncingPaperScroll = false; });
+  };
+  const updateTopScrollWidth = () => {
+    srPaperScrollTopSpacer.style.width = `${srPaperTable.scrollWidth}px`;
+    srPaperScrollTop.scrollLeft = srPaperScroll.scrollLeft;
+  };
+  srPaperScrollTop.addEventListener('scroll', () => syncScroll(srPaperScrollTop, srPaperScroll), { passive: true });
+  srPaperScroll.addEventListener('scroll', () => syncScroll(srPaperScroll, srPaperScrollTop), { passive: true });
+  if (typeof ResizeObserver === 'function') new ResizeObserver(updateTopScrollWidth).observe(srPaperTable);
+  window.addEventListener('resize', updateTopScrollWidth, { passive: true });
+  requestAnimationFrame(updateTopScrollWidth);
+}
 
 let srPaperTrades = [];
+let srLearningData = null;
+let srMlSignalMap = new Map();
+let srLegacySignalMap = new Map();
 let srPaperSort = { key: 'status', dir: 'asc' };
 let srClassFilter = 'all';
 let srSideFilter = 'all';
 let srDayFilter = 'all';
+let srStage2Filter = 'all';
 const srClassSelect = document.getElementById('srClassFilter');
 const srSideSelect = document.getElementById('srSideFilter');
 const srDaySelect = document.getElementById('srDayFilter');
+const srStage2Select = document.getElementById('srStage2Filter');
 const rerenderPaper = () => renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant, realGateCompare: srPaperLastRealGate });
 if (srClassSelect) srClassSelect.addEventListener('change', () => { srClassFilter = srClassSelect.value || 'all'; rerenderPaper(); });
 if (srSideSelect) srSideSelect.addEventListener('change', () => { srSideFilter = srSideSelect.value || 'all'; rerenderPaper(); });
 if (srDaySelect) srDaySelect.addEventListener('change', () => { srDayFilter = srDaySelect.value || 'all'; rerenderPaper(); });
+if (srStage2Select) srStage2Select.addEventListener('change', () => { srStage2Filter = srStage2Select.value || 'all'; rerenderPaper(); });
 
 function populateSrClassOptions(trades) {
   if (!srClassSelect) return;
@@ -88,6 +123,259 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function srMlSignalKey(item = {}) {
+  return [item.symbol, item.side ?? item.action, item.stage].map((v) => String(v ?? '').toUpperCase()).join('|');
+}
+
+function getSrMlFlag(item = {}, model = 'candle') {
+  if (model === 'legacy') {
+    if (item.id && srLearningData?.legacyTradeFlags?.[item.id]) return srLearningData.legacyTradeFlags[item.id];
+    return srLegacySignalMap.get(srMlSignalKey(item)) ?? null;
+  }
+  if (item.id && srLearningData?.tradeFlags?.[item.id]) return srLearningData.tradeFlags[item.id];
+  return srMlSignalMap.get(srMlSignalKey(item)) ?? null;
+}
+
+function srCandleName(value) {
+  if (value && typeof value === 'object') return String(value.name ?? 'UNKNOWN').toUpperCase();
+  return String(value ?? 'UNKNOWN').toUpperCase();
+}
+
+function srCandlePatternCell(item = {}, compact = false) {
+  const p5 = srCandleName(item.candlePatternAtEntry ?? item.symbolCandleAtEntry ?? item.candlePattern5m);
+  const p15 = srCandleName(item.candlePattern15m);
+  const btc = srCandleName(item.btcCandlePattern5m);
+  const tone = p5.includes('BULLISH') || p5 === 'HAMMER'
+    ? '#34d399'
+    : p5.includes('BEARISH') || p5 === 'SHOOTING_STAR' ? '#fb7185' : '#fbbf24';
+  const title = `Coin 5m=${p5}; Coin 15m=${p15}; BTC 5m=${btc}`;
+  return `<span title="${escapeHtml(title)}" style="display:inline-block;padding:4px 7px;border:1px solid ${tone};color:${tone};background:#111827;border-radius:4px;font-size:10px;font-weight:950;white-space:nowrap">`
+    + `${escapeHtml(p5)}`
+    + `${compact ? '' : `<small style="display:block;margin-top:2px;font-size:9px;color:#94a3b8">15m ${escapeHtml(p15)} · BTC ${escapeHtml(btc)}</small>`}`
+    + '</span>';
+}
+
+function srBtcCandlePatternCell(item = {}) {
+  const btc = srCandleName(item.btcCandlePatternAtEntry ?? item.btcCandleAtEntry ?? item.btcCandlePattern5m);
+  const tone = btc.includes('BULLISH') || btc === 'HAMMER'
+    ? '#34d399'
+    : btc.includes('BEARISH') || btc === 'SHOOTING_STAR' ? '#fb7185' : '#fbbf24';
+  return `<span title="BTC 5m=${escapeHtml(btc)}" style="display:inline-block;padding:4px 7px;border:1px solid ${tone};color:${tone};background:#111827;border-radius:4px;font-size:10px;font-weight:950;white-space:nowrap">${escapeHtml(btc)}</span>`;
+}
+
+function srSideCandleGate(item = {}) {
+  const tier = String(item.shakeoutSideCandleTier ?? '').toUpperCase();
+  if (['GOOD', 'RISK', 'WATCH'].includes(tier)) {
+    return {
+      tier,
+      label: tier === 'RISK' ? 'RISK · TEST $1' : tier,
+      reason: String(item.shakeoutSideCandleReason ?? item.shakeoutSideCandleLabel ?? tier),
+      rank: { RISK: 1, WATCH: 2, GOOD: 3 }[tier] ?? 0,
+    };
+  }
+
+  const side = String(item.side ?? item.action ?? '').toUpperCase();
+  const direction = String(
+    item.btcTrendDir ?? item.btcHealth?.btcTrendDir ?? item.btcTrend?.direction ?? '',
+  ).toUpperCase();
+  const phase = String(
+    item.regimeAtEntry ?? item.btcPhase ?? item.btcPhaseLabel ?? item.btcRegimeAtEntry
+      ?? item.btcRegime ?? item.btcHealth?.regime ?? '',
+  ).toUpperCase();
+  const pct6h = Number(item.btcPct6hAtEntry ?? item.btcHealth?.pct6h ?? item.btcPct6h);
+  const regime = phase === 'SW_UP' || direction === 'UP'
+    ? 'SW_UP'
+    : phase === 'SW_DOWN' || direction === 'DOWN'
+      ? 'SW_DOWN'
+      : phase.includes('DOWN') || ['WEAK', 'WEAK_DOWN'].includes(phase)
+        ? 'SW_DOWN'
+        : phase.includes('UP') || ['STRONG', 'WEAK_UP'].includes(phase)
+          ? 'SW_UP'
+          : Number.isFinite(pct6h) && pct6h > 0 ? 'SW_UP'
+            : Number.isFinite(pct6h) && pct6h < 0 ? 'SW_DOWN' : 'SW_FLAT';
+  const btcCandle = srCandleName(
+    item.btcCandlePatternAtEntry ?? item.btcCandleAtEntry ?? item.btcCandlePattern5m,
+  );
+  const bias = btcCandle.includes('BEARISH') || btcCandle === 'SHOOTING_STAR'
+    ? 'BEARISH'
+    : btcCandle.includes('BULLISH') || btcCandle === 'HAMMER' ? 'BULLISH' : 'NEUTRAL';
+  let derivedTier = 'WATCH';
+  let reason = `${regime} + ${side || 'NO_SIDE'} + BTC ${btcCandle}: danh gia tu log cu`;
+  if (regime === 'SW_DOWN' && side === 'LONG' && bias === 'BEARISH') {
+    derivedTier = 'RISK';
+    reason = `LONG nguoc SW_DOWN va nen BTC ${btcCandle} xac nhan giam`;
+  } else if (regime === 'SW_DOWN' && side === 'SHORT' && bias === 'BEARISH') {
+    derivedTier = 'GOOD';
+    reason = `SHORT thuan SW_DOWN va nen BTC ${btcCandle} xac nhan giam`;
+  } else if (regime === 'SW_UP' && side === 'SHORT' && bias === 'BULLISH') {
+    derivedTier = 'RISK';
+    reason = `SHORT nguoc SW_UP va nen BTC ${btcCandle} xac nhan tang`;
+  } else if (regime === 'SW_UP' && side === 'LONG' && bias === 'BULLISH') {
+    derivedTier = 'GOOD';
+    reason = `LONG thuan SW_UP va nen BTC ${btcCandle} xac nhan tang`;
+  }
+  return {
+    tier: derivedTier,
+    label: derivedTier,
+    reason,
+    rank: { RISK: 1, WATCH: 2, GOOD: 3 }[derivedTier] ?? 0,
+    regime,
+  };
+}
+
+function srSideCandleGateBadge(item = {}) {
+  const gate = srSideCandleGate(item);
+  const colors = {
+    GOOD: ['#052e1a', '#34d399', '#d1fae5'],
+    WATCH: ['#422006', '#fbbf24', '#fde68a'],
+    RISK: ['#7f1d1d', '#fb7185', '#fff1f2'],
+  }[gate.tier];
+  const context = `${String(item.regimeAtEntry ?? gate.regime ?? 'SW_FLAT').toUpperCase()} · ${String(item.side ?? '-').toUpperCase()}`;
+  return `<span title="${escapeHtml(gate.reason)}" style="display:inline-block;padding:4px 7px;border:1px solid ${colors[1]};color:${colors[2]};background:${colors[0]};border-radius:4px;font-size:10px;font-weight:950;white-space:nowrap">`
+    + `${escapeHtml(gate.label)}`
+    + (context ? `<small style="display:block;margin-top:2px;font-size:9px;color:${colors[2]};opacity:.82">${escapeHtml(context)}</small>` : '')
+    + '</span>';
+}
+
+function srStage2Gate(item = {}) {
+  const storedTier = String(item.shakeoutStage2Tier ?? '').toUpperCase();
+  if (['WATCH_PLUS', 'WATCH', 'RISK'].includes(storedTier)) {
+    return {
+      tier: storedTier,
+      label: String(item.shakeoutStage2Label ?? storedTier.replace('_PLUS', '+')),
+      code: String(item.shakeoutStage2Code ?? ''),
+      modifier: String(item.shakeoutStage2Modifier ?? 'HOLD'),
+      layer1Tier: String(item.shakeoutStage2Layer1Tier ?? 'NO_DATA'),
+      setup: String(item.shakeoutStage2Setup ?? item.shakeoutClass ?? item.subtype ?? 'NO_SETUP'),
+      variant: String(item.shakeoutStage2Variant ?? item.variant ?? 'NO_VARIANT'),
+      fillQuality: String(item.shakeoutStage2FillQuality ?? 'NO_FILL_DATA'),
+      flags: Array.isArray(item.shakeoutStage2Flags) ? item.shakeoutStage2Flags : [],
+      reason: String(item.shakeoutStage2Reason ?? storedTier),
+      auditCaptured: Boolean(item.shakeoutStage2AuditCaptured),
+      derived: Boolean(item.shakeoutStage2Derived),
+      twoLayer: Boolean(item.shakeoutStage2Layer1Tier),
+      rank: { RISK: 1, WATCH: 2, WATCH_PLUS: 3 }[storedTier],
+    };
+  }
+
+  // Không suy ngược RISK từ kết quả hoặc nến lịch sử. Thiếu Layer 1 thì chỉ WATCH.
+  return {
+    tier: 'WATCH',
+    label: 'NO L1 DATA',
+    code: 'S2_NO_LAYER1_DATA',
+    modifier: 'HOLD',
+    layer1Tier: 'NO_DATA',
+    setup: 'NO_SETUP',
+    variant: String(item.variant ?? 'NO_VARIANT'),
+    fillQuality: 'NO_FILL_DATA',
+    flags: [],
+    reason: 'Lệnh cũ chưa lưu Layer 1 Side × BTC; không gắn RISK bằng dữ liệu hậu kiểm.',
+    auditCaptured: false,
+    derived: true,
+    twoLayer: false,
+    rank: 2,
+  };
+}
+
+function srStage2Badge(item = {}) {
+  const gate = srStage2Gate(item);
+  const colors = {
+    WATCH_PLUS: ['#052e1a', '#34d399', '#d1fae5'],
+    WATCH: ['#422006', '#fbbf24', '#fde68a'],
+    RISK: ['#7f1d1d', '#fb7185', '#fff1f2'],
+  }[gate.tier];
+  const delay = Number(item.shakeoutStage2FillDelayMinutes);
+  const context = [
+    gate.derived ? 'DERIVED V2' : 'LIVE V2',
+    `${gate.setup}/${gate.variant}`,
+    gate.fillQuality,
+    Number.isFinite(delay) ? `${delay.toFixed(0)}m` : '',
+  ].filter(Boolean).join(' · ');
+  const audit = gate.flags.length ? `AUDIT: ${gate.flags.join(' + ')}` : 'AUDIT: CLEAN/NO DATA';
+  const displayTier = gate.tier === 'WATCH_PLUS' ? 'WATCH+' : gate.tier;
+  return `<span title="${escapeHtml(gate.reason)}" style="display:inline-block;max-width:190px;padding:4px 7px;border:1px solid ${colors[1]};color:${colors[2]};background:${colors[0]};border-radius:4px;font-size:10px;font-weight:950;white-space:normal;line-height:1.25">`
+    + `${escapeHtml(displayTier)} · ${escapeHtml(gate.modifier)}`
+    + `<small style="display:block;margin-top:2px;font-size:9px;opacity:.82">${escapeHtml(context)}</small>`
+    + `<small style="display:block;margin-top:2px;font-size:8px;opacity:.68">${escapeHtml(audit)}</small>`
+    + '</span>';
+}
+
+function srMlFlagBadge(item = {}, compact = false, model = 'candle') {
+  if (srLearningData?.enabled === false) {
+    return '<span class="sr-ml-flag muted" title="Python model đã tắt để giảm tải máy">PY OFF</span>';
+  }
+  const result = getSrMlFlag(item, model);
+  if (!result) return '<span class="sr-ml-flag muted" title="Chưa chạy Python self-learning">PY ...</span>';
+  const detail = `${result.reason ?? ''}${result.groupLevel ? ` · ${result.groupLevel}` : ''}`;
+  return `<span class="sr-ml-flag ${escapeHtml(result.tone ?? 'muted')}" title="${escapeHtml(detail)}">`
+    + `${escapeHtml(result.label ?? result.flag ?? 'PYTHON')}`
+    + `${compact ? '' : `<small style="display:block;margin-top:2px;font-size:9px;font-weight:800">${escapeHtml(result.reason ?? '')}</small>`}`
+    + '</span>';
+}
+
+function renderSrLearningPanel(data = srLearningData) {
+  if (!srMlStatus || !srMlSummary || !srMlGroups) return;
+  if (!data) {
+    srMlStatus.textContent = 'Chưa có kết quả tự học.';
+    srMlSummary.innerHTML = '';
+    srMlGroups.innerHTML = '';
+    return;
+  }
+  if (data.enabled === false) {
+    srMlStatus.textContent = 'PY MODEL OFF · đã tắt train và chấm Python để giảm tải máy';
+    srMlSummary.innerHTML = '';
+    srMlGroups.innerHTML = '';
+    return;
+  }
+  const t = data.training ?? {};
+  const s = data.summary ?? {};
+  srMlStatus.textContent = `${data.mode ?? 'ANALYSIS_ONLY'} · OLD ${t.legacy?.closedSamples ?? 0} mẫu / CANDLE ${t.candle?.closedSamples ?? 0} mẫu · ${t.candle?.method ?? 'PRIOR'} · ${t.lookbackDays ?? '-'} ngày · ${data.generatedAt ? new Date(data.generatedAt).toLocaleString('vi-VN') : '-'}`;
+  const cards = [
+    ['Closed học', t.closedSamples ?? 0, '#e2e8f0'],
+    ['OLD Good live', s.legacyGood ?? 0, '#34d399'],
+    ['OLD Risk live', s.legacyRisk ?? 0, '#fb7185'],
+    ['PY Learned Good', s.signalLearnedGood ?? s.signalGood ?? 0, '#34d399'],
+    ['PY Prior Watch', s.signalPriorWatch ?? 0, '#fbbf24'],
+    ['PY High-Jump Prior', s.signalHighJumpPrior ?? 0, '#fb7185'],
+    ['PY Candle Conflict', s.signalCandleConflict ?? 0, '#f97316'],
+    ['PY BTC Conflict', s.signalBtcConflict ?? 0, '#ef4444'],
+    ['PY Chase Prior', s.signalChasePrior ?? 0, '#e11d48'],
+    ['PY Watch live', s.signalWatch ?? 0, '#fbbf24'],
+    ['PY Risk live', s.signalRisk ?? 0, '#fb7185'],
+    ['PY No data', s.signalNoData ?? 0, '#94a3b8'],
+  ];
+  srMlSummary.innerHTML = cards.map(([label, value, color]) => `<div class="sr-ml-stat"><span>${label}</span><strong style="color:${color}">${value}</strong></div>`).join('');
+  const groupCard = (title, rows, tone) => {
+    const body = (rows ?? []).slice(0, 5).map((row) => `<div title="${escapeHtml(row.group)}">${escapeHtml(row.group)} · n=${row.closed} · WR ${Number(row.adjustedWinRate ?? 0).toFixed(1)}% · ROE ${Number(row.avgNetRoe ?? 0) >= 0 ? '+' : ''}${Number(row.avgNetRoe ?? 0).toFixed(1)}%</div>`).join('');
+    return `<div class="sr-ml-group"><strong style="color:${tone}">${title}</strong>${body || '<div>Chưa đủ mẫu.</div>'}</div>`;
+  };
+  srMlGroups.innerHTML = groupCard('Nhóm tốt Python học được', data.topGoodGroups, '#34d399')
+    + groupCard('Nhóm rủi ro Python học được', data.topRiskGroups, '#fb7185')
+    + groupCard('Nhóm tốt dữ liệu cũ', data.legacyTopGoodGroups, '#2dd4bf')
+    + groupCard('Nhóm rủi ro dữ liệu cũ', data.legacyTopRiskGroups, '#f97316');
+}
+
+async function loadShakeoutLearning(force = false) {
+  if (srMlRefresh) srMlRefresh.disabled = true;
+  try {
+    const response = await fetch(SELF_LEARNING_API_URL, {
+      method: force ? 'POST' : 'GET',
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    srLearningData = await response.json();
+    srMlSignalMap = new Map((srLearningData.signalFlags ?? []).map((row) => [srMlSignalKey(row), row]));
+    srLegacySignalMap = new Map((srLearningData.legacySignalFlags ?? []).map((row) => [srMlSignalKey(row), row]));
+    renderSrLearningPanel();
+    render();
+    if (srPaperTrades.length) rerenderPaper();
+  } catch (error) {
+    if (srMlStatus) srMlStatus.textContent = `Python self-learning lỗi: ${error.message}`;
+  } finally {
+    if (srMlRefresh) srMlRefresh.disabled = false;
+  }
 }
 
 function fmtSigned(v, suffix = '') {
@@ -600,6 +888,7 @@ function buildCard(sig) {
       </div>
 
       <div class="sr-pattern">${sig.reason || ''}</div>
+      <div style="margin-top:7px;display:flex;gap:7px;align-items:flex-start;flex-wrap:wrap">${srCandlePatternCell(sig)}${srMlFlagBadge(sig, false, 'legacy')}${srMlFlagBadge(sig, false, 'candle')}</div>
       ${shakeoutHighJumpRiskBadge(sig)}
       ${shakeoutQualityBadge(sig)}
       ${shakeoutRealGateBadge(sig)}
@@ -1290,11 +1579,145 @@ function renderSignalScoreStats(trades) {
   `;
 }
 
+function renderShakeoutStage2Stats(trades) {
+  if (!srStage2Stats) return;
+  const twoLayerTrades = trades.filter((trade) => srStage2Gate(trade).twoLayer);
+  const summarize = (all) => {
+    const closed = all.filter((trade) => trade.status === 'CLOSED' && trade.outcome !== 'INVALID');
+    const wins = closed.filter((trade) => Number(srNetPnlValue(trade) ?? 0) > 0).length;
+    const pnlRows = all.filter((trade) =>
+      trade.status === 'OPEN' || (trade.status === 'CLOSED' && trade.outcome !== 'INVALID'));
+    const pnl = pnlRows.reduce((sum, trade) => sum + Number(srNetPnlValue(trade) ?? 0), 0);
+    const avgRoe = closed.length
+      ? closed.reduce((sum, trade) => sum + Number(srNetRoeValue(trade) ?? 0), 0) / closed.length
+      : null;
+    return {
+      total: all.length,
+      captured: all.filter((trade) => Boolean(trade.shakeoutStage2AuditCaptured)).length,
+      open: all.filter((trade) => trade.status === 'OPEN').length,
+      pending: all.filter((trade) => trade.status === 'PENDING').length,
+      closed: closed.length,
+      wins,
+      losses: closed.length - wins,
+      winRate: closed.length ? wins / closed.length * 100 : null,
+      pnl,
+      avgRoe,
+    };
+  };
+  const tiers = ['WATCH_PLUS', 'WATCH', 'RISK'];
+  const rows = tiers.map((tier) => {
+    const all = twoLayerTrades.filter((trade) => srStage2Gate(trade).tier === tier);
+    return {
+      tier,
+      ...summarize(all),
+    };
+  });
+
+  const detailMap = new Map();
+  for (const trade of twoLayerTrades) {
+    const gate = srStage2Gate(trade);
+    const key = [
+      gate.layer1Tier,
+      gate.setup,
+      gate.variant,
+      gate.fillQuality,
+      gate.tier,
+    ].join('|');
+    const group = detailMap.get(key) ?? {
+      layer1Tier: gate.layer1Tier,
+      setup: gate.setup,
+      variant: gate.variant,
+      fillQuality: gate.fillQuality,
+      tier: gate.tier,
+      trades: [],
+    };
+    group.trades.push(trade);
+    detailMap.set(key, group);
+  }
+  const detailRows = [...detailMap.values()]
+    .map((group) => ({ ...group, ...summarize(group.trades) }))
+    .sort((a, b) => b.total - a.total
+      || String(a.layer1Tier).localeCompare(String(b.layer1Tier))
+      || String(a.setup).localeCompare(String(b.setup))
+      || String(a.variant).localeCompare(String(b.variant))
+      || String(a.fillQuality).localeCompare(String(b.fillQuality)));
+
+  const auditGroups = [
+    {
+      flag: 'AUDIT_CLEAN',
+      trades: twoLayerTrades.filter((trade) =>
+        trade.shakeoutStage2AuditCaptured && srStage2Gate(trade).flags.length === 0),
+    },
+    {
+      flag: 'AUDIT_NOT_CAPTURED',
+      trades: twoLayerTrades.filter((trade) => !trade.shakeoutStage2AuditCaptured),
+    },
+    ...['DUPLICATE_ACTIVE', 'BTC_CANDLE_CONFLICT', 'STALE_FILL', 'DRIFT_RISK'].map((flag) => ({
+      flag,
+      trades: twoLayerTrades.filter((trade) => srStage2Gate(trade).flags.includes(flag)),
+    })),
+  ].map((group) => ({ ...group, ...summarize(group.trades) }));
+
+  const colors = { WATCH_PLUS: '#34d399', WATCH: '#fbbf24', RISK: '#fb7185' };
+  const metricCells = (row) => `
+    <td>${row.total}</td>
+    <td>${row.open}/${row.pending}</td>
+    <td>${row.closed}</td>
+    <td>${row.wins}/${row.losses}</td>
+    <td>${row.winRate == null ? '-' : `${row.winRate.toFixed(1)}%`}</td>
+    <td style="color:${row.pnl >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:800">${row.pnl >= 0 ? '+' : ''}$${row.pnl.toFixed(2)}</td>
+    <td style="color:${row.avgRoe == null ? 'var(--muted)' : row.avgRoe >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:800">${row.avgRoe == null ? '-' : `${row.avgRoe >= 0 ? '+' : ''}${row.avgRoe.toFixed(1)}%`}</td>`;
+  srStage2Stats.innerHTML = `
+    <div class="sr-daily-title">2 lớp observe-only · L1 Side × BTC → L2 setup + variant + fill · flags chỉ audit</div>
+    <table class="sr-daily-table">
+      <thead><tr><th>Nhãn L2</th><th>Tổng</th><th>Audit live</th><th>Open/Chờ</th><th>Closed</th><th>W/L</th><th>WR</th><th>Net PnL</th><th>Avg ROE</th></tr></thead>
+      <tbody>${rows.map((row) => `
+        <tr>
+          <td style="color:${colors[row.tier]};font-weight:900">${row.tier === 'WATCH_PLUS' ? 'WATCH+' : row.tier}</td>
+          <td>${row.total}</td>
+          <td>${row.captured}</td>
+          <td>${row.open}/${row.pending}</td>
+          <td>${row.closed}</td>
+          <td>${row.wins}/${row.losses}</td>
+          <td>${row.winRate == null ? '-' : `${row.winRate.toFixed(1)}%`}</td>
+          <td style="color:${row.pnl >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:800">${row.pnl >= 0 ? '+' : ''}$${row.pnl.toFixed(2)}</td>
+          <td style="color:${row.avgRoe == null ? 'var(--muted)' : row.avgRoe >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:800">${row.avgRoe == null ? '-' : `${row.avgRoe >= 0 ? '+' : ''}${row.avgRoe.toFixed(1)}%`}</td>
+        </tr>`).join('')}</tbody>
+    </table>
+    <div style="margin-top:5px;color:#94a3b8;font-size:10px">${twoLayerTrades.length}/${trades.length} lệnh có snapshot L1 Side × BTC. Duplicate/stale/conflict/drift chỉ hiển thị ở dòng AUDIT; không được tự nâng hoặc hạ nhãn.</div>
+    <div class="sr-daily-title" style="margin-top:12px">Chi tiết từng loại L1 × setup × variant × chất lượng fill</div>
+    <table class="sr-daily-table">
+      <thead><tr><th>L1</th><th>Setup</th><th>Variant</th><th>Fill</th><th>Nhãn L2</th><th>Tổng</th><th>Open/Chờ</th><th>Closed</th><th>W/L</th><th>WR</th><th>Net PnL</th><th>Avg ROE</th></tr></thead>
+      <tbody>${detailRows.length ? detailRows.map((row) => `
+        <tr>
+          <td>${escapeHtml(row.layer1Tier)}</td>
+          <td>${escapeHtml(row.setup)}</td>
+          <td>${escapeHtml(row.variant)}</td>
+          <td>${escapeHtml(row.fillQuality)}</td>
+          <td style="color:${colors[row.tier]};font-weight:900">${row.tier === 'WATCH_PLUS' ? 'WATCH+' : escapeHtml(row.tier)}</td>
+          ${metricCells(row)}
+        </tr>`).join('') : '<tr><td colspan="12" style="text-align:center;color:var(--muted)">Chưa có lệnh đủ snapshot hai lớp.</td></tr>'}</tbody>
+    </table>
+    <div class="sr-daily-title" style="margin-top:12px">Thống kê riêng từng cờ audit</div>
+    <table class="sr-daily-table">
+      <thead><tr><th>Cờ audit</th><th>Tổng</th><th>Open/Chờ</th><th>Closed</th><th>W/L</th><th>WR</th><th>Net PnL</th><th>Avg ROE</th></tr></thead>
+      <tbody>${auditGroups.map((row) => `
+        <tr>
+          <td style="font-weight:900">${escapeHtml(row.flag)}</td>
+          ${metricCells(row)}
+        </tr>`).join('')}</tbody>
+    </table>
+    <div style="margin-top:5px;color:#94a3b8;font-size:10px">Một lệnh có thể xuất hiện trong nhiều dòng cờ audit; bảng audit không dùng để quyết định nhãn.</div>
+  `;
+}
+
 function getSrFilteredTrades(trades = srPaperTrades) {
   return trades.filter((t) =>
     (srClassFilter === 'all' || String(t.shakeoutClass || 'UNKNOWN') === srClassFilter)
     && (srSideFilter === 'all' || t.side === srSideFilter)
-    && (srDayFilter === 'all' || paperTradeDay(t) === srDayFilter));
+    && (srDayFilter === 'all' || paperTradeDay(t) === srDayFilter)
+    && (srStage2Filter === 'all'
+      || (srStage2Gate(t).twoLayer && srStage2Gate(t).tier === srStage2Filter)));
 }
 
 function renderSrPaperComputedStats(filtered) {
@@ -1305,6 +1728,7 @@ function renderSrPaperComputedStats(filtered) {
     srDayFilter !== 'all' ? `ngày ${srDayFilter}` : '',
     srClassFilter !== 'all' ? `loại ${srClassFilter}` : '',
     srSideFilter !== 'all' ? srSideFilter : '',
+    srStage2Filter !== 'all' ? `Stage 2 ${srStage2Filter}` : '',
   ].filter(Boolean).join(' · ');
   const liveText = `live PnL ${stats.livePnl >= 0 ? '+' : ''}$${Number(stats.livePnl ?? 0).toFixed(2)}`
     + ` · live ROE ${stats.liveRoe >= 0 ? '+' : ''}${Number(stats.liveRoe ?? 0).toFixed(1)}%`;
@@ -1317,6 +1741,7 @@ function renderSrPaperComputedStats(filtered) {
   renderVariantCompare(buildSrPaperCompare(filtered, 'variant', ['MARKET', 'PENDING']));
   renderRealGateCompare(buildSrPaperCompare(filtered, 'realGate', ['REAL_OK', 'REAL_TEST', 'REAL_BLOCK']));
   renderShakeoutChaseStats(filtered);
+  renderShakeoutStage2Stats(filtered);
   renderShakeoutComboStats(filtered);
   renderSignalScoreStats(filtered);
   renderDailyStats(buildSrDailyStats(filtered));
@@ -1325,6 +1750,10 @@ function renderSrPaperComputedStats(filtered) {
 function srPaperSortValue(t, key) {
   switch (key) {
     case 'variant': return String(t.variant ?? '');
+    case 'pythonLegacy': return srPythonModelRank(getSrMlFlag(t, 'legacy'));
+    case 'pythonCandle': return srPythonModelRank(getSrMlFlag(t, 'candle'));
+    case 'sideCandle': return srSideCandleGate(t).rank;
+    case 'stage2': return srStage2Gate(t).rank;
     case 'symbol': return String(t.symbol ?? '');
     case 'side': return String(t.side ?? '');
     case 'entry': return Number(t.entryPrice);
@@ -1344,6 +1773,15 @@ function srPaperSortValue(t, key) {
     }
     default: return '';
   }
+}
+
+function srPythonModelRank(flag) {
+  const value = String(flag?.label ?? flag?.flag ?? flag?.tier ?? '').toUpperCase();
+  if (value.includes('GOOD') || value.includes('VERIFIED')) return 4;
+  if (value.includes('WATCH')) return 3;
+  if (value.includes('RISK')) return 2;
+  if (value.includes('NO OOS')) return 1;
+  return 0;
 }
 
 function getSrProjectedPnl(t) {
@@ -1408,7 +1846,7 @@ document.querySelectorAll('.sr-sort').forEach((th) => {
       srPaperSort.dir = srPaperSort.dir === 'asc' ? 'desc' : 'asc';
     } else {
       // số/giá mặc định desc, chữ mặc định asc
-      srPaperSort = { key, dir: ['symbol', 'side', 'variant', 'source', 'status', 'btcDetail'].includes(key) ? 'asc' : 'desc' };
+      srPaperSort = { key, dir: ['symbol', 'side', 'variant', 'source', 'status', 'btcDetail', 'stage2'].includes(key) ? 'asc' : 'desc' };
     }
     renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant, realGateCompare: srPaperLastRealGate });
   });
@@ -1435,7 +1873,7 @@ function renderPaperTrades(data) {
   updateSrSortHeaders();
 
   if (!rows.length) {
-    srPaperBody.innerHTML = '<tr><td colspan="16" style="text-align:center;color:var(--muted);padding:16px">Khong co lenh khop filter (ngày/loại/side).</td></tr>';
+    srPaperBody.innerHTML = '<tr><td colspan="22" style="text-align:center;color:var(--muted);padding:16px">Khong co lenh khop filter (ngày/loại/side/Stage 2).</td></tr>';
     return;
   }
 
@@ -1567,6 +2005,10 @@ function renderPaperTrades(data) {
     return `
       <tr class="${rowClass}" style="${isClosed ? 'opacity:.55' : ''}">
         <td>${variantBadge}</td>
+        <td>${srMlFlagBadge(t, true, 'legacy')}</td>
+        <td>${srMlFlagBadge(t, true, 'candle')}</td>
+        <td>${srCandlePatternCell(t, true)}</td>
+        <td>${srBtcCandlePatternCell(t)}</td>
         <td><a href="/?symbol=${encodeURIComponent(t.symbol)}" target="_blank" style="color:var(--text);font-weight:900;text-decoration:none">${escapeHtml(t.symbol)}</a></td>
         <td><span class="${sideClass}">${escapeHtml(t.side)}</span></td>
         <td>${fmtPrice(t.entryPrice)}</td>
@@ -1576,6 +2018,8 @@ function renderPaperTrades(data) {
         <td title="${escapeHtml(btcDetail.title)}">${btcDetailHtml}</td>
         <td data-srmark="${escapeHtml(t.id)}">${fmtPrice(t.markPrice)}</td>
         <td data-srpnl="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '<span style="color:var(--muted)">chưa khớp</span>' : formatSrNetPnl(t)}</td>
+        <td>${srSideCandleGateBadge(t)}</td>
+        <td>${srStage2Badge(t)}</td>
         <td data-srroe="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '-' : fmtSigned(srNetRoeValue(t), '%')}</td>
         <td>${t.partialTpTaken
           ? `<span style="display:inline-block;padding:3px 7px;border:1px solid #22d3ee;color:#67e8f9;background:#083344;border-radius:4px;font-weight:900" title="${escapeHtml(t.note)}">${escapeHtml(
@@ -1755,14 +2199,17 @@ srPaperBody.addEventListener('click', async (ev) => {
     ev.target.disabled = false;
   }
 });
+if (srMlRefresh) srMlRefresh.addEventListener('click', () => loadShakeoutLearning(true));
 connectSse();
 connectPaperSse();
 fetchOnce();
 loadPaperTrades();
+loadShakeoutLearning();
 setInterval(() => {
   lastScan.textContent = scannedAt ? timeAgo(scannedAt) : '-';
 }, 1000);
 setInterval(fetchOnce, 90_000);
+setInterval(() => loadShakeoutLearning(), 5 * 60_000);
 function schedulePaperPoll() {
   const delay = srPaperTrades.some((t) => t.status === 'OPEN') ? 3000 : 15000;
   setTimeout(async () => {

@@ -19,13 +19,20 @@ const sourceFiles = {
 const jsonCache = new Map();
 let writeLock = Promise.resolve();
 const syncAtByDay = new Map();
-const SOURCE_SYNC_INTERVAL_MS = 30_000;
+// Direct source-open events are the primary clone path. Full source-file sync
+// is only a recovery fallback and must not re-read the 260MB+ pump store every
+// time the page polls.
+const SOURCE_SYNC_INTERVAL_MS = Math.max(
+  60_000,
+  Number(process.env.RECOMMENDED_SOURCE_SYNC_INTERVAL_MS ?? 5 * 60_000),
+);
 const RECOMMENDED_TEST_MARGIN_USDT = 1;
 const RECOMMENDED_CLUSTER_WINDOW_MS = 15 * 60_000;
 const RECOMMENDED_CLUSTER_FULL_SIZE_LIMIT = 3;
 const RECOMMENDED_DEFAULT_SL_ROE = 16;
 const RECOMMENDED_DEFAULT_TP_ROE = 15;
 const RECOMMENDED_PAPER_MODE = "INDEPENDENT_SOCKET_V2";
+const RECOMMENDED_DIRECT_EVENT_MODE = "SOURCE_OPEN_EVENT_V3";
 const socketProcessAtBySymbol = new Map();
 
 function number(value, fallback = null) {
@@ -320,13 +327,12 @@ function preserveRecommendedSl16Close(existing, incoming) {
 }
 
 async function persistRecommendedPaperLiveStops(trades = []) {
-  const closedById = new Map(
+  const updatesById = new Map(
     (trades ?? [])
-      .filter((trade) => trade?.id && trade?.paperMode === RECOMMENDED_PAPER_MODE
-        && normalizePart(trade?.status) !== "OPEN")
+      .filter((trade) => trade?.id && trade?.paperMode === RECOMMENDED_PAPER_MODE)
       .map((trade) => [trade.id, trade]),
   );
-  if (!closedById.size) return 0;
+  if (!updatesById.size) return 0;
   let changed = 0;
   writeLock = writeLock.then(async () => {
     const store = await readJsonCached(paperFile, {
@@ -335,11 +341,21 @@ async function persistRecommendedPaperLiveStops(trades = []) {
       trades: [],
     });
     const nextTrades = (store.trades ?? []).map((trade) => {
-      const closed = closedById.get(trade?.id);
-      if (!closed) return trade;
-      if (normalizePart(trade?.status) !== "OPEN") return trade;
+      const incoming = updatesById.get(trade?.id);
+      if (!incoming) return trade;
+      const shouldClose = normalizePart(trade?.status) === "OPEN"
+        && normalizePart(incoming?.status) !== "OPEN";
+      const candleMissing = !trade?.candlePatternAtEntry
+        && incoming?.candlePatternAtEntry
+        && normalizePart(incoming.candlePatternAtEntry?.name) !== "NO_DATA";
+      if (!shouldClose && !candleMissing) return trade;
       changed += 1;
-      return { ...trade, ...closed };
+      if (shouldClose) return { ...trade, ...incoming };
+      return {
+        ...trade,
+        candlePatternAtEntry: incoming.candlePatternAtEntry,
+        candlePatternTimeframe: incoming.candlePatternTimeframe ?? null,
+      };
     });
     if (!changed) return;
     await writeJsonAtomic(paperFile, {
@@ -1009,6 +1025,11 @@ async function syncDay(day, recommendations, baselineDay = "") {
         });
         continue;
       }
+      // New paper entries are event-driven from the exact source OPEN event.
+      // The file scan remains migration/history reconciliation only; creating a
+      // clone here reintroduces 30-90s latency and preferentially selects source
+      // trades that stayed OPEN long enough to be observed.
+      if (process.env.RECOMMENDED_LEGACY_SYNC_CREATE !== "true") continue;
       const sourceStatus = normalizePart(trade?.status);
       if (!["OPEN", "PENDING", "ENTRY_READY"].includes(sourceStatus)) continue;
       const cloneOpenedAt = new Date().toISOString();
@@ -1107,6 +1128,195 @@ async function syncDay(day, recommendations, baselineDay = "") {
     });
   });
   await writeLock;
+}
+
+function breakoutAgeOf(trade) {
+  const direct = trade?.breakoutAge == null ? null : number(trade.breakoutAge);
+  if (direct != null) return direct;
+  const match = String(trade?.note ?? "").match(/breakout-(\d+)bars/i);
+  return match ? number(match[1]) : null;
+}
+
+function directEventTiming({ trade, marketEntry, now = Date.now() }) {
+  const sourceEntry = entryOf(trade);
+  const marketPrice = number(marketEntry?.price);
+  const marketAt = number(marketEntry?.at);
+  const receivedAt = number(marketEntry?.receivedAt);
+  const sourceAt = Date.parse(String(trade?.openedAt ?? trade?.filledAt ?? trade?.createdAt ?? "")) || 0;
+  // A source paper can carry an older signal timestamp even though this callback
+  // is delivered immediately when the OPEN row is created. Use receipt latency
+  // for freshness, while retaining sourceAt for audit/day attribution.
+  const eventLatencyMs = receivedAt != null
+    ? Math.max(0, now - receivedAt)
+    : sourceAt > 0 ? Math.max(0, now - sourceAt) : null;
+  const marketAgeMs = marketAt != null ? Math.max(0, now - marketAt) : null;
+  const side = normalizePart(trade?.side);
+  const rawDrift = sourceEntry && marketPrice
+    ? ((marketPrice - sourceEntry) / sourceEntry) * 100
+    : null;
+  const adverseChasePct = rawDrift == null ? null : side === "SHORT" ? -rawDrift : rawDrift;
+  return { sourceEntry, marketPrice, marketAt, receivedAt, sourceAt, eventLatencyMs, marketAgeMs, rawDrift, adverseChasePct };
+}
+
+export async function processRecommendedSourceOpenEvent({
+  page,
+  trade,
+  marketEntry,
+  learningFlagsByRecommendationId = null,
+  catalogOverride = null,
+  paperFileOverride = null,
+} = {}) {
+  const sourcePage = String(page ?? "").trim().toLowerCase();
+  const sourceStatus = normalizePart(trade?.status);
+  if (!sourceFiles[sourcePage]) return { created: false, reason: "UNSUPPORTED_SOURCE_PAGE" };
+  if (sourceStatus !== "OPEN") return { created: false, reason: "SOURCE_NOT_OPEN" };
+
+  const now = Date.now();
+  const timing = directEventTiming({ trade, marketEntry, now });
+  const maxEventAgeMs = Math.max(1_000, number(process.env.RECOMMENDED_EVENT_MAX_AGE_MS, 10_000));
+  const maxMarketAgeMs = Math.max(500, number(process.env.RECOMMENDED_EVENT_MARKET_MAX_AGE_MS, 5_000));
+  const maxChasePct = Math.max(0, number(process.env.RECOMMENDED_EVENT_MAX_ADVERSE_CHASE_PCT, 0.15));
+  const maxBreakoutAgeBars = Math.max(0, number(process.env.RECOMMENDED_EVENT_MAX_BREAKOUT_AGE_BARS, 2));
+  const breakoutAge = breakoutAgeOf(trade);
+  const stage = normalizePart(stageOfEma(trade));
+  if (!timing.sourceEntry || !timing.marketPrice) return { created: false, reason: "MISSING_EVENT_MARKET_PRICE" };
+  if (timing.eventLatencyMs == null || timing.eventLatencyMs > maxEventAgeMs) {
+    return { created: false, reason: "SOURCE_EVENT_STALE", eventLatencyMs: timing.eventLatencyMs };
+  }
+  if (timing.marketAgeMs == null || timing.marketAgeMs > maxMarketAgeMs) {
+    return { created: false, reason: "EVENT_MARKET_STALE", marketAgeMs: timing.marketAgeMs };
+  }
+  if (timing.adverseChasePct != null && timing.adverseChasePct > maxChasePct) {
+    return { created: false, reason: "EVENT_MARKET_CHASE", adverseChasePct: timing.adverseChasePct };
+  }
+  if (/BREAKOUT|BREAKDOWN/.test(stage)
+      && breakoutAge != null
+      && breakoutAge > maxBreakoutAgeBars) {
+    return { created: false, reason: "BREAKOUT_TOO_OLD", breakoutAge };
+  }
+
+  const catalog = catalogOverride ?? await getRecommendedSignals();
+  const targetPaperFile = paperFileOverride ?? paperFile;
+  const day = timing.sourceAt ? new Date(timing.sourceAt).toISOString().slice(0, 10) : tradeDay(trade);
+  if (!day || day !== catalog.selectedDay) {
+    return { created: false, reason: "SOURCE_DAY_NOT_ACTIVE", day, selectedDay: catalog.selectedDay };
+  }
+
+  let result = { created: false, reason: "NO_RECOMMENDATION" };
+  writeLock = writeLock.then(async () => {
+    const store = await readJsonCached(targetPaperFile, { version: 2, updatedAt: null, trades: [] });
+    const independentPaperTrades = (store.trades ?? []).filter(
+      (row) => row?.paperMode === RECOMMENDED_PAPER_MODE,
+    );
+    const effectiveRecommendations = applyPaperSamplesToRecommendations(
+      catalog.recommendations ?? [],
+      independentPaperTrades,
+      catalog.basedOnDateUtc ?? "",
+    );
+    const phase = btcPhase(trade);
+    const combo = comboOf(sourcePage, trade);
+    const recommendation = effectiveRecommendations.find(
+      (item) => recommendationKey(item.page, item.btcPhase, item.combo)
+        === recommendationKey(sourcePage, phase, combo),
+    );
+    if (!recommendation) return;
+
+    const sourceTradeId = tradeId(sourcePage, trade);
+    const cloneId = `recommended-${sourceTradeId}`;
+    if ((store.trades ?? []).some((row) => row.id === cloneId)) {
+      result = { created: false, reason: "ALREADY_CLONED", id: cloneId };
+      return;
+    }
+
+    const clusterCutoff = now - RECOMMENDED_CLUSTER_WINDOW_MS;
+    const clusterFullSizeCount = independentPaperTrades.filter((row) =>
+      row.sourcePage === sourcePage
+      && normalizePart(row.side) === normalizePart(trade.side)
+      && row.recommendationBtcPhase === phase
+      && Date.parse(row.openedAt ?? "") >= clusterCutoff
+      && !String(row.recommendedTradePlanLabel ?? "").includes("TEST $1")
+      && number(row.marginUsdt, 0) > RECOMMENDED_TEST_MARGIN_USDT).length;
+    const plan = recommendedTradePlan({ sourcePage, page: sourcePage, trade, recommendation, clusterFullSizeCount });
+    const marketTrade = {
+      ...scaleTradeForMargin(trade, plan.marginUsdt),
+      entry: timing.marketPrice,
+      entryPrice: timing.marketPrice,
+      fillPrice: timing.marketPrice,
+    };
+    const plannedTrade = applyRecommendedDefaultSl(marketTrade);
+    const margin = marginOf(plannedTrade);
+    const leverage = leverageOf(plannedTrade);
+    if (!margin || !leverage) {
+      result = { created: false, reason: "INVALID_TRADE_PLAN" };
+      return;
+    }
+    const cloneOpenedAt = new Date(now).toISOString();
+    const learningFlag = learningFlagsByRecommendationId?.[recommendation.id] ?? null;
+    const clone = {
+      ...plannedTrade,
+      id: cloneId,
+      paperMode: RECOMMENDED_PAPER_MODE,
+      recommendedEntryMode: RECOMMENDED_DIRECT_EVENT_MODE,
+      status: "OPEN",
+      outcome: null,
+      closeReason: null,
+      closedAt: null,
+      exitPrice: null,
+      closePrice: null,
+      pnl: 0,
+      netPnl: 0,
+      realizedPnl: 0,
+      unrealizedPnl: 0,
+      roe: 0,
+      roePct: 0,
+      entry: timing.marketPrice,
+      entryPrice: timing.marketPrice,
+      fillPrice: timing.marketPrice,
+      quantity: margin * leverage / timing.marketPrice,
+      originalQuantity: margin * leverage / timing.marketPrice,
+      score: scoreOf(trade),
+      scoreBucket: scoreBucket(trade),
+      sourcePage,
+      sourceTradeId,
+      sourceEntryPrice: timing.sourceEntry,
+      sourceEventAt: timing.sourceAt ? new Date(timing.sourceAt).toISOString() : null,
+      sourceEventLatencyMs: timing.eventLatencyMs,
+      sourceSignalAt: trade?.createdAt ?? trade?.openedAt ?? trade?.time ?? null,
+      sourceSignalStatus: sourceStatus,
+      sourceSignalOutcome: trade?.outcome ?? null,
+      sourceBreakoutAge: breakoutAge,
+      recommendationIds: [recommendation.id],
+      recommendationStrength: recommendation.strength,
+      recommendationWindows: recommendation.matchedWindows,
+      recommendationCombo: recommendation.combo,
+      recommendationBtcPhase: recommendation.btcPhase,
+      recommendationBestSample: recommendation.bestSample,
+      recommendedTradePlanLabel: plan.label,
+      recommendedTradePlanReason: plan.reason,
+      recommendedTradePlanVersion: "source-open-event-v3-sl16",
+      recommendedLearningFlag: learningFlag,
+      marketEntrySource: String(marketEntry?.source ?? "source-open-event").slice(0, 40),
+      marketEntryAt: timing.marketAt ? new Date(timing.marketAt).toISOString() : null,
+      marketEntrySourceAgeMs: timing.marketAgeMs,
+      entryVsSourcePct: +timing.rawDrift.toFixed(5),
+      adverseChasePct: +timing.adverseChasePct.toFixed(5),
+      activeDateUtc: day,
+      createdAt: cloneOpenedAt,
+      openedAt: cloneOpenedAt,
+      clonedAt: cloneOpenedAt,
+      syncedAt: cloneOpenedAt,
+    };
+    await writeJsonAtomic(targetPaperFile, {
+      ...store,
+      version: 3,
+      paperMode: RECOMMENDED_PAPER_MODE,
+      updatedAt: cloneOpenedAt,
+      trades: [clone, ...(store.trades ?? [])],
+    });
+    result = { created: true, reason: "SOURCE_OPEN_EVENT", trade: clone };
+  });
+  await writeLock;
+  return result;
 }
 
 function paperSummary(trades) {

@@ -10,29 +10,40 @@
   <body>
     <main class="shell">
       <header>
-        <div><a href="/intraday-combos">← Intraday Combos</a><p class="eyebrow">1H / 4H TREND COMMITTEE</p><h1>Trend Decision <em>Paper</em></h1><p class="lede">Một lần mỗi chu kỳ: gom toàn bộ tín hiệu đã nhận, kiểm tra combo lịch sử và trend BTC rồi mới quyết định vào paper.</p></div>
+        <div><a href="/intraday-combos">← Intraday Combos</a><p class="eyebrow">1H / 4H TREND COMMITTEE</p><h1>Trend Decision <em>Paper</em></h1><p class="lede">Signal-live: scanner có batch mới sẽ đánh giá ngay; chu kỳ bên dưới chỉ là dự phòng. ENTER dùng market socket và chặn tín hiệu cũ hoặc giá đã chase xa entry gốc.</p></div>
         <div id="status" class="status">Đang tải…</div>
       </header>
       <section class="controls">
         <label><span>CHU KỲ QUYẾT ĐỊNH</span><select id="timeframe"><option value="1h">Mỗi 1 giờ</option><option value="4h">Mỗi 4 giờ</option></select></label>
-        <label><span>TỰ ĐỘNG ĐÁNH GIÁ</span><select id="decisionEvery"><option value="5">Mỗi 5 phút</option><option value="15">Mỗi 15 phút</option><option value="30">Mỗi 30 phút</option><option value="60">Mỗi 60 phút</option></select></label>
+        <label><span>CHẠY DỰ PHÒNG</span><select id="decisionEvery"><option value="5">Mỗi 5 phút</option><option value="15">Mỗi 15 phút</option><option value="30">Mỗi 30 phút</option><option value="60">Mỗi 60 phút</option></select></label>
         <label><span>LOOKBACK</span><select id="lookback"><option value="14">14 ngày</option><option value="30">30 ngày</option><option value="60">60 ngày</option><option value="90">90 ngày</option></select></label>
         <label><span>MIN CLOSED</span><select id="minClosed"><option value="5">5 lệnh</option><option value="8">8 lệnh</option><option value="12">12 lệnh</option></select></label>
         <button id="save">Lưu cấu hình</button><button id="run" class="primary">Quyết định ngay</button>
       </section>
       <div id="error" class="error" hidden></div>
       <section id="overview" class="overview"></section>
+      <section class="history-range" aria-label="Lọc khoảng ngày lịch sử">
+        <div class="history-range-title"><p class="eyebrow">HISTORY FILTER</p><strong>Khoảng ngày</strong><span id="historyRangeMeta">Toàn bộ thời gian</span><small>Áp dụng: thống kê lịch sử, lệnh đã đóng và Decision Log. Không lọc BTC live hoặc lệnh đang mở. Decision Log dùng tối đa 2.000 mẫu được hệ thống lưu.</small></div>
+        <label><span>TỪ NGÀY</span><input id="historyDateFrom" type="date"></label>
+        <label><span>ĐẾN NGÀY</span><input id="historyDateTo" type="date"></label>
+        <div class="history-range-actions"><button type="button" data-history-days="0">Hôm nay</button><button type="button" data-history-days="7">7 ngày</button><button type="button" data-history-days="30">30 ngày</button><button id="historyDateClear" type="button">Xóa lọc</button></div>
+      </section>
+      <section id="historyOverview" class="history-overview" aria-label="Thống kê theo khoảng ngày"></section>
+      <section class="panel combo-evaluation-panel">
+        <div class="panel-head"><div><p class="eyebrow">VALID ENTRY DATA ONLY</p><h2>Đánh giá combo sau hiệu chỉnh</h2><p id="comboEvaluationScope" class="panel-note"></p></div><span id="comboEvaluationMeta"></span></div>
+        <div class="table-wrap"><table class="combo-evaluation-table"><thead><tr><th>Đánh giá</th><th>Stage</th><th>Side / TF</th><th>Combo chuẩn</th><th>Closed</th><th>W / L / Hòa</th><th>WR</th><th>Avg ROE</th><th>PF</th><th>PnL</th></tr></thead><tbody id="comboEvaluationRows"></tbody></table></div>
+      </section>
       <section class="panel">
         <div class="panel-head"><div><p class="eyebrow">ACTIVE BOOK</p><h2>Paper đang quản lý</h2></div><span id="tradeMeta"></span></div>
         <div id="trades" class="trade-grid"></div>
       </section>
       <section class="panel">
         <div class="panel-head"><div><p class="eyebrow">CLOSED BOOK</p><h2>Lịch sử lệnh đã đóng</h2></div><div class="panel-actions"><span id="closedMeta"></span><select id="closedFilter"><option value="ALL">Tất cả</option><option value="WIN">Thắng</option><option value="LOSS">Thua</option><option value="FLAT">Hòa</option></select><select id="closedPageSize"><option value="10">10 dòng</option><option value="25" selected>25 dòng</option><option value="50">50 dòng</option><option value="100">100 dòng</option></select><button id="closedPrev" type="button">Trước</button><span id="closedPageInfo">1/1</span><button id="closedNext" type="button">Sau</button></div></div>
-        <div class="table-wrap"><table class="closed-table"><thead><tr><th>Thời gian</th><th>Kết quả</th><th>Tín hiệu</th><th>Giá vào</th><th>Entry / Exit</th><th>ROE / PnL</th><th>Peak / SL</th><th>Combo</th><th>Lý do đóng</th></tr></thead><tbody id="closedTrades"></tbody></table></div>
+<div class="table-wrap"><table class="closed-table"><thead><tr><th><button class="table-sort active" data-closed-sort="closedAt">Thời gian đóng <span>▼</span></button></th><th><button class="table-sort" data-closed-sort="openedAt">Thời gian vào <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="result">Kết quả <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="signal">Tín hiệu <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="candle">Mẫu nến <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="btcCandle">Nến BTC <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="regimeGate">BTC regime gate <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="entryMode">Kiểu vào <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="entryPrice">Entry / Exit <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="roe">ROE / PnL <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="peakRoe">Peak / SL <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="combo">Combo <span>↕</span></button></th><th><button class="table-sort" data-closed-sort="outcome">Lý do đóng <span>↕</span></button></th></tr></thead><tbody id="closedTrades"></tbody></table></div>
       </section>
       <section class="panel">
-        <div class="panel-head"><div><p class="eyebrow">DECISION LOG</p><h2>Tín hiệu đã đánh giá</h2></div><select id="decisionFilter"><option value="ALL">Tất cả</option><option value="ENTER">ENTER</option><option value="WATCH">WATCH</option><option value="REJECT">REJECT</option></select></div>
-        <div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Quyết định</th><th>Tín hiệu</th><th>Trend</th><th>Combo stats</th><th>Phân tích</th></tr></thead><tbody id="decisions"></tbody></table></div>
+        <div class="panel-head"><div><p class="eyebrow">DECISION LOG</p><h2>Tín hiệu đã đánh giá</h2></div><div class="panel-actions"><span id="decisionMeta"></span><select id="decisionFilter"><option value="ALL">Tất cả</option><option value="ENTER">ENTER</option><option value="WATCH">WATCH</option><option value="REJECT">REJECT</option></select></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Thời gian</th><th>Quyết định</th><th>Tín hiệu</th><th>Trend</th><th>BTC regime gate</th><th>Combo stats</th><th>Phân tích</th></tr></thead><tbody id="decisions"></tbody></table></div>
       </section>
     </main>
     <script src="/decision-paper.js"></script>

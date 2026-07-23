@@ -594,6 +594,8 @@ const pumpPaperCount = document.getElementById('pumpPaperCount');
 const pumpPaperDayFilter = document.getElementById('pumpPaperDayFilter');
 const pumpComboStatsEl = document.getElementById('pumpComboStats');
 const pumpPaperOverview = document.getElementById('pumpPaperOverview');
+const pumpStage2FilterEl = document.getElementById('pumpStage2Filter');
+const pumpStage2StatsEl = document.getElementById('pumpStage2Stats');
 
 let pumpPaperTradesCache  = [];
 let pumpPaperSummaryCache = null;
@@ -604,6 +606,8 @@ let pumpPaperPagination = null;
 let pumpPaperDay = 'all';
 let pumpPaperAvailableDays = [];
 let pumpPaperComboStats = [];
+let pumpStage2Filter = 'all';
+let pumpStage2Stats = [];
 
 function normalizePumpComboPart(value, fallback = '-') {
   const text = String(value ?? fallback).trim();
@@ -679,6 +683,56 @@ pumpPaperDayFilter?.addEventListener('change', () => {
   pumpPaperDay = pumpPaperDayFilter.value || 'all';
   loadPumpPaperTrades(1, true);
 });
+
+pumpStage2FilterEl?.addEventListener('change', () => {
+  pumpStage2Filter = pumpStage2FilterEl.value || 'all';
+  loadPumpPaperTrades(1, true);
+});
+
+function renderPumpStage2Stats(rows = pumpStage2Stats) {
+  if (!pumpStage2StatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    pumpStage2StatsEl.innerHTML = '';
+    pumpStage2StatsEl.style.display = 'none';
+    return;
+  }
+  pumpStage2StatsEl.style.display = '';
+  pumpStage2StatsEl.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'WATCH');
+    const cls = tier === 'WATCH_PLUS' ? 'good' : tier === 'RISK' ? 'bad' : 'neutral';
+    const pnl = Number(row.pnl ?? 0);
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    return `<div class="pump-paper-metric ${cls}">
+      <span class="pump-paper-metric-label">Stage 2 · ${escapePumpHtml(row.label ?? tier)}</span>
+      <strong class="${pnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(pnl)}</strong>
+      <small>${row.total ?? 0} total · ${row.open ?? 0} open · ${row.pending ?? 0} pending · ${row.closed ?? 0} closed<br>
+      WR ${wr} · ${row.wins ?? 0}W/${row.losses ?? 0}L · AvgROE ${avgRoe}</small>
+    </div>`;
+  }).join('');
+}
+
+function renderPumpStage2Badge(t) {
+  const tier = String(t?.pumpStage2Tier ?? '').toUpperCase();
+  if (!tier) return '<span style="color:var(--muted)">-</span>';
+  const cls = tier === 'WATCH_PLUS' ? 'watch-plus' : tier === 'RISK' ? 'risk' : 'watch';
+  const label = String(t.pumpStage2Label ?? tier.replace('_PLUS', '+'));
+  const code = String(t.pumpStage2Code ?? '');
+  const reason = [
+    t.pumpStage2Reason,
+    t.pumpStage2ContextKey,
+    t.pumpStage2Version,
+    t.pumpStage2Derived ? 'Suy ra từ snapshot lịch sử; không sửa log cũ.' : 'Snapshot lưu tại entry.',
+    'Observe-only: không đổi entry, size, SL hoặc TP.',
+  ].filter(Boolean).join(' | ');
+  return `<span class="pump-stage2-badge ${cls}" title="${escapePumpHtml(reason)}">
+    ${escapePumpHtml(label)}
+    ${code ? `<small>${escapePumpHtml(code.replace(/^PUMP_S2_/, ''))}</small>` : ''}
+  </span>`;
+}
 
 function renderPumpComboStats(rows = pumpPaperComboStats) {
   if (!pumpComboStatsEl) return;
@@ -872,6 +926,9 @@ function pumpPaperSortValue(t, key) {
   if (key === 'roe') return t.roe == null ? null : Number(t.roe);
   if (key === 'source') return t.source ?? '';
   if (key === 'combo') return pumpTradeCombo(t);
+  if (key === 'stage2') {
+    return { WATCH_PLUS: 3, WATCH: 2, RISK: 1 }[String(t.pumpStage2Tier ?? '').toUpperCase()] ?? 0;
+  }
   if (key === 'score') return Number((t.source ?? '').replace(/\D/g, '')) || 0;
   if (key === 'time') return Date.parse(t.createdAt ?? '') || 0;
   if (key === 'status') {
@@ -962,11 +1019,12 @@ function renderPumpPaperTrades(trades, summary) {
   countTxt = appendPumpSummaryPnl(countTxt, summary);
   pumpPaperCount.textContent = countTxt;
   renderPumpPaperOverview(summary);
+  renderPumpStage2Stats(pumpStage2Stats);
   renderPumpComboStats(pumpPaperComboStats);
   renderPumpPaperPager();
 
   if (!all.length) {
-    pumpPaperBody.innerHTML = '<tr><td colspan="17" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
+    pumpPaperBody.innerHTML = '<tr><td colspan="18" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
     return;
   }
 
@@ -1024,6 +1082,7 @@ function renderPumpPaperTrades(trades, summary) {
       <td style="font-size:11px">${outcomeHtml}</td>
       <td style="font-size:11px;color:var(--text);font-weight:700">${scoreNum || '-'}</td>
       <td style="font-size:10px;color:var(--cyan);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${combo.replace(/"/g, '&quot;')}">${comboShort}</td>
+      <td>${renderPumpStage2Badge(t)}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
       <td>${actionBtns}</td>
@@ -1074,6 +1133,7 @@ function refreshPumpPaperPnl(trades) {
   countTxt = appendPumpSummaryPnl(countTxt, summary);
   pumpPaperCount.textContent = countTxt;
   renderPumpPaperOverview(summary);
+  renderPumpStage2Stats(pumpStage2Stats);
   renderPumpComboStats(pumpPaperComboStats);
   renderPumpPaperPager();
 }
@@ -1085,13 +1145,17 @@ async function loadPumpPaperTrades(page = pumpPaperPage, forceRender = false) {
   try {
     const nextPage = Math.max(1, Number(page) || 1);
     const dayParam = encodeURIComponent(pumpPaperDay || 'all');
-    const res = await fetch(`/api/pump-paper-trades?page=${nextPage}&limit=${pumpPaperLimit}&day=${dayParam}`);
+    const stage2Param = encodeURIComponent(pumpStage2Filter || 'all');
+    const res = await fetch(`/api/pump-paper-trades?page=${nextPage}&limit=${pumpPaperLimit}&day=${dayParam}&stage2=${stage2Param}`);
     if (!res.ok) return;
     const data = await res.json();
     pumpPaperPage = data.pagination?.page ?? nextPage;
     pumpPaperPagination = data.pagination ?? null;
     pumpPaperAvailableDays = data.availableDays ?? pumpPaperAvailableDays;
     pumpPaperComboStats = data.comboStats ?? [];
+    pumpStage2Stats = data.stage2Stats ?? [];
+    pumpStage2Filter = data.filter?.stage2 ?? pumpStage2Filter;
+    if (pumpStage2FilterEl) pumpStage2FilterEl.value = pumpStage2Filter;
     renderPumpPaperDayOptions(pumpPaperAvailableDays);
     const trades = data.trades ?? [];
     pumpPaperSummaryCache = data.summary;

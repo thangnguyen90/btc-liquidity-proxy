@@ -2,10 +2,11 @@
 
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { createReadStream } from 'node:fs';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { appendFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
+import { finished } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
@@ -24,7 +25,20 @@ import { detectPostDumpKillLong, detectPostPumpKillShort, runPostPumpKillShortSc
 import { runPumpIgnitionScan } from './pumpIgnitionDetector.js';
 import { runEmaSqueezeScan } from './emaSqueezeDetector.js';
 import { runEma99KillReclaimScan } from './ema99KillReclaimDetector.js';
-import { runShakeoutReclaimScan } from './shakeoutReclaimDetector.js';
+import { detectClosedCandlePattern, runShakeoutReclaimScan } from './shakeoutReclaimDetector.js';
+import { evaluateShakeoutSideCandle } from './shakeoutSideCandleRule.js';
+import {
+  calculateBtc5mFlipRate,
+  capShakeoutChopChaseMargin,
+  isShakeoutChopChase,
+  shakeoutFeeBreakEvenPrice,
+} from './shakeoutChaseShadowRule.js';
+import {
+  SHAKEOUT_STAGE_2_VERSION,
+  capShakeoutPendingShadowMargin,
+  evaluateShakeoutStage2,
+  shakeoutRollingDriftStats,
+} from './shakeoutStage2Rule.js';
 import { runTopReversalScan } from './topReversalDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
@@ -35,8 +49,14 @@ import { getEtfProxy } from './etfProxy.js';
 import { fetchMarketNews, loadMarketNews, marketNewsConfig, saveMarketNews } from './marketNews.js';
 import { coinFlowConfig, fetchCoinFlowBoard, loadCoinFlow, saveCoinFlow } from './coinFlow.js';
 import { fetchTokenUnlocksBoard, getUnlockSummaryForSymbol, loadTokenUnlocks, saveTokenUnlocks, tokenUnlocksConfig } from './tokenUnlocks.js';
-import { applyRecommendedDefaultSlLiveClose, getRecommendedPaper, getRecommendedPaperActiveSymbols, getRecommendedSignals, processRecommendedPaperSocketPrice } from './recommendedSignals.js';
+import { applyRecommendedDefaultSlLiveClose, getRecommendedPaper, getRecommendedPaperActiveSymbols, getRecommendedSignals, processRecommendedPaperSocketPrice, processRecommendedSourceOpenEvent } from './recommendedSignals.js';
 import { IntradayDecisionPaper } from './intradayDecisionPaper.js';
+import { getBrLikeEvalGate } from './brLikeEvalRule.js';
+import { evaluateEmaPreStageCandle } from './emaPreStageCandleRule.js';
+import { EMA_STAGE_CANDLE_RULE_VERSION, evaluateEmaStageCandle } from './emaStageCandleRule.js';
+import { capPumpStructureStopLoss, getPumpEvalGate, getPumpStage2Rule } from './pumpEvalRule.js';
+import { buildLiquidScanAutoPaperPayload, selectLiquidScanAutoPaperRows } from './liquidScanAutoPaper.js';
+import { capLiquidScanShadowMargin, evaluateLiquidScanShadow, evaluateLiquidScanStage2, evaluateLiquidScanStage3, liquidPaperFinancialMetrics, liquidScanTrailLockRoe } from './liquidScanEvalRule.js';
 import WebSocket from 'ws';
 
 loadEnv();
@@ -44,7 +64,78 @@ loadEnv();
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const publicDir = join(rootDir, 'public');
 const execFileAsync = promisify(execFile);
+// Python learning is analysis-only and can be expensive on large paper stores.
+// Keep every sidecar opt-in so a missing environment variable can never start
+// training jobs or block a paper page request.
+const paperPageLearningEnabled = process.env.PAPER_PAGE_SELF_LEARNING_ENABLED === 'true';
+const shakeoutLearningEnabled = process.env.SHAKEOUT_SELF_LEARNING_ENABLED === 'true';
+const recommendedLearningEnabled = process.env.RECOMMENDED_SELF_LEARNING_ENABLED === 'true';
 let intradayComboCache = { key: '', data: null, expiresAt: 0 };
+let shakeoutLearningCache = { key: '', data: null, expiresAt: 0 };
+let shakeoutLearningTimer = null;
+let recommendedLearningCache = { key: '', data: null, expiresAt: 0 };
+let recommendedLearningTimer = null;
+const paperPageLearningCache = new Map();
+
+function paperPageLearningConfig(value) {
+  const page = String(value ?? '').trim().toLowerCase().replace(/^\//, '');
+  const configs = {
+    paper: ['paper-trades.json', ''],
+    'ema-squeeze': ['pump-paper-trades.json', 'emasq-'],
+    pump: ['pump-paper-trades.json', ''],
+    'liquid-scan': ['liquid-paper-trades.json', ''],
+    cap: ['cap-paper-trades.json', ''],
+    'dump-ignition': ['di-paper-trades.json', ''],
+    'pump-ignition': ['pi-paper-trades.json', ''],
+    'br-like-limit': ['br-like-limit-paper-trades.json', ''],
+    'edge-short': ['edge-paper-trades.json', ''],
+    'spike-reversal': ['sr-paper-trades.json', ''],
+    'post-pump-kill-short': ['ppks-paper-trades.json', ''],
+    'top-reversal': ['top-reversal-paper-trades.json', ''],
+    'decision-paper': ['intraday-decision-paper.json', ''],
+  };
+  const config = configs[page];
+  return config ? { page, paperFile: join(rootDir, 'data', config[0]), sourcePrefix: config[1] } : null;
+}
+
+async function getPaperPageLearningAnalysis(pageValue, { force = false } = {}) {
+  if (!paperPageLearningEnabled) {
+    return { enabled: false, mode: 'DISABLED', tradeFlags: {}, signalFlags: [], summary: {} };
+  }
+  const config = paperPageLearningConfig(pageValue);
+  if (!config) throw new Error('Unsupported paper learning page');
+  const paperStat = await stat(config.paperFile).catch(() => null);
+  const key = `${paperStat?.mtimeMs ?? 0}:${paperStat?.size ?? 0}`;
+  const cached = paperPageLearningCache.get(config.page);
+  // Paper marks update store mtimes continuously. Keep the model snapshot for
+  // the configured TTL so a page reload cannot retrain a large store every tick.
+  if (!force && cached?.data && Date.now() < cached.expiresAt) return cached.data;
+  const script = join(rootDir, 'scripts', 'paper_page_self_learning.py');
+  const args = [
+    script,
+    '--paper-file', config.paperFile,
+    '--page', config.page,
+    '--lookback-days', String(Math.max(1, Number(process.env.PAPER_PAGE_SELF_LEARNING_LOOKBACK_DAYS ?? 30))),
+    '--min-samples', String(Math.max(3, Number(process.env.PAPER_PAGE_SELF_LEARNING_MIN_SAMPLES ?? 8))),
+    '--max-flags', String(Math.max(500, Number(process.env.PAPER_PAGE_SELF_LEARNING_MAX_FLAGS ?? 100_000))),
+  ];
+  if (config.sourcePrefix) args.push('--source-prefix', config.sourcePrefix);
+  const configured = process.env.PYTHON_BIN || 'python3';
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync(configured, args, { timeout: 90_000, maxBuffer: 64 * 1024 * 1024 }));
+  } catch (error) {
+    if (configured !== 'python3' || error?.code !== 'ENOENT') throw error;
+    ({ stdout } = await execFileAsync('python', args, { timeout: 90_000, maxBuffer: 64 * 1024 * 1024 }));
+  }
+  const data = JSON.parse(stdout);
+  paperPageLearningCache.set(config.page, {
+    key,
+    data,
+    expiresAt: Date.now() + Math.max(30_000, Number(process.env.PAPER_PAGE_SELF_LEARNING_CACHE_MS ?? 5 * 60_000)),
+  });
+  return data;
+}
 
 async function getIntradayComboPredictions({ days = 30, minClosed = 3, limit = 20, btcOverride = null } = {}) {
   const btcHealth = btcOverride ?? await getBtcHealth().catch(() => btcHealthCache.data ?? {});
@@ -73,6 +164,175 @@ async function getIntradayComboPredictions({ days = 30, minClosed = 3, limit = 2
   const data = JSON.parse(stdout);
   intradayComboCache = { key, data, expiresAt: Date.now() + 30_000 };
   return data;
+}
+
+function shakeoutLearningSignalView(signal = {}) {
+  const currentBtc = buildBtcHealthSnapshot(btcHealthCache.data ?? {}) ?? {};
+  return {
+    symbol: signal.symbol ?? null,
+    side: signal.side ?? signal.action ?? null,
+    action: signal.action ?? signal.side ?? null,
+    stage: signal.stage ?? null,
+    signalType: signal.signalType ?? signal.type ?? null,
+    type: signal.type ?? signal.signalType ?? null,
+    score: signal.score ?? null,
+    shakeoutClass: signal.shakeoutClass ?? null,
+    shakeoutQuality: signal.shakeoutQuality ?? null,
+    trapRisk: signal.trapRisk ?? signal.riskFlags?.trapRisk ?? null,
+    riskFlags: signal.riskFlags ? { trapRisk: signal.riskFlags.trapRisk ?? null } : null,
+    signalTimeframe: signal.signalTimeframe ?? signal.interval ?? signal.factors?.timeframe ?? null,
+    interval: signal.interval ?? signal.signalTimeframe ?? signal.factors?.timeframe ?? null,
+    factors: signal.factors ? { timeframe: signal.factors.timeframe ?? null } : null,
+    candlePattern5m: signal.candlePattern5m ?? null,
+    candlePattern15m: signal.candlePattern15m ?? null,
+    btcCandlePattern5m: signal.btcCandlePattern5m ?? null,
+    btcPhase: signal.btcPhase ?? null,
+    btcRegime: signal.btcRegime ?? currentBtc.regime ?? null,
+    btcRegimeAtEntry: signal.btcRegimeAtEntry ?? null,
+    btcTrendDir: signal.btcTrendDir ?? currentBtc.btcTrendDir ?? null,
+    btcTrendScore: signal.btcTrendScore ?? currentBtc.btcTrendScore ?? null,
+    btcPct6hAtEntry: signal.btcPct6hAtEntry ?? currentBtc.pct6h ?? null,
+    btcRelationLabel: signal.btcRelationLabel ?? null,
+    btcCorr: signal.btcCorr ?? signal.btcRelation?.corr ?? null,
+    btcRelation: signal.btcRelation ? { corr: signal.btcRelation.corr ?? null } : null,
+    scannedAt: signal.scannedAt ?? shakeoutReclaimScanCache.data?.scannedAt ?? null,
+  };
+}
+
+async function getShakeoutLearningAnalysis({ force = false } = {}) {
+  if (!shakeoutLearningEnabled) {
+    return {
+      enabled: false,
+      mode: 'DISABLED',
+      tradeFlags: {},
+      legacyTradeFlags: {},
+      signalFlags: [],
+      legacySignalFlags: [],
+      summary: {},
+      training: {},
+    };
+  }
+  const paperFile = join(rootDir, 'data', 'shakeout-paper-trades.json');
+  const script = join(rootDir, 'scripts', 'shakeout_self_learning.py');
+  const paperStat = await stat(paperFile).catch(() => null);
+  const signals = (shakeoutReclaimScanCache.data?.signals ?? []).map(shakeoutLearningSignalView);
+  const scanVersion = shakeoutReclaimScanCache.data?.scannedAt ?? 0;
+  const key = `${paperStat?.mtimeMs ?? 0}:${paperStat?.size ?? 0}:${scanVersion}:${signals.length}`;
+  if (!force && shakeoutLearningCache.data && shakeoutLearningCache.key === key
+      && Date.now() < shakeoutLearningCache.expiresAt) {
+    return shakeoutLearningCache.data;
+  }
+  const args = [
+    script,
+    '--paper-file', paperFile,
+    '--signals-json', JSON.stringify(signals),
+    '--lookback-days', String(Math.max(1, Number(process.env.SHAKEOUT_SELF_LEARNING_LOOKBACK_DAYS ?? 30))),
+    '--min-samples', String(Math.max(3, Number(process.env.SHAKEOUT_SELF_LEARNING_MIN_SAMPLES ?? 8))),
+    '--legacy-min-total', String(Math.max(8, Number(process.env.SHAKEOUT_SELF_LEARNING_LEGACY_MIN_TOTAL ?? 30))),
+    '--legacy-min-oos', String(Math.max(3, Number(process.env.SHAKEOUT_SELF_LEARNING_LEGACY_MIN_OOS ?? 12))),
+  ];
+  const configured = process.env.PYTHON_BIN || 'python3';
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync(configured, args, { timeout: 45_000, maxBuffer: 24 * 1024 * 1024 }));
+  } catch (error) {
+    if (configured !== 'python3' || error?.code !== 'ENOENT') throw error;
+    ({ stdout } = await execFileAsync('python', args, { timeout: 45_000, maxBuffer: 24 * 1024 * 1024 }));
+  }
+  const data = JSON.parse(stdout);
+  // Guardrail: this object is returned only by the analysis endpoint. Never merge
+  // it into scanner signals or pass it to paper/real trade creation.
+  shakeoutLearningCache = {
+    key,
+    data,
+    expiresAt: Date.now() + Math.max(30_000, Number(process.env.SHAKEOUT_SELF_LEARNING_CACHE_MS ?? 5 * 60_000)),
+  };
+  return data;
+}
+
+function startShakeoutLearningSidecar() {
+  if (!shakeoutLearningEnabled || shakeoutLearningTimer) return;
+  const refresh = () => getShakeoutLearningAnalysis({ force: true })
+    .then((data) => console.log(`[ShakeoutML] learned ${data.training?.closedSamples ?? 0} closed samples; groups=${data.training?.learnedGroups ?? 0}; analysis-only`))
+    .catch((error) => console.warn('[ShakeoutML] refresh failed:', error.message));
+  setTimeout(refresh, 20_000).unref?.();
+  shakeoutLearningTimer = setInterval(
+    refresh,
+    Math.max(60_000, Number(process.env.SHAKEOUT_SELF_LEARNING_INTERVAL_MS ?? 15 * 60_000)),
+  );
+  shakeoutLearningTimer.unref?.();
+}
+
+async function getRecommendedLearningAnalysis({ force = false, day = '' } = {}) {
+  if (!recommendedLearningEnabled) {
+    return {
+      enabled: false,
+      mode: 'DISABLED',
+      selectedDay: day,
+      recommendationFlags: {},
+      tradeFlags: {},
+      summary: {},
+      training: {},
+    };
+  }
+  const paperFile = join(rootDir, 'data', 'recommended-paper-trades.json');
+  const script = join(rootDir, 'scripts', 'recommended_signal_learning.py');
+  const [paperStat, catalog] = await Promise.all([
+    stat(paperFile).catch(() => null),
+    getRecommendedSignals(day),
+  ]);
+  const signals = catalog?.recommendations ?? [];
+  const selectedDay = catalog?.selectedDay ?? day ?? '';
+  const key = `${paperStat?.mtimeMs ?? 0}:${paperStat?.size ?? 0}:${selectedDay}:${catalog?.generatedAt ?? ''}:${signals.length}`;
+  if (!force && recommendedLearningCache.data && recommendedLearningCache.key === key
+      && Date.now() < recommendedLearningCache.expiresAt) {
+    return recommendedLearningCache.data;
+  }
+  const validFrom = process.env.RECOMMENDED_SELF_LEARNING_VALID_FROM
+    ?? process.env.INTRADAY_DECISION_COMBO_STATS_VALID_FROM
+    ?? '2026-07-20T05:40:00.000Z';
+  const args = [
+    script,
+    '--paper-file', paperFile,
+    '--signals-json', JSON.stringify(signals),
+    '--lookback-days', String(Math.max(1, Number(process.env.RECOMMENDED_SELF_LEARNING_LOOKBACK_DAYS ?? 30))),
+    '--min-samples', String(Math.max(3, Number(process.env.RECOMMENDED_SELF_LEARNING_MIN_SAMPLES ?? 8))),
+  ];
+  if (validFrom) args.push('--valid-from', validFrom);
+  const configured = process.env.PYTHON_BIN || 'python3';
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync(configured, args, { timeout: 45_000, maxBuffer: 24 * 1024 * 1024 }));
+  } catch (error) {
+    if (configured !== 'python3' || error?.code !== 'ENOENT') throw error;
+    ({ stdout } = await execFileAsync('python', args, { timeout: 45_000, maxBuffer: 24 * 1024 * 1024 }));
+  }
+  const data = {
+    ...JSON.parse(stdout),
+    selectedDay,
+    catalogGeneratedAt: catalog?.generatedAt ?? null,
+  };
+  // Guardrail: expose only through the read-only analysis endpoint. Do not pass
+  // these flags into recommendation matching, cloning or trade management.
+  recommendedLearningCache = {
+    key,
+    data,
+    expiresAt: Date.now() + Math.max(30_000, Number(process.env.RECOMMENDED_SELF_LEARNING_CACHE_MS ?? 5 * 60_000)),
+  };
+  return data;
+}
+
+function startRecommendedLearningSidecar() {
+  if (!recommendedLearningEnabled || recommendedLearningTimer) return;
+  const refresh = () => getRecommendedLearningAnalysis({ force: true })
+    .then((data) => console.log(`[RecommendedML] learned ${data.training?.closedSamples ?? 0} closed samples; groups=${data.training?.learnedGroups ?? 0}; analysis-only`))
+    .catch((error) => console.warn('[RecommendedML] refresh failed:', error.message));
+  setTimeout(refresh, 25_000).unref?.();
+  recommendedLearningTimer = setInterval(
+    refresh,
+    Math.max(60_000, Number(process.env.RECOMMENDED_SELF_LEARNING_INTERVAL_MS ?? 15 * 60_000)),
+  );
+  recommendedLearningTimer.unref?.();
 }
 const client = new BinanceClient({
   baseUrl: process.env.BINANCE_FUTURES_BASE_URL || undefined,
@@ -215,6 +475,16 @@ function intradayEmaDecisionContext(signal = {}) {
   };
 }
 
+function intradayPumpDecisionContext(signal = {}) {
+  const rule = nativePumpEvalGateOfSignal(signal, btcHealthCache.data ?? {});
+  return {
+    decisionRule: rule,
+    decisionStage: normalizePumpComboPart(signal.type ?? signal.signalType ?? 'PUMP', 'PUMP'),
+    decisionBtcCorr: Number.isFinite(Number(rule?.btcCorr)) ? Number(rule.btcCorr) : null,
+    decisionBtcPhase: rule?.btcPhase ?? null,
+  };
+}
+
 function intradayDecisionCandidates(timeframe = '1h') {
   // Signal setup 5m/15m expires quickly even when 4h is used as macro context.
   const maxAgeMs = 60 * 60 * 1000;
@@ -242,13 +512,20 @@ function intradayDecisionCandidates(timeframe = '1h') {
       if (!combo && comboBuilder) {
         try { combo = comboBuilder(signal); } catch {}
       }
-      const emaDecisionContext = source === 'ema-squeeze'
+      const strategyDecisionContext = source === 'ema-squeeze'
         ? intradayEmaDecisionContext(signal)
-        : null;
-      if (emaDecisionContext?.decisionCombo) combo = emaDecisionContext.decisionCombo;
+        : source === 'pump'
+          ? intradayPumpDecisionContext(signal)
+          : null;
+      if (strategyDecisionContext?.decisionCombo) combo = strategyDecisionContext.decisionCombo;
+      const observedAt = signal.scannedAt ?? scannedAt;
+      const btcCandlePatternAtEntry = signal.btcCandlePatternAtEntry
+        ?? signal.btcCandlePattern5m
+        ?? cachedCandlePatternAt('BTCUSDT', '5m', observedAt)
+        ?? null;
       rows.push({
         ...signal,
-        ...(emaDecisionContext ?? {}),
+        ...(strategyDecisionContext ?? {}),
         source,
         modelSource,
         combo,
@@ -259,11 +536,21 @@ function intradayDecisionCandidates(timeframe = '1h') {
         entry: signal.entry ?? signal.entryPrice ?? signal.markPrice,
         tp: signal.tp ?? signal.takeProfit ?? signal.targets?.[0],
         sl: signal.sl ?? signal.stopLoss,
-        observedAt: signal.scannedAt ?? scannedAt,
+        btcCandlePatternAtEntry,
+        observedAt,
       });
     }
   }
   return rows;
+}
+
+function intradayDecisionSignalVersion() {
+  return [
+    pumpScanCache, capScanCache, killShortScanCache, dumpIgnitionScanCache,
+    spikeReversalScanCache, postPumpKillShortScanCache, pumpIgnitionScanCache,
+    emaSqueezesScanCache, ema99KillReclaimScanCache, shakeoutReclaimScanCache,
+    topReversalScanCache, liquidScanCache,
+  ].map((cache) => Number(cache?.data?.scannedAt ?? 0)).join('|');
 }
 
 let intradayDecisionPaper = null;
@@ -297,7 +584,9 @@ function createIntradayDecisionPaper() {
       ?? (_snapshotCache ?? []).find((row) => row.symbol === symbol)?.markPrice
       ?? null,
     getMarkInfo: (symbol) => sharedLastTicker.getPriceInfo(symbol),
+    getSignalVersion: () => intradayDecisionSignalVersion(),
     setSymbols: (symbols) => sharedLastTicker.setSymbols('intradayDecisionPaper', symbols),
+    enrichTradeForLog: attachCandlePatternToPaperTrade,
     onStateChange: (state, reason) => pushSse(
       intradayDecisionPaperSseClients,
       reason === 'socket-tick' || reason === 'socket-close'
@@ -567,6 +856,11 @@ async function schedulePumpScan() {
         if ((sig.factors?.chasePct ?? 0) > 0.30) continue;        // chase quá cao
         if (sig.marketOk === false) continue;                      // too far from EMA
         if ((sig.factors?.emaRibbon ?? 1) === 0) continue;        // EMA không bullish
+        const pumpEvalGate = nativePumpEvalGateOfSignal(sig, btcHealthCache.data ?? {});
+        if (pumpEvalGate && !pumpEvalGate.allow) {
+          console.log(`[PumpPaper] SKIP ${sig.action ?? '-'} ${sig.symbol} ${pumpEvalGate.label} - ${pumpEvalGate.reason}`);
+          continue;
+        }
         const key = `${sig.symbol}|${sig.type}`;
         const last = pumpPaperAutoFired.get(key) ?? 0;
         if (Date.now() - last < 4 * 3600 * 1000) continue;
@@ -574,7 +868,7 @@ async function schedulePumpScan() {
         createPumpPaperTrade({
           symbol: sig.symbol,
           side: sig.action,
-          marginUsdt: pumpSignalAutoPaperMarginUsdt(sig),
+          marginUsdt: pumpEvalGate?.marginUsdt ?? pumpSignalAutoPaperMarginUsdt(sig),
           leverage: 10,
           entryPrice: sig.entry,
           tp: sig.tp ?? null,
@@ -586,7 +880,19 @@ async function schedulePumpScan() {
           pumpSignalFactors: sig.factors ?? null,
           pumpSignalTimeframe: sig.factors?.timeframe ?? sig.interval ?? null,
           pumpCombo: pumpSignalComboOf(sig),
-          note: sig.note ?? '',
+          btcHealth: btcHealthCache.data ?? null,
+          btcCorr: pumpEvalGate?.btcCorr ?? null,
+          pumpEvalTier: pumpEvalGate?.tier ?? null,
+          pumpEvalLabel: pumpEvalGate?.label ?? null,
+          pumpEvalReason: pumpEvalGate?.reason ?? null,
+          pumpEvalVersion: pumpEvalGate?.version ?? null,
+          pumpEvalMarginUsdt: pumpEvalGate?.marginUsdt ?? null,
+          pumpEvalHour: pumpEvalGate?.hour ?? null,
+          pumpEvalCorrBucket: pumpEvalGate?.corrBucket ?? null,
+          pumpEvalBtcPhase: pumpEvalGate?.btcPhase ?? null,
+          pumpEvalContextKey: pumpEvalGate?.contextKey ?? null,
+          note: [sig.note ?? '', pumpEvalGate ? `pumpEval=${pumpEvalGate.label} version=${pumpEvalGate.version}` : '']
+            .filter(Boolean).join(' | '),
         }).catch(() => {});
         if (pumpPaperTicker) syncPumpPaperTicker().catch(() => {});
       }
@@ -3106,36 +3412,25 @@ function getEmaPreStageRule({ stage, side, interval, btcPhase, corrBucket, hour 
   };
 }
 
-function getEmaPreStageEvalGate({ stage, side, interval, btcSnap, btcCorr, date = new Date() }) {
+function getEmaPreStageEvalGate({ stage, side, interval, symbolCandle, btcCandle, btcSnap, btcCorr, date = new Date() }) {
   if (process.env.EMA_SQUEEZE_PAPER_PRE_STAGE_EVAL_GATE === 'false') return null;
-  const dir = String(btcSnap?.btcTrendDir ?? '').toLowerCase();
-  const trendScore = btcSnap?.btcTrendScore == null ? NaN : Number(btcSnap.btcTrendScore);
-  const corr = btcCorr == null ? NaN : Number(btcCorr);
-  const btcPhase = dir && Number.isFinite(trendScore)
-    ? `${dir}_${trendScore < 45 ? 'weak' : trendScore < 65 ? 'mid' : 'strong'}`
-    : 'no_data';
-  const corrBucket = Number.isFinite(corr)
-    ? corr < 0.3 ? 'rac' : corr < 0.5 ? 'yeu' : 'theo'
-    : 'no_data';
-  const rule = getEmaPreStageRule({
+  const rule = evaluateEmaPreStageCandle({
     stage,
     side,
     interval,
-    btcPhase,
-    corrBucket,
-    hour: getBangkokHour(date),
+    symbolCandle,
+    btcCandle,
   });
   if (!rule) return null;
-  const configuredFullMargin = Number(process.env.EMA_SQUEEZE_PAPER_PRE_STAGE_A_MARGIN_USDT ?? 10);
-  const configuredTestMargin = Number(process.env.EMA_SQUEEZE_PAPER_PRE_STAGE_B_MARGIN_USDT ?? 1);
-  const fullMarginUsdt = Number.isFinite(configuredFullMargin) && configuredFullMargin > 0 ? configuredFullMargin : 10;
-  const testMarginUsdt = Number.isFinite(configuredTestMargin) && configuredTestMargin > 0 ? configuredTestMargin : 1;
+  const dir = String(btcSnap?.btcTrendDir ?? '').toLowerCase();
+  const trendScore = btcSnap?.btcTrendScore == null ? NaN : Number(btcSnap.btcTrendScore);
+  const corr = btcCorr == null ? NaN : Number(btcCorr);
   return {
     ...rule,
-    marginUsdt: rule.tier === 'A' ? fullMarginUsdt : rule.tier === 'B' ? testMarginUsdt : 0,
-    testOnly: rule.tier === 'B',
     corr: Number.isFinite(corr) ? +corr.toFixed(3) : null,
-    btcPhase: btcPhase === 'no_data' ? 'BTC_NO_DATA' : `BTC_${btcPhase.toUpperCase()}`,
+    btcPhase: dir && Number.isFinite(trendScore)
+      ? `BTC_${dir.toUpperCase()}_${trendScore < 45 ? 'WEAK' : trendScore < 65 ? 'MID' : 'STRONG'}`
+      : 'BTC_NO_DATA',
     hour: getBangkokHour(date),
   };
 }
@@ -3886,8 +4181,11 @@ function getTopReversalBtcBearShiftGate(health = btcHealthCache.data) {
 
 function buildBtcHealthSnapshot(health = btcHealthCache.data) {
   if (!health || health.error) return null;
+  const marketRegime = getEmaSqueezeMarketRegime(health);
   return {
     regime: emaSqueezeBtcRegime(health),
+    marketRegime: marketRegime.regime,
+    marketRegimeReason: marketRegime.reason,
     bias: health.bias ?? null,
     bearPoints: health.bearPoints ?? null,
     rsi1h: health.rsi1h ?? null,
@@ -3902,6 +4200,9 @@ function buildBtcHealthSnapshot(health = btcHealthCache.data) {
     longPct: health.longPct ?? null,
     btcTrendScore: health.btcTrendScore ?? null,
     btcTrendDir: health.btcTrendDir ?? null,
+    btcTrendScore4h: health.btcTrendScore4h ?? null,
+    btcTrendDir4h: health.btcTrendDir4h ?? null,
+    pct24h: health.pct24h ?? null,
     btcCandle1hPct: health.btcCandle1hPct ?? null,
     btcSpikeAlert: health.btcSpikeAlert ?? null,
     btcSpike: health.btcSpike ?? null,
@@ -5942,6 +6243,16 @@ async function createEmaSqueezePaperTrades(signals = []) {
         })
       : null;
     const brBtcCorr = usesBrRules ? getCoinBtcCorr(paperSignal.symbol, paperSignal.interval ?? '15m') : null;
+    const brLikeEvalGate = isNativeBrLikeMarketPaper
+      ? getBrLikeEvalGate({
+          side,
+          interval: paperSignal.interval ?? interval,
+          btcTrendDir: btcSnap?.btcTrendDir,
+          btcTrendScore: btcSnap?.btcTrendScore,
+          btcCorr: brBtcCorr,
+          hour: getBangkokHour(),
+        })
+      : null;
     const squeezeLongEvalGate = isSqueezeLongBrRulePaper
       ? getEmaSqueezeLongEvalGate({
           interval: paperSignal.interval ?? interval,
@@ -5967,19 +6278,29 @@ async function createEmaSqueezePaperTrades(signals = []) {
     const emaPreStageEvalCorr = ['PRE_BREAKOUT', 'PRE_BREAKDOWN'].includes(stage)
       ? getCoinBtcCorr(paperSignal.symbol, paperSignal.interval ?? '15m')
       : null;
+    const emaPreStageCandleContext = !runnerMeta.isRunner && ['PRE_BREAKOUT', 'PRE_BREAKDOWN'].includes(stage)
+      ? attachCandlePatternToPaperTrade({
+          symbol: paperSignal.symbol,
+          side,
+          interval: paperSignal.interval ?? interval,
+          source: `emasq-${paperSignal.interval ?? interval ?? '15m'}-${stage.toLowerCase()}-context`,
+          createdAt: new Date().toISOString(),
+          candlePattern5m: paperSignal.candlePattern5m ?? sig.candlePattern5m ?? null,
+          candlePattern15m: paperSignal.candlePattern15m ?? sig.candlePattern15m ?? null,
+          btcCandlePattern5m: paperSignal.btcCandlePattern5m ?? sig.btcCandlePattern5m ?? null,
+        })
+      : null;
     const emaPreStageEvalGate = !runnerMeta.isRunner && ['PRE_BREAKOUT', 'PRE_BREAKDOWN'].includes(stage)
       ? getEmaPreStageEvalGate({
           stage,
           side,
           interval: paperSignal.interval ?? interval,
+          symbolCandle: emaPreStageCandleContext?.candlePatternAtEntry,
+          btcCandle: emaPreStageCandleContext?.btcCandlePatternAtEntry,
           btcSnap,
           btcCorr: emaPreStageEvalCorr,
         })
       : null;
-    if (emaPreStageEvalGate && !emaPreStageEvalGate.allow) {
-      console.log(`[EmaSqueezePaper] skip ${paperSignal.symbol} ${stage} - ${emaPreStageEvalGate.label}: ${emaPreStageEvalGate.reason}`);
-      continue;
-    }
     const key = `${paperSignal.symbol}|${paperSignal.interval ?? '15m'}|${isBrLikePaper ? (isBrLikeShortPaper ? 'BR_LIKE_SHORT' : 'BR_LIKE') : stage}|${side}`;
     const last = emaSqueezePaperAutoFired.get(key) ?? 0;
     if (Date.now() - last < cooldownMs) continue;
@@ -6032,10 +6353,6 @@ async function createEmaSqueezePaperTrades(signals = []) {
       && Number.isFinite(runnerEvalGate.marginUsdt)
       && runnerEvalGate.marginUsdt > 0
       ? runnerEvalGate.marginUsdt
-      : emaPreStageEvalGate
-      && Number.isFinite(emaPreStageEvalGate.marginUsdt)
-      && emaPreStageEvalGate.marginUsdt > 0
-      ? emaPreStageEvalGate.marginUsdt
       : emaBreakEvalGate
       && Number.isFinite(emaBreakEvalGate.marginUsdt)
       && emaBreakEvalGate.marginUsdt > 0
@@ -6044,6 +6361,10 @@ async function createEmaSqueezePaperTrades(signals = []) {
       && Number.isFinite(squeezeLongEvalGate.marginUsdt)
       && squeezeLongEvalGate.marginUsdt > 0
       ? squeezeLongEvalGate.marginUsdt
+      : brLikeEvalGate
+      && Number.isFinite(brLikeEvalGate.marginUsdt)
+      && brLikeEvalGate.marginUsdt > 0
+      ? brLikeEvalGate.marginUsdt
       : squeezeBrRuleTestOnly
       && Number.isFinite(squeezeBrRuleTestMargin)
       && squeezeBrRuleTestMargin > 0
@@ -6114,11 +6435,14 @@ async function createEmaSqueezePaperTrades(signals = []) {
         squeezeLongEvalGate
           ? `squeezeLongEval=${squeezeLongEvalGate.label} | tier=${squeezeLongEvalGate.tier} | margin=$${squeezeLongEvalGate.marginUsdt} | ${squeezeLongEvalGate.reason}`
           : '',
+        brLikeEvalGate
+          ? `brEval=${brLikeEvalGate.label} | tier=${brLikeEvalGate.tier} | margin=$${brLikeEvalGate.marginUsdt} | version=${brLikeEvalGate.version} | ${brLikeEvalGate.reason}`
+          : '',
         emaBreakEvalGate
           ? `emaBreakEval=${emaBreakEvalGate.label} | tier=${emaBreakEvalGate.tier} | margin=$${emaBreakEvalGate.marginUsdt} | ${emaBreakEvalGate.reason}`
           : '',
         emaPreStageEvalGate
-          ? `emaPreStageEval=${emaPreStageEvalGate.label} | tier=${emaPreStageEvalGate.tier} | margin=$${emaPreStageEvalGate.marginUsdt} | ${emaPreStageEvalGate.reason}`
+          ? `emaPreStageEval=${emaPreStageEvalGate.label} | tier=${emaPreStageEvalGate.tier} | observeOnly=Y | ${emaPreStageEvalGate.reason}`
           : '',
         runnerEvalGate
           ? `runnerEval=${runnerEvalGate.label} | tier=${runnerEvalGate.tier} | margin=$${runnerEvalGate.marginUsdt} | ${runnerEvalGate.reason}`
@@ -6187,6 +6511,16 @@ async function createEmaSqueezePaperTrades(signals = []) {
       rr: paperSignal.rr ?? null,
       heavySide: paperSignal.heavySide ?? null,
       entryPlan: paperSignal.entryPlan ?? null,
+      candlePatternAtEntry: emaPreStageCandleContext?.candlePatternAtEntry ?? null,
+      candlePatternTimeframe: emaPreStageCandleContext?.candlePatternTimeframe ?? null,
+      btcCandlePatternAtEntry: emaPreStageCandleContext?.btcCandlePatternAtEntry ?? null,
+      sideCandleTier: emaPreStageEvalGate?.tier ?? null,
+      sideCandleLabel: emaPreStageEvalGate?.label ?? null,
+      sideCandleReason: emaPreStageEvalGate?.reason ?? null,
+      sideCandleRuleVersion: emaPreStageEvalGate?.version ?? null,
+      sideCandleContext: emaPreStageEvalGate
+        ? `${emaPreStageEvalGate.stage} · ${emaPreStageEvalGate.interval}`
+        : null,
       btcHealth: btcSnap,
       btcCorr: brBtcCorr ?? runnerBtcCorr ?? getCoinBtcCorr(paperSignal.symbol, paperSignal.interval ?? '15m'),
 	      breakoutQuality: paperSignal.breakoutQuality ?? sig.breakoutQuality ?? null,
@@ -6202,6 +6536,14 @@ async function createEmaSqueezePaperTrades(signals = []) {
 	      brCandleUpperShare: brRealCandle?.upperShare ?? null,
 	      brCandleLowerShare: brRealCandle?.lowerShare ?? null,
 	      brCandleVolRatio: brRealCandle?.volRatio ?? null,
+	      brEvalTier: brLikeEvalGate?.tier ?? null,
+	      brEvalLabel: brLikeEvalGate?.label ?? null,
+	      brEvalReason: brLikeEvalGate?.reason ?? null,
+	      brEvalVersion: brLikeEvalGate?.version ?? null,
+	      brEvalMarginUsdt: brLikeEvalGate?.marginUsdt ?? null,
+	      brEvalHour: brLikeEvalGate?.hour ?? null,
+	      brEvalCorrBucket: brLikeEvalGate?.corrBucket ?? null,
+	      brEvalBtcPhase: brLikeEvalGate?.btcPhase ?? null,
 		      brShortEnvLabel: brShortEnvGate?.label ?? null,
 		      brShortEnvBlockMarket: brShortEnvGate?.blockMarket ?? null,
 		      shortSessionTestLabel: brLikeShortSessionTestGate?.label ?? preBreakdownSessionTestGate?.label ?? null,
@@ -6209,8 +6551,9 @@ async function createEmaSqueezePaperTrades(signals = []) {
 		      shortSessionTestMarginUsdt: brLikeShortSessionTestGate?.marketMarginUsdt ?? preBreakdownSessionTestGate?.marketMarginUsdt ?? null,
 		      shortSessionTestHour: brLikeShortSessionTestGate?.hour ?? preBreakdownSessionTestGate?.hour ?? null,
 		      shortSessionTestCorr: brLikeShortSessionTestGate?.corr ?? preBreakdownSessionTestGate?.corr ?? null,
-		      binanceMarketEligible: usesBrRules
-		        ? !(brShortEnvGate?.blockMarket || brBtcTurnClusterBlockMarket || brRegimeBlockMarket)
+	      binanceMarketEligible: usesBrRules
+	        ? !(brLikeEvalGate && !brLikeEvalGate.allow)
+	          && !(brShortEnvGate?.blockMarket || brBtcTurnClusterBlockMarket || brRegimeBlockMarket)
 		        : stage === 'BREAKOUT'
 		          ? !(breakoutBtcTurnClusterGate?.blockMarket || breakoutRegimeMarketGate?.blockMarket || breakoutChaseMarketGate?.blockMarket)
 		          : runnerMeta.isRunner
@@ -6296,10 +6639,17 @@ async function createEmaSqueezePaperTrades(signals = []) {
 	      emaPreStageEvalTier: emaPreStageEvalGate?.tier ?? null,
 	      emaPreStageEvalLabel: emaPreStageEvalGate?.label ?? null,
 	      emaPreStageEvalReason: emaPreStageEvalGate?.reason ?? null,
-	      emaPreStageEvalMarginUsdt: emaPreStageEvalGate?.marginUsdt ?? null,
+	      emaPreStageEvalMarginUsdt: null,
+	      emaPreStageEvalObservationOnly: Boolean(emaPreStageEvalGate),
 	      emaPreStageEvalCorr: emaPreStageEvalGate?.corr ?? null,
 	      emaPreStageEvalBtcPhase: emaPreStageEvalGate?.btcPhase ?? null,
 	      emaPreStageEvalHour: emaPreStageEvalGate?.hour ?? null,
+	      emaPreStageEvalVersion: emaPreStageEvalGate?.version ?? null,
+	      emaPreStageEvalSymbolPattern: emaPreStageEvalGate?.symbolPattern ?? null,
+	      emaPreStageEvalSymbolBias: emaPreStageEvalGate?.symbolBias ?? null,
+	      emaPreStageEvalBtcPattern: emaPreStageEvalGate?.btcPattern ?? null,
+	      emaPreStageEvalBtcBias: emaPreStageEvalGate?.btcBias ?? null,
+	      emaPreStageEvalReasonCode: emaPreStageEvalGate?.reasonCode ?? null,
 	    };
     const srcBase = isBrLikePaper
       ? `emasq-${paperSignal.interval ?? '15m'}-${isBrLikeShortPaper ? 'br_like_short' : 'br_like'}-${brLikeScore.toFixed(0)}-${paperSignal.score}`
@@ -6505,6 +6855,10 @@ async function createEmaSqueezePaperTrades(signals = []) {
           ].join(' | '),
         }).catch((e) => console.warn(`[BrLikeLimitPaper] ${paperSignal.symbol}:`, e.message));
         }
+      }
+      if (brLikeEvalGate && !brLikeEvalGate.allow) {
+        console.log(`[EmaSqueezePaper] skip ${paperSignal.symbol} ${isBrLikeShortPaper ? 'BR-like Short' : 'BR-like'} MARKET - ${brLikeEvalGate.label}: ${brLikeEvalGate.reason} version=${brLikeEvalGate.version}`);
+        continue;
       }
       await cutOppositeBrLikeOnSymbol({
         symbol: paperSignal.symbol,
@@ -7708,6 +8062,11 @@ const CAP_PAPER_FILE    = join(rootDir, 'data', 'cap-paper-trades.json');
 const DI_PAPER_FILE     = join(rootDir, 'data', 'di-paper-trades.json');
 const PI_PAPER_FILE     = join(rootDir, 'data', 'pi-paper-trades.json');
 const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
+const PUMP_PAPER_ARCHIVE_FILE = join(rootDir, 'data', 'archive', 'pump-paper-trades.ndjson');
+const PUMP_PAPER_MAX_ACTIVE_ROWS = Math.max(
+  5_000,
+  Number(process.env.PUMP_PAPER_MAX_ACTIVE_ROWS ?? 100_000),
+);
 const BR_LIKE_LIMIT_EVAL_FILE = join(rootDir, 'data', 'br-like-limit-eval.json');
 const BR_LIKE_LIMIT_PAPER_FILE = join(rootDir, 'data', 'br-like-limit-paper-trades.json');
 const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
@@ -7715,9 +8074,159 @@ const SR_PAPER_FILE     = join(rootDir, 'data', 'sr-paper-trades.json');
 const PPKS_PAPER_FILE   = join(rootDir, 'data', 'ppks-paper-trades.json');
 const SHAKEOUT_PAPER_FILE = join(rootDir, 'data', 'shakeout-paper-trades.json');
 const TOP_REVERSAL_PAPER_FILE = join(rootDir, 'data', 'top-reversal-paper-trades.json');
+const PAPER_CANDLE_LOG_FILES = new Set([
+  PAPER_TRADES_FILE,
+  LIQUID_PAPER_FILE,
+  CAP_PAPER_FILE,
+  DI_PAPER_FILE,
+  PI_PAPER_FILE,
+  PUMP_PAPER_FILE,
+  BR_LIKE_LIMIT_PAPER_FILE,
+  EDGE_PAPER_FILE,
+  SR_PAPER_FILE,
+  PPKS_PAPER_FILE,
+  SHAKEOUT_PAPER_FILE,
+  TOP_REVERSAL_PAPER_FILE,
+]);
 const MARKET_NEWS_FILE  = join(rootDir, 'data', 'market-news.json');
 const COIN_FLOW_FILE    = join(rootDir, 'data', 'coin-flow.json');
 const TOKEN_UNLOCKS_FILE = join(rootDir, 'data', 'token-unlocks.json');
+
+function paperTradeTimeframe(trade) {
+  const decision = String(trade?.decisionTimeframe ?? '').toLowerCase();
+  if (/^\d+[mh]$/.test(decision)) return decision;
+  const sourceMatch = String(trade?.source ?? '').match(
+    /(?:emasq|pump|cap|edge|ppks|liq|shakeout|top|sr|di|pi)-(\d+[mh])-/i,
+  );
+  if (sourceMatch) return sourceMatch[1].toLowerCase();
+  const direct = String(trade?.timeframe ?? trade?.interval ?? trade?.tf
+    ?? trade?.pumpSignalTimeframe ?? trade?.candlePatternTimeframe ?? '').toLowerCase();
+  return /^\d+[mh]$/.test(direct) ? direct : '15m';
+}
+
+function paperTradeSignalAt(trade) {
+  return trade?.sourceSignalAt ?? trade?.signalAt ?? trade?.observedAt
+    ?? trade?.createdAt ?? trade?.openedAt ?? trade?.time ?? trade?.timestamp;
+}
+
+function attachCoinCandlePatternToPaperTrade(trade) {
+  if (!trade || typeof trade !== 'object' || !trade.symbol) return trade;
+  const timeframe = paperTradeTimeframe(trade);
+  const existing = trade.candlePatternAtEntry;
+  const existingTimeframe = String(existing?.timeframe ?? trade?.candlePatternTimeframe ?? '').toLowerCase();
+  if (existing
+    && !['UNKNOWN', 'NO_DATA'].includes(String(existing?.name ?? existing).toUpperCase())
+    && (!existingTimeframe || existingTimeframe === timeframe)) {
+    return trade;
+  }
+  const sourcePattern = timeframe === '5m' ? trade.candlePattern5m : trade.candlePattern15m;
+  if (sourcePattern && !['UNKNOWN', 'NO_DATA'].includes(String(sourcePattern?.name ?? sourcePattern).toUpperCase())) {
+    return {
+      ...trade,
+      candlePatternAtEntry: typeof sourcePattern === 'object'
+        ? { ...sourcePattern, timeframe: sourcePattern.timeframe ?? timeframe, detectedFrom: sourcePattern.detectedFrom ?? 'SOURCE_SIGNAL' }
+        : { name: String(sourcePattern), direction: 'NEUTRAL', timeframe, detectedFrom: 'SOURCE_SIGNAL' },
+      candlePatternTimeframe: timeframe,
+    };
+  }
+  const pattern = cachedCandlePatternAt(trade.symbol, timeframe, paperTradeSignalAt(trade));
+  if (!pattern) return trade;
+  return {
+    ...trade,
+    candlePatternAtEntry: { ...pattern, capturedAt: new Date().toISOString() },
+    candlePatternTimeframe: timeframe,
+  };
+}
+
+function getShakeoutBtcEntrySnapshot(health = btcHealthCache.data, atMs = Date.now()) {
+  const btcHealth = buildBtcHealthSnapshot(health);
+  const fallbackMarketRegime = getEmaSqueezeMarketRegime(health).regime;
+  const flipWindow = Math.max(
+    3,
+    Number(process.env.SHAKEOUT_RECLAIM_CHASE_BTC_5M_FLIP_WINDOW ?? 12),
+  );
+  const flip = calculateBtc5mFlipRate(
+    klineCache.getIfCached('BTCUSDT', '5m', flipWindow + 4) ?? [],
+    { atMs, window: flipWindow },
+  );
+  return {
+    capturedAt: new Date(atMs).toISOString(),
+    // Missing BTC health is deliberately classified as CHOP by the regime helper,
+    // so an uncertain CHASE entry can never bypass the $1 shadow cap.
+    btcMarketRegimeAtEntry: btcHealth?.marketRegime ?? fallbackMarketRegime,
+    btcTrendDir4hAtEntry: btcHealth?.btcTrendDir4h ?? null,
+    btcTrendScore4hAtEntry: Number.isFinite(Number(btcHealth?.btcTrendScore4h))
+      ? Number(btcHealth.btcTrendScore4h)
+      : null,
+    btcPct24hAtEntry: Number.isFinite(Number(btcHealth?.pct24h))
+      ? Number(btcHealth.pct24h)
+      : null,
+    btc5mFlipRateAtEntry: flip.rate,
+    btc5mFlipCountAtEntry: flip.flips,
+    btc5mFlipTransitionsAtEntry: flip.transitions,
+    btc5mFlipSamplesAtEntry: flip.samples,
+    btc5mFlipWindowAtEntry: flip.window,
+  };
+}
+
+function attachCandlePatternToPaperTrade(trade) {
+  const enriched = attachCoinCandlePatternToPaperTrade(trade);
+  if (!enriched || typeof enriched !== 'object' || !enriched.symbol) return enriched;
+  const existing = enriched.btcCandlePatternAtEntry ?? enriched.btcCandlePattern5m;
+  if (existing
+    && !['UNKNOWN', 'NO_DATA'].includes(String(existing?.name ?? existing).toUpperCase())) {
+    return enriched.btcCandlePatternAtEntry
+      ? enriched
+      : {
+          ...enriched,
+          btcCandlePatternAtEntry: typeof existing === 'object'
+            ? { ...existing, timeframe: existing.timeframe ?? '5m' }
+            : { name: String(existing), direction: 'NEUTRAL', timeframe: '5m' },
+        };
+  }
+  const pattern = cachedCandlePatternAt('BTCUSDT', '5m', paperTradeSignalAt(enriched));
+  return pattern
+    ? { ...enriched, btcCandlePatternAtEntry: { ...pattern, capturedAt: new Date().toISOString() } }
+    : enriched;
+}
+
+function attachCandlePatternsToPaperStore(store) {
+  if (Array.isArray(store)) return store.map(attachCandlePatternToPaperTrade);
+  if (!store || typeof store !== 'object' || !Array.isArray(store.trades)) return store;
+  return { ...store, trades: store.trades.map(attachCandlePatternToPaperTrade) };
+}
+
+async function backfillRecentPaperCandleLogs() {
+  const jobs = [
+    ['paper', readPaperStore, writePaperStore],
+    ['liquid', readLiquidPaperStore, writeLiquidPaperStore],
+    ['cap', readCapPaperStore, writeCapPaperStore],
+    ['dump-ignition', readDiPaperStore, writeDiPaperStore],
+    ['pump-ignition', readPiPaperStore, writePiPaperStore],
+    ['br-like-limit', readBrLikeLimitPaperStore, writeBrLikeLimitPaperStore],
+    ['edge', readEdgePaperStore, writeEdgePaperStore],
+    ['spike-reversal', readSrPaperStore, writeSrPaperStore],
+    ['post-pump-kill-short', readPpksPaperStore, writePpksPaperStore],
+    ['shakeout', readShakeoutPaperStore, writeShakeoutPaperStore],
+    ['top-reversal', readTopReversalPaperStore, writeTopReversalPaperStore],
+  ];
+  for (const [label, readStore, writeStore] of jobs) {
+    try {
+      const store = await readStore();
+      const before = (store?.trades ?? []).filter((trade) => trade?.candlePatternAtEntry).length;
+      const beforeBtc = (store?.trades ?? []).filter((trade) => trade?.btcCandlePatternAtEntry).length;
+      const enriched = attachCandlePatternsToPaperStore(store);
+      const after = (enriched?.trades ?? []).filter((trade) => trade?.candlePatternAtEntry).length;
+      const afterBtc = (enriched?.trades ?? []).filter((trade) => trade?.btcCandlePatternAtEntry).length;
+      if (after > before || afterBtc > beforeBtc) {
+        await writeStore(enriched);
+        console.log(`[PaperCandle] ${label} backfilled coin=${after - before}, btc=${afterBtc - beforeBtc} row(s).`);
+      }
+    } catch (error) {
+      console.warn(`[PaperCandle] ${label} backfill skipped:`, error.message);
+    }
+  }
+}
 
 let marketNewsCache = { items: [], updatedAt: null, sources: [], error: null };
 let marketNewsRefreshInflight = null;
@@ -7829,6 +8338,7 @@ let paperTicker = null;
 let liquidPaperRestPoller = null;
 const paperFillLocks = new Set();
 const liquidPaperFillLocks = new Set();
+const liquidPaperPeakRoe = new Map();
 const capMarkCache = new Map();  // symbol → last price  (for cap paper trades)
 const capMarkCacheAt = new Map(); // symbol → socket event time (for cap paper trades)
 let capPaperTicker = null;
@@ -7844,6 +8354,12 @@ const pumpMarkCache = new Map(); // symbol → markPrice (for pump paper trades)
 const pumpMarkCacheAt = new Map(); // symbol → socket event time (for pump paper trades)
 const emaSqueezeSocketMarks = new Map();
 const emaSqueezeSocketMarkAt = new Map();
+// Batched Binance premium-index fallback. Kept separate from socket caches so
+// callers can tell which source supplied the current mark.
+const pumpPaperRestMarkCache = new Map();
+const pumpPaperRestMarkCacheAt = new Map();
+let pumpPaperRestMarkRefreshRunning = false;
+let pumpPaperRestManageCursor = 0;
 const recommendedPaperSocketMarks = new Map();
 const recommendedPaperSocketMarkAt = new Map();
 let recommendedPaperTicker = null;
@@ -7938,6 +8454,40 @@ function recommendedLiveMark(trade) {
   return null;
 }
 
+function publishRecommendedSourceOpen(page, trade, market = null) {
+  if (String(trade?.status ?? '').toUpperCase() !== 'OPEN') return;
+  const receivedAt = Date.now();
+  const liveMarket = recommendedLiveMark({ ...trade, sourcePage: page });
+  const selectedMarket = liveMarket ?? market;
+  const eventPrice = Number(selectedMarket?.price ?? trade?.fillPrice ?? trade?.entryPrice);
+  if (!Number.isFinite(eventPrice) || eventPrice <= 0) return;
+  const learningFlagsByRecommendationId = Object.fromEntries(
+    (recommendedLearningCache.data?.signalFlags ?? [])
+      .filter((flag) => flag?.id)
+      .map((flag) => [flag.id, flag]),
+  );
+  processRecommendedSourceOpenEvent({
+    page,
+    trade: attachCandlePatternToPaperTrade(enrichRecommendedPaperCandlePattern(trade)),
+    marketEntry: {
+      price: eventPrice,
+      at: Number(selectedMarket?.at ?? receivedAt),
+      receivedAt,
+      source: selectedMarket?.source ?? `${page}-source-open-event`,
+    },
+    learningFlagsByRecommendationId,
+  }).then((result) => {
+    if (result?.created) {
+      console.log(`[RecommendedEvent] OPEN ${trade.symbol} ${trade.side} page=${page} latency=${result.trade?.sourceEventLatencyMs ?? '-'}ms drift=${result.trade?.entryVsSourcePct ?? '-'}%`);
+      syncRecommendedPaperTicker().catch(() => {});
+      return;
+    }
+    if (['SOURCE_EVENT_STALE', 'EVENT_MARKET_STALE', 'EVENT_MARKET_CHASE', 'BREAKOUT_TOO_OLD'].includes(result?.reason)) {
+      console.log(`[RecommendedEvent] SKIP ${trade.symbol} ${trade.side} page=${page} reason=${result.reason} age=${result.eventLatencyMs ?? result.marketAgeMs ?? result.breakoutAge ?? '-'} chase=${result.adverseChasePct ?? '-'}`);
+    }
+  }).catch((error) => console.warn(`[RecommendedEvent] ${trade?.symbol ?? '-'}:`, error.message));
+}
+
 function startRecommendedPaperTicker() {
   if (recommendedPaperTicker) return;
   recommendedPaperTicker = createAggTradeTicker({
@@ -7965,6 +8515,7 @@ async function syncRecommendedPaperTicker() {
 }
 
 function enrichRecommendedPaperTradeLive(trade) {
+  trade = attachCandlePatternToPaperTrade(enrichRecommendedPaperCandlePattern(trade));
   const status = String(trade?.status ?? '').toUpperCase();
   if (!['OPEN', 'PENDING', 'ENTRY_READY'].includes(status)) return trade;
   const leverage = Number(trade?.leverage ?? trade?.lev ?? 1);
@@ -9090,7 +9641,8 @@ const server = createServer(async (request, response) => {
         return;
       }
       await intradayDecisionPaper.updateOpenTrades();
-      await sendJson(response, intradayDecisionPaper.getState());
+      const decisionLimit = Math.max(1, Math.min(2000, Number.parseInt(requestUrl.searchParams.get('decisionLimit') ?? '2000', 10) || 2000));
+      await sendJson(response, intradayDecisionPaper.getState({ decisionLimit }));
       return;
     }
 
@@ -9442,6 +9994,27 @@ const server = createServer(async (request, response) => {
         return;
       }
     }
+    if (requestUrl.pathname === '/api/shakeout-self-learning'
+        && ['GET', 'POST'].includes(request.method)) {
+      // Read-only analytics sidecar. Its output is deliberately not consumed by
+      // createShakeoutPaperTrades() or handleShakeoutReclaimRealOrders().
+      const force = request.method === 'POST' || requestUrl.searchParams.get('refresh') === '1';
+      await sendJson(response, await getShakeoutLearningAnalysis({ force }));
+      return;
+    }
+    if (requestUrl.pathname === '/api/paper-page-self-learning'
+        && ['GET', 'POST'].includes(request.method)) {
+      const force = request.method === 'POST' || requestUrl.searchParams.get('refresh') === '1';
+      try {
+        await sendJson(response, await getPaperPageLearningAnalysis(
+          requestUrl.searchParams.get('page') || '',
+          { force },
+        ));
+      } catch (error) {
+        await sendJson(response, { error: error.message }, /Unsupported/.test(error.message) ? 400 : 500);
+      }
+      return;
+    }
     if (requestUrl.pathname === '/api/shakeout-paper-trades/close' && request.method === 'POST') {
       await sendJson(response, await closeShakeoutPaperTrade(await readJsonBody(request)));
       return;
@@ -9514,6 +10087,7 @@ const server = createServer(async (request, response) => {
         await sendJson(response, await getPumpPaperTrades({
           paging: parsePaperPaging(requestUrl),
           day: requestUrl.searchParams.get('day') || requestUrl.searchParams.get('date') || 'all',
+          stage2: requestUrl.searchParams.get('stage2') || 'all',
         }));
         return;
       }
@@ -9541,12 +10115,22 @@ const server = createServer(async (request, response) => {
         type: requestUrl.searchParams.get('type') || 'all',
         tf: requestUrl.searchParams.get('tf') || 'all',
         day: requestUrl.searchParams.get('day') || 'all',
+        stageCandle: requestUrl.searchParams.get('stageCandle') || 'all',
       };
       await sendJson(response, await getEmaSqueezePaperTrades({ paging: parsePaperPaging(requestUrl), filter }));
       return;
     }
     if (requestUrl.pathname === '/api/recommended-signals' && request.method === 'GET') {
       await sendJson(response, await getRecommendedSignals(requestUrl.searchParams.get('day') || ''));
+      return;
+    }
+    if (requestUrl.pathname === '/api/recommended-signal-learning'
+        && ['GET', 'POST'].includes(request.method)) {
+      const force = request.method === 'POST' || requestUrl.searchParams.get('refresh') === '1';
+      await sendJson(response, await getRecommendedLearningAnalysis({
+        force,
+        day: requestUrl.searchParams.get('day') || '',
+      }));
       return;
     }
     if (requestUrl.pathname === '/api/recommended-paper-trades' && request.method === 'GET') {
@@ -9559,7 +10143,9 @@ const server = createServer(async (request, response) => {
         sortDir: requestUrl.searchParams.get('sortDir') || 'desc',
         prepareTrades: prepareRecommendedPaperLive,
         enrichTrade: (trade) =>
-          applyRecommendedDefaultSlLiveClose(enrichRecommendedPaperTradeLive(trade)),
+          applyRecommendedDefaultSlLiveClose(
+            attachCandlePatternToPaperTrade(enrichRecommendedPaperTradeLive(trade)),
+          ),
       }));
       return;
     }
@@ -9587,7 +10173,7 @@ const server = createServer(async (request, response) => {
     }
     if (requestUrl.pathname === '/api/br-like-limit-paper-trades/close' && request.method === 'POST') {
       const body = await readJsonBody(request);
-      const mark = Number(emaSqueezeSocketMarks.get(String(body.symbol ?? '').toUpperCase()));
+      const mark = Number(getFreshEmaSqueezeMarkInfo(body.symbol)?.mark);
       await sendJson(response, await closeBrLikeLimitPaperTrade({
         id: body.id,
         exitPrice: Number(body.exitPrice ?? mark),
@@ -10187,10 +10773,14 @@ server.listen(port, '127.0.0.1', () => {
   startSrPaperTicker();
   startPpksPaperTicker();
   startShakeoutPaperTicker();
+  startShakeoutLearningSidecar();
+  startRecommendedLearningSidecar();
   startTopReversalPaperTicker();
   startRecommendedPaperTicker();
+  startLiquidScanAutoPaperScheduler();
   intradayDecisionPaper = createIntradayDecisionPaper();
   intradayDecisionPaper.init().catch((err) => console.warn('[DecisionPaper] Init failed:', err.message));
+  setTimeout(() => backfillRecentPaperCandleLogs().catch(() => {}), 45_000).unref?.();
   startPositionSocketMonitor();
 
   runAfterKlineWarmup('algo APIs', () => {
@@ -11476,7 +12066,7 @@ async function readPaperStore() {
 
 let _paperWriteLock = Promise.resolve();
 async function writePaperStore(store) {
-  const payload = { ...store, updatedAt: new Date().toISOString() };
+  const payload = attachCandlePatternsToPaperStore({ ...store, updatedAt: new Date().toISOString() });
   _paperWriteLock = _paperWriteLock.then(async () => {
     await mkdir(join(rootDir, 'data'), { recursive: true });
     const tmp = PAPER_TRADES_FILE + '.tmp';
@@ -11487,31 +12077,41 @@ async function writePaperStore(store) {
   return payload;
 }
 
+let _liquidPaperStoreCache = null;
+let _liquidPaperStoreLoadPromise = null;
 async function readLiquidPaperStore() {
-  try {
-    const text = await readFile(LIQUID_PAPER_FILE, 'utf8');
-    const parsed = JSON.parse(text);
-    return {
-      createdAt: parsed.createdAt ?? new Date().toISOString(),
-      updatedAt: parsed.updatedAt ?? null,
-      trades: Array.isArray(parsed.trades) ? parsed.trades : [],
-    };
-  } catch (e) {
-    if (e.code === 'ENOENT') {
-      // File chưa tồn tại — tạo mới
-      const fresh = { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
-      await writeLiquidPaperStore(fresh);
-      return fresh;
+  if (_liquidPaperStoreCache) return _liquidPaperStoreCache;
+  if (_liquidPaperStoreLoadPromise) return _liquidPaperStoreLoadPromise;
+  _liquidPaperStoreLoadPromise = (async () => {
+    try {
+      const text = await readFile(LIQUID_PAPER_FILE, 'utf8');
+      const parsed = JSON.parse(text);
+      _liquidPaperStoreCache = {
+        createdAt: parsed.createdAt ?? new Date().toISOString(),
+        updatedAt: parsed.updatedAt ?? null,
+        trades: Array.isArray(parsed.trades) ? parsed.trades : [],
+      };
+    } catch (e) {
+      if (e.code === 'ENOENT') {
+        _liquidPaperStoreCache = { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
+        await writeLiquidPaperStore(_liquidPaperStoreCache);
+      } else {
+        // File bị corrupt (JSON parse lỗi) — KHÔNG ghi đè, trả về rỗng tạm để tránh mất data
+        console.error('[LiquidPaper] ⚠️ Store parse error, serving empty to avoid overwrite:', e.message);
+        _liquidPaperStoreCache = { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
+      }
+    } finally {
+      _liquidPaperStoreLoadPromise = null;
     }
-    // File bị corrupt (JSON parse lỗi) — KHÔNG ghi đè, trả về rỗng tạm để tránh mất data
-    console.error('[LiquidPaper] ⚠️ Store parse error, serving empty to avoid overwrite:', e.message);
-    return { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
-  }
+    return _liquidPaperStoreCache;
+  })();
+  return _liquidPaperStoreLoadPromise;
 }
 
 let _liquidPaperWriteLock = Promise.resolve();
 async function writeLiquidPaperStore(store) {
-  const payload = { ...store, updatedAt: new Date().toISOString() };
+  const payload = attachCandlePatternsToPaperStore({ ...store, updatedAt: new Date().toISOString() });
+  _liquidPaperStoreCache = payload;
   // Serialize writes + atomic tmp→rename để tránh race condition và corrupt khi crash
   _liquidPaperWriteLock = _liquidPaperWriteLock.then(async () => {
     await mkdir(join(rootDir, 'data'), { recursive: true });
@@ -11541,6 +12141,14 @@ async function getPaperMark(symbol) {
   return Number(price.markPrice);
 }
 
+function getLiquidPaperFeeRate() {
+  const rate = Number(process.env.LIQUID_SCAN_PAPER_FEE_RATE
+    ?? process.env.BINANCE_FUTURES_TAKER_FEE_RATE
+    ?? process.env.BINANCE_FEE_RATE
+    ?? 0.0004);
+  return Number.isFinite(rate) && rate >= 0 ? rate : 0.0004;
+}
+
 function enrichPaperTrade(trade, markPrice = null) {
   const currentPrice = trade.status === 'CLOSED'
     ? Number(trade.exitPrice)
@@ -11556,6 +12164,9 @@ function enrichPaperTrade(trade, markPrice = null) {
   const signalQty = signalMark > 0 ? (margin * Number(trade.leverage)) / signalMark : 0;
   const signalPnl = signalMark > 0 ? (currentPrice - signalMark) * signalQty * sideMult : null;
   const signalRoe = signalPnl != null && margin > 0 ? (signalPnl / margin) * 100 : null;
+  const financial = String(trade.source ?? '').startsWith('liquid-scan')
+    ? liquidPaperFinancialMetrics(trade, currentPrice, getLiquidPaperFeeRate())
+    : {};
   return {
     ...trade,
     markPrice: currentPrice,
@@ -11566,18 +12177,20 @@ function enrichPaperTrade(trade, markPrice = null) {
     signalPnl,
     signalRoe,
     notionalUsdt: margin * Number(trade.leverage),
+    ...financial,
   };
 }
 
-function paperSummary(trades) {
+function paperSummary(trades, { useNet = false } = {}) {
   const enriched = trades.map((t) => enrichPaperTrade(t, t.markPrice));
   const closed = enriched.filter((t) => t.status === 'CLOSED');
   const open = enriched.filter((t) => t.status === 'OPEN');
   const pending = enriched.filter((t) => t.status === 'PENDING');
   const entryReady = enriched.filter((t) => t.status === 'ENTRY_READY');
-  const realizedPnl = closed.reduce((sum_, t) => sum_ + Number(t.pnl ?? 0), 0);
-  const unrealizedPnl = open.reduce((sum_, t) => sum_ + Number(t.pnl ?? 0), 0);
-  const wins = closed.filter((t) => Number(t.pnl) > 0).length;
+  const pnlOf = (t) => Number(useNet ? (t.netPnl ?? t.pnl ?? 0) : (t.pnl ?? 0));
+  const realizedPnl = closed.reduce((sum_, t) => sum_ + pnlOf(t), 0);
+  const unrealizedPnl = open.reduce((sum_, t) => sum_ + pnlOf(t), 0);
+  const wins = closed.filter((t) => pnlOf(t) > 0).length;
   return {
     total: enriched.length,
     open: open.length,
@@ -11687,8 +12300,8 @@ function liquidComboStatsOf(list, { limit = 24 } = {}) {
     }
     if (t.status === 'CLOSED') {
       row.closed += 1;
-      const pnl = Number(t.pnl ?? 0);
-      const roe = Number(t.roe ?? 0);
+      const pnl = Number(t.netPnl ?? t.pnl ?? 0);
+      const roe = Number(t.netRoe ?? t.roe ?? 0);
       row.pnl += pnl;
       row.roeSum += roe;
       if (pnl > 0) row.wins += 1;
@@ -11866,18 +12479,37 @@ async function getLiquidPaperTrades({ paging = null, day = 'all' } = {}) {
   }));
   const allTrades = filteredStoredTrades
     .map((t) => {
-      const enriched = enrichPaperTrade(t, marks.get(t.symbol));
+      const enriched = attachCandlePatternToPaperTrade(enrichPaperTrade(t, marks.get(t.symbol)));
+      const liquidEval = evaluateLiquidScanShadow(enriched);
+      const liquidStage2 = evaluateLiquidScanStage2(enriched);
+      const liquidStage3 = evaluateLiquidScanStage3(enriched);
       return {
         ...enriched,
         liquidGateLabel: enriched.liquidGateLabel ?? liquidPaperGateLabel(enriched),
         liquidCombo: enriched.liquidCombo ?? liquidPaperComboOf(enriched),
+        liquidEvalTier: enriched.liquidEvalTier ?? liquidEval.tier,
+        liquidEvalLabel: enriched.liquidEvalLabel ?? `${liquidEval.tier} · LEGACY`,
+        liquidEvalReason: enriched.liquidEvalReason ?? `${liquidEval.reason}; chỉ suy ra để đánh giá, lệnh cũ không đổi size`,
+        liquidEvalVersion: enriched.liquidEvalVersion ?? `${liquidEval.version}:DERIVED_LEGACY`,
+        liquidStage2Tier: enriched.liquidStage2Tier ?? liquidStage2.tier,
+        liquidStage2Code: enriched.liquidStage2Code ?? liquidStage2.code,
+        liquidStage2Label: enriched.liquidStage2Label ?? liquidStage2.label,
+        liquidStage2Reason: enriched.liquidStage2Reason ?? `${liquidStage2.reason}; derived để thống kê, không đổi lệnh/size`,
+        liquidStage2TargetKind: enriched.liquidStage2TargetKind ?? liquidStage2.targetKind,
+        liquidStage2Version: enriched.liquidStage2Version ?? `${liquidStage2.version}:DERIVED`,
+        liquidStage3Tier: enriched.liquidStage3Tier ?? liquidStage3.tier,
+        liquidStage3Code: enriched.liquidStage3Code ?? liquidStage3.code,
+        liquidStage3Label: enriched.liquidStage3Label ?? liquidStage3.label,
+        liquidStage3Reason: enriched.liquidStage3Reason ?? `${liquidStage3.reason}; derived để thống kê, không đổi lệnh/size`,
+        liquidStage3ComboKey: enriched.liquidStage3ComboKey ?? liquidStage3.comboKey,
+        liquidStage3Version: enriched.liquidStage3Version ?? `${liquidStage3.version}:DERIVED`,
       };
     })
     .sort((a, b) => new Date(b.openedAt ?? b.entryReadyAt ?? b.createdAt ?? 0) - new Date(a.openedAt ?? a.entryReadyAt ?? a.createdAt ?? 0));
   const { rows: trades, pagination } = slicePaperPage(allTrades, paging);
   const summary = {
-    ...paperSummary(allTrades),
-    byMargin: summarizePaperMarginStats(allTrades),
+    ...paperSummary(allTrades, { useNet: true }),
+    byMargin: summarizePaperMarginStats(allTrades, { useNet: true }),
   };
   return {
     ...store,
@@ -11894,13 +12526,15 @@ async function getLiquidPaperTrades({ paging = null, day = 'all' } = {}) {
 async function createLiquidPaperTrade(payload) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   const side = String(payload.side ?? '').toUpperCase();
-  const marginUsdt = Number(payload.marginUsdt);
+  const source = String(payload.source ?? 'liquid-scan').slice(0, 80);
+  const requestedMarginUsdt = Number(payload.requestedMarginUsdt ?? payload.marginUsdt);
+  const shadowCapUsdt = Math.max(0.01, Number(process.env.LIQUID_SCAN_AUTO_PAPER_SHADOW_MARGIN_USDT ?? 1));
   const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 1)));
   const note = String(payload.note ?? '').slice(0, 700);
 
   if (!symbol) throw new Error('symbol is required.');
   if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT.');
-  if (!Number.isFinite(marginUsdt) || marginUsdt <= 0) throw new Error('marginUsdt must be greater than 0.');
+  if (!Number.isFinite(requestedMarginUsdt) || requestedMarginUsdt <= 0) throw new Error('marginUsdt must be greater than 0.');
   const entryPrice = payload.entryPrice ? Number(payload.entryPrice) : await getPaperMark(symbol);
   if (!Number.isFinite(entryPrice) || entryPrice <= 0) throw new Error('entryPrice must be greater than 0.');
   const entryPlan = payload.entryPlan && typeof payload.entryPlan === 'object' ? payload.entryPlan : null;
@@ -11936,8 +12570,29 @@ async function createLiquidPaperTrade(payload) {
   const effectiveSl = Number.isFinite(defaultSlRoe) && defaultSlRoe > 0
     ? calcRoeStopLossPrice({ side, entryPrice, leverage, roe: defaultSlRoe })
     : null;
+  const liquidEval = evaluateLiquidScanShadow({
+    side,
+    signalPoint: payload.signalPoint,
+    sweepDistancePct,
+    entryPlan,
+    btcHealth,
+    btcCorr,
+  });
+  const liquidStage2 = evaluateLiquidScanStage2({
+    side,
+    btcCorr,
+    sweepDistancePct,
+    sweepTargetPrice: payload.sweepTargetPrice,
+    entryPlan,
+  });
+  const goodMarginUsdt = Math.max(0.01, Number(process.env.LIQUID_SCAN_GOOD_TEST_MARGIN_USDT ?? 5));
+  const evalMarginCapUsdt = Number(liquidEval.testMarginUsdt) >= 5 ? goodMarginUsdt : shadowCapUsdt;
+  const marginUsdt = source.startsWith('liquid-scan')
+    ? capLiquidScanShadowMargin(requestedMarginUsdt, evalMarginCapUsdt)
+    : requestedMarginUsdt;
   const liquidNote = [
     note,
+    source.startsWith('liquid-scan') ? `${liquidEval.label} | ${liquidEval.reason}` : '',
     Number.isFinite(effectiveSl) && effectiveSl > 0 ? `liquidDefaultSl=${defaultSlRoe}%ROE@${effectiveSl}` : '',
   ].filter(Boolean).join(' | ').slice(0, 700);
 
@@ -11952,7 +12607,7 @@ async function createLiquidPaperTrade(payload) {
     entryPrice,
     createdAt: new Date().toISOString(),
     openedAt: ['PENDING', 'ENTRY_READY'].includes(payload.status) ? null : new Date().toISOString(),
-    source: String(payload.source ?? 'liquid-scan').slice(0, 80),
+    source,
     note: liquidNote,
     takeProfitPrice: payload.takeProfitPrice ?? payload.tp ?? null,
     stopLossPrice: Number.isFinite(effectiveSl) && effectiveSl > 0
@@ -11974,14 +12629,44 @@ async function createLiquidPaperTrade(payload) {
     btcTrendDir: btcHealth?.btcTrendDir ?? null,
     btcTrendScore: btcHealth?.btcTrendScore ?? null,
     btcCorr: Number.isFinite(btcCorr) ? btcCorr : null,
+    liquidShadow: source.startsWith('liquid-scan'),
+    liquidRequestedMarginUsdt: Number.isFinite(requestedMarginUsdt) ? requestedMarginUsdt : null,
+    liquidEvalTier: liquidEval.tier,
+    liquidEvalLabel: liquidEval.label,
+    liquidEvalReason: liquidEval.reason,
+    liquidEvalVersion: liquidEval.version,
+    liquidEvalBtcPhase: liquidEval.btcPhase,
+    liquidEvalCohort: liquidEval.cohort ?? null,
+    liquidEvalMarginCapUsdt: source.startsWith('liquid-scan') ? evalMarginCapUsdt : null,
+    liquidStage2Tier: liquidStage2.tier,
+    liquidStage2Code: liquidStage2.code,
+    liquidStage2Label: liquidStage2.label,
+    liquidStage2Reason: liquidStage2.reason,
+    liquidStage2TargetKind: liquidStage2.targetKind,
+    liquidStage2Version: liquidStage2.version,
     entryPlan,
   };
   trade.liquidGateLabel = String(payload.liquidGateLabel ?? liquidPaperGateLabel(trade)).slice(0, 120);
   trade.liquidCombo = String(payload.liquidCombo ?? liquidPaperComboOf(trade)).slice(0, 240);
+  Object.assign(trade, attachCandlePatternToPaperTrade(trade));
+  const liquidStage3 = evaluateLiquidScanStage3(trade);
+  trade.liquidStage3Tier = liquidStage3.tier;
+  trade.liquidStage3Code = liquidStage3.code;
+  trade.liquidStage3Label = liquidStage3.label;
+  trade.liquidStage3Reason = liquidStage3.reason;
+  trade.liquidStage3ComboKey = liquidStage3.comboKey;
+  trade.liquidStage3Version = liquidStage3.version;
 
   const store = await readLiquidPaperStore();
   store.trades.unshift(trade);
   await writeLiquidPaperStore(store);
+  if (trade.status === 'OPEN') {
+    publishRecommendedSourceOpen('liquid', trade, {
+      price: trade.entryPrice,
+      at: Date.parse(trade.openedAt ?? trade.createdAt),
+      source: 'liquid-source-open-event',
+    });
+  }
   syncPaperTickerSymbols().catch(() => {});
   scheduleLiquidPaperBroadcast(100);
   const markPrice = await getPaperMark(symbol).catch(() => null);
@@ -11990,6 +12675,75 @@ async function createLiquidPaperTrade(payload) {
     if (filled) return { trade: enrichPaperTrade(filled, markPrice), file: 'data/liquid-paper-trades.json' };
   }
   return { trade: enrichPaperTrade(trade, entryPrice), file: 'data/liquid-paper-trades.json' };
+}
+
+let liquidScanAutoPaperTimer = null;
+let liquidScanAutoPaperRunning = false;
+
+async function runLiquidScanAutoPaper() {
+  if (liquidScanAutoPaperRunning || process.env.LIQUID_SCAN_AUTO_PAPER_ENABLED === 'false') return null;
+  liquidScanAutoPaperRunning = true;
+  const startedAt = Date.now();
+  try {
+    const interval = ['5m', '15m', '30m', '1h', '4h'].includes(process.env.LIQUID_SCAN_AUTO_PAPER_TIMEFRAME)
+      ? process.env.LIQUID_SCAN_AUTO_PAPER_TIMEFRAME
+      : '15m';
+    const limit = Math.max(10, Math.min(200, Number(process.env.LIQUID_SCAN_AUTO_PAPER_LIMIT ?? 200)));
+    const minVolumeUsdt = Math.max(0, Number(process.env.LIQUID_SCAN_AUTO_PAPER_MIN_VOLUME ?? 0));
+    const minPoint = Math.max(1, Math.min(99, Number(process.env.LIQUID_SCAN_AUTO_PAPER_MIN_POINT ?? 75)));
+    const minDistancePct = Math.max(0, Number(process.env.LIQUID_SCAN_AUTO_PAPER_MIN_DIST_PCT ?? 1));
+    const marginUsdt = Math.max(0.01, Number(process.env.LIQUID_SCAN_AUTO_PAPER_MARGIN ?? 10));
+    const leverage = Math.max(1, Math.min(125, Number(process.env.LIQUID_SCAN_AUTO_PAPER_LEVERAGE ?? 10)));
+    const dedupeMs = Math.max(60_000, Number(process.env.LIQUID_SCAN_AUTO_PAPER_DEDUPE_MS ?? 4 * 60 * 60 * 1000));
+
+    const [scan, store] = await Promise.all([
+      runLiquidScan({ interval, limit, minVolumeUsdt }),
+      readLiquidPaperStore(),
+    ]);
+    const existing = Array.isArray(store.trades) ? store.trades : [];
+    const candidates = selectLiquidScanAutoPaperRows(scan.rows ?? [], existing, {
+      minPoint,
+      minDistancePct,
+      dedupeMs,
+    });
+    const results = [];
+    for (const row of candidates) {
+      try {
+        const payload = buildLiquidScanAutoPaperPayload(row, {
+          marginUsdt,
+          shadowCapUsdt: Number(process.env.LIQUID_SCAN_AUTO_PAPER_SHADOW_MARGIN_USDT ?? 1),
+          leverage,
+          minPoint,
+          signalTimeframe: interval,
+        });
+        const createdTrade = await createLiquidPaperTrade(payload);
+        results.push({ symbol: row.symbol, side: payload.side, id: createdTrade?.trade?.id ?? null, ok: true });
+      } catch (error) {
+        results.push({ symbol: row.symbol, side: row.entryPlan?.side ?? null, error: error.message, ok: false });
+      }
+    }
+    const created = results.filter((row) => row.ok).length;
+    const failed = results.length - created;
+    console.log(`[LiquidScanAutoPaper] scanned=${scan.processed ?? 0}/${scan.requested ?? limit} eligible=${candidates.length} created=${created} failed=${failed} durationMs=${Date.now() - startedAt}`);
+    if (failed) console.warn('[LiquidScanAutoPaper] create failures:', results.filter((row) => !row.ok).slice(0, 10));
+    return { scanned: scan.processed ?? 0, eligible: candidates.length, created, failed, results };
+  } catch (error) {
+    console.warn('[LiquidScanAutoPaper] scan failed:', error.message);
+    return { scanned: 0, eligible: 0, created: 0, failed: 1, error: error.message };
+  } finally {
+    liquidScanAutoPaperRunning = false;
+  }
+}
+
+function startLiquidScanAutoPaperScheduler() {
+  if (process.env.LIQUID_SCAN_AUTO_PAPER_ENABLED === 'false' || liquidScanAutoPaperTimer) return;
+  const intervalMs = Math.max(60_000, Number(process.env.LIQUID_SCAN_AUTO_PAPER_INTERVAL_MS ?? 15 * 60 * 1000));
+  const initialDelayMs = Math.max(1_000, Number(process.env.LIQUID_SCAN_AUTO_PAPER_INITIAL_DELAY_MS ?? 15_000));
+  const initialTimer = setTimeout(() => runLiquidScanAutoPaper().catch(() => {}), initialDelayMs);
+  initialTimer.unref?.();
+  liquidScanAutoPaperTimer = setInterval(() => runLiquidScanAutoPaper().catch(() => {}), intervalMs);
+  liquidScanAutoPaperTimer.unref?.();
+  console.log(`[LiquidScanAutoPaper] scheduler started interval=${intervalMs}ms initialDelay=${initialDelayMs}ms`);
 }
 
 async function closePaperTrade(payload) {
@@ -12355,6 +13109,11 @@ async function fillPendingLiquidPaperTrade(trade, markPrice) {
   await writeLiquidPaperStore(store);
   scheduleLiquidPaperBroadcast(100);
   console.log(`[LiquidPaper] ✅ FILLED ${current.symbol} ${current.side} setupEntry=${setupEntryPrice} socketEntry=${fillPrice}`);
+  publishRecommendedSourceOpen('liquid', store.trades[idx], {
+    price: fillPrice,
+    at: Date.now(),
+    source: 'liquid-fill-socket-event',
+  });
   return store.trades[idx];
 }
 
@@ -12379,7 +13138,7 @@ async function processLiquidPaperPendingFillsForSymbol(symbol, markPrice) {
     const store = await readLiquidPaperStore();
     let dirty = false;
     for (let i = 0; i < store.trades.length; i++) {
-      const t = store.trades[i];
+      let t = store.trades[i];
       if (t.symbol !== symbol) continue;
       if (t.status === 'PENDING' && paperEntryTouched(t, markPrice)) {
         await fillPendingLiquidPaperTrade(t, markPrice);
@@ -12387,6 +13146,45 @@ async function processLiquidPaperPendingFillsForSymbol(symbol, markPrice) {
       }
       if (t.status !== 'OPEN') continue;
       const isLong = t.side === 'LONG';
+      const entry = Number(t.entryPrice);
+      const quantity = Number(t.quantity);
+      const margin = Number(t.marginUsdt);
+      const leverage = Math.max(1, Number(t.leverage) || 1);
+      const livePnl = (Number(markPrice) - entry) * quantity * (isLong ? 1 : -1);
+      const liveRoe = margin > 0 ? livePnl / margin * 100 : 0;
+      const progressiveEnabled = process.env.LIQUID_SCAN_PAPER_PROGRESSIVE_SL_ENABLED !== 'false'
+        && t.liquidEvalVersion === 'LIQUID_SHADOW_V2_20260722';
+      if (progressiveEnabled && Number.isFinite(liveRoe)) {
+        const previousPeak = liquidPaperPeakRoe.get(t.id) ?? Number(t.peakRoe ?? 0);
+        const peakRoe = Math.max(previousPeak, liveRoe);
+        liquidPaperPeakRoe.set(t.id, peakRoe);
+        const targetLockRoe = liquidScanTrailLockRoe(peakRoe);
+        const currentLockRoe = Number(t.slTrailLockRoe ?? -Infinity);
+        if (targetLockRoe != null && targetLockRoe > currentLockRoe) {
+          const lockMove = targetLockRoe / 100 / leverage;
+          const newSl = isLong ? entry * (1 + lockMove) : entry * (1 - lockMove);
+          const currentSl = Number(t.stopLossPrice ?? 0);
+          const improves = !Number.isFinite(currentSl) || currentSl <= 0
+            || (isLong ? newSl > currentSl : newSl < currentSl);
+          const remainsBehindMark = isLong ? newSl < Number(markPrice) : newSl > Number(markPrice);
+          if (Number.isFinite(newSl) && newSl > 0 && improves && remainsBehindMark) {
+            store.trades[i] = {
+              ...t,
+              stopLossPrice: newSl,
+              peakRoe,
+              slTrailLockRoe: targetLockRoe,
+              slTrailUpdatedAt: new Date().toISOString(),
+              note: [
+                String(t.note ?? ''),
+                `liquidProgressiveSl=${targetLockRoe}%@${newSl}; peak=${peakRoe.toFixed(1)}%`,
+              ].filter(Boolean).join(' | ').slice(0, 700),
+            };
+            t = store.trades[i];
+            dirty = true;
+            console.log(`[LiquidPaper] SL_TRAIL ${symbol} ${t.side} peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% sl=${newSl}`);
+          }
+        }
+      }
       const tp = Number(t.takeProfitPrice ?? 0);
       const sl = Number(t.stopLossPrice ?? 0);
       const tpHit = tp > 0 && (isLong ? markPrice >= tp : markPrice <= tp);
@@ -12397,16 +13195,22 @@ async function processLiquidPaperPendingFillsForSymbol(symbol, markPrice) {
       const sideMult = isLong ? 1 : -1;
       const pnl = (exitPrice - Number(t.entryPrice)) * Number(t.quantity) * sideMult;
       const roe = Number(t.marginUsdt) > 0 ? (pnl / Number(t.marginUsdt)) * 100 : 0;
+      const financial = liquidPaperFinancialMetrics({ ...t, status: 'CLOSED', exitPrice }, exitPrice, getLiquidPaperFeeRate());
       store.trades[i] = {
         ...t,
         status: 'CLOSED',
         exitPrice,
         pnl,
         roe,
+        ...financial,
         closedAt: new Date().toISOString(),
         outcome,
-        closeNote: `Auto-closed: ${outcome} hit @ ${markPrice}`,
+        closeType: outcome === 'SL' && t.slTrailLockRoe != null ? 'SL_TRAIL' : outcome,
+        closeNote: outcome === 'SL' && t.slTrailLockRoe != null
+          ? `Auto-closed: progressive SL ${t.slTrailLockRoe}% hit @ ${markPrice}`
+          : `Auto-closed: ${outcome} hit @ ${markPrice}`,
       };
+      liquidPaperPeakRoe.delete(t.id);
       dirty = true;
       console.log(`[LiquidPaper] 🎯 ${outcome} hit ${symbol} ${t.side} exit=${markPrice} (${outcome === 'TP' ? 'tp' : 'sl'}=${outcome === 'TP' ? tp : sl})`);
     }
@@ -12497,27 +13301,45 @@ function startLiquidPaperRestPoller() {
 // Ghi ra .tmp trước, rename sau → nếu crash giữa chừng file gốc không bị corrupt
 async function atomicWriteJson(filePath, data) {
   const tmp = filePath + '.tmp';
-  await writeFile(tmp, JSON.stringify(data, null, 2));
+  const payload = PAPER_CANDLE_LOG_FILES.has(filePath)
+    ? attachCandlePatternsToPaperStore(data)
+    : data;
+  if (payload && typeof payload === 'object' && Array.isArray(payload.trades)) {
+    await writePumpPaperSnapshot(tmp, payload);
+  } else {
+    await writeFile(tmp, JSON.stringify(payload));
+  }
   await rename(tmp, filePath);
 }
 
 // ── Cap paper trade system (separate from liquidation paper trades) ──────────
 
+let _capPaperStoreCache = null;
+let _capPaperStoreLoadPromise = null;
 async function readCapPaperStore() {
-  try {
-    const raw = await readFile(CAP_PAPER_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
-    return parsed;
-  } catch (e) {
-    if (e.code !== 'ENOENT') console.warn('[CapPaper] Store read error, starting fresh:', e.message);
-    return { trades: [] };
-  }
+  if (_capPaperStoreCache) return _capPaperStoreCache;
+  if (_capPaperStoreLoadPromise) return _capPaperStoreLoadPromise;
+  _capPaperStoreLoadPromise = (async () => {
+    try {
+      const raw = await readFile(CAP_PAPER_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+      _capPaperStoreCache = parsed;
+    } catch (e) {
+      if (e.code !== 'ENOENT') console.warn('[CapPaper] Store read error, starting fresh:', e.message);
+      _capPaperStoreCache = { trades: [] };
+    } finally {
+      _capPaperStoreLoadPromise = null;
+    }
+    return _capPaperStoreCache;
+  })();
+  return _capPaperStoreLoadPromise;
 }
 
 let _capPaperWriteLock = Promise.resolve();
 async function writeCapPaperStore(store) {
   // Serialize writes + atomic (tmp → rename) để tránh corrupt khi crash giữa chừng
+  _capPaperStoreCache = store;
   _capPaperWriteLock = _capPaperWriteLock.then(() => atomicWriteJson(CAP_PAPER_FILE, store));
   return _capPaperWriteLock;
 }
@@ -13242,13 +14064,16 @@ let _pumpPaperStoreLoadPromise = null;
 let _pumpPaperWriteRunning = false;
 let _pumpPaperWritePending = false;
 let _pumpPaperWriteWaiters = [];
+let _pumpPaperArchiveWrite = Promise.resolve();
 let _pumpPaperDerivedCacheVersion = 0;
 let _pumpPaperDayIndexCache = null;
+let _pumpPaperActiveIndexCache = null;
 const _pumpPaperMemoCache = new Map();
 
 function invalidatePumpPaperDerivedCache() {
   _pumpPaperDerivedCacheVersion += 1;
   _pumpPaperDayIndexCache = null;
+  _pumpPaperActiveIndexCache = null;
   _pumpPaperMemoCache.clear();
 }
 
@@ -13290,6 +14115,51 @@ function pumpPaperMemo(key, build) {
   return value;
 }
 
+async function writePumpPaperSnapshot(filePath, store) {
+  const output = createWriteStream(filePath, { encoding: 'utf8' });
+  const write = async (chunk) => {
+    if (output.write(chunk)) return;
+    await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        output.off('drain', onDrain);
+        output.off('error', onError);
+      };
+      const onDrain = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error) => {
+        cleanup();
+        reject(error);
+      };
+      output.once('drain', onDrain);
+      output.once('error', onError);
+    });
+  };
+  try {
+    const metadata = Object.entries(store ?? {}).filter(([key]) => key !== 'trades');
+    await write('{');
+    for (const [key, value] of metadata) {
+      await write(`${JSON.stringify(key)}:${JSON.stringify(value)},`);
+    }
+    await write('"trades":[');
+    const trades = Array.isArray(store?.trades) ? store.trades : [];
+    const batchSize = 100;
+    for (let index = 0; index < trades.length; index += batchSize) {
+      const chunk = trades
+        .slice(index, index + batchSize)
+        .map((trade) => JSON.stringify(trade))
+        .join(',');
+      await write(`${index > 0 ? ',' : ''}${chunk}`);
+    }
+    output.end(']}');
+    await finished(output);
+  } catch (error) {
+    output.destroy(error);
+    throw error;
+  }
+}
+
 async function drainPumpPaperWrites() {
   if (_pumpPaperWriteRunning) return;
   _pumpPaperWriteRunning = true;
@@ -13298,9 +14168,11 @@ async function drainPumpPaperWrites() {
       _pumpPaperWritePending = false;
       const waiters = _pumpPaperWriteWaiters.splice(0);
       try {
-        // Compact JSON cuts both disk usage and temporary stringify memory substantially.
+        // Stream the large store in small batches. JSON.stringify(store) used to
+        // allocate a second 260MB+ string plus encoder buffers on every mark
+        // update, driving V8 into multi-GB GC churn.
         const tmp = `${PUMP_PAPER_FILE}.tmp`;
-        await writeFile(tmp, JSON.stringify(_pumpPaperStoreCache));
+        await writePumpPaperSnapshot(tmp, _pumpPaperStoreCache);
         await rename(tmp, PUMP_PAPER_FILE);
         waiters.forEach(({ resolve }) => resolve());
       } catch (err) {
@@ -13313,17 +14185,76 @@ async function drainPumpPaperWrites() {
   }
 }
 
+function queuePumpPaperArchive(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return _pumpPaperArchiveWrite;
+  const payload = `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`;
+  _pumpPaperArchiveWrite = _pumpPaperArchiveWrite.then(async () => {
+    await mkdir(join(rootDir, 'data', 'archive'), { recursive: true });
+    await appendFile(PUMP_PAPER_ARCHIVE_FILE, payload, 'utf8');
+    console.log(`[PumpPaper] Archived ${rows.length} overflow trade(s); active store capped at ${PUMP_PAPER_MAX_ACTIVE_ROWS}.`);
+  }).catch((error) => {
+    console.warn('[PumpPaper] Archive write failed:', error.message);
+    throw error;
+  });
+  return _pumpPaperArchiveWrite;
+}
+
+function getPumpPaperActiveIndex(store) {
+  if (_pumpPaperActiveIndexCache?.version === _pumpPaperDerivedCacheVersion) {
+    return _pumpPaperActiveIndexCache;
+  }
+  const emaBySymbol = new Map();
+  const pumpBySymbol = new Map();
+  const ema = [];
+  const pump = [];
+  const append = (map, symbol, trade) => {
+    if (!map.has(symbol)) map.set(symbol, []);
+    map.get(symbol).push(trade);
+  };
+  for (const trade of Array.isArray(store?.trades) ? store.trades : []) {
+    if (!['OPEN', 'PENDING'].includes(String(trade?.status ?? '').toUpperCase())) continue;
+    const symbol = String(trade?.symbol ?? '').toUpperCase();
+    if (!symbol) continue;
+    if (String(trade?.source ?? '').startsWith('emasq-')) {
+      ema.push(trade);
+      append(emaBySymbol, symbol, trade);
+    } else {
+      pump.push(trade);
+      append(pumpBySymbol, symbol, trade);
+    }
+  }
+  _pumpPaperActiveIndexCache = {
+    version: _pumpPaperDerivedCacheVersion,
+    ema,
+    pump,
+    emaBySymbol,
+    pumpBySymbol,
+  };
+  return _pumpPaperActiveIndexCache;
+}
+
 function writePumpPaperStore(store) {
-  _pumpPaperStoreCache = store;
+  const allTrades = Array.isArray(store?.trades) ? store.trades : [];
+  const overflow = allTrades.length > PUMP_PAPER_MAX_ACTIVE_ROWS
+    ? allTrades.slice(PUMP_PAPER_MAX_ACTIVE_ROWS)
+    : [];
+  _pumpPaperStoreCache = overflow.length
+    ? { ...store, trades: allTrades.slice(0, PUMP_PAPER_MAX_ACTIVE_ROWS) }
+    : store;
   invalidatePumpPaperDerivedCache();
   _pumpPaperWritePending = true;
   const result = new Promise((resolve, reject) => {
     _pumpPaperWriteWaiters.push({ resolve, reject });
   });
-  drainPumpPaperWrites().catch(() => {});
-  return result;
+  if (!overflow.length) {
+    drainPumpPaperWrites().catch(() => {});
+    return result;
+  }
+  return queuePumpPaperArchive(overflow).then(() => {
+    drainPumpPaperWrites().catch(() => {});
+    return result;
+  });
 }
-
 function getPumpPaperMarkFreshMs() {
   const freshMs = Number(process.env.PUMP_PAPER_MARK_STALE_MS
     ?? process.env.EMA_SQUEEZE_PAPER_MARK_STALE_MS
@@ -13347,6 +14278,15 @@ function getFreshPumpPaperMarkInfo(symbol) {
   if (Number.isFinite(sharedMark) && sharedMark > 0 && sharedAt && now - sharedAt <= freshMs) {
     return { mark: sharedMark, at: sharedAt, source: 'sharedSocket' };
   }
+  const restAt = Number(pumpPaperRestMarkCacheAt.get(sym) ?? 0);
+  const restMark = Number(pumpPaperRestMarkCache.get(sym));
+  const restFreshMs = Math.max(
+    freshMs,
+    Number(process.env.PUMP_PAPER_REST_MARK_FRESH_MS ?? 90_000),
+  );
+  if (Number.isFinite(restMark) && restMark > 0 && restAt && now - restAt <= restFreshMs) {
+    return { mark: restMark, at: restAt, source: 'restPremiumIndex' };
+  }
   return null;
 }
 
@@ -13356,6 +14296,93 @@ function getFreshPumpPaperMark(symbol) {
 
 function getPumpPaperMarkUpdatedAt(symbol) {
   return getFreshPumpPaperMarkInfo(symbol)?.at ?? null;
+}
+
+function getFreshEmaSqueezeMarkInfo(symbol) {
+  const sym = String(symbol ?? '').toUpperCase();
+  if (!sym) return null;
+  const now = Date.now();
+  const socketFreshMs = Number(process.env.EMA_SQUEEZE_PAPER_MARK_STALE_MS ?? 15_000);
+  const socketMark = Number(emaSqueezeSocketMarks.get(sym));
+  const socketAt = Number(emaSqueezeSocketMarkAt.get(sym) ?? 0);
+  if (Number.isFinite(socketMark) && socketMark > 0 && socketAt && now - socketAt <= socketFreshMs) {
+    return { mark: socketMark, at: socketAt, source: 'emaSocket' };
+  }
+  const sharedInfo = sharedLastTicker.getPriceInfo?.(sym);
+  const sharedMark = Number(sharedInfo?.markPrice ?? sharedInfo?.price);
+  const sharedAt = Number(sharedInfo?.updatedAt ?? sharedInfo?.eventTime ?? sharedInfo?.at ?? 0);
+  if (Number.isFinite(sharedMark) && sharedMark > 0 && sharedAt && now - sharedAt <= socketFreshMs) {
+    return { mark: sharedMark, at: sharedAt, source: 'sharedSocket' };
+  }
+  const restAt = Number(pumpPaperRestMarkCacheAt.get(sym) ?? 0);
+  const restMark = Number(pumpPaperRestMarkCache.get(sym));
+  const restFreshMs = Math.max(
+    socketFreshMs,
+    Number(process.env.PUMP_PAPER_REST_MARK_FRESH_MS ?? 90_000),
+  );
+  if (Number.isFinite(restMark) && restMark > 0 && restAt && now - restAt <= restFreshMs) {
+    return { mark: restMark, at: restAt, source: 'restPremiumIndex' };
+  }
+  return null;
+}
+
+async function refreshPumpPaperRestMarks() {
+  if (pumpPaperRestMarkRefreshRunning) return;
+  pumpPaperRestMarkRefreshRunning = true;
+  try {
+    const store = await readPumpPaperStore();
+    const activeIndex = getPumpPaperActiveIndex(store);
+    const activeRows = [...activeIndex.pump, ...activeIndex.ema];
+    const activeSymbols = new Set(activeRows
+      .map((trade) => String(trade.symbol ?? '').toUpperCase())
+      .filter(Boolean));
+    if (!activeSymbols.size) return;
+
+    const rows = await client.getPremiumIndex(undefined, {
+      priority: 2,
+      dropOnCongestion: true,
+      source: 'pumpPaper:restMarkFallback',
+    });
+    if (!Array.isArray(rows)) return;
+    const refreshedAt = Date.now();
+    let refreshed = 0;
+    for (const row of rows) {
+      const symbol = String(row?.symbol ?? '').toUpperCase();
+      if (!activeSymbols.has(symbol)) continue;
+      const mark = Number(row?.markPrice);
+      if (!Number.isFinite(mark) || mark <= 0) continue;
+      pumpPaperRestMarkCache.set(symbol, mark);
+      pumpPaperRestMarkCacheAt.set(symbol, refreshedAt);
+      refreshed += 1;
+    }
+
+    // Only feed EMA management when its socket is stale. Native Pump rows are
+    // already evaluated by processPumpPaperCachedMarks() once per second.
+    const staleEmaSymbols = [...activeIndex.emaBySymbol.keys()]
+      .filter((symbol) => {
+        const socketAt = Number(emaSqueezeSocketMarkAt.get(symbol) ?? 0);
+        const socketFreshMs = Number(process.env.EMA_SQUEEZE_PAPER_MARK_STALE_MS ?? 15_000);
+        return !socketAt || refreshedAt - socketAt > socketFreshMs;
+      });
+    const manageBatchSize = Math.max(
+      1,
+      Number(process.env.PUMP_PAPER_REST_MANAGE_BATCH_SIZE ?? 20),
+    );
+    const manageCount = Math.min(manageBatchSize, staleEmaSymbols.length);
+    for (let index = 0; index < manageCount; index += 1) {
+      const symbol = staleEmaSymbols[(pumpPaperRestManageCursor + index) % staleEmaSymbols.length];
+      const mark = Number(pumpPaperRestMarkCache.get(symbol));
+      if (Number.isFinite(mark) && mark > 0) queueEmaSqueezePaperProcessing(symbol, mark);
+    }
+    if (staleEmaSymbols.length) {
+      pumpPaperRestManageCursor = (pumpPaperRestManageCursor + manageCount) % staleEmaSymbols.length;
+    }
+    if (refreshed) scheduleEmaSqueezePaperBroadcast(50);
+  } catch (error) {
+    console.warn('[PumpPaper] REST mark fallback failed:', error.message);
+  } finally {
+    pumpPaperRestMarkRefreshRunning = false;
+  }
 }
 
 function normalizePumpComboPart(value, fallback = '-') {
@@ -13540,6 +14567,197 @@ function pumpSignalAutoPaperMarginUsdt(input = {}) {
   return 10;
 }
 
+function isNativePumpEvalSource(source) {
+  return /^pump-\d+(?:-|$)/i.test(String(source ?? ''));
+}
+
+function getEmaPaperFeeRate() {
+  const feeRate = Number(
+    process.env.EMA_SQUEEZE_PAPER_FEE_RATE
+      ?? process.env.BINANCE_FUTURES_TAKER_FEE_RATE
+      ?? process.env.BINANCE_FEE_RATE
+      ?? 0.0004,
+  );
+  return Number.isFinite(feeRate) && feeRate >= 0 ? feeRate : 0.0004;
+}
+
+function estimateEmaPaperFeeUsdt(trade, exitOrMarkPrice) {
+  if (!trade || String(trade.status ?? '').toUpperCase() === 'PENDING') return null;
+  const entry = Number(trade.entryPrice);
+  const exit = Number(exitOrMarkPrice ?? trade.exitPrice ?? trade.markPrice ?? trade.entryPrice);
+  const savedQty = Math.abs(Number(trade.originalQuantity ?? trade.quantity));
+  const margin = Number(trade.marginUsdt ?? trade.marginUsd ?? trade.margin ?? trade.orderUsdt);
+  const leverage = Number(trade.leverage);
+  const inferredQty = Number.isFinite(margin) && margin > 0
+    && Number.isFinite(leverage) && leverage > 0
+    && Number.isFinite(entry) && entry > 0
+    ? (margin * leverage) / entry
+    : NaN;
+  const qty = Number.isFinite(savedQty) && savedQty > 0 ? savedQty : inferredQty;
+  if (![entry, exit, qty].every(Number.isFinite) || entry <= 0 || exit <= 0 || qty <= 0) return null;
+  return (Math.abs(entry * qty) + Math.abs(exit * qty)) * getEmaPaperFeeRate();
+}
+
+function nativePumpEvalGateOfSignal(input = {}, health = {}, corrOverride = null) {
+  const factors = input.factors ?? input.pumpSignalFactors ?? {};
+  const interval = String(input.interval
+    ?? input.timeframe
+    ?? input.pumpSignalTimeframe
+    ?? factors.timeframe
+    ?? '15m').toLowerCase();
+  const rawCorr = corrOverride ?? input.btcCorr;
+  const corrValue = rawCorr == null ? NaN : Number(rawCorr);
+  const btcCorr = Number.isFinite(corrValue)
+    ? corrValue
+    : input.symbol
+      ? getCoinBtcCorr(input.symbol, interval, 30)
+      : null;
+  const gate = getPumpEvalGate({
+    side: input.action ?? input.side,
+    type: input.type ?? input.pumpSignalType ?? input.signalType,
+    interval,
+    score: input.score ?? input.pumpScore ?? Number(String(input.source ?? '').match(/^pump-(\d+)/i)?.[1]),
+    volRatio: factors.volRatio ?? factors.volume ?? factors.volNowX,
+    chasePct: factors.chasePct,
+    marketOk: input.marketOk ?? input.pumpSignalMarketOk,
+    btcTrendDir: health?.btcTrendDir ?? input.btcTrendDir,
+    btcTrendScore: health?.btcTrendScore ?? input.btcTrendScore,
+    btcPct6h: health?.pct6h ?? input.btcPct6h,
+    btcCorr,
+    hour: getBangkokHour(),
+  });
+  return gate ? { ...gate, btcCorr: Number.isFinite(Number(btcCorr)) ? Number(btcCorr) : null } : null;
+}
+
+function normalizePumpStage2Tier(value, fallback = 'WATCH') {
+  const tier = String(value ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/\+/g, '_PLUS')
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return ['WATCH_PLUS', 'WATCH', 'RISK'].includes(tier) ? tier : fallback;
+}
+
+function pumpStage2RuleOfTrade(trade = {}) {
+  if (!isNativePumpEvalSource(trade.source)) return null;
+  const savedTier = normalizePumpStage2Tier(trade.pumpStage2Tier, '');
+  if (savedTier && trade.pumpStage2Version) {
+    return {
+      observationOnly: true,
+      tier: savedTier,
+      code: trade.pumpStage2Code ?? 'PUMP_S2_SAVED',
+      label: trade.pumpStage2Label ?? savedTier.replace('_PLUS', '+'),
+      reason: trade.pumpStage2Reason ?? 'Pump Stage 2 snapshot đã lưu tại entry.',
+      contextKey: trade.pumpStage2ContextKey ?? null,
+      version: trade.pumpStage2Version,
+      derived: false,
+    };
+  }
+  const factors = trade.pumpSignalFactors ?? trade.factors ?? {};
+  const health = trade.btcHealth ?? {};
+  const rule = getPumpStage2Rule({
+    side: trade.side ?? trade.action,
+    type: trade.pumpSignalType ?? trade.type ?? trade.signalType,
+    interval: trade.pumpSignalTimeframe ?? trade.interval ?? factors.timeframe ?? '15m',
+    score: trade.pumpScore ?? trade.score ?? Number(String(trade.source ?? '').match(/^pump-(\d+)/i)?.[1]),
+    volRatio: factors.volRatio ?? factors.volume ?? factors.volNowX,
+    chasePct: factors.chasePct,
+    btcTrendDir: health.btcTrendDir ?? trade.btcTrendDir,
+    btcTrendScore: health.btcTrendScore ?? trade.btcTrendScore,
+    btcPct6h: health.pct6h ?? trade.btcPct6h,
+    btcCorr: trade.btcCorr,
+    candlePattern: trade.candlePatternAtEntry,
+    btcCandlePattern: trade.btcCandlePatternAtEntry,
+  });
+  return { ...rule, derived: true };
+}
+
+function enrichPumpStage2Trade(trade = {}) {
+  const rule = pumpStage2RuleOfTrade(trade);
+  if (!rule) return trade;
+  return {
+    ...trade,
+    pumpStage2Tier: rule.tier,
+    pumpStage2Code: rule.code,
+    pumpStage2Label: rule.label,
+    pumpStage2Reason: rule.reason,
+    pumpStage2ContextKey: rule.contextKey,
+    pumpStage2Version: rule.version,
+    pumpStage2Derived: rule.derived === true,
+    pumpStage2ObservationOnly: true,
+  };
+}
+
+function buildPumpStage2Stats(storedTrades = []) {
+  const makeBucket = (tier, label) => ({
+    tier,
+    label,
+    total: 0,
+    open: 0,
+    pending: 0,
+    closed: 0,
+    wins: 0,
+    losses: 0,
+    realizedPnl: 0,
+    roeSum: 0,
+    activeTrades: [],
+  });
+  const buckets = {
+    WATCH_PLUS: makeBucket('WATCH_PLUS', 'WATCH+'),
+    WATCH: makeBucket('WATCH', 'WATCH'),
+    RISK: makeBucket('RISK', 'RISK'),
+  };
+  for (const raw of storedTrades) {
+    const trade = enrichPumpStage2Trade(raw);
+    const tier = normalizePumpStage2Tier(trade.pumpStage2Tier, '');
+    const row = buckets[tier];
+    if (!row) continue;
+    row.total += 1;
+    if (trade.status === 'CLOSED') {
+      const pnl = Number(trade.netPnl ?? trade.pnl ?? 0);
+      const roe = Number(trade.netRoe ?? trade.roe ?? 0);
+      row.closed += 1;
+      row.realizedPnl += Number.isFinite(pnl) ? pnl : 0;
+      row.roeSum += Number.isFinite(roe) ? roe : 0;
+      if (pnl > 0) row.wins += 1;
+      else if (pnl < 0) row.losses += 1;
+    } else if (trade.status === 'PENDING') {
+      row.pending += 1;
+    } else {
+      row.open += 1;
+      row.activeTrades.push(raw);
+    }
+  }
+  return buckets;
+}
+
+function finalizePumpStage2Stats(buckets, markForTrade = () => null) {
+  return ['WATCH_PLUS', 'WATCH', 'RISK'].map((tier) => {
+    const row = buckets[tier];
+    const unrealizedPnl = row.activeTrades.reduce((sum, raw) => {
+      const trade = enrichPumpPaperTrade(raw, markForTrade(raw));
+      const pnl = Number(trade.netPnl ?? trade.pnl ?? 0);
+      return sum + (Number.isFinite(pnl) ? pnl : 0);
+    }, 0);
+    return {
+      tier: row.tier,
+      label: row.label,
+      total: row.total,
+      open: row.open,
+      pending: row.pending,
+      closed: row.closed,
+      wins: row.wins,
+      losses: row.losses,
+      wr: row.closed > 0 ? +(row.wins / row.closed * 100).toFixed(1) : null,
+      avgRoe: row.closed > 0 ? +(row.roeSum / row.closed).toFixed(1) : null,
+      realizedPnl: +row.realizedPnl.toFixed(4),
+      unrealizedPnl: +unrealizedPnl.toFixed(4),
+      pnl: +(row.realizedPnl + unrealizedPnl).toFixed(4),
+    };
+  });
+}
+
 function enrichPumpPaperTrade(t, markPrice) {
   const liveMark = Number(markPrice);
   const hasLiveMark = Number.isFinite(liveMark) && liveMark > 0;
@@ -13560,18 +14778,73 @@ function enrichPumpPaperTrade(t, markPrice) {
   const roe = isActive && margin > 0
     ? (pnl == null ? null : (pnl / margin) * 100)
     : (t.roe ?? null);
+  const feeExitPrice = isActive
+    ? mark
+    : Number(t.exitPrice ?? t.markPrice ?? t.entryPrice);
+  const feeRate = getEmaPaperFeeRate();
+  const estimatedFeeUsdt = isEmaSqueeze && pnl != null
+    ? estimateEmaPaperFeeUsdt(t, feeExitPrice)
+    : null;
+  const netPnl = isEmaSqueeze && pnl != null
+    ? Number(pnl) - Number(estimatedFeeUsdt ?? 0)
+    : pnl;
+  const netRoe = margin > 0 && netPnl != null ? (netPnl / margin) * 100 : null;
+  const liveMarkInfo = isEmaSqueeze
+    ? getFreshEmaSqueezeMarkInfo(t.symbol)
+    : getFreshPumpPaperMarkInfo(t.symbol);
   return {
     ...t,
     markPrice: mark,
-    markUpdatedAt: isEmaSqueeze
-      ? (emaSqueezeSocketMarkAt.get(String(t.symbol ?? '').toUpperCase()) ?? null)
-      : getPumpPaperMarkUpdatedAt(t.symbol),
+    markUpdatedAt: liveMarkInfo?.at ?? null,
+    markSource: liveMarkInfo?.source ?? null,
     pnl,
     roe,
+    grossPnl: pnl,
+    feeRate: isEmaSqueeze ? feeRate : null,
+    estimatedFeeUsdt,
+    feeUsdt: estimatedFeeUsdt,
+    netPnl,
+    netRoe,
   };
 }
 
-function summarizePaperMarginStats(trades = []) {
+function emaPaperFinancialMetrics(t, markPrice = null) {
+  const status = String(t?.status ?? '').toUpperCase();
+  const isOpen = status === 'OPEN';
+  const entry = Number(t?.entryPrice);
+  const qty = Number(t?.quantity);
+  const margin = Number(t?.marginUsdt);
+  const mark = Number(markPrice);
+  const sideMult = String(t?.side ?? '').toUpperCase() === 'LONG' ? 1 : -1;
+  const realizedPnl = Number(t?.realizedPnl ?? 0);
+  const grossPnl = isOpen
+    ? (Number.isFinite(mark) && mark > 0 && Number.isFinite(entry) && Number.isFinite(qty)
+      ? realizedPnl + (mark - entry) * qty * sideMult
+      : null)
+    : Number(t?.grossPnl ?? t?.pnl);
+  const feeExitPrice = isOpen ? mark : Number(t?.exitPrice ?? t?.markPrice ?? t?.entryPrice);
+  const hasSavedFee = t?.estimatedFeeUsdt != null && Number.isFinite(Number(t.estimatedFeeUsdt));
+  const estimatedFeeUsdt = hasSavedFee
+    ? Number(t.estimatedFeeUsdt)
+    : grossPnl == null
+      ? null
+      : estimateEmaPaperFeeUsdt(t, feeExitPrice);
+  const hasSavedNetPnl = t?.netPnl != null && Number.isFinite(Number(t.netPnl));
+  const netPnl = hasSavedNetPnl
+    ? Number(t.netPnl)
+    : grossPnl == null
+      ? null
+      : Number(grossPnl) - Number(estimatedFeeUsdt ?? 0);
+  const hasSavedNetRoe = t?.netRoe != null && Number.isFinite(Number(t.netRoe));
+  const netRoe = hasSavedNetRoe
+    ? Number(t.netRoe)
+    : margin > 0 && netPnl != null
+      ? (netPnl / margin) * 100
+      : Number(t?.roe);
+  return { grossPnl, estimatedFeeUsdt, netPnl, netRoe };
+}
+
+function summarizePaperMarginStats(trades = [], { useNet = false } = {}) {
   const groups = {
     test10: { label: 'TEST $10', total: 0, open: 0, pending: 0, closed: 0, wins: 0, losses: 0, realizedPnl: 0, unrealizedPnl: 0, roeSum: 0 },
     test1: { label: 'TEST $1', total: 0, open: 0, pending: 0, closed: 0, wins: 0, losses: 0, realizedPnl: 0, unrealizedPnl: 0, roeSum: 0 },
@@ -13586,11 +14859,12 @@ function summarizePaperMarginStats(trades = []) {
   for (const trade of trades) {
     const row = pick(trade.marginUsdt);
     row.total += 1;
-    const pnl = Number(trade.pnl ?? 0);
+    const pnl = Number(useNet ? (trade.netPnl ?? trade.pnl ?? 0) : (trade.pnl ?? 0));
+    const roe = Number(useNet ? (trade.netRoe ?? trade.roe ?? 0) : (trade.roe ?? 0));
     if (trade.status === 'CLOSED') {
       row.closed += 1;
       row.realizedPnl += pnl;
-      row.roeSum += Number(trade.roe ?? 0);
+      row.roeSum += roe;
       if (pnl > 0) row.wins += 1;
       else if (pnl < 0) row.losses += 1;
     } else {
@@ -14110,30 +15384,32 @@ function pumpComboStatsOf(list, { limit = 24, context = 'pump' } = {}) {
   return mixed.slice(0, maxRows);
 }
 
-async function getPumpPaperTrades({ paging = null, day = 'all' } = {}) {
+async function getPumpPaperTrades({ paging = null, day = 'all', stage2 = 'all' } = {}) {
   const store = await readPumpPaperStore();
   const dayIndex = getPumpPaperDayIndex(store);
   const availableDays = dayIndex.availableDays;
   const dayFilter = String(day ?? 'all');
-  const allStoredTrades = getPumpPaperTradesByDay(store, dayFilter);
-  const emaMarkFreshMs = Number(process.env.EMA_SQUEEZE_PAPER_MARK_STALE_MS ?? 15_000);
-  const getFreshEmaMark = (symbol) => {
-    const sym = String(symbol ?? '').toUpperCase();
-    const at = Number(emaSqueezeSocketMarkAt.get(sym) ?? 0);
-    const mark = Number(emaSqueezeSocketMarks.get(sym));
-    return Number.isFinite(mark) && mark > 0 && at && Date.now() - at <= emaMarkFreshMs
-      ? mark
-      : null;
-  };
+  const dayStoredTrades = getPumpPaperTradesByDay(store, dayFilter);
+  const stage2Filter = normalizePumpStage2Tier(stage2, 'all');
+  const allStoredTrades = stage2Filter === 'all'
+    ? dayStoredTrades
+    : dayStoredTrades.filter((trade) => normalizePumpStage2Tier(
+        pumpStage2RuleOfTrade(trade)?.tier,
+        '',
+      ) === stage2Filter);
+  const getFreshEmaMark = (symbol) => getFreshEmaSqueezeMarkInfo(symbol)?.mark ?? null;
   const { rows: selectedStoredTrades, pagination } = slicePaperPage(allStoredTrades, paging);
   const markForTrade = (t) => String(t.source ?? '').startsWith('emasq-')
     ? getFreshEmaMark(t.symbol)
     : getFreshPumpPaperMark(t.symbol);
-  const trades = selectedStoredTrades.map((t) => enrichPumpPaperTrade(
+  const trades = selectedStoredTrades.map((t) => enrichPumpStage2Trade(enrichPumpPaperTrade(
     t,
     markForTrade(t),
+  )));
+  const stage2StatsBase = pumpPaperMemo(`pump-stage2:${dayFilter || 'all'}`, () => (
+    buildPumpStage2Stats(dayStoredTrades)
   ));
-  const cached = pumpPaperMemo(`pump-paper:${dayFilter || 'all'}`, () => {
+  const cached = pumpPaperMemo(`pump-paper:${dayFilter || 'all'}:${stage2Filter}`, () => {
     const open = allStoredTrades.filter((t) => t.status !== 'CLOSED');
     const closed = allStoredTrades.filter((t) => t.status === 'CLOSED');
     const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
@@ -14157,6 +15433,7 @@ async function getPumpPaperTrades({ paging = null, day = 'all' } = {}) {
   });
   const enrichedOpen = cached.open.map((t) => enrichPumpPaperTrade(t, markForTrade(t)));
   const unrealizedPnl = enrichedOpen.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+  const stage2Stats = finalizePumpStage2Stats(stage2StatsBase, markForTrade);
   const summary = {
     total: allStoredTrades.length,
     pageTotal: trades.length,
@@ -14176,9 +15453,10 @@ async function getPumpPaperTrades({ paging = null, day = 'all' } = {}) {
     trades,
     summary,
     comboStats: cached.comboStats,
+    stage2Stats,
     pagination,
     availableDays,
-    filter: { day: dayFilter || 'all' },
+    filter: { day: dayFilter || 'all', stage2: stage2Filter },
     updatedAt: Date.now(),
   };
 }
@@ -14202,6 +15480,100 @@ function emaPaperStageOf(t) {
 function emaPaperTimeframeOf(t) {
   const match = String(t.source ?? '').match(/^emasq-(\d+[mh])-/);
   return match ? match[1] : '5m';
+}
+
+function emaStageCandleEvaluationOfTrade(t = {}) {
+  if (!String(t.source ?? '').startsWith('emasq-')) return null;
+  if (t.emaStageCandleVersion) {
+    return {
+      version: t.emaStageCandleVersion,
+      observationOnly: true,
+      affectsEntry: false,
+      affectsMargin: false,
+      affectsSl: false,
+      affectsTp: false,
+      tier: t.emaStageCandleTier ?? 'WATCH',
+      label: t.emaStageCandleLabel ?? t.emaStageCandleTier ?? 'WATCH',
+      code: t.emaStageCandleCode ?? 'EMA_STAGE_CANDLE_STORED',
+      stage: t.emaStageCandleStage ?? emaPaperStageOf(t),
+      side: t.emaStageCandleSide ?? t.side ?? 'NO_SIDE',
+      timeframe: t.emaStageCandleTimeframe ?? emaPaperTimeframeOf(t),
+      altPattern: t.emaStageCandleAltPattern ?? 'NO_DATA',
+      altBias: t.emaStageCandleAltBias ?? 'NO_DATA',
+      btcPattern: t.emaStageCandleBtcPattern ?? 'NO_DATA',
+      btcBias: t.emaStageCandleBtcBias ?? 'NO_DATA',
+      btcRegime: t.emaStageCandleBtcRegime ?? 'SW_FLAT',
+      btcCorr: Number.isFinite(Number(t.btcCorr)) ? Number(t.btcCorr) : null,
+      contextKey: t.emaStageCandleContextKey ?? null,
+      reason: t.emaStageCandleReason ?? 'Saved EMA stage candle observation',
+    };
+  }
+
+  const timeframe = emaPaperTimeframeOf(t);
+  const symbolCandle = t.candlePatternAtEntry
+    ?? (timeframe === '5m' ? t.candlePattern5m : t.candlePattern15m)
+    ?? t.candlePattern15m
+    ?? t.candlePattern5m
+    ?? null;
+  const btcCandle = t.btcCandlePatternAtEntry ?? t.btcCandlePattern5m ?? null;
+  return evaluateEmaStageCandle({
+    stage: emaPaperStageOf(t),
+    source: t.source,
+    note: t.note,
+    runnerCandidate: t.runnerCandidate,
+    side: t.side,
+    timeframe,
+    symbolCandle,
+    btcCandle,
+    btcHealth: t.btcHealth,
+    btcPhase: t.btcPhase ?? t.emaBreakEvalBtcPhase ?? t.emaPreStageEvalBtcPhase,
+    btcRegimeAtEntry: t.btcRegimeAtEntry,
+    btcCorr: t.btcCorr,
+  });
+}
+
+function emaStageCandleFilterCode(evaluation) {
+  if (!evaluation) return 'NO_DATA';
+  if (String(evaluation.code ?? '').includes('PAIR_MISSING')) return 'NO_DATA';
+  const tier = String(evaluation.tier ?? 'WATCH').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+  return ['GOOD', 'GOOD_TEST', 'WATCH_PLUS', 'WATCH', 'RISK'].includes(tier) ? tier : 'WATCH';
+}
+
+function withEmaStageCandleFields(t, evaluation, { derived = false } = {}) {
+  if (!evaluation) return t;
+  return {
+    ...t,
+    emaStageCandleVersion: evaluation.version,
+    emaStageCandleTier: evaluation.tier,
+    emaStageCandleFilterCode: emaStageCandleFilterCode(evaluation),
+    emaStageCandleLabel: evaluation.label,
+    emaStageCandleCode: evaluation.code,
+    emaStageCandleStage: evaluation.stage,
+    emaStageCandleSide: evaluation.side,
+    emaStageCandleTimeframe: evaluation.timeframe,
+    emaStageCandleAltPattern: evaluation.altPattern,
+    emaStageCandleAltBias: evaluation.altBias,
+    emaStageCandleBtcPattern: evaluation.btcPattern,
+    emaStageCandleBtcBias: evaluation.btcBias,
+    emaStageCandleBtcRegime: evaluation.btcRegime,
+    emaStageCandleContextKey: evaluation.contextKey,
+    emaStageCandleReason: evaluation.reason,
+    emaStageCandleObservationOnly: true,
+    emaStageCandleAffectsEntry: false,
+    emaStageCandleAffectsMargin: false,
+    emaStageCandleAffectsSl: false,
+    emaStageCandleAffectsTp: false,
+    emaStageCandleDerived: derived,
+  };
+}
+
+function enrichEmaStageCandleTrade(t = {}) {
+  if (!String(t.source ?? '').startsWith('emasq-')) return t;
+  return withEmaStageCandleFields(
+    t,
+    emaStageCandleEvaluationOfTrade(t),
+    { derived: !t.emaStageCandleVersion },
+  );
 }
 
 function enrichEmaBrRealCandleFit(t) {
@@ -14231,7 +15603,90 @@ function emaPaperMatchesFilter(t, filter) {
   if (filter.day && filter.day !== 'all') {
     if (String(t.createdAt ?? '').slice(0, 10) !== filter.day) return false;
   }
+  if (filter.stageCandle && filter.stageCandle !== 'all') {
+    if (emaStageCandleFilterCode(emaStageCandleEvaluationOfTrade(t)) !== filter.stageCandle) return false;
+  }
   return true;
+}
+
+function emaStageCandleStatsOf(trades = []) {
+  const makeGroup = (key, label = key) => ({
+    key,
+    label,
+    total: 0,
+    open: 0,
+    pending: 0,
+    closed: 0,
+    wins: 0,
+    losses: 0,
+    breakeven: 0,
+    closedNetPnl: 0,
+    closedNetRoeSum: 0,
+    wr: null,
+    avgRoe: null,
+  });
+  const tierMap = new Map();
+  const stageMap = new Map();
+  const stageTierMap = new Map();
+  const contextMap = new Map();
+  const getGroup = (map, key, label = key) => {
+    if (!map.has(key)) map.set(key, makeGroup(key, label));
+    return map.get(key);
+  };
+  const addTrade = (group, trade) => {
+    const status = String(trade.status ?? '').toUpperCase();
+    group.total += 1;
+    if (status === 'OPEN') group.open += 1;
+    if (status === 'PENDING') group.pending += 1;
+    if (status !== 'CLOSED') return;
+    const metrics = emaPaperFinancialMetrics(trade);
+    const pnl = Number(metrics.netPnl ?? 0);
+    const roe = Number(metrics.netRoe ?? 0);
+    group.closed += 1;
+    group.closedNetPnl += pnl;
+    group.closedNetRoeSum += roe;
+    if (pnl > 0) group.wins += 1;
+    else if (pnl < 0) group.losses += 1;
+    else group.breakeven += 1;
+  };
+  const finalize = (map) => [...map.values()].map((group) => ({
+    ...group,
+    closedNetPnl: +group.closedNetPnl.toFixed(4),
+    wr: group.closed ? +(group.wins / group.closed * 100).toFixed(1) : null,
+    avgRoe: group.closed ? +(group.closedNetRoeSum / group.closed).toFixed(2) : null,
+    closedNetRoeSum: undefined,
+  }));
+
+  for (const trade of trades) {
+    const evaluation = emaStageCandleEvaluationOfTrade(trade);
+    if (!evaluation) continue;
+    const tier = emaStageCandleFilterCode(evaluation);
+    const stage = String(evaluation.stage ?? 'EMA_OTHER');
+    const contextKey = evaluation.contextKey
+      ?? [stage, evaluation.side, evaluation.timeframe, `ALT_${evaluation.altPattern}`, `BTC_${evaluation.btcPattern}`].join('|');
+    addTrade(getGroup(tierMap, tier, tier.replaceAll('_', '-')), trade);
+    addTrade(getGroup(stageMap, stage, stage.replaceAll('_', ' ')), trade);
+    addTrade(getGroup(stageTierMap, `${stage}|${tier}`, `${stage.replaceAll('_', ' ')} · ${tier.replaceAll('_', '-')}`), trade);
+    addTrade(getGroup(contextMap, `${contextKey}|${tier}`, `${contextKey} · ${tier}`), trade);
+  }
+
+  const sortStats = (rows) => rows.sort((a, b) => (
+    b.total - a.total
+    || b.closed - a.closed
+    || b.closedNetPnl - a.closedNetPnl
+    || a.key.localeCompare(b.key)
+  ));
+  const allContexts = sortStats(finalize(contextMap));
+  return {
+    version: EMA_STAGE_CANDLE_RULE_VERSION,
+    observationOnly: true,
+    byTier: sortStats(finalize(tierMap)),
+    byStage: sortStats(finalize(stageMap)),
+    byStageTier: sortStats(finalize(stageTierMap)),
+    byContext: allContexts.slice(0, 250),
+    contextTotal: allContexts.length,
+    contextLimit: 250,
+  };
 }
 
 function summarizeEmaPaperMarginStats(trades = []) {
@@ -14242,8 +15697,11 @@ function summarizeEmaPaperMarginStats(trades = []) {
     closed: 0,
     wins: 0,
     losses: 0,
-    realizedPnl: 0,
-    unrealizedPnl: 0,
+    grossRealizedPnl: 0,
+    grossUnrealizedPnl: 0,
+    estimatedFeeUsdt: 0,
+    netRealizedPnl: 0,
+    netUnrealizedPnl: 0,
     netPnl: 0,
     roeSum: 0,
     wr: null,
@@ -14261,36 +15719,53 @@ function summarizeEmaPaperMarginStats(trades = []) {
     if (Number.isFinite(margin) && margin > 0 && margin <= 1.01) return 'test1';
     return 'other';
   };
-  const add = (group, rawTrade) => {
+  const add = (group, rawTrade, metrics) => {
     const status = String(rawTrade?.status ?? '').toUpperCase();
-    const trade = status === 'OPEN'
-      ? enrichPumpPaperTrade(rawTrade, emaSqueezeSocketMarks.get(rawTrade.symbol))
-      : rawTrade;
     group.total += 1;
     if (status === 'CLOSED') {
       group.closed += 1;
-      const pnl = Number(trade.pnl);
-      if (Number.isFinite(pnl)) {
-        group.realizedPnl += pnl;
-        if (pnl > 0) group.wins += 1;
-        else if (pnl < 0) group.losses += 1;
+      const grossPnl = Number(metrics.grossPnl);
+      const fee = Number(metrics.estimatedFeeUsdt ?? 0);
+      const netPnl = Number(metrics.netPnl);
+      if (Number.isFinite(grossPnl)) group.grossRealizedPnl += grossPnl;
+      if (Number.isFinite(fee)) group.estimatedFeeUsdt += fee;
+      if (Number.isFinite(netPnl)) {
+        group.netRealizedPnl += netPnl;
+        if (netPnl > 0) group.wins += 1;
+        else if (netPnl < 0) group.losses += 1;
       }
-      const roe = Number(trade.roe);
+      const roe = Number(metrics.netRoe);
       if (Number.isFinite(roe)) group.roeSum += roe;
     } else {
       group.open += 1;
-      const pnl = Number(trade.pnl);
-      if (Number.isFinite(pnl)) group.unrealizedPnl += pnl;
+      const grossPnl = Number(metrics.grossPnl);
+      const fee = Number(metrics.estimatedFeeUsdt ?? 0);
+      const netPnl = Number(metrics.netPnl);
+      if (Number.isFinite(grossPnl)) group.grossUnrealizedPnl += grossPnl;
+      if (Number.isFinite(fee)) group.estimatedFeeUsdt += fee;
+      if (Number.isFinite(netPnl)) group.netUnrealizedPnl += netPnl;
     }
   };
   for (const trade of trades) {
-    add(groups.all, trade);
-    add(groups[bucketOf(trade)], trade);
+    const metrics = emaPaperFinancialMetrics(
+      trade,
+      String(trade?.status ?? '').toUpperCase() === 'OPEN'
+        ? getFreshEmaSqueezeMarkInfo(trade.symbol)?.mark
+        : null,
+    );
+    add(groups.all, trade, metrics);
+    add(groups[bucketOf(trade)], trade, metrics);
   }
   for (const group of Object.values(groups)) {
-    group.netPnl = +(group.realizedPnl + group.unrealizedPnl).toFixed(4);
-    group.realizedPnl = +group.realizedPnl.toFixed(4);
-    group.unrealizedPnl = +group.unrealizedPnl.toFixed(4);
+    group.grossPnl = +(group.grossRealizedPnl + group.grossUnrealizedPnl).toFixed(4);
+    group.netPnl = +(group.netRealizedPnl + group.netUnrealizedPnl).toFixed(4);
+    group.realizedPnl = +group.grossRealizedPnl.toFixed(4);
+    group.unrealizedPnl = +group.grossUnrealizedPnl.toFixed(4);
+    group.grossRealizedPnl = +group.grossRealizedPnl.toFixed(4);
+    group.grossUnrealizedPnl = +group.grossUnrealizedPnl.toFixed(4);
+    group.estimatedFeeUsdt = +group.estimatedFeeUsdt.toFixed(4);
+    group.netRealizedPnl = +group.netRealizedPnl.toFixed(4);
+    group.netUnrealizedPnl = +group.netUnrealizedPnl.toFixed(4);
     group.wr = group.closed ? +((group.wins / group.closed) * 100).toFixed(1) : null;
     group.avgRoe = group.closed ? +(group.roeSum / group.closed).toFixed(1) : null;
     delete group.roeSum;
@@ -14571,18 +16046,27 @@ function emaComboStatsOf(list, { brOnly = false, limit = 40, sort = 'default' } 
     return [stage, side, tf, corrBucket, trendBucket, relation, ...detail].join(' | ');
   };
 
-  for (const t of list) {
+  for (const rawTrade of list) {
+    const status = String(rawTrade?.status ?? '').toUpperCase();
+    const t = enrichEmaBrRealCandleFit(rawTrade);
+    const metrics = emaPaperFinancialMetrics(
+      t,
+      status === 'OPEN' ? getFreshEmaSqueezeMarkInfo(t.symbol)?.mark : null,
+    );
     const key = comboKeyOf(enrichEmaBrRealCandleFit(t));
     if (!key) continue;
     if (!groups.has(key)) {
       groups.set(key, {
         key,
         total: 0,
+        open: 0,
         closed: 0,
         wins: 0,
         losses: 0,
-        pnl: 0,
-        avgRoeSum: 0,
+        grossPnl: 0,
+        estimatedFeeUsdt: 0,
+        netPnl: 0,
+        netRoeSum: 0,
         marginCounts: {},
       });
     }
@@ -14593,22 +16077,31 @@ function emaComboStatsOf(list, { brOnly = false, limit = 40, sort = 'default' } 
       const marginKey = margin.toFixed(4).replace(/\.?0+$/, '');
       row.marginCounts[marginKey] = (row.marginCounts[marginKey] ?? 0) + 1;
     }
+    const grossPnl = Number(metrics.grossPnl);
+    const estimatedFeeUsdt = Number(metrics.estimatedFeeUsdt ?? 0);
+    const netPnl = Number(metrics.netPnl);
+    if (Number.isFinite(grossPnl)) row.grossPnl += grossPnl;
+    if (Number.isFinite(estimatedFeeUsdt)) row.estimatedFeeUsdt += estimatedFeeUsdt;
+    if (Number.isFinite(netPnl)) row.netPnl += netPnl;
     if (t.status === 'CLOSED') {
       row.closed += 1;
-      const p = Number(t.pnl ?? 0);
-      row.pnl += p;
-      row.avgRoeSum += Number(t.roe ?? 0);
-      if (p > 0) row.wins += 1;
-      else if (p < 0) row.losses += 1;
+      row.netRoeSum += Number(metrics.netRoe ?? 0);
+      if (netPnl > 0) row.wins += 1;
+      else if (netPnl < 0) row.losses += 1;
+    } else {
+      row.open += 1;
     }
   }
   const scoredRows = [...groups.values()]
-    .filter((row) => row.closed > 0)
+    .filter((row) => row.total > 0)
     .map((row) => ({
       ...row,
       wr: row.wins + row.losses ? +((row.wins / (row.wins + row.losses)) * 100).toFixed(1) : null,
-      pnl: +row.pnl.toFixed(4),
-      avgRoe: row.closed ? +(row.avgRoeSum / row.closed).toFixed(1) : null,
+      grossPnl: +row.grossPnl.toFixed(4),
+      estimatedFeeUsdt: +row.estimatedFeeUsdt.toFixed(4),
+      netPnl: +row.netPnl.toFixed(4),
+      pnl: +row.netPnl.toFixed(4),
+      avgRoe: row.closed ? +(row.netRoeSum / row.closed).toFixed(1) : null,
     }))
     .map((row) => {
       const wr = Number(row.wr ?? 0);
@@ -14620,7 +16113,9 @@ function emaComboStatsOf(list, { brOnly = false, limit = 40, sort = 'default' } 
       const pnlScore = Math.max(-35, Math.min(35, pnl * 1.5));
       const wrScore = Math.max(-25, Math.min(25, (wr - 55) * 0.9));
       const qualityScore = +(sampleScore + roeScore + pnlScore + wrScore).toFixed(1);
-      const quality = closed >= 80 && pnl >= 10 && wr >= 60 && avgRoe >= 0.8
+      const quality = closed === 0
+        ? 'OPEN_ONLY'
+        : closed >= 80 && pnl >= 10 && wr >= 60 && avgRoe >= 0.8
         ? 'STRONG_SAMPLE'
         : pnl > 0 && wr >= 60 && avgRoe >= 0.5
           ? 'GOOD'
@@ -14867,32 +16362,70 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filt
       baseEmaTrades,
       allEmaTrades,
       open,
+      closed,
       closedCount: closed.length,
       wins,
       tpHits,
       slHits,
       avgRoe,
       realizedPnl,
-      byMargin: summarizeEmaPaperMarginStats(allEmaTrades),
-      emaCombos: emaComboStatsOf(allEmaTrades),
-      brLikeCombos: emaComboStatsOf(allEmaTrades, { brOnly: true }),
       availableDays,
+      emaStageCandleStats: emaStageCandleStatsOf(allEmaTrades),
     };
   });
   const allEmaTrades = cached.allEmaTrades;
-  const deltaCutoff = Date.now() - 5 * 60_000;
-  const selectedTrades = deltaOnly
-    ? allEmaTrades.filter((t) =>
-      ['OPEN', 'PENDING'].includes(t.status)
-      || (Date.parse(t.closedAt ?? t.createdAt ?? 0) || 0) >= deltaCutoff)
-    : allEmaTrades;
-  const { rows: pagedTrades, pagination } = slicePaperPage(selectedTrades, deltaOnly ? null : paging);
+  // SSE clients only merge active/recent rows and intentionally ignore the
+  // aggregate summary. Return before enriching the complete EMA history:
+  // doing the full-history map here made every socket tick allocate tens of
+  // thousands of cloned trade objects even when only one mark had changed.
+  if (deltaOnly) {
+    const deltaCutoff = Date.now() - 5 * 60_000;
+    const deltaTrades = allEmaTrades
+      .filter((t) => (
+        ['OPEN', 'PENDING'].includes(String(t.status ?? '').toUpperCase())
+        || (Date.parse(t.closedAt ?? t.createdAt ?? 0) || 0) >= deltaCutoff
+      ))
+      .map((t) => enrichPumpPaperTrade(
+        enrichEmaStageCandleTrade(enrichEmaBrRealCandleFit(t)),
+        getFreshEmaSqueezeMarkInfo(t.symbol)?.mark,
+      ));
+    return {
+      trades: deltaTrades,
+      updatedAt: Date.now(),
+      partial: true,
+    };
+  }
+  const selectedTrades = allEmaTrades;
+  const { rows: pagedTrades, pagination } = slicePaperPage(selectedTrades, paging);
   const trades = pagedTrades
-    .map((t) => enrichPumpPaperTrade(enrichEmaBrRealCandleFit(t), emaSqueezeSocketMarks.get(t.symbol)));
+    .map((t) => enrichPumpPaperTrade(
+      enrichEmaStageCandleTrade(enrichEmaBrRealCandleFit(t)),
+      getFreshEmaSqueezeMarkInfo(t.symbol)?.mark,
+    ));
   // Net PnL theo mark đang chạy: realized (closed) + unrealized (OPEN tính theo mark live)
-  const unrealizedPnl = cached.open
-    .filter((t) => t.status === 'OPEN')
-    .reduce((sum, t) => sum + Number(enrichPumpPaperTrade(t, emaSqueezeSocketMarks.get(t.symbol)).pnl ?? 0), 0);
+  const enrichedOpen = cached.open
+    .filter((t) => String(t.status ?? '').toUpperCase() === 'OPEN')
+    .map((t) => enrichPumpPaperTrade(
+      enrichEmaStageCandleTrade(enrichEmaBrRealCandleFit(t)),
+      getFreshEmaSqueezeMarkInfo(t.symbol)?.mark,
+    ));
+  const closedMetrics = cached.closed.map((t) => emaPaperFinancialMetrics(t));
+  const netWins = closedMetrics.filter((metrics) => Number(metrics.netPnl) > 0).length;
+  const netAvgRoe = closedMetrics.length
+    ? closedMetrics.reduce((sum, metrics) => sum + Number(metrics.netRoe ?? 0), 0) / closedMetrics.length
+    : null;
+  const grossRealizedPnl = closedMetrics.reduce((sum, metrics) => sum + Number(metrics.grossPnl ?? 0), 0);
+  const grossUnrealizedPnl = enrichedOpen.reduce((sum, t) => sum + Number(t.grossPnl ?? t.pnl ?? 0), 0);
+  const realizedFeeUsdt = closedMetrics.reduce((sum, metrics) => sum + Number(metrics.estimatedFeeUsdt ?? 0), 0);
+  const unrealizedFeeUsdt = enrichedOpen.reduce((sum, t) => sum + Number(t.estimatedFeeUsdt ?? 0), 0);
+  const netRealizedPnl = closedMetrics.reduce((sum, metrics) => sum + Number(metrics.netPnl ?? 0), 0);
+  const netUnrealizedPnl = enrichedOpen.reduce((sum, t) => sum + Number(t.netPnl ?? t.pnl ?? 0), 0);
+  const estimatedFeeUsdt = realizedFeeUsdt + unrealizedFeeUsdt;
+  const grossPnl = grossRealizedPnl + grossUnrealizedPnl;
+  const netPnl = netRealizedPnl + netUnrealizedPnl;
+  const byMargin = summarizeEmaPaperMarginStats(allEmaTrades);
+  const emaCombos = emaComboStatsOf(allEmaTrades);
+  const brLikeCombos = emaComboStatsOf(allEmaTrades, { brOnly: true });
   const [btcTurnGates, runnerBtcTurnGates, breakoutBtcTurnGates] = await Promise.all([
     getBrLikeBtcTurnGateSummary(),
     getRunnerBtcTurnGateSummary(),
@@ -14912,17 +16445,27 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filt
 	      pageTotal: trades.length,
 	      open: cached.open.length,
 	      closed: cached.closedCount,
-	      wins: cached.wins,
-	      losses: cached.closedCount - cached.wins,
+	      wins: netWins,
+	      losses: cached.closedCount - netWins,
 	      tpHits: cached.tpHits,
 	      slHits: cached.slHits,
-	      avgRoe: cached.avgRoe == null ? null : +cached.avgRoe.toFixed(1),
-	      realizedPnl: +cached.realizedPnl.toFixed(4),
-	      unrealizedPnl: +unrealizedPnl.toFixed(4),
-	      netPnl: +(cached.realizedPnl + unrealizedPnl).toFixed(4),
-	      byMargin: cached.byMargin,
-	      emaCombos: cached.emaCombos,
-	      brLikeCombos: cached.brLikeCombos,
+	      avgRoe: netAvgRoe == null ? null : +netAvgRoe.toFixed(1),
+	      realizedPnl: +grossRealizedPnl.toFixed(4),
+	      unrealizedPnl: +grossUnrealizedPnl.toFixed(4),
+	      grossRealizedPnl: +grossRealizedPnl.toFixed(4),
+	      grossUnrealizedPnl: +grossUnrealizedPnl.toFixed(4),
+	      grossPnl: +grossPnl.toFixed(4),
+	      realizedFeeUsdt: +realizedFeeUsdt.toFixed(4),
+	      unrealizedFeeUsdt: +unrealizedFeeUsdt.toFixed(4),
+	      estimatedFeeUsdt: +estimatedFeeUsdt.toFixed(4),
+	      netRealizedPnl: +netRealizedPnl.toFixed(4),
+	      netUnrealizedPnl: +netUnrealizedPnl.toFixed(4),
+	      netPnl: +netPnl.toFixed(4),
+	      feeRate: getEmaPaperFeeRate(),
+	      byMargin,
+	      emaCombos,
+	      brLikeCombos,
+      emaStageCandleStats: cached.emaStageCandleStats,
       brLikeScore75Log,
       btcTurnGates,
       runnerBtcTurnGates,
@@ -15406,12 +16949,7 @@ function isBrLikePaperSourceForSide(source, side) {
 }
 
 function getFreshEmaSqueezeMark(symbol) {
-  const sym = String(symbol ?? '').toUpperCase();
-  const mark = Number(emaSqueezeSocketMarks.get(sym));
-  const at = Number(emaSqueezeSocketMarkAt.get(sym) ?? 0);
-  const freshMs = Number(process.env.EMA_SQUEEZE_PAPER_MARK_STALE_MS ?? 15_000);
-  if (Number.isFinite(mark) && mark > 0 && at && Date.now() - at <= freshMs) return mark;
-  return null;
+  return getFreshEmaSqueezeMarkInfo(symbol)?.mark ?? null;
 }
 
 function calcPaperPnlRoe(row, markPrice) {
@@ -15622,7 +17160,7 @@ async function enforceBreakoutBtcTurnPositiveCuts() {
 async function createPumpPaperTrade(payload) {
   const symbol = String(payload.symbol ?? '').toUpperCase().trim();
   const side = String(payload.side ?? '').toUpperCase();
-  const marginUsdt = Number(payload.marginUsdt ?? 1);
+  const requestedMarginUsdt = Number(payload.marginUsdt ?? 1);
   const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
   const entryPrice = Number(payload.entryPrice);
 
@@ -15641,9 +17179,9 @@ async function createPumpPaperTrade(payload) {
   );
   if (dup) {
     const dupMark = String(dup.source ?? '').startsWith('emasq-')
-      ? emaSqueezeSocketMarks.get(symbol)
+      ? getFreshEmaSqueezeMarkInfo(symbol)?.mark
       : getFreshPumpPaperMark(symbol);
-    return { trade: enrichPumpPaperTrade(dup, dupMark) };
+    return { trade: enrichEmaStageCandleTrade(enrichPumpPaperTrade(dup, dupMark)) };
   }
 
   const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
@@ -15656,18 +17194,37 @@ async function createPumpPaperTrade(payload) {
   const rawBtcHealth = payload.btcHealth
     ?? (source.startsWith('pump-') ? await getBtcHealth().catch(() => btcHealthCache.data) : null);
   const btcHealthSnapshot = rawBtcHealth ? buildBtcHealthSnapshot(rawBtcHealth) : null;
-  const payloadBtcCorr = Number(payload.btcCorr);
+  const payloadBtcCorr = payload.btcCorr == null ? NaN : Number(payload.btcCorr);
   const btcCorr = Number.isFinite(payloadBtcCorr)
     ? +payloadBtcCorr.toFixed(2)
     : source.startsWith('pump-')
       ? getCoinBtcCorr(symbol, pumpTf, 30)
       : null;
+  const nativePumpSource = isNativePumpEvalSource(source);
+  const pumpEvalGate = nativePumpSource
+    ? nativePumpEvalGateOfSignal({ ...payload, source, symbol, side, interval: pumpTf }, btcHealthSnapshot ?? {}, btcCorr)
+    : null;
+  if (pumpEvalGate && !pumpEvalGate.allow) {
+    throw new Error(`${pumpEvalGate.label}: ${pumpEvalGate.reason}`);
+  }
+  const marginUsdt = pumpEvalGate?.marginUsdt
+    ?? (Number.isFinite(requestedMarginUsdt) && requestedMarginUsdt > 0 ? requestedMarginUsdt : 1);
   if (process.env.EMA_SQUEEZE_PAPER_BREAKOUT_QUALITY_GATE !== 'false'
       && source.includes('-breakout')
       && payload.breakoutPaperEligible === false) {
     throw new Error(`BREAKOUT ${payload.breakoutQuality ?? 'REVIEW'} is not eligible for Paper`);
   }
   const emaSqueezeSl = emaSqueezePaperStopLossFromRoe({ source, side, entryPrice, leverage });
+  const configuredPumpHardSlRoe = Number(process.env.PUMP_PAPER_HARD_SL_ROE ?? 15);
+  const pumpHardSlRoe = Number.isFinite(configuredPumpHardSlRoe) && configuredPumpHardSlRoe > 0
+    ? configuredPumpHardSlRoe
+    : 15;
+  const pumpHardSl = nativePumpSource && process.env.PUMP_PAPER_HARD_SL_ENABLED !== 'false'
+    ? capPumpStructureStopLoss({ side, entryPrice, leverage, structureSl: payload.sl, maxLossRoe: pumpHardSlRoe })
+    : null;
+  const resolvedStopLoss = emaSqueezeSl
+    ?? pumpHardSl
+    ?? (payload.sl != null ? Number(payload.sl) : null);
   if (source.includes('-breakout')) {
     const minRr = Number(process.env.EMA_SQUEEZE_PAPER_BREAKOUT_MIN_RR ?? 1);
     const tp = Number(payload.tp);
@@ -15688,7 +17245,7 @@ async function createPumpPaperTrade(payload) {
     quantity: (marginUsdt * leverage) / entryPrice,
     entryPrice,
     tp: payload.tp != null ? Number(payload.tp) : null,
-    sl: emaSqueezeSl ?? (payload.sl != null ? Number(payload.sl) : null),
+    sl: resolvedStopLoss,
     fillPrice: status === 'OPEN' ? entryPrice : null,
     signalMarkPrice: Number.isFinite(signalMarkPrice) && signalMarkPrice > 0 ? signalMarkPrice : null,
     marketEntrySource: payload.marketEntrySource ? String(payload.marketEntrySource).slice(0, 40) : null,
@@ -15707,6 +17264,14 @@ async function createPumpPaperTrade(payload) {
     pumpSignalMarketOk: payload.pumpSignalMarketOk ?? null,
     pumpSignalFactors: payload.pumpSignalFactors ?? null,
     pumpSignalTimeframe: pumpTf,
+    candlePatternAtEntry: payload.candlePatternAtEntry ?? null,
+    candlePatternTimeframe: payload.candlePatternTimeframe ?? null,
+    btcCandlePatternAtEntry: payload.btcCandlePatternAtEntry ?? null,
+    sideCandleTier: payload.sideCandleTier ?? null,
+    sideCandleLabel: payload.sideCandleLabel ?? null,
+    sideCandleReason: payload.sideCandleReason ?? null,
+    sideCandleRuleVersion: payload.sideCandleRuleVersion ?? null,
+    sideCandleContext: payload.sideCandleContext ?? null,
     pumpCombo: payload.pumpCombo
       ? String(payload.pumpCombo).slice(0, 240)
       : (String(source ?? '').startsWith('pump-') ? pumpSignalComboOf({
@@ -15719,6 +17284,19 @@ async function createPumpPaperTrade(payload) {
           factors: payload.pumpSignalFactors,
         }) : null),
     pumpComboSavedAt: new Date().toISOString(),
+    pumpEvalTier: pumpEvalGate?.tier ?? payload.pumpEvalTier ?? null,
+    pumpEvalLabel: pumpEvalGate?.label ?? payload.pumpEvalLabel ?? null,
+    pumpEvalReason: pumpEvalGate?.reason ?? payload.pumpEvalReason ?? null,
+    pumpEvalVersion: pumpEvalGate?.version ?? payload.pumpEvalVersion ?? null,
+    pumpEvalMarginUsdt: pumpEvalGate?.marginUsdt ?? payload.pumpEvalMarginUsdt ?? null,
+    pumpEvalHour: pumpEvalGate?.hour ?? payload.pumpEvalHour ?? null,
+    pumpEvalCorrBucket: pumpEvalGate?.corrBucket ?? payload.pumpEvalCorrBucket ?? null,
+    pumpEvalBtcPhase: pumpEvalGate?.btcPhase ?? payload.pumpEvalBtcPhase ?? null,
+    pumpEvalContextKey: pumpEvalGate?.contextKey ?? payload.pumpEvalContextKey ?? null,
+    pumpStructureSl: nativePumpSource && payload.sl != null ? Number(payload.sl) : null,
+    pumpHardSlEnabled: nativePumpSource ? process.env.PUMP_PAPER_HARD_SL_ENABLED !== 'false' : null,
+    pumpHardSlRoe: nativePumpSource ? pumpHardSlRoe : null,
+    pumpHardSlApplied: nativePumpSource && pumpHardSl != null && Number.isFinite(Number(pumpHardSl)),
     btcHealth: btcHealthSnapshot, // snapshot BTC health lúc vào — để backtest gate
     btcTrendDir: btcHealthSnapshot?.btcTrendDir ?? null,
     btcTrendScore: btcHealthSnapshot?.btcTrendScore ?? null,
@@ -15736,6 +17314,14 @@ async function createPumpPaperTrade(payload) {
     brCandleUpperShare: payload.brCandleUpperShare ?? null,
     brCandleLowerShare: payload.brCandleLowerShare ?? null,
     brCandleVolRatio: payload.brCandleVolRatio ?? null,
+    brEvalTier: payload.brEvalTier ?? null,
+    brEvalLabel: payload.brEvalLabel ?? null,
+    brEvalReason: payload.brEvalReason ?? null,
+    brEvalVersion: payload.brEvalVersion ?? null,
+    brEvalMarginUsdt: payload.brEvalMarginUsdt ?? null,
+    brEvalHour: payload.brEvalHour ?? null,
+    brEvalCorrBucket: payload.brEvalCorrBucket ?? null,
+    brEvalBtcPhase: payload.brEvalBtcPhase ?? null,
     brShortEnvLabel: payload.brShortEnvLabel ?? null,
     brShortEnvBlockMarket: payload.brShortEnvBlockMarket ?? null,
     shortSessionTestLabel: payload.shortSessionTestLabel ?? null,
@@ -15814,17 +17400,61 @@ async function createPumpPaperTrade(payload) {
     emaBreakEvalMarginUsdt: payload.emaBreakEvalMarginUsdt ?? null,
     emaBreakEvalCorr: payload.emaBreakEvalCorr ?? null,
     emaBreakEvalBtcPhase: payload.emaBreakEvalBtcPhase ?? null,
+    emaPreStageEvalTier: payload.emaPreStageEvalTier ?? null,
+    emaPreStageEvalLabel: payload.emaPreStageEvalLabel ?? null,
+    emaPreStageEvalReason: payload.emaPreStageEvalReason ?? null,
+    emaPreStageEvalMarginUsdt: payload.emaPreStageEvalMarginUsdt ?? null,
+    emaPreStageEvalCorr: payload.emaPreStageEvalCorr ?? null,
+    emaPreStageEvalBtcPhase: payload.emaPreStageEvalBtcPhase ?? null,
+    emaPreStageEvalHour: payload.emaPreStageEvalHour ?? null,
+    emaPreStageEvalVersion: payload.emaPreStageEvalVersion ?? null,
+    emaPreStageEvalSymbolPattern: payload.emaPreStageEvalSymbolPattern ?? null,
+    emaPreStageEvalSymbolBias: payload.emaPreStageEvalSymbolBias ?? null,
+    emaPreStageEvalBtcPattern: payload.emaPreStageEvalBtcPattern ?? null,
+    emaPreStageEvalBtcBias: payload.emaPreStageEvalBtcBias ?? null,
+    emaPreStageEvalReasonCode: payload.emaPreStageEvalReasonCode ?? null,
   };
-  store.trades.unshift(trade);
+  const candleTrade = attachCandlePatternToPaperTrade(trade);
+  const emaStageCandleTrade = source.startsWith('emasq-')
+    ? withEmaStageCandleFields(
+        candleTrade,
+        emaStageCandleEvaluationOfTrade(candleTrade),
+        { derived: false },
+      )
+    : candleTrade;
+  const stage2Rule = nativePumpSource ? pumpStage2RuleOfTrade(emaStageCandleTrade) : null;
+  const storedTrade = stage2Rule
+    ? {
+        ...emaStageCandleTrade,
+        pumpStage2Tier: stage2Rule.tier,
+        pumpStage2Code: stage2Rule.code,
+        pumpStage2Label: stage2Rule.label,
+        pumpStage2Reason: stage2Rule.reason,
+        pumpStage2ContextKey: stage2Rule.contextKey,
+        pumpStage2Version: stage2Rule.version,
+        pumpStage2ObservationOnly: true,
+      }
+    : emaStageCandleTrade;
+  store.trades.unshift(storedTrade);
+  // Dispatch the direct event before serializing the large historical store.
+  // Recommended computes freshness at function entry, so disk latency cannot
+  // turn a genuinely new market signal into SOURCE_EVENT_STALE.
+  if (storedTrade.status === 'OPEN') {
+    publishRecommendedSourceOpen(source.startsWith('emasq-') ? 'ema' : 'pump', storedTrade, {
+      price: storedTrade.entryPrice,
+      at: Date.parse(storedTrade.openedAt ?? storedTrade.createdAt),
+      source: source.startsWith('emasq-') ? 'ema-source-open-event' : 'pump-source-open-event',
+    });
+  }
   await writePumpPaperStore(store);
   if (source.startsWith('emasq-')) syncEmaSqueezePaperTicker().catch(() => {});
   else syncPumpPaperTicker().catch(() => {});
   console.log(`[PumpPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
   return {
-    trade: enrichPumpPaperTrade(
-      trade,
-      source.startsWith('emasq-') ? emaSqueezeSocketMarks.get(symbol) : getFreshPumpPaperMark(symbol),
-    ),
+    trade: enrichEmaStageCandleTrade(enrichPumpStage2Trade(enrichPumpPaperTrade(
+      storedTrade,
+      source.startsWith('emasq-') ? getFreshEmaSqueezeMarkInfo(symbol)?.mark : getFreshPumpPaperMark(symbol),
+    ))),
   };
 }
 
@@ -15838,10 +17468,10 @@ async function closePumpPaperTrade(payload) {
   const exitPrice = payload.exitPrice
     ? Number(payload.exitPrice)
     : isEmaSqueeze
-      ? Number(emaSqueezeSocketMarks.get(trade.symbol))
+      ? Number(getFreshEmaSqueezeMarkInfo(trade.symbol)?.mark)
       : Number(getFreshPumpPaperMark(trade.symbol));
   if (!Number.isFinite(exitPrice) || exitPrice <= 0) {
-    throw new Error(`Chưa có tick socket mới cho ${trade.symbol}; không thể đóng bằng giá cache/entry`);
+    throw new Error(`Chưa có giá socket/REST mới cho ${trade.symbol}; không thể đóng bằng giá cache/entry`);
   }
   const sideMult = trade.side === 'LONG' ? 1 : -1;
   const pnl = Number(trade.realizedPnl ?? 0)
@@ -15890,6 +17520,11 @@ async function fillPumpPendingTrade(trade, markPrice) {
     store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
     await writePumpPaperStore(store);
     console.log(`[PumpPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
+    publishRecommendedSourceOpen(String(store.trades[idx].source ?? '').startsWith('emasq-') ? 'ema' : 'pump', store.trades[idx], {
+      price: Number(markPrice),
+      at: Date.now(),
+      source: String(store.trades[idx].source ?? '').startsWith('emasq-') ? 'ema-fill-socket-event' : 'pump-fill-socket-event',
+    });
   } finally {
     pumpPaperFillLocks.delete(trade.id);
   }
@@ -15897,9 +17532,10 @@ async function fillPumpPendingTrade(trade, markPrice) {
 
 async function processPumpPaperFills(symbol, markPrice) {
   const store = await readPumpPaperStore();
-  const pending = store.trades.filter((t) => t.status === 'PENDING' && t.symbol === symbol);
+  const activeForSymbol = getPumpPaperActiveIndex(store).pumpBySymbol.get(String(symbol ?? '').toUpperCase()) ?? [];
+  const pending = activeForSymbol.filter((t) => t.status === 'PENDING');
   for (const t of pending) await fillPumpPendingTrade(t, markPrice);
-  const open = store.trades.filter((t) => t.status === 'OPEN' && t.symbol === symbol);
+  const open = activeForSymbol.filter((t) => t.status === 'OPEN');
   for (const t of open) {
     await checkEmaSqueezePaperProfit(t, markPrice);
     await checkPumpPaperTpSl(t, markPrice);
@@ -15913,9 +17549,8 @@ async function processPumpPaperCachedMarks() {
   pumpPaperBatchRunning = true;
   try {
   const store = await readPumpPaperStore();
-  const active = store.trades.filter((t) => ['PENDING', 'OPEN'].includes(t.status));
+  const active = getPumpPaperActiveIndex(store).pump;
   for (const trade of active) {
-    if (String(trade.source ?? '').startsWith('emasq-')) continue;
     const markPrice = getFreshPumpPaperMark(trade.symbol);
     if (!Number.isFinite(Number(markPrice)) || Number(markPrice) <= 0) continue;
     if (trade.status === 'PENDING') await fillPumpPendingTrade(trade, Number(markPrice));
@@ -16041,6 +17676,83 @@ function isBaseEmaSqueezeShortPaperTrade(trade) {
     && trade?.runnerCandidate !== true
     && !note.includes('runner=y')
     && String(trade?.side ?? '').toUpperCase() === 'SHORT';
+}
+
+function recommendedTradeTimeframe(trade) {
+  const sourceMatch = String(trade?.source ?? '').match(
+    /(?:emasq|pump|cap|edge|ppks|liq|shakeout|top)-(\d+[mh])-/i,
+  );
+  if (sourceMatch) return sourceMatch[1].toLowerCase();
+  const direct = String(trade?.timeframe ?? trade?.tf ?? trade?.pumpSignalTimeframe
+    ?? trade?.candlePatternTimeframe ?? '').toLowerCase();
+  if (/^\d+[mh]$/.test(direct)) return direct;
+  const comboMatch = String(trade?.recommendationCombo ?? '').match(/(?:^|\|)\s*(\d+[mh])\s*(?:\||$)/i);
+  return comboMatch?.[1]?.toLowerCase() || '15m';
+}
+
+function cachedCandlePatternAt(symbol, interval, signalAt) {
+  const candles = klineCache.getIfCached(String(symbol ?? '').toUpperCase(), interval, 500);
+  if (!Array.isArray(candles) || candles.length < 3) return null;
+  const signalMs = Date.parse(signalAt ?? '');
+  const snapshot = Number.isFinite(signalMs)
+    ? candles.filter((candle) => Number(candle?.openTime) <= signalMs)
+    : candles;
+  if (snapshot.length < 3) return null;
+  const pattern = detectClosedCandlePattern(snapshot);
+  if (!pattern || pattern.name === 'UNKNOWN') return null;
+  const candle = snapshot.at(-2);
+  return {
+    ...pattern,
+    timeframe: interval,
+    candleOpenTime: Number(candle?.openTime) || null,
+    detectedFrom: 'KLINE_AT_SIGNAL',
+  };
+}
+
+function enrichRecommendedPaperCandlePattern(trade) {
+  if (!trade || typeof trade !== 'object') return trade;
+  const timeframe = recommendedTradeTimeframe(trade);
+  const direct = trade.candlePatternAtEntry
+    ?? (timeframe === '5m' ? trade.candlePattern5m : trade.candlePattern15m);
+  if (direct && (typeof direct !== 'object'
+    || !['UNKNOWN', 'NO_DATA'].includes(String(direct.name ?? '').toUpperCase()))) {
+    return {
+      ...trade,
+      candlePatternAtEntry: typeof direct === 'object'
+        ? { ...direct, timeframe: direct.timeframe ?? timeframe }
+        : { name: String(direct), direction: 'NEUTRAL', timeframe, detectedFrom: 'SOURCE' },
+      candlePatternTimeframe: timeframe,
+    };
+  }
+  if (trade.brCandleKind) {
+    return {
+      ...trade,
+      candlePatternAtEntry: {
+        name: String(trade.brCandleKind),
+        direction: String(trade.brCandleDir ?? 'NEUTRAL'),
+        timeframe,
+        detectedFrom: 'SOURCE_BR_CANDLE',
+      },
+      candlePatternTimeframe: timeframe,
+    };
+  }
+  const pattern = cachedCandlePatternAt(
+    trade.symbol,
+    timeframe,
+    trade.sourceSignalAt ?? trade.createdAt ?? trade.openedAt ?? trade.time,
+  );
+  return pattern
+    ? { ...trade, candlePatternAtEntry: pattern, candlePatternTimeframe: timeframe }
+    : {
+        ...trade,
+        candlePatternAtEntry: {
+          name: 'NO_DATA',
+          direction: 'NEUTRAL',
+          timeframe,
+          detectedFrom: 'NO_OHLC_SNAPSHOT',
+        },
+        candlePatternTimeframe: timeframe,
+      };
 }
 
 function getEmaSqueezeShortRunnerTargetRoe(trade) {
@@ -16507,18 +18219,13 @@ async function checkEmaSqueezeBreakoutTpToEntry(trade, markPrice) {
 async function syncPumpPaperTicker() {
   if (!pumpPaperTicker) return;
   const store = await readPumpPaperStore();
-  const symbols = [...new Set(store.trades
-    .filter((t) => ['PENDING', 'OPEN'].includes(t.status) && !String(t.source ?? '').startsWith('emasq-'))
-    .map((t) => t.symbol))];
+  const symbols = [...getPumpPaperActiveIndex(store).pumpBySymbol.keys()];
   pumpPaperTicker.setSymbols(symbols);
 }
 
 async function processEmaSqueezePaperSymbol(symbol, markPrice) {
   const store = await readPumpPaperStore();
-  const trades = store.trades.filter((t) =>
-    t.symbol === symbol
-    && ['PENDING', 'OPEN'].includes(t.status)
-    && String(t.source ?? '').startsWith('emasq-'));
+  const trades = getPumpPaperActiveIndex(store).emaBySymbol.get(String(symbol ?? '').toUpperCase()) ?? [];
   for (const trade of trades) {
     if (trade.status === 'PENDING') {
       await fillPumpPendingTrade(trade, markPrice);
@@ -16569,11 +18276,7 @@ async function syncEmaSqueezePaperTicker() {
   const store = await readPumpPaperStore();
   const brLimitStore = await readBrLikeLimitPaperStore().catch(() => ({ trades: [] }));
   const symbols = [...new Set([
-    ...store.trades
-    .filter((t) =>
-      ['PENDING', 'OPEN'].includes(t.status)
-      && String(t.source ?? '').startsWith('emasq-'))
-    .map((t) => t.symbol),
+    ...getPumpPaperActiveIndex(store).emaBySymbol.keys(),
     ...brLimitStore.trades
       .filter((t) => ['PENDING', 'OPEN'].includes(t.status))
       .map((t) => t.symbol),
@@ -16623,6 +18326,12 @@ function startPumpPaperTicker() {
   setInterval(() => processPumpPaperCachedMarks().catch((err) => {
     console.warn('[PumpPaper] Batch mark processing failed:', err.message);
   }), 1_000);
+  const restMarkIntervalMs = Math.max(
+    15_000,
+    Number(process.env.PUMP_PAPER_REST_MARK_INTERVAL_MS ?? 30_000),
+  );
+  setTimeout(() => refreshPumpPaperRestMarks().catch(() => {}), 1_500).unref?.();
+  setInterval(() => refreshPumpPaperRestMarks().catch(() => {}), restMarkIntervalMs).unref?.();
   setInterval(() => expireOldEmaSqueezePending().catch(() => {}), 60_000);
   setInterval(() => exitEuphoriaBrLikeOnBtcReversal().catch(() => {}), 60_000);
   startEmaSqueezePaperTicker();
@@ -16870,6 +18579,13 @@ async function createEdgePaperTrade(payload) {
   };
   store.trades.unshift(trade);
   await writeEdgePaperStore(store);
+  if (trade.status === 'OPEN') {
+    publishRecommendedSourceOpen('edge', trade, {
+      price: trade.entryPrice,
+      at: Date.parse(trade.openedAt ?? trade.createdAt),
+      source: 'edge-source-open-event',
+    });
+  }
   await syncEdgePaperTicker();
   console.log(`[EdgePaper] ${status} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
   return { trade: enrichEdgePaperTrade(trade, entryPrice) };
@@ -16932,6 +18648,11 @@ async function fillEdgePendingTrade(trade, markPrice) {
     };
     await writeEdgePaperStore(store);
     console.log(`[EdgePaper] FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} setupEntry=${entry} fill=${fillPrice}`);
+    publishRecommendedSourceOpen('edge', store.trades[idx], {
+      price: fillPrice,
+      at: Date.now(),
+      source: 'edge-fill-socket-event',
+    });
   } finally {
     edgePaperFillLocks.delete(trade.id);
   }
@@ -17724,6 +19445,54 @@ function enrichShakeoutPaperTrade(t, markPrice) {
   };
 }
 
+function enrichShakeoutStage2V2(trade = {}) {
+  const layer1Tier = String(trade.shakeoutSideCandleTier ?? '').toUpperCase();
+  if (!['GOOD', 'WATCH', 'RISK'].includes(layer1Tier)) return trade;
+  const auditCaptured = Boolean(trade.shakeoutStage2Version);
+  const evaluation = evaluateShakeoutStage2({
+    layer1Tier,
+    setup: trade.shakeoutClass ?? trade.subtype ?? trade.signalType,
+    shakeoutCombo: trade.shakeoutCombo,
+    signalType: trade.signalType,
+    subtype: trade.subtype,
+    variant: trade.variant,
+    side: trade.side,
+    signalAt: trade.signalAt ?? trade.scannedAt ?? trade.createdAt,
+    fillAt: trade.openedAt,
+    signalBtcMarketRegime: trade.btcMarketRegimeAtSignal,
+    entryBtcMarketRegime: trade.btcMarketRegimeAtEntry,
+    signalBtcCandle: trade.btcCandleAtSignal,
+    entryBtcCandle: auditCaptured
+      ? (trade.btcCandleAtEntry ?? trade.btcCandlePatternAtEntry)
+      : null,
+    duplicateActiveCount: trade.shakeoutStage2DuplicateActiveCount,
+    duplicateActiveMarginUsdt: trade.shakeoutStage2DuplicateActiveMarginUsdt,
+    rollingDrift: trade.shakeoutStage2RollingDrift,
+    // A historical row did not capture these flags at entry/fill. Keep its
+    // audit empty instead of fabricating hindsight evidence from later data.
+    auditFlags: auditCaptured ? (trade.shakeoutStage2Flags ?? []) : [],
+  });
+  return {
+    ...trade,
+    shakeoutStage2SourceVersion: trade.shakeoutStage2Version ?? null,
+    shakeoutStage2Version: evaluation.version,
+    shakeoutStage2Tier: evaluation.tier,
+    shakeoutStage2Label: evaluation.label,
+    shakeoutStage2Code: evaluation.code,
+    shakeoutStage2Modifier: evaluation.modifier,
+    shakeoutStage2Layer1Tier: evaluation.layer1Tier,
+    shakeoutStage2Setup: evaluation.setup,
+    shakeoutStage2Variant: evaluation.variant,
+    shakeoutStage2FillQuality: evaluation.fillQuality,
+    shakeoutStage2Flags: evaluation.flags,
+    shakeoutStage2Reason: evaluation.reason,
+    shakeoutStage2FillDelayMinutes: evaluation.fillDelayMinutes,
+    shakeoutStage2AuditOnlyFlags: true,
+    shakeoutStage2AuditCaptured: auditCaptured,
+    shakeoutStage2Derived: trade.shakeoutStage2Version !== SHAKEOUT_STAGE_2_VERSION,
+  };
+}
+
 function getShakeoutPaperMark(symbol) {
   const key = String(symbol ?? '').toUpperCase();
   const wsMark = Number(shakeoutSocketMarks.get(key));
@@ -17733,10 +19502,10 @@ function getShakeoutPaperMark(symbol) {
 
 async function getShakeoutPaperTrades() {
   const store = await readShakeoutPaperStore();
-  const trades = store.trades.map((t) => enrichShakeoutPaperTrade(
+  const trades = store.trades.map((t) => enrichShakeoutStage2V2(enrichShakeoutPaperTrade(
     t,
     getShakeoutPaperMark(t.symbol),
-  ));
+  )));
   const open = trades.filter((t) => ['OPEN', 'PENDING'].includes(t.status));
   const closed = trades.filter((t) => t.status === 'CLOSED');
   const expired = trades.filter((t) => t.status === 'EXPIRED').length;
@@ -17984,7 +19753,7 @@ function capShakeoutTpByMaxRoe({ entryPrice, tp, side, leverage }) {
 async function createShakeoutPaperTrade(payload) {
   const symbol = String(payload.symbol ?? '').toUpperCase().trim();
   const side = String(payload.side ?? payload.action ?? 'LONG').toUpperCase();
-  const marginUsdt = Number(payload.marginUsdt ?? process.env.SHAKEOUT_RECLAIM_PAPER_MARGIN_USDT ?? 10);
+  let marginUsdt = Number(payload.marginUsdt ?? process.env.SHAKEOUT_RECLAIM_PAPER_MARGIN_USDT ?? 10);
   const leverage = Math.max(1, Math.min(125, Number(payload.leverage ?? 10)));
   const entryPrice = Number(payload.entryPrice ?? payload.entry);
 
@@ -18008,6 +19777,15 @@ async function createShakeoutPaperTrade(payload) {
   // variant: 'MARKET' (vào ngay theo giá market) hoặc 'PENDING' (chờ giá chạm entry dự kiến)
   const variant = payload.variant ? String(payload.variant).toUpperCase().slice(0, 16) : null;
   const signalId = payload.signalId ? String(payload.signalId).slice(0, 64) : null;
+  const pendingShadowMarginCapUsdt = Math.max(
+    0.01,
+    Number(process.env.SHAKEOUT_RECLAIM_PENDING_SHADOW_MARGIN_CAP_USDT ?? 1),
+  );
+  marginUsdt = capShakeoutPendingShadowMargin({
+    variant,
+    marginUsdt,
+    capUsdt: pendingShadowMarginCapUsdt,
+  });
 
   const store = await readShakeoutPaperStore();
   const dup = store.trades.find((t) =>
@@ -18024,6 +19802,61 @@ async function createShakeoutPaperTrade(payload) {
     ? payload.btcHealth
     : await getBtcHealth().catch(() => btcHealthCache.data);
   const btcHealthSnapshot = buildBtcHealthSnapshot(rawBtcHealth) ?? null;
+  const signalContext = getShakeoutBtcEntrySnapshot(rawBtcHealth, Date.now());
+  const entryContext = status === 'OPEN'
+    ? signalContext
+    : null;
+  const chopChaseMarginCapUsdt = Math.max(
+    0.01,
+    Number(process.env.SHAKEOUT_RECLAIM_CHASE_CHOP_MARGIN_CAP_USDT ?? 1),
+  );
+  marginUsdt = capShakeoutChopChaseMargin({
+    variant,
+    btcMarketRegimeAtEntry: entryContext?.btcMarketRegimeAtEntry,
+    marginUsdt,
+    capUsdt: chopChaseMarginCapUsdt,
+  });
+  const entrySignalAt = payload.signalAt ?? payload.scannedAt ?? payload.createdAt ?? new Date().toISOString();
+  const resolvedSymbolCandleAtEntry = payload.symbolCandleAtEntry
+    ?? payload.candlePatternAtEntry
+    ?? payload.candlePattern5m
+    ?? cachedCandlePatternAt(symbol, '5m', entrySignalAt)
+    ?? null;
+  const resolvedBtcCandleAtEntry = payload.btcCandleAtEntry
+    ?? payload.btcCandlePatternAtEntry
+    ?? payload.btcCandlePattern5m
+    ?? cachedCandlePatternAt('BTCUSDT', '5m', entrySignalAt)
+    ?? null;
+  const activeSignalVariants = signalId
+    ? store.trades.filter((row) =>
+        row.signalId === signalId
+        && ['OPEN', 'PENDING'].includes(row.status))
+    : [];
+  const stage2RollingDrift = shakeoutRollingDriftStats(store.trades, {
+    variant,
+    side,
+    createdAt: entrySignalAt,
+  });
+  const resolvedSideCandleGate = payload.shakeoutSideCandleTier
+    ? {
+        version: payload.ruleVersion,
+        regime: payload.regimeAtEntry,
+        tier: payload.shakeoutSideCandleTier,
+        label: payload.shakeoutSideCandleLabel,
+        reason: payload.shakeoutSideCandleReason,
+        marginCapUsdt: payload.shakeoutSideCandleMarginCapUsdt,
+      }
+    : evaluateShakeoutSideCandle({
+        side,
+        btcHealth: btcHealthSnapshot ?? {},
+        btcCandle: resolvedBtcCandleAtEntry,
+      });
+  const sideCandleMarginCap = Number(resolvedSideCandleGate.marginCapUsdt);
+  if (resolvedSideCandleGate.marginCapUsdt != null
+      && Number.isFinite(sideCandleMarginCap)
+      && sideCandleMarginCap > 0) {
+    marginUsdt = Math.min(marginUsdt, sideCandleMarginCap);
+  }
   const btcTrendScore = Number(btcHealthSnapshot?.btcTrendScore);
   const btcPct6h = Number(btcHealthSnapshot?.pct6h);
   const signalTimeframe = String(payload.signalTimeframe ?? payload.timeframe ?? payload.interval ?? payload.factors?.timeframe ?? '5m');
@@ -18056,6 +19889,27 @@ async function createShakeoutPaperTrade(payload) {
     btcRelationLabel,
     btcGateLabel,
   }, btcHealthSnapshot)).slice(0, 260);
+  const stage2Evaluation = evaluateShakeoutStage2({
+    layer1Tier: resolvedSideCandleGate.tier,
+    setup: payload.shakeoutClass ?? payload.subtype ?? payload.signalType ?? payload.type,
+    shakeoutCombo,
+    signalType: payload.signalType ?? payload.type,
+    subtype: payload.subtype,
+    variant,
+    side,
+    signalAt: entrySignalAt,
+    fillAt: status === 'OPEN' ? new Date().toISOString() : null,
+    signalBtcMarketRegime: signalContext?.btcMarketRegimeAtEntry,
+    entryBtcMarketRegime: entryContext?.btcMarketRegimeAtEntry,
+    signalBtcCandle: resolvedBtcCandleAtEntry,
+    entryBtcCandle: status === 'OPEN' ? resolvedBtcCandleAtEntry : null,
+    duplicateActiveCount: activeSignalVariants.length,
+    duplicateActiveMarginUsdt: activeSignalVariants.reduce(
+      (sum, row) => sum + Number(row.marginUsdt ?? 0),
+      0,
+    ),
+    rollingDrift: stage2RollingDrift,
+  });
   const btcLogNote = btcHealthSnapshot
     ? `btcLog=${btcHealthSnapshot.regime ?? '-'}:${btcHealthSnapshot.btcTrendDir ?? '-'}:${Number.isFinite(btcTrendScore) ? btcTrendScore : '-'} pct6h=${Number.isFinite(btcPct6h) ? btcPct6h.toFixed(2) : '-'} ema1h=${btcHealthSnapshot.emaTrend1h ?? '-'} bull=${btcHealthSnapshot.bullBias ?? '-'}`
     : 'btcLog=NO_DATA';
@@ -18081,6 +19935,48 @@ async function createShakeoutPaperTrade(payload) {
     outcome: null,
     score: payload.score != null ? Number(payload.score) : null,
     signalType: String(payload.signalType ?? payload.type ?? '').slice(0, 80),
+    candlePattern5m: payload.candlePattern5m && typeof payload.candlePattern5m === 'object'
+      ? payload.candlePattern5m
+      : null,
+    candlePattern15m: payload.candlePattern15m && typeof payload.candlePattern15m === 'object'
+      ? payload.candlePattern15m
+      : null,
+    btcCandlePattern5m: payload.btcCandlePattern5m && typeof payload.btcCandlePattern5m === 'object'
+      ? payload.btcCandlePattern5m
+      : null,
+    candlePatternAtEntry: resolvedSymbolCandleAtEntry && typeof resolvedSymbolCandleAtEntry === 'object'
+      ? resolvedSymbolCandleAtEntry
+      : null,
+    btcCandlePatternAtEntry: resolvedBtcCandleAtEntry && typeof resolvedBtcCandleAtEntry === 'object'
+      ? resolvedBtcCandleAtEntry
+      : null,
+    symbolCandleAtEntry: resolvedSymbolCandleAtEntry && typeof resolvedSymbolCandleAtEntry === 'object'
+      ? resolvedSymbolCandleAtEntry
+      : null,
+    btcCandleAtEntry: resolvedBtcCandleAtEntry && typeof resolvedBtcCandleAtEntry === 'object'
+      ? resolvedBtcCandleAtEntry
+      : null,
+    symbolCandleAtSignal: resolvedSymbolCandleAtEntry && typeof resolvedSymbolCandleAtEntry === 'object'
+      ? resolvedSymbolCandleAtEntry
+      : null,
+    btcCandleAtSignal: resolvedBtcCandleAtEntry && typeof resolvedBtcCandleAtEntry === 'object'
+      ? resolvedBtcCandleAtEntry
+      : null,
+    ruleVersion: resolvedSideCandleGate.version ? String(resolvedSideCandleGate.version).slice(0, 64) : null,
+    regimeAtEntry: resolvedSideCandleGate.regime ? String(resolvedSideCandleGate.regime).toUpperCase().slice(0, 16) : null,
+    shakeoutSideCandleTier: resolvedSideCandleGate.tier
+      ? String(resolvedSideCandleGate.tier).toUpperCase().slice(0, 12)
+      : null,
+    shakeoutSideCandleLabel: resolvedSideCandleGate.label
+      ? String(resolvedSideCandleGate.label).toUpperCase().slice(0, 80)
+      : null,
+    shakeoutSideCandleReason: resolvedSideCandleGate.reason
+      ? String(resolvedSideCandleGate.reason).slice(0, 300)
+      : null,
+    shakeoutSideCandleMarginCapUsdt: resolvedSideCandleGate.marginCapUsdt != null
+      && Number.isFinite(Number(resolvedSideCandleGate.marginCapUsdt))
+      ? Number(resolvedSideCandleGate.marginCapUsdt)
+      : null,
     shakeoutQuality: payload.shakeoutQuality ? String(payload.shakeoutQuality).toUpperCase().slice(0, 12) : null,
     highJumpRisk: Boolean(payload.highJumpRisk),
     highJumpRiskLabel: payload.highJumpRiskLabel ? String(payload.highJumpRiskLabel).slice(0, 40) : null,
@@ -18120,14 +20016,67 @@ async function createShakeoutPaperTrade(payload) {
     btcPct6hAtEntry: Number.isFinite(btcPct6h) ? btcPct6h : null,
     btcEmaTrend1hAtEntry: btcHealthSnapshot?.emaTrend1h ?? null,
     btcBullBiasAtEntry: btcHealthSnapshot?.bullBias ?? null,
+    btcMarketRegimeAtEntry: entryContext?.btcMarketRegimeAtEntry ?? null,
+    btcTrendDir4hAtEntry: entryContext?.btcTrendDir4hAtEntry ?? null,
+    btcTrendScore4hAtEntry: entryContext?.btcTrendScore4hAtEntry ?? null,
+    btcPct24hAtEntry: entryContext?.btcPct24hAtEntry ?? null,
+    btc5mFlipRateAtEntry: entryContext?.btc5mFlipRateAtEntry ?? null,
+    btc5mFlipCountAtEntry: entryContext?.btc5mFlipCountAtEntry ?? null,
+    btc5mFlipTransitionsAtEntry: entryContext?.btc5mFlipTransitionsAtEntry ?? null,
+    btc5mFlipSamplesAtEntry: entryContext?.btc5mFlipSamplesAtEntry ?? null,
+    btc5mFlipWindowAtEntry: entryContext?.btc5mFlipWindowAtEntry ?? null,
+    btcContextCapturedAt: entryContext?.capturedAt ?? null,
+    btcMarketRegimeAtSignal: signalContext?.btcMarketRegimeAtEntry ?? null,
+    btcTrendDir4hAtSignal: signalContext?.btcTrendDir4hAtEntry ?? null,
+    btcTrendScore4hAtSignal: signalContext?.btcTrendScore4hAtEntry ?? null,
+    btc5mFlipRateAtSignal: signalContext?.btc5mFlipRateAtEntry ?? null,
+    btcSignalContextCapturedAt: signalContext?.capturedAt ?? null,
+    shakeoutStage2Version: stage2Evaluation.version,
+    shakeoutStage2Tier: stage2Evaluation.tier,
+    shakeoutStage2Label: stage2Evaluation.label,
+    shakeoutStage2Code: stage2Evaluation.code,
+    shakeoutStage2Modifier: stage2Evaluation.modifier,
+    shakeoutStage2Layer1Tier: stage2Evaluation.layer1Tier,
+    shakeoutStage2Setup: stage2Evaluation.setup,
+    shakeoutStage2Variant: stage2Evaluation.variant,
+    shakeoutStage2FillQuality: stage2Evaluation.fillQuality,
+    shakeoutStage2AuditOnlyFlags: true,
+    shakeoutStage2AuditCaptured: true,
+    shakeoutStage2Derived: false,
+    shakeoutStage2Flags: stage2Evaluation.flags,
+    shakeoutStage2Reason: stage2Evaluation.reason,
+    shakeoutStage2EvaluatedAt: stage2Evaluation.evaluatedAt,
+    shakeoutStage2FillDelayMinutes: stage2Evaluation.fillDelayMinutes,
+    shakeoutStage2DuplicateActiveCount: stage2Evaluation.duplicateActiveCount,
+    shakeoutStage2DuplicateActiveMarginUsdt: stage2Evaluation.duplicateActiveMarginUsdt,
+    shakeoutStage2RollingDrift: stage2Evaluation.rollingDrift,
+    pendingShadowMarginCapUsdt: variant === 'PENDING' ? pendingShadowMarginCapUsdt : null,
+    chaseChopShadow: isShakeoutChopChase({
+      variant,
+      btcMarketRegimeAtEntry: entryContext?.btcMarketRegimeAtEntry,
+    }),
+    signalAt: String(entrySignalAt),
     createdAt: new Date().toISOString(),
     openedAt: status === 'OPEN' ? new Date().toISOString() : null,
     closedAt: null,
     source: String(payload.source ?? 'manual').slice(0, 80),
     note: [
       btcLogNote,
+      entryContext
+        ? `BTC_ENTRY_CONTEXT=4h:${entryContext.btcTrendDir4hAtEntry ?? '-'}:${entryContext.btcTrendScore4hAtEntry ?? '-'} flip5m=${entryContext.btc5mFlipRateAtEntry ?? '-'} (${entryContext.btc5mFlipCountAtEntry}/${entryContext.btc5mFlipTransitionsAtEntry}) regime=${entryContext.btcMarketRegimeAtEntry ?? '-'}`
+        : '',
+      isShakeoutChopChase({ variant, btcMarketRegimeAtEntry: entryContext?.btcMarketRegimeAtEntry })
+        ? `CHASE_CHOP_SHADOW=margin_cap_$${chopChaseMarginCapUsdt}`
+        : '',
       `SHAKEOUT_BTC_GATE=${btcGateLabel}: ${btcGateReason}`,
       `SHAKEOUT_COMBO=${shakeoutCombo}`,
+      resolvedSideCandleGate.label
+        ? `SIDE_BTC_CANDLE=${resolvedSideCandleGate.label}: ${resolvedSideCandleGate.reason ?? ''}`
+        : '',
+      variant === 'PENDING'
+        ? `PENDING_SHADOW=margin_cap_$${pendingShadowMarginCapUsdt}`
+        : '',
+      `SHAKEOUT_STAGE_2=${stage2Evaluation.tier}:${stage2Evaluation.label}; ${stage2Evaluation.reason}`,
       String(payload.note ?? ''),
       defaultSl ? `defaultSL=${Math.abs(Number(process.env.SHAKEOUT_RECLAIM_PAPER_DEFAULT_SL_ROE ?? 20))}%ROE@${defaultSl}` : '',
       tpCap.capped ? `maxTP=${tpCap.maxRoe}%ROE oldTP=${rawTp} newTP=${tp}` : '',
@@ -18253,7 +20202,72 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
     if (!touched) return;
     // Giá khớp thực tế: limit đã marketable (giá vượt qua) thì khớp ở giá market, không bao giờ tệ hơn market
     const fill = side === 'LONG' ? Math.min(limit, markPrice) : Math.max(limit, markPrice);
-    const margin = Number(row.marginUsdt);
+    const filledAt = new Date().toISOString();
+    const rawBtcHealth = await getBtcHealth().catch(() => btcHealthCache.data);
+    const entryContext = getShakeoutBtcEntrySnapshot(rawBtcHealth, Date.now());
+    const chopChaseMarginCapUsdt = Math.max(
+      0.01,
+      Number(process.env.SHAKEOUT_RECLAIM_CHASE_CHOP_MARGIN_CAP_USDT ?? 1),
+    );
+    let margin = capShakeoutChopChaseMargin({
+      variant: row.variant,
+      btcMarketRegimeAtEntry: entryContext.btcMarketRegimeAtEntry,
+      marginUsdt: row.marginUsdt,
+      capUsdt: chopChaseMarginCapUsdt,
+    });
+    const pendingShadowMarginCapUsdt = Math.max(
+      0.01,
+      Number(process.env.SHAKEOUT_RECLAIM_PENDING_SHADOW_MARGIN_CAP_USDT ?? 1),
+    );
+    margin = capShakeoutPendingShadowMargin({
+      variant: row.variant,
+      marginUsdt: margin,
+      capUsdt: pendingShadowMarginCapUsdt,
+    });
+    const symbolCandleAtEntry = cachedCandlePatternAt(row.symbol, '5m', filledAt) ?? null;
+    const btcCandleAtEntry = cachedCandlePatternAt('BTCUSDT', '5m', filledAt) ?? null;
+    const fillBtcHealthSnapshot = buildBtcHealthSnapshot(rawBtcHealth) ?? {};
+    const fillSideCandleGate = evaluateShakeoutSideCandle({
+      side,
+      btcHealth: fillBtcHealthSnapshot,
+      btcCandle: btcCandleAtEntry,
+    });
+    const activeSignalVariants = row.signalId
+      ? store.trades.filter((candidate) =>
+          candidate.id !== row.id
+          && candidate.signalId === row.signalId
+          && ['OPEN', 'PENDING'].includes(candidate.status))
+      : [];
+    const stage2RollingDrift = shakeoutRollingDriftStats(store.trades, {
+      ...row,
+      openedAt: filledAt,
+    });
+    const stage2Evaluation = evaluateShakeoutStage2({
+      layer1Tier: fillSideCandleGate.tier,
+      setup: row.shakeoutClass ?? row.subtype ?? row.signalType,
+      shakeoutCombo: row.shakeoutCombo,
+      signalType: row.signalType,
+      subtype: row.subtype,
+      variant: row.variant,
+      side,
+      signalAt: row.signalAt ?? row.scannedAt ?? row.createdAt,
+      fillAt: filledAt,
+      signalBtcMarketRegime: row.btcMarketRegimeAtSignal
+        ?? row.btcMarketRegimeAtEntry
+        ?? row.btcRegimeAtEntry,
+      entryBtcMarketRegime: entryContext.btcMarketRegimeAtEntry,
+      signalBtcCandle: row.btcCandleAtSignal
+        ?? row.btcCandleAtEntry
+        ?? row.btcCandlePatternAtEntry
+        ?? row.btcCandlePattern5m,
+      entryBtcCandle: btcCandleAtEntry,
+      duplicateActiveCount: activeSignalVariants.length,
+      duplicateActiveMarginUsdt: activeSignalVariants.reduce(
+        (sum, candidate) => sum + Number(candidate.marginUsdt ?? 0),
+        0,
+      ),
+      rollingDrift: stage2RollingDrift,
+    });
     const lev = Number(row.leverage);
     const qty = fill > 0 ? (margin * lev) / fill : row.quantity;
     const dynamicRiskPct = Math.max(0.001, Number(row.btcDynamicRiskPct ?? 0.03));
@@ -18275,9 +20289,15 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
       leverage: lev,
     });
     const filledTp = fillTpCap.tp;
+    const entryContextNote = `BTC_ENTRY_CONTEXT=4h:${entryContext.btcTrendDir4hAtEntry ?? '-'}:${entryContext.btcTrendScore4hAtEntry ?? '-'} flip5m=${entryContext.btc5mFlipRateAtEntry ?? '-'} (${entryContext.btc5mFlipCountAtEntry}/${entryContext.btc5mFlipTransitionsAtEntry}) regime=${entryContext.btcMarketRegimeAtEntry ?? '-'}`;
+    const chopShadowNote = isShakeoutChopChase({
+      variant: row.variant,
+      btcMarketRegimeAtEntry: entryContext.btcMarketRegimeAtEntry,
+    }) ? `CHASE_CHOP_SHADOW=margin_cap_$${chopChaseMarginCapUsdt}` : '';
     store.trades[idx] = {
       ...row,
       status: 'OPEN',
+      marginUsdt: margin,
       entryPrice: fill,
       fillPrice: fill,
       quantity: qty,
@@ -18285,22 +20305,80 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
       sl: filledSl,
       tp: filledTp,
       realizedPnl: Number(row.realizedPnl ?? 0),
-      openedAt: new Date().toISOString(),
+      openedAt: filledAt,
+      symbolCandleAtEntry: symbolCandleAtEntry && typeof symbolCandleAtEntry === 'object'
+        ? symbolCandleAtEntry
+        : null,
+      candlePatternAtEntry: symbolCandleAtEntry && typeof symbolCandleAtEntry === 'object'
+        ? symbolCandleAtEntry
+        : row.candlePatternAtEntry,
+      btcCandleAtEntry: btcCandleAtEntry && typeof btcCandleAtEntry === 'object'
+        ? btcCandleAtEntry
+        : null,
+      btcCandlePatternAtEntry: btcCandleAtEntry && typeof btcCandleAtEntry === 'object'
+        ? btcCandleAtEntry
+        : row.btcCandlePatternAtEntry,
+      ruleVersion: fillSideCandleGate.version,
+      regimeAtEntry: fillSideCandleGate.regime,
+      shakeoutSideCandleTier: fillSideCandleGate.tier,
+      shakeoutSideCandleLabel: fillSideCandleGate.label,
+      shakeoutSideCandleReason: fillSideCandleGate.reason,
+      shakeoutSideCandleMarginCapUsdt: fillSideCandleGate.marginCapUsdt,
+      btcMarketRegimeAtEntry: entryContext.btcMarketRegimeAtEntry,
+      btcTrendDir4hAtEntry: entryContext.btcTrendDir4hAtEntry,
+      btcTrendScore4hAtEntry: entryContext.btcTrendScore4hAtEntry,
+      btcPct24hAtEntry: entryContext.btcPct24hAtEntry,
+      btc5mFlipRateAtEntry: entryContext.btc5mFlipRateAtEntry,
+      btc5mFlipCountAtEntry: entryContext.btc5mFlipCountAtEntry,
+      btc5mFlipTransitionsAtEntry: entryContext.btc5mFlipTransitionsAtEntry,
+      btc5mFlipSamplesAtEntry: entryContext.btc5mFlipSamplesAtEntry,
+      btc5mFlipWindowAtEntry: entryContext.btc5mFlipWindowAtEntry,
+      btcContextCapturedAt: entryContext.capturedAt,
+      shakeoutStage2Version: stage2Evaluation.version,
+      shakeoutStage2Tier: stage2Evaluation.tier,
+      shakeoutStage2Label: stage2Evaluation.label,
+      shakeoutStage2Code: stage2Evaluation.code,
+      shakeoutStage2Modifier: stage2Evaluation.modifier,
+      shakeoutStage2Layer1Tier: stage2Evaluation.layer1Tier,
+      shakeoutStage2Setup: stage2Evaluation.setup,
+      shakeoutStage2Variant: stage2Evaluation.variant,
+      shakeoutStage2FillQuality: stage2Evaluation.fillQuality,
+      shakeoutStage2AuditOnlyFlags: true,
+      shakeoutStage2AuditCaptured: true,
+      shakeoutStage2Derived: false,
+      shakeoutStage2Flags: stage2Evaluation.flags,
+      shakeoutStage2Reason: stage2Evaluation.reason,
+      shakeoutStage2EvaluatedAt: stage2Evaluation.evaluatedAt,
+      shakeoutStage2FillDelayMinutes: stage2Evaluation.fillDelayMinutes,
+      shakeoutStage2DuplicateActiveCount: stage2Evaluation.duplicateActiveCount,
+      shakeoutStage2DuplicateActiveMarginUsdt: stage2Evaluation.duplicateActiveMarginUsdt,
+      shakeoutStage2RollingDrift: stage2Evaluation.rollingDrift,
+      pendingShadowMarginCapUsdt,
+      chaseChopShadow: isShakeoutChopChase({
+        variant: row.variant,
+        btcMarketRegimeAtEntry: entryContext.btcMarketRegimeAtEntry,
+      }),
       btcDynamicLocked: row.btcDynamicEntry ? true : row.btcDynamicLocked,
       noStopLoss: false,
       note: row.btcDynamicEntry
         ? [
             `btcDynamicFilled=${fill} sl=${filledSl} hardSlRoe=${fillSlRoe}% tp=${filledTp}`,
             fillTpCap.capped ? `maxTP=${fillTpCap.maxRoe}%ROE oldTP=${rawFilledTp} newTP=${filledTp}` : '',
+            entryContextNote,
+            chopShadowNote,
+            `SHAKEOUT_STAGE_2=${stage2Evaluation.tier}:${stage2Evaluation.label}; ${stage2Evaluation.reason}`,
             String(row.note ?? ''),
           ]
-          .filter(Boolean).join(' | ').slice(0, 500)
+          .filter(Boolean).join(' | ').slice(0, 900)
         : [
             String(row.note ?? ''),
+            entryContextNote,
+            chopShadowNote,
+            `SHAKEOUT_STAGE_2=${stage2Evaluation.tier}:${stage2Evaluation.label}; ${stage2Evaluation.reason}`,
             Number.isFinite(realGateFillSl) && realGateFillSl > 0
               ? `fillSL=${fillSlRoe}%ROE@${filledSl}`
               : '',
-          ].filter(Boolean).join(' | ').slice(0, 500),
+          ].filter(Boolean).join(' | ').slice(0, 900),
     };
     await writeShakeoutPaperStore(store);
     scheduleShakeoutPaperBroadcast(50);
@@ -18688,6 +20766,8 @@ async function checkShakeoutPaperTpSl(trade, markPrice) {
       ? (tpHit ? 'RECOVERY_BE' : 'RECOVERY_SL30')
       : trade.partialTpTaken
         ? (tpHit ? 'RUNNER_TP' : partialSlAtEntry ? 'PARTIAL_BE' : 'PARTIAL_TRAIL')
+        : slHit && trade.slTrailMode === 'CHASE_CHOP_FEE_BREAK_EVEN'
+          ? 'CHASE_CHOP_FEE_BE'
         : slHit && Number(trade.slTrailLockRoe ?? 0) > 0
           ? 'SL_TRAIL_LOCK'
         : (tpHit ? 'TP' : 'SL');
@@ -18779,6 +20859,15 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
   shakeoutPaperPeakRoe.set(trade.id, peakRoe);
 
   const isChaseTrade = String(trade.variant ?? '').toUpperCase() === 'CHASE';
+  const isChopChaseShadow = isShakeoutChopChase({
+    variant: trade.variant,
+    btcMarketRegimeAtEntry: trade.btcMarketRegimeAtEntry,
+  });
+  const chopBreakEvenTriggerRoe = Math.max(
+    0.1,
+    Number(process.env.SHAKEOUT_RECLAIM_CHASE_CHOP_BE_TRIGGER_ROE ?? 7),
+  );
+  const chopFeeBreakEvenActive = isChopChaseShadow && peakRoe >= chopBreakEvenTriggerRoe;
   const trailStartRoe = Number(isChaseTrade
     ? (process.env.SHAKEOUT_RECLAIM_CHASE_TRAIL_START_ROE ?? 20)
     : (process.env.SHAKEOUT_RECLAIM_PAPER_TRAIL_START_ROE ?? 15));
@@ -18789,7 +20878,9 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
     const stepRoe = Math.max(1, Number(process.env.SHAKEOUT_RECLAIM_CHASE_TRAIL_STEP_ROE ?? 5));
     return firstLockRoe + Math.floor((currentPeakRoe - trailStartRoe) / stepRoe) * stepRoe;
   };
-  const targetLockRoe = trade.partialTpTaken
+  const targetLockRoe = chopFeeBreakEvenActive
+    ? 0
+    : trade.partialTpTaken
     ? (peakRoe >= trailStartRoe ? getTradeTargetLockRoe(peakRoe) : 0)
     : (peakRoe >= trailStartRoe ? getTradeTargetLockRoe(peakRoe) : null);
 
@@ -18799,10 +20890,18 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
   let improves = false;
   let crossedLock = false;
   if (targetLockRoe != null) {
-    const targetTotalPnl = margin * targetLockRoe / 100;
-    const runnerPnlNeeded = targetTotalPnl - realizedPnl;
-    const priceMove = runnerPnlNeeded / qty;
-    newSl = isLong ? entry + priceMove : entry - priceMove;
+    if (chopFeeBreakEvenActive && realizedPnl === 0) {
+      newSl = shakeoutFeeBreakEvenPrice({
+        entryPrice: entry,
+        side: trade.side,
+        feeRate: getShakeoutPaperFeeRate(),
+      });
+    } else {
+      const targetTotalPnl = margin * targetLockRoe / 100;
+      const runnerPnlNeeded = targetTotalPnl - realizedPnl;
+      const priceMove = runnerPnlNeeded / qty;
+      newSl = isLong ? entry + priceMove : entry - priceMove;
+    }
     if (Number.isFinite(newSl) && newSl > 0) {
       const curSl = Number(trade.sl ?? 0);
       improves = !Number.isFinite(curSl) || curSl <= 0
@@ -18822,7 +20921,9 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
     const row = store.trades[idx];
     const notes = [];
     if (targetLockRoe != null && improves && Number.isFinite(newSl) && newSl > 0) {
-      notes.push(trade.partialTpTaken
+      notes.push(chopFeeBreakEvenActive
+        ? `shakeoutChaseChopFeeBE=peak>=${chopBreakEvenTriggerRoe}%@${newSl}`
+        : trade.partialTpTaken
         ? `shakeoutRunnerSlTrail=${targetLockRoe}%@${newSl}`
         : `shakeoutPaperSlTrail=${targetLockRoe}%@${newSl}`);
     }
@@ -18834,6 +20935,12 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
       ...(targetLockRoe != null && improves && !crossedLock ? { sl: newSl } : {}),
       peakRoe,
       ...(targetLockRoe != null ? { slTrailLockRoe: targetLockRoe } : {}),
+      ...(chopFeeBreakEvenActive ? {
+        slTrailMode: 'CHASE_CHOP_FEE_BREAK_EVEN',
+        chaseChopBreakEvenTriggeredAt: row.chaseChopBreakEvenTriggeredAt ?? new Date().toISOString(),
+        chaseChopBreakEvenTriggerRoe: chopBreakEvenTriggerRoe,
+        chaseChopBreakEvenPrice: newSl,
+      } : {}),
       dynamicRiskUpdatedAt: new Date().toISOString(),
       note: [String(row.note ?? ''), ...notes].filter(Boolean).join(' | ').slice(0, 500),
     };
@@ -18844,7 +20951,9 @@ async function checkShakeoutPaperSlTrail(trade, markPrice) {
       await closeShakeoutPaperTrade({
         id: trade.id,
         exitPrice,
-        outcome: trade.partialTpTaken ? 'PARTIAL_TRAIL' : 'SL',
+        outcome: chopFeeBreakEvenActive
+          ? 'CHASE_CHOP_FEE_BE'
+          : trade.partialTpTaken ? 'PARTIAL_TRAIL' : 'SL',
       });
       console.log(`[ShakeoutPaper] SL_LOCK_HIT ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% exit=${exitPrice}`);
     } else if (targetLockRoe != null && improves && Number.isFinite(newSl) && newSl > 0) {
@@ -20213,6 +22322,20 @@ async function createShakeoutPaperTrades(signals = []) {
     const realGateNote = `SHAKEOUT_${realGate.label}: ${realGate.reasons.join('; ')}${realGate.projectedRoe != null ? `; tpRoe=${realGate.projectedRoe}%` : ''}`;
     const signalTimeframe = String(sig.factors?.timeframe ?? sig.interval ?? '5m');
     const shakeoutBtcHealth = buildBtcHealthSnapshot(btcHealthCache.data ?? {});
+    const rawSignalAt = sig.scannedAt ?? sig.signalAt ?? now;
+    const parsedSignalAt = typeof rawSignalAt === 'number' ? rawSignalAt : Date.parse(rawSignalAt);
+    const signalAt = new Date(Number.isFinite(parsedSignalAt) ? parsedSignalAt : now).toISOString();
+    const symbolCandleAtEntry = sig.candlePattern5m
+      ?? cachedCandlePatternAt(sig.symbol, '5m', signalAt)
+      ?? null;
+    const btcCandleAtEntry = sig.btcCandlePattern5m
+      ?? cachedCandlePatternAt('BTCUSDT', '5m', signalAt)
+      ?? null;
+    const sideCandleGate = evaluateShakeoutSideCandle({
+      side,
+      btcHealth: shakeoutBtcHealth ?? {},
+      btcCandle: btcCandleAtEntry,
+    });
     const shakeoutBtcCorr = getCoinBtcCorr(sig.symbol, signalTimeframe, 30);
     const shakeoutBtcGate = getShakeoutBtcGate({
       sig,
@@ -20450,13 +22573,16 @@ async function createShakeoutPaperTrades(signals = []) {
       const isBadChaseGroup = Boolean(v.chaseWeakGroup);
       const variantMarginUsdt = Number(v.marginUsdt);
       // Explicit weak cohorts stay at $1 so they remain measurable instead of being hidden.
-      const effectiveMarginUsdt = btcUpShortBadSizeGroup.bad
+      const preSideCandleMarginUsdt = btcUpShortBadSizeGroup.bad
         ? btcUpShortBadSizeMarginUsdt
         : Number.isFinite(variantMarginUsdt) && variantMarginUsdt > 0
           ? variantMarginUsdt
         : jumpRisk.block && !isBadChaseGroup
           ? highJumpRiskMarginUsdt
           : classifiedMarginUsdt;
+      const effectiveMarginUsdt = sideCandleGate.marginCapUsdt == null
+        ? preSideCandleMarginUsdt
+        : Math.min(preSideCandleMarginUsdt, sideCandleGate.marginCapUsdt);
       const geometryOk = side === 'LONG'
         ? signalSl < v.entryPrice && v.entryPrice < signalTp
         : signalTp < v.entryPrice && v.entryPrice < signalSl;
@@ -20542,6 +22668,17 @@ async function createShakeoutPaperTrades(signals = []) {
         stage: sig.stage,
         signalTimeframe,
         signalType: sig.type,
+        candlePattern5m: sig.candlePattern5m,
+        candlePattern15m: sig.candlePattern15m,
+        btcCandlePattern5m: sig.btcCandlePattern5m,
+        symbolCandleAtEntry,
+        btcCandleAtEntry,
+        ruleVersion: sideCandleGate.version,
+        regimeAtEntry: sideCandleGate.regime,
+        shakeoutSideCandleTier: sideCandleGate.tier,
+        shakeoutSideCandleLabel: sideCandleGate.label,
+        shakeoutSideCandleReason: sideCandleGate.reason,
+        shakeoutSideCandleMarginCapUsdt: sideCandleGate.marginCapUsdt,
         shakeoutQuality: v.shakeoutQualityOverride ?? shakeoutQuality.tier,
         highJumpRisk: Boolean(jumpRisk.block),
         highJumpRiskLabel: jumpRisk.block ? 'HIGH JUMP RISK' : '',
@@ -24564,6 +26701,22 @@ async function sendStatic(pathname, response) {
 
     if (extname(filePath) === '.html') {
       let html = await readFile(filePath, 'utf8');
+      const paperCandlePages = new Set([
+        '/pump.html', '/post-pump-kill-short.html', '/cap.html', '/edge-short.html',
+        '/liquid-scan.html', '/dump-ignition.html', '/ema-squeeze.html', '/spike-reversal.html',
+        '/decision-paper.html', '/shakeout-reclaim.html', '/top-reversal.html', '/pump-ignition.html',
+        '/br-like-limit.html', '/paper.html', '/recommended-signals.html',
+      ]);
+      if (paperCandlePages.has(staticPath) && !html.includes('/paper-candle-columns.js')) {
+        html = html.includes('</head>')
+          ? html.replace('</head>', '  <script src="/paper-candle-columns.js?v=20260722-ema-candle-sort-filter2"></script>\n</head>')
+          : html;
+      }
+      if (paperPageLearningEnabled && paperCandlePages.has(staticPath) && !html.includes('/paper-learning-columns.js')) {
+        html = html.includes('</head>')
+          ? html.replace('</head>', '  <script src="/paper-learning-columns.js"></script>\n</head>')
+          : html;
+      }
       const hasDedicatedLoader = staticPath === '/recommended-signals.html';
       if (!hasDedicatedLoader && !html.includes('/global-loading.js')) {
         const loaderScript = '<script src="/global-loading.js"></script>';

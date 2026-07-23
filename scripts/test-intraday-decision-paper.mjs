@@ -4,9 +4,37 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { IntradayDecisionPaper } from '../src/intradayDecisionPaper.js';
+import { btcRegimeGate, decisionEntryTiming, decisionSignalFingerprint, IntradayDecisionPaper } from '../src/intradayDecisionPaper.js';
 
 const directory = await mkdtemp(path.join(os.tmpdir(), 'decision-paper-test-'));
+
+const downLongRisk = btcRegimeGate({
+  side: 'LONG',
+  trend: { direction: 'DOWN', strength: 'MID', macro4h: { direction: 'DOWN', strength: 'MID' } },
+  btcCandlePattern: { name: 'BEARISH_CANDLE' },
+  signalScore: 90,
+});
+assert.equal(downLongRisk.tier, 'RISK');
+assert.equal(downLongRisk.regime, 'SW_DOWN');
+assert.equal(downLongRisk.marginCapUsdt, 1);
+
+const downShortGood = btcRegimeGate({
+  side: 'SHORT',
+  trend: { direction: 'DOWN', strength: 'MID' },
+  btcCandlePattern: { name: 'BEARISH_MARUBOZU' },
+  signalScore: 80,
+});
+assert.equal(downShortGood.tier, 'GOOD');
+assert.equal(downShortGood.marginCapUsdt, null);
+
+const downLongReversal = btcRegimeGate({
+  side: 'LONG',
+  trend: { direction: 'DOWN', strength: 'MID' },
+  btcCandlePattern: { name: 'BULLISH_ENGULFING' },
+  signalScore: 79,
+});
+assert.equal(downLongReversal.tier, 'WATCH');
+assert.equal(downLongReversal.minSignalScore, 80);
 const manager = new IntradayDecisionPaper({
   file: path.join(directory, 'state.json'),
   evaluationFile: path.join(directory, 'intraday-decision-paper-trades.json'),
@@ -94,8 +122,8 @@ trailStartManager.store.trades = [{
 }];
 trailStartManager.handlePriceTick({ symbol: 'TRAILUSDT', markPrice: 100.7, eventTime: Date.now() });
 assert.equal(trailStartManager.store.trades[0].status, 'OPEN');
-assert.equal(trailStartManager.store.trades[0].lockedStopRoe, null);
-assert.equal(trailStartManager.store.trades[0].sl, 98.5);
+assert.equal(trailStartManager.store.trades[0].lockedStopRoe, 0);
+assert.equal(trailStartManager.store.trades[0].sl, 100);
 trailStartManager.handlePriceTick({ symbol: 'TRAILUSDT', markPrice: 101.5, eventTime: Date.now() });
 assert.equal(trailStartManager.store.trades[0].status, 'OPEN');
 assert.equal(trailStartManager.store.trades[0].lockedStopRoe, 5);
@@ -138,10 +166,11 @@ const unlimitedManager = new IntradayDecisionPaper({
   }] }),
   getCandidates: async () => Array.from({ length: 55 }, (_, index) => ({
     source: 'test-source', symbol: `TEST${index}USDT`, side: 'LONG', timeframe: '15m',
-    signalType: 'test-signal', combo: 'TEST | LONG | 15m', score: 90, entry: 100,
+    signalType: 'test-signal', combo: 'TEST | LONG | 15m', score: 90, entry: 100, observedAt: Date.now(),
   })),
   getMarkInfo: () => ({ markPrice: 100.25, at: Date.now() }),
 });
+unlimitedManager.store.settings.maxAdverseEntryDriftPct = 0.3;
 await unlimitedManager.runNow({ timeframe: '1h' });
 assert.equal(unlimitedManager.store.settings.maxOpenPositions, null);
 assert.equal(unlimitedManager.store.settings.maxEntriesPerRun, null);
@@ -177,7 +206,7 @@ const exactStageManager = new IntradayDecisionPaper({
     signalType: 'ema_squeeze_15m_pre_breakout', decisionStage: 'PRE_BREAKOUT',
     combo: 'PRE_BREAKOUT | LONG | 15m | BTC_CORR_RAC | BTC_UP_MID | DOC_LAP | GATE_CURRENT',
     decisionRule: { allow: true, tier: 'B', marginUsdt: 1, label: 'PRE_BREAKOUT_B' },
-    score: 90, entry: 100,
+    score: 90, entry: 100, observedAt: Date.now(),
   }],
   getMarkInfo: () => ({ markPrice: 100.1, at: Date.now() }),
 });
@@ -186,6 +215,27 @@ assert.equal(exactStageManager.store.trades.length, 1);
 assert.match(exactStageManager.store.trades[0].combo, /^Pre Breakout \|/);
 assert.equal(exactStageManager.store.trades[0].predictionScore, 85);
 assert.equal(exactStageManager.store.trades[0].marginUsdt, 1);
+
+const regimeSizeManager = new IntradayDecisionPaper({
+  file: path.join(directory, 'regime-size-state.json'),
+  evaluationFile: path.join(directory, 'regime-size-log.json'),
+  getTrend: async () => ({ direction: 'DOWN', strength: 'MID', score: 55, macro4h: { direction: 'DOWN', strength: 'MID' } }),
+  getCatalog: async () => ({ recommendations: [{
+    source: 'test-source', side: 'LONG', timeframe: '15m', signalType: 'test-signal',
+    combo: 'TEST | LONG | 15m | BTC_CORR_RAC', grade: 'A', predictionScore: 99,
+  }] }),
+  getCandidates: async () => [{
+    source: 'test-source', symbol: 'REGIMEUSDT', side: 'LONG', timeframe: '15m',
+    signalType: 'test-signal', combo: 'TEST | LONG | 15m | BTC_CORR_RAC', score: 90,
+    entry: 100, observedAt: Date.now(), btcCandlePattern5m: { name: 'BEARISH_CANDLE' },
+  }],
+  getMarkInfo: () => ({ markPrice: 100.1, at: Date.now() }),
+});
+await regimeSizeManager.runNow({ timeframe: '1h' });
+assert.equal(regimeSizeManager.store.trades.length, 1);
+assert.equal(regimeSizeManager.store.trades[0].marginUsdt, 1);
+assert.equal(regimeSizeManager.store.trades[0].btcRegimeGate.tier, 'RISK');
+assert.equal(regimeSizeManager.store.trades[0].btcRegimeAtEntry, 'SW_DOWN');
 
 const blockedRuleManager = new IntradayDecisionPaper({
   file: path.join(directory, 'blocked-rule-state.json'),
@@ -197,7 +247,7 @@ const blockedRuleManager = new IntradayDecisionPaper({
     signalType: 'ema_squeeze_15m_pre_breakout', decisionStage: 'PRE_BREAKOUT',
     combo: 'PRE_BREAKOUT | LONG | 15m | BTC_CORR_RAC | BTC_UP_MID | DOC_LAP | GATE_CURRENT',
     decisionRule: { allow: false, tier: 'BLOCK', marginUsdt: 0, label: 'PRE_BREAKOUT_BLOCK' },
-    score: 90, entry: 100,
+    score: 90, entry: 100, observedAt: Date.now(),
   }],
   getMarkInfo: () => ({ markPrice: 100.1, at: Date.now() }),
 });
@@ -206,4 +256,47 @@ assert.equal(blockedRuleManager.store.trades.length, 0);
 assert.equal(blockedRuleManager.store.decisions[0].decision, 'REJECT');
 assert.match(blockedRuleManager.store.decisions[0].reason, /PRE_BREAKOUT_BLOCK/);
 
-console.log('Decision paper socket test passed: fixed SL -15%, progressive trail starts at +15→+5, and separate evaluation log.');
+const timingNow = Date.now();
+const freshTiming = decisionEntryTiming({
+  source: 'ema-squeeze', symbol: 'FRESHUSDT', side: 'LONG', timeframe: '15m',
+  decisionStage: 'BREAKOUT', breakoutAge: 1, entry: 100, observedAt: timingNow - 10_000,
+}, 100.1, { maxSignalAgeSeconds: 90, maxAdverseEntryDriftPct: 0.15, maxBreakoutAgeBars: 2 }, timingNow);
+assert.equal(freshTiming.blockReason, null);
+
+const chasedTiming = decisionEntryTiming({
+  source: 'ema-squeeze', symbol: 'CHASEUSDT', side: 'LONG', timeframe: '15m',
+  decisionStage: 'BREAKOUT', breakoutAge: 1, entry: 100, observedAt: timingNow - 10_000,
+}, 100.25, { maxSignalAgeSeconds: 90, maxAdverseEntryDriftPct: 0.15, maxBreakoutAgeBars: 2 }, timingNow);
+assert.match(chasedTiming.blockReason, /chase/);
+
+const staleTiming = decisionEntryTiming({
+  source: 'ema-squeeze', symbol: 'STALESIGNALUSDT', side: 'SHORT', timeframe: '15m',
+  decisionStage: 'BREAKDOWN', breakoutAge: 1, entry: 100, observedAt: timingNow - 91_000,
+}, 99.9, { maxSignalAgeSeconds: 90, maxAdverseEntryDriftPct: 0.15, maxBreakoutAgeBars: 2 }, timingNow);
+assert.match(staleTiming.blockReason, /đã cũ/);
+
+const fingerprintBase = {
+  source: 'ema-squeeze', symbol: 'EVENTUSDT', side: 'LONG', timeframe: '15m',
+  decisionStage: 'BREAKOUT', breakoutAge: 1, observedAt: Date.UTC(2026, 6, 21, 4, 30),
+};
+assert.equal(
+  decisionSignalFingerprint(fingerprintBase),
+  decisionSignalFingerprint({ ...fingerprintBase, breakoutAge: 2, observedAt: Date.UTC(2026, 6, 21, 4, 45) }),
+  'same breakout candle must keep one fingerprint as breakoutAge advances',
+);
+
+let liveVersion = 'batch-1';
+let queuedTrigger = null;
+const versionManager = new IntradayDecisionPaper({
+  file: path.join(directory, 'version-state.json'),
+  getSignalVersion: () => liveVersion,
+});
+versionManager.signalVersion = liveVersion;
+versionManager.queueRun = (request) => { queuedTrigger = request.trigger; };
+versionManager.checkSignalVersion();
+assert.equal(queuedTrigger, null);
+liveVersion = 'batch-2';
+versionManager.checkSignalVersion();
+assert.equal(queuedTrigger, 'signal-live');
+
+console.log('Decision paper socket test passed: live entry freshness/chase gates, event dedup, fixed SL and progressive trail.');

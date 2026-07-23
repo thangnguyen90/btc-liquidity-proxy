@@ -81,6 +81,75 @@ function prep(candles) {
   };
 }
 
+// Analysis metadata only. The returned pattern is attached to a signal/paper
+// row but is never used by Shakeout score, entry, SL, TP or trade gates.
+export function detectClosedCandlePattern(candles) {
+  if (!Array.isArray(candles) || candles.length < 3) {
+    return { name: 'UNKNOWN', direction: 'NEUTRAL', reason: 'not enough closed candles' };
+  }
+  const current = candles[candles.length - 2];
+  const previous = candles[candles.length - 3];
+  const open = Number(current?.open);
+  const high = Number(current?.high);
+  const low = Number(current?.low);
+  const close = Number(current?.close);
+  const prevOpen = Number(previous?.open);
+  const prevClose = Number(previous?.close);
+  if (![open, high, low, close, prevOpen, prevClose].every(Number.isFinite) || high <= low) {
+    return { name: 'UNKNOWN', direction: 'NEUTRAL', reason: 'invalid OHLC' };
+  }
+  const range = high - low;
+  const body = Math.abs(close - open);
+  const bodyShare = body / range;
+  const upperWick = high - Math.max(open, close);
+  const lowerWick = Math.min(open, close) - low;
+  const bullish = close > open;
+  const bearish = close < open;
+  const prevBullish = prevClose > prevOpen;
+  const prevBearish = prevClose < prevOpen;
+  const bullishEngulfing = bullish && prevBearish && open <= prevClose && close >= prevOpen;
+  const bearishEngulfing = bearish && prevBullish && open >= prevClose && close <= prevOpen;
+  let name = bullish ? 'BULLISH_CANDLE' : bearish ? 'BEARISH_CANDLE' : 'DOJI';
+  let direction = bullish ? 'BULLISH' : bearish ? 'BEARISH' : 'NEUTRAL';
+  if (bullishEngulfing) {
+    name = 'BULLISH_ENGULFING';
+    direction = 'BULLISH';
+  } else if (bearishEngulfing) {
+    name = 'BEARISH_ENGULFING';
+    direction = 'BEARISH';
+  } else if (bodyShare <= 0.10) {
+    name = 'DOJI';
+    direction = 'NEUTRAL';
+  } else if (lowerWick >= body * 2 && upperWick <= body * 0.75) {
+    name = 'HAMMER';
+    direction = 'BULLISH';
+  } else if (upperWick >= body * 2 && lowerWick <= body * 0.75) {
+    name = 'SHOOTING_STAR';
+    direction = 'BEARISH';
+  } else if (lowerWick >= range * 0.55 && bodyShare <= 0.35) {
+    name = 'BULLISH_PIN_BAR';
+    direction = 'BULLISH';
+  } else if (upperWick >= range * 0.55 && bodyShare <= 0.35) {
+    name = 'BEARISH_PIN_BAR';
+    direction = 'BEARISH';
+  } else if (bodyShare >= 0.80) {
+    name = bullish ? 'BULLISH_MARUBOZU' : 'BEARISH_MARUBOZU';
+  }
+  return {
+    name,
+    direction,
+    open,
+    high,
+    low,
+    close,
+    bodyShare: Number(bodyShare.toFixed(4)),
+    upperWickShare: Number((upperWick / range).toFixed(4)),
+    lowerWickShare: Number((lowerWick / range).toFixed(4)),
+    closeTime: Number(current?.closeTime ?? current?.time ?? current?.openTime ?? 0) || null,
+    reason: `${name}; body=${(bodyShare * 100).toFixed(1)}%; upper=${(upperWick / range * 100).toFixed(1)}%; lower=${(lowerWick / range * 100).toFixed(1)}%`,
+  };
+}
+
 function closeReturns(candles, bars) {
   if (!Array.isArray(candles) || candles.length < bars + 2) return [];
   const end = candles.length - 2;
@@ -624,6 +693,9 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
     bottomReboundRisk,
     btcRegime,
   });
+  const candlePattern5m = detectClosedCandlePattern(candles5m);
+  const candlePattern15m = detectClosedCandlePattern(candles15m);
+  const btcCandlePattern5m = detectClosedCandlePattern(opts.btcCandles5m);
 
   return {
     pass: true,
@@ -648,6 +720,9 @@ export function detectShakeoutReclaim(candles5m, candles15m, snapshot = {}, opts
     shakeoutClassLabel: shakeoutClassInfo.label,
     shakeoutClassReason: shakeoutClassInfo.reason,
     shakeoutClassColor: shakeoutClassInfo.color,
+    candlePattern5m,
+    candlePattern15m,
+    btcCandlePattern5m,
     entry: Number(entry.toFixed(10)),
     entryMode: btcStrongShortEma99
       ? 'EMA99_BTC_STRONG_SHORT'
