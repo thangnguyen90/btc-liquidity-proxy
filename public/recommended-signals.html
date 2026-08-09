@@ -124,8 +124,7 @@
       body.is-loading .load-progress::after {
         animation: loading-bar 1s ease-in-out infinite;
       }
-      body.is-loading .pager,
-      body.is-loading .sort-btn {
+      body.is-loading .pager {
         pointer-events: none;
       }
       @keyframes loading-spin {
@@ -144,6 +143,7 @@
         font-weight: 800;
       }
       .control select,
+      .control input,
       .control button {
         height: 38px;
         border: 1px solid var(--line);
@@ -152,15 +152,56 @@
         padding: 0 12px;
         border-radius: 5px;
       }
+      .control input {
+        color-scheme: dark;
+        min-width: 150px;
+      }
       .control button {
         background: #173a31;
         border-color: #2a8d70;
         cursor: pointer;
         font-weight: 800;
       }
+      .range-actions-row {
+        display: flex;
+        gap: 6px;
+      }
+      .range-actions-row button {
+        min-width: 82px;
+      }
+      .range-actions-row button.active {
+        background: #245d4d;
+        border-color: var(--green);
+        color: var(--green);
+      }
+      .date-search-control {
+        min-width: 128px;
+      }
+      .date-search-control small {
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.2;
+        max-width: 190px;
+      }
+      #date-search.is-loading {
+        cursor: wait;
+        opacity: 0.82;
+      }
+      #date-search.is-loading::before {
+        content: "";
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 7px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 50%;
+        vertical-align: -2px;
+        animation: loading-spin 0.7s linear infinite;
+      }
       .summary {
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-columns: repeat(7, minmax(0, 1fr));
         border-block: 1px solid var(--line);
         margin-bottom: 20px;
       }
@@ -193,6 +234,31 @@
       }
       .section-head span {
         color: var(--muted);
+      }
+      .section-head .socket-pnl-status {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 8px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.03em;
+      }
+      .section-head .socket-pnl-status.live {
+        color: var(--green);
+        border-color: #23896e;
+        background: #102520;
+      }
+      .section-head .socket-pnl-status.partial {
+        color: var(--yellow);
+        border-color: #b38a14;
+        background: #27220f;
+      }
+      .section-head .socket-pnl-status.missing {
+        color: var(--red);
+        border-color: #c75369;
+        background: #2b191d;
       }
       .grid {
         display: grid;
@@ -471,6 +537,85 @@
         border-left-color: var(--red);
         background: #28171c;
       }
+      .combo-stat-card.risk {
+        border-left-color: var(--red);
+        background: #28171c;
+      }
+      .combo-stat-card.watch {
+        border-left-color: var(--yellow);
+        background: #27220f;
+      }
+      .two-layer-note {
+        margin: -4px 0 10px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .two-layer-block {
+        margin-top: 12px;
+      }
+      .two-layer-block h4 {
+        margin: 0 0 7px;
+        color: #cfe0da;
+        font-size: 12px;
+      }
+      .paper-label-filter-panel {
+        margin: 18px 0 12px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: #141b19;
+        padding: 12px;
+      }
+      .paper-label-filter-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+      }
+      .paper-label-filter-head h3 {
+        margin: 0;
+        font-size: 14px;
+      }
+      .paper-label-filter-head span,
+      .paper-label-filter-note {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .paper-label-filter-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 9px;
+      }
+      .paper-label-filter-control {
+        display: grid;
+        gap: 5px;
+        min-width: 0;
+      }
+      .paper-label-filter-control label {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+      }
+      .paper-label-filter-control select,
+      .paper-label-filter-reset {
+        width: 100%;
+        height: 36px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: #202725;
+        color: var(--text);
+        padding: 0 10px;
+      }
+      .paper-label-filter-reset {
+        align-self: end;
+        border-color: #2a8d70;
+        background: #173a31;
+        cursor: pointer;
+        font-weight: 900;
+      }
+      .paper-label-filter-note {
+        margin: 9px 0 0;
+      }
       .combo-stat-title {
         display: flex;
         justify-content: space-between;
@@ -513,6 +658,14 @@
         border-color: var(--red);
         color: #ff9caf;
       }
+      .combo-stat-card.risk .combo-win-badge {
+        border-color: var(--red);
+        color: #ff9caf;
+      }
+      .combo-stat-card.watch .combo-win-badge {
+        border-color: var(--yellow);
+        color: var(--yellow);
+      }
       .combo-stat-line {
         color: #bdd0c9;
         font-size: 11px;
@@ -537,7 +690,7 @@
       table {
         width: 100%;
         border-collapse: collapse;
-        min-width: 1900px;
+        min-width: 2380px;
       }
       th,
       td {
@@ -593,6 +746,33 @@
         color: var(--muted);
         border-color: #45544f;
         background: #1c2422;
+      }
+      .layer-badge {
+        display: inline-block;
+        min-width: 76px;
+        border: 1px solid #52615c;
+        border-radius: 4px;
+        padding: 3px 6px;
+        background: #1c2422;
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 900;
+        text-align: center;
+      }
+      .layer-good {
+        border-color: var(--green);
+        background: #102520;
+        color: var(--green);
+      }
+      .layer-watch {
+        border-color: var(--yellow);
+        background: #2a2412;
+        color: var(--yellow);
+      }
+      .layer-risk {
+        border-color: var(--red);
+        background: #351720;
+        color: #ff8ba0;
       }
       .trend-badge {
         display: block;
@@ -668,9 +848,15 @@
         .combo-stats {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
+        .paper-label-filter-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
       }
       @media (max-width: 650px) {
         .combo-stats {
+          grid-template-columns: 1fr;
+        }
+        .paper-label-filter-grid {
           grid-template-columns: 1fr;
         }
       }
@@ -757,6 +943,316 @@
           grid-template-columns: 1fr;
         }
       }
+      .liquid-short-wave, .liquid-long-wave {
+        display:inline-flex; width:fit-content; margin-top:3px; padding:2px 5px;
+        border:1px solid var(--line); border-radius:4px; color:var(--muted);
+        font-size:8px; font-weight:900; letter-spacing:.03em;
+      }
+      .liquid-short-wave[data-short-wave="SHORT_IMPULSE"],
+      .liquid-long-wave[data-long-wave="BTC_RALLY_REJECT"] { color:var(--red); border-color:var(--red); }
+      .liquid-short-wave[data-short-wave="BTC_CRASH_RECLAIM"],
+      .liquid-long-wave[data-long-wave="LONG_IMPULSE"],
+      .liquid-long-wave[data-long-wave="LONG_RELOAD"] { color:var(--green); border-color:var(--green); }
+      .liquid-short-wave[data-short-wave="SHORT_BUILDUP"],
+      .liquid-long-wave[data-long-wave="LONG_BUILDUP"] { color:var(--yellow); border-color:var(--yellow); }
+      .market-health-widget {
+        --market-tone: var(--blue);
+        display: grid;
+        gap: 13px;
+        margin: 16px 0 0;
+        padding: 16px;
+        overflow: hidden;
+        border: 1px solid color-mix(in srgb, var(--market-tone) 58%, var(--line));
+        border-radius: 9px;
+        background:
+          linear-gradient(115deg, color-mix(in srgb, var(--market-tone) 9%, transparent), transparent 42%),
+          var(--panel);
+        box-shadow: inset 4px 0 0 color-mix(in srgb, var(--market-tone) 80%, transparent);
+      }
+      .market-health-widget[data-market-label="LONG_FAVORED"] { --market-tone: var(--green); }
+      .market-health-widget[data-market-label="SHORT_FAVORED"] { --market-tone: var(--red); }
+      .market-health-widget[data-market-label="MARKET_CHOP"] { --market-tone: var(--yellow); }
+      .market-health-widget[data-market-label="MARKET_DISPERSION"] { --market-tone: #a78bfa; }
+      .market-health-widget[data-market-label="MARKET_SHOCK"] { --market-tone: #fb4d64; }
+      .market-health-widget[data-market-label="NO_DATA"] { --market-tone: var(--muted); }
+      .market-health-head,
+      .market-health-title-row,
+      .market-health-live,
+      .market-health-foot,
+      .market-health-horizon {
+        display: flex;
+        align-items: center;
+      }
+      .market-health-head {
+        justify-content: space-between;
+        gap: 18px;
+      }
+      .market-health-title-row {
+        flex-wrap: wrap;
+        gap: 9px;
+      }
+      .market-health-title-row h2 {
+        margin: 0;
+        color: var(--market-tone);
+        font-size: clamp(18px, 2vw, 25px);
+        letter-spacing: .02em;
+      }
+      .market-health-confidence {
+        padding: 3px 7px;
+        border: 1px solid color-mix(in srgb, var(--market-tone) 55%, var(--line));
+        border-radius: 999px;
+        color: var(--market-tone);
+        background: color-mix(in srgb, var(--market-tone) 10%, transparent);
+        font-size: 10px;
+        font-weight: 900;
+        text-transform: uppercase;
+      }
+      .market-health-description {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .market-health-live {
+        flex: 0 0 auto;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .market-health-live-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .market-health-live.is-live { color: var(--green); }
+      .market-health-live.is-stale { color: var(--red); }
+      .market-health-live.is-connecting { color: var(--yellow); }
+      .market-health-live.is-live .market-health-live-dot {
+        animation: market-health-pulse 1.8s ease-in-out infinite;
+        box-shadow: 0 0 0 3px rgba(50, 227, 173, .14);
+      }
+      @keyframes market-health-pulse {
+        50% { opacity: .45; transform: scale(.82); }
+      }
+      .market-health-grid {
+        display: grid;
+        grid-template-columns: 1.05fr 1.05fr 1fr 1fr;
+        gap: 9px;
+      }
+      .market-health-score-card,
+      .market-health-context-card {
+        display: grid;
+        gap: 7px;
+        min-width: 0;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: rgba(10, 14, 13, .38);
+      }
+      .market-health-score-card > span,
+      .market-health-context-card > span {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: .045em;
+      }
+      .market-health-score-card > strong {
+        font-size: 32px;
+        line-height: 1;
+      }
+      .market-health-score-card.is-long > strong { color: var(--green); }
+      .market-health-score-card.is-short > strong { color: var(--red); }
+      .market-health-score-card small { color: var(--muted); font-size: 10px; }
+      .market-health-score-track {
+        width: 100%;
+        height: 5px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, .16);
+      }
+      .market-health-score-track i {
+        display: block;
+        width: 0;
+        height: 100%;
+        border-radius: inherit;
+        transition: width .35s ease;
+      }
+      .market-health-score-card.is-long .market-health-score-track i { background: var(--green); }
+      .market-health-score-card.is-short .market-health-score-track i { background: var(--red); }
+      .market-health-horizon {
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .market-health-horizon strong { color: var(--text); font-size: 12px; }
+      .market-dispersion-cycle-card {
+        --dispersion-cycle-tone: #a78bfa;
+        grid-column: 1 / -1;
+        display: grid;
+        gap: 9px;
+        padding: 12px;
+        border: 1px solid color-mix(in srgb, var(--dispersion-cycle-tone) 62%, var(--line));
+        border-left: 4px solid var(--dispersion-cycle-tone);
+        border-radius: 7px;
+        background: linear-gradient(100deg, color-mix(in srgb, var(--dispersion-cycle-tone) 9%, transparent), rgba(10,14,13,.38) 38%);
+      }
+      .market-dispersion-cycle-card[data-dispersion-segment="DISP_HOLD_LONG_LEAD"] { --dispersion-cycle-tone: var(--green); }
+      .market-dispersion-cycle-card[data-dispersion-segment="DISP_HOLD_SHORT_LEAD"] { --dispersion-cycle-tone: var(--red); }
+      .market-dispersion-cycle-card[data-dispersion-segment="DISP_HOLD_BALANCED"] { --dispersion-cycle-tone: #a78bfa; }
+      .market-dispersion-cycle-card[data-dispersion-segment^="DISP_REENTER"] { --dispersion-cycle-tone: var(--blue); }
+      .market-dispersion-cycle-card[data-dispersion-segment^="DISP_EXIT"] { --dispersion-cycle-tone: var(--yellow); }
+      .market-dispersion-cycle-card[data-dispersion-segment="DISP_OUTSIDE"],
+      .market-dispersion-cycle-card[data-dispersion-segment="DISP_NO_DATA"] { --dispersion-cycle-tone: var(--muted); }
+      .market-dispersion-cycle-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .market-dispersion-cycle-head > div {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 9px;
+      }
+      .market-dispersion-cycle-head span {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: .045em;
+      }
+      .market-dispersion-cycle-head strong {
+        padding: 4px 8px;
+        border: 1px solid color-mix(in srgb, var(--dispersion-cycle-tone) 70%, var(--line));
+        border-radius: 4px;
+        color: var(--dispersion-cycle-tone);
+        background: color-mix(in srgb, var(--dispersion-cycle-tone) 11%, transparent);
+        font-size: 12px;
+      }
+      .market-dispersion-cycle-head em {
+        color: var(--dispersion-cycle-tone);
+        font-size: 10px;
+        font-style: normal;
+        font-weight: 900;
+      }
+      .market-dispersion-cycle-metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(120px, 1fr));
+        gap: 7px;
+      }
+      .market-dispersion-cycle-metrics span {
+        padding: 7px 8px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        color: var(--muted);
+        background: rgba(10,14,13,.28);
+        font-size: 10px;
+      }
+      .market-dispersion-cycle-metrics b { color: var(--text); }
+      .market-dispersion-cycle-card > small { color: var(--text); font-size: 10px; }
+      .market-dispersion-cycle-card > p { margin: 0; color: var(--muted); font-size: 9px; }
+      .market-edge-cycle-card {
+        --edge-cycle-tone: var(--muted);
+        grid-column: 1 / -1;
+        display: grid;
+        gap: 9px;
+        padding: 12px;
+        border: 1px solid color-mix(in srgb, var(--edge-cycle-tone) 62%, var(--line));
+        border-left: 4px solid var(--edge-cycle-tone);
+        border-radius: 7px;
+        background: linear-gradient(100deg, color-mix(in srgb, var(--edge-cycle-tone) 9%, transparent), rgba(10,14,13,.38) 38%);
+      }
+      .market-edge-cycle-card[data-edge-phase="SHORT_EDGE_INTACT"] { --edge-cycle-tone: var(--green); }
+      .market-edge-cycle-card[data-edge-phase="SHORT_EDGE_DECAY"] { --edge-cycle-tone: var(--red); }
+      .market-edge-cycle-card[data-edge-phase="SHORT_EDGE_RECOVERY"] { --edge-cycle-tone: var(--yellow); }
+      .market-edge-cycle-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .market-edge-cycle-head > div {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 9px;
+      }
+      .market-edge-cycle-head span {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: .045em;
+      }
+      .market-edge-cycle-head strong {
+        padding: 4px 8px;
+        border: 1px solid color-mix(in srgb, var(--edge-cycle-tone) 70%, var(--line));
+        border-radius: 4px;
+        color: var(--edge-cycle-tone);
+        background: color-mix(in srgb, var(--edge-cycle-tone) 11%, transparent);
+        font-size: 12px;
+      }
+      .market-edge-cycle-head em {
+        color: var(--edge-cycle-tone);
+        font-size: 10px;
+        font-style: normal;
+        font-weight: 900;
+      }
+      .market-edge-cycle-metrics {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(110px, 1fr));
+        gap: 7px;
+      }
+      .market-edge-cycle-metrics span {
+        padding: 7px 8px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        color: var(--muted);
+        background: rgba(10,14,13,.28);
+        font-size: 10px;
+      }
+      .market-edge-cycle-metrics b { color: var(--text); }
+      .market-edge-cycle-card > small { color: var(--text); font-size: 10px; }
+      .market-edge-cycle-card > p { margin: 0; color: var(--muted); font-size: 9px; }
+      .market-health-reasons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .market-health-reasons span {
+        padding: 4px 7px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        color: #cbd5e1;
+        background: rgba(15, 23, 42, .26);
+        font-size: 10px;
+      }
+      .market-health-foot {
+        flex-wrap: wrap;
+        gap: 8px 14px;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .market-health-foot strong {
+        margin-left: auto;
+        color: var(--market-tone);
+        font-size: 10px;
+      }
+      @media (max-width: 1000px) {
+        .market-health-grid { grid-template-columns: 1fr 1fr; }
+        .market-dispersion-cycle-metrics { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
+        .market-edge-cycle-metrics { grid-template-columns: repeat(3, minmax(100px, 1fr)); }
+      }
+      @media (max-width: 650px) {
+        .market-health-head,
+        .market-dispersion-cycle-head,
+        .market-edge-cycle-head { align-items: flex-start; flex-direction: column; }
+        .market-health-grid { grid-template-columns: 1fr; }
+        .market-dispersion-cycle-metrics { grid-template-columns: 1fr 1fr; }
+        .market-edge-cycle-metrics { grid-template-columns: 1fr 1fr; }
+        .market-health-foot strong { width: 100%; margin-left: 0; }
+      }
     </style>
   </head>
   <body>
@@ -769,13 +1265,116 @@
         </div>
         <div><a href="/intraday-combos">Intraday Forecast</a> · <a href="/">Dashboard</a></div>
       </header>
+      <section id="recommendedMarketHealth" class="market-health-widget" data-market-label="NO_DATA" aria-live="polite">
+        <div class="market-health-head">
+          <div>
+            <div class="eyebrow">MARKET DIRECTION HEALTH · NẾN ĐÃ ĐÓNG</div>
+            <div class="market-health-title-row">
+              <h2 id="recommendedMarketHealthLabel">ĐANG CHẤM THỊ TRƯỜNG...</h2>
+              <span id="recommendedMarketHealthConfidence" class="market-health-confidence">confidence --</span>
+            </div>
+            <p id="recommendedMarketHealthDescription" class="market-health-description">Đang tổng hợp BTC và độ rộng nhóm thanh khoản lớn.</p>
+          </div>
+          <div id="recommendedMarketHealthLive" class="market-health-live is-connecting" role="status">
+            <span class="market-health-live-dot" aria-hidden="true"></span>
+            <span id="recommendedMarketHealthLiveText">Realtime đang kết nối...</span>
+          </div>
+        </div>
+        <div class="market-health-grid">
+          <article class="market-health-score-card is-long">
+            <span>LONG MARKET SCORE</span>
+            <strong id="recommendedMarketLongScore">--</strong>
+            <div class="market-health-score-track"><i id="recommendedMarketLongBar"></i></div>
+            <div id="recommendedMarketLongWave" class="liquid-long-wave" data-long-wave="LONG_NO_DATA">LONG NO DATA</div>
+            <small id="recommendedMarketLongDetail">Chờ breadth + BTC</small>
+          </article>
+          <article class="market-health-score-card is-short">
+            <span>SHORT MARKET SCORE</span>
+            <strong id="recommendedMarketShortScore">--</strong>
+            <div class="market-health-score-track"><i id="recommendedMarketShortBar"></i></div>
+            <div id="recommendedMarketShortWave" class="liquid-short-wave" data-short-wave="SHORT_NO_DATA">SHORT NO DATA</div>
+            <small id="recommendedMarketShortDetail">Chờ breadth + BTC</small>
+          </article>
+          <article class="market-health-context-card">
+            <span>ALT BREADTH · UP / DOWN</span>
+            <div class="market-health-horizon"><b>1h</b><strong id="recommendedMarketBreadth1h">-- / --</strong></div>
+            <div class="market-health-horizon"><b>3h</b><strong id="recommendedMarketBreadth3h">-- / --</strong></div>
+            <div class="market-health-horizon"><b>6h</b><strong id="recommendedMarketBreadth6h">-- / --</strong></div>
+          </article>
+          <article class="market-health-context-card">
+            <span>BTC CONTEXT</span>
+            <div class="market-health-horizon"><b>15m</b><strong id="recommendedMarketBtc15m">--</strong></div>
+            <div class="market-health-horizon"><b>1h</b><strong id="recommendedMarketBtc1h">--</strong></div>
+            <div class="market-health-horizon"><b>6h</b><strong id="recommendedMarketBtc6h">--</strong></div>
+          </article>
+          <article id="recommendedMarketDispersionCycle" class="market-dispersion-cycle-card" data-dispersion-segment="DISP_NO_DATA">
+            <div class="market-dispersion-cycle-head">
+              <div>
+                <span>MARKET DISPERSION · COHORT REALTIME</span>
+                <strong id="recommendedMarketDispersionLabel">DISP NO DATA</strong>
+              </div>
+              <em id="recommendedMarketDispersionGap">gap --</em>
+            </div>
+            <div class="market-dispersion-cycle-metrics">
+              <span>Raw <b id="recommendedMarketDispersionRaw">NO DATA</b></span>
+              <span>Stable <b id="recommendedMarketDispersionStable">NO DATA</b></span>
+              <span>Lead <b id="recommendedMarketDispersionLead">NO DATA</b></span>
+              <span>Hysteresis <b id="recommendedMarketDispersionPending">--</b></span>
+            </div>
+            <small id="recommendedMarketDispersionDescription">Chưa đủ dữ liệu để xác định cohort MARKET DISPERSION.</small>
+            <p>REALTIME OBSERVE ONLY · mỗi lệnh vẫn lưu cohort riêng theo snapshot tại entry · không gate/chặn/đổi size</p>
+          </article>
+          <article id="recommendedShortEdgeCycle" class="market-edge-cycle-card" data-edge-phase="SHORT_EDGE_NO_DATA">
+            <div class="market-edge-cycle-head">
+              <div>
+                <span>SHORT CONTINUATION · EDGE CYCLE REALTIME</span>
+                <strong id="recommendedShortEdgeCycleLabel">EDGE NO DATA</strong>
+              </div>
+              <em id="recommendedShortEdgeCycleAge">--</em>
+            </div>
+            <div class="market-edge-cycle-metrics">
+              <span>SHORT slope <b id="recommendedShortEdgeShortSlope">--</b></span>
+              <span>LONG slope <b id="recommendedShortEdgeLongSlope">--</b></span>
+              <span>Drop khỏi peak <b id="recommendedShortEdgeDrop">--</b></span>
+              <span>BTC 15m <b id="recommendedShortEdgeBtc15m">--</b></span>
+              <span>Giảm liên tiếp <b id="recommendedShortEdgeDeclineSamples">--</b></span>
+            </div>
+            <small id="recommendedShortEdgeTransition">Chưa có dữ liệu đổi chu kỳ.</small>
+            <p>OBSERVE ONLY · không gate/chặn/đổi size · decay khi SHORT giảm + LONG tăng + BTC reclaim</p>
+          </article>
+        </div>
+        <div id="recommendedMarketHealthReasons" class="market-health-reasons">
+          <span>Đang chờ dữ liệu...</span>
+        </div>
+        <div class="market-health-foot">
+          <span id="recommendedMarketHealthSample">Sample --</span>
+          <span id="recommendedMarketHealthPending">Hysteresis 2 nến 5m</span>
+          <strong>OBSERVE ONLY · không gate/chặn/đổi size</strong>
+        </div>
+      </section>
       <div class="toolbar">
         <div class="control">
-          <label for="day">NGÀY ĐỀ XUẤT UTC</label
-          ><select id="day"></select>
+          <label for="from-day">TỪ NGÀY UTC</label>
+          <input id="from-day" type="date" />
         </div>
         <div class="control">
-          <label for="combo-window">CỬA SỔ COMBO</label>
+          <label for="to-day">ĐẾN NGÀY UTC</label>
+          <input id="to-day" type="date" />
+        </div>
+        <div class="control">
+          <label>CHỌN NHANH</label>
+          <div class="range-actions-row">
+            <button id="today-range" type="button">Hôm nay</button>
+            <button id="all-range" type="button">Tất cả</button>
+          </div>
+        </div>
+        <div class="control date-search-control" id="date-search-control">
+          <label for="date-search">ÁP DỤNG RANGE</label>
+          <button id="date-search" type="button">Search</button>
+          <small id="date-range-status">Mặc định ngày hiện tại</small>
+        </div>
+        <div class="control">
+          <label for="combo-window">MẪU RECOMMENDATION</label>
           <select id="combo-window">
             <option value="1">Trong ngày</option>
             <option value="3">3 ngày</option>
@@ -805,7 +1404,11 @@
       <section class="paper-band">
         <div class="section-head">
           <h2>Recommended Paper</h2>
+          <span id="recommended-socket-pnl-status" class="socket-pnl-status">● PNL ACTIVE · ĐANG KẾT NỐI</span>
         </div>
+        <p class="two-layer-note">
+          Màu card thống kê toàn màn hình theo AvgROE: xanh khi &gt; 3.5%, đỏ khi &lt; -1%, còn lại WATCH.
+        </p>
         <div class="combo-summary-head">
           <h3>Thống kê theo rule size</h3>
           <span id="rule-size-stats-meta"></span>
@@ -816,12 +1419,175 @@
           <span id="combo-stats-meta"></span>
         </div>
         <section class="combo-stats" id="combo-stats"></section>
+        <div class="combo-summary-head">
+          <h3>Đánh giá 2 lớp paper clone</h3>
+          <span id="two-layer-stats-meta"></span>
+        </div>
+        <p class="two-layer-note">
+          Chỉ quan sát và thống kê; chưa chặn entry hoặc thay đổi size.
+        </p>
+        <div class="two-layer-block">
+          <h4>Lớp 1 · Chất lượng tín hiệu nguồn</h4>
+          <section class="combo-stats" id="source-layer-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Lớp 2 · Chất lượng lần clone market</h4>
+          <section class="combo-stats" id="clone-layer-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Ma trận Source × Clone</h4>
+          <section class="combo-stats" id="two-layer-matrix-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Ma trận 4 · Kết luận 2L × Độ thuận BTC</h4>
+          <section class="combo-stats" id="market-fit-matrix-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Hiệu quả nhãn M4 đã chốt trước entry</h4>
+          <section class="combo-stats" id="market-fit-label-stats"></section>
+        </div>
+        <div class="combo-summary-head">
+          <h3>Lớp 5 · Recommended × xu hướng ngày</h3>
+          <span id="day-regime-stats-meta"></span>
+        </div>
+        <p class="two-layer-note">
+          Snapshot trước entry · 7 phiếu BTC, làm mượt 3 nhịp 15 phút · chỉ gắn nhãn và thống kê, không gate/chặn/đổi size.
+        </p>
+        <div class="two-layer-block">
+          <h4>Trạng thái ngày tại entry</h4>
+          <section class="combo-stats" id="day-regime-state-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Phân loại tín hiệu theo backtest</h4>
+          <section class="combo-stats" id="day-regime-selection-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Ma trận Side × Day Regime</h4>
+          <section class="combo-stats" id="day-regime-side-matrix-stats"></section>
+        </div>
+        <div class="combo-summary-head">
+          <h3>Lớp 6 · Backtest Confidence</h3>
+          <span id="backtest-confidence-stats-meta"></span>
+        </div>
+        <p class="two-layer-note">
+          Nhãn chốt trước entry · lịch sử 3 ngày theo Source × Side × Tier 2L × M4, xác nhận bằng các lệnh đã đóng trong ngày · chỉ thống kê, không gate/chặn/đổi size.
+        </p>
+        <div class="two-layer-block">
+          <h4>Hiệu quả BT PRIME / GOOD / WATCH / RISK / NO DATA</h4>
+          <section class="combo-stats" id="backtest-confidence-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Độ tin cậy bằng chứng · CONF HIGH / MEDIUM / LOW</h4>
+          <p class="two-layer-note">
+            Chỉ đo độ dày history và mẫu xác nhận trước entry; không khẳng định hướng lời/lỗ và không quản lý lệnh.
+          </p>
+          <section class="combo-stats" id="backtest-reliability-stats"></section>
+        </div>
+        <div class="combo-summary-head">
+          <h3>Lớp 7 · Market Point Fit</h3>
+          <span id="market-point-fit-stats-meta"></span>
+        </div>
+        <p class="two-layer-note">
+          Snapshot trước entry · score cùng hướng × chênh LONG/SHORT × slope × drop khỏi peak × wave state · chỉ gắn nhãn và thống kê, không gate/chặn/đổi size.
+        </p>
+        <div class="two-layer-block">
+          <h4>Hiệu quả POINT STRONG / SUPPORT / TRANSITION / EXHAUSTED / HEADWIND / NO DATA</h4>
+          <section class="combo-stats" id="market-point-fit-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Ma trận nguồn × hướng × Market Point Fit</h4>
+          <section class="combo-stats" id="market-point-source-side-stats"></section>
+        </div>
+        <div class="combo-summary-head">
+          <h3>Lớp 8 · Market Dispersion</h3>
+          <span id="market-dispersion-stats-meta"></span>
+        </div>
+        <p class="two-layer-note">
+          Snapshot trước entry · RE-ENTER tách theo TRANSITION/CHOP · HOLD tách BALANCED/LONG LEAD/SHORT LEAD · EXIT tách theo TRANSITION/CHOP · chỉ gắn nhãn và thống kê, không gate/chặn/đổi size.
+        </p>
+        <div class="two-layer-block">
+          <h4>RE-ENTER / HOLD / EXIT × trạng thái chuyển đổi × bên dẫn điểm</h4>
+          <section class="combo-stats" id="market-dispersion-phase-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Ma trận nguồn × hướng × nhóm chuyển đổi Dispersion</h4>
+          <section class="combo-stats" id="market-dispersion-source-side-stats"></section>
+        </div>
+        <div class="combo-summary-head">
+          <h3>Lớp 9 · Entry Support Flip</h3>
+          <span id="support-entry-stats-meta"></span>
+        </div>
+        <p class="two-layer-note">
+          Gap LONG/SHORT ≥15 · xác nhận 2 snapshot · tối đa 180 phút sau khi đổi bên dẫn · chỉ gắn nhãn và thống kê, không gate/chặn/đổi size/SL/TP hay tác động Binance.
+        </p>
+        <div class="two-layer-block">
+          <h4>Tín hiệu đẹp × Tín hiệu xấu cần theo dõi chuỗi</h4>
+          <section class="combo-stats" id="support-entry-group-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Tách nhóm xanh · EDGE/LIQUID × SOURCE CONFIRMED/WEAK</h4>
+          <section class="combo-stats" id="support-entry-source-quality-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Nhãn cụ thể · SHORT theo nguồn × trạng thái sau flip</h4>
+          <section class="combo-stats" id="support-entry-short-source-stats"></section>
+        </div>
+        <div class="two-layer-block">
+          <h4>Nhãn cụ thể · LONG theo nguồn × trạng thái sau flip</h4>
+          <section class="combo-stats" id="support-entry-long-source-stats"></section>
+        </div>
+        <section class="paper-label-filter-panel" aria-labelledby="paper-label-filter-title">
+          <div class="paper-label-filter-head">
+            <h3 id="paper-label-filter-title">Lọc Paper theo các lớp đánh giá</h3>
+            <span id="paper-label-filter-meta" aria-live="polite">Tất cả lệnh trong khoảng ngày</span>
+          </div>
+          <div class="paper-label-filter-grid">
+            <div class="paper-label-filter-control">
+              <label for="paper-filter-source-layer">LỚP 1 · SOURCE</label>
+              <select id="paper-filter-source-layer" data-paper-filter="sourceLayer"></select>
+            </div>
+            <div class="paper-label-filter-control">
+              <label for="paper-filter-clone-layer">LỚP 2 · CLONE</label>
+              <select id="paper-filter-clone-layer" data-paper-filter="cloneLayer"></select>
+            </div>
+            <div class="paper-label-filter-control">
+              <label for="paper-filter-two-layer">KẾT LUẬN 2L</label>
+              <select id="paper-filter-two-layer" data-paper-filter="twoLayer"></select>
+            </div>
+            <div class="paper-label-filter-control">
+              <label for="paper-filter-market-fit">MA TRẬN 4 · ĐỘ THUẬN BTC</label>
+              <select id="paper-filter-market-fit" data-paper-filter="marketFit"></select>
+            </div>
+            <div class="paper-label-filter-control">
+              <label for="paper-filter-day-selection">LỚP 5 · XU HƯỚNG NGÀY</label>
+              <select id="paper-filter-day-selection" data-paper-filter="daySelection"></select>
+            </div>
+            <div class="paper-label-filter-control">
+              <label for="paper-filter-backtest-confidence">LỚP 6 · BACKTEST CONFIDENCE</label>
+              <select id="paper-filter-backtest-confidence" data-paper-filter="backtestConfidence"></select>
+            </div>
+            <div class="paper-label-filter-control">
+              <label for="paper-filter-backtest-reliability">ĐỘ TIN CẬY · CONF</label>
+              <select id="paper-filter-backtest-reliability" data-paper-filter="backtestReliability"></select>
+            </div>
+            <div class="paper-label-filter-control">
+              <label for="paper-filter-market-point-fit">LỚP 7 · MARKET POINT FIT</label>
+              <select id="paper-filter-market-point-fit" data-paper-filter="marketPointFit"></select>
+            </div>
+            <div class="paper-label-filter-control">
+              <label for="paper-filter-market-dispersion">LỚP 8 · MARKET DISPERSION</label>
+              <select id="paper-filter-market-dispersion" data-paper-filter="marketDispersion"></select>
+            </div>
+            <button class="paper-label-filter-reset" id="paper-label-filter-reset" type="button">Xóa tất cả bộ lọc</button>
+          </div>
+          <p class="paper-label-filter-note">Các điều kiện được kết hợp theo AND và chỉ lọc bảng Paper bên dưới; không gate/chặn/đổi size lệnh.</p>
+        </section>
         <div
           class="pager table-pager"
           id="pagination"
           aria-label="Phân trang Recommended Paper"
         ></div>
-        <div class="table-wrap">
+        <div class="table-wrap" data-paper-scroll data-paper-scroll-label="Cuộn ngang phía trên bảng Recommended Paper">
           <table>
             <thead>
               <tr>
@@ -847,8 +1613,61 @@
                     RULE SIZE
                   </button>
                 </th>
-                <th>MẪU NẾN</th>
-                <th>NẾN BTC</th>
+                <th>
+                  <button class="sort-btn" data-sort="sourceLayer">
+                    SOURCE L1
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="cloneLayer">
+                    CLONE L2
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="twoLayer">
+                    KẾT LUẬN 2L
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="marketFit">
+                    NHÃN M4
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="daySelection">
+                    DAY EDGE
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="backtestConfidence">
+                    LỚP 6 · BT / CONF
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="marketPointFit">
+                    LỚP 7 · POINT FIT
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="marketDispersion">
+                    LỚP 8 · DISPERSION
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="supportEntry">
+                    LỚP 9 · ENTRY SUPPORT
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="candle">
+                    MẪU NẾN
+                  </button>
+                </th>
+                <th>
+                  <button class="sort-btn" data-sort="btcCandle">
+                    NẾN BTC
+                  </button>
+                </th>
                 <th>
                   <button class="sort-btn" data-sort="pythonModel">
                     PY MODEL
@@ -878,7 +1697,11 @@
                     BTC PHASE
                   </button>
                 </th>
-                <th>BTC KIỂU</th>
+                <th>
+                  <button class="sort-btn" data-sort="btcRegime">
+                    BTC KIỂU
+                  </button>
+                </th>
                 <th>
                   <button class="sort-btn" data-sort="btcTrend">
                     BTC TREND
@@ -897,6 +1720,8 @@
         </div>
       </section>
     </main>
-    <script type="module" src="/recommended-signals.js"></script>
+    <script src="/paper-candle-columns.js?v=20260723-recommended-sort"></script>
+    <script src="/paper-top-scroll.js" defer></script>
+    <script type="module" src="/recommended-signals.js?v=20260802-live-whitelist-v5-two-step"></script>
   </body>
 </html>

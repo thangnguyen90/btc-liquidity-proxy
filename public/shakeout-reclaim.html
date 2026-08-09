@@ -559,6 +559,129 @@
         text-transform: uppercase; letter-spacing: .05em;
         margin: 0 0 6px;
       }
+      .sr-mi-summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .sr-mi-card {
+        border: 1px solid rgba(148, 163, 184, .35);
+        border-radius: 7px;
+        padding: 9px 11px;
+        background: rgba(15, 23, 42, .26);
+      }
+      .sr-mi-card.long {
+        border-color: rgba(16, 185, 129, .62);
+        box-shadow: inset 3px 0 0 #10b981;
+      }
+      .sr-mi-card.short {
+        border-color: rgba(244, 63, 94, .62);
+        box-shadow: inset 3px 0 0 #f43f5e;
+      }
+      .sr-mi-card.probe {
+        border-color: rgba(251, 191, 36, .68);
+        background: rgba(120, 53, 15, .12);
+        box-shadow: inset 3px 0 0 #fbbf24;
+      }
+      .sr-mi-card-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 5px;
+      }
+      .sr-mi-card-line {
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 3px;
+      }
+      .sr-mi-badge {
+        display: inline-flex;
+        align-items: center;
+        width: max-content;
+        max-width: 150px;
+        border: 1px solid currentColor;
+        border-radius: 4px;
+        padding: 2px 5px;
+        font-size: 9px;
+        font-weight: 900;
+        line-height: 1.25;
+        white-space: nowrap;
+      }
+      .sr-mi-badge.long {
+        color: #34d399;
+        background: rgba(6, 78, 59, .34);
+      }
+      .sr-mi-badge.short {
+        color: #fb7185;
+        background: rgba(76, 5, 25, .38);
+      }
+      .sr-mi-badge.probe {
+        color: #fbbf24;
+        background: rgba(120, 53, 15, .34);
+      }
+      .sr-mi-chart-scroll {
+        overflow-x: auto;
+        padding: 3px 0 5px;
+      }
+      .sr-mi-chart {
+        display: grid;
+        grid-template-columns: repeat(var(--days), minmax(62px, 1fr));
+        gap: 5px;
+        min-width: calc(var(--days) * 67px);
+      }
+      .sr-mi-day { text-align: center; min-width: 0; }
+      .sr-mi-zone {
+        position: relative;
+        height: 145px;
+      }
+      .sr-mi-zone::after {
+        content: '';
+        position: absolute;
+        top: var(--zero);
+        left: 0;
+        right: 0;
+        border-top: 1px solid rgba(148, 163, 184, .48);
+      }
+      .sr-mi-bar {
+        position: absolute;
+        left: 18%;
+        right: 18%;
+        min-height: 2px;
+      }
+      .sr-mi-bar.pos {
+        bottom: var(--below);
+        height: var(--h);
+        border-radius: 3px 3px 0 0;
+        background: rgba(16, 185, 129, .72);
+      }
+      .sr-mi-bar.neg {
+        top: var(--zero);
+        height: var(--h);
+        border-radius: 0 0 3px 3px;
+        background: rgba(244, 63, 94, .74);
+      }
+      .sr-mi-pnl {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        white-space: nowrap;
+        font-size: 9px;
+        font-weight: 900;
+      }
+      .sr-mi-pnl.pos { bottom: calc(var(--below) + var(--h) + 2px); color: #34d399; }
+      .sr-mi-pnl.neg { top: calc(var(--zero) - 16px); color: #fb7185; }
+      .sr-mi-date { display: block; font-size: 10px; font-weight: 900; }
+      .sr-mi-orders { display: block; color: var(--muted); font-size: 9px; }
+      .sr-mi-chart-title {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin: 10px 0 2px;
+        font-size: 10px;
+        font-weight: 900;
+      }
       .sr-score-stats-table tr.sr-score-good td { background: rgba(16, 185, 129, .07); }
       .sr-score-stats-table tr.sr-score-bad td { background: rgba(159, 18, 57, .13); }
       .sr-score-stats-table tr.sr-score-watch td { background: rgba(251, 191, 36, .06); }
@@ -757,9 +880,26 @@
               <option value="RISK">RISK</option>
             </select>
           </label>
+          <div style="margin-left:auto;display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+            <button class="sr-paper-btn" type="button" data-sr-paper-prev>Prev</button>
+            <strong class="sr-paper-page-meta" style="min-width:150px;text-align:center;color:var(--muted);font-size:11px">Trang 1/1 · 0 dòng</strong>
+            <button class="sr-paper-btn" type="button" data-sr-paper-next>Next</button>
+            <label style="color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase">Mỗi trang
+              <select id="srPaperPageSize" style="margin-left:6px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="200">200</option>
+                <option value="300">300</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div id="srVariantCompare" class="sr-daily-wrap"></div>
         <div id="srRealGateCompare" class="sr-daily-wrap"></div>
+        <div id="srMarketIndependentStats" class="sr-daily-wrap"></div>
+        <div id="srShortWaveStats" class="sr-daily-wrap"></div>
+        <div id="srObservationStats" class="sr-daily-wrap"></div>
+        <div id="srPaperPageStatsNote" style="margin:8px 0 3px;color:#94a3b8;font-size:10px;font-weight:800"></div>
         <div id="srChaseStats" class="sr-daily-wrap"></div>
         <div id="srStage2Stats" class="sr-daily-wrap"></div>
         <div id="srComboStats" class="sr-daily-wrap"></div>
@@ -787,7 +927,9 @@
                 <th class="sr-sort" data-sort="mark">Giá (last) <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="pnl">PnL <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="sideCandle" title="Danh gia rieng theo side, xu huong BTC va nen BTC tai luc vao">Side x BTC <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="marketIndependent" title="Nhãn quan sát LONG/SHORT + MARKET + BTC độc lập tại entry; không gate/chặn/đổi size.">MI Edge <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="stage2" title="L1 Side × BTC; L2 setup + variant + chất lượng fill. Duplicate/stale/conflict/drift chỉ là audit.">Stage 2 <span class="sr-sort-mark"></span></th>
+                <th class="sr-sort" data-sort="observation" title="Snapshot cấu trúc + execution + market context tại signal/entry; chỉ dùng tạo cohort và thống kê.">Context Obs <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="roe">ROE <span class="sr-sort-mark"></span></th>
                 <th class="sr-sort" data-sort="status">Status <span class="sr-sort-mark">^</span></th>
                 <th class="sr-sort" data-sort="score">Score <span class="sr-sort-mark"></span></th>
@@ -797,14 +939,19 @@
               </tr>
             </thead>
             <tbody id="srPaperBody">
-              <tr><td colspan="22" style="text-align:center;color:var(--muted);padding:16px">Dang tai...</td></tr>
+              <tr><td colspan="24" style="text-align:center;color:var(--muted);padding:16px">Dang tai...</td></tr>
             </tbody>
           </table>
+        </div>
+        <div style="margin-top:9px;display:flex;justify-content:flex-end;gap:7px;align-items:center">
+          <button class="sr-paper-btn" type="button" data-sr-paper-prev>Prev</button>
+          <strong class="sr-paper-page-meta" style="min-width:150px;text-align:center;color:var(--muted);font-size:11px">Trang 1/1 · 0 dòng</strong>
+          <button class="sr-paper-btn" type="button" data-sr-paper-next>Next</button>
         </div>
       </section>
     </main>
 
-    <script src="/shakeout-reclaim.js?v=20260723-stage2-v4-breakdown" type="module"></script>
+    <script src="/shakeout-reclaim.js?v=20260727-short-wave-v1" type="module"></script>
   <script src="/btcHealth.js"></script>
 </body>
 </html>

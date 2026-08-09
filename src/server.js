@@ -16,6 +16,7 @@ import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
 import { computeHeatmapData } from './liquidityProxy.js';
 import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked, summarizeTopTraderTrend, formatTopTraderTrend } from './discordNotifier.js';
 import { KlineCache } from './klineCache.js';
+import { resolveEmaWarmupReadyTarget, warmupRetryDelayMs } from './klineWarmupPolicy.js';
 import { runPumpScan } from './pumpDetector.js';
 import { runCapScan }  from './capDetector.js';
 import { runKillShortScan } from './killShortDetector.js';
@@ -33,30 +34,286 @@ import {
   isShakeoutChopChase,
   shakeoutFeeBreakEvenPrice,
 } from './shakeoutChaseShadowRule.js';
+import { evaluateShakeoutChaseShortTier } from './shakeoutChaseShortTier.js';
 import {
   SHAKEOUT_STAGE_2_VERSION,
   capShakeoutPendingShadowMargin,
   evaluateShakeoutStage2,
   shakeoutRollingDriftStats,
 } from './shakeoutStage2Rule.js';
+import {
+  buildShakeoutObservationStats,
+  enrichShakeoutObservation,
+  evaluateShakeoutObservation,
+} from './shakeoutObservation.js';
+import {
+  buildShakeoutPaperAggregateStats,
+  enrichShakeoutMarketIndependentObservation,
+} from './shakeoutPaperStats.js';
 import { runTopReversalScan } from './topReversalDetector.js';
 import { startTrailingStopScanner } from './trailingStop.js';
 import { startBtcReversalGuard } from './btcReversalGuard.js';
 import { startPositionMonitor } from './positionMonitor.js';
+import {
+  LIVE_CARD_BINANCE_LIFECYCLE_VERSION,
+  LIVE_CARD_ENTRY_FAST_PATH_VERSION,
+  LIVE_CARD_WHITELIST_PNL_STATS_VERSION,
+  LiveCardBinanceLifecycleStore,
+  aggregateLiveCardHistoryOverview,
+  aggregateLiveCardWhitelistStats,
+  attachLiveCardPaperOriginals,
+  classifyLiveCardSignalSource,
+  safeBotClosePlan,
+} from './liveCardBinanceLifecycle.js';
+import {
+  appendEdgePaperEntryJournal,
+  readLatestEdgePaperJournalRecords,
+  recoverEdgePaperTradesFromJournal,
+} from './edgePaperEntryJournal.js';
+import {
+  AUTO_BINANCE_ENTRY_POLICY_VERSION,
+  authorizeLiveCardAutoOrder,
+  evaluateAutoBinanceEntryPolicy,
+  liveCardOnlyAutoBinanceEnabled,
+} from './autoBinancePolicy.js';
+import {
+  LIVE_CARD_FILL_ANCHORED_PROTECTION_VERSION,
+  LIVE_CARD_SIGNAL_PROTECTION_VERSION,
+  buildFillAnchoredProtectionSpec,
+  isLiveCardSignalProtection,
+  resolveFillAnchoredProtectionPrices,
+  resolveSignalProtectionWorkingTypes,
+} from './liveCardSignalProtection.js';
+import {
+  LIVE_CARD_SHORT_TIME_STOP_DEFAULT_MS,
+  LIVE_CARD_SHORT_TIME_STOP_VERSION,
+  selectExpiredLiveCardShortExecutions,
+} from './liveCardShortTimeStop.js';
+import {
+  LIMIT_ORDER_RETENTION_VERSION,
+  isAutoCancelEntryLimitEnabled,
+  isRegularLimitOrder,
+  selectAutomaticProtectionCleanupOrders,
+} from './limitOrderRetention.js';
+import {
+  BINANCE_PROFIT_LOCK_VERSION,
+  binanceProfitLockStopPrice,
+  resolveBinanceProfitLockRoe,
+} from './binanceProfitLock.js';
 import { sharedLastTicker } from './sharedLastTicker.js';
-import { createAggTradeTicker } from './aggTradeTicker.js';
 import { getEtfProxy } from './etfProxy.js';
 import { fetchMarketNews, loadMarketNews, marketNewsConfig, saveMarketNews } from './marketNews.js';
 import { coinFlowConfig, fetchCoinFlowBoard, loadCoinFlow, saveCoinFlow } from './coinFlow.js';
 import { fetchTokenUnlocksBoard, getUnlockSummaryForSymbol, loadTokenUnlocks, saveTokenUnlocks, tokenUnlocksConfig } from './tokenUnlocks.js';
-import { applyRecommendedDefaultSlLiveClose, getRecommendedPaper, getRecommendedPaperActiveSymbols, getRecommendedSignals, processRecommendedPaperSocketPrice, processRecommendedSourceOpenEvent } from './recommendedSignals.js';
+import { applyRecommendedDefaultSlLiveClose, getRecommendedPaper, getRecommendedPaperActiveSymbols, getRecommendedSignals, paperSupportEntryStats, processRecommendedPaperSocketPrice, processRecommendedSourceOpenEvent, recommendedLiveCardKeysOfTrade } from './recommendedSignals.js';
+import { buildRecommendedSupportEntryStatRows, decorateRecommendedSupportEntrySnapshots } from './recommendedSupportEntry.js';
 import { IntradayDecisionPaper } from './intradayDecisionPaper.js';
 import { getBrLikeEvalGate } from './brLikeEvalRule.js';
 import { evaluateEmaPreStageCandle } from './emaPreStageCandleRule.js';
 import { EMA_STAGE_CANDLE_RULE_VERSION, evaluateEmaStageCandle } from './emaStageCandleRule.js';
-import { capPumpStructureStopLoss, getPumpEvalGate, getPumpStage2Rule } from './pumpEvalRule.js';
+import {
+  PUMP_LIFT_VERSION,
+  capPumpStructureStopLoss,
+  evaluatePumpLiftEvidence,
+  getPumpEvalGate,
+  getPumpStage2Rule,
+} from './pumpEvalRule.js';
+import {
+  PUMP_EVAL_TIER_STATS_VERSION,
+  decoratePumpEvalTier,
+  isNativePumpEvalTrade,
+  mergePumpEvalTierStats,
+  pumpEvalTierStats,
+} from './pumpEvalTier.js';
+import {
+  PUMP_CANONICAL_RUNTIME_VALIDATED,
+  PUMP_CANONICAL_TIER_VERSION,
+  buildPumpCanonicalModel,
+  decoratePumpCanonicalTier,
+  evaluatePumpCanonicalTier,
+  mergePumpCanonicalTierStats,
+  pumpCanonicalTierStats,
+} from './pumpCanonicalTier.js';
+import {
+  PUMP_COMBO_SELECTOR_VERSION,
+  evaluatePumpComboSelectorEvidence,
+} from './pumpComboSelectorRule.js';
+import {
+  EMA_COMBO_LAYER_HISTORY_START,
+  EMA_COMBO_LAYER_VERSION,
+  buildEmaComboLayerModel,
+  emaComboLayersOfTrade,
+  emaComboTierOrder,
+  evaluateEmaComboLayers,
+  withEmaComboLayerFields,
+} from './emaComboLayers.js';
+import {
+  PUMP_OBSERVATION_VERSION,
+  buildPumpObservationEntryModel,
+  buildPumpObservationSnapshotMap,
+  buildPumpObservationStats,
+  decoratePumpObservationTrades,
+  pumpObservationSnapshotForEntry,
+} from './pumpObservationLayers.js';
 import { buildLiquidScanAutoPaperPayload, selectLiquidScanAutoPaperRows } from './liquidScanAutoPaper.js';
-import { capLiquidScanShadowMargin, evaluateLiquidScanShadow, evaluateLiquidScanStage2, evaluateLiquidScanStage3, liquidPaperFinancialMetrics, liquidScanTrailLockRoe } from './liquidScanEvalRule.js';
+import { capLiquidScanShadowMargin, evaluateLiquidRunner30Candidate, evaluateLiquidScanShadow, evaluateLiquidScanStage2, evaluateLiquidScanStage3, liquidPaperFinancialMetrics, liquidScanStage3MarginCap, liquidScanTrailLockRoe } from './liquidScanEvalRule.js';
+import {
+  LIQUID_SCAN_CYCLE_EDGE_VERSION,
+  deriveLiquidScanCycleEdgeSnapshots,
+  evaluateLiquidScanCycleEdgeSnapshot,
+} from './liquidScanCycleEdge.js';
+import {
+  buildLiquidComboCycleStats,
+  liquidComboCycleEntrySnapshot,
+} from './liquidComboCycleStats.js';
+import {
+  LIQUID_COMBO_BTC_BREADTH_VERSION,
+  deriveLiquidComboBtcBreadthSnapshots,
+  evaluateLiquidComboBtcBreadthLabel,
+} from './liquidComboBtcBreadthLabel.js';
+import {
+  LIQUID_LONG_CORR_REBOUND_VERSION,
+  evaluateLiquidLongCorrRebound,
+  liquidLongCorrReboundPaperSizing,
+} from './liquidLongCorrRebound.js';
+import {
+  LIQUID_LONG_BTC_EXPANSION_VERSION,
+  evaluateLiquidLongBtcExpansion,
+} from './liquidLongBtcExpansion.js';
+import {
+  LIQUID_STABLE_MECHANISM_VERSION,
+  evaluateLiquidStableMechanism,
+} from './liquidStableMechanism.js';
+import {
+  SOURCE_LONG_CORR_REBOUND_VERSION,
+  buildSourceLongCorrReboundStats,
+  decorateSourceLongCorrReboundTrade,
+  decorateSourceLongCorrReboundTrades,
+  sourceLongCorrReboundSnapshotForEntry,
+} from './sourceLongCorrRebound.js';
+import { buildPumpComboCycleStats } from './pumpComboCycleStats.js';
+import { buildShortWaveStats } from './shortWaveStats.js';
+import {
+  LIQUID_PAPER_DAY_TIME_ZONE,
+  liquidPaperDayKey,
+  liquidPaperDayInRange,
+  liquidPaperTradeDayKey,
+  normalizeLiquidPaperDateRange,
+} from './liquidPaperDateRange.js';
+import {
+  LIQUID_BTC_WAVE_STATE_VERSION,
+  evaluateLiquidBtcWaveState,
+} from './liquidBtcWaveState.js';
+import {
+  advanceLiquidShortEdgeCycle,
+  buildLiquidMarketPointCrossoverSnapshots,
+  evaluateLiquidWaveContinuationRelation,
+} from './liquidWaveContinuationRelation.js';
+import { evaluateLiquidEdgeActivePointLabel } from './liquidEdgeActivePointLabel.js';
+import {
+  LIQUID_LIVE_CARD_WHITELIST_VERSION,
+  LIVE_CARD_COMBO_ENTRY_MATCH_VERSION,
+  liquidLiveCardKeysOfTrade,
+  liveCardComboKeyAtEntry,
+  liveCardKey,
+  liveCardKeysFromRows,
+  matchLiveCardWhitelistKeys,
+  normalizeLiquidLiveCardKey,
+  normalizeLiquidLiveCardKeys,
+} from './liquidLiveCardWhitelist.js';
+import {
+  LIQUID_LONG_REVERSAL_VERSION,
+  evaluateLiquidLongReversal,
+} from './liquidLongReversalLabel.js';
+import {
+  LIQUID_LONG_POINT_PHASE_VERSION,
+  evaluateLiquidLongPointPhase,
+} from './liquidLongPointPhase.js';
+import {
+  advanceLiquidMarketPointState,
+  evaluateLiquidMarketPointPhase,
+} from './liquidMarketPointPhase.js';
+import {
+  LIQUID_LONG_MARKET_STATE_VERSION,
+  evaluateLiquidLongMarketState,
+} from './liquidLongMarketState.js';
+import {
+  LIQUID_LONG_SESSION_HEALTH_VERSION,
+  deriveLiquidLongSessionHealthSnapshots,
+  evaluateLiquidLongSessionHealthSnapshot,
+} from './liquidLongSessionHealth.js';
+import {
+  LIQUID_MARKET_DIRECTION_HEALTH_VERSION,
+  buildMarketDirectionSnapshot,
+  buildLiquidMarketDirectionSignalLogRecord,
+  deriveLiquidMarketDirectionScoreDynamics,
+  evaluateLiquidMarketDirectionHealth,
+  liquidMarketDirectionLabelDescription,
+  stabilizeLiquidMarketDirectionLabel,
+} from './liquidMarketDirectionHealth.js';
+import {
+  LIQUID_RUNNER_DIRECTION_VERSION,
+  deriveLiquidRunnerDirectionSnapshots,
+  evaluateLiquidRunnerDirectionSnapshot,
+} from './liquidRunnerDirectionEdge.js';
+import {
+  EDGE_SHORT_LABEL_VERSION,
+  decorateEdgeShortLabelSnapshots,
+  edgeShortLabelGroupStats,
+  edgeShortLabelSnapshotForEntry,
+} from './edgeShortLabel.js';
+import {
+  EDGE_SHORT_TIER_VERSION,
+  decorateEdgeShortTierSnapshots,
+  edgeShortTierSnapshot,
+  edgeShortTierStats,
+} from './edgeShortTier.js';
+import {
+  EDGE_SHORT_WAVE_2B_VERSION,
+  decorateEdgeShortWave2bSnapshots,
+  edgeShortWave2bSnapshot,
+  edgeShortWave2bStats,
+} from './edgeShortWave2b.js';
+import {
+  EDGE_SHORT_WAVE_2C_VERSION,
+  decorateEdgeShortWave2cSnapshots,
+  edgeShortWave2cSnapshot,
+  edgeShortWave2cStats,
+} from './edgeShortWave2c.js';
+import {
+  EDGE_SHORT_BEST_VERSION,
+  decorateEdgeShortBestSnapshots,
+  edgeShortBestSnapshotForEntry,
+  edgeShortBestStats,
+} from './edgeShortBestCandidate.js';
+import {
+  EDGE_SHORT_LIVE_VERSION,
+  decorateEdgeShortLiveSnapshots,
+  edgeShortLiveSnapshotForEntry,
+  edgeShortLiveStats,
+} from './edgeShortLiveHealth.js';
+import {
+  EDGE_SHORT_BEST_RISK_PHASE_VERSION,
+  EDGE_SHORT_BEST_PROFILE_VERSION,
+  decorateEdgeShortBestProfileSnapshots,
+  edgeShortBestProfileSnapshotForEntry,
+  edgeShortBestProfileStats,
+  edgeShortBestRiskPhaseStats,
+} from './edgeShortBestProfile.js';
+import {
+  EDGE_SHORT_LONG_SPRING_VERSION,
+  EDGE_SHORT_LONG_SPRING_WHITELIST_VERSION,
+  decorateEdgeShortLongSpringSnapshots,
+  edgeShortLongSpringSnapshotForEntry,
+  edgeShortLongSpringStats,
+} from './edgeShortLongSpring.js';
+import {
+  EDGE_SHORT_UTAD_VERSION,
+  EDGE_SHORT_UTAD_WHITELIST_VERSION,
+  decorateEdgeShortUtadSnapshots,
+  edgeShortUtadSnapshotForEntry,
+  edgeShortUtadStats,
+} from './edgeShortUtad.js';
 import WebSocket from 'ws';
 
 loadEnv();
@@ -107,7 +364,7 @@ async function getPaperPageLearningAnalysis(pageValue, { force = false } = {}) {
   const paperStat = await stat(config.paperFile).catch(() => null);
   const key = `${paperStat?.mtimeMs ?? 0}:${paperStat?.size ?? 0}`;
   const cached = paperPageLearningCache.get(config.page);
-  // Paper marks update store mtimes continuously. Keep the model snapshot for
+  // Paper marks update store mtimes continuously. Keep the model snapshot fo
   // the configured TTL so a page reload cannot retrain a large store every tick.
   if (!force && cached?.data && Date.now() < cached.expiresAt) return cached.data;
   const script = join(rootDir, 'scripts', 'paper_page_self_learning.py');
@@ -345,6 +602,19 @@ const analyzeClient = new BinanceClient({
   timeoutMs: 20_000,
   rateGate: analyzeRateGate,
 });
+// Login Orders dùng gate riêng: credential trình duyệt cũ/sai tuyệt đối không
+// được mở circuit trên gate signed REST của auto-order/position protection.
+const ordersAuthRateGate = new BinanceRateGate({
+  limitPerMin: 60,
+  concurrency: 1,
+  maxQueue: 50,
+  highWatermark: 20,
+});
+const ordersAuthClient = new BinanceClient({
+  baseUrl: process.env.BINANCE_FUTURES_BASE_URL || undefined,
+  timeoutMs: 20_000,
+  rateGate: ordersAuthRateGate,
+});
 const klineCache = new KlineCache({ client, maxKlines: 500 });
 const pumpScanCache = { data: null, expiresAt: 0 };
 const capScanCache       = { data: null, expiresAt: 0 };
@@ -358,6 +628,11 @@ const ema99KillReclaimScanCache = { data: null, expiresAt: 0 };
 const shakeoutReclaimScanCache = { data: null, expiresAt: 0 };
 const topReversalScanCache = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
+const liquidMarketDirectionCache = { data: null, expiresAt: 0, inflight: null };
+const shortWaveStatsCache = { data: null, expiresAt: 0 };
+let liquidMarketDirectionState = null;
+let liquidShortEdgeCycleState = null;
+let liquidMarketPointLiveState = null;
 const analyzeCache = new Map(); // key: `${symbol}|${interval}|${rangePct}|${binSizePct}` → { data, expiresAt }
 
 function decisionTrendFromHealth(health = {}, timeframe = '1h') {
@@ -635,13 +910,23 @@ function staleScanPayload(cache, reason = 'binance-rest-congested') {
 
 let _lastRestBlockAlertKey = '';
 let _lastRestCongestedAlertAt = 0;
+const _sentRestAuthAlertKeys = new Map();
 
-function binanceRestAlertWebhook() {
-  return process.env.BINANCE_REST_ALERT_WEBHOOK_URL
-    || process.env.DISCORD_WEBHOOK_URL
-    || process.env.LIQ_SCAN_WEBHOOK_URL
-    || process.env.POST_PUMP_DUMP_RISK_WEBHOOK_URL
-    || '';
+function binanceRestAlertWebhook(kind = '') {
+  if (kind === 'auth-blocked') {
+    // Auth/IP failures belong with the real-order signal stream so the operator
+    // immediately knows that signals cannot become Binance orders.
+    return process.env.LIVE_CARD_ORDER_WEBHOOK_URL
+      || process.env.ORDER_FILL_WEBHOOK_URL
+      || process.env.BINANCE_REST_ALERT_WEBHOOK_URL
+      || '';
+  }
+  // System/REST alerts must never fall through to a strategy channel such as
+  // post-pump-kill-short. Configure a dedicated webhook or keep alerts local.
+  const alertWebhook = process.env.BINANCE_REST_ALERT_WEBHOOK_URL || '';
+  const ppksWebhook = process.env.POST_PUMP_KILL_SHORT_WEBHOOK_URL || '';
+  if (alertWebhook && ppksWebhook && alertWebhook === ppksWebhook) return '';
+  return alertWebhook;
 }
 
 function topQueueText(snap) {
@@ -651,24 +936,41 @@ function topQueueText(snap) {
 }
 
 function sendBinanceRestDiscordAlert(kind, snap, extra = {}) {
-  const webhookUrl = binanceRestAlertWebhook();
+  const webhookUrl = binanceRestAlertWebhook(kind);
   if (!webhookUrl) return;
   const now = Date.now();
   const blockedUntil = Number(snap?.blockedUntil ?? 0);
   const remainingSec = blockedUntil > now ? Math.ceil((blockedUntil - now) / 1000) : 0;
-  const title = kind === 'blocked'
-    ? `Binance REST blocked (${snap?.blockReason || 'rate-limit'})`
-    : 'Binance REST queue congested';
-  const color = kind === 'blocked' ? 0xef4444 : 0xf59e0b;
-  const fields = [
-    { name: 'Queue', value: String(snap?.queue ?? 0), inline: true },
-    { name: 'Active', value: String(snap?.active ?? 0), inline: true },
-    { name: 'Tokens', value: String(snap?.tokens ?? '-'), inline: true },
-    kind === 'blocked'
-      ? { name: 'Resume ETA', value: remainingSec > 0 ? `${remainingSec}s | ${new Date(blockedUntil).toISOString()}` : '-', inline: false }
-      : { name: 'High watermark', value: String(snap?.highWatermark ?? '-'), inline: true },
-    { name: 'Top queue', value: `\`\`\`\n${topQueueText(snap).slice(0, 950)}\n\`\`\``, inline: false },
-  ].filter(Boolean);
+  const authBlock = extra.authBlock ?? null;
+  const title = kind === 'auth-blocked'
+    ? '[BINANCE AUTH BLOCKED] IP / API key / permission'
+    : kind === 'blocked'
+      ? `Binance REST blocked (${snap?.blockReason || 'rate-limit'})`
+      : 'Binance REST queue congested';
+  const color = kind === 'congested' ? 0xf59e0b : 0xef4444;
+  const fields = kind === 'auth-blocked'
+    ? [
+        { name: 'Scope', value: String(authBlock?.scope ?? 'legacy').slice(0, 1024), inline: true },
+        { name: 'Source', value: String(authBlock?.source ?? 'unknown').slice(0, 1024), inline: true },
+        { name: 'Request', value: `${authBlock?.method ?? 'GET'} ${authBlock?.path ?? '-'}`.slice(0, 1024), inline: false },
+        { name: 'Binance error', value: `-2015: ${String(authBlock?.reason ?? snap?.authBlockReason ?? 'Invalid API-key, IP, or permissions').slice(0, 950)}`, inline: false },
+        {
+          name: 'Signed REST paused',
+          value: Number(authBlock?.blockedUntil) > now
+            ? `${Math.ceil((Number(authBlock.blockedUntil) - now) / 1000)}s | probe ${Math.max(0, Math.ceil((Number(authBlock?.nextProbeAt ?? 0) - now) / 1000))}s`
+            : '-',
+          inline: false,
+        },
+      ]
+    : [
+        { name: 'Queue', value: String(snap?.queue ?? 0), inline: true },
+        { name: 'Active', value: String(snap?.active ?? 0), inline: true },
+        { name: 'Tokens', value: String(snap?.tokens ?? '-'), inline: true },
+        kind === 'blocked'
+          ? { name: 'Resume ETA', value: remainingSec > 0 ? `${remainingSec}s | ${new Date(blockedUntil).toISOString()}` : '-', inline: false }
+          : { name: 'High watermark', value: String(snap?.highWatermark ?? '-'), inline: true },
+        { name: 'Top queue', value: `\`\`\`\n${topQueueText(snap).slice(0, 950)}\n\`\`\``, inline: false },
+      ].filter(Boolean);
 
   fetch(webhookUrl, {
     method: 'POST',
@@ -676,7 +978,9 @@ function sendBinanceRestDiscordAlert(kind, snap, extra = {}) {
     body: JSON.stringify({
       embeds: [{
         title,
-        description: extra.message ?? 'Backend will prefer cache/WS and limit REST until the gate is stable.',
+        description: extra.message ?? (kind === 'auth-blocked'
+          ? 'Binance rejected signed REST. Signals may still be detected, but real entry/management cannot reach Binance until the credential/IP circuit recovers.'
+          : 'Backend will prefer cache/WS and limit REST until the gate is stable.'),
         color,
         fields,
         timestamp: new Date(now).toISOString(),
@@ -696,6 +1000,20 @@ function startBinanceRestAlertMonitor() {
   const tick = () => {
     const snap = binanceRateGate.snapshot?.();
     if (!snap) return;
+    const authBlocks = Array.isArray(snap.authBlocks) ? snap.authBlocks : [];
+    for (const block of authBlocks) {
+      const openedAt = Number(block?.openedAt ?? 0);
+      const key = `${block?.scope ?? 'legacy'}|${openedAt || block?.blockedUntil || block?.reason || 'active'}`;
+      if (_sentRestAuthAlertKeys.has(key)) continue;
+      _sentRestAuthAlertKeys.set(key, Date.now());
+      sendBinanceRestDiscordAlert('auth-blocked', snap, { authBlock: block });
+    }
+    if (_sentRestAuthAlertKeys.size > 500) {
+      const cutoff = Date.now() - 7 * 24 * 60 * 60_000;
+      for (const [key, sentAt] of _sentRestAuthAlertKeys) {
+        if (sentAt < cutoff) _sentRestAuthAlertKeys.delete(key);
+      }
+    }
     if (snap.blockedUntil > Date.now()) {
       const key = `${snap.blockedUntil}|${snap.blockReason}`;
       if (key !== _lastRestBlockAlertKey) {
@@ -763,31 +1081,155 @@ function pushSse(clients, data) {
   }
 }
 
+const liquidPaperPendingTradeUpdates = new Map();
 let liquidPaperBroadcastTimer = null;
-function scheduleLiquidPaperBroadcast(delayMs = 700) {
-  if (liquidPaperSseClients.size === 0 || liquidPaperBroadcastTimer) return;
-  liquidPaperBroadcastTimer = setTimeout(async () => {
-    liquidPaperBroadcastTimer = null;
-    if (liquidPaperSseClients.size === 0) return;
-    try {
-      pushSse(liquidPaperSseClients, await getLiquidPaperTrades());
-    } catch (err) {
-      pushSse(liquidPaperSseClients, { error: err.message, updatedAt: new Date().toISOString() });
+let liquidPaperBroadcastInFlight = false;
+let liquidPaperBroadcastQueued = false;
+
+function queueLiquidPaperTradeUpdate(trade) {
+  if (!trade?.id) return;
+  liquidPaperPendingTradeUpdates.set(trade.id, trade);
+}
+
+function writeLiquidPaperSse(response, payload) {
+  if (!response || response.destroyed || response.writableEnded) {
+    liquidPaperSseClients.delete(response);
+    return false;
+  }
+  if (response.liquidPaperBackpressured) return false;
+  try {
+    const accepted = response.write(payload);
+    if (!accepted) {
+      response.liquidPaperBackpressured = true;
+      response.once('drain', () => {
+        response.liquidPaperBackpressured = false;
+        scheduleLiquidPaperBroadcast(50);
+      });
     }
+    return true;
+  } catch {
+    liquidPaperSseClients.delete(response);
+    return false;
+  }
+}
+
+function pushLiquidPaperSse(data) {
+  const payload = `data: ${JSON.stringify(data)}\n\n`;
+  let delivered = 0;
+  for (const response of liquidPaperSseClients) {
+    if (writeLiquidPaperSse(response, payload)) delivered += 1;
+  }
+  return delivered;
+}
+
+async function getLiquidPaperLivePayload({ snapshot = false } = {}) {
+  const store = await readLiquidPaperStore();
+  const activeStatuses = new Set(['OPEN', 'PENDING', 'ENTRY_READY']);
+  const activeTrades = store.trades.filter((trade) => activeStatuses.has(trade.status));
+  const marks = [...new Set(activeTrades.map((trade) => trade.symbol).filter(Boolean))]
+    .map((symbol) => {
+      const live = paperMarkCache.get(symbol);
+      const markPrice = Number(live?.markPrice);
+      if (!Number.isFinite(markPrice) || markPrice <= 0) return null;
+      return {
+        symbol,
+        markPrice,
+        markUpdatedAt: live.at ?? Date.now(),
+        markSource: live.source ?? 'ws',
+      };
+    })
+    .filter(Boolean);
+
+  let updateRows;
+  if (snapshot) {
+    const recentClosedCutoff = Date.now() - 60 * 60_000;
+    const recentClosed = store.trades
+      .filter((trade) => (
+        trade.status === 'CLOSED'
+        && Date.parse(trade.closedAt ?? 0) >= recentClosedCutoff
+      ))
+      .slice(0, 200);
+    updateRows = [...activeTrades, ...recentClosed];
+  } else {
+    updateRows = [...liquidPaperPendingTradeUpdates.values()];
+  }
+
+  const trades = updateRows.map((trade) => (
+    attachCandlePatternToPaperTrade(enrichPaperTrade(
+      trade,
+      paperMarkCache.get(trade.symbol)?.markPrice,
+    ))
+  ));
+  return {
+    type: snapshot ? 'LIQUID_LIVE_SNAPSHOT' : 'LIQUID_LIVE_PATCH',
+    historyUnchanged: true,
+    activeIds: snapshot ? activeTrades.map((trade) => trade.id) : undefined,
+    trades,
+    marks,
+    feeRate: getLiquidPaperFeeRate(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function flushLiquidPaperBroadcast() {
+  if (liquidPaperBroadcastInFlight) {
+    liquidPaperBroadcastQueued = true;
+    return;
+  }
+  if (liquidPaperSseClients.size === 0) return;
+  liquidPaperBroadcastInFlight = true;
+  liquidPaperBroadcastQueued = false;
+  try {
+    const pendingAtStart = new Map(liquidPaperPendingTradeUpdates);
+    const payload = await getLiquidPaperLivePayload();
+    const delivered = pushLiquidPaperSse(payload);
+    if (delivered > 0) {
+      for (const [id, trade] of pendingAtStart) {
+        if (liquidPaperPendingTradeUpdates.get(id) === trade) {
+          liquidPaperPendingTradeUpdates.delete(id);
+        }
+      }
+    }
+  } catch (err) {
+    pushLiquidPaperSse({
+      type: 'LIQUID_LIVE_ERROR',
+      error: err.message,
+      updatedAt: new Date().toISOString(),
+    });
+  } finally {
+    liquidPaperBroadcastInFlight = false;
+    if (liquidPaperBroadcastQueued || liquidPaperPendingTradeUpdates.size > 0) {
+      liquidPaperBroadcastQueued = false;
+      scheduleLiquidPaperBroadcast(100);
+    }
+  }
+}
+
+function scheduleLiquidPaperBroadcast(delayMs = 700) {
+  if (liquidPaperSseClients.size === 0) return;
+  if (liquidPaperBroadcastInFlight) {
+    liquidPaperBroadcastQueued = true;
+    return;
+  }
+  if (liquidPaperBroadcastTimer) return;
+  liquidPaperBroadcastTimer = setTimeout(() => {
+    liquidPaperBroadcastTimer = null;
+    flushLiquidPaperBroadcast().catch(() => {});
   }, delayMs);
+  liquidPaperBroadcastTimer.unref?.();
 }
 
 let shakeoutPaperBroadcastTimer = null;
 function scheduleShakeoutPaperBroadcast(delayMs = 700) {
   if (shakeoutPaperSseClients.size === 0 || shakeoutPaperBroadcastTimer) return;
-  shakeoutPaperBroadcastTimer = setTimeout(async () => {
+  shakeoutPaperBroadcastTimer = setTimeout(() => {
     shakeoutPaperBroadcastTimer = null;
     if (shakeoutPaperSseClients.size === 0) return;
-    try {
-      pushSse(shakeoutPaperSseClients, await getShakeoutPaperTrades());
-    } catch (err) {
-      pushSse(shakeoutPaperSseClients, { error: err.message, updatedAt: new Date().toISOString() });
-    }
+    pushSse(shakeoutPaperSseClients, {
+      type: 'SHAKEOUT_PAPER_REFRESH',
+      refresh: true,
+      updatedAt: new Date().toISOString(),
+    });
   }, delayMs);
 }
 
@@ -800,9 +1242,27 @@ function scheduleEmaSqueezePaperBroadcast(delayMs = 700) {
     if (emaSqueezePaperSseClients.size === 0 || emaSqueezePaperBroadcastRunning) return;
     emaSqueezePaperBroadcastRunning = true;
     try {
-      pushSse(emaSqueezePaperSseClients, await getEmaSqueezePaperTrades({ deltaOnly: true }));
+      const clientsByFilter = new Map();
+      for (const client of emaSqueezePaperSseClients) {
+        const key = JSON.stringify(client.filter ?? {});
+        if (!clientsByFilter.has(key)) clientsByFilter.set(key, []);
+        clientsByFilter.get(key).push(client);
+      }
+      for (const clients of clientsByFilter.values()) {
+        const data = await getEmaSqueezePaperTrades({
+          deltaOnly: true,
+          filter: clients[0]?.filter ?? null,
+        });
+        const payload = `data: ${JSON.stringify(data)}\n\n`;
+        for (const client of clients) {
+          try { client.response.write(payload); } catch { emaSqueezePaperSseClients.delete(client); }
+        }
+      }
     } catch (err) {
-      pushSse(emaSqueezePaperSseClients, { error: err.message, updatedAt: Date.now() });
+      const payload = `data: ${JSON.stringify({ error: err.message, updatedAt: Date.now() })}\n\n`;
+      for (const client of emaSqueezePaperSseClients) {
+        try { client.response.write(payload); } catch { emaSqueezePaperSseClients.delete(client); }
+      }
     } finally {
       emaSqueezePaperBroadcastRunning = false;
     }
@@ -857,10 +1317,6 @@ async function schedulePumpScan() {
         if (sig.marketOk === false) continue;                      // too far from EMA
         if ((sig.factors?.emaRibbon ?? 1) === 0) continue;        // EMA không bullish
         const pumpEvalGate = nativePumpEvalGateOfSignal(sig, btcHealthCache.data ?? {});
-        if (pumpEvalGate && !pumpEvalGate.allow) {
-          console.log(`[PumpPaper] SKIP ${sig.action ?? '-'} ${sig.symbol} ${pumpEvalGate.label} - ${pumpEvalGate.reason}`);
-          continue;
-        }
         const key = `${sig.symbol}|${sig.type}`;
         const last = pumpPaperAutoFired.get(key) ?? 0;
         if (Date.now() - last < 4 * 3600 * 1000) continue;
@@ -868,7 +1324,7 @@ async function schedulePumpScan() {
         createPumpPaperTrade({
           symbol: sig.symbol,
           side: sig.action,
-          marginUsdt: pumpEvalGate?.marginUsdt ?? pumpSignalAutoPaperMarginUsdt(sig),
+          marginUsdt: pumpSignalAutoPaperMarginUsdt(sig),
           leverage: 10,
           entryPrice: sig.entry,
           tp: sig.tp ?? null,
@@ -891,7 +1347,10 @@ async function schedulePumpScan() {
           pumpEvalCorrBucket: pumpEvalGate?.corrBucket ?? null,
           pumpEvalBtcPhase: pumpEvalGate?.btcPhase ?? null,
           pumpEvalContextKey: pumpEvalGate?.contextKey ?? null,
-          note: [sig.note ?? '', pumpEvalGate ? `pumpEval=${pumpEvalGate.label} version=${pumpEvalGate.version}` : '']
+          note: [
+            sig.note ?? '',
+            pumpEvalGate ? `legacyPumpEval=${pumpEvalGate.label} version=${pumpEvalGate.version} diagnosticOnly=Y` : '',
+          ]
             .filter(Boolean).join(' | '),
         }).catch(() => {});
         if (pumpPaperTicker) syncPumpPaperTicker().catch(() => {});
@@ -1019,6 +1478,7 @@ function edgePaperPayloadFromSignal(sig = {}, {
   const edgePlanSlRoe = Number(edgePlan.slRoe);
   const defaultSlRoe = getEdgeShortPaperSlRoe();
   return {
+    [LIVE_CARD_AUTO_ELIGIBLE]: true,
     symbol: sig.symbol,
     side: action,
     status,
@@ -1039,6 +1499,17 @@ function edgePaperPayloadFromSignal(sig = {}, {
     btcCorr,
     capGateLabel,
     capGateReason,
+    sourceSignalAt: sig.sourceSignalAt ?? sig.signalAt ?? sig.scannedAt ?? null,
+    candlePatternAtEntry: sig.candlePatternAtEntry
+      ?? sig.candlePattern
+      ?? sig.candlePattern15m
+      ?? sig.candlePattern5m
+      ?? null,
+    candlePatternTimeframe: sig.candlePatternTimeframe ?? interval,
+    btcCandlePatternAtEntry: sig.btcCandlePatternAtEntry
+      ?? sig.btcCandleAtEntry
+      ?? sig.btcCandlePattern5m
+      ?? null,
     note: sig.note ?? '',
   };
 }
@@ -1423,6 +1894,7 @@ function calcAutoLeverage(entry, sl, defaultLev = 10) {
 }
 
 async function handlePostPumpDumpRiskRealOrder(sig) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (sig?.type !== 'post_pump_dump_risk') return;
   if (process.env.POST_PUMP_DUMP_RISK_AUTO_ORDER_ENABLED !== 'true') return;
   if (sig.action !== 'SHORT') return;
@@ -1636,6 +2108,7 @@ function sendPostDumpBounceRiskDiscord(sig) {
 }
 
 async function handlePostDumpBounceRiskRealOrder(sig) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (sig?.type !== 'post_dump_bounce_risk') return;
   if (process.env.POST_DUMP_BOUNCE_RISK_AUTO_ORDER_ENABLED !== 'true') return;
   if (sig.action !== 'LONG') return;
@@ -1918,6 +2391,9 @@ async function scheduleSpikeReversalScan() {
 }
 
 let _postPumpKillShortDebounce = null;
+// PPKS is a paper/observation page. This hard lock intentionally ignores env
+// toggles so a future config reload cannot accidentally place Binance orders.
+const POST_PUMP_KILL_SHORT_BINANCE_HARD_DISABLED = true;
 async function schedulePostPumpKillShortScan() {
   clearTimeout(_postPumpKillShortDebounce);
   _postPumpKillShortDebounce = setTimeout(async () => {
@@ -1988,10 +2464,12 @@ async function schedulePostPumpKillShortScan() {
         }).catch((e) => console.warn(`[PpksPaper] auto-fire ${sig.symbol}:`, e.message));
       }
 
-      for (const sig of signals) {
-        handlePostPumpKillShortRealOrder(sig).catch((e) => {
-          console.warn(`[PostPumpKillShortOrder] ${sig.symbol}:`, e.message);
-        });
+      if (!POST_PUMP_KILL_SHORT_BINANCE_HARD_DISABLED) {
+        for (const sig of signals) {
+          handlePostPumpKillShortRealOrder(sig).catch((e) => {
+            console.warn(`[PostPumpKillShortOrder] ${sig.symbol}:`, e.message);
+          });
+        }
       }
 
       const ppksWebhook = process.env.POST_PUMP_KILL_SHORT_WEBHOOK_URL || '';
@@ -2059,6 +2537,8 @@ async function schedulePostPumpKillShortScan() {
 }
 
 async function handlePostPumpKillShortRealOrder(sig) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
+  if (POST_PUMP_KILL_SHORT_BINANCE_HARD_DISABLED) return;
   if (process.env.POST_PUMP_KILL_SHORT_AUTO_ORDER_ENABLED !== 'true') return;
   const isShort = sig.stage === 'confirmed_short' || sig.stage === 'watch_spike';
   const isLong = sig.stage === 'confirmed_long' || sig.stage === 'watch_long_sweep';
@@ -5354,7 +5834,7 @@ async function movePumpPaperTpToEntry({ id, reason }) {
       .join(' | ')
       .slice(0, 500),
   };
-  await writePumpPaperStore(store);
+  await writePumpPaperStore(store, { upsertIds: [id] });
   return true;
 }
 
@@ -6754,6 +7234,7 @@ async function createEmaSqueezePaperTrades(signals = []) {
         }
       }
       return createPumpPaperTrade({
+        [LIVE_CARD_AUTO_ELIGIBLE]: true,
         ...basePayload,
         ...extra,
         tp: tpOverride,
@@ -7215,6 +7696,7 @@ function annotateEmaSqueezeRealOrderStatus(signals = []) {
 }
 
 async function handleEmaSqueezeRealLongOrders(signals = []) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED !== 'true') return;
   if (!runtimeSettings.emaSqueezeRealOrderEnabled) {
     console.log('[EmaSqueezeReal] skip - EMA Squeeze auto Binance disabled on board');
@@ -7415,6 +7897,7 @@ async function handleEmaSqueezeRealLongOrders(signals = []) {
 }
 
 async function handleEma99KillReclaimRealLongOrders(signals = []) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (process.env.EMA99_KILL_RECLAIM_REAL_ORDER_ENABLED !== 'true') return;
   if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
     console.log('[Ema99KillReclaimReal] skip - real Binance order disabled/dry-run');
@@ -7559,11 +8042,21 @@ setTimeout(() => scheduleStrategyScans('initial'), 30_000);
 // Fallback: scan mỗi 2 phút kể cả khi WebSocket không có tick
 let _staleReseedLock = false;
 let _tieredWarmupPromise = null;
+let _emaWarmupRetryPromise = null;
+let _emaWarmupRetryTimer = null;
+let _emaWarmupRetryAttempt = 0;
 let _klineWarmupSymbols = [];
 let _allowLogicBeforeKlineReady = false;
 let _emaQuickWarmupDone = false;
 const _warmupMaxSymbols = Number(process.env.KLINE_WARMUP_MAX_SYMBOLS) || 120; // keep REST warmup bounded
 const _socketMaxSymbols = Math.max(_warmupMaxSymbols, Number(process.env.KLINE_SOCKET_MAX_SYMBOLS) || 400);
+const LIQUID_MARKET_HEALTH_WARMUP_MAX_SYMBOLS = Math.max(
+  30,
+  Math.min(
+    _socketMaxSymbols,
+    Number(process.env.LIQUID_MARKET_HEALTH_MAX_SYMBOLS ?? 120),
+  ),
+);
 const EMA_SQUEEZE_EXCLUDE_SYMBOLS = new Set(String(process.env.EMA_SQUEEZE_EXCLUDE_SYMBOLS ?? 'BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,TONUSDT,TRXUSDT,LINKUSDT,BCHUSDT,LTCUSDT,AVAXUSDT')
   .split(',')
   .map((s) => s.trim().toUpperCase())
@@ -7627,6 +8120,81 @@ function emaSqueezeWarmupReadiness(symbols, minBars = 40) {
     ? Math.min(...EMA_SQUEEZE_INTERVALS.map((interval) => counts[interval] ?? 0))
     : 0;
   return { counts, min };
+}
+
+function emaWarmupReadyTarget(symbols) {
+  const total = Array.isArray(symbols) ? symbols.length : 0;
+  return resolveEmaWarmupReadyTarget(total, {
+    configuredMinReady: process.env.EMA_SQUEEZE_WARMUP_RETRY_MIN_READY,
+    readyRatio: process.env.EMA_SQUEEZE_WARMUP_RETRY_READY_RATIO ?? 0.95,
+  });
+}
+
+function scheduleMissingEmaWarmupRetry(symbols, minBars) {
+  const list = Array.isArray(symbols) ? [...new Set(symbols)] : [];
+  if (list.length === 0 || _emaWarmupRetryTimer || _emaWarmupRetryPromise) return;
+
+  const readiness = emaSqueezeWarmupReadiness(list, minBars);
+  if (readiness.min >= list.length) {
+    _emaWarmupRetryAttempt = 0;
+    return;
+  }
+
+  const target = emaWarmupReadyTarget(list);
+  const targetMet = readiness.min >= target;
+  const baseMs = Number(process.env.KLINE_WARMUP_RETRY_MS ?? 90_000);
+  const maxMs = Number(process.env.EMA_SQUEEZE_WARMUP_RETRY_MAX_MS ?? 15 * 60_000);
+  const gapRetryMs = Number(process.env.EMA_SQUEEZE_WARMUP_GAP_RETRY_MS ?? maxMs);
+  const delayMs = targetMet
+    ? Math.max(baseMs, gapRetryMs)
+    : warmupRetryDelayMs(_emaWarmupRetryAttempt, { baseMs, maxMs });
+  const mode = targetMet ? 'background gap-fill' : 'readiness recovery';
+  const readyText = EMA_SQUEEZE_INTERVALS
+    .map((interval) => `${interval}:${readiness.counts[interval] ?? 0}/${list.length}`)
+    .join(' ');
+
+  console.log(
+    `[KlineWarmup] EMA ${mode}; ${readyText} (target ${target});`
+    + ` missing-only retry in ${Math.round(delayMs / 1000)}s.`,
+  );
+  _emaWarmupRetryTimer = setTimeout(() => {
+    _emaWarmupRetryTimer = null;
+    if (_emaWarmupRetryPromise) return;
+    _emaWarmupRetryPromise = (async () => {
+      if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) {
+        console.warn('[KlineWarmup] EMA missing-only retry postponed: REST queue congested.');
+        return;
+      }
+
+      let attempted = false;
+      for (const interval of EMA_SQUEEZE_INTERVALS) {
+        const missing = klineCache.missingReady(list, interval, minBars);
+        if (missing.length === 0) continue;
+        attempted = true;
+        console.log(
+          `[KlineWarmup] Retrying only ${missing.length}/${list.length}`
+          + ` missing EMA symbols @${interval}.`,
+        );
+        klineCache.subscribe(missing, interval);
+        await klineCache.seed(missing, interval, 250, {
+          batchSize: 1,
+          batchDelayMs: Number(process.env.EMA_SQUEEZE_WARMUP_DELAY_MS ?? 5500),
+        });
+        if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) break;
+      }
+      if (attempted) scheduleEmaSqueezeScan();
+    })().catch((err) => {
+      console.warn('[KlineWarmup] EMA missing-only retry failed:', err.message);
+    }).finally(() => {
+      _emaWarmupRetryPromise = null;
+      const after = emaSqueezeWarmupReadiness(list, minBars);
+      const afterTarget = emaWarmupReadyTarget(list);
+      if (after.min < afterTarget) _emaWarmupRetryAttempt += 1;
+      else _emaWarmupRetryAttempt = 0;
+      scheduleMissingEmaWarmupRetry(list, minBars);
+    });
+  }, delayMs);
+  _emaWarmupRetryTimer.unref?.();
 }
 
 function scheduleStrategyScans(reason = 'manual') {
@@ -7705,6 +8273,25 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
         klineCache.subscribe(sorted.slice(0, ma60Max5mInitial).map((r) => r.symbol), '5m');
       }
       console.log(`[KlineWarmup] WS subscribed ${socketSymbols15m.length} symbols @15m before REST seed.`);
+      const marketHealthSymbols = sorted
+        .slice(0, LIQUID_MARKET_HEALTH_WARMUP_MAX_SYMBOLS)
+        .map((row) => row.symbol);
+      if (marketHealthSymbols.length && !binanceRateGate.isBlocked?.() && !isBinanceRestCongested()) {
+        console.log(
+          `[KlineWarmup] Priority seeding ${marketHealthSymbols.length}`
+          + ' market-health symbols @15m before strategy tiers.',
+        );
+        await klineCache.seed(marketHealthSymbols, '15m', 100, {
+          batchSize: Math.max(
+            1,
+            Number(process.env.LIQUID_MARKET_HEALTH_WARMUP_BATCH_SIZE ?? 2),
+          ),
+          batchDelayMs: Math.max(
+            500,
+            Number(process.env.LIQUID_MARKET_HEALTH_WARMUP_DELAY_MS ?? 1500),
+          ),
+        });
+      }
       emaWarmupSymbols = selectEmaSqueezeWarmupSymbols(sorted);
       const emaQuickSymbols = emaWarmupSymbols.slice(0, Number(process.env.EMA_SQUEEZE_QUICK_WARMUP_SYMBOLS ?? 20));
       let emaQuickComplete = emaQuickSymbols.length === 0;
@@ -7771,21 +8358,16 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
       const readyForScan = klineCache.countReady(socketSymbols15m, '15m', minReadyBars);
       const scanReadyTarget = Math.min(minLogicReady, socketSymbols15m.length);
       const emaReady = emaSqueezeWarmupReadiness(emaWarmupSymbols, minReadyBars);
-      const emaReadyTarget = emaWarmupSymbols.length
-        ? Math.min(
-            Number(process.env.EMA_SQUEEZE_WARMUP_RETRY_MIN_READY ?? Math.ceil(emaWarmupSymbols.length * 0.85)),
-            emaWarmupSymbols.length,
-          )
-        : 0;
+      const emaReadyTarget = emaWarmupReadyTarget(emaWarmupSymbols);
       const emaReadyText = EMA_SQUEEZE_INTERVALS
         .map((interval) => `${interval}:${emaReady.counts[interval] ?? 0}/${emaWarmupSymbols.length}`)
         .join(' ');
-      if (
+      const baseWarmupMissing = (
         klineCache.stats('15m').cached < minCached
         || readyForScan < scanReadyTarget
-        || (emaWarmupSymbols.length && emaReady.min < emaReadyTarget)
-      ) {
-        console.warn(`[KlineWarmup] Ready 15m ${readyForScan}/${scanReadyTarget}; EMA ${emaReadyText} (target ${emaReadyTarget}); retrying seed in ${Math.round(retryMs / 1000)}s.`);
+      );
+      if (baseWarmupMissing) {
+        console.warn(`[KlineWarmup] Base readiness ${readyForScan}/${scanReadyTarget}; retrying tiered seed in ${Math.round(retryMs / 1000)}s.`);
         setTimeout(async () => {
           if (_tieredWarmupPromise) return;
           if (isBinanceRestCongested()) {
@@ -7796,6 +8378,12 @@ async function startTieredKlineWarmup(snapshot, reason = 'startup') {
             console.warn('[KlineWarmup] Retry failed:', err.message);
           });
         }, retryMs);
+      }
+      if (emaWarmupSymbols.length && emaReady.min < emaWarmupSymbols.length) {
+        if (emaReady.min >= emaReadyTarget) {
+          console.log(`[KlineWarmup] EMA ready ${emaReadyText} (target ${emaReadyTarget}); strategy coverage is ready.`);
+        }
+        scheduleMissingEmaWarmupRetry(emaWarmupSymbols, minReadyBars);
       }
     }
   })();
@@ -7838,6 +8426,7 @@ setInterval(async () => {
   }
 }, 2 * 60 * 1000);
 const symbolCache = { data: null, expiresAt: 0 };
+let _symbolCacheInflight = null;
 const snapshotCache = { data: null, expiresAt: 0, inflight: null };
 const autoTradeState = {
   startedAt: null,
@@ -7852,14 +8441,14 @@ const port = Number(process.env.PORT ?? 19082);
 const ordersTokens = new Set();
 const runtimeSettings = {
   orderEnabled: process.env.BINANCE_ORDER_ENABLED === 'true',
-  autoTradeEnabled: process.env.AUTO_TRADE_ENABLED === 'true',
+  autoTradeEnabled: !liveCardOnlyAutoBinanceEnabled() && process.env.AUTO_TRADE_ENABLED === 'true',
   dryRun: process.env.AUTO_TRADE_DRY_RUN !== 'false',
   btcReversalGuard: false,
   btcReversalGuardRoe: 1,
-  autoProbeEnabled: process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION === 'true',
+  autoProbeEnabled: !liveCardOnlyAutoBinanceEnabled() && process.env.AUTO_LIQ_PROBE_BEFORE_CONFIRMATION === 'true',
   autoProbeMargin: Number(process.env.AUTO_LIQ_PROBE_MARGIN ?? 1),
-  pumpAutoOrderEnabled: process.env.PUMP_AUTO_ORDER_ENABLED === 'true',
-  emaSqueezeRealOrderEnabled: process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
+  pumpAutoOrderEnabled: !liveCardOnlyAutoBinanceEnabled() && process.env.PUMP_AUTO_ORDER_ENABLED === 'true',
+  emaSqueezeRealOrderEnabled: !liveCardOnlyAutoBinanceEnabled() && process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
   pumpMaxLimitOrders: Number(process.env.AUTO_LIQ_MAX_LIMIT_ORDERS ?? 30),
   pumpMaxPositions: Number(process.env.AUTO_TRADE_MAX_POSITIONS ?? 0),
   pumpPaperTimeoutH: Number(process.env.PUMP_PAPER_TIMEOUT_H ?? 3), // giờ — tự cắt nếu quá thời gian và pnl ≤ 1%
@@ -7868,7 +8457,18 @@ const runtimeSettings = {
   positionTimeoutH: Number(process.env.POSITION_TIMEOUT_H ?? 3),
   positionTimeoutMinRoe: Number(process.env.POSITION_TIMEOUT_MIN_ROE ?? 1),
 };
+if (liveCardOnlyAutoBinanceEnabled()) {
+  console.log(`[AutoBinancePolicy] ${AUTO_BINANCE_ENTRY_POLICY_VERSION} active: only checked Orders cards may open automatic Binance entries.`);
+}
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
+const rejectedOrdersCredentials = new Map(); // fingerprint → retryAfter epoch ms
+
+function ordersCredentialFingerprint(apiKey, apiSecret) {
+  return crypto.createHash('sha256')
+    .update(`${String(apiKey ?? '')}\0${String(apiSecret ?? '')}`)
+    .digest('hex')
+    .slice(0, 12);
+}
 
 // Block auto orders 17:00–19:00 Vietnam time (UTC+7) every day
 const VN_BLOCK_HOURS = new Set(
@@ -7881,16 +8481,234 @@ function isVnBlockHour() {
 }
 let tslScanner = null;
 let posMonitor = null;
+const ORDERS_POSITION_PNL_STREAM_VERSION = 'ORDERS_POSITION_PNL_STREAM_V2_20260809_LIVE_CARD';
+const ordersPositionPnlClients = new Set();
+
+function binancePositionDisplayMargin(pos = {}) {
+  const reported = Number(pos.positionInitialMargin ?? pos.initialMargin);
+  if (reported > 0) return reported;
+  const amount = Math.abs(Number(pos.amt ?? pos.positionAmt) || 0);
+  const entry = Number(pos.entry ?? pos.entryPrice) || 0;
+  const leverage = Math.max(1, Number(pos.leverage) || 1);
+  return amount * entry / leverage;
+}
+
+function binancePositionPnlPayload(symbol, pos = {}, markPrice = null, managementRoe = null) {
+  const amount = Number(pos.amt ?? pos.positionAmt) || 0;
+  const entry = Number(pos.entry ?? pos.entryPrice) || 0;
+  const leverage = Math.max(1, Number(pos.leverage) || 1);
+  const mark = Number(markPrice ?? pos.markPrice) || 0;
+  const unrealizedPnl = Number.isFinite(Number(pos.unRealizedProfit))
+    ? Number(pos.unRealizedProfit)
+    : (mark - entry) * amount;
+  const positionInitialMargin = binancePositionDisplayMargin({
+    ...pos,
+    amt: amount,
+    entry,
+    leverage,
+  });
+  const binanceRoe = positionInitialMargin > 0
+    ? unrealizedPnl / positionInitialMargin * 100
+    : 0;
+  return {
+    version: ORDERS_POSITION_PNL_STREAM_VERSION,
+    symbol: String(symbol ?? pos.symbol ?? '').toUpperCase(),
+    positionAmt: String(amount),
+    entryPrice: String(entry),
+    markPrice: String(mark),
+    marketReady: mark > 0,
+    leverage: String(leverage),
+    positionInitialMargin: String(positionInitialMargin || 0),
+    unRealizedProfit: String(unrealizedPnl),
+    roe: binanceRoe,
+    managementRoe: Number.isFinite(Number(managementRoe)) ? Number(managementRoe) : binanceRoe,
+    positionSide: pos.positionSide ?? 'BOTH',
+    eventAt: Date.now(),
+  };
+}
+
+function writeOrdersPositionPnlEvent(response, event, payload) {
+  try {
+    response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    return true;
+  } catch {
+    ordersPositionPnlClients.delete(response);
+    return false;
+  }
+}
+
+function broadcastOrdersPositionPnl(event, payload) {
+  for (const response of ordersPositionPnlClients) {
+    writeOrdersPositionPnlEvent(response, event, payload);
+  }
+}
+
+function openOrdersPositionPnlStream(request, response) {
+  response.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  response.socket?.setTimeout?.(0);
+  ordersPositionPnlClients.add(response);
+  writeOrdersPositionPnlEvent(response, 'ready', {
+    version: ORDERS_POSITION_PNL_STREAM_VERSION,
+    source: 'BINANCE_USER_DATA_PLUS_MARK_PRICE_SOCKET',
+    connectedAt: Date.now(),
+  });
+  const current = posMonitor?.getActivePositions?.() ?? [];
+  writeOrdersPositionPnlEvent(response, 'snapshot', {
+    version: ORDERS_POSITION_PNL_STREAM_VERSION,
+    positions: current.map((position) => binancePositionPnlPayload(
+      position.symbol,
+      position,
+      position.markPrice,
+      null,
+    )),
+    eventAt: Date.now(),
+  });
+  const heartbeat = setInterval(() => {
+    writeOrdersPositionPnlEvent(response, 'heartbeat', { at: Date.now() });
+  }, 15_000);
+  heartbeat.unref?.();
+  request.on('close', () => {
+    clearInterval(heartbeat);
+    ordersPositionPnlClients.delete(response);
+  });
+}
 // Symbols bị loại khỏi mọi auto position management (trailing stop, timeout, neg-TP, SL trail, avg-down)
 const tslExcludedSymbols = new Set();
 
-function sendOrderFillDiscord({ symbol, side, filledQty, avgPrice, positionSide, fillTime, source }) {
+const orderFillDiscordSent = new Map();
+const liveCardOrderFailureDiscordSent = new Map();
+
+function sendLiveCardOrderFailureDiscord({
+  page,
+  trade,
+  matchedKeys = [],
+  error,
+  stage = 'BINANCE_ENTRY',
+}) {
+  const webhookUrl = process.env.LIVE_CARD_ORDER_WEBHOOK_URL
+    || process.env.ORDER_FILL_WEBHOOK_URL
+    || '';
+  if (!webhookUrl || !Array.isArray(matchedKeys) || matchedKeys.length === 0) return;
+
+  const symbol = normalizeSymbol(trade?.symbol ?? '') || '-';
+  const side = String(trade?.side ?? '-').toUpperCase();
+  const tradeId = String(trade?.id ?? '-');
+  const errorCode = String(error?.code ?? error?.name ?? 'ERROR');
+  const errorMessage = String(error?.message ?? error ?? 'Unknown Binance error').slice(0, 950);
+  const dedupeKey = `${page}:${tradeId}:${stage}:${errorCode}:${errorMessage}`;
+  const previous = Number(liveCardOrderFailureDiscordSent.get(dedupeKey) ?? 0);
+  if (previous > 0 && Date.now() - previous < 30 * 60_000) return;
+  liveCardOrderFailureDiscordSent.set(dedupeKey, Date.now());
+  if (liveCardOrderFailureDiscordSent.size > 2_000) {
+    const cutoff = Date.now() - 30 * 60_000;
+    for (const [key, at] of liveCardOrderFailureDiscordSent) {
+      if (at < cutoff) liveCardOrderFailureDiscordSent.delete(key);
+    }
+  }
+
+  const gate = binanceRateGate.snapshot();
+  const authCircuitText = Array.isArray(gate.authBlocks) && gate.authBlocks.length
+    ? gate.authBlocks.slice(0, 3).map((block) => {
+      const probeSec = Math.max(0, Math.ceil((Number(block.nextProbeAt ?? 0) - Date.now()) / 1000));
+      return `${block.scope ?? 'legacy'} · ${block.source ?? 'unknown'} · ${block.method ?? 'GET'} ${block.path ?? '-'} · probe ${probeSec}s`;
+    }).join('\n')
+    : 'none';
+  const cards = matchedKeys.map((key) => String(key)).join('\n').slice(0, 950) || '-';
+  const source = String(
+    trade?.source
+      ?? trade?.recommendationCombo
+      ?? trade?.signalType
+      ?? trade?.setup
+      ?? '-',
+  ).slice(0, 500);
+  const embed = {
+    title: `[BINANCE FAIL] ${symbol} ${side}`,
+    color: 0xef4444,
+    fields: [
+      { name: 'Page / Stage', value: `${String(page ?? '-')} / ${stage}`.slice(0, 1024), inline: true },
+      { name: 'Trade ID', value: tradeId.slice(0, 1024), inline: true },
+      { name: 'Signal Source', value: source || '-', inline: false },
+      { name: 'Matched real card', value: cards, inline: false },
+      { name: 'Error', value: `${errorCode}: ${errorMessage}`.slice(0, 1024), inline: false },
+      {
+        name: 'REST gate',
+        value: `queue ${gate.queue}/${gate.maxQueue} · active ${gate.active}/${gate.concurrency} · tokens ${gate.tokens}/${gate.limitPerMin} · congested ${gate.congested ? 'YES' : 'NO'}`,
+        inline: false,
+      },
+      { name: 'Auth circuit', value: authCircuitText.slice(0, 1024), inline: false },
+    ],
+    timestamp: new Date().toISOString(),
+  };
+
+  fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ embeds: [embed] }),
+    signal: AbortSignal.timeout(10_000),
+  })
+    .then((res) => {
+      if (!res.ok) {
+        liveCardOrderFailureDiscordSent.delete(dedupeKey);
+        console.warn(`[LiveCardFailDiscord] ${symbol} failed: ${res.status}`);
+      } else {
+        console.log(`[LiveCardFailDiscord] sent ${symbol} ${side} stage=${stage}`);
+      }
+    })
+    .catch((notifyError) => {
+      liveCardOrderFailureDiscordSent.delete(dedupeKey);
+      console.warn(`[LiveCardFailDiscord] ${symbol}:`, notifyError.message);
+    });
+}
+
+function sendOrderFillDiscord({
+  symbol,
+  side,
+  filledQty,
+  cumulativeFilledQty,
+  avgPrice,
+  positionSide,
+  fillTime,
+  source,
+  orderStatus,
+  orderId,
+  clientOrderId,
+  signalSource,
+  executionPage,
+  lifecycleId,
+  matchedKeys,
+  signalCombo,
+  signalLabel,
+  marginUsdt,
+  leverage,
+}) {
   const webhookUrl = process.env.ORDER_FILL_WEBHOOK_URL || '';
-  if (!webhookUrl || source !== 'ORDER_TRADE_UPDATE') return;
+  if (!webhookUrl || source !== 'ORDER_TRADE_UPDATE' || orderStatus !== 'FILLED') return;
+
+  const dedupeKey = String(orderId ?? clientOrderId ?? `${symbol}:${side}:${fillTime}`);
+  const previous = Number(orderFillDiscordSent.get(dedupeKey) ?? 0);
+  if (previous > 0 && Date.now() - previous < 24 * 60 * 60_000) return;
+  orderFillDiscordSent.set(dedupeKey, Date.now());
+  if (orderFillDiscordSent.size > 2_000) {
+    const cutoff = Date.now() - 24 * 60 * 60_000;
+    for (const [key, at] of orderFillDiscordSent) {
+      if (at < cutoff) orderFillDiscordSent.delete(key);
+    }
+  }
 
   const price = Number(avgPrice);
-  const qty = Number(filledQty);
+  const fullQty = Number(cumulativeFilledQty);
+  const qty = Number.isFinite(fullQty) && fullQty > 0 ? fullQty : Number(filledQty);
   const isBuy = String(side).toUpperCase() === 'BUY';
+  const whitelistText = (Array.isArray(matchedKeys) ? matchedKeys : [])
+    .map((key) => String(key ?? '').trim())
+    .filter(Boolean)
+    .join('\n') || '-';
+  const comboText = String(signalCombo ?? signalLabel ?? '-').trim() || '-';
   const embed = {
     title: `[BINANCE FILL] ${symbol} ${isBuy ? 'LONG/BUY' : 'SHORT/SELL'}`,
     color: isBuy ? 0x22c55e : 0xef4444,
@@ -7899,7 +8717,15 @@ function sendOrderFillDiscord({ symbol, side, filledQty, avgPrice, positionSide,
       { name: 'Qty', value: Number.isFinite(qty) ? String(qty) : String(filledQty ?? '-'), inline: true },
       { name: 'Avg Fill', value: Number.isFinite(price) ? String(price) : String(avgPrice ?? '-'), inline: true },
       { name: 'Position Side', value: String(positionSide ?? 'BOTH'), inline: true },
-      { name: 'Source', value: String(source), inline: true },
+      { name: 'Execution Page', value: String(executionPage ?? '-').toUpperCase(), inline: true },
+      { name: 'Raw Signal ID', value: String(signalSource ?? 'BINANCE/MANUAL'), inline: true },
+      ...(Number.isFinite(Number(marginUsdt)) && Number(marginUsdt) > 0
+        ? [{ name: 'Margin / Leverage', value: `$${Number(marginUsdt)} / ${Number(leverage) || 1}x`, inline: true }]
+        : []),
+      { name: 'Matched Whitelist (exact)', value: whitelistText.slice(0, 1024), inline: false },
+      { name: 'Combo / Signal at Entry', value: comboText.slice(0, 1024), inline: false },
+      ...(lifecycleId ? [{ name: 'Lifecycle', value: String(lifecycleId).slice(0, 1024), inline: false }] : []),
+      { name: 'Order', value: String(orderId ?? clientOrderId ?? '-'), inline: true },
       { name: 'Time', value: fillTime ? new Date(Number(fillTime)).toISOString() : new Date().toISOString(), inline: false },
     ],
     timestamp: new Date().toISOString(),
@@ -7911,10 +8737,17 @@ function sendOrderFillDiscord({ symbol, side, filledQty, avgPrice, positionSide,
     body: JSON.stringify({ embeds: [embed] }),
   })
     .then((res) => {
-      if (!res.ok) console.warn(`[OrderFillDiscord] ${symbol} failed: ${res.status}`);
-      else console.log(`[OrderFillDiscord] sent ${symbol} ${side} qty=${filledQty}`);
+      if (!res.ok) {
+        orderFillDiscordSent.delete(dedupeKey);
+        console.warn(`[OrderFillDiscord] ${symbol} failed: ${res.status}`);
+      } else {
+        console.log(`[OrderFillDiscord] sent ${symbol} ${side} qty=${qty}`);
+      }
     })
-    .catch((err) => console.warn(`[OrderFillDiscord] ${symbol}:`, err.message));
+    .catch((err) => {
+      orderFillDiscordSent.delete(dedupeKey);
+      console.warn(`[OrderFillDiscord] ${symbol}:`, err.message);
+    });
 }
 
 function startPositionSocketMonitor() {
@@ -7924,18 +8757,115 @@ function startPositionSocketMonitor() {
     getCredentials: () => getApiCredentials(null),
     onPositionClose: (symbol) => {
       // Triggered ngay khi ACCOUNT_UPDATE báo pa=0 — không cần đợi StaleOrder poll 30s
-      console.log(`[PosMonitor] 🔴 ${symbol} closed → cancelling open orders immediately`);
+      console.log(`[PosMonitor] 🔴 ${symbol} closed → cleaning TP/SL, retaining LIMIT orders`);
+      broadcastOrdersPositionPnl('position-closed', {
+        version: ORDERS_POSITION_PNL_STREAM_VERSION,
+        symbol,
+        eventAt: Date.now(),
+      });
       signalProtectionPlans.delete(symbol);
+      liveCardBinanceLifecycle.markPositionClosed(symbol)
+        .then(() => broadcastOrdersPositionPnl('live-card-lifecycle', {
+          version: ORDERS_POSITION_PNL_STREAM_VERSION,
+          symbol,
+          status: 'POSITION_CLOSED',
+          eventAt: Date.now(),
+        }))
+        .catch((error) => {
+          console.warn(`[LiveCardLifecycle] mark closed ${symbol}:`, error.message);
+        });
       let creds;
       try { creds = getApiCredentials(null); } catch { return; }
       const { apiKey, apiSecret } = creds;
-      cancelAllOrdersForSymbol(symbol, apiKey, apiSecret)
+      cancelAutomaticProtectionOrdersForSymbol(symbol, apiKey, apiSecret)
         .then(() => invalidateOpenOrdersCache())
-        .catch((err) => console.warn(`[PosMonitor] Cancel orders ${symbol}:`, err.message));
+        .catch((err) => console.warn(`[PosMonitor] Cleanup protection ${symbol}:`, err.message));
     },
-    onOrderFill: (symbol, { side, filledQty, avgPrice, positionSide, fillTime, orderStatus = null, orderId = null, source = 'UNKNOWN' }) => {
+    onOrderFill: async (symbol, {
+      side,
+      filledQty,
+      cumulativeFilledQty = null,
+      avgPrice,
+      positionSide,
+      fillTime,
+      orderStatus = null,
+      orderId = null,
+      clientOrderId = null,
+      orderType = null,
+      source = 'UNKNOWN',
+    }) => {
       console.log(`[SlGuard] onOrderFill ${symbol} source=${source} fillTime=${fillTime} createdAt=${slTracking.createdAt}`);
-      const protectionPlan = source === 'ORDER_TRADE_UPDATE' ? signalProtectionPlans.get(symbol) : null;
+      const lifecycleExecution = source === 'ORDER_TRADE_UPDATE'
+        ? await liveCardBinanceLifecycle.recordFill({
+          symbol,
+          side,
+          filledQty,
+          cumulativeFilledQty,
+          avgPrice,
+          positionSide,
+          fillTime,
+          orderStatus,
+          orderId,
+          clientOrderId,
+          orderType,
+        }).catch((error) => {
+          console.warn(`[LiveCardLifecycle] fill ${symbol}:`, error.message);
+          return null;
+        })
+        : null;
+      let protectionPlan = source === 'ORDER_TRADE_UPDATE' ? signalProtectionPlans.get(symbol) : null;
+      const matchesPlan = protectionPlan && (
+        (protectionPlan.orderId != null && orderId != null && String(protectionPlan.orderId) === String(orderId))
+        || (protectionPlan.entryClientOrderId && clientOrderId && protectionPlan.entryClientOrderId === clientOrderId)
+      );
+      if (protectionPlan && !matchesPlan) protectionPlan = null;
+      if (!protectionPlan && lifecycleExecution) {
+        rememberSignalProtectionPlan({
+          symbol,
+          side,
+          takeProfitPrice: lifecycleExecution.takeProfitPrice,
+          stopLossPrice: lifecycleExecution.stopLossPrice,
+          signalEntryPrice: lifecycleExecution.signalEntryPrice,
+          signalTakeProfitPrice: lifecycleExecution.signalTakeProfitPrice ?? lifecycleExecution.takeProfitPrice,
+          signalStopLossPrice: lifecycleExecution.signalStopLossPrice ?? lifecycleExecution.stopLossPrice,
+          fillAnchorEnabled: lifecycleExecution.fillAnchorEnabled,
+          fillAnchorVersion: lifecycleExecution.fillAnchorVersion,
+          takeProfitDistanceFraction: lifecycleExecution.takeProfitDistanceFraction,
+          stopLossDistanceFraction: lifecycleExecution.stopLossDistanceFraction,
+          fillPrice: lifecycleExecution.fillPrice ?? avgPrice,
+          source: `live-card-whitelist-${lifecycleExecution.executionPage ?? 'unknown'}`,
+          orderId: lifecycleExecution.entryOrderId,
+          entryClientOrderId: lifecycleExecution.entryClientOrderId,
+          lifecycleId: lifecycleExecution.lifecycleId,
+          preserveSignalProtection: lifecycleExecution.preserveSignalProtection !== false,
+          takeProfitWorkingType: lifecycleExecution.takeProfitWorkingType,
+          stopLossWorkingType: lifecycleExecution.stopLossWorkingType,
+        });
+        protectionPlan = signalProtectionPlans.get(symbol) ?? null;
+      }
+      if (protectionPlan && Number(avgPrice) > 0) protectionPlan.fillPrice = Number(avgPrice);
+      // Sau restart, REST_SYNC không có entry order để đối chiếu nhưng sl-tracking vẫn giữ
+      // snapshot TP/SL của live-card. Khôi phục plan từ snapshot đó, tuyệt đối không rơi vào
+      // fallback SL/TP cố định.
+      if (!protectionPlan && source === 'REST_SYNC') {
+        const trackedProtection = slTracking.positions?.[symbol] ?? null;
+        if (isLiveCardSignalProtection({ tracking: trackedProtection })) {
+          rememberSignalProtectionPlan({
+            symbol,
+            side,
+            takeProfitPrice: trackedProtection.signalTp,
+            stopLossPrice: trackedProtection.signalSl,
+            source: trackedProtection.signalSource ?? 'live-card-whitelist-recovered',
+            preserveSignalProtection: true,
+            takeProfitWorkingType: trackedProtection.takeProfitWorkingType,
+            stopLossWorkingType: trackedProtection.stopLossWorkingType,
+          });
+          protectionPlan = signalProtectionPlans.get(symbol) ?? null;
+          if (protectionPlan) {
+            console.log(`[SignalProtection] ${symbol} recovered from sl-tracking after REST sync`);
+          }
+        }
+      }
       if (source !== 'REST_SYNC' || !slTracking.positions[symbol]) {
         slTracking.positions[symbol] = {
           openedAt: fillTime,
@@ -7944,14 +8874,32 @@ function startPositionSocketMonitor() {
           slPlaced: false,
           signalTp: protectionPlan?.tpPrice ?? null,
           signalSl: protectionPlan?.slPrice ?? null,
+          signalEntryPrice: protectionPlan?.signalEntryPrice ?? null,
+          signalTakeProfitPrice: protectionPlan?.signalTakeProfitPrice ?? null,
+          signalStopLossPrice: protectionPlan?.signalStopLossPrice ?? null,
+          fillAnchorVersion: protectionPlan?.fillAnchorVersion ?? null,
+          fillAnchorEnabled: protectionPlan?.fillAnchorEnabled === true,
+          protectionFillPrice: Number(avgPrice) || protectionPlan?.fillPrice || null,
           signalSource: protectionPlan?.source ?? null,
+          lifecycleId: protectionPlan?.lifecycleId ?? null,
+          signalProtectionVersion: protectionPlan?.preserveSignalProtection
+            ? LIVE_CARD_SIGNAL_PROTECTION_VERSION
+            : null,
+          preserveSignalProtection: protectionPlan?.preserveSignalProtection === true,
+          takeProfitWorkingType: protectionPlan?.takeProfitWorkingType ?? null,
+          stopLossWorkingType: protectionPlan?.stopLossWorkingType ?? null,
         };
         saveSlTracking();
       }
       if (protectionPlan) {
-        if (orderStatus === 'FILLED') {
+        if (source === 'REST_SYNC' && !protectionPlan.appliedAt) {
+          console.log(`[SignalProtection] ${symbol} REST sync; restoring exact signal TP/SL`);
+          setTimeout(() => applySignalProtectionOnFill(symbol), 800);
+        } else if (orderStatus === 'FILLED' && !protectionPlan.appliedAt) {
           console.log(`[SignalProtection] ${symbol} full fill orderId=${orderId ?? protectionPlan.orderId ?? '-'}; applying signal TP/SL`);
           setTimeout(() => applySignalProtectionOnFill(symbol), 800);
+        } else if (protectionPlan.appliedAt) {
+          console.log(`[SignalProtection] ${symbol} already applied; ignore duplicate entry fill update`);
         } else {
           console.log(`[SignalProtection] ${symbol} ${orderStatus ?? 'PARTIAL'} fill; waiting for full fill before TP/SL`);
         }
@@ -7959,7 +8907,36 @@ function startPositionSocketMonitor() {
         console.log(`[SlGuard] Registered ${symbol}, triggering fallback SL/TP guard in 1s`);
         setTimeout(() => triggerSlGuardForSymbol(symbol), 1000);
       }
-      sendOrderFillDiscord({ symbol, side, filledQty, avgPrice, positionSide, fillTime, source });
+      sendOrderFillDiscord({
+        symbol,
+        side,
+        filledQty,
+        cumulativeFilledQty,
+        avgPrice,
+        positionSide,
+        fillTime,
+        source,
+        orderStatus,
+        orderId,
+        clientOrderId,
+        signalSource: lifecycleExecution?.signalSource ?? protectionPlan?.source ?? null,
+        executionPage: lifecycleExecution?.executionPage ?? null,
+        lifecycleId: lifecycleExecution?.lifecycleId ?? null,
+        matchedKeys: lifecycleExecution?.matchedKeys ?? [],
+        signalCombo: lifecycleExecution?.signalCombo ?? null,
+        signalLabel: lifecycleExecution?.signalLabel ?? null,
+        marginUsdt: lifecycleExecution?.marginUsdt ?? null,
+        leverage: lifecycleExecution?.leverage ?? null,
+      });
+      if (lifecycleExecution?.lifecycleId) {
+        broadcastOrdersPositionPnl('live-card-lifecycle', {
+          version: ORDERS_POSITION_PNL_STREAM_VERSION,
+          lifecycleId: lifecycleExecution.lifecycleId,
+          symbol,
+          status: lifecycleExecution.status,
+          eventAt: Date.now(),
+        });
+      }
       appendFillLog({ symbol, side, filledQty, avgPrice, positionSide, fillTime }).catch(() => {});
       invalidateOpenOrdersCache();
       tpConfirmedClear(symbol);
@@ -7977,6 +8954,10 @@ function startPositionSocketMonitor() {
       }
     },
     onRoeUpdate: (symbol, pos, markPrice, roe) => {
+      broadcastOrdersPositionPnl(
+        'position',
+        binancePositionPnlPayload(symbol, pos, markPrice, roe),
+      );
       if (!positionFirstSeenAt.has(symbol)) positionFirstSeenAt.set(symbol, Date.now());
       const skipTsl = tslExcludedSymbols.has(symbol);
       if (pendingLiqTp.has(symbol)) {
@@ -8054,6 +9035,15 @@ const SL_TRACKING_FILE = join(rootDir, 'data', 'sl-tracking.json');
 let slTracking = { createdAt: Date.now(), positions: {} };
 const PAPER_TRADES_FILE = join(rootDir, 'data', 'paper-trades.json');
 const LIQUID_PAPER_FILE = join(rootDir, 'data', 'liquid-paper-trades.json');
+const LIQUID_LIVE_CARD_WHITELIST_FILE = join(rootDir, 'data', 'liquid-live-card-whitelist.json');
+const LIVE_CARD_REAL_ENABLED_FILE = join(rootDir, 'data', 'live-card-real-enabled.json');
+const LIVE_CARD_BINANCE_STATE_FILE = join(rootDir, 'data', 'live-card-binance-state.json');
+const LIVE_CARD_BINANCE_EVENT_FILE = join(rootDir, 'data', 'live-card-binance-events.ndjson');
+const liveCardBinanceLifecycle = new LiveCardBinanceLifecycleStore({
+  stateFile: LIVE_CARD_BINANCE_STATE_FILE,
+  eventFile: LIVE_CARD_BINANCE_EVENT_FILE,
+});
+const LIQUID_MARKET_DIRECTION_SIGNAL_LOG_FILE = join(rootDir, 'data', 'liquid-market-direction-signal-log.ndjson');
 const FILLS_DIR = join(rootDir, 'data', 'fills');
 const PUMP_ORDERS_FILE = join(rootDir, 'data', 'pump-orders.json');
 const PUMP_HISTORY_FILE = join(rootDir, 'data', 'pump-order-history.json');
@@ -8062,6 +9052,9 @@ const CAP_PAPER_FILE    = join(rootDir, 'data', 'cap-paper-trades.json');
 const DI_PAPER_FILE     = join(rootDir, 'data', 'di-paper-trades.json');
 const PI_PAPER_FILE     = join(rootDir, 'data', 'pi-paper-trades.json');
 const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
+// Realtime mutations are appended here instead of rewriting the very large
+// historical JSON snapshot on every fill/TP/SL/timeout.
+const PUMP_PAPER_WAL_FILE = join(rootDir, 'data', 'pump-paper-trades.wal.ndjson');
 const PUMP_PAPER_ARCHIVE_FILE = join(rootDir, 'data', 'archive', 'pump-paper-trades.ndjson');
 const PUMP_PAPER_MAX_ACTIVE_ROWS = Math.max(
   5_000,
@@ -8070,6 +9063,7 @@ const PUMP_PAPER_MAX_ACTIVE_ROWS = Math.max(
 const BR_LIKE_LIMIT_EVAL_FILE = join(rootDir, 'data', 'br-like-limit-eval.json');
 const BR_LIKE_LIMIT_PAPER_FILE = join(rootDir, 'data', 'br-like-limit-paper-trades.json');
 const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
+const EDGE_PAPER_ENTRY_JOURNAL_FILE = join(rootDir, 'data', 'edge-paper-entry-journal.ndjson');
 const SR_PAPER_FILE     = join(rootDir, 'data', 'sr-paper-trades.json');
 const PPKS_PAPER_FILE   = join(rootDir, 'data', 'ppks-paper-trades.json');
 const SHAKEOUT_PAPER_FILE = join(rootDir, 'data', 'shakeout-paper-trades.json');
@@ -8204,7 +9198,7 @@ async function backfillRecentPaperCandleLogs() {
     ['dump-ignition', readDiPaperStore, writeDiPaperStore],
     ['pump-ignition', readPiPaperStore, writePiPaperStore],
     ['br-like-limit', readBrLikeLimitPaperStore, writeBrLikeLimitPaperStore],
-    ['edge', readEdgePaperStore, writeEdgePaperStore],
+    ['edge', readEdgePaperStore, writeEdgePaperCandleBackfill],
     ['spike-reversal', readSrPaperStore, writeSrPaperStore],
     ['post-pump-kill-short', readPpksPaperStore, writePpksPaperStore],
     ['shakeout', readShakeoutPaperStore, writeShakeoutPaperStore],
@@ -8337,7 +9331,17 @@ async function initTokenUnlocksBatch() {
 let paperTicker = null;
 let liquidPaperRestPoller = null;
 const paperFillLocks = new Set();
-const liquidPaperFillLocks = new Set();
+const liquidPaperQueuedMarks = new Map();
+const liquidPaperMarkBatchWaiters = [];
+let liquidPaperMarkBatchTimer = null;
+let liquidPaperMarkBatchRunning = false;
+let liquidPaperActiveIndexCache = {
+  trades: null,
+  length: -1,
+  firstId: null,
+  lastId: null,
+  bySymbol: new Map(),
+};
 const liquidPaperPeakRoe = new Map();
 const capMarkCache = new Map();  // symbol → last price  (for cap paper trades)
 const capMarkCacheAt = new Map(); // symbol → socket event time (for cap paper trades)
@@ -8469,6 +9473,7 @@ function publishRecommendedSourceOpen(page, trade, market = null) {
   processRecommendedSourceOpenEvent({
     page,
     trade: attachCandlePatternToPaperTrade(enrichRecommendedPaperCandlePattern(trade)),
+    marketDirectionAtSignal: marketDirectionSnapshotForSignalStorage(),
     marketEntry: {
       price: eventPrice,
       at: Number(selectedMarket?.at ?? receivedAt),
@@ -8476,6 +9481,13 @@ function publishRecommendedSourceOpen(page, trade, market = null) {
       source: selectedMarket?.source ?? `${page}-source-open-event`,
     },
     learningFlagsByRecommendationId,
+    liveOrderEvaluator: (clone, priorTrades) => maybePlaceSourceLiveCardOrder(
+      'recommended',
+      clone,
+      priorTrades,
+      recommendedLiveCardKeysOfTrade(clone),
+      { autoEligible: true },
+    ),
   }).then((result) => {
     if (result?.created) {
       console.log(`[RecommendedEvent] OPEN ${trade.symbol} ${trade.side} page=${page} latency=${result.trade?.sourceEventLatencyMs ?? '-'}ms drift=${result.trade?.entryVsSourcePct ?? '-'}%`);
@@ -8490,16 +9502,23 @@ function publishRecommendedSourceOpen(page, trade, market = null) {
 
 function startRecommendedPaperTicker() {
   if (recommendedPaperTicker) return;
-  recommendedPaperTicker = createAggTradeTicker({
-    logLabel: 'RecommendedPaperTick',
-    onPrice: ({ symbol, markPrice, eventTime }) => {
+  recommendedPaperTicker = sharedLastTicker.createClient(
+    'recommendedPaper',
+    ({ symbol, markPrice, eventTime }) => {
       recommendedPaperSocketMarks.set(symbol, markPrice);
       recommendedPaperSocketMarkAt.set(symbol, eventTime);
-      processRecommendedPaperSocketPrice(symbol, markPrice, eventTime)
+      processRecommendedPaperSocketPrice(symbol, markPrice, eventTime, {
+        onTradeClosed: async (trade) => {
+          queueLiveCardBotClose('recommended', trade, {
+            outcome: trade.outcome,
+            reason: trade.closeReason ?? trade.recommendedCloseReason ?? trade.outcome,
+          });
+        },
+      })
         .catch((error) => console.warn('[RecommendedPaperTick]', error.message));
     },
-  });
-  console.log('[RecommendedPaper] Dedicated EMA-style last-price ticker started.');
+  );
+  console.log('[RecommendedPaper] Shared last-price ticker consumer started.');
   refreshRecommendedPaperSystem().catch(() => {});
   setInterval(() => refreshRecommendedPaperSystem().catch(() => {}), 30_000);
 }
@@ -8889,6 +9908,25 @@ const server = createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host}`);
 
+    // Kept deliberately allocation-light so the PM2 watchdog can detect an
+    // event-loop stall/OOM before users are left with an "online" but dead app.
+    if (requestUrl.pathname === '/healthz' && request.method === 'GET') {
+      const memory = process.memoryUsage();
+      response.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      response.end(JSON.stringify({
+        ok: true,
+        pid: process.pid,
+        uptimeSeconds: Math.floor(process.uptime()),
+        heapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
+        rssMb: Math.round(memory.rss / 1024 / 1024),
+        at: new Date().toISOString(),
+      }));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/logout' && request.method === 'POST') {
       const token = request.headers['x-orders-token'] ?? '';
       ordersTokens.delete(token);
@@ -8903,9 +9941,46 @@ const server = createServer(async (request, response) => {
         await sendJson(response, { error: 'API Key và API Secret là bắt buộc.' }, 400);
         return;
       }
+      const apiKey = String(body.apiKey).trim();
+      const apiSecret = String(body.apiSecret).trim();
+      const credentialFingerprint = ordersCredentialFingerprint(apiKey, apiSecret);
+      const rejectedUntil = Number(rejectedOrdersCredentials.get(credentialFingerprint) ?? 0);
+      if (rejectedUntil > Date.now()) {
+        await sendJson(response, {
+          error: 'Credential Orders vừa bị Binance từ chối. Hãy nhập lại key/secret hoặc kiểm tra IP/quyền Futures.',
+          code: 'BINANCE_AUTH_REJECTED',
+        }, 401);
+        return;
+      }
+      try {
+        // Không cấp Orders token cho credential chưa được Binance xác nhận.
+        // Trước đây localStorage cũ có thể đăng nhập lại thành công ở app rồi
+        // liên tục tạo -2015 dù credential background trong .env vẫn hợp lệ.
+        await ordersAuthClient.getBalance({
+          apiKey,
+          apiSecret,
+          recvWindow: Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000),
+        });
+      } catch (error) {
+        const authCode = Number(error?.code);
+        const isAuthRejected = authCode === -2014
+          || authCode === -2015
+          || /invalid api-key|api-key.*invalid|permissions for action/i.test(String(error?.message ?? ''));
+        if (isAuthRejected) {
+          const cooldownMs = Math.max(60_000, Number(process.env.ORDERS_AUTH_REJECT_COOLDOWN_MS ?? 60 * 60_000));
+          rejectedOrdersCredentials.set(credentialFingerprint, Date.now() + cooldownMs);
+          await sendJson(response, {
+            error: 'Binance từ chối API key/secret hoặc IP/quyền Futures. Session Orders chưa được tạo.',
+            code: 'BINANCE_AUTH_REJECTED',
+          }, 401);
+          return;
+        }
+        throw error;
+      }
+      rejectedOrdersCredentials.delete(credentialFingerprint);
       const token = crypto.randomUUID();
       ordersTokens.add(token);
-      sessionCredentials.set(token, { apiKey: String(body.apiKey), apiSecret: String(body.apiSecret) });
+      sessionCredentials.set(token, { apiKey, apiSecret });
       await sendJson(response, { token });
       return;
     }
@@ -8916,6 +9991,16 @@ const server = createServer(async (request, response) => {
       const { apiKey, apiSecret } = getApiCredentials(token);
       const data = await client.getAccountUid({ apiKey, apiSecret });
       await sendJson(response, data);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/positions/stream' && request.method === 'GET') {
+      const token = request.headers['x-orders-token'] ?? '';
+      if (!ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Unauthorized.' }, 401);
+        return;
+      }
+      openOrdersPositionPnlStream(request, response);
       return;
     }
 
@@ -8988,6 +10073,16 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/token-unlocks/refresh' && request.method === 'POST') {
       await sendJson(response, await refreshTokenUnlocks('manual'));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/liquid-market-direction-health') {
+      await sendJson(response, await getLiquidMarketDirectionHealth());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/short-wave-stats') {
+      await sendJson(response, await getShortWavePerformanceStats());
       return;
     }
 
@@ -9823,6 +10918,8 @@ const server = createServer(async (request, response) => {
         await sendJson(response, await getLiquidPaperTrades({
           paging: hasPaging ? parsePaperPaging(requestUrl) : null,
           day: requestUrl.searchParams.get('day') || 'all',
+          fromDay: requestUrl.searchParams.get('from') || '',
+          toDay: requestUrl.searchParams.get('to') || '',
         }));
         return;
       }
@@ -9830,6 +10927,96 @@ const server = createServer(async (request, response) => {
         await sendJson(response, await createLiquidPaperTrade(await readJsonBody(request)));
         return;
       }
+    }
+
+    if (['/api/live-card-whitelist', '/api/liquid-live-card-whitelist'].includes(requestUrl.pathname)) {
+      if (request.method === 'GET') {
+        await sendJson(response, await liquidLiveCardWhitelistStatus());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const key = normalizeLiquidLiveCardKey(body.key);
+        if (!key || typeof body.enabled !== 'boolean') {
+          await sendJson(response, { error: 'key hợp lệ và enabled boolean là bắt buộc.' }, 400);
+          return;
+        }
+        await updateLiquidLiveCardWhitelist(key, body.enabled);
+        await sendJson(response, await liquidLiveCardWhitelistStatus());
+        return;
+      }
+      await sendJson(response, { error: 'Method not allowed.' }, 405);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/live-card-real-enabled') {
+      const token = request.headers['x-orders-token'] ?? '';
+      if (!ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Unauthorized. Đăng nhập trang Orders để quản lý quyền lệnh thật.' }, 401);
+        return;
+      }
+      if (request.method === 'GET') {
+        await sendJson(response, await liveCardRealEnabledStatus());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const key = normalizeLiquidLiveCardKey(body.key);
+        if (!key || typeof body.enabled !== 'boolean') {
+          await sendJson(response, { error: 'key hợp lệ và enabled boolean là bắt buộc.' }, 400);
+          return;
+        }
+        try {
+          await updateLiveCardRealEnabled(key, body.enabled);
+        } catch (error) {
+          await sendJson(response, { error: error.message }, 400);
+          return;
+        }
+        await sendJson(response, await liveCardRealEnabledStatus());
+        return;
+      }
+      await sendJson(response, { error: 'Method not allowed.' }, 405);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/live-card-binance-lifecycle') {
+      const token = request.headers['x-orders-token'] ?? '';
+      if (!ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Unauthorized. Login Orders is required.' }, 401);
+        return;
+      }
+      if (request.method !== 'GET') {
+        await sendJson(response, { error: 'Method not allowed.' }, 405);
+        return;
+      }
+      let status = await liveCardBinanceLifecycle.status();
+      const closedPnlSync = await syncLiveCardClosedPnl(token, status.executions);
+      if (closedPnlSync.reconciled > 0) status = await liveCardBinanceLifecycle.status();
+      const [liquidPaperStore, edgePaperStore] = await Promise.all([
+        readLiquidPaperStore(),
+        readEdgePaperStore(),
+      ]);
+      const executionsWithPaper = attachLiveCardPaperOriginals(status.executions, {
+        liquid: liquidPaperStore.trades,
+        'short-edge': edgePaperStore.trades,
+      });
+      const limit = Math.max(1, Math.min(500, Number(requestUrl.searchParams.get('limit') ?? 100)));
+      await sendJson(response, {
+        ...status,
+        statsVersion: LIVE_CARD_WHITELIST_PNL_STATS_VERSION,
+        overview: aggregateLiveCardHistoryOverview(executionsWithPaper),
+        sourceStats: status.stats,
+        stats: aggregateLiveCardWhitelistStats(executionsWithPaper),
+        closedPnlSync,
+        executions: executionsWithPaper.slice(0, limit),
+        total: status.executions.length,
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/liquid-combo-cycle-today' && request.method === 'GET') {
+      await sendJson(response, await getLiquidComboCycleTodayStats());
+      return;
     }
 
     if (requestUrl.pathname === '/api/liquid-paper-trades-stream') {
@@ -9842,12 +11029,23 @@ const server = createServer(async (request, response) => {
       response.write(': connected\n\n');
       liquidPaperSseClients.add(response);
       request.on('close', () => liquidPaperSseClients.delete(response));
-      getLiquidPaperTrades()
+      getLiquidPaperLivePayload({ snapshot: true })
         .then((data) => {
-          if (!response.destroyed) response.write(`data: ${JSON.stringify(data)}\n\n`);
+          if (!response.destroyed) {
+            writeLiquidPaperSse(response, `data: ${JSON.stringify(data)}\n\n`);
+          }
         })
         .catch((err) => {
-          if (!response.destroyed) response.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+          if (!response.destroyed) {
+            writeLiquidPaperSse(
+              response,
+              `data: ${JSON.stringify({
+                type: 'LIQUID_LIVE_ERROR',
+                error: err.message,
+                updatedAt: new Date().toISOString(),
+              })}\n\n`,
+            );
+          }
         });
       return;
     }
@@ -9972,19 +11170,24 @@ const server = createServer(async (request, response) => {
       response.write(': connected\n\n');
       shakeoutPaperSseClients.add(response);
       request.on('close', () => shakeoutPaperSseClients.delete(response));
-      getShakeoutPaperTrades()
-        .then((data) => {
-          if (!response.destroyed) response.write(`data: ${JSON.stringify(data)}\n\n`);
-        })
-        .catch((err) => {
-          if (!response.destroyed) response.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-        });
+      response.write(`data: ${JSON.stringify({
+        type: 'SHAKEOUT_PAPER_REFRESH',
+        refresh: true,
+        initial: true,
+        updatedAt: new Date().toISOString(),
+      })}\n\n`);
       return;
     }
 
     if (requestUrl.pathname === '/api/shakeout-paper-trades') {
       if (request.method === 'GET') {
-        await sendJson(response, await getShakeoutPaperTrades());
+        await sendJson(response, await getShakeoutPaperTrades({
+          paging: parsePaperPaging(requestUrl, { defaultLimit: 100, maxLimit: 500 }),
+          day: requestUrl.searchParams.get('day') ?? 'all',
+          shakeoutClass: requestUrl.searchParams.get('class') ?? 'all',
+          side: requestUrl.searchParams.get('side') ?? 'all',
+          stage2: requestUrl.searchParams.get('stage2') ?? 'all',
+        }));
         return;
       }
       if (request.method === 'POST') {
@@ -9994,6 +11197,7 @@ const server = createServer(async (request, response) => {
         return;
       }
     }
+
     if (requestUrl.pathname === '/api/shakeout-self-learning'
         && ['GET', 'POST'].includes(request.method)) {
       // Read-only analytics sidecar. Its output is deliberately not consumed by
@@ -10087,7 +11291,11 @@ const server = createServer(async (request, response) => {
         await sendJson(response, await getPumpPaperTrades({
           paging: parsePaperPaging(requestUrl),
           day: requestUrl.searchParams.get('day') || requestUrl.searchParams.get('date') || 'all',
+          fromDay: requestUrl.searchParams.get('from') || '',
+          toDay: requestUrl.searchParams.get('to') || '',
           stage2: requestUrl.searchParams.get('stage2') || 'all',
+          lift: requestUrl.searchParams.get('lift') || 'all',
+          selector: requestUrl.searchParams.get('selector') || 'all',
         }));
         return;
       }
@@ -10105,8 +11313,17 @@ const server = createServer(async (request, response) => {
         'x-accel-buffering': 'no',
       });
       response.write(': connected\n\n');
-      emaSqueezePaperSseClients.add(response);
-      request.on('close', () => emaSqueezePaperSseClients.delete(response));
+      const client = {
+        response,
+        filter: {
+          type: requestUrl.searchParams.get('type') || 'all',
+          tf: requestUrl.searchParams.get('tf') || 'all',
+          day: requestUrl.searchParams.get('day') || 'all',
+          stageCandle: requestUrl.searchParams.get('stageCandle') || 'all',
+        },
+      };
+      emaSqueezePaperSseClients.add(client);
+      request.on('close', () => emaSqueezePaperSseClients.delete(client));
       scheduleEmaSqueezePaperBroadcast(50);
       return;
     }
@@ -10136,7 +11353,18 @@ const server = createServer(async (request, response) => {
     if (requestUrl.pathname === '/api/recommended-paper-trades' && request.method === 'GET') {
       await sendJson(response, await getRecommendedPaper({
         day: requestUrl.searchParams.get('day') || '',
+        fromDay: requestUrl.searchParams.get('fromDay') || '',
+        toDay: requestUrl.searchParams.get('toDay') || '',
         window: requestUrl.searchParams.get('window') || '1',
+        sourceLayer: requestUrl.searchParams.get('sourceLayer') || '',
+        cloneLayer: requestUrl.searchParams.get('cloneLayer') || '',
+        twoLayer: requestUrl.searchParams.get('twoLayer') || '',
+        marketFit: requestUrl.searchParams.get('marketFit') || '',
+        daySelection: requestUrl.searchParams.get('daySelection') || '',
+        backtestConfidence: requestUrl.searchParams.get('backtestConfidence') || '',
+        backtestReliability: requestUrl.searchParams.get('backtestReliability') || '',
+        marketPointFit: requestUrl.searchParams.get('marketPointFit') || '',
+        marketDispersion: requestUrl.searchParams.get('marketDispersion') || '',
         page: requestUrl.searchParams.get('page') || 1,
         pageSize: requestUrl.searchParams.get('pageSize') || 300,
         sortBy: requestUrl.searchParams.get('sortBy') || 'time',
@@ -10198,6 +11426,8 @@ const server = createServer(async (request, response) => {
       if (request.method === 'GET') {
         await sendJson(response, await getEdgePaperTrades({
           day: requestUrl.searchParams.get('day'),
+          fromDay: requestUrl.searchParams.get('from') || '',
+          toDay: requestUrl.searchParams.get('to') || '',
           page: requestUrl.searchParams.get('page'),
           pageSize: requestUrl.searchParams.get('pageSize'),
         }));
@@ -10220,14 +11450,22 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/pump-auto-order-enabled') {
       if (request.method === 'GET') {
-        await sendJson(response, { enabled: runtimeSettings.pumpAutoOrderEnabled });
+        await sendJson(response, {
+          enabled: runtimeSettings.pumpAutoOrderEnabled,
+          blockedByExclusivePolicy: liveCardOnlyAutoBinanceEnabled(),
+        });
         return;
       }
       if (request.method === 'POST') {
         const body = await readJsonBody(request);
-        if (typeof body.enabled === 'boolean') runtimeSettings.pumpAutoOrderEnabled = body.enabled;
+        if (typeof body.enabled === 'boolean') {
+          runtimeSettings.pumpAutoOrderEnabled = !liveCardOnlyAutoBinanceEnabled() && body.enabled;
+        }
         console.log(`[PumpAuto] ${runtimeSettings.pumpAutoOrderEnabled ? '✅ Bật' : '⏸ Tắt'} pump auto order`);
-        await sendJson(response, { enabled: runtimeSettings.pumpAutoOrderEnabled });
+        await sendJson(response, {
+          enabled: runtimeSettings.pumpAutoOrderEnabled,
+          blockedByExclusivePolicy: liveCardOnlyAutoBinanceEnabled(),
+        });
         return;
       }
     }
@@ -10238,17 +11476,21 @@ const server = createServer(async (request, response) => {
           enabled: runtimeSettings.emaSqueezeRealOrderEnabled && process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
           envEnabled: process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
           runtimeEnabled: runtimeSettings.emaSqueezeRealOrderEnabled,
+          blockedByExclusivePolicy: liveCardOnlyAutoBinanceEnabled(),
         });
         return;
       }
       if (request.method === 'POST') {
         const body = await readJsonBody(request);
-        if (typeof body.enabled === 'boolean') runtimeSettings.emaSqueezeRealOrderEnabled = body.enabled;
+        if (typeof body.enabled === 'boolean') {
+          runtimeSettings.emaSqueezeRealOrderEnabled = !liveCardOnlyAutoBinanceEnabled() && body.enabled;
+        }
         console.log(`[EmaSqueezeReal] ${runtimeSettings.emaSqueezeRealOrderEnabled ? 'Bật' : 'Tắt'} auto Binance từ board`);
         await sendJson(response, {
           enabled: runtimeSettings.emaSqueezeRealOrderEnabled && process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
           envEnabled: process.env.EMA_SQUEEZE_REAL_ORDER_ENABLED === 'true',
           runtimeEnabled: runtimeSettings.emaSqueezeRealOrderEnabled,
+          blockedByExclusivePolicy: liveCardOnlyAutoBinanceEnabled(),
         });
         return;
       }
@@ -10311,6 +11553,13 @@ const server = createServer(async (request, response) => {
     if (requestUrl.pathname === '/api/pump-auto-order-test' && request.method === 'POST') {
       const token = request.headers['x-orders-token'] ?? null;
       if (!token || !ordersTokens.has(token)) { await sendJson(response, { error: 'Unauthorized' }, 401); return; }
+      if (liveCardOnlyAutoBinanceEnabled()) {
+        await sendJson(response, {
+          error: 'Pump Auto test đã bị khóa: chỉ card được bật LỆNH THẬT trong Orders mới được auto Binance.',
+          policyVersion: AUTO_BINANCE_ENTRY_POLICY_VERSION,
+        }, 409);
+        return;
+      }
       const body = await readJsonBody(request);
       const { symbol = 'BTCUSDT' } = body;
       // Lấy signal hiện tại hoặc tạo fake signal để test
@@ -10464,15 +11713,25 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/auto-probe-enabled') {
       if (request.method === 'GET') {
-        await sendJson(response, { enabled: runtimeSettings.autoProbeEnabled, margin: runtimeSettings.autoProbeMargin });
+        await sendJson(response, {
+          enabled: runtimeSettings.autoProbeEnabled,
+          margin: runtimeSettings.autoProbeMargin,
+          blockedByExclusivePolicy: liveCardOnlyAutoBinanceEnabled(),
+        });
         return;
       }
       if (request.method === 'POST') {
         const body = await readJsonBody(request);
-        if (typeof body.enabled === 'boolean') runtimeSettings.autoProbeEnabled = body.enabled;
+        if (typeof body.enabled === 'boolean') {
+          runtimeSettings.autoProbeEnabled = !liveCardOnlyAutoBinanceEnabled() && body.enabled;
+        }
         if (typeof body.margin === 'number' && body.margin > 0) runtimeSettings.autoProbeMargin = body.margin;
         console.log(`[AutoProbe] ${runtimeSettings.autoProbeEnabled ? '✅ Bật' : '⏸ Tắt'} auto vô $${runtimeSettings.autoProbeMargin} khi READY`);
-        await sendJson(response, { enabled: runtimeSettings.autoProbeEnabled, margin: runtimeSettings.autoProbeMargin });
+        await sendJson(response, {
+          enabled: runtimeSettings.autoProbeEnabled,
+          margin: runtimeSettings.autoProbeMargin,
+          blockedByExclusivePolicy: liveCardOnlyAutoBinanceEnabled(),
+        });
         return;
       }
     }
@@ -10620,12 +11879,18 @@ const server = createServer(async (request, response) => {
       if (request.method === 'POST') {
         const body = await readJsonBody(request);
         if (typeof body.orderEnabled === 'boolean') runtimeSettings.orderEnabled = body.orderEnabled;
-        if (typeof body.autoTradeEnabled === 'boolean') runtimeSettings.autoTradeEnabled = body.autoTradeEnabled;
+        if (typeof body.autoTradeEnabled === 'boolean') {
+          runtimeSettings.autoTradeEnabled = !liveCardOnlyAutoBinanceEnabled() && body.autoTradeEnabled;
+        }
         if (typeof body.dryRun === 'boolean') runtimeSettings.dryRun = body.dryRun;
         if (typeof body.btcReversalGuard === 'boolean') runtimeSettings.btcReversalGuard = body.btcReversalGuard;
         if (typeof body.btcReversalGuardRoe === 'number') runtimeSettings.btcReversalGuardRoe = body.btcReversalGuardRoe;
       }
-      await sendJson(response, { ...runtimeSettings });
+      await sendJson(response, {
+        ...runtimeSettings,
+        autoBinancePolicy: AUTO_BINANCE_ENTRY_POLICY_VERSION,
+        liveCardWhitelistOnly: liveCardOnlyAutoBinanceEnabled(),
+      });
       return;
     }
 
@@ -10642,6 +11907,9 @@ const server = createServer(async (request, response) => {
         enabled: process.env.TRAILING_STOP_ENABLED === 'true',
         triggerRoe: Number(process.env.TRAILING_STOP_TRIGGER_ROE ?? 10),
         updateRoe: Number(process.env.TRAILING_STOP_UPDATE_ROE ?? 5),
+        binanceProfitLockVersion: BINANCE_PROFIT_LOCK_VERSION,
+        binanceProfitLockTriggerRoe: Number(process.env.BINANCE_PROFIT_LOCK_TRIGGER_ROE ?? 5),
+        binanceProfitLockFirstLockRoe: Number(process.env.BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE ?? 1),
         protected: protected_,
       });
       return;
@@ -10701,7 +11969,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, '127.0.0.1', () => {
+server.listen(port, '127.0.0.1', async () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
   loadDynamicBlacklist();
   loadSlTracking();
@@ -10769,6 +12037,9 @@ server.listen(port, '127.0.0.1', () => {
   startDiPaperTicker();
   startPiPaperTicker();
   startPumpPaperTicker();
+  await recoverEdgePaperEntryJournal().catch((error) => {
+    console.warn(`[EdgePaperJournal] recovery skipped: ${error.message}`);
+  });
   startEdgePaperTicker();
   startSrPaperTicker();
   startPpksPaperTicker();
@@ -10777,11 +12048,13 @@ server.listen(port, '127.0.0.1', () => {
   startRecommendedLearningSidecar();
   startTopReversalPaperTicker();
   startRecommendedPaperTicker();
+  startLiquidMarketDirectionHealthMonitor();
   startLiquidScanAutoPaperScheduler();
   intradayDecisionPaper = createIntradayDecisionPaper();
   intradayDecisionPaper.init().catch((err) => console.warn('[DecisionPaper] Init failed:', err.message));
   setTimeout(() => backfillRecentPaperCandleLogs().catch(() => {}), 45_000).unref?.();
   startPositionSocketMonitor();
+  startLiveCardShortTimeStopScanner();
 
   runAfterKlineWarmup('algo APIs', () => {
     loadSlTracking().then(() =>
@@ -10798,7 +12071,14 @@ server.listen(port, '127.0.0.1', () => {
     if (process.env.LONG_SHORT_REFRESH_ENABLED !== 'false') {
       startLongShortRefresh();
     }
-    tslScanner = startTrailingStopScanner({ client, getSymbols, intervalMs: tslIntervalMs, webhookUrl: process.env.TSL_WEBHOOK_URL, isExcluded: (sym) => tslExcludedSymbols.has(sym), getPositionData: getSharedPositionData });
+    tslScanner = startTrailingStopScanner({
+      client,
+      getSymbols,
+      intervalMs: tslIntervalMs,
+      webhookUrl: process.env.TSL_WEBHOOK_URL,
+      isExcluded: (sym) => tslExcludedSymbols.has(sym) || hasPreservedLiveCardSignalProtection(sym),
+      getPositionData: getSharedPositionData,
+    });
     startBtcReversalGuard({ client, getSymbols, getRuntimeSettings: () => runtimeSettings, intervalMs: brgIntervalMs, getPositionData: getSharedPositionData });
     // Proactive position store refresh — chủ động làm mới trước khi scanner cần.
     setInterval(async () => {
@@ -11305,6 +12585,7 @@ function getGoldHealth() {
 // klineCache._applyTick() liên tục cập nhật close của nến hiện tại từ WS,
 // nên khi getBtcHealth() chạy (mỗi 30s) RSI đã dùng giá live rồi — không cần invalidate liên tục.
 klineCache.on('candleClose', ({ symbol, interval }) => {
+  if (interval === '5m' || interval === '15m') liquidMarketDirectionCache.expiresAt = 0;
   if (symbol !== 'BTCUSDT') return;
   if (interval !== '1h' && interval !== '4h' && interval !== '1d') return;
   btcHealthCache.expiresAt = 0; // force refresh ngay khi nến mới đóng
@@ -11315,33 +12596,98 @@ async function getSymbols() {
   if (symbolCache.data && Date.now() < symbolCache.expiresAt) {
     return symbolCache.data;
   }
-
-  const exchangeInfo = await client.getExchangeInfo({ priority: 1, source: 'getSymbols' });
-  const symbols = exchangeInfo.symbols
-    .filter((item) => item.contractType === 'PERPETUAL' && item.quoteAsset === 'USDT' && item.status === 'TRADING')
-    .map((item) => ({
-      symbol: item.symbol,
-      baseAsset: item.baseAsset,
-      quoteAsset: item.quoteAsset,
-      quantityPrecision: item.quantityPrecision,
-      filters: item.filters,
-      orderTypes: item.orderTypes ?? [],
-    }))
-    .sort((a, b) => a.symbol.localeCompare(b.symbol));
-
-  symbolCache.data = symbols;
-  symbolCache.expiresAt = Date.now() + 60 * 60 * 1000;
-
-  return symbols;
+  if (_symbolCacheInflight) return _symbolCacheInflight;
+  _symbolCacheInflight = (async () => {
+    const exchangeInfo = await client.getExchangeInfo({ priority: 1, source: 'getSymbols' });
+    const symbols = exchangeInfo.symbols
+      .filter((item) => item.contractType === 'PERPETUAL' && item.quoteAsset === 'USDT' && item.status === 'TRADING')
+      .map((item) => ({
+        symbol: item.symbol,
+        baseAsset: item.baseAsset,
+        quoteAsset: item.quoteAsset,
+        quantityPrecision: item.quantityPrecision,
+        filters: item.filters,
+        orderTypes: item.orderTypes ?? [],
+      }))
+      .sort((a, b) => a.symbol.localeCompare(b.symbol));
+    symbolCache.data = symbols;
+    symbolCache.expiresAt = Date.now() + 60 * 60 * 1000;
+    return symbols;
+  })();
+  try {
+    return await _symbolCacheInflight;
+  } finally {
+    _symbolCacheInflight = null;
+  }
 }
 
 const signalProtectionPlans = new Map(); // symbol -> intended TP/SL to apply after full fill
 const signalProtectionRunning = new Set();
 
-function rememberSignalProtectionPlan({ symbol, side, takeProfitPrice, stopLossPrice, source, orderId = null }) {
+function hasPreservedLiveCardSignalProtection(symbol) {
+  return isLiveCardSignalProtection({
+    tracking: slTracking.positions?.[symbol] ?? null,
+    plan: signalProtectionPlans.get(symbol) ?? null,
+  });
+}
+
+function rememberSignalProtectionPlan({
+  symbol,
+  side,
+  takeProfitPrice,
+  stopLossPrice,
+  signalEntryPrice = null,
+  signalTakeProfitPrice = takeProfitPrice,
+  signalStopLossPrice = stopLossPrice,
+  fillAnchorEnabled = null,
+  fillAnchorVersion = null,
+  takeProfitDistanceFraction = null,
+  stopLossDistanceFraction = null,
+  fillPrice = null,
+  source,
+  orderId = null,
+  entryClientOrderId = null,
+  lifecycleId = null,
+  preserveSignalProtection = false,
+  takeProfitWorkingType = null,
+  stopLossWorkingType = null,
+}) {
   const tpPrice = Number(takeProfitPrice);
   const slPrice = Number(stopLossPrice);
   if ((!Number.isFinite(tpPrice) || tpPrice <= 0) && (!Number.isFinite(slPrice) || slPrice <= 0)) return;
+  const protectionPolicy = resolveSignalProtectionWorkingTypes({
+    source,
+    preserveSignalProtection,
+    takeProfitWorkingType,
+    stopLossWorkingType,
+  });
+  const derivedAnchor = buildFillAnchoredProtectionSpec({
+    side,
+    signalEntryPrice,
+    takeProfitPrice: signalTakeProfitPrice,
+    stopLossPrice: signalStopLossPrice,
+  });
+  const explicitTpDistance = Number(takeProfitDistanceFraction);
+  const explicitSlDistance = Number(stopLossDistanceFraction);
+  const hasExplicitAnchor = fillAnchorEnabled === true && (
+    (Number.isFinite(explicitTpDistance) && explicitTpDistance > 0)
+    || (Number.isFinite(explicitSlDistance) && explicitSlDistance > 0)
+  );
+  const fillAnchor = hasExplicitAnchor
+    ? {
+        fillAnchorVersion: fillAnchorVersion ?? LIVE_CARD_FILL_ANCHORED_PROTECTION_VERSION,
+        fillAnchorEnabled: true,
+        signalEntryPrice: Number(signalEntryPrice) || null,
+        signalTakeProfitPrice: Number(signalTakeProfitPrice) || null,
+        signalStopLossPrice: Number(signalStopLossPrice) || null,
+        takeProfitDistanceFraction: Number.isFinite(explicitTpDistance) && explicitTpDistance > 0
+          ? explicitTpDistance
+          : null,
+        stopLossDistanceFraction: Number.isFinite(explicitSlDistance) && explicitSlDistance > 0
+          ? explicitSlDistance
+          : null,
+      }
+    : derivedAnchor;
   signalProtectionPlans.set(symbol, {
     symbol,
     side,
@@ -11349,6 +12695,11 @@ function rememberSignalProtectionPlan({ symbol, side, takeProfitPrice, stopLossP
     slPrice: Number.isFinite(slPrice) && slPrice > 0 ? slPrice : null,
     source: String(source ?? 'signal'),
     orderId,
+    entryClientOrderId,
+    lifecycleId,
+    fillPrice: Number(fillPrice) || null,
+    ...fillAnchor,
+    ...protectionPolicy,
     createdAt: Date.now(),
   });
 }
@@ -11363,17 +12714,106 @@ async function applySignalProtectionOnFill(symbol, attempt = 1) {
 
   signalProtectionRunning.add(symbol);
   try {
-    await setTpSl({ symbol, tpPrice: plan.tpPrice, slPrice: plan.slPrice });
-    if (plan.slPrice && slTracking.positions[symbol]) {
-      slTracking.positions[symbol].slPlaced = true;
-      slTracking.positions[symbol].slPrice = plan.slPrice;
-      slTracking.positions[symbol].slPlacedAt = new Date().toISOString();
+    let execution = null;
+    if (plan.lifecycleId) {
+      execution = await liveCardBinanceLifecycle.get(plan.lifecycleId);
+      if (['BOT_CLOSE_REQUESTED', 'BOT_CLOSE_SUBMITTED', 'POSITION_CLOSED'].includes(execution?.status)) {
+        signalProtectionPlans.delete(symbol);
+        return;
+      }
+    }
+    const anchored = resolveFillAnchoredProtectionPrices({
+      side: plan.side,
+      fillPrice: execution?.fillPrice ?? plan.fillPrice,
+      takeProfitPrice: plan.tpPrice,
+      stopLossPrice: plan.slPrice,
+      fillAnchorEnabled: plan.fillAnchorEnabled,
+      takeProfitDistanceFraction: plan.takeProfitDistanceFraction,
+      stopLossDistanceFraction: plan.stopLossDistanceFraction,
+    });
+    if (anchored.rebased) {
+      plan.fillPrice = anchored.fillPrice;
+      plan.tpPrice = anchored.takeProfitPrice;
+      plan.slPrice = anchored.stopLossPrice;
+      if (!plan.fillAnchoredAt) {
+        plan.fillAnchoredAt = new Date().toISOString();
+        if (plan.lifecycleId) {
+          await liveCardBinanceLifecycle.upsert({
+            lifecycleId: plan.lifecycleId,
+            takeProfitPrice: plan.tpPrice,
+            stopLossPrice: plan.slPrice,
+            signalEntryPrice: plan.signalEntryPrice,
+            signalTakeProfitPrice: plan.signalTakeProfitPrice,
+            signalStopLossPrice: plan.signalStopLossPrice,
+            fillAnchorVersion: plan.fillAnchorVersion,
+            fillAnchorEnabled: true,
+            takeProfitDistanceFraction: plan.takeProfitDistanceFraction,
+            stopLossDistanceFraction: plan.stopLossDistanceFraction,
+            protectionFillPrice: plan.fillPrice,
+            protectionFillAnchoredAt: plan.fillAnchoredAt,
+          }, 'PROTECTION_REBASED_TO_FILL', {
+            symbol,
+            fillPrice: plan.fillPrice,
+            takeProfitPrice: plan.tpPrice,
+            stopLossPrice: plan.slPrice,
+          }).catch((error) => {
+            console.warn(`[LiveCardLifecycle] fill anchor ${symbol}:`, error.message);
+          });
+        }
+      }
+    }
+    const protectionResult = await setTpSl({
+      symbol,
+      tpPrice: plan.tpPrice,
+      slPrice: plan.slPrice,
+      clientIdPrefix: plan.lifecycleId ? `lc_${String(plan.lifecycleId).replace(/[^a-zA-Z0-9]/g, '').slice(-12)}` : null,
+      takeProfitWorkingType: plan.takeProfitWorkingType,
+      stopLossWorkingType: plan.stopLossWorkingType,
+    });
+    if (slTracking.positions[symbol]) {
+      slTracking.positions[symbol].signalTp = plan.tpPrice;
+      slTracking.positions[symbol].signalSl = plan.slPrice;
+      slTracking.positions[symbol].signalEntryPrice = plan.signalEntryPrice;
+      slTracking.positions[symbol].signalTakeProfitPrice = plan.signalTakeProfitPrice;
+      slTracking.positions[symbol].signalStopLossPrice = plan.signalStopLossPrice;
+      slTracking.positions[symbol].lifecycleId = plan.lifecycleId ?? slTracking.positions[symbol].lifecycleId ?? null;
+      slTracking.positions[symbol].fillAnchorVersion = plan.fillAnchorVersion;
+      slTracking.positions[symbol].fillAnchorEnabled = plan.fillAnchorEnabled === true;
+      slTracking.positions[symbol].protectionFillPrice = plan.fillPrice;
+      slTracking.positions[symbol].protectionFillAnchoredAt = plan.fillAnchoredAt ?? null;
+      if (plan.slPrice) {
+        slTracking.positions[symbol].slPlaced = true;
+        slTracking.positions[symbol].slPrice = plan.slPrice;
+        slTracking.positions[symbol].slPlacedAt = new Date().toISOString();
+      }
+      slTracking.positions[symbol].signalProtectionVersion = plan.preserveSignalProtection
+        ? LIVE_CARD_SIGNAL_PROTECTION_VERSION
+        : null;
+      slTracking.positions[symbol].preserveSignalProtection = plan.preserveSignalProtection === true;
+      slTracking.positions[symbol].takeProfitWorkingType = plan.takeProfitWorkingType;
+      slTracking.positions[symbol].stopLossWorkingType = plan.stopLossWorkingType;
       saveSlTracking();
     }
     plan.appliedAt = Date.now();
+    plan.protectionResult = protectionResult;
+    if (plan.lifecycleId) {
+      await liveCardBinanceLifecycle.markProtection(plan.lifecycleId, protectionResult).catch((error) => {
+        console.warn(`[LiveCardLifecycle] protection ${symbol}:`, error.message);
+      });
+      broadcastOrdersPositionPnl('live-card-lifecycle', {
+        version: ORDERS_POSITION_PNL_STREAM_VERSION,
+        lifecycleId: plan.lifecycleId,
+        symbol,
+        status: 'PROTECTED',
+        eventAt: Date.now(),
+      });
+    }
     console.log(`[SignalProtection] ${symbol} applied source=${plan.source} TP=${plan.tpPrice ?? '-'} SL=${plan.slPrice ?? '-'}`);
   } catch (err) {
     console.warn(`[SignalProtection] ${symbol} attempt=${attempt} failed: ${err.message}`);
+    if (plan.lifecycleId && attempt >= 4) {
+      await liveCardBinanceLifecycle.markProtection(plan.lifecycleId, null, err.message).catch(() => {});
+    }
     if (attempt < 4) {
       setTimeout(() => applySignalProtectionOnFill(symbol, attempt + 1), attempt * 1500);
     }
@@ -11382,7 +12822,52 @@ async function applySignalProtectionOnFill(symbol, attempt = 1) {
   }
 }
 
-async function placeOrder(payload, token = null, credentialsOverride = null) {
+async function recoverSignalProtectionAfterMarketFill(symbol, attempt = 1) {
+  const plan = signalProtectionPlans.get(symbol);
+  if (!plan || plan.appliedAt || signalProtectionRunning.has(symbol)) return;
+  try {
+    const credentials = getApiCredentials(null);
+    const positions = await client.getPositions(credentials);
+    const expectedLong = String(plan.side ?? '').toUpperCase() === 'BUY';
+    const position = positions.find((row) => {
+      if (row.symbol !== symbol || Number(row.positionAmt) === 0) return false;
+      const positionSide = String(row.positionSide ?? 'BOTH').toUpperCase();
+      if (positionSide !== 'BOTH') return positionSide === (expectedLong ? 'LONG' : 'SHORT');
+      return expectedLong ? Number(row.positionAmt) > 0 : Number(row.positionAmt) < 0;
+    });
+    const positionQty = Math.abs(Number(position?.positionAmt ?? 0));
+    const expectedQty = Math.abs(Number(plan.submittedQty ?? 0));
+    const fullyVisible = positionQty > 0 && (!expectedQty || positionQty + 1e-12 >= expectedQty * 0.999);
+    if (!fullyVisible) {
+      if (attempt < 5) {
+        setTimeout(() => recoverSignalProtectionAfterMarketFill(symbol, attempt + 1), 2000 * attempt);
+      }
+      return;
+    }
+    if (plan.lifecycleId) {
+      await liveCardBinanceLifecycle.recordFill({
+        symbol,
+        orderId: plan.orderId,
+        clientOrderId: plan.entryClientOrderId,
+        filledQty: positionQty,
+        cumulativeFilledQty: positionQty,
+        avgPrice: Number(position.entryPrice) || null,
+        fillTime: Date.now(),
+        orderStatus: 'FILLED',
+        source: 'REST_FILL_RECOVERY',
+      }).catch(() => {});
+    }
+    console.warn(`[SignalProtection] ${symbol} socket fill missing; REST confirmed full MARKET position, applying TP/SL`);
+    await applySignalProtectionOnFill(symbol);
+  } catch (error) {
+    console.warn(`[SignalProtection] REST recovery ${symbol} attempt=${attempt}: ${error.message}`);
+    if (attempt < 5) {
+      setTimeout(() => recoverSignalProtectionAfterMarketFill(symbol, attempt + 1), 2000 * attempt);
+    }
+  }
+}
+
+async function placeOrder(payload, token = null, credentialsOverride = null, executionContext = null) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   const side = String(payload.side ?? '').toUpperCase();
   const orderType = String(payload.orderType ?? payload.type ?? 'MARKET').toUpperCase();
@@ -11400,8 +12885,30 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
     : Number(payload.stopLossPrice);
   const protectionOnFill = payload.protectionOnFill === true;
   const protectionSource = String(payload.source ?? 'signal');
+  const protectionMeta = payload.protectionMeta && typeof payload.protectionMeta === 'object'
+    ? payload.protectionMeta
+    : {};
+  const protectionPolicy = resolveSignalProtectionWorkingTypes({
+    source: protectionSource,
+    preserveSignalProtection: payload.preserveSignalProtection === true,
+    takeProfitWorkingType: payload.takeProfitWorkingType,
+    stopLossWorkingType: payload.stopLossWorkingType,
+  });
+  const requestedClientOrderId = String(payload.clientOrderId ?? '').replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 36);
   const maxOpenPositions = Number(payload.maxOpenPositions ?? 0);
   const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+  const autoEntryPolicy = evaluateAutoBinanceEntryPolicy({
+    payload,
+    tokenIsAuthorized: Boolean(token && ordersTokens.has(token)),
+    orderEnabled: runtimeSettings.orderEnabled,
+  });
+
+  if (!autoEntryPolicy.allowed) {
+    const error = new Error('Auto Binance bị khóa: tín hiệu không thuộc card đã bật LỆNH THẬT trong Orders.');
+    error.code = autoEntryPolicy.reason;
+    error.policyVersion = AUTO_BINANCE_ENTRY_POLICY_VERSION;
+    throw error;
+  }
 
   if (!['BUY', 'SELL'].includes(side)) {
     throw new Error('Invalid order side.');
@@ -11420,9 +12927,17 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
     throw new Error('Limit price must be greater than 0.');
   }
 
+  const urgentOrderReadOptions = executionContext?.liveCard === true
+    ? {
+        priority: 1,
+        dropOnCongestion: false,
+        dedupeKey: `live-card-order-premium:${symbol}`,
+        source: 'liveCardOrder:premiumIndex',
+      }
+    : {};
   const [symbols, premiumIndex] = await Promise.all([
     getSymbols(),
-    client.getPremiumIndex(symbol),
+    client.getPremiumIndex(symbol, urgentOrderReadOptions),
   ]);
   const symbolInfo = symbols.find((item) => item.symbol === symbol);
 
@@ -11470,9 +12985,23 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
 
   const { apiKey, apiSecret } = credentialsOverride ?? getApiCredentials(token);
 
+  let positionsForOrder = Array.isArray(executionContext?.positions)
+    ? executionContext.positions
+    : null;
   if (maxOpenPositions > 0) {
-    const positions = await client.getPositions({ apiKey, apiSecret });
-    const openCount = positions.filter((p) => Number(p.positionAmt) !== 0).length;
+    positionsForOrder ??= await client.getPositions({
+      apiKey,
+      apiSecret,
+      ...(executionContext?.liveCard === true
+        ? {
+            priority: 1,
+            dropOnCongestion: false,
+            dedupeKey: 'live-card-order-max-positions',
+            source: 'liveCardOrder:maxPositions',
+          }
+        : {}),
+    });
+    const openCount = positionsForOrder.filter((p) => Number(p.positionAmt) !== 0).length;
     if (openCount >= maxOpenPositions) {
       throw new Error(`Max open positions (${maxOpenPositions}) reached. Currently ${openCount} open.`);
     }
@@ -11484,7 +13013,7 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
     type: orderType,
     quantity,
     recvWindow,
-    newClientOrderId: `lp_${Date.now()}`,
+    newClientOrderId: requestedClientOrderId || `lp_${Date.now()}`,
   };
 
   if (orderType === 'LIMIT') {
@@ -11496,7 +13025,18 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
     orderParams.price = roundedLimitPrice;
     orderParams.timeInForce = 'IOC';
   }
-  const isHedge = await getHedgeMode(token, credentialsOverride);
+  const isHedge = await getHedgeMode(
+    token,
+    credentialsOverride,
+    executionContext?.liveCard === true
+      ? {
+          priority: 1,
+          dropOnCongestion: false,
+          dedupeKey: 'live-card-order-position-mode',
+          source: 'liveCardOrder:positionMode',
+        }
+      : {},
+  );
   const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
   const positionSide = isHedge ? (side === 'BUY' ? 'LONG' : 'SHORT') : undefined;
 
@@ -11518,20 +13058,34 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
   const stopLossParams = roundedStopLossPrice && supportsStopMarket
     ? tpSlBase('STOP_MARKET', roundedStopLossPrice, `lp_sl_${Date.now()}`)
     : null;
-  const leverageResult = await client.setLeverage({
-    symbol,
-    leverage,
-    apiKey,
-    apiSecret,
-    recvWindow,
-  });
+  const positionLeverage = Number(positionsForOrder?.find((position) => position.symbol === symbol)?.leverage);
+  const leverageAlreadySet = Number.isFinite(positionLeverage) && positionLeverage === leverage;
+  const leverageResult = leverageAlreadySet
+    ? { symbol, leverage, skipped: true, reason: 'PREFLIGHT_LEVERAGE_ALREADY_SET' }
+    : await client.setLeverage({
+        symbol,
+        leverage,
+        apiKey,
+        apiSecret,
+        recvWindow,
+      });
   if (protectionOnFill) {
     rememberSignalProtectionPlan({
       symbol,
       side,
       takeProfitPrice: roundedTakeProfitPrice,
       stopLossPrice: roundedStopLossPrice,
+      signalEntryPrice: payload.protectionSignalEntryPrice,
+      signalTakeProfitPrice: payload.protectionSignalTakeProfitPrice ?? roundedTakeProfitPrice,
+      signalStopLossPrice: payload.protectionSignalStopLossPrice ?? roundedStopLossPrice,
+      fillAnchorEnabled: payload.fillAnchorEnabled,
+      fillAnchorVersion: payload.fillAnchorVersion,
+      takeProfitDistanceFraction: payload.takeProfitDistanceFraction,
+      stopLossDistanceFraction: payload.stopLossDistanceFraction,
       source: protectionSource,
+      entryClientOrderId: orderParams.newClientOrderId,
+      lifecycleId: protectionMeta.lifecycleId ?? null,
+      ...protectionPolicy,
     });
   }
 
@@ -11560,7 +13114,14 @@ async function placeOrder(payload, token = null, credentialsOverride = null) {
 
   if (protectionOnFill) {
     const plan = signalProtectionPlans.get(symbol);
-    if (plan) plan.orderId = orderResult?.orderId ?? null;
+    if (plan) {
+      plan.orderId = orderResult?.orderId ?? null;
+      plan.entryClientOrderId = orderResult?.clientOrderId ?? orderParams.newClientOrderId;
+      plan.submittedQty = Number(quantity) || null;
+    }
+    if (orderType === 'MARKET') {
+      setTimeout(() => recoverSignalProtectionAfterMarketFill(symbol), 3500);
+    }
   }
 
   trackSubmittedOrderPosition({
@@ -11607,6 +13168,14 @@ async function setTpSl(payload, token = null) {
   if (!symbol) throw new Error('symbol is required.');
   const tpPrice = payload.tpPrice !== '' && payload.tpPrice != null ? Number(payload.tpPrice) : null;
   const slPrice = payload.slPrice !== '' && payload.slPrice != null ? Number(payload.slPrice) : null;
+  const clientIdPrefix = String(payload.clientIdPrefix ?? 'lp')
+    .replace(/[^a-zA-Z0-9_\-]/g, '')
+    .slice(0, 24) || 'lp';
+  const protectionPolicy = resolveSignalProtectionWorkingTypes({
+    source: 'set-tp-sl',
+    takeProfitWorkingType: payload.takeProfitWorkingType,
+    stopLossWorkingType: payload.stopLossWorkingType,
+  });
   if (!tpPrice && !slPrice) throw new Error('Nhập ít nhất một trong hai: TP price hoặc SL price.');
 
   const { apiKey, apiSecret } = getApiCredentials(token);
@@ -11664,23 +13233,33 @@ async function setTpSl(payload, token = null) {
   }
 
   const qty = String(Math.abs(Number(pos.positionAmt)));
-  const tpSlBase = (type, triggerPrice, clientId) => {
-    const p = { algoType: 'CONDITIONAL', symbol, side: closeSide, type, triggerPrice: String(priceFromTick(symbolInfo, triggerPrice)), quantity: qty, workingType: 'MARK_PRICE', recvWindow, newClientOrderId: clientId };
+  const tpSlBase = (type, triggerPrice, workingType, clientId) => {
+    const p = { algoType: 'CONDITIONAL', symbol, side: closeSide, type, triggerPrice: String(priceFromTick(symbolInfo, triggerPrice)), quantity: qty, workingType, recvWindow, newClientOrderId: clientId };
     if (isHedge) p.positionSide = positionSide; else p.reduceOnly = 'true';
     return p;
   };
 
   if (tpPrice) {
-    const params = tpSlBase('TAKE_PROFIT_MARKET', tpPrice, `lp_tp_${Date.now()}`.slice(0, 36));
+    const params = tpSlBase(
+      'TAKE_PROFIT_MARKET',
+      tpPrice,
+      protectionPolicy.takeProfitWorkingType,
+      `${clientIdPrefix}_tp_${Date.now().toString(36)}`.slice(0, 36),
+    );
     placed.tp = await client.placeAlgoOrder({ params, apiKey, apiSecret });
   }
   if (slPrice) {
-    const params = tpSlBase('STOP_MARKET', slPrice, `lp_sl_${Date.now()}`.slice(0, 36));
+    const params = tpSlBase(
+      'STOP_MARKET',
+      slPrice,
+      protectionPolicy.stopLossWorkingType,
+      `${clientIdPrefix}_sl_${Date.now().toString(36)}`.slice(0, 36),
+    );
     placed.sl = await client.placeAlgoOrder({ params, apiKey, apiSecret });
   }
 
-  console.log(`[SetTpSl] ${symbol} tp=${tpPrice ?? '-'} sl=${slPrice ?? '-'} cancelled=${JSON.stringify(cancelled)}`);
-  return { symbol, cancelled, placed };
+  console.log(`[SetTpSl] ${symbol} tp=${tpPrice ?? '-'}(${protectionPolicy.takeProfitWorkingType}) sl=${slPrice ?? '-'}(${protectionPolicy.stopLossWorkingType}) cancelled=${JSON.stringify(cancelled)}`);
+  return { symbol, cancelled, placed, ...protectionPolicy };
 }
 
 async function getMarketSnapshot() {
@@ -12007,6 +13586,297 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
   };
 }
 
+async function refreshLiquidMarketDirectionHealth() {
+  if (liquidMarketDirectionCache.data && Date.now() < liquidMarketDirectionCache.expiresAt) {
+    return liquidMarketDirectionCache.data;
+  }
+
+  const now = Date.now();
+  const maxSymbols = Math.max(30, Math.min(200, Number(process.env.LIQUID_MARKET_HEALTH_MAX_SYMBOLS ?? 120)));
+  const stableBasePattern = /^(USDC|FDUSD|TUSD|USDP|BUSD|DAI|EUR|TRY|BRL|JPY|GBP)USDT$/;
+  // Scoring uses websocket candle cache; the market snapshot is only the liquid
+  // symbol universe. Prefer the in-memory snapshot so a stuck/congested Binance
+  // REST refresh cannot blank or block the point card.
+  let snapshotSource = 'shared-cache';
+  let snapshot = Array.isArray(_snapshotCache) && _snapshotCache.length
+    ? _snapshotCache
+    : Array.isArray(snapshotCache.data) && snapshotCache.data.length
+      ? snapshotCache.data
+      : null;
+  if (!snapshot) {
+    snapshotSource = 'rest-fallback';
+    const snapshotTimeoutMs = Math.max(
+      1_000,
+      Number(process.env.LIQUID_MARKET_HEALTH_SNAPSHOT_TIMEOUT_MS ?? 4_000),
+    );
+    snapshot = await Promise.race([
+      getSharedSnapshot(),
+      new Promise((resolve) => setTimeout(() => resolve([]), snapshotTimeoutMs)),
+    ]).catch(() => []);
+    if (!Array.isArray(snapshot) || !snapshot.length) snapshotSource = 'no-snapshot';
+  }
+  const candidates = [...snapshot]
+    .filter((row) => row?.symbol && row.symbol !== 'BTCUSDT' && !stableBasePattern.test(row.symbol))
+    .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+    .slice(0, maxSymbols);
+  const universe = candidates.map((row) => ({
+    symbol: row.symbol,
+    quoteVolume: Number(row.quoteVolume ?? 0),
+    candles15m: klineCache.getIfCached(row.symbol, '15m', 100),
+  }));
+  const btcHealth = btcHealthCache.data ?? await Promise.race([
+    getBtcHealth(),
+    new Promise((resolve) => setTimeout(() => resolve(null), 2_500)),
+  ]).catch(() => null);
+  const evaluation = evaluateLiquidMarketDirectionHealth({
+    universe,
+    btcCandles5m: klineCache.getIfCached('BTCUSDT', '5m', 100),
+    btcCandles15m: klineCache.getIfCached('BTCUSDT', '15m', 100),
+    btcCandles1h: klineCache.getIfCached('BTCUSDT', '1h', 100),
+    btcHealth,
+    macroShock: getBtcMacroShockGuard(),
+    now,
+    minSample: 30,
+  });
+  liquidMarketDirectionState = stabilizeLiquidMarketDirectionLabel(
+    liquidMarketDirectionState,
+    evaluation,
+    2,
+  );
+  const scoreDynamics = deriveLiquidMarketDirectionScoreDynamics(
+    liquidMarketDirectionCache.data,
+    evaluation,
+  );
+  liquidShortEdgeCycleState = advanceLiquidShortEdgeCycle(
+    liquidShortEdgeCycleState,
+    {
+      sampleKey: scoreDynamics?.sampleKey ?? evaluation?.sampleKey ?? '',
+      evaluatedAt: scoreDynamics?.evaluatedAt ?? evaluation?.evaluatedAt ?? now,
+      longScore: scoreDynamics?.longScore ?? evaluation?.scores?.long,
+      shortScore: scoreDynamics?.shortScore ?? evaluation?.scores?.short,
+      shortScoreSlope: scoreDynamics?.shortScoreSlope,
+      longScoreSlope: scoreDynamics?.longScoreSlope,
+      shortScoreDropFromPeak: scoreDynamics?.shortScoreDropFromPeak,
+      shortWaveState: scoreDynamics?.shortWaveState,
+      btcRet15m: scoreDynamics?.btcRet15m ?? evaluation?.btc?.ret15m,
+    },
+  );
+  const socket = klineCache.stats('15m');
+  const data = {
+    ...evaluation,
+    label: liquidMarketDirectionState.committedLabel,
+    description: liquidMarketDirectionLabelDescription(liquidMarketDirectionState.committedLabel),
+    pendingLabel: liquidMarketDirectionState.candidateLabel,
+    pendingCount: liquidMarketDirectionState.candidateCount,
+    hysteresisSamples: 2,
+    scoreDynamics,
+    shortEdgeCycle: {
+      ...liquidShortEdgeCycleState,
+      rule: 'SHORT_DROP_FROM_PEAK_OR_2_DOWN_AND_LONG_UP_AND_BTC_RECLAIM',
+      resetRule: 'SHORT_RELOAD_OR_IMPULSE_OR_SHORT_RECOVERY',
+      observationOnly: true,
+      affectsOrders: false,
+    },
+    universeSize: candidates.length,
+    version: LIQUID_MARKET_DIRECTION_HEALTH_VERSION,
+    runtime: {
+      version: 'LIQUID_MARKET_HEALTH_RUNTIME_V3_20260801',
+      snapshotSource,
+      nonBlockingRefresh: true,
+    },
+    socket: {
+      lastTickAt: socket.lastTickAt,
+      staleSec: socket.staleSec,
+      isStale: socket.isStale,
+      cached15m: socket.cached,
+    },
+    observationOnly: true,
+    affectsOrders: false,
+  };
+  liquidMarketPointLiveState = advanceLiquidMarketPointState(
+    liquidMarketPointLiveState,
+    {
+      sampleKey: data.sampleKey ?? data.scoreDynamics?.sampleKey,
+      evaluatedAt: data.evaluatedAt ?? data.scoreDynamics?.evaluatedAt ?? now,
+      longScore: data.scores?.long ?? data.scoreDynamics?.longScore,
+      shortScore: data.scores?.short ?? data.scoreDynamics?.shortScore,
+      marketLabel: data.label ?? data.rawLabel,
+    },
+  );
+  liquidMarketDirectionCache.data = data;
+  liquidMarketDirectionCache.expiresAt = now + 20_000;
+  return data;
+}
+
+function getLiquidMarketDirectionHealth() {
+  if (liquidMarketDirectionCache.data && Date.now() < liquidMarketDirectionCache.expiresAt) {
+    return Promise.resolve(liquidMarketDirectionCache.data);
+  }
+  if (!liquidMarketDirectionCache.inflight) {
+    const refreshPromise = refreshLiquidMarketDirectionHealth();
+    const trackedPromise = refreshPromise.finally(() => {
+      if (liquidMarketDirectionCache.inflight === trackedPromise) {
+        liquidMarketDirectionCache.inflight = null;
+      }
+    });
+    liquidMarketDirectionCache.inflight = trackedPromise;
+  }
+  // Once a valid score exists, never blank the card while the next 20s refresh
+  // is still running. Cold start waits for the bounded refresh above.
+  return liquidMarketDirectionCache.data
+    ? Promise.resolve(liquidMarketDirectionCache.data)
+    : liquidMarketDirectionCache.inflight;
+}
+
+function marketDirectionSnapshotForSignalStorage() {
+  return buildMarketDirectionSnapshot(liquidMarketDirectionCache.data ?? {
+    version: LIQUID_MARKET_DIRECTION_HEALTH_VERSION,
+    evaluatedAt: Date.now(),
+    label: 'NO_DATA',
+    rawLabel: 'NO_DATA',
+    scores: { long: 0, short: 0, confidence: 0 },
+    breadth: null,
+    btc: null,
+    sampleSize: 0,
+    universeSize: 0,
+    reasons: ['market direction cache is warming up'],
+  });
+}
+
+async function getShortWavePerformanceStats() {
+  if (shortWaveStatsCache.data && Date.now() < shortWaveStatsCache.expiresAt) {
+    return shortWaveStatsCache.data;
+  }
+  const [liquidStore, pumpStore, edgeStore] = await Promise.all([
+    readLiquidPaperStore(),
+    readPumpPaperStore(),
+    readEdgePaperStore(),
+  ]);
+  const liquidTrades = (Array.isArray(liquidStore?.trades) ? liquidStore.trades : [])
+    .map((trade) => String(trade.status ?? '').toUpperCase() === 'OPEN'
+      ? enrichPaperTrade(trade, paperMarkCache.get(trade.symbol)?.markPrice)
+      : trade);
+  const pumpTrades = (Array.isArray(pumpStore?.trades) ? pumpStore.trades : [])
+    .map((trade) => {
+      if (String(trade.status ?? '').toUpperCase() !== 'OPEN') return trade;
+      const mark = String(trade.source ?? '').startsWith('emasq-')
+        ? getFreshEmaSqueezeMarkInfo(trade.symbol)?.mark
+        : getFreshPumpPaperMark(trade.symbol);
+      return enrichPumpPaperTrade(trade, mark);
+    });
+  const edgeTrades = (Array.isArray(edgeStore?.trades) ? edgeStore.trades : [])
+    .map((trade) => ({
+      ...(String(trade.status ?? '').toUpperCase() === 'OPEN'
+        ? enrichEdgePaperTrade(trade, edgeMarkCache.get(trade.symbol))
+        : trade),
+      shortWaveSourceFamily: 'SHORT_EDGE',
+    }));
+  const trades = [
+    ...liquidTrades,
+    ...pumpTrades,
+    ...edgeTrades,
+  ];
+  const data = {
+    ...buildShortWaveStats(trades),
+    updatedAt: Date.now(),
+  };
+  shortWaveStatsCache.data = data;
+  shortWaveStatsCache.expiresAt = Date.now() + 20_000;
+  return data;
+}
+
+let liquidMarketDirectionMonitorTimer = null;
+
+function startLiquidMarketDirectionHealthMonitor() {
+  if (liquidMarketDirectionMonitorTimer) return;
+  const refresh = () => getLiquidMarketDirectionHealth()
+    .catch((error) => console.warn(`[LiquidMarketDirection] refresh failed: ${error.message}`));
+  const initialTimer = setTimeout(refresh, 8_000);
+  initialTimer.unref?.();
+  liquidMarketDirectionMonitorTimer = setInterval(refresh, 20_000);
+  liquidMarketDirectionMonitorTimer.unref?.();
+}
+
+let _liquidMarketDirectionSignalLogLock = Promise.resolve();
+let _liquidMarketDirectionSignalLogReadCache = {
+  signature: '',
+  pointSnapshotsByTradeId: new Map(),
+  marketSnapshotsByTradeId: new Map(),
+};
+
+async function getLiquidMarketDirectionSignalLogSnapshots() {
+  try {
+    const fileStat = await stat(LIQUID_MARKET_DIRECTION_SIGNAL_LOG_FILE);
+    const signature = `${fileStat.size}:${fileStat.mtimeMs}`;
+    if (_liquidMarketDirectionSignalLogReadCache.signature === signature) {
+      return _liquidMarketDirectionSignalLogReadCache;
+    }
+    const text = await readFile(LIQUID_MARKET_DIRECTION_SIGNAL_LOG_FILE, 'utf8');
+    const records = [];
+    const marketSnapshotsByTradeId = new Map();
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const record = JSON.parse(line);
+        records.push(record);
+        if (record?.tradeId && record?.marketDirection) {
+          marketSnapshotsByTradeId.set(String(record.tradeId), record.marketDirection);
+        }
+      } catch {
+        // The final append may still be in progress; ignore only malformed lines.
+      }
+    }
+    const pointSnapshotsByTradeId = buildLiquidMarketPointCrossoverSnapshots(records);
+    _liquidMarketDirectionSignalLogReadCache = {
+      signature,
+      pointSnapshotsByTradeId,
+      marketSnapshotsByTradeId,
+    };
+    return _liquidMarketDirectionSignalLogReadCache;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn(`[LiquidWaveContinuation] snapshot log read failed: ${error.message}`);
+    }
+    return {
+      signature: '',
+      pointSnapshotsByTradeId: new Map(),
+      marketSnapshotsByTradeId: new Map(),
+    };
+  }
+}
+
+async function getLiquidMarketPointCrossoverSnapshots() {
+  return (await getLiquidMarketDirectionSignalLogSnapshots()).pointSnapshotsByTradeId;
+}
+
+async function appendLiquidMarketDirectionSignalLog(trade) {
+  const storedMarketHealth = trade?.marketDirectionAtSignal;
+  const marketHealth = storedMarketHealth && typeof storedMarketHealth === 'object'
+    ? storedMarketHealth
+    : await getLiquidMarketDirectionHealth().catch((error) => ({
+    version: LIQUID_MARKET_DIRECTION_HEALTH_VERSION,
+    evaluatedAt: Date.now(),
+    label: 'NO_DATA',
+    rawLabel: 'NO_DATA',
+    scores: { long: 0, short: 0, confidence: 0 },
+    breadth: null,
+    btc: null,
+    sampleSize: 0,
+    universeSize: 0,
+    reasons: [`snapshot error: ${String(error?.message ?? error).slice(0, 160)}`],
+    }));
+  const record = buildLiquidMarketDirectionSignalLogRecord(trade, marketHealth);
+  const line = `${JSON.stringify(record)}\n`;
+  _liquidMarketDirectionSignalLogLock = _liquidMarketDirectionSignalLogLock
+    .catch(() => {})
+    .then(async () => {
+      await mkdir(join(rootDir, 'data'), { recursive: true });
+      await appendFile(LIQUID_MARKET_DIRECTION_SIGNAL_LOG_FILE, line, 'utf8');
+    });
+  await _liquidMarketDirectionSignalLogLock;
+  return record;
+}
+
 async function _fetchMarketSnapshot() {
   const [symbols, tickers, premiumRows] = await Promise.all([
     getSymbols(),
@@ -12079,6 +13949,224 @@ async function writePaperStore(store) {
 
 let _liquidPaperStoreCache = null;
 let _liquidPaperStoreLoadPromise = null;
+let _liquidLongSessionDerivedCache = null;
+let _liquidComboBtcBreadthDerivedCache = null;
+let _liquidComboCycleTodayCache = null;
+let _liquidLiveCardWhitelistCache = null;
+let _liquidLiveCardWhitelistWriteLock = Promise.resolve();
+let _liveCardRealEnabledCache = null;
+let _liveCardRealEnabledWriteLock = Promise.resolve();
+const liquidLiveCardOrderFired = new Map();
+const LIVE_CARD_AUTO_ELIGIBLE = Symbol('LIVE_CARD_AUTO_ELIGIBLE');
+
+async function readLiquidLiveCardWhitelist() {
+  if (_liquidLiveCardWhitelistCache) return _liquidLiveCardWhitelistCache;
+  try {
+    const text = await readFile(LIQUID_LIVE_CARD_WHITELIST_FILE, 'utf8');
+    const parsed = JSON.parse(text);
+    _liquidLiveCardWhitelistCache = {
+      version: LIQUID_LIVE_CARD_WHITELIST_VERSION,
+      updatedAt: parsed.updatedAt ?? null,
+      enabledKeys: normalizeLiquidLiveCardKeys(parsed.enabledKeys),
+    };
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.error(`[LiquidLiveCards] whitelist read failed; serving empty without overwrite: ${error.message}`);
+    }
+    _liquidLiveCardWhitelistCache = {
+      version: LIQUID_LIVE_CARD_WHITELIST_VERSION,
+      updatedAt: null,
+      enabledKeys: [],
+    };
+  }
+  return _liquidLiveCardWhitelistCache;
+}
+
+async function writeLiquidLiveCardWhitelist(config) {
+  const next = {
+    version: LIQUID_LIVE_CARD_WHITELIST_VERSION,
+    updatedAt: new Date().toISOString(),
+    enabledKeys: normalizeLiquidLiveCardKeys(config?.enabledKeys),
+  };
+  _liquidLiveCardWhitelistWriteLock = _liquidLiveCardWhitelistWriteLock
+    .catch(() => {})
+    .then(async () => {
+      await mkdir(join(rootDir, 'data'), { recursive: true });
+      const tmp = `${LIQUID_LIVE_CARD_WHITELIST_FILE}.tmp`;
+      await writeFile(tmp, JSON.stringify(next, null, 2), 'utf8');
+      await rename(tmp, LIQUID_LIVE_CARD_WHITELIST_FILE);
+      _liquidLiveCardWhitelistCache = next;
+    });
+  await _liquidLiveCardWhitelistWriteLock;
+  return next;
+}
+
+async function readLiveCardRealEnabled() {
+  if (_liveCardRealEnabledCache) return _liveCardRealEnabledCache;
+  try {
+    const text = await readFile(LIVE_CARD_REAL_ENABLED_FILE, 'utf8');
+    const parsed = JSON.parse(text);
+    _liveCardRealEnabledCache = {
+      version: LIQUID_LIVE_CARD_WHITELIST_VERSION,
+      updatedAt: parsed.updatedAt ?? null,
+      enabledKeys: normalizeLiquidLiveCardKeys(parsed.enabledKeys),
+    };
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.error(`[LiveCardReal] config read failed; serving empty without overwrite: ${error.message}`);
+    }
+    _liveCardRealEnabledCache = {
+      version: LIQUID_LIVE_CARD_WHITELIST_VERSION,
+      updatedAt: null,
+      enabledKeys: [],
+    };
+  }
+  return _liveCardRealEnabledCache;
+}
+
+async function writeLiveCardRealEnabled(config) {
+  const whitelist = await readLiquidLiveCardWhitelist();
+  const allowed = new Set(whitelist.enabledKeys);
+  const next = {
+    version: LIQUID_LIVE_CARD_WHITELIST_VERSION,
+    updatedAt: new Date().toISOString(),
+    enabledKeys: normalizeLiquidLiveCardKeys(config?.enabledKeys)
+      .filter((key) => allowed.has(key)),
+  };
+  _liveCardRealEnabledWriteLock = _liveCardRealEnabledWriteLock
+    .catch(() => {})
+    .then(async () => {
+      await mkdir(join(rootDir, 'data'), { recursive: true });
+      const tmp = `${LIVE_CARD_REAL_ENABLED_FILE}.tmp`;
+      await writeFile(tmp, JSON.stringify(next, null, 2), 'utf8');
+      await rename(tmp, LIVE_CARD_REAL_ENABLED_FILE);
+      _liveCardRealEnabledCache = next;
+    });
+  await _liveCardRealEnabledWriteLock;
+  return next;
+}
+
+async function updateLiquidLiveCardWhitelist(key, enabled) {
+  const current = await readLiquidLiveCardWhitelist();
+  const keys = new Set(current.enabledKeys);
+  if (enabled) keys.add(key);
+  else keys.delete(key);
+  const next = await writeLiquidLiveCardWhitelist({ enabledKeys: [...keys] });
+  if (!enabled) {
+    const real = await readLiveCardRealEnabled();
+    if (real.enabledKeys.includes(key)) {
+      await writeLiveCardRealEnabled({
+        enabledKeys: real.enabledKeys.filter((candidate) => candidate !== key),
+      });
+    }
+  }
+  return next;
+}
+
+async function updateLiveCardRealEnabled(key, enabled) {
+  const whitelist = await readLiquidLiveCardWhitelist();
+  if (enabled && !whitelist.enabledKeys.includes(key)) {
+    throw new Error('Card chưa nằm trong whitelist. Hãy bật WHITELIST tại trang thống kê trước.');
+  }
+  const current = await readLiveCardRealEnabled();
+  const keys = new Set(current.enabledKeys);
+  if (enabled) keys.add(key);
+  else keys.delete(key);
+  return writeLiveCardRealEnabled({ enabledKeys: [...keys] });
+}
+
+async function liquidLiveCardWhitelistStatus() {
+  const config = await readLiquidLiveCardWhitelist();
+  const real = await readLiveCardRealEnabled();
+  const whitelistSet = new Set(config.enabledKeys);
+  const effectiveRealKeys = real.enabledKeys.filter((key) => whitelistSet.has(key));
+  const marginUsdt = Math.max(0.01, Number(
+    process.env.LIVE_CARD_REAL_MARGIN_USDT ?? process.env.LIQUID_SCAN_REAL_MARGIN_USDT ?? 1,
+  ));
+  const leverage = Math.max(1, Math.min(125, Number(
+    process.env.LIVE_CARD_REAL_LEVERAGE ?? process.env.LIQUID_SCAN_REAL_LEVERAGE ?? 10,
+  )));
+  return {
+    ...config,
+    enabledCount: config.enabledKeys.length,
+    realEnabledCount: effectiveRealKeys.length,
+    orderEnabled: runtimeSettings.orderEnabled,
+    dryRun: runtimeSettings.dryRun,
+    liveReady: runtimeSettings.orderEnabled && !runtimeSettings.dryRun,
+    autoBinancePolicy: AUTO_BINANCE_ENTRY_POLICY_VERSION,
+    liveCardWhitelistOnly: liveCardOnlyAutoBinanceEnabled(),
+    marginUsdt,
+    leverage,
+    orderType: 'MARKET',
+    maxOpenPositions: Math.max(0, Number(
+      process.env.LIVE_CARD_REAL_MAX_POSITIONS ?? process.env.LIQUID_SCAN_REAL_MAX_POSITIONS ?? 30,
+    )),
+    dedupeMinutes: Math.max(1, Number(process.env.LIQUID_SCAN_REAL_DEDUPE_MS ?? 4 * 60 * 60 * 1000) / 60_000),
+    matching: 'TWO_STEP_REAL_ENABLED_ONLY',
+    appliesTo: 'FUTURE_AUTO_SIGNALS_ONLY:LIQUID,EMA,EDGE,RECOMMENDED',
+  };
+}
+
+async function liveCardRealEnabledStatus() {
+  const whitelist = await readLiquidLiveCardWhitelist();
+  const real = await readLiveCardRealEnabled();
+  const whitelistSet = new Set(whitelist.enabledKeys);
+  const effectiveRealKeys = real.enabledKeys.filter((key) => whitelistSet.has(key));
+  const base = await liquidLiveCardWhitelistStatus();
+  return {
+    ...base,
+    whitelistUpdatedAt: whitelist.updatedAt,
+    whitelistKeys: whitelist.enabledKeys,
+    realUpdatedAt: real.updatedAt,
+    realEnabledKeys: effectiveRealKeys,
+    matching: 'ANY_REAL_ENABLED_CARD',
+  };
+}
+
+function getLiquidLongSessionDerivedSnapshots(store, trades) {
+  if (
+    _liquidLongSessionDerivedCache?.store === store
+    && _liquidLongSessionDerivedCache?.trades === trades
+    && _liquidLongSessionDerivedCache?.version === LIQUID_LONG_SESSION_HEALTH_VERSION
+  ) {
+    return _liquidLongSessionDerivedCache.snapshots;
+  }
+
+  const snapshots = deriveLiquidLongSessionHealthSnapshots(trades);
+  _liquidLongSessionDerivedCache = {
+    store,
+    trades,
+    version: LIQUID_LONG_SESSION_HEALTH_VERSION,
+    snapshots,
+  };
+  return snapshots;
+}
+
+function getLiquidComboBtcBreadthDerivedSnapshots(
+  store,
+  trades,
+  marketSnapshotsByTradeId,
+  marketLogSignature,
+) {
+  if (
+    _liquidComboBtcBreadthDerivedCache?.store === store
+    && _liquidComboBtcBreadthDerivedCache?.trades === trades
+    && _liquidComboBtcBreadthDerivedCache?.marketLogSignature === marketLogSignature
+    && _liquidComboBtcBreadthDerivedCache?.version === LIQUID_COMBO_BTC_BREADTH_VERSION
+  ) {
+    return _liquidComboBtcBreadthDerivedCache.snapshots;
+  }
+  const snapshots = deriveLiquidComboBtcBreadthSnapshots(trades, marketSnapshotsByTradeId);
+  _liquidComboBtcBreadthDerivedCache = {
+    store,
+    trades,
+    marketLogSignature,
+    version: LIQUID_COMBO_BTC_BREADTH_VERSION,
+    snapshots,
+  };
+  return snapshots;
+}
+
 async function readLiquidPaperStore() {
   if (_liquidPaperStoreCache) return _liquidPaperStoreCache;
   if (_liquidPaperStoreLoadPromise) return _liquidPaperStoreLoadPromise;
@@ -12108,19 +14196,85 @@ async function readLiquidPaperStore() {
   return _liquidPaperStoreLoadPromise;
 }
 
-let _liquidPaperWriteLock = Promise.resolve();
-async function writeLiquidPaperStore(store) {
-  const payload = attachCandlePatternsToPaperStore({ ...store, updatedAt: new Date().toISOString() });
-  _liquidPaperStoreCache = payload;
-  // Serialize writes + atomic tmp→rename để tránh race condition và corrupt khi crash
-  _liquidPaperWriteLock = _liquidPaperWriteLock.then(async () => {
-    await mkdir(join(rootDir, 'data'), { recursive: true });
-    const tmp = LIQUID_PAPER_FILE + '.tmp';
-    await writeFile(tmp, JSON.stringify(payload, null, 2));
-    await rename(tmp, LIQUID_PAPER_FILE);
+let _liquidPaperWriteRunning = false;
+let _liquidPaperWritePending = false;
+let _liquidPaperWriteWaiters = [];
+
+async function drainLiquidPaperWrites() {
+  if (_liquidPaperWriteRunning) return;
+  _liquidPaperWriteRunning = true;
+  try {
+    while (_liquidPaperWritePending) {
+      _liquidPaperWritePending = false;
+      const waiters = _liquidPaperWriteWaiters.splice(0);
+      try {
+        await mkdir(join(rootDir, 'data'), { recursive: true });
+        const tmp = `${LIQUID_PAPER_FILE}.tmp`;
+        // Snapshot the array so socket mutations made while the stream is
+        // writing are persisted by the next coalesced pass, never mixed into
+        // the current JSON snapshot.
+        const snapshot = {
+          ..._liquidPaperStoreCache,
+          trades: Array.isArray(_liquidPaperStoreCache?.trades)
+            ? _liquidPaperStoreCache.trades.slice()
+            : [],
+        };
+        await writePumpPaperSnapshot(tmp, snapshot);
+        await rename(tmp, LIQUID_PAPER_FILE);
+        waiters.forEach(({ resolve }) => resolve(_liquidPaperStoreCache));
+      } catch (error) {
+        waiters.forEach(({ reject }) => reject(error));
+      }
+    }
+  } finally {
+    _liquidPaperWriteRunning = false;
+    if (_liquidPaperWritePending) setImmediate(() => drainLiquidPaperWrites().catch(() => {}));
+  }
+}
+
+function writeLiquidPaperStore(store, { attachPatterns = true } = {}) {
+  // Keep one stable in-memory store object. Concurrent socket handlers may
+  // already hold this reference; replacing it used to let an older handler
+  // overwrite a newer close/fill state.
+  const nextStore = {
+    ...store,
+    updatedAt: new Date().toISOString(),
+  };
+  const payload = attachPatterns
+    ? attachCandlePatternsToPaperStore(nextStore)
+    : nextStore;
+  store.createdAt = payload.createdAt;
+  store.updatedAt = payload.updatedAt;
+  store.trades = Array.isArray(payload.trades) ? payload.trades : [];
+  _liquidPaperStoreCache = store;
+  _liquidLongSessionDerivedCache = null;
+  _liquidComboBtcBreadthDerivedCache = null;
+  _liquidPaperWritePending = true;
+  const result = new Promise((resolve, reject) => {
+    _liquidPaperWriteWaiters.push({ resolve, reject });
   });
-  await _liquidPaperWriteLock;
-  return payload;
+  drainLiquidPaperWrites().catch(() => {});
+  return result;
+}
+
+function stageLiquidPaperStore(store, { attachPatterns = true } = {}) {
+  // Auto scan can create several trades in one pass. Keep those additions in
+  // the shared cache and persist the completed pass once, instead of rewriting
+  // the full historical JSON once (or twice) for every candidate.
+  const nextStore = {
+    ...store,
+    updatedAt: new Date().toISOString(),
+  };
+  const payload = attachPatterns
+    ? attachCandlePatternsToPaperStore(nextStore)
+    : nextStore;
+  store.createdAt = payload.createdAt;
+  store.updatedAt = payload.updatedAt;
+  store.trades = Array.isArray(payload.trades) ? payload.trades : [];
+  _liquidPaperStoreCache = store;
+  _liquidLongSessionDerivedCache = null;
+  _liquidComboBtcBreadthDerivedCache = null;
+  return store;
 }
 
 async function getPaperMark(symbol) {
@@ -12179,6 +14333,52 @@ function enrichPaperTrade(trade, markPrice = null) {
     notionalUsdt: margin * Number(trade.leverage),
     ...financial,
   };
+}
+
+async function getLiquidComboCycleTodayStats() {
+  const now = Date.now();
+  const day = liquidPaperDayKey(new Date(now));
+  const store = await readLiquidPaperStore();
+  if (
+    _liquidComboCycleTodayCache?.store === store
+    && _liquidComboCycleTodayCache?.day === day
+    && now < _liquidComboCycleTodayCache.expiresAt
+  ) {
+    return _liquidComboCycleTodayCache.data;
+  }
+
+  const trades = (Array.isArray(store.trades) ? store.trades : []).map((trade) => {
+    if (!['OPEN', 'PENDING', 'ENTRY_READY'].includes(String(trade.status ?? '').toUpperCase())) {
+      return trade;
+    }
+    return enrichPaperTrade(trade, paperMarkCache.get(trade.symbol)?.markPrice);
+  });
+  const stats = buildLiquidComboCycleStats(trades);
+  const data = {
+    version: stats.version,
+    ...(stats.today ?? {
+      day,
+      timeZone: LIQUID_PAPER_DAY_TIME_ZONE,
+      mode: 'OBSERVATION_ONLY',
+      observationOnly: true,
+      affectsEntry: false,
+      stableToday: [],
+    }),
+    historyCriteria: stats.criteria?.stable ?? null,
+    stableHistoryCount: Number(stats.counts?.STABLE_GOOD ?? 0),
+    criteria: stats.criteria ?? null,
+    counts: stats.counts ?? null,
+    stableGood: stats.stableGood ?? [],
+    formingGood: stats.formingGood ?? [],
+    updatedAt: now,
+  };
+  _liquidComboCycleTodayCache = {
+    store,
+    day,
+    data,
+    expiresAt: now + 20_000,
+  };
+  return data;
 }
 
 function paperSummary(trades, { useNet = false } = {}) {
@@ -12460,17 +14660,43 @@ async function createPaperTrade(payload) {
   return { trade: enrichPaperTrade(trade, entryPrice) };
 }
 
-async function getLiquidPaperTrades({ paging = null, day = 'all' } = {}) {
+async function getLiquidPaperTrades({ paging = null, day = 'all', fromDay = '', toDay = '' } = {}) {
   const store = await readLiquidPaperStore();
   const allStoreTrades = Array.isArray(store.trades) ? store.trades : [];
+  const marketDirectionLogSnapshots = await getLiquidMarketDirectionSignalLogSnapshots();
+  const pointCrossoverByTradeId = marketDirectionLogSnapshots.pointSnapshotsByTradeId;
+  const derivedComboBtcBreadthById = getLiquidComboBtcBreadthDerivedSnapshots(
+    store,
+    allStoreTrades,
+    marketDirectionLogSnapshots.marketSnapshotsByTradeId,
+    marketDirectionLogSnapshots.signature,
+  );
+  const stage4InputTrades = allStoreTrades.map((trade) => {
+    const evaluated = evaluateLiquidScanStage3(trade);
+    const useStored = String(trade.liquidStage3Version ?? '').startsWith(evaluated.version);
+    return {
+      ...trade,
+      liquidStage3Tier: useStored ? trade.liquidStage3Tier : evaluated.tier,
+      liquidStage3Code: useStored ? trade.liquidStage3Code : evaluated.code,
+      liquidStage2TargetKind: useStored
+        ? (trade.liquidStage2TargetKind ?? evaluated.targetKind)
+        : evaluated.targetKind,
+    };
+  });
+  const derivedStage4ById = deriveLiquidScanCycleEdgeSnapshots(stage4InputTrades);
+  const derivedLongSessionById = getLiquidLongSessionDerivedSnapshots(store, allStoreTrades);
+  const derivedRunnerDirectionById = deriveLiquidRunnerDirectionSnapshots(allStoreTrades);
   const availableDays = [...new Set(allStoreTrades
-    .map((t) => String(t.createdAt ?? t.openedAt ?? t.closedAt ?? '').slice(0, 10))
-    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))]
+    .map((trade) => liquidPaperTradeDayKey(trade))
+    .filter(Boolean))]
     .sort((a, b) => b.localeCompare(a));
-  const dayFilter = String(day ?? 'all');
-  const filteredStoredTrades = dayFilter && dayFilter !== 'all'
-    ? allStoreTrades.filter((t) => String(t.createdAt ?? t.openedAt ?? t.closedAt ?? '').slice(0, 10) === dayFilter)
-    : allStoreTrades;
+  const dateRange = normalizeLiquidPaperDateRange({ day, fromDay, toDay });
+  const filteredStoredTrades = dateRange.mode === 'all'
+    ? allStoreTrades
+    : allStoreTrades.filter((trade) => liquidPaperDayInRange(
+      liquidPaperTradeDayKey(trade),
+      dateRange,
+    ));
   const activeSymbols = [...new Set(filteredStoredTrades.filter((t) => ['OPEN', 'PENDING', 'ENTRY_READY'].includes(t.status)).map((t) => t.symbol))];
   const marks = new Map();
   await Promise.all(activeSymbols.map(async (symbol) => {
@@ -12483,6 +14709,66 @@ async function getLiquidPaperTrades({ paging = null, day = 'all' } = {}) {
       const liquidEval = evaluateLiquidScanShadow(enriched);
       const liquidStage2 = evaluateLiquidScanStage2(enriched);
       const liquidStage3 = evaluateLiquidScanStage3(enriched);
+      const liquidLongCorrRebound = evaluateLiquidLongCorrRebound(enriched);
+      const liquidStableMechanism = evaluateLiquidStableMechanism(enriched);
+      const liquidRunner30 = evaluateLiquidRunner30Candidate(enriched);
+      const liquidStage4 = derivedStage4ById.get(String(enriched.id));
+      const pointState = pointCrossoverByTradeId.get(String(enriched.id));
+      const liquidMarketPointPhase = pointState
+        ? evaluateLiquidMarketPointPhase(enriched, pointState)
+        : {};
+      const liquidBtcWave = evaluateLiquidBtcWaveState({
+        ...enriched,
+        liquidStage3Tier: liquidStage3.tier,
+        liquidStage3Code: liquidStage3.code,
+        liquidStage3Version: liquidStage3.version,
+      });
+      const liquidWaveContinuation = evaluateLiquidWaveContinuationRelation(
+        { ...enriched, ...liquidBtcWave },
+        pointState,
+      );
+      const liquidLongReversal = evaluateLiquidLongReversal(enriched);
+      const useStoredLongPointPhase = String(enriched.liquidLongPointPhaseVersion ?? '')
+        === LIQUID_LONG_POINT_PHASE_VERSION;
+      const liquidLongPointPhase = useStoredLongPointPhase
+        ? {}
+        : evaluateLiquidLongPointPhase({ ...enriched, ...liquidLongReversal }, pointState);
+      const liquidLongMarket = evaluateLiquidLongMarketState(enriched);
+      const liquidLongSession = derivedLongSessionById.get(String(enriched.id));
+      const liquidRunnerDirection = derivedRunnerDirectionById.get(String(enriched.id));
+      const liquidComboBtcBreadth = derivedComboBtcBreadthById.get(String(enriched.id));
+      const stage3GoodPlusMarginUsdt = Math.max(
+        0.01,
+        Number(process.env.LIQUID_SCAN_STAGE3_GOOD_PLUS_MARGIN_USDT ?? 10),
+      );
+      const useStoredStage3 = String(enriched.liquidStage3Version ?? '').startsWith(liquidStage3.version);
+      const useStoredLongCorrRebound = String(enriched.liquidLongCorrReboundVersion ?? '')
+        === LIQUID_LONG_CORR_REBOUND_VERSION;
+      const useStoredStableMechanism = String(enriched.liquidStableMechanismVersion ?? '')
+        === LIQUID_STABLE_MECHANISM_VERSION;
+      const useStoredLongBtcExpansion = String(enriched.liquidLongBtcExpansionVersion ?? '')
+        === LIQUID_LONG_BTC_EXPANSION_VERSION;
+      const useStoredComboBtcBreadth = String(enriched.liquidComboBtcBreadthVersion ?? '')
+        === LIQUID_COMBO_BTC_BREADTH_VERSION;
+      const useStoredStage4 = String(enriched.liquidStage4Version ?? '') === LIQUID_SCAN_CYCLE_EDGE_VERSION;
+      const useStoredBtcWave = String(enriched.liquidBtcWaveVersion ?? '') === LIQUID_BTC_WAVE_STATE_VERSION;
+      const useStoredLongReversal = String(enriched.liquidLongReversalVersion ?? '') === LIQUID_LONG_REVERSAL_VERSION;
+      const useStoredLongMarket = String(enriched.liquidLongMarketVersion ?? '') === LIQUID_LONG_MARKET_STATE_VERSION;
+      const useStoredLongSession = String(enriched.liquidLongSessionVersion ?? '') === LIQUID_LONG_SESSION_HEALTH_VERSION;
+      const useStoredRunnerDirection = String(enriched.liquidRunnerDirectionVersion ?? '') === LIQUID_RUNNER_DIRECTION_VERSION;
+      const liquidEdgeActivePoint = evaluateLiquidEdgeActivePointLabel({
+        ...enriched,
+        liquidStage3Tier: useStoredStage3 ? enriched.liquidStage3Tier : liquidStage3.tier,
+        liquidStage4Tier: useStoredStage4 ? enriched.liquidStage4Tier : (liquidStage4?.tier ?? 'UNRATED'),
+      }, pointState);
+      const liquidLongBtcExpansion = evaluateLiquidLongBtcExpansion({
+        ...enriched,
+        ...liquidMarketPointPhase,
+        liquidStage3Tier: useStoredStage3 ? enriched.liquidStage3Tier : liquidStage3.tier,
+        liquidStage2TargetKind: useStoredStage3
+          ? (enriched.liquidStage2TargetKind ?? liquidStage3.targetKind)
+          : liquidStage3.targetKind,
+      });
       return {
         ...enriched,
         liquidGateLabel: enriched.liquidGateLabel ?? liquidPaperGateLabel(enriched),
@@ -12497,12 +14783,195 @@ async function getLiquidPaperTrades({ paging = null, day = 'all' } = {}) {
         liquidStage2Reason: enriched.liquidStage2Reason ?? `${liquidStage2.reason}; derived để thống kê, không đổi lệnh/size`,
         liquidStage2TargetKind: enriched.liquidStage2TargetKind ?? liquidStage2.targetKind,
         liquidStage2Version: enriched.liquidStage2Version ?? `${liquidStage2.version}:DERIVED`,
-        liquidStage3Tier: enriched.liquidStage3Tier ?? liquidStage3.tier,
-        liquidStage3Code: enriched.liquidStage3Code ?? liquidStage3.code,
-        liquidStage3Label: enriched.liquidStage3Label ?? liquidStage3.label,
-        liquidStage3Reason: enriched.liquidStage3Reason ?? `${liquidStage3.reason}; derived để thống kê, không đổi lệnh/size`,
-        liquidStage3ComboKey: enriched.liquidStage3ComboKey ?? liquidStage3.comboKey,
-        liquidStage3Version: enriched.liquidStage3Version ?? `${liquidStage3.version}:DERIVED`,
+        liquidStage3RecordedTier: useStoredStage3 ? null : (enriched.liquidStage3Tier ?? null),
+        liquidStage3RecordedVersion: useStoredStage3 ? null : (enriched.liquidStage3Version ?? null),
+        liquidStage3Tier: useStoredStage3 ? enriched.liquidStage3Tier : liquidStage3.tier,
+        liquidStage3Code: useStoredStage3 ? enriched.liquidStage3Code : liquidStage3.code,
+        liquidStage3Label: useStoredStage3 ? enriched.liquidStage3Label : liquidStage3.label,
+        liquidStage3Reason: useStoredStage3
+          ? enriched.liquidStage3Reason
+          : `${liquidStage3.reason}; V3 derived để thống kê/quan sát, không đổi lệnh hoặc size lịch sử`,
+        liquidStage3ComboKey: useStoredStage3 ? enriched.liquidStage3ComboKey : liquidStage3.comboKey,
+        liquidStage3Version: useStoredStage3 ? enriched.liquidStage3Version : `${liquidStage3.version}:DERIVED`,
+        liquidStage3TargetMarginUsdt: useStoredStage3
+          ? (enriched.liquidStage3TargetMarginUsdt ?? null)
+          : (liquidStage3.tier === 'GOOD_PLUS' ? stage3GoodPlusMarginUsdt : null),
+        ...(useStoredLongCorrRebound ? {} : {
+          ...liquidLongCorrRebound,
+          liquidLongCorrReboundBasis: 'DERIVED_ENTRY_SNAPSHOT',
+          liquidLongCorrReboundVersion: `${LIQUID_LONG_CORR_REBOUND_VERSION}:DERIVED`,
+        }),
+        ...(useStoredStableMechanism ? {} : {
+          ...liquidStableMechanism,
+          liquidStableMechanismBasis: 'DERIVED_ENTRY_SNAPSHOT',
+          liquidStableMechanismVersion: `${LIQUID_STABLE_MECHANISM_VERSION}:DERIVED`,
+        }),
+        ...(useStoredLongBtcExpansion ? {} : {
+          ...liquidLongBtcExpansion,
+          liquidLongBtcExpansionBasis: 'DERIVED_ENTRY_SNAPSHOT',
+          liquidLongBtcExpansionVersion: `${LIQUID_LONG_BTC_EXPANSION_VERSION}:DERIVED`,
+        }),
+        ...(useStoredComboBtcBreadth || !liquidComboBtcBreadth ? {} : liquidComboBtcBreadth),
+        liquidStage4RecordedTier: useStoredStage4 ? null : (enriched.liquidStage4Tier ?? null),
+        liquidStage4RecordedVersion: useStoredStage4 ? null : (enriched.liquidStage4Version ?? null),
+        liquidStage4Tier: useStoredStage4 ? enriched.liquidStage4Tier : (liquidStage4?.tier ?? 'UNRATED'),
+        liquidStage4Code: useStoredStage4 ? enriched.liquidStage4Code : (liquidStage4?.code ?? 'LIQ_CYCLE_UNRATED'),
+        liquidStage4Label: useStoredStage4 ? enriched.liquidStage4Label : (liquidStage4?.label ?? null),
+        liquidStage4Reason: useStoredStage4
+          ? enriched.liquidStage4Reason
+          : `${liquidStage4?.reason ?? 'Không có đánh giá Stage 4.'}; causal backfill, chỉ quan sát`,
+        liquidStage4CohortKey: useStoredStage4
+          ? enriched.liquidStage4CohortKey
+          : (liquidStage4?.cohortKey ?? null),
+        liquidStage4SelectedCohortKey: useStoredStage4
+          ? enriched.liquidStage4SelectedCohortKey
+          : (liquidStage4?.selectedCohortKey ?? null),
+        liquidStage4CycleFamily: useStoredStage4
+          ? enriched.liquidStage4CycleFamily
+          : (liquidStage4?.cycleFamily ?? null),
+        liquidStage4Basis: useStoredStage4
+          ? (enriched.liquidStage4Basis ?? 'SNAPSHOT')
+          : (liquidStage4?.basis ?? 'BACKFILL_CAUSAL'),
+        liquidStage4History: useStoredStage4
+          ? (enriched.liquidStage4History ?? null)
+          : (liquidStage4?.history ?? null),
+        liquidStage4Recent: useStoredStage4
+          ? (enriched.liquidStage4Recent ?? null)
+          : (liquidStage4?.recent ?? null),
+        liquidStage4Pulse: useStoredStage4
+          ? (enriched.liquidStage4Pulse ?? null)
+          : (liquidStage4?.pulse ?? null),
+        liquidStage4Version: useStoredStage4
+          ? enriched.liquidStage4Version
+          : `${LIQUID_SCAN_CYCLE_EDGE_VERSION}:DERIVED`,
+        liquidStage4ObservationOnly: true,
+        ...liquidMarketPointPhase,
+        ...liquidEdgeActivePoint,
+        ...liquidBtcWave,
+        liquidBtcWaveBasis: useStoredBtcWave
+          ? (enriched.liquidBtcWaveBasis ?? 'ENTRY_SNAPSHOT')
+          : 'DERIVED_ENTRY_SNAPSHOT',
+        liquidBtcWaveVersion: useStoredBtcWave
+          ? enriched.liquidBtcWaveVersion
+          : `${LIQUID_BTC_WAVE_STATE_VERSION}:DERIVED`,
+        ...liquidWaveContinuation,
+        ...liquidLongReversal,
+        liquidLongReversalBasis: useStoredLongReversal
+          ? (enriched.liquidLongReversalBasis ?? 'ENTRY_SNAPSHOT')
+          : 'DERIVED_ENTRY_SNAPSHOT',
+        liquidLongReversalVersion: useStoredLongReversal
+          ? enriched.liquidLongReversalVersion
+          : `${LIQUID_LONG_REVERSAL_VERSION}:DERIVED`,
+        ...liquidLongPointPhase,
+        liquidLongPointPhaseBasis: useStoredLongPointPhase
+          ? (enriched.liquidLongPointPhaseBasis ?? 'MARKET_DIRECTION_SIGNAL_LOG')
+          : 'DERIVED_MARKET_DIRECTION_SIGNAL_LOG',
+        liquidLongPointPhaseVersion: useStoredLongPointPhase
+          ? enriched.liquidLongPointPhaseVersion
+          : `${LIQUID_LONG_POINT_PHASE_VERSION}:DERIVED`,
+        ...liquidLongMarket,
+        liquidLongMarketBasis: useStoredLongMarket
+          ? (enriched.liquidLongMarketBasis ?? 'ENTRY_SNAPSHOT')
+          : 'DERIVED_ENTRY_SNAPSHOT',
+        liquidLongMarketVersion: useStoredLongMarket
+          ? enriched.liquidLongMarketVersion
+          : `${LIQUID_LONG_MARKET_STATE_VERSION}:DERIVED`,
+        ...liquidLongSession,
+        liquidLongSessionBasis: useStoredLongSession
+          ? (enriched.liquidLongSessionBasis ?? 'CAUSAL_SAME_DAY_CLOSED_BEFORE_ENTRY')
+          : 'DERIVED_CAUSAL_SAME_DAY_CLOSED_BEFORE_ENTRY',
+        liquidLongSessionVersion: useStoredLongSession
+          ? enriched.liquidLongSessionVersion
+          : `${LIQUID_LONG_SESSION_HEALTH_VERSION}:DERIVED`,
+        liquidRunner30Matched: enriched.liquidRunner30Version === liquidRunner30.version
+          ? enriched.liquidRunner30Matched
+          : liquidRunner30.matched,
+        liquidRunner30Tier: enriched.liquidRunner30Version === liquidRunner30.version
+          ? enriched.liquidRunner30Tier
+          : liquidRunner30.tier,
+        liquidRunner30Code: enriched.liquidRunner30Version === liquidRunner30.version
+          ? enriched.liquidRunner30Code
+          : liquidRunner30.code,
+        liquidRunner30Label: enriched.liquidRunner30Version === liquidRunner30.version
+          ? enriched.liquidRunner30Label
+          : liquidRunner30.label,
+        liquidRunner30Reason: enriched.liquidRunner30Version === liquidRunner30.version
+          ? enriched.liquidRunner30Reason
+          : `${liquidRunner30.reason}; derived từ snapshot entry, chỉ quan sát`,
+        liquidRunner30PlannedTpRoe: enriched.liquidRunner30Version === liquidRunner30.version
+          ? enriched.liquidRunner30PlannedTpRoe
+          : liquidRunner30.plannedTpRoe,
+        liquidRunner30TargetKind: enriched.liquidRunner30Version === liquidRunner30.version
+          ? enriched.liquidRunner30TargetKind
+          : liquidRunner30.targetKind,
+        liquidRunner30Version: enriched.liquidRunner30Version === liquidRunner30.version
+          ? enriched.liquidRunner30Version
+          : `${liquidRunner30.version}:DERIVED`,
+        liquidRunner30ObservationOnly: true,
+        liquidRunnerDirectionRecordedTier: useStoredRunnerDirection
+          ? null
+          : (enriched.liquidRunnerDirectionTier ?? null),
+        liquidRunnerDirectionRecordedVersion: useStoredRunnerDirection
+          ? null
+          : (enriched.liquidRunnerDirectionVersion ?? null),
+        liquidRunnerDirectionEligible: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionEligible
+          : (liquidRunnerDirection?.eligible ?? false),
+        liquidRunnerDirectionTier: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionTier
+          : (liquidRunnerDirection?.tier ?? 'UNRATED'),
+        liquidRunnerDirectionCode: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionCode
+          : (liquidRunnerDirection?.code ?? 'R30_DIR_UNRATED'),
+        liquidRunnerDirectionLabel: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionLabel
+          : (liquidRunnerDirection?.label ?? null),
+        liquidRunnerDirectionReason: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionReason
+          : `${liquidRunnerDirection?.reason ?? 'Không có đánh giá Runner Direction.'}; causal backfill, chỉ quan sát`,
+        liquidRunnerDirectionReachTier: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionReachTier
+          : (liquidRunnerDirection?.reachTier ?? null),
+        liquidRunnerDirectionPlannedTpRoe: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionPlannedTpRoe
+          : (liquidRunnerDirection?.plannedTpRoe ?? null),
+        liquidRunnerDirectionTargetKind: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionTargetKind
+          : (liquidRunnerDirection?.targetKind ?? null),
+        liquidRunnerDirectionRelation: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionRelation
+          : (liquidRunnerDirection?.directionRelation ?? null),
+        liquidRunnerDirectionScore: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionScore
+          : (liquidRunnerDirection?.directionScore ?? null),
+        liquidRunnerDirectionCandleRelation: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionCandleRelation
+          : (liquidRunnerDirection?.candleRelation ?? null),
+        liquidRunnerDirectionCohortKey: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionCohortKey
+          : (liquidRunnerDirection?.cohortKey ?? null),
+        liquidRunnerDirectionSelectedCohortKey: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionSelectedCohortKey
+          : (liquidRunnerDirection?.selectedCohortKey ?? null),
+        liquidRunnerDirectionCycleFamily: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionCycleFamily
+          : (liquidRunnerDirection?.cycleFamily ?? null),
+        liquidRunnerDirectionBasis: useStoredRunnerDirection
+          ? (enriched.liquidRunnerDirectionBasis ?? 'SNAPSHOT')
+          : (liquidRunnerDirection?.basis ?? 'BACKFILL_CAUSAL'),
+        liquidRunnerDirectionHistory: useStoredRunnerDirection
+          ? (enriched.liquidRunnerDirectionHistory ?? null)
+          : (liquidRunnerDirection?.history ?? null),
+        liquidRunnerDirectionRecent: useStoredRunnerDirection
+          ? (enriched.liquidRunnerDirectionRecent ?? null)
+          : (liquidRunnerDirection?.recent ?? null),
+        liquidRunnerDirectionPulse: useStoredRunnerDirection
+          ? (enriched.liquidRunnerDirectionPulse ?? null)
+          : (liquidRunnerDirection?.pulse ?? null),
+        liquidRunnerDirectionVersion: useStoredRunnerDirection
+          ? enriched.liquidRunnerDirectionVersion
+          : `${LIQUID_RUNNER_DIRECTION_VERSION}:DERIVED`,
+        liquidRunnerDirectionObservationOnly: true,
       };
     })
     .sort((a, b) => new Date(b.openedAt ?? b.entryReadyAt ?? b.createdAt ?? 0) - new Date(a.openedAt ?? a.entryReadyAt ?? a.createdAt ?? 0));
@@ -12511,19 +14980,664 @@ async function getLiquidPaperTrades({ paging = null, day = 'all' } = {}) {
     ...paperSummary(allTrades, { useNet: true }),
     byMargin: summarizePaperMarginStats(allTrades, { useNet: true }),
   };
+  const liveTradeById = new Map(
+    allTrades
+      .filter((trade) => trade.status !== 'CLOSED')
+      .map((trade) => [String(trade.id), trade]),
+  );
+  const comboCycleTrades = allStoreTrades.map(
+    (trade) => liveTradeById.get(String(trade.id)) ?? trade,
+  );
   return {
     ...store,
     trades,
     summary,
     comboStats: liquidComboStatsOf(allTrades),
+    comboCycleStats: buildLiquidComboCycleStats(comboCycleTrades),
     pagination,
     availableDays,
-    filter: { day: dayFilter || 'all' },
+    filter: {
+      day: dateRange.mode === 'day' ? dateRange.fromDay : 'all',
+      fromDay: dateRange.fromDay,
+      toDay: dateRange.toDay,
+      mode: dateRange.mode,
+      timeZone: LIQUID_PAPER_DAY_TIME_ZONE,
+    },
     file: 'data/liquid-paper-trades.json',
   };
 }
 
-async function createLiquidPaperTrade(payload) {
+function currentLiquidLivePointState() {
+  const market = liquidMarketDirectionCache.data ?? {};
+  const dynamics = market.scoreDynamics ?? {};
+  const cycle = market.shortEdgeCycle ?? {};
+  const longScore = Number(market.scores?.long ?? dynamics.longScore);
+  const shortScore = Number(market.scores?.short ?? dynamics.shortScore);
+  const evaluatedAt = Number(market.evaluatedAt ?? dynamics.evaluatedAt);
+  if (!Number.isFinite(longScore) || !Number.isFinite(shortScore)) return null;
+  const dominance = longScore > shortScore ? 'LONG' : shortScore > longScore ? 'SHORT' : 'TIE';
+  return {
+    ...(liquidMarketPointLiveState ?? {}),
+    pointEvaluatedAt: Number.isFinite(evaluatedAt) ? evaluatedAt : null,
+    pointLongScore: longScore,
+    pointShortScore: shortScore,
+    pointDominance: dominance,
+    pointGap: Math.abs(longScore - shortScore),
+    pointMarketLabel: String(market.label ?? market.rawLabel ?? '').trim().toUpperCase() || null,
+    shortEdgeDataAvailable: cycle.dataAvailable === true,
+    shortEdgePhase: cycle.phase ?? null,
+    shortEdgeWaveState: dynamics.shortWaveState ?? cycle.shortWaveState ?? null,
+    shortEdgeShortScoreSlope: dynamics.shortScoreSlope ?? cycle.shortScoreSlope ?? null,
+    shortEdgeLongScoreSlope: dynamics.longScoreSlope ?? cycle.longScoreSlope ?? null,
+    shortEdgeShortScoreDropFromPeak: dynamics.shortScoreDropFromPeak ?? cycle.shortScoreDropFromPeak ?? null,
+    shortEdgeBtcRet15m: dynamics.btcRet15m ?? cycle.btcRet15m ?? market.btc?.ret15m ?? null,
+    shortEdgeDeclineSamples: cycle.declineSamples ?? 0,
+    shortEdgeDecayActive: cycle.decayActive === true,
+    shortEdgeDecayStartAt: cycle.decayStart?.at ?? null,
+    shortEdgeDecayAgeMinutes: cycle.decayStart?.at == null || !Number.isFinite(evaluatedAt)
+      ? null
+      : Math.max(0, (evaluatedAt - Number(cycle.decayStart.at)) / 60_000),
+    shortEdgeDecayStartLongScore: cycle.decayStart?.longScore ?? null,
+    shortEdgeDecayStartShortScore: cycle.decayStart?.shortScore ?? null,
+    shortEdgeDecayStartShortSlope: cycle.decayStart?.shortScoreSlope ?? null,
+    shortEdgeDecayStartLongSlope: cycle.decayStart?.longScoreSlope ?? null,
+    shortEdgeDecayStartDropFromPeak: cycle.decayStart?.shortScoreDropFromPeak ?? null,
+    shortEdgeDecayStartWaveState: cycle.decayStart?.shortWaveState ?? null,
+    shortEdgeDecayStartBtcRet15m: cycle.decayStart?.btcRet15m ?? null,
+    shortEdgeIntactStartAt: cycle.intactStartAt ?? null,
+    shortEdgeIntactAgeMinutes: cycle.intactStartAt == null || !Number.isFinite(evaluatedAt)
+      ? null
+      : Math.max(0, (evaluatedAt - Number(cycle.intactStartAt)) / 60_000),
+  };
+}
+
+function liquidLiveTradeWithRealtimeLabels(trade) {
+  const pointState = currentLiquidLivePointState();
+  const marketDynamics = liquidMarketDirectionCache.data?.scoreDynamics ?? {};
+  const withWaveRelation = {
+    ...trade,
+    liquidLiveShortWaveState: marketDynamics.shortWaveState ?? null,
+    liquidLiveLongWaveState: marketDynamics.longWaveState ?? null,
+    ...evaluateLiquidWaveContinuationRelation(trade, pointState),
+  };
+  const withEdgePoint = {
+    ...withWaveRelation,
+    ...evaluateLiquidEdgeActivePointLabel(withWaveRelation, pointState),
+  };
+  return {
+    ...withEdgePoint,
+    ...evaluateLiquidLongPointPhase(withEdgePoint, pointState),
+  };
+}
+
+function liquidLiveProtectionIsValid(trade) {
+  const entry = Number(trade.entryPrice);
+  const tp = Number(trade.takeProfitPrice ?? trade.tp);
+  const sl = Number(trade.stopLossPrice ?? trade.sl);
+  if (!(entry > 0) || !(tp > 0) || !(sl > 0)) return false;
+  return String(trade.side ?? '').toUpperCase() === 'LONG'
+    ? tp > entry && sl < entry
+    : tp < entry && sl > entry;
+}
+
+function addLiveCardRowKeys(target, page, group, rows, keyOf = (row) => row?.key) {
+  for (const key of liveCardKeysFromRows(page, group, rows, keyOf)) target.add(key);
+}
+
+function emaLiveCardKeysOfTrade(trade = {}) {
+  const keys = new Set();
+  keys.add(liveCardKey('ema', 'overview', 'all'));
+  const margin = Number(trade.marginUsdt);
+  const marginKey = margin >= 9.5 && margin <= 10.5
+    ? 'test10'
+    : margin <= 1.01 ? 'test1' : 'other';
+  keys.add(liveCardKey('ema', 'overview', marginKey));
+  addLiveCardRowKeys(keys, 'ema', 'combo', emaComboStatsOf([trade]));
+  const stage = emaStageCandleStatsOf([trade]);
+  addLiveCardRowKeys(keys, 'ema', 'stage-tier', stage?.byTier);
+  addLiveCardRowKeys(keys, 'ema', 'stage-tier-matrix', stage?.byStageTier);
+  const support = paperSupportEntryStats(
+    buildRecommendedSupportEntryStatRows([trade], { sourcePage: 'ema' }),
+  );
+  addLiveCardRowKeys(keys, 'ema', 'support-entry', support?.groups);
+  addLiveCardRowKeys(keys, 'ema', 'support-short-source', support?.shortSourceGroups);
+  addLiveCardRowKeys(keys, 'ema', 'support-long-source', support?.longSourceGroups);
+  return [...keys].filter(Boolean);
+}
+
+function edgeLiveCardKeysOfTrade(trade = {}) {
+  const keys = new Set();
+  const comboKeyAtEntry = liveCardComboKeyAtEntry('edge', pumpPaperFallbackCombo(trade));
+  if (comboKeyAtEntry) keys.add(comboKeyAtEntry);
+  const support = paperSupportEntryStats(
+    decorateRecommendedSupportEntrySnapshots([{ ...trade, sourcePage: 'edge' }]),
+  );
+  addLiveCardRowKeys(keys, 'edge', 'support-entry', support?.groups);
+  addLiveCardRowKeys(keys, 'edge', 'support-short-source', support?.shortSourceGroups);
+  addLiveCardRowKeys(keys, 'edge', 'support-long-source', support?.longSourceGroups);
+  addLiveCardRowKeys(keys, 'edge', 'label', edgeShortLabelGroupStats([trade]), (row) => row?.key ?? row?.tier ?? row?.label);
+  addLiveCardRowKeys(keys, 'edge', 'tier', edgeShortTierStats([trade]), (row) => row?.key ?? row?.tier);
+  addLiveCardRowKeys(keys, 'edge', 'wave-2b', edgeShortWave2bStats([trade]), (row) => row?.key ?? row?.label);
+  const wave2c = edgeShortWave2cStats([trade]);
+  addLiveCardRowKeys(keys, 'edge', 'wave-2c', wave2c?.aggregate, (row) => row?.key ?? row?.label);
+  addLiveCardRowKeys(keys, 'edge', 'wave-2c-tier', wave2c?.byTier, (row) => row?.key ?? row?.label);
+  addLiveCardRowKeys(keys, 'edge', 'best', edgeShortBestStats([trade]), (row) => row?.key ?? row?.label);
+  addLiveCardRowKeys(keys, 'edge', 'best-profile', edgeShortBestProfileStats([trade]), (row) => row?.key ?? row?.label);
+  addLiveCardRowKeys(keys, 'edge', 'best-risk-phase', edgeShortBestRiskPhaseStats([trade]), (row) => row?.key ?? row?.label);
+  addLiveCardRowKeys(keys, 'edge', 'live-health', edgeShortLiveStats([trade]), (row) => row?.key ?? row?.tier ?? row?.label);
+  addLiveCardRowKeys(
+    keys,
+    'edge',
+    'source-long-corr',
+    buildSourceLongCorrReboundStats([trade], { sourcePage: 'edge' }),
+    (row) => row?.key ?? row?.code ?? row?.label,
+  );
+  addLiveCardRowKeys(
+    keys,
+    'edge',
+    'long-spring',
+    edgeShortLongSpringStats([trade]),
+    (row) => row?.key ?? row?.label,
+  );
+  addLiveCardRowKeys(
+    keys,
+    'edge',
+    'short-utad',
+    edgeShortUtadStats([trade]),
+    (row) => row?.key ?? row?.label,
+  );
+  return [...keys].filter(Boolean);
+}
+
+function liveCardAuditPatch(result = {}) {
+  return {
+    liveCardDecision: result.decision ?? null,
+    liveCardMatchedKeys: Array.isArray(result.matchedKeys) ? result.matchedKeys : [],
+    liveCardWhitelistVersion: result.version ?? LIQUID_LIVE_CARD_WHITELIST_VERSION,
+    liveCardAttemptedAt: result.attemptedAt ?? null,
+    liveCardPlacedAt: result.placedAt ?? null,
+    liveCardOrderId: result.orderId ?? null,
+    liveCardClientOrderId: result.clientOrderId ?? null,
+    liveCardLifecycleId: result.lifecycleId ?? null,
+    liveCardExecutionVersion: result.executionVersion ?? null,
+    liveCardSourceType: result.sourceType ?? null,
+    liveCardSignalSource: result.signalSource ?? null,
+    liveCardEntryOrderType: result.entryOrderType ?? null,
+    liveCardComboEntryMatchVersion: result.comboEntryMatchVersion ?? LIVE_CARD_COMBO_ENTRY_MATCH_VERSION,
+  };
+}
+
+async function maybePlaceSourceLiveCardOrder(
+  page,
+  trade,
+  existingTrades = [],
+  tradeKeys = [],
+  { autoEligible = false } = {},
+) {
+  if (!autoEligible) {
+    return {
+      decision: 'NOT_AUTO_SIGNAL',
+      matchedKeys: [],
+      comboEntryMatchVersion: LIVE_CARD_COMBO_ENTRY_MATCH_VERSION,
+    };
+  }
+  const [whitelist, realConfig] = await Promise.all([
+    readLiquidLiveCardWhitelist(),
+    readLiveCardRealEnabled(),
+  ]);
+  const whitelistSet = new Set(whitelist.enabledKeys);
+  const enabledKeys = realConfig.enabledKeys.filter((key) => whitelistSet.has(key));
+  if (!enabledKeys.length) {
+    return {
+      decision: 'NO_REAL_CARD_ENABLED',
+      matchedKeys: [],
+      comboEntryMatchVersion: LIVE_CARD_COMBO_ENTRY_MATCH_VERSION,
+    };
+  }
+
+  const match = matchLiveCardWhitelistKeys(tradeKeys, enabledKeys);
+  if (!match.allowed) {
+    return {
+      decision: 'NO_CARD_MATCH',
+      matchedKeys: [],
+      version: match.version,
+      comboEntryMatchVersion: LIVE_CARD_COMBO_ENTRY_MATCH_VERSION,
+    };
+  }
+  if (!runtimeSettings.orderEnabled) {
+    return { decision: 'BLOCKED_ORDER_DISABLED', matchedKeys: match.matchedKeys, version: match.version };
+  }
+  if (runtimeSettings.dryRun) {
+    return { decision: 'BLOCKED_DRY_RUN', matchedKeys: match.matchedKeys, version: match.version };
+  }
+  if (isVnBlockHour()) {
+    return { decision: 'BLOCKED_VN_HOUR', matchedKeys: match.matchedKeys, version: match.version };
+  }
+  if (!liquidLiveProtectionIsValid(trade)) {
+    return { decision: 'BLOCKED_INVALID_TP_SL', matchedKeys: match.matchedKeys, version: match.version };
+  }
+
+  const marketEvaluatedAt = Number(liquidMarketDirectionCache.data?.evaluatedAt);
+  const maxMarketAgeMs = Math.max(30_000, Number(process.env.LIQUID_SCAN_REAL_MARKET_MAX_AGE_MS ?? 5 * 60_000));
+  if (!Number.isFinite(marketEvaluatedAt) || Date.now() - marketEvaluatedAt > maxMarketAgeMs) {
+    return { decision: 'BLOCKED_MARKET_HEALTH_STALE', matchedKeys: match.matchedKeys, version: match.version };
+  }
+
+  const dedupeMs = Math.max(60_000, Number(process.env.LIQUID_SCAN_REAL_DEDUPE_MS ?? 4 * 60 * 60 * 1000));
+  const symbol = normalizeSymbol(trade.symbol ?? '');
+  const side = String(trade.side ?? '').toUpperCase();
+  const attemptedAt = new Date().toISOString();
+  const firedKey = `${symbol}:${side}`;
+  const lastFiredAt = Number(liquidLiveCardOrderFired.get(firedKey) ?? 0);
+  const recentPersisted = existingTrades.some((row) => (
+    String(row.id) !== String(trade.id)
+    && normalizeSymbol(row.symbol ?? '') === symbol
+    && String(row.side ?? '').toUpperCase() === side
+    && Number.isFinite(Date.parse(
+      row.liveCardAttemptedAt ?? row.liveCardPlacedAt
+        ?? row.liquidLiveCardAttemptedAt ?? row.liquidLiveCardPlacedAt ?? '',
+    ))
+    && Date.now() - Date.parse(
+      row.liveCardAttemptedAt ?? row.liveCardPlacedAt
+        ?? row.liquidLiveCardAttemptedAt ?? row.liquidLiveCardPlacedAt,
+    ) < dedupeMs
+  ));
+  if ((lastFiredAt > 0 && Date.now() - lastFiredAt < dedupeMs) || recentPersisted) {
+    return { decision: 'BLOCKED_DEDUPE', matchedKeys: match.matchedKeys, version: match.version };
+  }
+
+  let credentials;
+  let positions;
+  let openOrders;
+  try {
+    credentials = getApiCredentials(null);
+    [positions, openOrders] = await Promise.all([
+      client.getPositions({
+        ...credentials,
+        priority: 1,
+        dropOnCongestion: false,
+        dedupeKey: 'live-card-preflight-positions',
+        source: 'liveCardPreflight:positions',
+      }),
+      client.getOpenOrders({
+        ...credentials,
+        symbol,
+        priority: 1,
+        dropOnCongestion: false,
+        dedupeKey: `live-card-preflight-open-orders:${symbol}`,
+        source: 'liveCardPreflight:openOrdersBySymbol',
+      }),
+    ]);
+  } catch (error) {
+    sendLiveCardOrderFailureDiscord({
+      page,
+      trade,
+      matchedKeys: match.matchedKeys,
+      error,
+      stage: 'BINANCE_PREFLIGHT',
+    });
+    if (error && typeof error === 'object') {
+      error.liveCardMatchedKeys = match.matchedKeys;
+      error.liveCardWhitelistVersion = match.version;
+    }
+    throw error;
+  }
+  if (positions.some((position) => position.symbol === symbol && Number(position.positionAmt) !== 0)) {
+    return { decision: 'BLOCKED_EXISTING_POSITION', matchedKeys: match.matchedKeys, version: match.version };
+  }
+  if (openOrders.some((order) => order.symbol === symbol && order.reduceOnly !== true && order.reduceOnly !== 'true')) {
+    return { decision: 'BLOCKED_EXISTING_ORDER', matchedKeys: match.matchedKeys, version: match.version };
+  }
+
+  const marginUsdt = Math.max(0.01, Number(
+    process.env.LIVE_CARD_REAL_MARGIN_USDT ?? process.env.LIQUID_SCAN_REAL_MARGIN_USDT ?? 1,
+  ));
+  const leverage = Math.max(1, Math.min(125, Number(
+    process.env.LIVE_CARD_REAL_LEVERAGE ?? process.env.LIQUID_SCAN_REAL_LEVERAGE ?? 10,
+  )));
+  const maxOpenPositions = Math.max(0, Number(
+    process.env.LIVE_CARD_REAL_MAX_POSITIONS ?? process.env.LIQUID_SCAN_REAL_MAX_POSITIONS ?? 30,
+  ));
+  const preflightCompletedAt = new Date().toISOString();
+  liquidLiveCardOrderFired.set(firedKey, Date.now());
+  const lifecycleId = crypto.randomUUID();
+  const entryClientOrderId = `lc_${Date.now().toString(36)}_${lifecycleId.replaceAll('-', '').slice(0, 8)}`.slice(0, 36);
+  const sourceMeta = classifyLiveCardSignalSource(page, trade);
+  const signalEntryPrice = Number(
+    trade.entryPrice
+      ?? trade.entry
+      ?? trade.setupEntry
+      ?? trade.entryPlan?.entryPrice
+      ?? trade.signalMarkPrice,
+  ) || null;
+  const signalTakeProfitPrice = Number(trade.takeProfitPrice ?? trade.tp) || null;
+  const signalStopLossPrice = Number(trade.stopLossPrice ?? trade.sl) || null;
+  const fillAnchorSpec = buildFillAnchoredProtectionSpec({
+    side,
+    signalEntryPrice,
+    takeProfitPrice: signalTakeProfitPrice,
+    stopLossPrice: signalStopLossPrice,
+  });
+  const liveCardProtectionPolicy = resolveSignalProtectionWorkingTypes({
+    source: `live-card-whitelist-${page}`,
+    preserveSignalProtection: true,
+  });
+  const lifecycleBase = {
+    lifecycleId,
+    version: LIVE_CARD_BINANCE_LIFECYCLE_VERSION,
+    status: 'ENTRY_PREPARING',
+    paperTradeId: String(trade.id ?? ''),
+    recommendationId: trade.recommendationIds?.[0] ?? trade.recommendationId ?? null,
+    symbol,
+    side,
+    ...sourceMeta,
+    matchedKeys: match.matchedKeys,
+    signalType: String(trade.signalType ?? trade.setup ?? trade.stage ?? '').slice(0, 120) || null,
+    signalCombo: String(
+      trade.recommendationCombo
+        ?? trade.liquidCombo
+        ?? trade.pumpCombo
+        ?? trade.edgeShortLabelGroup
+        ?? trade.combo
+        ?? '',
+    ).slice(0, 500) || null,
+    signalLabel: String(
+      trade.recommendationCombo
+        ?? trade.liquidCombo
+        ?? trade.edgeShortLabel
+        ?? trade.pumpCombo
+        ?? '',
+    ).slice(0, 180) || null,
+    entryOrderType: 'MARKET',
+    entryClientOrderId,
+    marginUsdt,
+    leverage,
+    takeProfitPrice: signalTakeProfitPrice,
+    stopLossPrice: signalStopLossPrice,
+    ...fillAnchorSpec,
+    signalProtectionVersion: LIVE_CARD_SIGNAL_PROTECTION_VERSION,
+    entryFastPathVersion: LIVE_CARD_ENTRY_FAST_PATH_VERSION,
+    ...liveCardProtectionPolicy,
+    attemptedAt,
+    preflightStartedAt: attemptedAt,
+    preflightCompletedAt,
+  };
+  await liveCardBinanceLifecycle.upsert(lifecycleBase, 'ENTRY_REQUESTED', {
+    sourceType: sourceMeta.sourceType,
+    originSourceType: sourceMeta.originSourceType,
+  });
+  let result;
+  const orderRequestStartedAt = new Date().toISOString();
+  try {
+    result = await placeOrder(authorizeLiveCardAutoOrder({
+      symbol,
+      side: side === 'LONG' ? 'BUY' : 'SELL',
+      orderType: 'MARKET',
+      clientOrderId: entryClientOrderId,
+      notionalUsdt: marginUsdt * leverage,
+      leverage,
+      takeProfitPrice: trade.takeProfitPrice ?? trade.tp,
+      stopLossPrice: trade.stopLossPrice ?? trade.sl,
+      protectionSignalEntryPrice: signalEntryPrice,
+      protectionSignalTakeProfitPrice: signalTakeProfitPrice,
+      protectionSignalStopLossPrice: signalStopLossPrice,
+      ...fillAnchorSpec,
+      protectionOnFill: true,
+      ...liveCardProtectionPolicy,
+      protectionMeta: { lifecycleId },
+      dryRun: false,
+      maxOpenPositions,
+      source: `live-card-whitelist-${page}`,
+    }), null, credentials, {
+      liveCard: true,
+      positions,
+      openOrders,
+    });
+  } catch (error) {
+    await liveCardBinanceLifecycle.upsert({
+      ...lifecycleBase,
+      status: 'ENTRY_FAILED',
+      entryError: String(error?.message ?? error).slice(0, 500),
+      entryFailedAt: new Date().toISOString(),
+    }, 'ENTRY_FAILED', { error: String(error?.message ?? error).slice(0, 500) }).catch(() => {});
+    sendLiveCardOrderFailureDiscord({
+      page,
+      trade,
+      matchedKeys: match.matchedKeys,
+      error,
+      stage: 'BINANCE_MARKET_SUBMIT',
+    });
+    if (error && typeof error === 'object') {
+      error.liveCardMatchedKeys = match.matchedKeys;
+      error.liveCardWhitelistVersion = match.version;
+    }
+    throw error;
+  }
+  const placedAt = result?.status === 'submitted' ? new Date().toISOString() : null;
+  const entryOrderId = result?.orderResult?.orderId ?? null;
+  const resolvedClientOrderId = result?.orderResult?.clientOrderId ?? entryClientOrderId;
+  await liveCardBinanceLifecycle.markSubmitted({
+    ...lifecycleBase,
+    status: result?.status === 'submitted' ? 'ENTRY_SUBMITTED' : 'ENTRY_NOT_SUBMITTED',
+    entrySubmittedAt: placedAt,
+    orderRequestStartedAt,
+    preflightPositionsReused: true,
+    preflightOpenOrdersScope: 'SYMBOL',
+    leverageSetSkipped: result?.leverageResult?.skipped === true,
+    entryOrderId,
+    entryClientOrderId: resolvedClientOrderId,
+    submittedQty: Number(result?.order?.quantity) || null,
+    filledQty: Number(result?.orderResult?.executedQty) || null,
+    fillPrice: Number(result?.orderResult?.avgPrice) || null,
+  });
+  if (result?.status !== 'submitted') {
+    sendLiveCardOrderFailureDiscord({
+      page,
+      trade,
+      matchedKeys: match.matchedKeys,
+      error: new Error(`placeOrder returned status=${String(result?.status ?? 'unknown')}`),
+      stage: 'BINANCE_NOT_SUBMITTED',
+    });
+  }
+  return {
+    decision: result?.status === 'submitted' ? 'SUBMITTED' : 'NOT_SUBMITTED',
+    matchedKeys: match.matchedKeys,
+    version: match.version,
+    attemptedAt,
+    placedAt,
+    orderId: entryOrderId,
+    clientOrderId: resolvedClientOrderId,
+    lifecycleId,
+    executionVersion: LIVE_CARD_BINANCE_LIFECYCLE_VERSION,
+    entryFastPathVersion: LIVE_CARD_ENTRY_FAST_PATH_VERSION,
+    sourceType: sourceMeta.sourceType,
+    signalSource: sourceMeta.signalSource,
+    entryOrderType: 'MARKET',
+    comboEntryMatchVersion: LIVE_CARD_COMBO_ENTRY_MATCH_VERSION,
+    marginUsdt,
+    leverage,
+  };
+}
+
+async function maybePlaceLiquidLiveCardOrder(trade, existingTrades = []) {
+  if (!String(trade.source ?? '').startsWith('liquid-scan-auto-')) {
+    return { decision: 'NOT_AUTO_SIGNAL', matchedKeys: [] };
+  }
+  const evaluatedTrade = liquidLiveTradeWithRealtimeLabels(trade);
+  return maybePlaceSourceLiveCardOrder(
+    'liquid',
+    evaluatedTrade,
+    existingTrades,
+    liquidLiveCardKeysOfTrade(evaluatedTrade),
+    { autoEligible: true },
+  );
+}
+
+function liveCardLifecycleIdOfTrade(trade = {}) {
+  return String(
+    trade.liveCardLifecycleId
+      ?? trade.liquidLiveCardLifecycleId
+      ?? '',
+  ).trim() || null;
+}
+
+async function cancelLiveCardProtectionOrders(execution, credentials) {
+  const placed = execution?.protectionOrders;
+  const orders = [placed?.tp, placed?.sl].filter(Boolean);
+  const cancelled = [];
+  for (const order of orders) {
+    const algoId = order?.algoId ?? order?.orderId ?? null;
+    if (algoId == null) continue;
+    await client.cancelAlgoOrder({
+      algoId,
+      apiKey: credentials.apiKey,
+      apiSecret: credentials.apiSecret,
+      recvWindow: Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000),
+    }).then(() => cancelled.push(algoId)).catch((error) => {
+      const message = String(error?.message ?? error);
+      if (!/unknown order|does not exist|not found/i.test(message)) {
+        console.warn(`[LiveCardClose] cancel protection algo=${algoId}: ${message}`);
+      }
+    });
+  }
+  return cancelled;
+}
+
+async function maybeCloseLiveCardPositionForTrade(page, trade, { outcome = null, reason = null } = {}) {
+  const lifecycleId = liveCardLifecycleIdOfTrade(trade);
+  if (!lifecycleId) return { decision: 'NO_LIFECYCLE' };
+  const execution = await liveCardBinanceLifecycle.claimBotClose(lifecycleId, { outcome, reason });
+  if (!execution) return { decision: 'ALREADY_CLOSING_OR_NOT_ACTIVE', lifecycleId };
+
+  try {
+    const credentials = getApiCredentials(null);
+    const positions = await client.getPositions(credentials);
+    const closePlan = safeBotClosePlan(execution, positions);
+    if (!closePlan.allowed) {
+      const result = { reason: closePlan.reason, quantity: 0 };
+      await liveCardBinanceLifecycle.markBotClose(lifecycleId, result);
+      return { decision: closePlan.reason, lifecycleId };
+    }
+
+    const [symbols, premiumIndex] = await Promise.all([
+      getSymbols(),
+      client.getPremiumIndex(closePlan.symbol),
+    ]);
+    const symbolInfo = symbols.find((row) => row.symbol === closePlan.symbol);
+    if (!symbolInfo) throw new Error(`Symbol ${closePlan.symbol} not found for bot close.`);
+    const markPrice = Number(premiumIndex.markPrice);
+    const quantity = quantityFromNotional(
+      symbolInfo,
+      closePlan.quantity * markPrice,
+      markPrice,
+      true,
+    );
+    if (!(Number(quantity) > 0)) throw new Error(`Rounded bot close quantity is zero for ${closePlan.symbol}.`);
+    const closeClientOrderId = `lcclose_${Date.now().toString(36)}_${lifecycleId.replaceAll('-', '').slice(0, 7)}`.slice(0, 36);
+    const params = {
+      symbol: closePlan.symbol,
+      side: closePlan.closeSide,
+      type: 'MARKET',
+      quantity,
+      recvWindow: Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000),
+      newClientOrderId: closeClientOrderId,
+    };
+    if (closePlan.positionSide !== 'BOTH') params.positionSide = closePlan.positionSide;
+    else params.reduceOnly = 'true';
+    const orderResult = await client.placeFuturesOrder({
+      params,
+      apiKey: credentials.apiKey,
+      apiSecret: credentials.apiSecret,
+    });
+    const latest = await liveCardBinanceLifecycle.get(lifecycleId) ?? execution;
+    const cancelledProtection = await cancelLiveCardProtectionOrders(latest, credentials);
+    await liveCardBinanceLifecycle.markBotClose(lifecycleId, {
+      orderId: orderResult?.orderId ?? null,
+      clientOrderId: orderResult?.clientOrderId ?? closeClientOrderId,
+      quantity: Number(quantity),
+      cancelledProtection,
+      outcome,
+      reason,
+      sourceType: execution.sourceType,
+      originSourceType: execution.originSourceType,
+    });
+    broadcastOrdersPositionPnl('live-card-lifecycle', {
+      version: ORDERS_POSITION_PNL_STREAM_VERSION,
+      lifecycleId,
+      symbol: closePlan.symbol,
+      status: 'BOT_CLOSE_SUBMITTED',
+      eventAt: Date.now(),
+    });
+    console.log(`[LiveCardClose] MARKET ${closePlan.symbol} ${closePlan.closeSide} qty=${quantity} source=${execution.sourceType}/${execution.originSourceType} outcome=${outcome ?? '-'}`);
+    return { decision: 'BOT_CLOSE_SUBMITTED', lifecycleId, orderId: orderResult?.orderId ?? null };
+  } catch (error) {
+    await liveCardBinanceLifecycle.markBotClose(lifecycleId, null, error.message).catch(() => {});
+    console.error(`[LiveCardClose] lifecycle=${lifecycleId} page=${page}:`, error.message);
+    return { decision: 'BOT_CLOSE_FAILED', lifecycleId, error: error.message };
+  }
+}
+
+function queueLiveCardBotClose(page, trade, meta = {}) {
+  maybeCloseLiveCardPositionForTrade(page, trade, meta).catch((error) => {
+    console.error(`[LiveCardClose] unhandled page=${page} trade=${trade?.id ?? '-'}:`, error.message);
+  });
+}
+
+let liveCardShortTimeStopRunning = false;
+
+function liveCardShortTimeStopMaxHoldMs() {
+  const configured = Number(process.env.LIVE_CARD_SHORT_MAX_HOLD_MS ?? LIVE_CARD_SHORT_TIME_STOP_DEFAULT_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(60 * 60_000, configured)
+    : LIVE_CARD_SHORT_TIME_STOP_DEFAULT_MS;
+}
+
+async function runLiveCardShortTimeStopScan() {
+  if (liveCardShortTimeStopRunning || process.env.LIVE_CARD_SHORT_TIME_STOP_ENABLED === 'false') return;
+  liveCardShortTimeStopRunning = true;
+  try {
+    const status = await liveCardBinanceLifecycle.status();
+    const maxHoldMs = liveCardShortTimeStopMaxHoldMs();
+    const expired = selectExpiredLiveCardShortExecutions(status.executions, { maxHoldMs });
+    for (const execution of expired) {
+      const result = await maybeCloseLiveCardPositionForTrade(
+        execution.executionPage ?? execution.sourceType ?? 'unknown',
+        { liveCardLifecycleId: execution.lifecycleId },
+        {
+          outcome: 'TIME_STOP',
+          reason: `${LIVE_CARD_SHORT_TIME_STOP_VERSION}:${maxHoldMs}`,
+        },
+      );
+      console.warn(
+        `[LiveCardTimeStop] ${execution.symbol} age=${(execution.shortTimeStopAgeMs / 3_600_000).toFixed(2)}h `
+        + `max=${(maxHoldMs / 3_600_000).toFixed(2)}h decision=${result.decision}`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  } finally {
+    liveCardShortTimeStopRunning = false;
+  }
+}
+
+function startLiveCardShortTimeStopScanner() {
+  if (process.env.LIVE_CARD_SHORT_TIME_STOP_ENABLED === 'false') return;
+  const configuredIntervalMs = Number(process.env.LIVE_CARD_SHORT_TIME_STOP_INTERVAL_MS ?? 60_000);
+  const intervalMs = Number.isFinite(configuredIntervalMs) && configuredIntervalMs > 0
+    ? Math.max(30_000, configuredIntervalMs)
+    : 60_000;
+  console.log(
+    `[LiveCardTimeStop] started version=${LIVE_CARD_SHORT_TIME_STOP_VERSION} `
+    + `maxHold=${(liveCardShortTimeStopMaxHoldMs() / 3_600_000).toFixed(2)}h interval=${intervalMs / 1000}s`,
+  );
+  setTimeout(() => runLiveCardShortTimeStopScan().catch((error) => {
+    console.error('[LiveCardTimeStop] initial scan failed:', error.message);
+  }), 5_000).unref?.();
+  setInterval(() => runLiveCardShortTimeStopScan().catch((error) => {
+    console.error('[LiveCardTimeStop] scan failed:', error.message);
+  }), intervalMs).unref?.();
+}
+
+async function createLiquidPaperTrade(payload, { deferPersistence = false } = {}) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   const side = String(payload.side ?? '').toUpperCase();
   const source = String(payload.source ?? 'liquid-scan').slice(0, 80);
@@ -12563,6 +15677,7 @@ async function createLiquidPaperTrade(payload) {
   const btcHealth = payload.btcHealth && typeof payload.btcHealth === 'object'
     ? payload.btcHealth
     : buildBtcHealthSnapshot();
+  const marketDirectionAtSignal = marketDirectionSnapshotForSignalStorage();
   const btcCorr = Number.isFinite(Number(payload.btcCorr))
     ? Number(payload.btcCorr)
     : getCoinBtcCorr(symbol, signalTimeframe, 30);
@@ -12629,6 +15744,7 @@ async function createLiquidPaperTrade(payload) {
     btcTrendDir: btcHealth?.btcTrendDir ?? null,
     btcTrendScore: btcHealth?.btcTrendScore ?? null,
     btcCorr: Number.isFinite(btcCorr) ? btcCorr : null,
+    marketDirectionAtSignal,
     liquidShadow: source.startsWith('liquid-scan'),
     liquidRequestedMarginUsdt: Number.isFinite(requestedMarginUsdt) ? requestedMarginUsdt : null,
     liquidEvalTier: liquidEval.tier,
@@ -12649,17 +15765,170 @@ async function createLiquidPaperTrade(payload) {
   trade.liquidGateLabel = String(payload.liquidGateLabel ?? liquidPaperGateLabel(trade)).slice(0, 120);
   trade.liquidCombo = String(payload.liquidCombo ?? liquidPaperComboOf(trade)).slice(0, 240);
   Object.assign(trade, attachCandlePatternToPaperTrade(trade));
+  const liquidRunner30 = evaluateLiquidRunner30Candidate(trade);
   const liquidStage3 = evaluateLiquidScanStage3(trade);
+  const stage3GoodPlusMarginUsdt = Math.max(
+    0.01,
+    Number(process.env.LIQUID_SCAN_STAGE3_GOOD_PLUS_MARGIN_USDT ?? 10),
+  );
+  const stage3MarginCapUsdt = liquidScanStage3MarginCap(liquidStage3, {
+    goodPlusMarginUsdt: stage3GoodPlusMarginUsdt,
+    fallbackMarginUsdt: evalMarginCapUsdt,
+  });
+  const stage3MarginUsdt = source.startsWith('liquid-scan')
+    ? capLiquidScanShadowMargin(requestedMarginUsdt, stage3MarginCapUsdt)
+    : requestedMarginUsdt;
+  trade.marginUsdt = stage3MarginUsdt;
+  trade.quantity = (stage3MarginUsdt * leverage) / entryPrice;
+  trade.liquidEvalMarginCapUsdt = source.startsWith('liquid-scan') ? stage3MarginCapUsdt : null;
   trade.liquidStage3Tier = liquidStage3.tier;
   trade.liquidStage3Code = liquidStage3.code;
   trade.liquidStage3Label = liquidStage3.label;
   trade.liquidStage3Reason = liquidStage3.reason;
   trade.liquidStage3ComboKey = liquidStage3.comboKey;
   trade.liquidStage3Version = liquidStage3.version;
+  trade.liquidStage3TargetMarginUsdt = liquidStage3.tier === 'GOOD_PLUS'
+    ? stage3GoodPlusMarginUsdt
+    : null;
+  trade.liquidStage3MarginCapUsdt = source.startsWith('liquid-scan') ? stage3MarginCapUsdt : null;
+  trade.liquidStage3SizeApplied = source.startsWith('liquid-scan') && liquidStage3.tier === 'GOOD_PLUS';
+  Object.assign(trade, evaluateLiquidStableMechanism(trade));
+  const liquidLongCorrReboundTestMarginUsdt = Math.max(
+    0.01,
+    Number(process.env.LIQUID_SCAN_LONG_CORR_REBOUND_TEST_MARGIN_USDT ?? 10),
+  );
+  const liquidLongCorrRebound = evaluateLiquidLongCorrRebound(trade, {
+    applyPaperTest: source.startsWith('liquid-scan-auto-'),
+    paperTestMarginUsdt: liquidLongCorrReboundTestMarginUsdt,
+  });
+  Object.assign(trade, liquidLongCorrRebound);
+  const liquidLongCorrReboundSizing = liquidLongCorrReboundPaperSizing(trade, {
+    marginUsdt: trade.marginUsdt,
+    leverage,
+    entryPrice,
+  });
+  if (liquidLongCorrReboundSizing.applied) {
+    trade.marginUsdt = liquidLongCorrReboundSizing.marginUsdt;
+    trade.quantity = liquidLongCorrReboundSizing.quantity;
+    trade.liquidLongCorrReboundAppliedMarginUsdt = liquidLongCorrReboundSizing.appliedMarginUsdt;
+    trade.note = [
+      trade.note,
+      `LONG_CORR_REBOUND paper-test=$${liquidLongCorrReboundSizing.appliedMarginUsdt.toFixed(2)}`,
+    ].filter(Boolean).join(' | ').slice(0, 700);
+  }
+  trade.liquidRunner30Matched = liquidRunner30.matched;
+  trade.liquidRunner30Tier = liquidRunner30.tier;
+  trade.liquidRunner30Code = liquidRunner30.code;
+  trade.liquidRunner30Label = liquidRunner30.label;
+  trade.liquidRunner30Reason = liquidRunner30.reason;
+  trade.liquidRunner30PlannedTpRoe = liquidRunner30.plannedTpRoe;
+  trade.liquidRunner30TargetKind = liquidRunner30.targetKind;
+  trade.liquidRunner30Version = liquidRunner30.version;
+  trade.liquidRunner30ObservationOnly = true;
+  if (trade.liquidStage3SizeApplied) {
+    trade.note = [
+      trade.note,
+      `LIQUID_STAGE3_GOOD_PLUS size=$${stage3MarginUsdt.toFixed(2)} cap=$${stage3MarginCapUsdt.toFixed(2)}`,
+    ].filter(Boolean).join(' | ').slice(0, 700);
+  }
 
   const store = await readLiquidPaperStore();
+  const liquidComboBtcBreadthHistory = liquidComboCycleEntrySnapshot(trade, store.trades);
+  Object.assign(
+    trade,
+    evaluateLiquidComboBtcBreadthLabel(trade, liquidComboBtcBreadthHistory),
+  );
+  const liquidStage4 = evaluateLiquidScanCycleEdgeSnapshot(trade, store.trades);
+  const liquidRunnerDirection = evaluateLiquidRunnerDirectionSnapshot(trade, store.trades);
+  trade.liquidStage4Tier = liquidStage4.tier;
+  trade.liquidStage4Code = liquidStage4.code;
+  trade.liquidStage4Label = liquidStage4.label;
+  trade.liquidStage4Reason = liquidStage4.reason;
+  trade.liquidStage4CohortKey = liquidStage4.cohortKey;
+  trade.liquidStage4SelectedCohortKey = liquidStage4.selectedCohortKey;
+  trade.liquidStage4CycleFamily = liquidStage4.cycleFamily;
+  trade.liquidStage4Basis = liquidStage4.basis;
+  trade.liquidStage4History = liquidStage4.history;
+  trade.liquidStage4Recent = liquidStage4.recent;
+  trade.liquidStage4Pulse = liquidStage4.pulse;
+  trade.liquidStage4Version = liquidStage4.version;
+  trade.liquidStage4ObservationOnly = true;
+  Object.assign(trade, evaluateLiquidBtcWaveState(trade));
+  Object.assign(trade, evaluateLiquidLongReversal(trade));
+  const liquidLivePointState = currentLiquidLivePointState();
+  Object.assign(trade, evaluateLiquidLongPointPhase(trade, liquidLivePointState));
+  Object.assign(trade, evaluateLiquidMarketPointPhase(trade, liquidLivePointState, {
+    basis: 'ENTRY_MARKET_DIRECTION_SNAPSHOT',
+  }));
+  Object.assign(trade, evaluateLiquidLongBtcExpansion(trade));
+  Object.assign(trade, evaluateLiquidLongMarketState(trade));
+  Object.assign(trade, evaluateLiquidLongSessionHealthSnapshot(trade, store.trades));
+  trade.liquidRunnerDirectionEligible = liquidRunnerDirection.eligible;
+  trade.liquidRunnerDirectionTier = liquidRunnerDirection.tier;
+  trade.liquidRunnerDirectionCode = liquidRunnerDirection.code;
+  trade.liquidRunnerDirectionLabel = liquidRunnerDirection.label;
+  trade.liquidRunnerDirectionReason = liquidRunnerDirection.reason;
+  trade.liquidRunnerDirectionReachTier = liquidRunnerDirection.reachTier;
+  trade.liquidRunnerDirectionPlannedTpRoe = liquidRunnerDirection.plannedTpRoe;
+  trade.liquidRunnerDirectionTargetKind = liquidRunnerDirection.targetKind;
+  trade.liquidRunnerDirectionRelation = liquidRunnerDirection.directionRelation;
+  trade.liquidRunnerDirectionScore = liquidRunnerDirection.directionScore;
+  trade.liquidRunnerDirectionCandleRelation = liquidRunnerDirection.candleRelation;
+  trade.liquidRunnerDirectionCohortKey = liquidRunnerDirection.cohortKey;
+  trade.liquidRunnerDirectionSelectedCohortKey = liquidRunnerDirection.selectedCohortKey;
+  trade.liquidRunnerDirectionCycleFamily = liquidRunnerDirection.cycleFamily;
+  trade.liquidRunnerDirectionBasis = liquidRunnerDirection.basis;
+  trade.liquidRunnerDirectionHistory = liquidRunnerDirection.history;
+  trade.liquidRunnerDirectionRecent = liquidRunnerDirection.recent;
+  trade.liquidRunnerDirectionPulse = liquidRunnerDirection.pulse;
+  trade.liquidRunnerDirectionVersion = liquidRunnerDirection.version;
+  trade.liquidRunnerDirectionObservationOnly = true;
   store.trades.unshift(trade);
-  await writeLiquidPaperStore(store);
+  if (deferPersistence) stageLiquidPaperStore(store, { attachPatterns: false });
+  else await writeLiquidPaperStore(store);
+  appendLiquidMarketDirectionSignalLog(trade).catch((error) => {
+    console.warn(`[LiquidMarketDirectionLog] append failed trade=${trade.id}: ${error.message}`);
+  });
+  if (source.startsWith('liquid-scan-auto-') && trade.status === 'OPEN') {
+    let liveDecision;
+    try {
+      liveDecision = await maybePlaceLiquidLiveCardOrder(trade, store.trades);
+    } catch (error) {
+      liveDecision = {
+        decision: 'ERROR',
+        matchedKeys: error?.liveCardMatchedKeys ?? [],
+        version: error?.liveCardWhitelistVersion ?? LIQUID_LIVE_CARD_WHITELIST_VERSION,
+        attemptedAt: new Date().toISOString(),
+        error: String(error?.message ?? error).slice(0, 500),
+      };
+      console.error(`[LiquidLiveCards] ${trade.symbol} ${trade.side} failed: ${liveDecision.error}`);
+    }
+    Object.assign(trade, {
+      liquidLiveCardDecision: liveDecision.decision,
+      liquidLiveCardMatchedKeys: liveDecision.matchedKeys,
+      liquidLiveCardWhitelistVersion: liveDecision.version ?? LIQUID_LIVE_CARD_WHITELIST_VERSION,
+      liquidLiveCardEvaluatedAt: new Date().toISOString(),
+      liquidLiveCardAttemptedAt: liveDecision.attemptedAt ?? null,
+      liquidLiveCardPlacedAt: liveDecision.placedAt ?? null,
+      liquidLiveCardOrderId: liveDecision.orderId ?? null,
+      liquidLiveCardClientOrderId: liveDecision.clientOrderId ?? null,
+      liquidLiveCardLifecycleId: liveDecision.lifecycleId ?? null,
+      liquidLiveCardExecutionVersion: liveDecision.executionVersion ?? null,
+      liquidLiveCardSourceType: liveDecision.sourceType ?? null,
+      liquidLiveCardSignalSource: liveDecision.signalSource ?? null,
+      liquidLiveCardEntryOrderType: liveDecision.entryOrderType ?? null,
+      liquidLiveCardMarginUsdt: liveDecision.marginUsdt ?? null,
+      liquidLiveCardLeverage: liveDecision.leverage ?? null,
+      liquidLiveCardError: liveDecision.error ?? null,
+      ...liveCardAuditPatch(liveDecision),
+    });
+    if (deferPersistence) stageLiquidPaperStore(store, { attachPatterns: false });
+    else await writeLiquidPaperStore(store);
+    if (liveDecision.decision === 'SUBMITTED') {
+      console.log(`[LiquidLiveCards] REAL ${trade.symbol} ${trade.side} orderId=${liveDecision.orderId} cards=${liveDecision.matchedKeys.join(',')}`);
+    }
+  }
+  queueLiquidPaperTradeUpdate(trade);
   if (trade.status === 'OPEN') {
     publishRecommendedSourceOpen('liquid', trade, {
       price: trade.entryPrice,
@@ -12700,6 +15969,26 @@ async function runLiquidScanAutoPaper() {
       runLiquidScan({ interval, limit, minVolumeUsdt }),
       readLiquidPaperStore(),
     ]);
+    const requested = Math.max(1, Number(scan.requested ?? limit));
+    const minCoveragePct = Math.max(
+      0.5,
+      Math.min(1, Number(process.env.LIQUID_SCAN_AUTO_PAPER_MIN_COVERAGE_PCT ?? 0.9)),
+    );
+    const minProcessed = Math.min(requested, Math.ceil(requested * minCoveragePct));
+    if (Number(scan.processed ?? 0) < minProcessed) {
+      console.log(
+        `[LiquidScanAutoPaper] warmup skip processed=${scan.processed ?? 0}/${requested}`
+        + ` required=${minProcessed} coverage=${Math.round(minCoveragePct * 100)}%`,
+      );
+      return {
+        scanned: scan.processed ?? 0,
+        eligible: 0,
+        created: 0,
+        failed: 0,
+        skipped: 'KLINE_WARMUP',
+        requiredProcessed: minProcessed,
+      };
+    }
     const existing = Array.isArray(store.trades) ? store.trades : [];
     const candidates = selectLiquidScanAutoPaperRows(scan.rows ?? [], existing, {
       minPoint,
@@ -12716,7 +16005,7 @@ async function runLiquidScanAutoPaper() {
           minPoint,
           signalTimeframe: interval,
         });
-        const createdTrade = await createLiquidPaperTrade(payload);
+        const createdTrade = await createLiquidPaperTrade(payload, { deferPersistence: true });
         results.push({ symbol: row.symbol, side: payload.side, id: createdTrade?.trade?.id ?? null, ok: true });
       } catch (error) {
         results.push({ symbol: row.symbol, side: row.entryPlan?.side ?? null, error: error.message, ok: false });
@@ -12724,6 +16013,7 @@ async function runLiquidScanAutoPaper() {
     }
     const created = results.filter((row) => row.ok).length;
     const failed = results.length - created;
+    if (created > 0) await writeLiquidPaperStore(store);
     console.log(`[LiquidScanAutoPaper] scanned=${scan.processed ?? 0}/${scan.requested ?? limit} eligible=${candidates.length} created=${created} failed=${failed} durationMs=${Date.now() - startedAt}`);
     if (failed) console.warn('[LiquidScanAutoPaper] create failures:', results.filter((row) => !row.ok).slice(0, 10));
     return { scanned: scan.processed ?? 0, eligible: candidates.length, created, failed, results };
@@ -12860,6 +16150,7 @@ function appendPaperNote(note, part) {
 }
 
 async function autoPlaceBinanceOnEntryReady(trade, reason, markPrice) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (!runtimeSettings.autoProbeEnabled) return;
   if (isVnBlockHour()) { console.log('[AutoProbe] ⏰ Block 17-19h VN'); return; }
   try {
@@ -13049,12 +16340,7 @@ async function fillPendingPaperTrade(trade, markPrice) {
   return store.trades[idx];
 }
 
-async function fillPendingLiquidPaperTrade(trade, markPrice) {
-  const store = await readLiquidPaperStore();
-  const idx = store.trades.findIndex((t) => t.id === trade.id && t.status === 'PENDING');
-  if (idx < 0) return null;
-  const current = store.trades[idx];
-  if (!paperEntryTouched(current, markPrice)) return null;
+function filledLiquidPaperTrade(current, markPrice) {
   const setupEntryPrice = Number(current.entryPrice);
   const fillPrice = Number(markPrice);
   const margin = Number(current.marginUsdt);
@@ -13064,7 +16350,7 @@ async function fillPendingLiquidPaperTrade(trade, markPrice) {
     ? calcRoeStopLossPrice({ side: current.side, entryPrice: fillPrice, leverage, roe: defaultSlRoe })
     : null;
 
-  store.trades[idx] = {
+  return {
     ...current,
     status: 'OPEN',
     entryPrice: fillPrice,
@@ -13106,15 +16392,6 @@ async function fillPendingLiquidPaperTrade(trade, markPrice) {
       Number.isFinite(effectiveSl) && effectiveSl > 0 ? `liquidFillSl=${defaultSlRoe}%ROE@${effectiveSl}` : '',
     ].filter(Boolean).join(' | ').slice(0, 700),
   };
-  await writeLiquidPaperStore(store);
-  scheduleLiquidPaperBroadcast(100);
-  console.log(`[LiquidPaper] ✅ FILLED ${current.symbol} ${current.side} setupEntry=${setupEntryPrice} socketEntry=${fillPrice}`);
-  publishRecommendedSourceOpen('liquid', store.trades[idx], {
-    price: fillPrice,
-    at: Date.now(),
-    source: 'liquid-fill-socket-event',
-  });
-  return store.trades[idx];
 }
 
 async function processPaperPendingFillsForSymbol(symbol, markPrice) {
@@ -13131,96 +16408,262 @@ async function processPaperPendingFillsForSymbol(symbol, markPrice) {
   }
 }
 
-async function processLiquidPaperPendingFillsForSymbol(symbol, markPrice) {
-  if (liquidPaperFillLocks.has(symbol)) return;
-  liquidPaperFillLocks.add(symbol);
-  try {
-    const store = await readLiquidPaperStore();
-    let dirty = false;
-    for (let i = 0; i < store.trades.length; i++) {
-      let t = store.trades[i];
-      if (t.symbol !== symbol) continue;
-      if (t.status === 'PENDING' && paperEntryTouched(t, markPrice)) {
-        await fillPendingLiquidPaperTrade(t, markPrice);
-        continue;
+function getLiquidPaperActiveIndex(store) {
+  const trades = Array.isArray(store?.trades) ? store.trades : [];
+  const firstId = trades[0]?.id ?? null;
+  const lastId = trades[trades.length - 1]?.id ?? null;
+  if (
+    liquidPaperActiveIndexCache.trades === trades
+    && liquidPaperActiveIndexCache.length === trades.length
+    && liquidPaperActiveIndexCache.firstId === firstId
+    && liquidPaperActiveIndexCache.lastId === lastId
+  ) {
+    return liquidPaperActiveIndexCache.bySymbol;
+  }
+
+  const bySymbol = new Map();
+  for (let index = 0; index < trades.length; index++) {
+    const trade = trades[index];
+    if (!['OPEN', 'PENDING'].includes(String(trade?.status ?? '').toUpperCase())) continue;
+    const symbol = String(trade?.symbol ?? '').toUpperCase();
+    if (!symbol) continue;
+    const indexes = bySymbol.get(symbol) ?? [];
+    indexes.push(index);
+    bySymbol.set(symbol, indexes);
+  }
+  liquidPaperActiveIndexCache = {
+    trades,
+    length: trades.length,
+    firstId,
+    lastId,
+    bySymbol,
+  };
+  return bySymbol;
+}
+
+async function processLiquidPaperMarkBatch(marks) {
+  if (!(marks instanceof Map) || marks.size === 0) return;
+  const store = await readLiquidPaperStore();
+  let dirty = false;
+  const changedTradeIds = new Set();
+  const filledTradeIds = new Set();
+  const closedTradeIds = new Set();
+  const activeBySymbol = getLiquidPaperActiveIndex(store);
+  const candidateIndexes = [];
+  for (const symbol of marks.keys()) {
+    candidateIndexes.push(...(activeBySymbol.get(String(symbol).toUpperCase()) ?? []));
+  }
+
+  // Process only OPEN/PENDING rows for symbols present in this socket batch.
+  // Scanning all 18k+ historical rows every 50ms starved the market-score API.
+  for (const i of candidateIndexes) {
+    let t = store.trades[i];
+    if (!t) continue;
+    const symbol = String(t.symbol ?? '').toUpperCase();
+    const markPrice = Number(marks.get(symbol));
+    if (!Number.isFinite(markPrice) || markPrice <= 0) continue;
+    if (t.status === 'PENDING' && paperEntryTouched(t, markPrice)) {
+      let filled = filledLiquidPaperTrade(t, markPrice);
+      if (String(filled.source ?? '').startsWith('liquid-scan-auto-')) {
+        let liveDecision;
+        try {
+          liveDecision = await maybePlaceLiquidLiveCardOrder(filled, store.trades);
+        } catch (error) {
+          liveDecision = {
+            decision: 'ERROR',
+            matchedKeys: error?.liveCardMatchedKeys ?? [],
+            version: error?.liveCardWhitelistVersion ?? LIQUID_LIVE_CARD_WHITELIST_VERSION,
+            attemptedAt: new Date().toISOString(),
+            error: String(error?.message ?? error).slice(0, 500),
+          };
+        }
+        filled = {
+          ...filled,
+          ...liveCardAuditPatch(liveDecision),
+          liquidLiveCardDecision: liveDecision.decision,
+          liquidLiveCardMatchedKeys: liveDecision.matchedKeys,
+          liquidLiveCardWhitelistVersion: liveDecision.version ?? LIQUID_LIVE_CARD_WHITELIST_VERSION,
+          liquidLiveCardEvaluatedAt: new Date().toISOString(),
+          liquidLiveCardAttemptedAt: liveDecision.attemptedAt ?? null,
+          liquidLiveCardPlacedAt: liveDecision.placedAt ?? null,
+          liquidLiveCardOrderId: liveDecision.orderId ?? null,
+          liquidLiveCardClientOrderId: liveDecision.clientOrderId ?? null,
+          liquidLiveCardLifecycleId: liveDecision.lifecycleId ?? null,
+          liquidLiveCardExecutionVersion: liveDecision.executionVersion ?? null,
+          liquidLiveCardSourceType: liveDecision.sourceType ?? null,
+          liquidLiveCardSignalSource: liveDecision.signalSource ?? null,
+          liquidLiveCardEntryOrderType: liveDecision.entryOrderType ?? null,
+          liquidLiveCardMarginUsdt: liveDecision.marginUsdt ?? null,
+          liquidLiveCardLeverage: liveDecision.leverage ?? null,
+          liquidLiveCardError: liveDecision.error ?? null,
+        };
       }
-      if (t.status !== 'OPEN') continue;
-      const isLong = t.side === 'LONG';
-      const entry = Number(t.entryPrice);
-      const quantity = Number(t.quantity);
-      const margin = Number(t.marginUsdt);
-      const leverage = Math.max(1, Number(t.leverage) || 1);
-      const livePnl = (Number(markPrice) - entry) * quantity * (isLong ? 1 : -1);
-      const liveRoe = margin > 0 ? livePnl / margin * 100 : 0;
-      const progressiveEnabled = process.env.LIQUID_SCAN_PAPER_PROGRESSIVE_SL_ENABLED !== 'false'
-        && t.liquidEvalVersion === 'LIQUID_SHADOW_V2_20260722';
-      if (progressiveEnabled && Number.isFinite(liveRoe)) {
-        const previousPeak = liquidPaperPeakRoe.get(t.id) ?? Number(t.peakRoe ?? 0);
-        const peakRoe = Math.max(previousPeak, liveRoe);
-        liquidPaperPeakRoe.set(t.id, peakRoe);
-        const targetLockRoe = liquidScanTrailLockRoe(peakRoe);
-        const currentLockRoe = Number(t.slTrailLockRoe ?? -Infinity);
-        if (targetLockRoe != null && targetLockRoe > currentLockRoe) {
-          const lockMove = targetLockRoe / 100 / leverage;
-          const newSl = isLong ? entry * (1 + lockMove) : entry * (1 - lockMove);
-          const currentSl = Number(t.stopLossPrice ?? 0);
-          const improves = !Number.isFinite(currentSl) || currentSl <= 0
-            || (isLong ? newSl > currentSl : newSl < currentSl);
-          const remainsBehindMark = isLong ? newSl < Number(markPrice) : newSl > Number(markPrice);
-          if (Number.isFinite(newSl) && newSl > 0 && improves && remainsBehindMark) {
-            store.trades[i] = {
-              ...t,
-              stopLossPrice: newSl,
-              peakRoe,
-              slTrailLockRoe: targetLockRoe,
-              slTrailUpdatedAt: new Date().toISOString(),
-              note: [
-                String(t.note ?? ''),
-                `liquidProgressiveSl=${targetLockRoe}%@${newSl}; peak=${peakRoe.toFixed(1)}%`,
-              ].filter(Boolean).join(' | ').slice(0, 700),
-            };
-            t = store.trades[i];
-            dirty = true;
-            console.log(`[LiquidPaper] SL_TRAIL ${symbol} ${t.side} peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% sl=${newSl}`);
-          }
+      store.trades[i] = filled;
+      dirty = true;
+      changedTradeIds.add(filled.id);
+      filledTradeIds.add(filled.id);
+      continue;
+    }
+    if (t.status !== 'OPEN') continue;
+    const isLong = t.side === 'LONG';
+    const entry = Number(t.entryPrice);
+    const quantity = Number(t.quantity);
+    const margin = Number(t.marginUsdt);
+    const leverage = Math.max(1, Number(t.leverage) || 1);
+    const livePnl = (markPrice - entry) * quantity * (isLong ? 1 : -1);
+    const liveRoe = margin > 0 ? livePnl / margin * 100 : 0;
+    const progressiveEnabled = process.env.LIQUID_SCAN_PAPER_PROGRESSIVE_SL_ENABLED !== 'false'
+      && t.liquidEvalVersion === 'LIQUID_SHADOW_V2_20260722';
+    if (progressiveEnabled && Number.isFinite(liveRoe)) {
+      const previousPeak = liquidPaperPeakRoe.get(t.id) ?? Number(t.peakRoe ?? 0);
+      const peakRoe = Math.max(previousPeak, liveRoe);
+      liquidPaperPeakRoe.set(t.id, peakRoe);
+      const targetLockRoe = liquidScanTrailLockRoe(peakRoe);
+      const currentLockRoe = Number(t.slTrailLockRoe ?? -Infinity);
+      if (targetLockRoe != null && targetLockRoe > currentLockRoe) {
+        const lockMove = targetLockRoe / 100 / leverage;
+        const newSl = isLong ? entry * (1 + lockMove) : entry * (1 - lockMove);
+        const currentSl = Number(t.stopLossPrice ?? 0);
+        const improves = !Number.isFinite(currentSl) || currentSl <= 0
+          || (isLong ? newSl > currentSl : newSl < currentSl);
+        const remainsBehindMark = isLong ? newSl < markPrice : newSl > markPrice;
+        if (Number.isFinite(newSl) && newSl > 0 && improves && remainsBehindMark) {
+          store.trades[i] = {
+            ...t,
+            stopLossPrice: newSl,
+            peakRoe,
+            slTrailLockRoe: targetLockRoe,
+            slTrailUpdatedAt: new Date().toISOString(),
+            note: [
+              String(t.note ?? ''),
+              `liquidProgressiveSl=${targetLockRoe}%@${newSl}; peak=${peakRoe.toFixed(1)}%`,
+            ].filter(Boolean).join(' | ').slice(0, 700),
+          };
+          t = store.trades[i];
+          dirty = true;
+          changedTradeIds.add(t.id);
+          console.log(`[LiquidPaper] SL_TRAIL ${symbol} ${t.side} peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% sl=${newSl}`);
         }
       }
-      const tp = Number(t.takeProfitPrice ?? 0);
-      const sl = Number(t.stopLossPrice ?? 0);
-      const tpHit = tp > 0 && (isLong ? markPrice >= tp : markPrice <= tp);
-      const slHit = sl > 0 && (isLong ? markPrice <= sl : markPrice >= sl);
-      if (!tpHit && !slHit) continue;
-      const outcome = tpHit ? 'TP' : 'SL';
-      const exitPrice = outcome === 'TP' ? tp : sl;
-      const sideMult = isLong ? 1 : -1;
-      const pnl = (exitPrice - Number(t.entryPrice)) * Number(t.quantity) * sideMult;
-      const roe = Number(t.marginUsdt) > 0 ? (pnl / Number(t.marginUsdt)) * 100 : 0;
-      const financial = liquidPaperFinancialMetrics({ ...t, status: 'CLOSED', exitPrice }, exitPrice, getLiquidPaperFeeRate());
-      store.trades[i] = {
-        ...t,
-        status: 'CLOSED',
-        exitPrice,
-        pnl,
-        roe,
-        ...financial,
-        closedAt: new Date().toISOString(),
-        outcome,
-        closeType: outcome === 'SL' && t.slTrailLockRoe != null ? 'SL_TRAIL' : outcome,
-        closeNote: outcome === 'SL' && t.slTrailLockRoe != null
-          ? `Auto-closed: progressive SL ${t.slTrailLockRoe}% hit @ ${markPrice}`
-          : `Auto-closed: ${outcome} hit @ ${markPrice}`,
-      };
-      liquidPaperPeakRoe.delete(t.id);
-      dirty = true;
-      console.log(`[LiquidPaper] 🎯 ${outcome} hit ${symbol} ${t.side} exit=${markPrice} (${outcome === 'TP' ? 'tp' : 'sl'}=${outcome === 'TP' ? tp : sl})`);
     }
-    if (dirty) {
-      await writeLiquidPaperStore(store);
-      scheduleLiquidPaperBroadcast(100);
+    const tp = Number(t.takeProfitPrice ?? 0);
+    const sl = Number(t.stopLossPrice ?? 0);
+    const tpHit = tp > 0 && (isLong ? markPrice >= tp : markPrice <= tp);
+    const slHit = sl > 0 && (isLong ? markPrice <= sl : markPrice >= sl);
+    if (!tpHit && !slHit) continue;
+    const outcome = tpHit ? 'TP' : 'SL';
+    const exitPrice = outcome === 'TP' ? tp : sl;
+    const sideMult = isLong ? 1 : -1;
+    const pnl = (exitPrice - Number(t.entryPrice)) * Number(t.quantity) * sideMult;
+    const roe = Number(t.marginUsdt) > 0 ? (pnl / Number(t.marginUsdt)) * 100 : 0;
+    const financial = liquidPaperFinancialMetrics(
+      { ...t, status: 'CLOSED', exitPrice },
+      exitPrice,
+      getLiquidPaperFeeRate(),
+    );
+    store.trades[i] = {
+      ...t,
+      status: 'CLOSED',
+      exitPrice,
+      pnl,
+      roe,
+      ...financial,
+      closedAt: new Date().toISOString(),
+      outcome,
+      closeType: outcome === 'SL' && t.slTrailLockRoe != null ? 'SL_TRAIL' : outcome,
+      closeNote: outcome === 'SL' && t.slTrailLockRoe != null
+        ? `Auto-closed: progressive SL ${t.slTrailLockRoe}% hit @ ${markPrice}`
+        : `Auto-closed: ${outcome} hit @ ${markPrice}`,
+    };
+    liquidPaperPeakRoe.delete(t.id);
+    dirty = true;
+    changedTradeIds.add(t.id);
+    closedTradeIds.add(t.id);
+    console.log(`[LiquidPaper] 🎯 ${outcome} hit ${symbol} ${t.side} exit=${markPrice} (${outcome === 'TP' ? 'tp' : 'sl'}=${outcome === 'TP' ? tp : sl})`);
+  }
+
+  if (!dirty) return;
+
+  // Update the shared in-memory store immediately. Disk persistence is
+  // coalesced and streamed in the background, so active symbol ticks never
+  // wait behind a full historical JSON rewrite.
+  writeLiquidPaperStore(store, { attachPatterns: false }).catch((error) => {
+    console.error('[LiquidPaper] Persist failed:', error.message);
+  });
+  for (const id of changedTradeIds) {
+    const changedTrade = store.trades.find((trade) => trade.id === id);
+    if (!changedTrade) continue;
+    queueLiquidPaperTradeUpdate(changedTrade);
+    if (filledTradeIds.has(id)) {
+      console.log(`[LiquidPaper] ✅ FILLED ${changedTrade.symbol} ${changedTrade.side} setupEntry=${changedTrade.setupEntryPrice} socketEntry=${changedTrade.entryPrice}`);
+      publishRecommendedSourceOpen('liquid', changedTrade, {
+        price: changedTrade.entryPrice,
+        at: Date.now(),
+        source: 'liquid-fill-socket-event',
+      });
+    }
+    if (closedTradeIds.has(id)) {
+      queueLiveCardBotClose('liquid', changedTrade, {
+        outcome: changedTrade.outcome,
+        reason: changedTrade.closeType ?? changedTrade.closeNote ?? changedTrade.outcome,
+      });
+    }
+  }
+  scheduleLiquidPaperBroadcast(100);
+}
+
+async function drainLiquidPaperMarkBatch() {
+  if (liquidPaperMarkBatchRunning) return;
+  liquidPaperMarkBatchRunning = true;
+  try {
+    while (liquidPaperQueuedMarks.size > 0) {
+      const marks = new Map(liquidPaperQueuedMarks);
+      liquidPaperQueuedMarks.clear();
+      const waiters = liquidPaperMarkBatchWaiters.splice(0);
+      try {
+        await processLiquidPaperMarkBatch(marks);
+        waiters.forEach(({ resolve }) => resolve());
+      } catch (error) {
+        waiters.forEach(({ reject }) => reject(error));
+      }
     }
   } finally {
-    liquidPaperFillLocks.delete(symbol);
+    liquidPaperMarkBatchRunning = false;
+    if (liquidPaperQueuedMarks.size > 0) scheduleLiquidPaperMarkBatch();
   }
+}
+
+function scheduleLiquidPaperMarkBatch() {
+  if (liquidPaperMarkBatchRunning || liquidPaperMarkBatchTimer) return;
+  const delayMs = Math.max(10, Number(process.env.LIQUID_PAPER_SOCKET_BATCH_MS ?? 50));
+  liquidPaperMarkBatchTimer = setTimeout(() => {
+    liquidPaperMarkBatchTimer = null;
+    drainLiquidPaperMarkBatch().catch((error) => {
+      console.error('[LiquidPaper] Socket batch failed:', error.message);
+    });
+  }, delayMs);
+  liquidPaperMarkBatchTimer.unref?.();
+}
+
+function processLiquidPaperPendingFillsForSymbol(symbol, markPrice) {
+  const normalizedSymbol = String(symbol ?? '').toUpperCase();
+  const numericMark = Number(markPrice);
+  if (!normalizedSymbol || !Number.isFinite(numericMark) || numericMark <= 0) {
+    return Promise.resolve();
+  }
+  liquidPaperQueuedMarks.set(normalizedSymbol, numericMark);
+  const result = new Promise((resolve, reject) => {
+    liquidPaperMarkBatchWaiters.push({ resolve, reject });
+  });
+  scheduleLiquidPaperMarkBatch();
+  return result;
+}
+
+async function fillPendingLiquidPaperTrade(trade, markPrice) {
+  await processLiquidPaperPendingFillsForSymbol(trade.symbol, markPrice);
+  const store = await readLiquidPaperStore();
+  const current = store.trades.find((row) => row.id === trade.id);
+  return current && current.status !== 'PENDING' ? current : null;
 }
 
 async function processAllPaperPendingFills() {
@@ -13255,12 +16698,14 @@ async function pollLiquidPaperMarksOnce() {
 
   const rows = await client.getPremiumIndex();
   const bySymbol = new Map(rows.map((row) => [row.symbol, Number(row.markPrice)]));
+  const updates = [];
   for (const symbol of symbols) {
     const markPrice = bySymbol.get(symbol);
     if (!Number.isFinite(markPrice) || markPrice <= 0) continue;
     paperMarkCache.set(symbol, { markPrice, at: Date.now(), source: 'rest' });
-    await processLiquidPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
+    updates.push(processLiquidPaperPendingFillsForSymbol(symbol, markPrice));
   }
+  await Promise.allSettled(updates);
   scheduleLiquidPaperBroadcast(50);
 }
 
@@ -13578,14 +17023,14 @@ async function syncCapPaperTicker() {
 
 function startCapPaperTicker() {
   if (capPaperTicker) return;
-  capPaperTicker = createAggTradeTicker({
-    logLabel: 'CapPaperTick',
-    onPrice: ({ symbol, markPrice, eventTime }) => {
+  capPaperTicker = sharedLastTicker.createClient(
+    'capPaper',
+    ({ symbol, markPrice, eventTime }) => {
       capMarkCache.set(symbol, markPrice);
       capMarkCacheAt.set(symbol, eventTime);
     },
-  });
-  console.log('[CapPaper] Dedicated socket-only last-price ticker started (1s batched processing).');
+  );
+  console.log('[CapPaper] Shared last-price ticker consumer started (1s batched processing).');
   syncCapPaperTicker().catch(() => {});
   setInterval(() => syncCapPaperTicker().catch(() => {}), 30_000);
   setInterval(() => processCapPaperCachedMarks().catch((err) => {
@@ -13774,7 +17219,7 @@ async function syncDiPaperTicker() {
 
 function startDiPaperTicker() {
   if (diPaperTicker) return;
-  diPaperTicker = true; // guard flag — actual WS is sharedLastTicker
+  diPaperTicker = true; // guard flag — actual WS is sharedLastTicke
   sharedLastTicker.register('diPaper', ({ symbol, markPrice }) => {
     diMarkCache.set(symbol, markPrice);
     processDiPaperFills(symbol, markPrice).catch(() => {});
@@ -13966,7 +17411,7 @@ async function syncPiPaperTicker() {
 
 function startPiPaperTicker() {
   if (piPaperTicker) return;
-  piPaperTicker = true; // guard flag — actual WS is sharedLastTicker
+  piPaperTicker = true; // guard flag — actual WS is sharedLastTicke
   sharedLastTicker.register('piPaper', ({ symbol, markPrice }) => {
     piMarkCache.set(symbol, markPrice);
     processPiPaperFills(symbol, markPrice).catch(() => {});
@@ -13980,6 +17425,74 @@ function startPiPaperTicker() {
 
 // ── Pump paper trade system ───────────────────────────────────────────────────
 
+async function replayPumpPaperWal(store) {
+  let raw = '';
+  try {
+    raw = await readFile(PUMP_PAPER_WAL_FILE, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { applied: 0, skipped: 0 };
+    throw error;
+  }
+  if (!raw.trim()) return { applied: 0, skipped: 0 };
+
+  // Preserve every legacy row, including duplicate ids. Existing mutations use
+  // findIndex (first match), while delete uses filter (all matches); replay must
+  // mirror that behaviour instead of silently deduplicating historical data.
+  const baseRows = Array.isArray(store?.trades) ? [...store.trades] : [];
+  const firstIndexById = new Map();
+  for (let index = 0; index < baseRows.length; index += 1) {
+    const id = String(baseRows[index]?.id ?? '');
+    if (id && !firstIndexById.has(id)) firstIndexById.set(id, index);
+  }
+  const deletedBaseIds = new Set();
+  const newById = new Map();
+  const newOrder = [];
+  const newOrderSet = new Set();
+  let applied = 0;
+  let skipped = 0;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      const id = String(event?.id ?? event?.trade?.id ?? '');
+      if (!id) {
+        skipped += 1;
+        continue;
+      }
+      if (event.op === 'DELETE') {
+        deletedBaseIds.add(id);
+        newById.delete(id);
+        applied += 1;
+        continue;
+      }
+      if (event.op !== 'UPSERT' || !event.trade || typeof event.trade !== 'object') {
+        skipped += 1;
+        continue;
+      }
+      const baseIndex = firstIndexById.get(id);
+      if (baseIndex != null && !deletedBaseIds.has(id)) {
+        baseRows[baseIndex] = event.trade;
+      } else {
+        if (!newOrderSet.has(id)) {
+          newOrder.push(id);
+          newOrderSet.add(id);
+        }
+        newById.set(id, event.trade);
+      }
+      applied += 1;
+    } catch {
+      // A crash may truncate only the last append. The base JSON and all older
+      // valid WAL lines remain usable.
+      skipped += 1;
+    }
+  }
+  store.trades = [
+    ...newOrder.slice().reverse().filter((id) => newById.has(id)).map((id) => newById.get(id)),
+    ...baseRows.filter((trade) => !deletedBaseIds.has(String(trade?.id ?? ''))),
+  ];
+  return { applied, skipped };
+}
+
 async function readPumpPaperStore() {
   if (_pumpPaperStoreCache) return _pumpPaperStoreCache;
   if (_pumpPaperStoreLoadPromise) return _pumpPaperStoreLoadPromise;
@@ -13988,9 +17501,10 @@ async function readPumpPaperStore() {
       const raw = await readFile(PUMP_PAPER_FILE, 'utf8');
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+      const walResult = await replayPumpPaperWal(parsed);
       _pumpPaperStoreCache = parsed;
       invalidatePumpPaperDerivedCache();
-      console.log(`[PumpPaper] Store cached in memory (${parsed.trades.length} trades).`);
+      console.log(`[PumpPaper] Store cached in memory (${parsed.trades.length} trades; WAL ${walResult.applied} applied, ${walResult.skipped} skipped).`);
     } catch (e) {
       console.warn('[PumpPaper] Store read error, starting fresh:', e.message);
       _pumpPaperStoreCache = { trades: [] };
@@ -14061,14 +17575,25 @@ function scheduleTopReversalPaperBroadcast(delayMs = 700) {
 
 let _pumpPaperStoreCache = null;
 let _pumpPaperStoreLoadPromise = null;
-let _pumpPaperWriteRunning = false;
-let _pumpPaperWritePending = false;
-let _pumpPaperWriteWaiters = [];
+let _pumpPaperWalWrite = Promise.resolve();
 let _pumpPaperArchiveWrite = Promise.resolve();
 let _pumpPaperDerivedCacheVersion = 0;
 let _pumpPaperDayIndexCache = null;
 let _pumpPaperActiveIndexCache = null;
 const _pumpPaperMemoCache = new Map();
+let _pumpObservationEntryModel = null;
+let _pumpObservationSnapshotCache = null;
+
+function getPumpObservationSnapshotMapCached(store) {
+  const currentDay = liquidPaperDayKey(new Date());
+  if (
+    _pumpObservationSnapshotCache?.day === currentDay
+    && _pumpObservationSnapshotCache?.snapshots instanceof Map
+  ) return _pumpObservationSnapshotCache.snapshots;
+  const snapshots = buildPumpObservationSnapshotMap(store?.trades ?? []);
+  _pumpObservationSnapshotCache = { day: currentDay, snapshots };
+  return snapshots;
+}
 
 function invalidatePumpPaperDerivedCache() {
   _pumpPaperDerivedCacheVersion += 1;
@@ -14078,7 +17603,7 @@ function invalidatePumpPaperDerivedCache() {
 }
 
 function pumpPaperDateOf(t) {
-  return String(t?.createdAt ?? t?.openedAt ?? t?.closedAt ?? '').slice(0, 10);
+  return liquidPaperTradeDayKey(t);
 }
 
 function getPumpPaperDayIndex(store) {
@@ -14105,6 +17630,17 @@ function getPumpPaperTradesByDay(store, day = 'all') {
   const dayFilter = String(day ?? 'all');
   if (dayFilter && dayFilter !== 'all') return index.days.get(dayFilter) ?? [];
   return index.all;
+}
+
+function getPumpPaperTradesByDateRange(store, dateRange = {}) {
+  const index = getPumpPaperDayIndex(store);
+  if (dateRange.mode === 'all') return index.all;
+  const selected = [];
+  for (const day of index.availableDays) {
+    if (!liquidPaperDayInRange(day, dateRange)) continue;
+    selected.push(...(index.days.get(day) ?? []));
+  }
+  return selected;
 }
 
 function pumpPaperMemo(key, build) {
@@ -14160,29 +17696,18 @@ async function writePumpPaperSnapshot(filePath, store) {
   }
 }
 
-async function drainPumpPaperWrites() {
-  if (_pumpPaperWriteRunning) return;
-  _pumpPaperWriteRunning = true;
-  try {
-    while (_pumpPaperWritePending) {
-      _pumpPaperWritePending = false;
-      const waiters = _pumpPaperWriteWaiters.splice(0);
-      try {
-        // Stream the large store in small batches. JSON.stringify(store) used to
-        // allocate a second 260MB+ string plus encoder buffers on every mark
-        // update, driving V8 into multi-GB GC churn.
-        const tmp = `${PUMP_PAPER_FILE}.tmp`;
-        await writePumpPaperSnapshot(tmp, _pumpPaperStoreCache);
-        await rename(tmp, PUMP_PAPER_FILE);
-        waiters.forEach(({ resolve }) => resolve());
-      } catch (err) {
-        waiters.forEach(({ reject }) => reject(err));
-      }
-    }
-  } finally {
-    _pumpPaperWriteRunning = false;
-    if (_pumpPaperWritePending) setImmediate(() => drainPumpPaperWrites().catch(() => {}));
-  }
+function appendPumpPaperWal(events) {
+  const valid = (Array.isArray(events) ? events : []).filter(Boolean);
+  if (!valid.length) return Promise.resolve();
+  const payload = `${valid.map((event) => JSON.stringify({
+    v: 1,
+    at: new Date().toISOString(),
+    ...event,
+  })).join('\n')}\n`;
+  _pumpPaperWalWrite = _pumpPaperWalWrite
+    .catch(() => {})
+    .then(() => appendFile(PUMP_PAPER_WAL_FILE, payload, 'utf8'));
+  return _pumpPaperWalWrite;
 }
 
 function queuePumpPaperArchive(rows) {
@@ -14233,27 +17758,22 @@ function getPumpPaperActiveIndex(store) {
   return _pumpPaperActiveIndexCache;
 }
 
-function writePumpPaperStore(store) {
+function writePumpPaperStore(store, { upsertIds = [], deleteIds = [] } = {}) {
   const allTrades = Array.isArray(store?.trades) ? store.trades : [];
-  const overflow = allTrades.length > PUMP_PAPER_MAX_ACTIVE_ROWS
-    ? allTrades.slice(PUMP_PAPER_MAX_ACTIVE_ROWS)
-    : [];
-  _pumpPaperStoreCache = overflow.length
-    ? { ...store, trades: allTrades.slice(0, PUMP_PAPER_MAX_ACTIVE_ROWS) }
-    : store;
+  _pumpPaperStoreCache = store;
   invalidatePumpPaperDerivedCache();
-  _pumpPaperWritePending = true;
-  const result = new Promise((resolve, reject) => {
-    _pumpPaperWriteWaiters.push({ resolve, reject });
-  });
-  if (!overflow.length) {
-    drainPumpPaperWrites().catch(() => {});
-    return result;
+  const events = [];
+  for (const rawId of new Set(upsertIds.map((id) => String(id ?? '')).filter(Boolean))) {
+    const trade = allTrades.find((row) => String(row?.id ?? '') === rawId);
+    if (trade) events.push({ op: 'UPSERT', id: rawId, trade });
   }
-  return queuePumpPaperArchive(overflow).then(() => {
-    drainPumpPaperWrites().catch(() => {});
-    return result;
-  });
+  for (const rawId of new Set(deleteIds.map((id) => String(id ?? '')).filter(Boolean))) {
+    events.push({ op: 'DELETE', id: rawId });
+  }
+  if (!events.length) {
+    throw new Error('Pump paper mutation missing WAL ids; refusing an untracked in-memory-only write');
+  }
+  return appendPumpPaperWal(events);
 }
 function getPumpPaperMarkFreshMs() {
   const freshMs = Number(process.env.PUMP_PAPER_MARK_STALE_MS
@@ -14758,6 +18278,296 @@ function finalizePumpStage2Stats(buckets, markForTrade = () => null) {
   });
 }
 
+function normalizePumpLiftTier(value, fallback = 'NEUTRAL') {
+  const tier = String(value ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return ['BOOST', 'NEUTRAL', 'DEGRADE'].includes(tier) ? tier : fallback;
+}
+
+function pumpLiftToken(value, fallback = 'NO_DATA') {
+  const token = String(value ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return token || fallback;
+}
+
+function pumpLiftParentKeyOfTrade(trade = {}) {
+  const factors = trade.pumpSignalFactors ?? trade.factors ?? {};
+  const parent = pumpLiftToken(
+    trade.pumpEvalLabel
+      ?? trade.pumpSignalType
+      ?? trade.signalType
+      ?? trade.type,
+    'PUMP_PARENT_NO_DATA',
+  );
+  const side = pumpLiftToken(trade.side ?? trade.action, 'SIDE_NO_DATA');
+  const timeframe = String(
+    trade.pumpSignalTimeframe
+      ?? trade.interval
+      ?? factors.timeframe
+      ?? '15m',
+  ).toLowerCase();
+  const margin = Number(trade.marginUsdt ?? trade.marginUsd ?? trade.margin);
+  const marginBucket = Number.isFinite(margin)
+    ? margin >= 9.5 ? 'MARGIN_10'
+      : margin >= 0.95 ? 'MARGIN_1'
+        : `MARGIN_${Math.round(margin * 100) / 100}`
+    : 'MARGIN_NO_DATA';
+  return [parent, side, timeframe, marginBucket].join('|');
+}
+
+function pumpLiftCohortKeyOfTrade(trade = {}, stage2Rule = null) {
+  const stage2 = stage2Rule ?? pumpStage2RuleOfTrade(trade);
+  if (!stage2) return null;
+  return `${pumpLiftParentKeyOfTrade(trade)}|${pumpLiftToken(stage2.code, 'PUMP_S2_NO_DATA')}`;
+}
+
+function createPumpLiftAccumulator() {
+  return {
+    closed: 0,
+    capturedClosed: 0,
+    netPnl: 0,
+    roeSum: 0,
+    grossWin: 0,
+    grossLoss: 0,
+    dailyPnl: new Map(),
+  };
+}
+
+function addPumpLiftObservation(accumulator, trade) {
+  if (!accumulator || trade?.status !== 'CLOSED') return;
+  const pnl = Number(trade.pnl ?? 0);
+  const estimatedFee = Number(
+    trade.estimatedFeeUsdt
+      ?? trade.feeUsdt
+      ?? estimateEmaPaperFeeUsdt(trade)
+      ?? 0,
+  );
+  const netPnl = (Number.isFinite(pnl) ? pnl : 0)
+    - (Number.isFinite(estimatedFee) ? estimatedFee : 0);
+  const margin = Number(trade.marginUsdt ?? trade.marginUsd ?? trade.margin);
+  const netRoe = Number.isFinite(margin) && margin > 0
+    ? netPnl / margin * 100
+    : Number(trade.roe ?? 0);
+  const day = pumpPaperDateOf(trade);
+  accumulator.closed += 1;
+  accumulator.capturedClosed += trade.pumpStage2Version && trade.pumpStage2Code ? 1 : 0;
+  accumulator.netPnl += netPnl;
+  accumulator.roeSum += Number.isFinite(netRoe) ? netRoe : 0;
+  if (netPnl > 0) accumulator.grossWin += netPnl;
+  else if (netPnl < 0) accumulator.grossLoss += Math.abs(netPnl);
+  accumulator.dailyPnl.set(day, (accumulator.dailyPnl.get(day) ?? 0) + netPnl);
+}
+
+function finalizePumpLiftAccumulator(accumulator = createPumpLiftAccumulator()) {
+  const daily = [...accumulator.dailyPnl.values()];
+  const positiveDays = daily.filter((value) => value > 0).length;
+  const negativeDays = daily.filter((value) => value < 0).length;
+  const profitFactor = accumulator.grossLoss > 0
+    ? accumulator.grossWin / accumulator.grossLoss
+    : accumulator.grossWin > 0 ? 99 : 0;
+  return {
+    closed: accumulator.closed,
+    capturedClosed: accumulator.capturedClosed,
+    days: daily.length,
+    positiveDays,
+    negativeDays,
+    netPnl: accumulator.netPnl,
+    avgNetRoe: accumulator.closed > 0 ? accumulator.roeSum / accumulator.closed : 0,
+    profitFactor,
+  };
+}
+
+function buildPumpLiftModel(store, cutoffDay = null, lookbackDays = 5) {
+  const index = getPumpPaperDayIndex(store);
+  const normalizedCutoff = /^\d{4}-\d{2}-\d{2}$/.test(String(cutoffDay ?? ''))
+    ? String(cutoffDay)
+    : index.availableDays[0] ?? new Date().toISOString().slice(0, 10);
+  const historyDays = index.availableDays
+    .filter((day) => day < normalizedCutoff)
+    .slice(0, Math.max(1, Number(lookbackDays) || 5));
+  const cohortAccumulators = new Map();
+  const parentAccumulators = new Map();
+
+  for (const day of historyDays) {
+    for (const trade of index.days.get(day) ?? []) {
+      if (trade.status !== 'CLOSED' || !isNativePumpEvalSource(trade.source)) continue;
+      const stage2Rule = pumpStage2RuleOfTrade(trade);
+      if (!stage2Rule) continue;
+      const parentKey = pumpLiftParentKeyOfTrade(trade);
+      const cohortKey = pumpLiftCohortKeyOfTrade(trade, stage2Rule);
+      if (!cohortKey) continue;
+      if (!parentAccumulators.has(parentKey)) {
+        parentAccumulators.set(parentKey, createPumpLiftAccumulator());
+      }
+      if (!cohortAccumulators.has(cohortKey)) {
+        cohortAccumulators.set(cohortKey, createPumpLiftAccumulator());
+      }
+      addPumpLiftObservation(parentAccumulators.get(parentKey), trade);
+      addPumpLiftObservation(cohortAccumulators.get(cohortKey), trade);
+    }
+  }
+
+  return {
+    cutoffDay: normalizedCutoff,
+    historyDays,
+    cohorts: new Map(
+      [...cohortAccumulators.entries()]
+        .map(([key, value]) => [key, finalizePumpLiftAccumulator(value)]),
+    ),
+    parents: new Map(
+      [...parentAccumulators.entries()]
+        .map(([key, value]) => [key, finalizePumpLiftAccumulator(value)]),
+    ),
+  };
+}
+
+function pumpLiftRuleOfTrade(trade = {}, model = null) {
+  if (!isNativePumpEvalSource(trade.source)) return null;
+  const savedTier = normalizePumpLiftTier(trade.pumpLiftTier, '');
+  if (savedTier && trade.pumpLiftVersion) {
+    return {
+      observationOnly: true,
+      affectsEntry: false,
+      affectsMargin: false,
+      affectsSl: false,
+      affectsTp: false,
+      tier: savedTier,
+      label: trade.pumpLiftLabel ?? savedTier,
+      code: trade.pumpLiftCode ?? 'PUMP_LIFT_SAVED',
+      basis: trade.pumpLiftBasis ?? 'BOOTSTRAP',
+      actionable: trade.pumpLiftActionable === true,
+      reason: trade.pumpLiftReason ?? 'Pump lift snapshot đã lưu tại entry.',
+      version: trade.pumpLiftVersion,
+      parentKey: trade.pumpLiftParentKey ?? null,
+      cohortKey: trade.pumpLiftCohortKey ?? null,
+      closed: trade.pumpLiftClosed ?? 0,
+      days: trade.pumpLiftDays ?? 0,
+      capturedClosed: trade.pumpLiftCapturedClosed ?? 0,
+      netPnl: trade.pumpLiftNetPnl ?? 0,
+      avgNetRoe: trade.pumpLiftAvgNetRoe ?? 0,
+      parentAvgNetRoe: trade.pumpLiftParentAvgNetRoe ?? 0,
+      deltaRoe: trade.pumpLiftDeltaRoe ?? 0,
+      profitFactor: trade.pumpLiftProfitFactor ?? 0,
+      positiveDays: trade.pumpLiftPositiveDays ?? 0,
+      negativeDays: trade.pumpLiftNegativeDays ?? 0,
+      derived: false,
+    };
+  }
+  const stage2Rule = pumpStage2RuleOfTrade(trade);
+  if (!stage2Rule) return null;
+  const parentKey = pumpLiftParentKeyOfTrade(trade);
+  const cohortKey = pumpLiftCohortKeyOfTrade(trade, stage2Rule);
+  const evidence = evaluatePumpLiftEvidence({
+    cohort: model?.cohorts?.get(cohortKey) ?? {},
+    parent: model?.parents?.get(parentKey) ?? {},
+  });
+  return {
+    ...evidence,
+    parentKey,
+    cohortKey,
+    historyDays: model?.historyDays ?? [],
+    derived: true,
+  };
+}
+
+function withPumpLiftFields(trade = {}, rule = null) {
+  if (!rule) return trade;
+  return {
+    ...trade,
+    pumpLiftTier: rule.tier,
+    pumpLiftLabel: rule.label,
+    pumpLiftCode: rule.code,
+    pumpLiftBasis: rule.basis,
+    pumpLiftActionable: rule.actionable === true,
+    pumpLiftReason: rule.reason,
+    pumpLiftVersion: rule.version,
+    pumpLiftParentKey: rule.parentKey,
+    pumpLiftCohortKey: rule.cohortKey,
+    pumpLiftClosed: rule.closed,
+    pumpLiftDays: rule.days,
+    pumpLiftCapturedClosed: rule.capturedClosed,
+    pumpLiftNetPnl: rule.netPnl,
+    pumpLiftAvgNetRoe: rule.avgNetRoe,
+    pumpLiftParentAvgNetRoe: rule.parentAvgNetRoe,
+    pumpLiftDeltaRoe: rule.deltaRoe,
+    pumpLiftProfitFactor: rule.profitFactor,
+    pumpLiftPositiveDays: rule.positiveDays,
+    pumpLiftNegativeDays: rule.negativeDays,
+    pumpLiftHistoryDays: rule.historyDays,
+    pumpLiftDerived: rule.derived === true,
+    pumpLiftObservationOnly: true,
+  };
+}
+
+function enrichPumpLiftTrade(trade = {}, model = null) {
+  return withPumpLiftFields(trade, pumpLiftRuleOfTrade(trade, model));
+}
+
+function buildPumpLiftStats(storedTrades = [], model = null, markForTrade = () => null) {
+  const makeBucket = (tier) => ({
+    tier,
+    label: tier,
+    total: 0,
+    open: 0,
+    pending: 0,
+    closed: 0,
+    wins: 0,
+    losses: 0,
+    realizedPnl: 0,
+    unrealizedPnl: 0,
+    roeSum: 0,
+    bootstrap: 0,
+    oos: 0,
+  });
+  const buckets = {
+    BOOST: makeBucket('BOOST'),
+    NEUTRAL: makeBucket('NEUTRAL'),
+    DEGRADE: makeBucket('DEGRADE'),
+  };
+  for (const raw of storedTrades) {
+    const rule = pumpLiftRuleOfTrade(raw, model);
+    if (!rule) continue;
+    const tier = normalizePumpLiftTier(rule.tier);
+    const row = buckets[tier];
+    row.total += 1;
+    if (rule.basis === 'OOS') row.oos += 1;
+    else row.bootstrap += 1;
+    if (raw.status === 'CLOSED') {
+      const pnl = Number(raw.pnl ?? 0);
+      const roe = Number(raw.roe ?? 0);
+      row.closed += 1;
+      row.realizedPnl += Number.isFinite(pnl) ? pnl : 0;
+      row.roeSum += Number.isFinite(roe) ? roe : 0;
+      if (pnl > 0) row.wins += 1;
+      else if (pnl < 0) row.losses += 1;
+    } else if (raw.status === 'PENDING') {
+      row.pending += 1;
+    } else {
+      row.open += 1;
+      const enriched = enrichPumpPaperTrade(raw, markForTrade(raw));
+      const pnl = Number(enriched.pnl ?? 0);
+      row.unrealizedPnl += Number.isFinite(pnl) ? pnl : 0;
+    }
+  }
+  return ['BOOST', 'NEUTRAL', 'DEGRADE'].map((tier) => {
+    const row = buckets[tier];
+    return {
+      ...row,
+      wr: row.closed > 0 ? +(row.wins / row.closed * 100).toFixed(1) : null,
+      avgRoe: row.closed > 0 ? +(row.roeSum / row.closed).toFixed(1) : null,
+      realizedPnl: +row.realizedPnl.toFixed(4),
+      unrealizedPnl: +row.unrealizedPnl.toFixed(4),
+      pnl: +(row.realizedPnl + row.unrealizedPnl).toFixed(4),
+    };
+  });
+}
+
 function enrichPumpPaperTrade(t, markPrice) {
   const liveMark = Number(markPrice);
   const hasLiveMark = Number.isFinite(liveMark) && liveMark > 0;
@@ -15033,6 +18843,824 @@ function pumpPaperFallbackCombo(t = {}) {
     ?? (note.match(/(?:emaStageGate|breakoutMarketRegime|breakoutChase|runnerPreGate|marketRegime)=([^|]+)/i)?.[1]?.trim())
     ?? '-';
   return [stage, side, tf, corrBucket, trendBucket, relation, `GATE_${normalizePumpComboPart(gate)}`].join(' | ');
+}
+
+function normalizePumpComboSelectorTier(value, fallback = 'WATCH') {
+  const tier = String(value ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return ['CORE', 'PROBE', 'WATCH', 'AVOID'].includes(tier) ? tier : fallback;
+}
+
+function pumpComboSelectorSourceFamily(trade = {}) {
+  const source = String(trade.source ?? '').toLowerCase();
+  if (source.startsWith('emasq-')) return 'EMA';
+  if (isNativePumpEvalSource(source)) return 'PUMP_NATIVE';
+  return 'OTHER';
+}
+
+function pumpComboSelectorMarginBucket(trade = {}) {
+  const margin = Number(trade.marginUsdt ?? trade.marginUsd ?? trade.margin);
+  if (!Number.isFinite(margin) || margin <= 0) return 'MARGIN_NO_DATA';
+  if (margin >= 9.5) return 'MARGIN_10';
+  if (margin >= 4.5) return 'MARGIN_5';
+  if (margin >= 0.95) return 'MARGIN_1';
+  return `MARGIN_${Math.round(margin * 100) / 100}`;
+}
+
+function pumpComboSelectorKeysOfTrade(trade = {}) {
+  const family = pumpComboSelectorSourceFamily(trade);
+  const combo = String(pumpPaperFallbackCombo(trade) ?? '-').trim();
+  const parts = combo.split('|').map((part) => part.trim()).filter(Boolean);
+  const side = String(trade.side ?? trade.action ?? 'SIDE_NO_DATA').toUpperCase();
+  const timeframe = String(
+    family === 'EMA'
+      ? emaPaperTimeframeOf(trade)
+      : trade.pumpSignalTimeframe
+        ?? trade.interval
+        ?? trade.pumpSignalFactors?.timeframe
+        ?? '15m',
+  ).toLowerCase();
+  const margin = pumpComboSelectorMarginBucket(trade);
+  const stage = family === 'EMA'
+    ? String(emaPaperStageOf(trade) ?? parts[0] ?? 'EMA_OTHER').toUpperCase()
+    : String(trade.pumpSignalType ?? parts[0] ?? 'PUMP_OTHER').toUpperCase();
+  const btcPhase = family === 'EMA'
+    ? String(parts.find((part) => /^BTC_(?:UP|DOWN|FLAT)_/i.test(part)) ?? 'BTC_NO_DATA').toUpperCase()
+    : String(
+        trade.pumpEvalBtcPhase
+          ?? trade.btcHealth?.btcTrendDi
+          ?? trade.btcTrendDi
+          ?? 'BTC_NO_DATA',
+      ).toUpperCase();
+  return {
+    family,
+    combo,
+    exactKey: [family, margin, combo].join('|'),
+    coarseKey: [family, margin, stage, side, timeframe, btcPhase].join('|'),
+    familyKey: [family, margin, side, timeframe].join('|'),
+  };
+}
+
+function pumpComboSelectorCandleTier(trade = {}) {
+  const family = pumpComboSelectorSourceFamily(trade);
+  if (family === 'EMA') {
+    return String(
+      trade.emaStageCandleTie
+        ?? trade.sideCandleTie
+        ?? 'WATCH',
+    ).toUpperCase();
+  }
+  const stage2 = pumpStage2RuleOfTrade(trade);
+  return String(
+    trade.sideCandleTie
+      ?? stage2?.tie
+      ?? trade.pumpStage2Tie
+      ?? 'WATCH',
+  ).toUpperCase();
+}
+
+function createPumpComboSelectorAccumulator() {
+  return {
+    closed: 0,
+    netRoeSum: 0,
+    netRoeSquareSum: 0,
+    grossWin: 0,
+    grossLoss: 0,
+    slCount: 0,
+    dailyNetPnl: new Map(),
+  };
+}
+
+function addPumpComboSelectorObservation(accumulator, trade = {}) {
+  if (!accumulator || trade.status !== 'CLOSED') return;
+  const pnl = Number(trade.pnl ?? 0);
+  const estimatedFee = Number(
+    trade.estimatedFeeUsdt
+      ?? trade.feeUsdt
+      ?? estimateEmaPaperFeeUsdt(trade)
+      ?? 0,
+  );
+  const netPnl = (Number.isFinite(pnl) ? pnl : 0)
+    - (Number.isFinite(estimatedFee) ? estimatedFee : 0);
+  const margin = Number(trade.marginUsdt ?? trade.marginUsd ?? trade.margin);
+  const rawNetRoe = Number.isFinite(margin) && margin > 0
+    ? netPnl / margin * 100
+    : Number(trade.roe ?? 0);
+  if (!Number.isFinite(rawNetRoe)) return;
+  // Wins can run very far while hard losses are bounded. Capping each sample
+  // keeps one exceptional runner from manufacturing a CORE label.
+  const netRoe = Math.max(-20, Math.min(20, rawNetRoe));
+  accumulator.closed += 1;
+  accumulator.netRoeSum += netRoe;
+  accumulator.netRoeSquareSum += netRoe * netRoe;
+  const day = pumpPaperDateOf(trade);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    accumulator.dailyNetPnl.set(
+      day,
+      (accumulator.dailyNetPnl.get(day) ?? 0) + netPnl,
+    );
+  }
+  if (netPnl > 0) accumulator.grossWin += netPnl;
+  else if (netPnl < 0) accumulator.grossLoss += Math.abs(netPnl);
+  if (
+    String(trade.outcome ?? '').toUpperCase() === 'SL'
+    || rawNetRoe <= -14.5
+  ) {
+    accumulator.slCount += 1;
+  }
+}
+
+function finalizePumpComboSelectorAccumulator(
+  accumulator = createPumpComboSelectorAccumulator(),
+) {
+  const closed = accumulator.closed;
+  const meanRoe = closed > 0 ? accumulator.netRoeSum / closed : 0;
+  const variance = closed > 1
+    ? Math.max(
+        0,
+        (accumulator.netRoeSquareSum - closed * meanRoe * meanRoe) / (closed - 1),
+      )
+    : 64;
+  const standardDeviation = Math.sqrt(variance);
+  const profitFactor = accumulator.grossLoss > 0
+    ? accumulator.grossWin / accumulator.grossLoss
+    : accumulator.grossWin > 0 ? 9.99 : 0;
+  return {
+    closed,
+    days: accumulator.dailyNetPnl.size,
+    positiveDays: [...accumulator.dailyNetPnl.values()].filter((value) => value > 0).length,
+    negativeDays: [...accumulator.dailyNetPnl.values()].filter((value) => value < 0).length,
+    meanRoe,
+    standardDeviation,
+    standardError: standardDeviation / Math.sqrt(Math.max(1, closed)),
+    profitFactor: Math.min(9.99, profitFactor),
+    slRate: closed > 0 ? accumulator.slCount / closed : 0,
+  };
+}
+
+function addPumpComboSelectorTradeToWindow(windowModel, trade = {}) {
+  const keys = pumpComboSelectorKeysOfTrade(trade);
+  for (const [mapName, key] of [
+    ['exact', keys.exactKey],
+    ['coarse', keys.coarseKey],
+    ['family', keys.familyKey],
+  ]) {
+    const map = windowModel[mapName];
+    if (!map.has(key)) map.set(key, createPumpComboSelectorAccumulator());
+    addPumpComboSelectorObservation(map.get(key), trade);
+  }
+}
+
+function finalizePumpComboSelectorWindow(windowModel) {
+  return {
+    exact: new Map([...windowModel.exact.entries()]
+      .map(([key, value]) => [key, finalizePumpComboSelectorAccumulator(value)])),
+    coarse: new Map([...windowModel.coarse.entries()]
+      .map(([key, value]) => [key, finalizePumpComboSelectorAccumulator(value)])),
+    family: new Map([...windowModel.family.entries()]
+      .map(([key, value]) => [key, finalizePumpComboSelectorAccumulator(value)])),
+  };
+}
+
+function buildPumpComboSelectorModel(store, cutoffDay = null) {
+  const index = getPumpPaperDayIndex(store);
+  const normalizedCutoff = /^\d{4}-\d{2}-\d{2}$/.test(String(cutoffDay ?? ''))
+    ? String(cutoffDay)
+    : index.availableDays[0] ?? new Date().toISOString().slice(0, 10);
+  const historyDays = index.availableDays
+    .filter((day) => day < normalizedCutoff)
+    .slice(0, 7);
+  const working = {
+    '1d': { exact: new Map(), coarse: new Map(), family: new Map() },
+    '3d': { exact: new Map(), coarse: new Map(), family: new Map() },
+    '7d': { exact: new Map(), coarse: new Map(), family: new Map() },
+  };
+
+  historyDays.forEach((day, dayIndex) => {
+    for (const trade of index.days.get(day) ?? []) {
+      if (trade.status !== 'CLOSED') continue;
+      addPumpComboSelectorTradeToWindow(working['7d'], trade);
+      if (dayIndex < 3) addPumpComboSelectorTradeToWindow(working['3d'], trade);
+      if (dayIndex < 1) addPumpComboSelectorTradeToWindow(working['1d'], trade);
+    }
+  });
+  const emaLayerHistoryTrades = historyDays.flatMap((day) => index.days.get(day) ?? []);
+  const emaLayers = buildEmaComboLayerModel(
+    emaLayerHistoryTrades,
+    normalizedCutoff,
+    { feeRate: getEmaPaperFeeRate() },
+  );
+
+  return {
+    cutoffDay: normalizedCutoff,
+    historyDays,
+    emaLayers,
+    windows: {
+      '1d': finalizePumpComboSelectorWindow(working['1d']),
+      '3d': finalizePumpComboSelectorWindow(working['3d']),
+      '7d': finalizePumpComboSelectorWindow(working['7d']),
+    },
+  };
+}
+
+function pumpComboSelectorWindowEvidence(windowName, windowModel, keys) {
+  const exact = windowModel?.exact?.get(keys.exactKey) ?? {};
+  const coarse = windowModel?.coarse?.get(keys.coarseKey) ?? {};
+  const family = windowModel?.family?.get(keys.familyKey) ?? {};
+  const familyMean = Number(family.meanRoe ?? 0);
+  const coarseReliability = Number(coarse.closed ?? 0) / (Number(coarse.closed ?? 0) + 20);
+  const coarseMean = coarseReliability * Number(coarse.meanRoe ?? 0)
+    + (1 - coarseReliability) * familyMean;
+  const exactReliability = Number(exact.closed ?? 0) / (Number(exact.closed ?? 0) + 12);
+  const posteriorMeanRoe = exactReliability * Number(exact.meanRoe ?? 0)
+    + (1 - exactReliability) * coarseMean;
+  const fallback = Number(coarse.closed ?? 0) > 0 ? coarse : family;
+  const blend = (field, fallbackValue = 0) => (
+    exactReliability * Number(exact[field] ?? fallbackValue)
+    + (1 - exactReliability) * Number(fallback[field] ?? fallbackValue)
+  );
+  const standardError = Number(exact.closed ?? 0) > 1
+    ? Number(exact.standardError ?? 4)
+    : Number(fallback.standardError ?? 4);
+  return {
+    name: windowName,
+    exactClosed: Number(exact.closed ?? 0),
+    exactDays: Number(exact.days ?? 0),
+    exactPositiveDays: Number(exact.positiveDays ?? 0),
+    exactNegativeDays: Number(exact.negativeDays ?? 0),
+    supportClosed: Math.max(
+      Number(exact.closed ?? 0),
+      Number(coarse.closed ?? 0),
+      Number(family.closed ?? 0),
+    ),
+    posteriorMeanRoe,
+    profitFactor: blend('profitFactor'),
+    slRate: blend('slRate'),
+    standardError,
+  };
+}
+
+function pumpComboSelectorRuleOfTrade(trade = {}, model = null, { snapshot = false } = {}) {
+  const savedTier = normalizePumpComboSelectorTier(trade.pumpSelectorTier, '');
+  if (savedTier && trade.pumpSelectorVersion) {
+    return {
+      observationOnly: true,
+      affectsEntry: false,
+      affectsMargin: false,
+      affectsSl: false,
+      affectsTp: false,
+      tier: savedTier,
+      label: trade.pumpSelectorLabel ?? savedTier,
+      code: trade.pumpSelectorCode ?? 'PUMP_SELECTOR_SAVED',
+      basis: trade.pumpSelectorBasis ?? 'SNAPSHOT',
+      reason: trade.pumpSelectorReason ?? 'Combo Selector snapshot đã lưu tại entry.',
+      version: trade.pumpSelectorVersion,
+      exactKey: trade.pumpSelectorExactKey ?? null,
+      coarseKey: trade.pumpSelectorCoarseKey ?? null,
+      familyKey: trade.pumpSelectorFamilyKey ?? null,
+      sourceFamily: trade.pumpSelectorSourceFamily ?? null,
+      exactClosed: trade.pumpSelectorExactClosed ?? 0,
+      exactDays: trade.pumpSelectorExactDays ?? 0,
+      exactPositiveDays: trade.pumpSelectorExactPositiveDays ?? 0,
+      exactNegativeDays: trade.pumpSelectorExactNegativeDays ?? 0,
+      supportClosed: trade.pumpSelectorSupportClosed ?? 0,
+      expectedNetRoe: trade.pumpSelectorExpectedNetRoe ?? 0,
+      conservativeEdge: trade.pumpSelectorConservativeEdge ?? 0,
+      profitFactor: trade.pumpSelectorProfitFactor ?? 0,
+      slRate: trade.pumpSelectorSlRate ?? 0,
+      standardError: trade.pumpSelectorStandardError ?? 0,
+      positiveWindows: trade.pumpSelectorPositiveWindows ?? 0,
+      negativeWindows: trade.pumpSelectorNegativeWindows ?? 0,
+      recentConflict: trade.pumpSelectorRecentConflict === true,
+      candleTier: trade.pumpSelectorCandleTier ?? 'WATCH',
+      candleAdjustment: trade.pumpSelectorCandleAdjustment ?? 0,
+      historyDays: trade.pumpSelectorHistoryDays ?? [],
+      derived: false,
+    };
+  }
+  const keys = pumpComboSelectorKeysOfTrade(trade);
+  const windows = ['1d', '3d', '7d'].map((name) => (
+    pumpComboSelectorWindowEvidence(name, model?.windows?.[name], keys)
+  ));
+  const evidence = evaluatePumpComboSelectorEvidence({
+    windows,
+    exactClosed: windows.find((window) => window.name === '7d')?.exactClosed ?? 0,
+    candleTier: pumpComboSelectorCandleTier(trade),
+    snapshot,
+  });
+  return {
+    ...evidence,
+    exactKey: keys.exactKey,
+    coarseKey: keys.coarseKey,
+    familyKey: keys.familyKey,
+    sourceFamily: keys.family,
+    historyDays: model?.historyDays ?? [],
+    derived: !snapshot,
+  };
+}
+
+function withPumpComboSelectorFields(trade = {}, rule = null) {
+  if (!rule) return trade;
+  return {
+    ...trade,
+    pumpSelectorTier: rule.tier,
+    pumpSelectorLabel: rule.label,
+    pumpSelectorCode: rule.code,
+    pumpSelectorBasis: rule.basis,
+    pumpSelectorReason: rule.reason,
+    pumpSelectorVersion: rule.version,
+    pumpSelectorExactKey: rule.exactKey,
+    pumpSelectorCoarseKey: rule.coarseKey,
+    pumpSelectorFamilyKey: rule.familyKey,
+    pumpSelectorSourceFamily: rule.sourceFamily,
+    pumpSelectorExactClosed: rule.exactClosed,
+    pumpSelectorExactDays: rule.exactDays,
+    pumpSelectorExactPositiveDays: rule.exactPositiveDays,
+    pumpSelectorExactNegativeDays: rule.exactNegativeDays,
+    pumpSelectorSupportClosed: rule.supportClosed,
+    pumpSelectorExpectedNetRoe: rule.expectedNetRoe,
+    pumpSelectorConservativeEdge: rule.conservativeEdge,
+    pumpSelectorProfitFactor: rule.profitFactor,
+    pumpSelectorSlRate: rule.slRate,
+    pumpSelectorStandardError: rule.standardError,
+    pumpSelectorPositiveWindows: rule.positiveWindows,
+    pumpSelectorNegativeWindows: rule.negativeWindows,
+    pumpSelectorRecentConflict: rule.recentConflict === true,
+    pumpSelectorCandleTier: rule.candleTier,
+    pumpSelectorCandleAdjustment: rule.candleAdjustment,
+    pumpSelectorHistoryDays: rule.historyDays,
+    pumpSelectorDerived: rule.derived === true,
+    pumpSelectorObservationOnly: true,
+  };
+}
+
+function buildPumpComboSelectorStats(storedTrades = [], model = null, markForTrade = () => null) {
+  const makeBucket = (tier) => ({
+    tier,
+    label: tier,
+    total: 0,
+    open: 0,
+    pending: 0,
+    closed: 0,
+    wins: 0,
+    losses: 0,
+    realizedPnl: 0,
+    unrealizedPnl: 0,
+    grossRealizedPnl: 0,
+    grossUnrealizedPnl: 0,
+    estimatedFeeUsdt: 0,
+    roeSum: 0,
+    snapshot: 0,
+    backfill: 0,
+  });
+  const buckets = Object.fromEntries(
+    ['CORE', 'PROBE', 'WATCH', 'AVOID'].map((tier) => [tier, makeBucket(tier)]),
+  );
+  for (const raw of storedTrades) {
+    const rule = pumpComboSelectorRuleOfTrade(raw, model);
+    const tier = normalizePumpComboSelectorTier(rule?.tier);
+    const row = buckets[tier];
+    row.total += 1;
+    if (rule?.basis === 'SNAPSHOT') row.snapshot += 1;
+    else row.backfill += 1;
+    if (raw.status === 'CLOSED') {
+      const grossPnl = Number(raw.pnl ?? 0);
+      const fee = Number(
+        raw.estimatedFeeUsdt
+          ?? raw.feeUsdt
+          ?? estimateEmaPaperFeeUsdt(raw)
+          ?? 0,
+      );
+      const netPnl = (Number.isFinite(grossPnl) ? grossPnl : 0)
+        - (Number.isFinite(fee) ? fee : 0);
+      const margin = Number(raw.marginUsdt ?? raw.marginUsd ?? raw.margin);
+      const netRoe = Number.isFinite(margin) && margin > 0
+        ? netPnl / margin * 100
+        : Number(raw.roe ?? 0);
+      row.closed += 1;
+      row.realizedPnl += netPnl;
+      row.grossRealizedPnl += Number.isFinite(grossPnl) ? grossPnl : 0;
+      row.estimatedFeeUsdt += Number.isFinite(fee) ? fee : 0;
+      row.roeSum += Number.isFinite(netRoe) ? netRoe : 0;
+      if (netPnl > 0) row.wins += 1;
+      else if (netPnl < 0) row.losses += 1;
+    } else if (raw.status === 'PENDING') {
+      row.pending += 1;
+    } else {
+      row.open += 1;
+      const enriched = enrichPumpPaperTrade(raw, markForTrade(raw));
+      const grossPnl = Number(enriched.pnl ?? 0);
+      const fee = Number(
+        enriched.estimatedFeeUsdt
+          ?? enriched.feeUsdt
+          ?? estimateEmaPaperFeeUsdt(enriched, enriched.markPrice)
+          ?? 0,
+      );
+      const netPnl = (Number.isFinite(grossPnl) ? grossPnl : 0)
+        - (Number.isFinite(fee) ? fee : 0);
+      row.unrealizedPnl += netPnl;
+      row.grossUnrealizedPnl += Number.isFinite(grossPnl) ? grossPnl : 0;
+      row.estimatedFeeUsdt += Number.isFinite(fee) ? fee : 0;
+    }
+  }
+  return ['CORE', 'PROBE', 'WATCH', 'AVOID'].map((tier) => {
+    const row = buckets[tier];
+    const pnl = row.realizedPnl + row.unrealizedPnl;
+    const grossPnl = row.grossRealizedPnl + row.grossUnrealizedPnl;
+    const evaluatedTrades = row.closed + row.open;
+    return {
+      ...row,
+      wr: row.closed > 0 ? +(row.wins / row.closed * 100).toFixed(1) : null,
+      avgRoe: row.closed > 0 ? +(row.roeSum / row.closed).toFixed(1) : null,
+      realizedPnl: +row.realizedPnl.toFixed(4),
+      unrealizedPnl: +row.unrealizedPnl.toFixed(4),
+      grossPnl: +grossPnl.toFixed(4),
+      estimatedFeeUsdt: +row.estimatedFeeUsdt.toFixed(4),
+      avgPnl: evaluatedTrades > 0 ? +(pnl / evaluatedTrades).toFixed(4) : null,
+      pnl: +pnl.toFixed(4),
+    };
+  });
+}
+
+const PUMP_SOURCE_STAT_FIELDS = [
+  'total',
+  'active',
+  'open',
+  'pending',
+  'closed',
+  'wins',
+  'losses',
+  'grossRealizedPnl',
+  'grossUnrealizedPnl',
+  'realizedFeeUsdt',
+  'activeFeeUsdt',
+  'netRoeSum',
+  'grossWinRoe',
+  'grossLossRoe',
+];
+
+function makePumpSourceStatBucket(key, label = key) {
+  return {
+    key,
+    label,
+    total: 0,
+    active: 0,
+    open: 0,
+    pending: 0,
+    closed: 0,
+    wins: 0,
+    losses: 0,
+    grossRealizedPnl: 0,
+    grossUnrealizedPnl: 0,
+    realizedFeeUsdt: 0,
+    activeFeeUsdt: 0,
+    netRoeSum: 0,
+    grossWinRoe: 0,
+    grossLossRoe: 0,
+  };
+}
+
+function addPumpSourceStatTrade(bucket, raw, markForTrade = () => null) {
+  const isClosed = raw.status === 'CLOSED';
+  const isPending = raw.status === 'PENDING';
+  const trade = isClosed || isPending
+    ? raw
+    : enrichPumpPaperTrade(raw, markForTrade(raw));
+  const grossPnl = Number(trade.pnl ?? 0);
+  const normalizedGrossPnl = Number.isFinite(grossPnl) ? grossPnl : 0;
+  const fee = isPending
+    ? 0
+    : Number(
+        trade.estimatedFeeUsdt
+          ?? trade.feeUsdt
+          ?? estimateEmaPaperFeeUsdt(trade, trade.markPrice ?? trade.exitPrice)
+          ?? 0,
+      );
+  const normalizedFee = Number.isFinite(fee) && fee >= 0 ? fee : 0;
+  const netPnl = normalizedGrossPnl - normalizedFee;
+  const margin = Number(trade.marginUsdt ?? trade.marginUsd ?? trade.margin);
+  const netRoe = Number.isFinite(margin) && margin > 0
+    ? netPnl / margin * 100
+    : Number(trade.roe ?? 0);
+
+  bucket.total += 1;
+  if (isClosed) {
+    bucket.closed += 1;
+    bucket.grossRealizedPnl += normalizedGrossPnl;
+    bucket.realizedFeeUsdt += normalizedFee;
+    bucket.netRoeSum += Number.isFinite(netRoe) ? netRoe : 0;
+    if (netPnl > 0) bucket.wins += 1;
+    else if (netPnl < 0) bucket.losses += 1;
+    const cappedNetRoe = Math.max(-20, Math.min(20, Number.isFinite(netRoe) ? netRoe : 0));
+    if (cappedNetRoe > 0) bucket.grossWinRoe += cappedNetRoe;
+    else if (cappedNetRoe < 0) bucket.grossLossRoe += Math.abs(cappedNetRoe);
+    return;
+  }
+
+  bucket.active += 1;
+  if (isPending) bucket.pending += 1;
+  else bucket.open += 1;
+  bucket.grossUnrealizedPnl += normalizedGrossPnl;
+  bucket.activeFeeUsdt += normalizedFee;
+}
+
+function finalizePumpSourceStatBucket(bucket = makePumpSourceStatBucket('UNKNOWN')) {
+  const grossPnl = bucket.grossRealizedPnl + bucket.grossUnrealizedPnl;
+  const estimatedFeeUsdt = bucket.realizedFeeUsdt + bucket.activeFeeUsdt;
+  const netRealizedPnl = bucket.grossRealizedPnl - bucket.realizedFeeUsdt;
+  const netUnrealizedPnl = bucket.grossUnrealizedPnl - bucket.activeFeeUsdt;
+  const netPnl = netRealizedPnl + netUnrealizedPnl;
+  return {
+    ...bucket,
+    wr: bucket.closed > 0 ? +(bucket.wins / bucket.closed * 100).toFixed(1) : null,
+    avgNetRoe: bucket.closed > 0 ? +(bucket.netRoeSum / bucket.closed).toFixed(2) : null,
+    profitFactor: bucket.grossLossRoe > 0
+      ? +(bucket.grossWinRoe / bucket.grossLossRoe).toFixed(2)
+      : bucket.grossWinRoe > 0
+        ? 9.99
+        : 0,
+    grossRealizedPnl: +bucket.grossRealizedPnl.toFixed(4),
+    grossUnrealizedPnl: +bucket.grossUnrealizedPnl.toFixed(4),
+    grossPnl: +grossPnl.toFixed(4),
+    realizedFeeUsdt: +bucket.realizedFeeUsdt.toFixed(4),
+    activeFeeUsdt: +bucket.activeFeeUsdt.toFixed(4),
+    estimatedFeeUsdt: +estimatedFeeUsdt.toFixed(4),
+    netRealizedPnl: +netRealizedPnl.toFixed(4),
+    netUnrealizedPnl: +netUnrealizedPnl.toFixed(4),
+    netPnl: +netPnl.toFixed(4),
+  };
+}
+
+function pumpSourceMarginKey(trade = {}) {
+  const margin = Number(trade.marginUsdt ?? trade.marginUsd ?? trade.margin);
+  if (!Number.isFinite(margin) || margin <= 0) return 'OTHER';
+  if (margin >= 9.5) return 'MARGIN_10';
+  if (margin >= 0.95) return 'MARGIN_1';
+  return `MARGIN_${Math.round(margin * 100) / 100}`;
+}
+
+function pumpSourceMarginLabel(key) {
+  if (key === 'MARGIN_10') return 'TEST $10';
+  if (key === 'MARGIN_1') return 'TEST $1';
+  if (key === 'OTHER') return 'OTHER';
+  return key.replace(/^MARGIN_/, 'TEST $');
+}
+
+function pumpSourceTypeKey(trade, sourceFamily) {
+  if (sourceFamily === 'PUMP_NATIVE') {
+    return String(trade.pumpSignalType ?? 'PUMP_OTHER').toUpperCase();
+  }
+  return String(emaPaperStageOf(trade) ?? 'EMA_OTHER').toUpperCase();
+}
+
+function buildPumpSourcePerformanceStats(storedTrades = [], markForTrade = () => null) {
+  const families = new Map([
+    ['PUMP_NATIVE', {
+      bucket: makePumpSourceStatBucket('PUMP_NATIVE', 'PUMP NATIVE'),
+      margins: new Map(),
+      types: new Map(),
+    }],
+    ['EMA', {
+      bucket: makePumpSourceStatBucket('EMA', 'EMA'),
+      margins: new Map(),
+      types: new Map(),
+    }],
+  ]);
+  for (const trade of storedTrades) {
+    const sourceFamily = isNativePumpEvalSource(trade.source)
+      ? 'PUMP_NATIVE'
+      : String(trade.source ?? '').startsWith('emasq-')
+        ? 'EMA'
+        : null;
+    if (!sourceFamily) continue;
+    const family = families.get(sourceFamily);
+    addPumpSourceStatTrade(family.bucket, trade, markForTrade);
+
+    const marginKey = pumpSourceMarginKey(trade);
+    if (!family.margins.has(marginKey)) {
+      family.margins.set(
+        marginKey,
+        makePumpSourceStatBucket(marginKey, pumpSourceMarginLabel(marginKey)),
+      );
+    }
+    addPumpSourceStatTrade(family.margins.get(marginKey), trade, markForTrade);
+
+    const typeKey = pumpSourceTypeKey(trade, sourceFamily);
+    if (!family.types.has(typeKey)) {
+      family.types.set(typeKey, makePumpSourceStatBucket(typeKey, typeKey.replaceAll('_', ' ')));
+    }
+    addPumpSourceStatTrade(family.types.get(typeKey), trade, markForTrade);
+  }
+
+  return ['PUMP_NATIVE', 'EMA'].map((sourceFamily) => {
+    const family = families.get(sourceFamily);
+    const byMargin = [...family.margins.values()]
+      .map(finalizePumpSourceStatBucket)
+      .sort((a, b) => (
+        ['MARGIN_10', 'MARGIN_1', 'OTHER'].indexOf(a.key)
+        - ['MARGIN_10', 'MARGIN_1', 'OTHER'].indexOf(b.key)
+      ));
+    const byType = [...family.types.values()]
+      .map(finalizePumpSourceStatBucket)
+      .sort((a, b) => b.closed - a.closed || b.netPnl - a.netPnl);
+    return {
+      sourceFamily,
+      ...finalizePumpSourceStatBucket(family.bucket),
+      byMargin,
+      byType,
+    };
+  });
+}
+
+function mergePumpSourceStatRows(rows = [], key, label) {
+  const merged = makePumpSourceStatBucket(key, label);
+  for (const row of rows) {
+    for (const field of PUMP_SOURCE_STAT_FIELDS) {
+      merged[field] += Number(row?.[field] ?? 0);
+    }
+  }
+  return finalizePumpSourceStatBucket(merged);
+}
+
+function mergePumpSourcePerformanceStats(...groups) {
+  return ['PUMP_NATIVE', 'EMA'].map((sourceFamily) => {
+    const sourceRows = groups
+      .flat()
+      .filter((row) => row?.sourceFamily === sourceFamily);
+    const label = sourceFamily === 'PUMP_NATIVE' ? 'PUMP NATIVE' : 'EMA';
+    const marginKeys = [...new Set(sourceRows.flatMap((row) => (
+      Array.isArray(row.byMargin) ? row.byMargin.map((item) => item.key) : []
+    )))];
+    const typeKeys = [...new Set(sourceRows.flatMap((row) => (
+      Array.isArray(row.byType) ? row.byType.map((item) => item.key) : []
+    )))];
+    return {
+      sourceFamily,
+      ...mergePumpSourceStatRows(sourceRows, sourceFamily, label),
+      byMargin: marginKeys.map((marginKey) => mergePumpSourceStatRows(
+        sourceRows.flatMap((row) => row.byMargin ?? []).filter((row) => row.key === marginKey),
+        marginKey,
+        pumpSourceMarginLabel(marginKey),
+      )),
+      byType: typeKeys.map((typeKey) => mergePumpSourceStatRows(
+        sourceRows.flatMap((row) => row.byType ?? []).filter((row) => row.key === typeKey),
+        typeKey,
+        typeKey.replaceAll('_', ' '),
+      )).sort((a, b) => b.closed - a.closed || b.netPnl - a.netPnl),
+    };
+  });
+}
+
+function buildEmaComboLayerAnalysis(
+  storedTrades = [],
+  model = null,
+  markForTrade = () => null,
+) {
+  const emaRows = storedTrades.filter((trade) => (
+    String(trade.source ?? '').startsWith('emasq-')
+  ));
+  const makeTierBuckets = (tiers) => new Map(
+    tiers.map((tier) => [tier, makePumpSourceStatBucket(tier, tier.replace('_PLUS', '+'))]),
+  );
+  const setupBuckets = makeTierBuckets(['GOOD', 'WATCH', 'RISK']);
+  const marketBuckets = makeTierBuckets(['GOOD', 'WATCH', 'RISK']);
+  const comboTiers = emaComboTierOrder();
+  const comboBuckets = makeTierBuckets(comboTiers);
+  const candidateBuckets = new Map();
+
+  for (const trade of emaRows) {
+    const evaluation = emaComboLayersOfTrade(trade, model);
+    if (!evaluation) continue;
+    for (const [layer, buckets] of [
+      [evaluation.layer1, setupBuckets],
+      [evaluation.layer2, marketBuckets],
+      [evaluation.layer3, comboBuckets],
+    ]) {
+      const bucket = buckets.get(layer.tier) ?? buckets.get('WATCH');
+      addPumpSourceStatTrade(bucket, trade, markForTrade);
+    }
+
+    if (['GOOD_PLUS', 'GOOD'].includes(evaluation.layer3.tier)) {
+      const key = evaluation.layer3.key;
+      if (!candidateBuckets.has(key)) {
+        candidateBuckets.set(key, {
+          key,
+          label: evaluation.layer3.label,
+          tier: evaluation.layer3.tier,
+          selectionReady: evaluation.layer3.selectionReady === true,
+          provisional: evaluation.layer3.provisional === true,
+          reason: evaluation.layer3.reason,
+          setupTier: evaluation.layer1.tier,
+          marketTier: evaluation.layer2.tier,
+          history: evaluation.layer3.evidence,
+          bucket: makePumpSourceStatBucket(key, evaluation.layer3.label),
+        });
+      }
+      addPumpSourceStatTrade(candidateBuckets.get(key).bucket, trade, markForTrade);
+    }
+  }
+
+  const finalizeTiers = (buckets, order) => order.map((tier) => ({
+    tier,
+    ...finalizePumpSourceStatBucket(buckets.get(tier)),
+  }));
+  const candidates = [...candidateBuckets.values()]
+    .map((row) => ({
+      key: row.key,
+      label: row.label,
+      tier: row.tier,
+      selectionReady: row.selectionReady,
+      provisional: row.provisional,
+      reason: row.reason,
+      setupTier: row.setupTier,
+      marketTier: row.marketTier,
+      history: row.history,
+      current: finalizePumpSourceStatBucket(row.bucket),
+    }))
+    .sort((left, right) => (
+      Number(right.selectionReady) - Number(left.selectionReady)
+      || Number(right.history?.avgNetRoe ?? 0) - Number(left.history?.avgNetRoe ?? 0)
+      || Number(right.history?.closed ?? 0) - Number(left.history?.closed ?? 0)
+    ))
+    .slice(0, 20);
+  const historyDays = Array.isArray(model?.historyDays) ? model.historyDays : [];
+  return {
+    version: EMA_COMBO_LAYER_VERSION,
+    observationOnly: true,
+    affectsEntry: false,
+    affectsMargin: false,
+    affectsSl: false,
+    affectsTp: false,
+    pnlBasis: 'GROSS_MINUS_ESTIMATED_ROUND_TRIP_FEE',
+    cutoffDay: model?.cutoffDay ?? null,
+    historyStart: model?.historyStart ?? EMA_COMBO_LAYER_HISTORY_START,
+    historyDays,
+    minimumConfirmedDays: model?.minimumConfirmedDays ?? 3,
+    modelReady: historyDays.length >= Number(model?.minimumConfirmedDays ?? 3),
+    selectionReadyCount: candidates.filter((row) => row.selectionReady).length,
+    provisionalCount: candidates.filter((row) => row.provisional).length,
+    layers: {
+      setup: finalizeTiers(setupBuckets, ['GOOD', 'WATCH', 'RISK']),
+      market: finalizeTiers(marketBuckets, ['GOOD', 'WATCH', 'RISK']),
+      combo: finalizeTiers(comboBuckets, comboTiers),
+    },
+    candidates,
+  };
+}
+
+function mergeEmaComboLayerAnalysis(closedAnalysis, activeAnalysis) {
+  const base = closedAnalysis ?? activeAnalysis ?? {};
+  const mergeTierRows = (layerName) => {
+    const closedRows = closedAnalysis?.layers?.[layerName] ?? [];
+    const activeRows = activeAnalysis?.layers?.[layerName] ?? [];
+    const tiers = [...new Set([...closedRows, ...activeRows].map((row) => row.tier))];
+    return tiers.map((tier) => ({
+      tier,
+      ...mergePumpSourceStatRows(
+        [...closedRows, ...activeRows].filter((row) => row.tier === tier),
+        tier,
+        tier.replace('_PLUS', '+'),
+      ),
+    }));
+  };
+  const candidateKeys = [...new Set([
+    ...(closedAnalysis?.candidates ?? []).map((row) => row.key),
+    ...(activeAnalysis?.candidates ?? []).map((row) => row.key),
+  ])];
+  const candidates = candidateKeys.map((key) => {
+    const closed = (closedAnalysis?.candidates ?? []).find((row) => row.key === key);
+    const active = (activeAnalysis?.candidates ?? []).find((row) => row.key === key);
+    const row = closed ?? active;
+    return {
+      ...row,
+      current: mergePumpSourceStatRows(
+        [closed?.current, active?.current].filter(Boolean),
+        key,
+        row.label,
+      ),
+    };
+  })
+    .sort((left, right) => (
+      Number(right.selectionReady) - Number(left.selectionReady)
+      || Number(right.history?.avgNetRoe ?? 0) - Number(left.history?.avgNetRoe ?? 0)
+      || Number(right.history?.closed ?? 0) - Number(left.history?.closed ?? 0)
+    ))
+    .slice(0, 20);
+  return {
+    ...base,
+    modelReady: Boolean(closedAnalysis?.modelReady ?? activeAnalysis?.modelReady),
+    selectionReadyCount: candidates.filter((row) => row.selectionReady).length,
+    provisionalCount: candidates.filter((row) => row.provisional).length,
+    layers: {
+      setup: mergeTierRows('setup'),
+      market: mergeTierRows('market'),
+      combo: mergeTierRows('combo'),
+    },
+    candidates,
+  };
 }
 
 function pumpComboTradePlanOfKey(key, marginCounts = {}, options = {}) {
@@ -15384,32 +20012,98 @@ function pumpComboStatsOf(list, { limit = 24, context = 'pump' } = {}) {
   return mixed.slice(0, maxRows);
 }
 
-async function getPumpPaperTrades({ paging = null, day = 'all', stage2 = 'all' } = {}) {
+async function getPumpPaperTrades({
+  paging = null,
+  day = 'all',
+  fromDay = '',
+  toDay = '',
+  stage2 = 'all',
+  lift = 'all',
+  selector = 'all',
+} = {}) {
   const store = await readPumpPaperStore();
   const dayIndex = getPumpPaperDayIndex(store);
   const availableDays = dayIndex.availableDays;
-  const dayFilter = String(day ?? 'all');
-  const dayStoredTrades = getPumpPaperTradesByDay(store, dayFilter);
+  const dateRange = normalizeLiquidPaperDateRange({ day, fromDay, toDay });
+  const dateScopeKey = `${dateRange.mode}:${dateRange.fromDay ?? ''}:${dateRange.toDay ?? ''}`;
+  const dayStoredTrades = getPumpPaperTradesByDateRange(store, dateRange);
+  const selectedCutoffDay = availableDays.find((candidateDay) => (
+    liquidPaperDayInRange(candidateDay, dateRange)
+  ));
+  const canonicalCutoffDay = selectedCutoffDay
+    ?? dateRange.toDay
+    ?? dateRange.fromDay
+    ?? availableDays[0]
+    ?? liquidPaperDayKey(new Date());
   const stage2Filter = normalizePumpStage2Tier(stage2, 'all');
-  const allStoredTrades = stage2Filter === 'all'
+  const liftFilter = normalizePumpLiftTier(lift, 'all');
+  const selectorFilter = normalizePumpComboSelectorTier(selector, 'all');
+  const liftModel = pumpPaperMemo(`pump-lift-model:${canonicalCutoffDay}`, () => (
+    buildPumpLiftModel(store, canonicalCutoffDay)
+  ));
+  const selectorModel = pumpPaperMemo(`pump-selector-model:${canonicalCutoffDay}`, () => (
+    buildPumpComboSelectorModel(store, canonicalCutoffDay)
+  ));
+  const emaLayerStoredTrades = dateRange.mode === 'all'
+    ? (dayIndex.days.get(canonicalCutoffDay) ?? [])
+    : dayStoredTrades;
+  const canonicalModel = pumpPaperMemo(`pump-canonical-model:${canonicalCutoffDay}`, () => (
+    buildPumpCanonicalModel(store.trades, canonicalCutoffDay)
+  ));
+  // Prior-day labels are frozen for the whole Asia/Bangkok day. Keep this cache
+  // independent from paper writes so a new/closed trade does not rebuild all
+  // historical snapshots. New trades carry their own stored pumpObs* snapshot.
+  const observationSnapshotMap = getPumpObservationSnapshotMapCached(store);
+  const stage2StoredTrades = stage2Filter === 'all'
     ? dayStoredTrades
     : dayStoredTrades.filter((trade) => normalizePumpStage2Tier(
         pumpStage2RuleOfTrade(trade)?.tier,
         '',
       ) === stage2Filter);
+  const liftStoredTrades = liftFilter === 'all'
+    ? stage2StoredTrades
+    : stage2StoredTrades.filter((trade) => normalizePumpLiftTier(
+        pumpLiftRuleOfTrade(trade, liftModel)?.tier,
+        '',
+      ) === liftFilter);
+  const allStoredTrades = selectorFilter === 'all'
+    ? liftStoredTrades
+    : liftStoredTrades.filter((trade) => normalizePumpComboSelectorTier(
+        pumpComboSelectorRuleOfTrade(trade, selectorModel)?.tier,
+        '',
+      ) === selectorFilter);
   const getFreshEmaMark = (symbol) => getFreshEmaSqueezeMarkInfo(symbol)?.mark ?? null;
   const { rows: selectedStoredTrades, pagination } = slicePaperPage(allStoredTrades, paging);
   const markForTrade = (t) => String(t.source ?? '').startsWith('emasq-')
     ? getFreshEmaMark(t.symbol)
     : getFreshPumpPaperMark(t.symbol);
-  const trades = selectedStoredTrades.map((t) => enrichPumpStage2Trade(enrichPumpPaperTrade(
-    t,
-    markForTrade(t),
-  )));
-  const stage2StatsBase = pumpPaperMemo(`pump-stage2:${dayFilter || 'all'}`, () => (
+  const trades = selectedStoredTrades.map((t) => {
+    const decorated = decoratePumpCanonicalTier(
+      withPumpComboSelectorFields(
+        enrichPumpLiftTrade(
+          enrichPumpStage2Trade(decoratePumpEvalTier(enrichPumpPaperTrade(t, markForTrade(t)))),
+          liftModel,
+        ),
+        pumpComboSelectorRuleOfTrade(t, selectorModel),
+      ),
+      canonicalModel,
+    );
+    const shouldDecorateEmaLayers = Boolean(t.emaComboLayersSnapshot)
+      || dateRange.mode !== 'all'
+      || pumpPaperDateOf(t) === canonicalCutoffDay;
+    const layered = shouldDecorateEmaLayers
+      ? withEmaComboLayerFields(
+          decorated,
+          emaComboLayersOfTrade(t, selectorModel.emaLayers),
+        )
+      : decorated;
+    const observed = decoratePumpObservationTrades([layered], observationSnapshotMap)[0];
+    return decorateSourceLongCorrReboundTrade(observed, { sourcePage: 'pump' });
+  });
+  const stage2StatsBase = pumpPaperMemo(`pump-stage2:${dateScopeKey}`, () => (
     buildPumpStage2Stats(dayStoredTrades)
   ));
-  const cached = pumpPaperMemo(`pump-paper:${dayFilter || 'all'}:${stage2Filter}`, () => {
+  const cached = pumpPaperMemo(`pump-paper:${dateScopeKey}:${stage2Filter}:${liftFilter}:${selectorFilter}`, () => {
     const open = allStoredTrades.filter((t) => t.status !== 'CLOSED');
     const closed = allStoredTrades.filter((t) => t.status === 'CLOSED');
     const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
@@ -15434,6 +20128,95 @@ async function getPumpPaperTrades({ paging = null, day = 'all', stage2 = 'all' }
   const enrichedOpen = cached.open.map((t) => enrichPumpPaperTrade(t, markForTrade(t)));
   const unrealizedPnl = enrichedOpen.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
   const stage2Stats = finalizePumpStage2Stats(stage2StatsBase, markForTrade);
+  const pumpEvalClosedStats = pumpPaperMemo(`pump-eval-closed:${dateScopeKey}`, () => (
+    pumpEvalTierStats(dayStoredTrades.filter((trade) => (
+      trade.status === 'CLOSED' && isNativePumpEvalTrade(trade)
+    )))
+  ));
+  const pumpEvalActiveStats = pumpEvalTierStats(
+    dayStoredTrades
+      .filter((trade) => trade.status !== 'CLOSED' && isNativePumpEvalTrade(trade))
+      .map((trade) => decoratePumpEvalTier(enrichPumpPaperTrade(trade, markForTrade(trade)))),
+  );
+  const pumpEvalStats = mergePumpEvalTierStats(pumpEvalClosedStats, pumpEvalActiveStats);
+  const canonicalClosedStats = pumpPaperMemo(`pump-canonical-closed:${dateScopeKey}`, () => (
+    pumpCanonicalTierStats(
+      dayStoredTrades.filter((trade) => trade.status === 'CLOSED'),
+      canonicalModel,
+    )
+  ));
+  const canonicalActiveStats = pumpCanonicalTierStats(
+    dayStoredTrades
+      .filter((trade) => trade.status !== 'CLOSED')
+      .map((trade) => enrichPumpPaperTrade(trade, markForTrade(trade))),
+    canonicalModel,
+  );
+  const canonicalStats = mergePumpCanonicalTierStats(canonicalClosedStats, canonicalActiveStats);
+  const sourceClosedStats = pumpPaperMemo(`pump-source-closed:${dateScopeKey}`, () => (
+    buildPumpSourcePerformanceStats(
+      dayStoredTrades.filter((trade) => trade.status === 'CLOSED'),
+      markForTrade,
+    )
+  ));
+  const sourceActiveStats = buildPumpSourcePerformanceStats(
+    dayStoredTrades.filter((trade) => trade.status !== 'CLOSED'),
+    markForTrade,
+  );
+  const sourceStats = mergePumpSourcePerformanceStats(sourceClosedStats, sourceActiveStats);
+  const emaLayerClosedAnalysis = pumpPaperMemo(`ema-layer-closed:${dateScopeKey}:${canonicalCutoffDay}`, () => (
+    buildEmaComboLayerAnalysis(
+      emaLayerStoredTrades.filter((trade) => trade.status === 'CLOSED'),
+      selectorModel.emaLayers,
+      markForTrade,
+    )
+  ));
+  const emaLayerActiveAnalysis = buildEmaComboLayerAnalysis(
+    emaLayerStoredTrades.filter((trade) => trade.status !== 'CLOSED'),
+    selectorModel.emaLayers,
+    markForTrade,
+  );
+  const emaLayerAnalysis = mergeEmaComboLayerAnalysis(
+    emaLayerClosedAnalysis,
+    emaLayerActiveAnalysis,
+  );
+  const liftStats = buildPumpLiftStats(dayStoredTrades, liftModel, markForTrade);
+  const selectorStats = buildPumpComboSelectorStats(
+    dayStoredTrades.filter((trade) => isNativePumpEvalSource(trade.source)),
+    selectorModel,
+    markForTrade,
+  );
+  const selectorStatsEma = buildPumpComboSelectorStats(
+    dayStoredTrades.filter((trade) => String(trade.source ?? '').startsWith('emasq-')),
+    selectorModel,
+    markForTrade,
+  );
+  const comboCycleStats = pumpPaperMemo('pump-combo-cycle-stats', () => (
+    buildPumpComboCycleStats(store.trades, { comboKeyOf: pumpPaperFallbackCombo })
+  ));
+  const supportEntryBaseTrades = pumpPaperMemo(
+    `pump-support-entry:${dateScopeKey}`,
+    () => decorateRecommendedSupportEntrySnapshots(dayStoredTrades),
+  );
+  const supportEntryStats = paperSupportEntryStats(
+    supportEntryBaseTrades.map((trade) => (
+      trade.status === 'CLOSED'
+        ? trade
+        : enrichPumpPaperTrade(trade, markForTrade(trade))
+    )),
+  );
+  const pumpObservationStats = buildPumpObservationStats(
+    decoratePumpObservationTrades(dayStoredTrades, observationSnapshotMap).map((trade) => (
+      enrichPumpPaperTrade(trade, markForTrade(trade))
+    )),
+  );
+  const sourceLongCorrReboundStats = buildSourceLongCorrReboundStats(
+    dayStoredTrades.map((trade) => (
+      trade.status === 'CLOSED'
+        ? trade
+        : enrichPumpPaperTrade(trade, markForTrade(trade))
+    )),
+    { sourcePage: 'pump' },
+  );
   const summary = {
     total: allStoredTrades.length,
     pageTotal: trades.length,
@@ -15453,10 +20236,60 @@ async function getPumpPaperTrades({ paging = null, day = 'all', stage2 = 'all' }
     trades,
     summary,
     comboStats: cached.comboStats,
+    comboCycleStats,
+    supportEntryStats,
+    sourceStats,
+    sourceStatsVersion: 'PUMP_SOURCE_STATS_V1_20260726',
+    sourceStatsPnlBasis: 'GROSS_MINUS_ESTIMATED_ROUND_TRIP_FEE',
+    pumpObservationStats,
+    pumpObservationVersion: PUMP_OBSERVATION_VERSION,
+    sourceLongCorrReboundStats,
+    sourceLongCorrReboundVersion: SOURCE_LONG_CORR_REBOUND_VERSION,
+    emaLayerAnalysis,
+    canonicalStats,
+    canonicalModel: {
+      version: PUMP_CANONICAL_TIER_VERSION,
+      cutoffDay: canonicalModel.cutoffDay,
+      historyDays: canonicalModel.historyDays,
+      validated: PUMP_CANONICAL_RUNTIME_VALIDATED,
+      observationOnly: true,
+      affectsEntry: false,
+      affectsMargin: false,
+      affectsSl: false,
+      affectsTp: false,
+    },
+    pumpEvalStats,
+    pumpEvalStatsVersion: PUMP_EVAL_TIER_STATS_VERSION,
+    pumpEvalStatsScope: 'PUMP_NATIVE_ONLY',
     stage2Stats,
+    liftStats,
+    selectorStats,
+    selectorStatsEma,
+    liftModel: {
+      version: PUMP_LIFT_VERSION,
+      cutoffDay: liftModel.cutoffDay,
+      historyDays: liftModel.historyDays,
+      observationOnly: true,
+    },
+    selectorModel: {
+      version: PUMP_COMBO_SELECTOR_VERSION,
+      cutoffDay: selectorModel.cutoffDay,
+      historyDays: selectorModel.historyDays,
+      observationOnly: true,
+      sourceFamilies: ['PUMP_NATIVE'],
+    },
     pagination,
     availableDays,
-    filter: { day: dayFilter || 'all', stage2: stage2Filter },
+    filter: {
+      day: dateRange.mode === 'day' ? dateRange.fromDay : 'all',
+      fromDay: dateRange.fromDay,
+      toDay: dateRange.toDay,
+      mode: dateRange.mode,
+      timeZone: LIQUID_PAPER_DAY_TIME_ZONE,
+      stage2: stage2Filter,
+      lift: liftFilter,
+      selector: selectorFilter,
+    },
     updatedAt: Date.now(),
   };
 }
@@ -16337,6 +21170,35 @@ async function getEmaBrLikeScore75LogSummary(day, existingTrades = []) {
   return summary;
 }
 
+function liveEmaSupportEntryStats(baseStats, activeTrades = []) {
+  const primaryPnl = new Map();
+  const detailedPnl = new Map();
+  for (const trade of activeTrades) {
+    const classification = String(trade?.recommendedSupportEntryClass ?? '').trim().toUpperCase();
+    if (!['GOOD', 'BAD'].includes(classification)) continue;
+    const pnl = Number(trade?.pnl ?? trade?.netPnl ?? 0);
+    const livePnl = Number.isFinite(pnl) ? pnl : 0;
+    primaryPnl.set(classification, (primaryPnl.get(classification) ?? 0) + livePnl);
+    const source = String(trade?.sourcePage ?? 'UNKNOWN').trim().toUpperCase();
+    const side = String(trade?.side ?? 'NO_SIDE').trim().toUpperCase();
+    const code = String(trade?.recommendedSupportEntryCode ?? 'NO_DATA').trim().toUpperCase();
+    const key = `${classification}_${source}_${side}_${code}`;
+    detailedPnl.set(key, (detailedPnl.get(key) ?? 0) + livePnl);
+  }
+  const overlay = (groups, pnlByKey, keyOf) => (groups ?? []).map((group) => {
+    const activePnl = Number(pnlByKey.get(keyOf(group)) ?? 0);
+    const closedPnl = Number(group?.closedPnl ?? 0);
+    return { ...group, activePnl, pnl: closedPnl + activePnl };
+  });
+  return {
+    ...baseStats,
+    groups: overlay(baseStats?.groups, primaryPnl, (group) => String(group?.verdictLabel ?? '').toUpperCase()),
+    sourceSideMatrix: overlay(baseStats?.sourceSideMatrix, detailedPnl, (group) => String(group?.key ?? '').toUpperCase()),
+    shortSourceGroups: overlay(baseStats?.shortSourceGroups, detailedPnl, (group) => String(group?.key ?? '').toUpperCase()),
+    longSourceGroups: overlay(baseStats?.longSourceGroups, detailedPnl, (group) => String(group?.key ?? '').toUpperCase()),
+  };
+}
+
 async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filter = null } = {}) {
   const store = await readPumpPaperStore();
   const filterKey = JSON.stringify(filter ?? {});
@@ -16358,6 +21220,15 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filt
       ? closed.reduce((sum, t) => sum + Number(t.roe ?? 0), 0) / closed.length
       : null;
     const realizedPnl = closed.reduce((sum, t) => sum + Number(t.pnl ?? 0), 0);
+    const supportEntryStatRows = buildRecommendedSupportEntryStatRows(
+      allEmaTrades,
+      { sourcePage: 'ema' },
+    );
+    const supportEntryActiveById = new Map(
+      supportEntryStatRows
+        .filter((trade) => ['OPEN', 'PENDING'].includes(String(trade.status ?? '').toUpperCase()))
+        .map((trade) => [String(trade.id ?? ''), trade]),
+    );
     return {
       baseEmaTrades,
       allEmaTrades,
@@ -16371,9 +21242,25 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filt
       realizedPnl,
       availableDays,
       emaStageCandleStats: emaStageCandleStatsOf(allEmaTrades),
+      supportEntryActiveById,
+      supportEntryStatsBase: paperSupportEntryStats(supportEntryStatRows),
     };
   });
   const allEmaTrades = cached.allEmaTrades;
+  const enrichEmaSupportTrade = (trade) => enrichPumpPaperTrade(
+    enrichEmaStageCandleTrade(enrichEmaBrRealCandleFit(trade)),
+    getFreshEmaSqueezeMarkInfo(trade.symbol)?.mark,
+  );
+  const supportEntryActive = cached.open
+    .filter((trade) => ['OPEN', 'PENDING'].includes(String(trade.status ?? '').toUpperCase()))
+    .map((trade) => ({
+      ...(cached.supportEntryActiveById.get(String(trade.id ?? '')) ?? {}),
+      ...enrichEmaSupportTrade(trade),
+    }));
+  const supportEntryStats = liveEmaSupportEntryStats(
+    cached.supportEntryStatsBase,
+    supportEntryActive,
+  );
   // SSE clients only merge active/recent rows and intentionally ignore the
   // aggregate summary. Return before enriching the complete EMA history:
   // doing the full-history map here made every socket tick allocate tens of
@@ -16385,23 +21272,17 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filt
         ['OPEN', 'PENDING'].includes(String(t.status ?? '').toUpperCase())
         || (Date.parse(t.closedAt ?? t.createdAt ?? 0) || 0) >= deltaCutoff
       ))
-      .map((t) => enrichPumpPaperTrade(
-        enrichEmaStageCandleTrade(enrichEmaBrRealCandleFit(t)),
-        getFreshEmaSqueezeMarkInfo(t.symbol)?.mark,
-      ));
+      .map(enrichEmaSupportTrade);
     return {
       trades: deltaTrades,
+      supportEntryStats,
       updatedAt: Date.now(),
       partial: true,
     };
   }
   const selectedTrades = allEmaTrades;
   const { rows: pagedTrades, pagination } = slicePaperPage(selectedTrades, paging);
-  const trades = pagedTrades
-    .map((t) => enrichPumpPaperTrade(
-      enrichEmaStageCandleTrade(enrichEmaBrRealCandleFit(t)),
-      getFreshEmaSqueezeMarkInfo(t.symbol)?.mark,
-    ));
+  const trades = pagedTrades.map(enrichEmaSupportTrade);
   // Net PnL theo mark đang chạy: realized (closed) + unrealized (OPEN tính theo mark live)
   const enrichedOpen = cached.open
     .filter((t) => String(t.status ?? '').toUpperCase() === 'OPEN')
@@ -16471,7 +21352,8 @@ async function getEmaSqueezePaperTrades({ deltaOnly = false, paging = null, filt
       runnerBtcTurnGates,
       breakoutBtcTurnGates,
     },
-	    availableDays: cached.availableDays,
+    availableDays: cached.availableDays,
+    supportEntryStats,
     pagination,
     updatedAt: Date.now(),
     partial: deltaOnly,
@@ -17181,11 +22063,17 @@ async function createPumpPaperTrade(payload) {
     const dupMark = String(dup.source ?? '').startsWith('emasq-')
       ? getFreshEmaSqueezeMarkInfo(symbol)?.mark
       : getFreshPumpPaperMark(symbol);
-    return { trade: enrichEmaStageCandleTrade(enrichPumpPaperTrade(dup, dupMark)) };
+    return {
+      trade: decorateSourceLongCorrReboundTrade(
+        enrichEmaStageCandleTrade(enrichPumpPaperTrade(dup, dupMark)),
+        { sourcePage: 'pump' },
+      ),
+    };
   }
 
   const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
   const source = String(payload.source ?? 'manual').slice(0, 80);
+  const marketDirectionAtSignal = marketDirectionSnapshotForSignalStorage();
   const signalMarkPrice = Number(payload.signalMarkPrice);
   const pumpTf = String(payload.pumpSignalTimeframe
     ?? payload.pumpSignalFactors?.timeframe
@@ -17204,11 +22092,18 @@ async function createPumpPaperTrade(payload) {
   const pumpEvalGate = nativePumpSource
     ? nativePumpEvalGateOfSignal({ ...payload, source, symbol, side, interval: pumpTf }, btcHealthSnapshot ?? {}, btcCorr)
     : null;
-  if (pumpEvalGate && !pumpEvalGate.allow) {
-    throw new Error(`${pumpEvalGate.label}: ${pumpEvalGate.reason}`);
-  }
-  const marginUsdt = pumpEvalGate?.marginUsdt
-    ?? (Number.isFinite(requestedMarginUsdt) && requestedMarginUsdt > 0 ? requestedMarginUsdt : 1);
+  const pumpCanonicalRule = nativePumpSource
+    ? evaluatePumpCanonicalTier(
+        { ...payload, source, symbol, side, interval: pumpTf, btcHealth: btcHealthSnapshot, btcCorr },
+        null,
+        { snapshot: true },
+      )
+    : null;
+  // Legacy Pump Eval is retained only as an audit label. It must not reject a
+  // paper trade or override its requested size while the tier is unvalidated.
+  const marginUsdt = Number.isFinite(requestedMarginUsdt) && requestedMarginUsdt > 0
+    ? requestedMarginUsdt
+    : 1;
   if (process.env.EMA_SQUEEZE_PAPER_BREAKOUT_QUALITY_GATE !== 'false'
       && source.includes('-breakout')
       && payload.breakoutPaperEligible === false) {
@@ -17293,6 +22188,39 @@ async function createPumpPaperTrade(payload) {
     pumpEvalCorrBucket: pumpEvalGate?.corrBucket ?? payload.pumpEvalCorrBucket ?? null,
     pumpEvalBtcPhase: pumpEvalGate?.btcPhase ?? payload.pumpEvalBtcPhase ?? null,
     pumpEvalContextKey: pumpEvalGate?.contextKey ?? payload.pumpEvalContextKey ?? null,
+    pumpCanonicalTier: pumpCanonicalRule?.tier ?? null,
+    pumpCanonicalLabel: pumpCanonicalRule?.label ?? null,
+    pumpCanonicalCode: pumpCanonicalRule?.code ?? null,
+    pumpCanonicalReason: pumpCanonicalRule?.reason ?? null,
+    pumpCanonicalCandidateTier: pumpCanonicalRule?.candidateTier ?? null,
+    pumpCanonicalCandidateCode: pumpCanonicalRule?.candidateCode ?? null,
+    pumpCanonicalCandidateReason: pumpCanonicalRule?.candidateReason ?? null,
+    pumpCanonicalVersion: pumpCanonicalRule?.version ?? null,
+    pumpCanonicalBasis: pumpCanonicalRule?.basis ?? null,
+    pumpCanonicalModelCutoffDay: pumpCanonicalRule?.modelCutoffDay ?? null,
+    pumpCanonicalHistoryDays: pumpCanonicalRule?.historyDays ?? [],
+    pumpCanonicalExactKey: pumpCanonicalRule?.exactKey ?? null,
+    pumpCanonicalCoarseKey: pumpCanonicalRule?.coarseKey ?? null,
+    pumpCanonicalParentKey: pumpCanonicalRule?.parentKey ?? null,
+    pumpCanonicalExpectedNetRoe: pumpCanonicalRule?.expectedNetRoe ?? null,
+    pumpCanonicalConservativeEdge: pumpCanonicalRule?.conservativeEdge ?? null,
+    pumpCanonicalProfitFactor: pumpCanonicalRule?.profitFactor ?? null,
+    pumpCanonicalSlRate: pumpCanonicalRule?.slRate ?? null,
+    pumpCanonicalSupportClosed: pumpCanonicalRule?.supportClosed ?? 0,
+    pumpCanonicalExactClosed: pumpCanonicalRule?.exactClosed ?? 0,
+    pumpCanonicalDays: pumpCanonicalRule?.days ?? 0,
+    pumpCanonicalPositiveWindows: pumpCanonicalRule?.positiveWindows ?? 0,
+    pumpCanonicalNegativeWindows: pumpCanonicalRule?.negativeWindows ?? 0,
+    pumpCanonicalRecentConflict: pumpCanonicalRule?.recentConflict ?? false,
+    pumpCanonicalRuntimeAllow: true,
+    pumpCanonicalMarginUsdt: null,
+    pumpCanonicalValidated: false,
+    pumpCanonicalObservationOnly: true,
+    pumpCanonicalAffectsEntry: false,
+    pumpCanonicalAffectsMargin: false,
+    pumpCanonicalAffectsSl: false,
+    pumpCanonicalAffectsTp: false,
+    pumpCanonicalDerived: false,
     pumpStructureSl: nativePumpSource && payload.sl != null ? Number(payload.sl) : null,
     pumpHardSlEnabled: nativePumpSource ? process.env.PUMP_PAPER_HARD_SL_ENABLED !== 'false' : null,
     pumpHardSlRoe: nativePumpSource ? pumpHardSlRoe : null,
@@ -17301,6 +22229,7 @@ async function createPumpPaperTrade(payload) {
     btcTrendDir: btcHealthSnapshot?.btcTrendDir ?? null,
     btcTrendScore: btcHealthSnapshot?.btcTrendScore ?? null,
     btcCorr,     // correlation coin vs BTC lúc vào (cờ theo sóng BTC)
+    marketDirectionAtSignal,
     breakoutQuality: payload.breakoutQuality ?? null,
     breakoutQualityReason: payload.breakoutQualityReason ?? null,
     breakoutPaperEligible: payload.breakoutPaperEligible ?? null,
@@ -17423,7 +22352,7 @@ async function createPumpPaperTrade(payload) {
       )
     : candleTrade;
   const stage2Rule = nativePumpSource ? pumpStage2RuleOfTrade(emaStageCandleTrade) : null;
-  const storedTrade = stage2Rule
+  const stage2Trade = stage2Rule
     ? {
         ...emaStageCandleTrade,
         pumpStage2Tier: stage2Rule.tier,
@@ -17435,6 +22364,73 @@ async function createPumpPaperTrade(payload) {
         pumpStage2ObservationOnly: true,
       }
     : emaStageCandleTrade;
+  const liftModel = nativePumpSource
+    ? buildPumpLiftModel(store, pumpPaperDateOf(stage2Trade))
+    : null;
+  const liftRule = nativePumpSource
+    ? pumpLiftRuleOfTrade(stage2Trade, liftModel)
+    : null;
+  const liftTrade = withPumpLiftFields(
+    stage2Trade,
+    liftRule ? { ...liftRule, derived: false } : null,
+  );
+  const selectorModel = buildPumpComboSelectorModel(store, pumpPaperDateOf(liftTrade));
+  const selectorRule = pumpComboSelectorRuleOfTrade(
+    liftTrade,
+    selectorModel,
+    { snapshot: true },
+  );
+  const selectorTrade = withPumpComboSelectorFields(
+    liftTrade,
+    { ...selectorRule, derived: false },
+  );
+  const emaLayerEvaluation = source.startsWith('emasq-')
+    ? evaluateEmaComboLayers(selectorTrade, selectorModel.emaLayers)
+    : null;
+  const layeredTrade = withEmaComboLayerFields(selectorTrade, emaLayerEvaluation);
+  const observationAt = Date.parse(layeredTrade.openedAt ?? layeredTrade.createdAt ?? '') || Date.now();
+  if (
+    !_pumpObservationEntryModel
+    || observationAt < _pumpObservationEntryModel.dayStartAt
+    || observationAt >= _pumpObservationEntryModel.dayStartAt + 24 * 60 * 60 * 1000
+  ) {
+    _pumpObservationEntryModel = buildPumpObservationEntryModel(store.trades, observationAt);
+  }
+  const observedTrade = {
+    ...layeredTrade,
+    ...pumpObservationSnapshotForEntry(layeredTrade, _pumpObservationEntryModel),
+  };
+  const liveCardAutoEligible = payload[LIVE_CARD_AUTO_ELIGIBLE] === true;
+  let storedTrade = {
+    ...observedTrade,
+    ...sourceLongCorrReboundSnapshotForEntry(observedTrade, { sourcePage: 'pump' }),
+    liveCardAutoEligible,
+  };
+  if (source.startsWith('emasq-') && storedTrade.status === 'OPEN') {
+    let liveDecision;
+    try {
+      liveDecision = await maybePlaceSourceLiveCardOrder(
+        'ema',
+        storedTrade,
+        store.trades,
+        emaLiveCardKeysOfTrade(storedTrade),
+        { autoEligible: liveCardAutoEligible },
+      );
+    } catch (error) {
+      liveDecision = {
+        decision: 'ERROR',
+        matchedKeys: error?.liveCardMatchedKeys ?? [],
+        version: error?.liveCardWhitelistVersion ?? LIQUID_LIVE_CARD_WHITELIST_VERSION,
+        attemptedAt: new Date().toISOString(),
+        error: String(error?.message ?? error).slice(0, 500),
+      };
+    }
+    storedTrade = {
+      ...storedTrade,
+      ...liveCardAuditPatch(liveDecision),
+      liveCardError: liveDecision.error ?? null,
+    };
+  }
   store.trades.unshift(storedTrade);
   // Dispatch the direct event before serializing the large historical store.
   // Recommended computes freshness at function entry, so disk latency cannot
@@ -17446,15 +22442,20 @@ async function createPumpPaperTrade(payload) {
       source: source.startsWith('emasq-') ? 'ema-source-open-event' : 'pump-source-open-event',
     });
   }
-  await writePumpPaperStore(store);
+  await writePumpPaperStore(store, { upsertIds: [storedTrade.id] });
   if (source.startsWith('emasq-')) syncEmaSqueezePaperTicker().catch(() => {});
   else syncPumpPaperTicker().catch(() => {});
   console.log(`[PumpPaper] ${status === 'PENDING' ? '⏳' : '✅'} ${side} ${symbol} entry=${entryPrice} src=${trade.source}`);
   return {
-    trade: enrichEmaStageCandleTrade(enrichPumpStage2Trade(enrichPumpPaperTrade(
-      storedTrade,
-      source.startsWith('emasq-') ? getFreshEmaSqueezeMarkInfo(symbol)?.mark : getFreshPumpPaperMark(symbol),
-    ))),
+    trade: withPumpComboSelectorFields(
+      enrichPumpLiftTrade(enrichEmaStageCandleTrade(
+        enrichPumpStage2Trade(enrichPumpPaperTrade(
+          storedTrade,
+          source.startsWith('emasq-') ? getFreshEmaSqueezeMarkInfo(symbol)?.mark : getFreshPumpPaperMark(symbol),
+        )),
+      ), liftModel),
+      pumpComboSelectorRuleOfTrade(storedTrade, selectorModel),
+    ),
   };
 }
 
@@ -17491,7 +22492,11 @@ async function closePumpPaperTrade(payload) {
       : trade.note,
     closedAt: new Date().toISOString(),
   };
-  await writePumpPaperStore(store);
+  await writePumpPaperStore(store, { upsertIds: [payload.id] });
+  queueLiveCardBotClose(isEmaSqueeze ? 'ema' : 'pump', store.trades[idx], {
+    outcome,
+    reason: store.trades[idx].closeReason ?? outcome,
+  });
   if (String(trade.source ?? '').startsWith('emasq-')) syncEmaSqueezePaperTicker().catch(() => {});
   else syncPumpPaperTicker().catch(() => {});
   return { trade: enrichPumpPaperTrade(store.trades[idx], exitPrice) };
@@ -17501,7 +22506,7 @@ async function deletePumpPaperTrade(payload) {
   const store = await readPumpPaperStore();
   const deleted = store.trades.find((t) => t.id === payload.id);
   store.trades = store.trades.filter((t) => t.id !== payload.id);
-  await writePumpPaperStore(store);
+  await writePumpPaperStore(store, { deleteIds: [payload.id] });
   if (String(deleted?.source ?? '').startsWith('emasq-')) syncEmaSqueezePaperTicker().catch(() => {});
   else syncPumpPaperTicker().catch(() => {});
   return { ok: true };
@@ -17517,8 +22522,34 @@ async function fillPumpPendingTrade(trade, markPrice) {
     const entry = Number(store.trades[idx].entryPrice);
     const touched = store.trades[idx].side === 'LONG' ? markPrice <= entry : markPrice >= entry;
     if (!touched) return;
-    store.trades[idx] = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
-    await writePumpPaperStore(store);
+    let filledTrade = { ...store.trades[idx], status: 'OPEN', fillPrice: entry, openedAt: new Date().toISOString() };
+    if (String(filledTrade.source ?? '').startsWith('emasq-') && filledTrade.liveCardAutoEligible === true) {
+      let liveDecision;
+      try {
+        liveDecision = await maybePlaceSourceLiveCardOrder(
+          'ema',
+          filledTrade,
+          store.trades,
+          emaLiveCardKeysOfTrade(filledTrade),
+          { autoEligible: true },
+        );
+      } catch (error) {
+        liveDecision = {
+          decision: 'ERROR',
+          matchedKeys: error?.liveCardMatchedKeys ?? [],
+          version: error?.liveCardWhitelistVersion ?? LIQUID_LIVE_CARD_WHITELIST_VERSION,
+          attemptedAt: new Date().toISOString(),
+          error: String(error?.message ?? error).slice(0, 500),
+        };
+      }
+      filledTrade = {
+        ...filledTrade,
+        ...liveCardAuditPatch(liveDecision),
+        liveCardError: liveDecision.error ?? null,
+      };
+    }
+    store.trades[idx] = filledTrade;
+    await writePumpPaperStore(store, { upsertIds: [trade.id] });
     console.log(`[PumpPaper] ✅ FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} entry=${entry} mark=${markPrice}`);
     publishRecommendedSourceOpen(String(store.trades[idx].source ?? '').startsWith('emasq-') ? 'ema' : 'pump', store.trades[idx], {
       price: Number(markPrice),
@@ -17657,7 +22688,7 @@ async function checkPumpPaperDynamicRisk(trade, markPrice) {
       dynamicRiskUpdatedAt: new Date().toISOString(),
       note,
     };
-    await writePumpPaperStore(store);
+    await writePumpPaperStore(store, { upsertIds: [trade.id] });
     console.log(`[PumpPaper] DYNAMIC ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% sl=${store.trades[idx].sl ?? '-'} tp=${store.trades[idx].tp ?? '-'}`);
   } finally {
     pumpPaperDynamicRiskLocks.delete(trade.id);
@@ -17820,7 +22851,7 @@ async function checkEmaSqueezeShortPartialTp(trade, markPrice) {
       dynamicRiskUpdatedAt: nowIso,
       note: [ruleNote, String(row.note ?? '')].filter(Boolean).join(' | ').slice(0, 500),
     };
-    await writePumpPaperStore(store);
+    await writePumpPaperStore(store, { upsertIds: [trade.id] });
     scheduleEmaSqueezePaperBroadcast(50);
     console.log(`[EmaSqueezePaper] SQUEEZE_SHORT_TP1 ${row.symbol}: close=${(closeRatio * 100).toFixed(0)}% roe=${tp1Roe}% partialPnl=${partialPnl.toFixed(4)} TP2=${runnerTargetRoe}% SL=BE`);
     return true;
@@ -17945,7 +22976,7 @@ async function checkEmaSqueezePaperProfit(trade, markPrice) {
       slTrailLockRoe: targetLockRoe,
       note: [String(row.note ?? ''), notePart].filter(Boolean).join(' | ').slice(0, 500),
     };
-    await writePumpPaperStore(store);
+    await writePumpPaperStore(store, { upsertIds: [trade.id] });
     console.log(`[EmaSqueezePaper] ${fastGiveback ? 'FAST-GIVEBACK-SL' : 'SL_TRAIL'} ${row.side} ${row.symbol} roe=${roe.toFixed(1)}% peak=${peakRoe.toFixed(1)}% lock=${targetLockRoe}% sl=${newSl}${fastGiveback ? ` group=${fastGiveback.group}` : ''}`);
   } finally {
     emaSqueezeProfitLocks.delete(trade.id);
@@ -18064,7 +23095,7 @@ async function checkEmaSqueezeRunnerTpToEntry(trade, markPrice) {
         .join(' | ')
         .slice(0, 500),
     };
-    await writePumpPaperStore(store);
+    await writePumpPaperStore(store, { upsertIds: [trade.id] });
     scheduleEmaSqueezePaperBroadcast(50);
     console.log(`[EmaSqueezeRunnerPaper] RUNNER-TP-ENTRY ${row.side} ${row.symbol}: roe=${roe.toFixed(1)}% <= ${triggerRoe}% tp=${entry}`);
   } finally {
@@ -18154,7 +23185,7 @@ async function checkEmaSqueezeBrLikeTpToEntry(trade, markPrice) {
         .join(' | ')
         .slice(0, 500),
     };
-    await writePumpPaperStore(store);
+    await writePumpPaperStore(store, { upsertIds: [trade.id] });
     scheduleEmaSqueezePaperBroadcast(50);
     console.log(`[EmaSqueezePaper] BR-LIKE-TP-ENTRY ${row.side} ${row.symbol}: roe=${roe.toFixed(1)}% <= ${triggerRoe}% tp=${entry}`);
   } finally {
@@ -18208,7 +23239,7 @@ async function checkEmaSqueezeBreakoutTpToEntry(trade, markPrice) {
         .join(' | ')
         .slice(0, 500),
     };
-    await writePumpPaperStore(store);
+    await writePumpPaperStore(store, { upsertIds: [trade.id] });
     scheduleEmaSqueezePaperBroadcast(50);
     console.log(`[EmaSqueezeBreakoutPaper] BREAKOUT-TP-ENTRY ${row.side} ${row.symbol}: roe=${roe.toFixed(1)}% <= ${triggerRoe}% tp=${entry}`);
   } finally {
@@ -18286,16 +23317,16 @@ async function syncEmaSqueezePaperTicker() {
 
 function startEmaSqueezePaperTicker() {
   if (emaSqueezePaperTicker) return;
-  emaSqueezePaperTicker = createAggTradeTicker({
-    logLabel: 'EmaSqueezeTick',
-    onPrice: ({ symbol, markPrice, eventTime }) => {
+  emaSqueezePaperTicker = sharedLastTicker.createClient(
+    'emaSqueezePaper',
+    ({ symbol, markPrice, eventTime }) => {
       emaSqueezeSocketMarks.set(symbol, markPrice);
       emaSqueezeSocketMarkAt.set(symbol, eventTime);
       scheduleEmaSqueezePaperBroadcast();
       queueEmaSqueezePaperProcessing(symbol, markPrice);
     },
-  });
-  console.log('[EmaSqueezePaper] Dedicated socket-only last-price ticker started.');
+  );
+  console.log('[EmaSqueezePaper] Shared last-price ticker consumer started.');
   syncEmaSqueezePaperTicker().catch(() => {});
   setInterval(() => syncEmaSqueezePaperTicker().catch(() => {}), 30_000);
   setInterval(() => expireOldBrLikeLimitPaper().catch(() => {}), 60_000);
@@ -18312,15 +23343,15 @@ function startEmaSqueezePaperTicker() {
 
 function startPumpPaperTicker() {
   if (pumpPaperTicker) return;
-  pumpPaperTicker = createAggTradeTicker({
-    logLabel: 'PumpPaperTick',
-    onPrice: ({ symbol, markPrice, eventTime }) => {
+  pumpPaperTicker = sharedLastTicker.createClient(
+    'pumpPaper',
+    ({ symbol, markPrice, eventTime }) => {
       pumpMarkCache.set(symbol, markPrice);
       pumpMarkCacheAt.set(symbol, eventTime);
       scheduleEmaSqueezePaperBroadcast();
     },
-  });
-  console.log('[PumpPaper] Dedicated socket-only last-price ticker started (1s batched processing).');
+  );
+  console.log('[PumpPaper] Shared last-price ticker consumer started (1s batched processing).');
   syncPumpPaperTicker().catch(() => {});
   setInterval(() => syncPumpPaperTicker().catch(() => {}), 30_000);
   setInterval(() => processPumpPaperCachedMarks().catch((err) => {
@@ -18343,19 +23374,21 @@ async function expireOldEmaSqueezePending() {
   const store = await readPumpPaperStore();
   const now = Date.now();
   const keep = [];
+  const expiredIds = [];
   let removed = 0;
   for (const t of store.trades) {
     if (t.status === 'PENDING' && String(t.source ?? '').startsWith('emasq-')
         && (now - (Date.parse(t.createdAt ?? 0) || now)) > ttlMs) {
       console.log(`[EmaSqueezePaper] EXPIRE pending ${t.side} ${t.symbol} - >${(ttlMs / 3600000).toFixed(0)}h chưa khớp, xóa lệnh`);
       removed++;
+      if (t.id) expiredIds.push(t.id);
       continue;
     }
     keep.push(t);
   }
   if (removed) {
     store.trades = keep;
-    await writePumpPaperStore(store);
+    await writePumpPaperStore(store, { deleteIds: expiredIds });
     syncEmaSqueezePaperTicker().catch(() => {});
   }
 }
@@ -18418,9 +23451,112 @@ async function readEdgePaperStore() {
 }
 
 let _edgePaperWriteLock = Promise.resolve();
+let _edgePaperMutationLock = Promise.resolve();
+let edgeShortLabelDecorationCache = null;
 async function writeEdgePaperStore(store) {
-  _edgePaperWriteLock = _edgePaperWriteLock.then(() => atomicWriteJson(EDGE_PAPER_FILE, store));
+  edgeShortLabelDecorationCache = null;
+  _edgePaperWriteLock = _edgePaperWriteLock
+    .catch((error) => console.warn(`[EdgePaper] previous write failed; queue continues: ${error.message}`))
+    .then(() => atomicWriteJson(EDGE_PAPER_FILE, store));
   return _edgePaperWriteLock;
+}
+
+function mutateEdgePaperStore(mutator) {
+  const run = _edgePaperMutationLock
+    .catch(() => {})
+    .then(async () => {
+      await _edgePaperWriteLock.catch(() => {});
+      const store = await readEdgePaperStore();
+      const result = await mutator(store);
+      if (result?.changed !== false) await writeEdgePaperStore(store);
+      return result;
+    });
+  _edgePaperMutationLock = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function upsertEdgePaperTrade(trade) {
+  return mutateEdgePaperStore((store) => {
+    const index = store.trades.findIndex((row) => String(row?.id) === String(trade?.id));
+    if (index >= 0) store.trades[index] = trade;
+    else store.trades.unshift(trade);
+    return { changed: true, trade };
+  });
+}
+
+async function recoverEdgePaperEntryJournal() {
+  const latest = await readLatestEdgePaperJournalRecords(EDGE_PAPER_ENTRY_JOURNAL_FILE);
+  if (!latest.size) return { recoveredIds: [] };
+  const result = await mutateEdgePaperStore((store) => {
+    const recovered = recoverEdgePaperTradesFromJournal(store, latest);
+    if (recovered.recoveredIds.length) store.trades = recovered.store.trades;
+    return { changed: recovered.recoveredIds.length > 0, recoveredIds: recovered.recoveredIds };
+  });
+  if (result.recoveredIds.length) {
+    console.warn(`[EdgePaperJournal] recovered ${result.recoveredIds.length} paper row(s): ${result.recoveredIds.join(', ')}`);
+  }
+  return result;
+}
+
+async function writeEdgePaperCandleBackfill(enrichedStore) {
+  const enrichedById = new Map((enrichedStore?.trades ?? []).map((trade) => [String(trade?.id ?? ''), trade]));
+  return mutateEdgePaperStore((store) => {
+    let changed = false;
+    store.trades = store.trades.map((trade) => {
+      const enriched = enrichedById.get(String(trade?.id ?? ''));
+      if (!enriched) return trade;
+      const patch = {};
+      if (!trade.candlePatternAtEntry && enriched.candlePatternAtEntry) patch.candlePatternAtEntry = enriched.candlePatternAtEntry;
+      if (!trade.btcCandlePatternAtEntry && enriched.btcCandlePatternAtEntry) patch.btcCandlePatternAtEntry = enriched.btcCandlePatternAtEntry;
+      if (!Object.keys(patch).length) return trade;
+      changed = true;
+      return { ...trade, ...patch };
+    });
+    return { changed };
+  });
+}
+
+function edgeShortLabelStoreKey(trades = []) {
+  let closed = 0;
+  let latestClosedAt = '';
+  for (const trade of trades) {
+    if (trade?.status !== 'CLOSED') continue;
+    closed += 1;
+    const closedAt = String(trade.closedAt ?? '');
+    if (closedAt > latestClosedAt) latestClosedAt = closedAt;
+  }
+  const newest = trades[0] ?? {};
+  return [
+    trades.length,
+    closed,
+    newest.id ?? '',
+    newest.createdAt ?? '',
+    latestClosedAt,
+  ].join('|');
+}
+
+function getDecoratedEdgeShortLabelTrades(trades = []) {
+  const key = edgeShortLabelStoreKey(trades);
+  if (edgeShortLabelDecorationCache?.key === key) {
+    return edgeShortLabelDecorationCache.trades;
+  }
+  const decorated = decorateEdgeShortUtadSnapshots(decorateEdgeShortLongSpringSnapshots(
+    decorateSourceLongCorrReboundTrades(decorateEdgeShortBestProfileSnapshots(
+      decorateEdgeShortLiveSnapshots(
+        decorateEdgeShortBestSnapshots(
+          decorateEdgeShortWave2cSnapshots(
+            decorateEdgeShortWave2bSnapshots(
+              decorateEdgeShortTierSnapshots(
+                decorateEdgeShortLabelSnapshots(trades),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ), { sourcePage: 'edge' }),
+  ));
+  edgeShortLabelDecorationCache = { key, trades: decorated };
+  return decorated;
 }
 
 function enrichEdgePaperTrade(t, markPrice) {
@@ -18435,17 +23571,22 @@ function enrichEdgePaperTrade(t, markPrice) {
   return { ...t, markPrice: mark, pnl, roe };
 }
 
-async function getEdgePaperTrades({ day = 'all', page = 1, pageSize = 300 } = {}) {
+async function getEdgePaperTrades({ day = 'all', fromDay = '', toDay = '', page = 1, pageSize = 300 } = {}) {
   const store = await readEdgePaperStore();
-  const allStoreTrades = Array.isArray(store.trades) ? store.trades : [];
+  const allStoreTrades = getDecoratedEdgeShortLabelTrades(
+    Array.isArray(store.trades) ? store.trades : [],
+  );
   const availableDays = [...new Set(allStoreTrades
-    .map((t) => String(t.createdAt ?? t.openedAt ?? t.closedAt ?? '').slice(0, 10))
-    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))]
+    .map((trade) => liquidPaperTradeDayKey(trade))
+    .filter(Boolean))]
     .sort((a, b) => b.localeCompare(a));
-  const dayFilter = String(day ?? 'all');
-  const selectedStoredTrades = dayFilter && dayFilter !== 'all'
-    ? allStoreTrades.filter((t) => String(t.createdAt ?? '').slice(0, 10) === dayFilter)
-    : allStoreTrades;
+  const dateRange = normalizeLiquidPaperDateRange({ day, fromDay, toDay });
+  const selectedStoredTrades = dateRange.mode === 'all'
+    ? allStoreTrades
+    : allStoreTrades.filter((trade) => liquidPaperDayInRange(
+      liquidPaperTradeDayKey(trade),
+      dateRange,
+    ));
   const pageNum = Math.max(1, Math.floor(Number(page) || 1));
   const pageSizeNum = Math.max(25, Math.min(1000, Math.floor(Number(pageSize) || 300)));
   const sortedStoredTrades = selectedStoredTrades.slice().sort((a, b) => {
@@ -18469,6 +23610,11 @@ async function getEdgePaperTrades({ day = 'all', page = 1, pageSize = 300 } = {}
   const avgRoe = closed.length > 0 ? closed.reduce((s, t) => s + (t.roe ?? 0), 0) / closed.length : null;
   const realizedPnl = closed.reduce((s, t) => s + Number(t.pnl ?? 0), 0);
   const unrealizedPnl = open.reduce((s, t) => s + Number(t.pnl ?? 0), 0);
+  const supportEntryStats = paperSupportEntryStats(
+    decorateRecommendedSupportEntrySnapshots(
+      trades.map((trade) => ({ ...trade, sourcePage: 'edge' })),
+    ),
+  );
   const summary = {
     total: trades.length,
     open: open.length,
@@ -18482,12 +23628,58 @@ async function getEdgePaperTrades({ day = 'all', page = 1, pageSize = 300 } = {}
     unrealizedPnl: +unrealizedPnl.toFixed(4),
     netPnl: +(realizedPnl + unrealizedPnl).toFixed(4),
   };
+  const wave2cStats = edgeShortWave2cStats(trades);
+  const sourceLongCorrReboundStats = buildSourceLongCorrReboundStats(
+    trades,
+    { sourcePage: 'edge' },
+  );
   return {
     trades: pageTrades,
     summary,
     comboStats: pumpComboStatsOf(selectedStoredTrades, { context: 'edge' }),
+    supportEntryStats,
+    labelStats: edgeShortLabelGroupStats(trades),
+    labelVersion: EDGE_SHORT_LABEL_VERSION,
+    tierStats: edgeShortTierStats(trades),
+    tierVersion: EDGE_SHORT_TIER_VERSION,
+    tierObservationOnly: true,
+    wave2bStats: edgeShortWave2bStats(trades),
+    wave2bVersion: EDGE_SHORT_WAVE_2B_VERSION,
+    wave2bObservationOnly: true,
+    wave2cStats: wave2cStats.aggregate,
+    wave2cTierStats: wave2cStats.byTier,
+    wave2cVersion: EDGE_SHORT_WAVE_2C_VERSION,
+    wave2cObservationOnly: true,
+    bestStats: edgeShortBestStats(trades),
+    bestVersion: EDGE_SHORT_BEST_VERSION,
+    bestObservationOnly: true,
+    bestProfileStats: edgeShortBestProfileStats(trades),
+    bestProfileVersion: EDGE_SHORT_BEST_PROFILE_VERSION,
+    bestProfileObservationOnly: true,
+    bestRiskPhaseStats: edgeShortBestRiskPhaseStats(trades),
+    bestRiskPhaseVersion: EDGE_SHORT_BEST_RISK_PHASE_VERSION,
+    bestRiskPhaseObservationOnly: true,
+    longSpringStats: edgeShortLongSpringStats(trades),
+    longSpringVersion: EDGE_SHORT_LONG_SPRING_VERSION,
+    longSpringWhitelistVersion: EDGE_SHORT_LONG_SPRING_WHITELIST_VERSION,
+    longSpringObservationOnly: true,
+    shortUtadStats: edgeShortUtadStats(trades),
+    shortUtadVersion: EDGE_SHORT_UTAD_VERSION,
+    shortUtadWhitelistVersion: EDGE_SHORT_UTAD_WHITELIST_VERSION,
+    shortUtadObservationOnly: true,
+    liveStats: edgeShortLiveStats(trades),
+    liveVersion: EDGE_SHORT_LIVE_VERSION,
+    liveObservationOnly: true,
+    sourceLongCorrReboundStats,
+    sourceLongCorrReboundVersion: SOURCE_LONG_CORR_REBOUND_VERSION,
     availableDays,
-    filter: { day: dayFilter || 'all' },
+    filter: {
+      day: dateRange.mode === 'day' ? dateRange.fromDay : 'all',
+      fromDay: dateRange.fromDay,
+      toDay: dateRange.toDay,
+      mode: dateRange.mode,
+      timeZone: LIQUID_PAPER_DAY_TIME_ZONE,
+    },
     pagination: {
       page: safePage,
       pageSize: pageSizeNum,
@@ -18516,9 +23708,15 @@ async function createEdgePaperTrade(payload) {
     t.symbol === symbol && t.side === side && Math.abs(t.entryPrice - entryPrice) / entryPrice < 0.005 &&
     ['PENDING', 'OPEN'].includes(t.status),
   );
-  if (dup) return { trade: enrichEdgePaperTrade(dup, edgeMarkCache.get(symbol)) };
+  if (dup) {
+    const decoratedDup = getDecoratedEdgeShortLabelTrades(store.trades)
+      .find((trade) => trade.id === dup.id) ?? dup;
+    return { trade: enrichEdgePaperTrade(decoratedDup, edgeMarkCache.get(symbol)) };
+  }
 
   const status = payload.status === 'OPEN' ? 'OPEN' : 'PENDING';
+  const createdAt = new Date().toISOString();
+  const marketDirectionAtSignal = marketDirectionSnapshotForSignalStorage();
   const maxShortSlRoe = Number(process.env.EDGE_SHORT_MAX_SL_ROE ?? getEdgeShortPaperSlRoe());
   const payloadSlRoe = Math.abs(Number(payload.slRoe));
   const forcedSlRoe = Number.isFinite(payloadSlRoe) && payloadSlRoe > 0
@@ -18541,7 +23739,7 @@ async function createEdgePaperTrade(payload) {
       console.log(`[EdgePaper] clamp SHORT SL ${symbol}: ${slRoe.toFixed(1)}%ROE → ${maxShortSlRoe}%ROE`);
     }
   }
-  const trade = {
+  const baseTrade = attachCandlePatternToPaperTrade({
     id: crypto.randomUUID(),
     symbol,
     side,
@@ -18558,8 +23756,8 @@ async function createEdgePaperTrade(payload) {
     pnl: null,
     roe: null,
     outcome: null,
-    createdAt: new Date().toISOString(),
-    openedAt: status === 'OPEN' ? new Date().toISOString() : null,
+    createdAt,
+    openedAt: status === 'OPEN' ? createdAt : null,
     closedAt: null,
     source: String(payload.source ?? 'edge').slice(0, 80),
     note: `${String(payload.note ?? '').slice(0, 460)}${riskNote}`,
@@ -18574,11 +23772,117 @@ async function createEdgePaperTrade(payload) {
     btcTrendDir: payload.btcHealth?.btcTrendDir ?? payload.btcTrendDir ?? null,
     btcTrendScore: payload.btcHealth?.btcTrendScore ?? payload.btcTrendScore ?? null,
     btcCorr: payload.btcCorr ?? null,
+    marketDirectionAtSignal,
     capGateLabel: payload.capGateLabel ?? null,
     capGateReason: payload.capGateReason ?? null,
+    sourceSignalAt: payload.sourceSignalAt ?? payload.signalAt ?? payload.scannedAt ?? createdAt,
+    candlePatternAtEntry: payload.candlePatternAtEntry ?? payload.candlePattern ?? null,
+    candlePatternTimeframe: payload.candlePatternTimeframe
+      ?? payload.pumpSignalTimeframe
+      ?? null,
+    btcCandlePatternAtEntry: payload.btcCandlePatternAtEntry
+      ?? payload.btcCandleAtEntry
+      ?? payload.btcCandlePattern
+      ?? null,
+  });
+  const coreTrade = {
+    ...baseTrade,
+    ...edgeShortLabelSnapshotForEntry(
+      store.trades,
+      baseTrade,
+      Date.parse(createdAt),
+    ),
   };
-  store.trades.unshift(trade);
-  await writeEdgePaperStore(store);
+  const tierTrade = {
+    ...coreTrade,
+    ...edgeShortTierSnapshot(coreTrade),
+  };
+  const wave2bTrade = {
+    ...tierTrade,
+    ...edgeShortWave2bSnapshot(tierTrade),
+  };
+  const wave2cTrade = {
+    ...wave2bTrade,
+    ...edgeShortWave2cSnapshot(wave2bTrade),
+  };
+  const priorTrades = getDecoratedEdgeShortLabelTrades(store.trades);
+  const bestTrade = {
+    ...wave2cTrade,
+    ...edgeShortBestSnapshotForEntry(
+      priorTrades,
+      wave2cTrade,
+      Date.parse(createdAt),
+    ),
+  };
+  const liveTrade = {
+    ...bestTrade,
+    ...edgeShortLiveSnapshotForEntry(
+      priorTrades,
+      bestTrade,
+      Date.parse(createdAt),
+    ),
+  };
+  const profiledTrade = {
+    ...liveTrade,
+    ...edgeShortBestProfileSnapshotForEntry(liveTrade),
+  };
+  const longSpringTrade = {
+    ...profiledTrade,
+    ...edgeShortLongSpringSnapshotForEntry(profiledTrade),
+  };
+  const shortUtadTrade = {
+    ...longSpringTrade,
+    ...edgeShortUtadSnapshotForEntry(longSpringTrade),
+  };
+  const liveCardAutoEligible = payload[LIVE_CARD_AUTO_ELIGIBLE] === true;
+  let trade = {
+    ...shortUtadTrade,
+    ...sourceLongCorrReboundSnapshotForEntry(shortUtadTrade, { sourcePage: 'edge' }),
+    liveCardAutoEligible,
+  };
+  const journaledLiveEntry = trade.status === 'OPEN' && liveCardAutoEligible;
+  if (journaledLiveEntry) {
+    await appendEdgePaperEntryJournal(
+      EDGE_PAPER_ENTRY_JOURNAL_FILE,
+      'PREPARED',
+      trade,
+      { source: 'createEdgePaperTrade' },
+    );
+  }
+  if (trade.status === 'OPEN') {
+    let liveDecision;
+    try {
+      liveDecision = await maybePlaceSourceLiveCardOrder(
+        'edge',
+        trade,
+        store.trades,
+        edgeLiveCardKeysOfTrade(trade),
+        { autoEligible: liveCardAutoEligible },
+      );
+    } catch (error) {
+      liveDecision = {
+        decision: 'ERROR',
+        matchedKeys: error?.liveCardMatchedKeys ?? [],
+        version: error?.liveCardWhitelistVersion ?? LIQUID_LIVE_CARD_WHITELIST_VERSION,
+        attemptedAt: new Date().toISOString(),
+        error: String(error?.message ?? error).slice(0, 500),
+      };
+    }
+    trade = {
+      ...trade,
+      ...liveCardAuditPatch(liveDecision),
+      liveCardError: liveDecision.error ?? null,
+    };
+  }
+  await upsertEdgePaperTrade(trade);
+  if (journaledLiveEntry) {
+    await appendEdgePaperEntryJournal(
+      EDGE_PAPER_ENTRY_JOURNAL_FILE,
+      'COMMITTED',
+      trade,
+      { source: 'createEdgePaperTrade' },
+    );
+  }
   if (trade.status === 'OPEN') {
     publishRecommendedSourceOpen('edge', trade, {
       price: trade.entryPrice,
@@ -18592,26 +23896,42 @@ async function createEdgePaperTrade(payload) {
 }
 
 async function closeEdgePaperTrade(payload) {
-  const store = await readEdgePaperStore();
-  const idx = store.trades.findIndex((t) => t.id === payload.id);
-  if (idx < 0) throw new Error('Edge paper trade not found');
-  const trade = store.trades[idx];
-  if (trade.status === 'CLOSED') return { trade: enrichEdgePaperTrade(trade, trade.exitPrice) };
-  const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (edgeMarkCache.get(trade.symbol) ?? trade.entryPrice);
-  const sideMult = trade.side === 'LONG' ? 1 : -1;
-  const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
-  const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
-  const outcome = payload.outcome ?? 'MANUAL';
-  store.trades[idx] = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
-  await writeEdgePaperStore(store);
+  const result = await mutateEdgePaperStore((store) => {
+    const idx = store.trades.findIndex((t) => t.id === payload.id);
+    if (idx < 0) throw new Error('Edge paper trade not found');
+    const trade = store.trades[idx];
+    if (trade.status === 'CLOSED') return { changed: false, trade, alreadyClosed: true };
+    const exitPrice = payload.exitPrice ? Number(payload.exitPrice) : (edgeMarkCache.get(trade.symbol) ?? trade.entryPrice);
+    const sideMult = trade.side === 'LONG' ? 1 : -1;
+    const pnl = (exitPrice - trade.entryPrice) * trade.quantity * sideMult;
+    const roe = trade.marginUsdt > 0 ? (pnl / trade.marginUsdt) * 100 : 0;
+    const outcome = payload.outcome ?? 'MANUAL';
+    const closedTrade = { ...trade, status: 'CLOSED', exitPrice, pnl, roe, outcome, closedAt: new Date().toISOString() };
+    store.trades[idx] = closedTrade;
+    return { changed: true, trade: closedTrade };
+  });
+  const outcome = result.trade.outcome ?? payload.outcome ?? 'MANUAL';
+  if (!result.alreadyClosed) {
+    queueLiveCardBotClose('edge', result.trade, { outcome, reason: outcome });
+  }
   await syncEdgePaperTicker();
-  return { trade: enrichEdgePaperTrade(store.trades[idx], exitPrice) };
+  return { trade: enrichEdgePaperTrade(result.trade, result.trade.exitPrice) };
 }
 
 async function deleteEdgePaperTrade(payload) {
-  const store = await readEdgePaperStore();
-  store.trades = store.trades.filter((t) => t.id !== payload.id);
-  await writeEdgePaperStore(store);
+  const result = await mutateEdgePaperStore((store) => {
+    const deleted = store.trades.find((trade) => trade.id === payload.id) ?? null;
+    store.trades = store.trades.filter((trade) => trade.id !== payload.id);
+    return { changed: Boolean(deleted), deleted };
+  });
+  if (result.deleted?.liveCardAutoEligible === true) {
+    await appendEdgePaperEntryJournal(
+      EDGE_PAPER_ENTRY_JOURNAL_FILE,
+      'DELETED',
+      payload.id,
+      { source: 'deleteEdgePaperTrade' },
+    );
+  }
   await syncEdgePaperTicker();
   return { ok: true };
 }
@@ -18633,7 +23953,7 @@ async function fillEdgePendingTrade(trade, markPrice) {
     const nextQuantity = Number.isFinite(marginUsdt) && marginUsdt > 0 && Number.isFinite(fillPrice) && fillPrice > 0
       ? (marginUsdt * leverage) / fillPrice
       : row.quantity;
-    store.trades[idx] = {
+    let filledTrade = {
       ...row,
       status: 'OPEN',
       setupEntry: Number(row.setupEntry ?? entry),
@@ -18646,9 +23966,51 @@ async function fillEdgePendingTrade(trade, markPrice) {
         `socketFill=${fillPrice}; setupEntry=${Number(row.setupEntry ?? entry)}`,
       ].filter(Boolean).join(' | ').slice(0, 500),
     };
-    await writeEdgePaperStore(store);
-    console.log(`[EdgePaper] FILLED ${store.trades[idx].side} ${store.trades[idx].symbol} setupEntry=${entry} fill=${fillPrice}`);
-    publishRecommendedSourceOpen('edge', store.trades[idx], {
+    const journaledLiveEntry = filledTrade.liveCardAutoEligible === true;
+    if (journaledLiveEntry) {
+      await appendEdgePaperEntryJournal(
+        EDGE_PAPER_ENTRY_JOURNAL_FILE,
+        'PREPARED',
+        filledTrade,
+        { source: 'fillEdgePendingTrade' },
+      );
+    }
+    if (filledTrade.liveCardAutoEligible === true) {
+      let liveDecision;
+      try {
+        liveDecision = await maybePlaceSourceLiveCardOrder(
+          'edge',
+          filledTrade,
+          store.trades,
+          edgeLiveCardKeysOfTrade(filledTrade),
+          { autoEligible: true },
+        );
+      } catch (error) {
+        liveDecision = {
+          decision: 'ERROR',
+          matchedKeys: error?.liveCardMatchedKeys ?? [],
+          version: error?.liveCardWhitelistVersion ?? LIQUID_LIVE_CARD_WHITELIST_VERSION,
+          attemptedAt: new Date().toISOString(),
+          error: String(error?.message ?? error).slice(0, 500),
+        };
+      }
+      filledTrade = {
+        ...filledTrade,
+        ...liveCardAuditPatch(liveDecision),
+        liveCardError: liveDecision.error ?? null,
+      };
+    }
+    await upsertEdgePaperTrade(filledTrade);
+    if (journaledLiveEntry) {
+      await appendEdgePaperEntryJournal(
+        EDGE_PAPER_ENTRY_JOURNAL_FILE,
+        'COMMITTED',
+        filledTrade,
+        { source: 'fillEdgePendingTrade' },
+      );
+    }
+    console.log(`[EdgePaper] FILLED ${filledTrade.side} ${filledTrade.symbol} setupEntry=${entry} fill=${fillPrice}`);
+    publishRecommendedSourceOpen('edge', filledTrade, {
       price: fillPrice,
       at: Date.now(),
       source: 'edge-fill-socket-event',
@@ -18740,7 +24102,7 @@ async function syncEdgePaperTicker() {
 
 function startEdgePaperTicker() {
   if (edgePaperTicker) return;
-  edgePaperTicker = true; // guard flag — actual WS is sharedLastTicker
+  edgePaperTicker = true; // guard flag — actual WS is sharedLastTicke
   sharedLastTicker.register('edgePaper', ({ symbol, markPrice }) => {
     edgeMarkCache.set(symbol, markPrice);
   });
@@ -18924,7 +24286,7 @@ async function syncSrPaperTicker() {
 
 function startSrPaperTicker() {
   if (srPaperTicker) return;
-  srPaperTicker = true; // guard flag — actual WS is sharedLastTicker
+  srPaperTicker = true; // guard flag — actual WS is sharedLastTicke
   sharedLastTicker.register('srPaper', ({ symbol, markPrice }) => {
     srMarkCache.set(symbol, markPrice);
     processSrPaperFills(symbol, markPrice).catch(() => {});
@@ -19345,15 +24707,15 @@ async function syncPpksPaperTicker() {
 
 function startPpksPaperTicker() {
   if (ppksPaperTicker) return;
-  ppksPaperTicker = createAggTradeTicker({
-    logLabel: 'PpksPaperTick',
-    onPrice: ({ symbol, markPrice, eventTime }) => {
+  ppksPaperTicker = sharedLastTicker.createClient(
+    'ppksPaper',
+    ({ symbol, markPrice, eventTime }) => {
     ppksMarkCache.set(symbol, markPrice);
       ppksMarkCacheAt.set(symbol, eventTime);
     processPpksPaperFills(symbol, markPrice).catch(() => {});
     },
-  });
-  console.log('[PpksPaper] Dedicated socket-only last-price ticker started.');
+  );
+  console.log('[PpksPaper] Shared last-price ticker consumer started.');
   syncPpksPaperTicker().catch(() => {});
   setInterval(() => syncPpksPaperTicker().catch(() => {}), 30_000);
 }
@@ -19500,13 +24862,52 @@ function getShakeoutPaperMark(symbol) {
   return null;
 }
 
-async function getShakeoutPaperTrades() {
+async function getShakeoutPaperTrades({
+  paging = null,
+  day = 'all',
+  shakeoutClass = 'all',
+  side = 'all',
+  stage2 = 'all',
+} = {}) {
   const store = await readShakeoutPaperStore();
-  const trades = store.trades.map((t) => enrichShakeoutStage2V2(enrichShakeoutPaperTrade(
-    t,
-    getShakeoutPaperMark(t.symbol),
-  )));
-  const open = trades.filter((t) => ['OPEN', 'PENDING'].includes(t.status));
+  const allTrades = store.trades.map((t) => enrichShakeoutMarketIndependentObservation(
+    enrichShakeoutObservation(
+      enrichShakeoutStage2V2(enrichShakeoutPaperTrade(
+        t,
+        getShakeoutPaperMark(t.symbol),
+      )),
+    ),
+  ));
+  const availableDays = [...new Set(allTrades
+    .map((t) => String(t.createdAt ?? t.openedAt ?? t.closedAt ?? '').slice(0, 10))
+    .filter(Boolean))]
+    .sort()
+    .reverse();
+  const availableClasses = [...new Set(allTrades
+    .map((t) => String(t.shakeoutClass ?? 'UNKNOWN'))
+    .filter(Boolean))]
+    .sort();
+  const selectedDay = String(day ?? 'all');
+  const selectedClass = String(shakeoutClass ?? 'all');
+  const selectedSide = String(side ?? 'all').toUpperCase();
+  const selectedStage2 = String(stage2 ?? 'all').toUpperCase();
+  const statusRank = { OPEN: 0, PENDING: 1, CLOSED: 2, EXPIRED: 3, CANCELLED: 4 };
+  const trades = allTrades
+    .filter((t) => (
+      (selectedDay === 'all'
+        || String(t.createdAt ?? t.openedAt ?? t.closedAt ?? '').slice(0, 10) === selectedDay)
+      && (selectedClass === 'all' || String(t.shakeoutClass ?? 'UNKNOWN') === selectedClass)
+      && (selectedSide === 'ALL' || String(t.side ?? '').toUpperCase() === selectedSide)
+      && (selectedStage2 === 'ALL'
+        || String(t.shakeoutStage2Tier ?? '').toUpperCase() === selectedStage2)
+    ))
+    .sort((a, b) => {
+      const statusDiff = (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9);
+      if (statusDiff !== 0) return statusDiff;
+      return (Date.parse(b.createdAt ?? '') || 0) - (Date.parse(a.createdAt ?? '') || 0);
+    });
+  const openRows = trades.filter((t) => t.status === 'OPEN');
+  const pendingRows = trades.filter((t) => t.status === 'PENDING');
   const closed = trades.filter((t) => t.status === 'CLOSED');
   const expired = trades.filter((t) => t.status === 'EXPIRED').length;
   const cancelled = trades.filter((t) => t.status === 'CANCELLED').length;
@@ -19527,6 +24928,7 @@ async function getShakeoutPaperTrades() {
   const grossPnl = feeRows.reduce((s, t) => s + Number(t.grossPnl ?? t.pnl ?? 0), 0);
   const feeUsdt = feeRows.reduce((s, t) => s + Number(t.feeUsdt ?? 0), 0);
   const netPnl = feeRows.reduce((s, t) => s + Number(t.netPnl ?? t.pnl ?? 0), 0);
+  const liveRoe = feeRows.reduce((s, t) => s + Number(t.netRoe ?? t.roe ?? 0), 0);
 
   // Thống kê theo ngày (group theo closedAt, bỏ INVALID)
   const dailyMap = new Map();
@@ -19621,12 +25023,28 @@ async function getShakeoutPaperTrades() {
     };
   };
   const realGateCompare = ['REAL_OK', 'REAL_TEST', 'REAL_BLOCK'].map(buildRealGate);
+  const observationStats = buildShakeoutObservationStats(allTrades);
+  const aggregateStats = buildShakeoutPaperAggregateStats(trades, {
+    day: selectedDay,
+  });
+  const page = slicePaperPage(trades, paging);
 
   return {
-    trades,
+    trades: page.rows,
+    pagination: page.pagination,
+    availableDays,
+    availableClasses,
+    filter: {
+      day: selectedDay,
+      shakeoutClass: selectedClass,
+      side: selectedSide,
+      stage2: selectedStage2,
+    },
     summary: {
       total: trades.length,
-      open: open.length,
+      open: openRows.length,
+      pending: pendingRows.length,
+      active: openRows.length + pendingRows.length,
       closed: closed.length,
       expired,
       cancelled,
@@ -19647,10 +25065,14 @@ async function getShakeoutPaperTrades() {
       grossPnl: +grossPnl.toFixed(4),
       feeUsdt: +feeUsdt.toFixed(4),
       netPnl: +netPnl.toFixed(4),
+      livePnl: +netPnl.toFixed(4),
+      liveRoe: +liveRoe.toFixed(2),
     },
     daily,
     variantCompare,
     realGateCompare,
+    observationStats,
+    aggregateStats,
   };
 }
 
@@ -19837,7 +25259,7 @@ async function createShakeoutPaperTrade(payload) {
     side,
     createdAt: entrySignalAt,
   });
-  const resolvedSideCandleGate = payload.shakeoutSideCandleTier
+  const resolvedSideCandleGate = payload.shakeoutSideCandleTie
     ? {
         version: payload.ruleVersion,
         regime: payload.regimeAtEntry,
@@ -19879,6 +25301,23 @@ async function createShakeoutPaperTrade(payload) {
   const btcGateReason = String(payload.btcGateReason ?? payload.shakeoutBtcGateReason ?? fallbackBtcGate.reason ?? '').slice(0, 360);
   const btcPhase = normalizePumpComboPart(payload.btcPhase ?? fallbackBtcGate.phase, 'BTC_NO_DATA');
   const btcRelationLabel = normalizePumpComboPart(payload.btcRelationLabel ?? fallbackBtcGate.relation, 'REL_NO_DATA');
+  const chaseShortTierEvaluation = evaluateShakeoutChaseShortTier({
+    variant,
+    side,
+    score: payload.score,
+    btcPhase,
+    tierAMarginUsdt: process.env.SHAKEOUT_RECLAIM_PAPER_CHASE_SHORT_A_MARGIN_USDT ?? 10,
+    tierBMarginUsdt: process.env.SHAKEOUT_RECLAIM_PAPER_CHASE_SHORT_B_MARGIN_USDT ?? 5,
+  });
+  if (chaseShortTierEvaluation.applies) {
+    // The explicit CHASE SHORT A/B plan owns sizing for this cohort. Olde
+    // CHOP, side-candle and weak-group caps remain active for other variants.
+    marginUsdt = chaseShortTierEvaluation.marginUsdt;
+  }
+  const chaseChopShadow = !chaseShortTierEvaluation.applies && isShakeoutChopChase({
+    variant,
+    btcMarketRegimeAtEntry: entryContext?.btcMarketRegimeAtEntry,
+  });
   const shakeoutCombo = String(payload.shakeoutCombo ?? shakeoutSignalComboOf({
     ...payload,
     action: side,
@@ -19909,6 +25348,36 @@ async function createShakeoutPaperTrade(payload) {
       0,
     ),
     rollingDrift: stage2RollingDrift,
+  });
+  const observationRiskPct = Number.isFinite(sl) && sl > 0
+    ? Math.abs(sl - entryPrice) / entryPrice * 100
+    : null;
+  const observationRewardPct = Number.isFinite(tp) && tp > 0
+    ? Math.abs(tp - entryPrice) / entryPrice * 100
+    : null;
+  const observationEvaluation = evaluateShakeoutObservation({
+    ...payload,
+    side,
+    variant,
+    status: undefined,
+    outcome: undefined,
+    pnl: undefined,
+    roe: undefined,
+    signalAt: entrySignalAt,
+    signalTimeframe,
+    btcHealth: btcHealthSnapshot,
+    btcCorr,
+    btcPhase,
+    btcRelationLabel,
+    btcMarketRegimeAtSignal: signalContext?.btcMarketRegimeAtEntry,
+    btcMarketRegimeAtEntry: entryContext?.btcMarketRegimeAtEntry,
+    symbolCandleAtEntry: resolvedSymbolCandleAtEntry,
+    btcCandleAtEntry: resolvedBtcCandleAtEntry,
+    shakeoutObservationRiskPct: observationRiskPct,
+    shakeoutObservationRewardPct: observationRewardPct,
+    shakeoutObservationRr: observationRiskPct > 0 && observationRewardPct != null
+      ? observationRewardPct / observationRiskPct
+      : null,
   });
   const btcLogNote = btcHealthSnapshot
     ? `btcLog=${btcHealthSnapshot.regime ?? '-'}:${btcHealthSnapshot.btcTrendDir ?? '-'}:${Number.isFinite(btcTrendScore) ? btcTrendScore : '-'} pct6h=${Number.isFinite(btcPct6h) ? btcPct6h.toFixed(2) : '-'} ema1h=${btcHealthSnapshot.emaTrend1h ?? '-'} bull=${btcHealthSnapshot.bullBias ?? '-'}`
@@ -19964,7 +25433,7 @@ async function createShakeoutPaperTrade(payload) {
       : null,
     ruleVersion: resolvedSideCandleGate.version ? String(resolvedSideCandleGate.version).slice(0, 64) : null,
     regimeAtEntry: resolvedSideCandleGate.regime ? String(resolvedSideCandleGate.regime).toUpperCase().slice(0, 16) : null,
-    shakeoutSideCandleTier: resolvedSideCandleGate.tier
+    shakeoutSideCandleTier: resolvedSideCandleGate.tie
       ? String(resolvedSideCandleGate.tier).toUpperCase().slice(0, 12)
       : null,
     shakeoutSideCandleLabel: resolvedSideCandleGate.label
@@ -20010,6 +25479,24 @@ async function createShakeoutPaperTrade(payload) {
     chaseConfirmation: payload.chaseConfirmation && typeof payload.chaseConfirmation === 'object'
       ? payload.chaseConfirmation
       : null,
+    shakeoutChaseShortTierVersion: chaseShortTierEvaluation.applies
+      ? chaseShortTierEvaluation.version
+      : null,
+    shakeoutChaseShortTier: chaseShortTierEvaluation.applies
+      ? chaseShortTierEvaluation.tie
+      : null,
+    shakeoutChaseShortLabel: chaseShortTierEvaluation.applies
+      ? chaseShortTierEvaluation.label
+      : null,
+    shakeoutChaseShortCode: chaseShortTierEvaluation.applies
+      ? chaseShortTierEvaluation.code
+      : null,
+    shakeoutChaseShortReason: chaseShortTierEvaluation.applies
+      ? chaseShortTierEvaluation.reason
+      : null,
+    shakeoutChaseShortMarginUsdt: chaseShortTierEvaluation.applies
+      ? chaseShortTierEvaluation.marginUsdt
+      : null,
     btcTrendDir: btcHealthSnapshot?.btcTrendDir ?? null,
     btcTrendScore: Number.isFinite(btcTrendScore) ? btcTrendScore : null,
     btcRegimeAtEntry: btcHealthSnapshot?.regime ?? null,
@@ -20050,11 +25537,10 @@ async function createShakeoutPaperTrade(payload) {
     shakeoutStage2DuplicateActiveCount: stage2Evaluation.duplicateActiveCount,
     shakeoutStage2DuplicateActiveMarginUsdt: stage2Evaluation.duplicateActiveMarginUsdt,
     shakeoutStage2RollingDrift: stage2Evaluation.rollingDrift,
+    ...observationEvaluation,
+    shakeoutObservationDerived: false,
     pendingShadowMarginCapUsdt: variant === 'PENDING' ? pendingShadowMarginCapUsdt : null,
-    chaseChopShadow: isShakeoutChopChase({
-      variant,
-      btcMarketRegimeAtEntry: entryContext?.btcMarketRegimeAtEntry,
-    }),
+    chaseChopShadow,
     signalAt: String(entrySignalAt),
     createdAt: new Date().toISOString(),
     openedAt: status === 'OPEN' ? new Date().toISOString() : null,
@@ -20065,7 +25551,7 @@ async function createShakeoutPaperTrade(payload) {
       entryContext
         ? `BTC_ENTRY_CONTEXT=4h:${entryContext.btcTrendDir4hAtEntry ?? '-'}:${entryContext.btcTrendScore4hAtEntry ?? '-'} flip5m=${entryContext.btc5mFlipRateAtEntry ?? '-'} (${entryContext.btc5mFlipCountAtEntry}/${entryContext.btc5mFlipTransitionsAtEntry}) regime=${entryContext.btcMarketRegimeAtEntry ?? '-'}`
         : '',
-      isShakeoutChopChase({ variant, btcMarketRegimeAtEntry: entryContext?.btcMarketRegimeAtEntry })
+      chaseChopShadow
         ? `CHASE_CHOP_SHADOW=margin_cap_$${chopChaseMarginCapUsdt}`
         : '',
       `SHAKEOUT_BTC_GATE=${btcGateLabel}: ${btcGateReason}`,
@@ -20075,6 +25561,9 @@ async function createShakeoutPaperTrade(payload) {
         : '',
       variant === 'PENDING'
         ? `PENDING_SHADOW=margin_cap_$${pendingShadowMarginCapUsdt}`
+        : '',
+      chaseShortTierEvaluation.applies
+        ? `CHASE_SHORT_TIER=${chaseShortTierEvaluation.tier}; ${chaseShortTierEvaluation.reason}`
         : '',
       `SHAKEOUT_STAGE_2=${stage2Evaluation.tier}:${stage2Evaluation.label}; ${stage2Evaluation.reason}`,
       String(payload.note ?? ''),
@@ -20289,6 +25778,28 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
       leverage: lev,
     });
     const filledTp = fillTpCap.tp;
+    const fillObservationRiskPct = Number.isFinite(filledSl) && filledSl > 0
+      ? Math.abs(filledSl - fill) / fill * 100
+      : null;
+    const fillObservationRewardPct = Number.isFinite(filledTp) && filledTp > 0
+      ? Math.abs(filledTp - fill) / fill * 100
+      : null;
+    const fillObservation = evaluateShakeoutObservation({
+      ...row,
+      openedAt: filledAt,
+      shakeoutObservationCapturedAt: filledAt,
+      entryPrice: fill,
+      btcHealth: fillBtcHealthSnapshot,
+      btcPhase: pumpBtcPhaseBucket(fillBtcHealthSnapshot),
+      btcMarketRegimeAtEntry: entryContext.btcMarketRegimeAtEntry,
+      symbolCandleAtEntry,
+      btcCandleAtEntry,
+      shakeoutObservationRiskPct: fillObservationRiskPct,
+      shakeoutObservationRewardPct: fillObservationRewardPct,
+      shakeoutObservationRr: fillObservationRiskPct > 0 && fillObservationRewardPct != null
+        ? fillObservationRewardPct / fillObservationRiskPct
+        : null,
+    });
     const entryContextNote = `BTC_ENTRY_CONTEXT=4h:${entryContext.btcTrendDir4hAtEntry ?? '-'}:${entryContext.btcTrendScore4hAtEntry ?? '-'} flip5m=${entryContext.btc5mFlipRateAtEntry ?? '-'} (${entryContext.btc5mFlipCountAtEntry}/${entryContext.btc5mFlipTransitionsAtEntry}) regime=${entryContext.btcMarketRegimeAtEntry ?? '-'}`;
     const chopShadowNote = isShakeoutChopChase({
       variant: row.variant,
@@ -20353,6 +25864,11 @@ async function fillShakeoutPendingTrade(trade, markPrice) {
       shakeoutStage2DuplicateActiveCount: stage2Evaluation.duplicateActiveCount,
       shakeoutStage2DuplicateActiveMarginUsdt: stage2Evaluation.duplicateActiveMarginUsdt,
       shakeoutStage2RollingDrift: stage2Evaluation.rollingDrift,
+      shakeoutObservationSignalSnapshot: row.shakeoutObservationSignalSnapshot
+        ?? row.shakeoutObservationSnapshot
+        ?? null,
+      ...fillObservation,
+      shakeoutObservationDerived: false,
       pendingShadowMarginCapUsdt,
       chaseChopShadow: isShakeoutChopChase({
         variant: row.variant,
@@ -21629,16 +27145,16 @@ async function expireOldShakeoutPending() {
 
 function startShakeoutPaperTicker() {
   if (shakeoutPaperTicker) return;
-  shakeoutPaperTicker = createAggTradeTicker({
-    logLabel: 'ShakeoutTick',
-    onPrice: ({ symbol, markPrice, eventTime }) => {
+  shakeoutPaperTicker = sharedLastTicker.createClient(
+    'shakeoutPaper',
+    ({ symbol, markPrice, eventTime }) => {
       shakeoutSocketMarks.set(symbol, markPrice);
       shakeoutSocketMarkAt.set(symbol, eventTime);
       scheduleShakeoutPaperBroadcast();
       queueShakeoutPaperProcessing(symbol, markPrice);
     },
-  });
-  console.log('[ShakeoutPaper] Dedicated socket-only aggTrade ticker started.');
+  );
+  console.log('[ShakeoutPaper] Shared last-price ticker consumer started.');
   syncShakeoutPaperTicker().catch(() => {});
   setInterval(() => syncShakeoutPaperTicker().catch(() => {}), 30_000);
   setTimeout(() => expireOldShakeoutPending().catch(() => {}), 3_000);
@@ -22521,6 +28037,14 @@ async function createShakeoutPaperTrades(signals = []) {
       signalTp,
       signalSl,
     });
+    const chaseShortTier = evaluateShakeoutChaseShortTier({
+      variant: 'CHASE',
+      side,
+      score: sc,
+      btcPhase: shakeoutBtcGate.phase,
+      tierAMarginUsdt: process.env.SHAKEOUT_RECLAIM_PAPER_CHASE_SHORT_A_MARGIN_USDT ?? 10,
+      tierBMarginUsdt: process.env.SHAKEOUT_RECLAIM_PAPER_CHASE_SHORT_B_MARGIN_USDT ?? 5,
+    });
     const chaseBadGroup = getShakeoutBadChaseGroup({
       shakeoutClass: sig.shakeoutClass,
       side,
@@ -22528,11 +28052,16 @@ async function createShakeoutPaperTrades(signals = []) {
       btcGateLabel: shakeoutBtcGate.label,
       combo: shakeoutCombo,
     });
-    const chaseMarginUsdt = chaseBadGroup.bad
-      ? Math.max(0.01, Number(process.env.SHAKEOUT_RECLAIM_PAPER_CHASE_BAD_GROUP_MARGIN_USDT ?? 1))
-      : Number(process.env.SHAKEOUT_RECLAIM_PAPER_CHASE_CANDLE_MARGIN_USDT ?? 2);
-    const chaseBadGroupNote = chaseBadGroup.bad
+    const chaseMarginUsdt = chaseShortTier.applies
+      ? chaseShortTier.marginUsdt
+      : chaseBadGroup.bad
+        ? Math.max(0.01, Number(process.env.SHAKEOUT_RECLAIM_PAPER_CHASE_BAD_GROUP_MARGIN_USDT ?? 1))
+        : Number(process.env.SHAKEOUT_RECLAIM_PAPER_CHASE_CANDLE_MARGIN_USDT ?? 2);
+    const chaseBadGroupNote = !chaseShortTier.applies && chaseBadGroup.bad
       ? `; CHASE_BAD_GROUP_TEST_1=${chaseBadGroup.reason}`
+      : '';
+    const chaseShortTierNote = chaseShortTier.applies
+      ? `; CHASE_SHORT_TIER=${chaseShortTier.tier}; ${chaseShortTier.reason}`
       : '';
     const btcUpShortBadSizeGroup = getShakeoutBtcUpShortBadSizeGroup(shakeoutCombo);
     const btcUpShortBadSizeMarginUsdt = Math.max(
@@ -22548,12 +28077,15 @@ async function createShakeoutPaperTrades(signals = []) {
           tag: 'chase-candle-test',
           marginUsdt: chaseMarginUsdt,
           shakeoutQualityOverride: 'CHASE',
-          chaseWeakGroup: Boolean(chaseBadGroup.bad),
-          chaseWeakGroupReason: chaseBadGroup.reason,
+          chaseWeakGroup: Boolean(!chaseShortTier.applies && chaseBadGroup.bad),
+          chaseWeakGroupReason: !chaseShortTier.applies ? chaseBadGroup.reason : '',
+          chaseShortTier: chaseShortTier.applies ? chaseShortTier.tier : null,
+          chaseShortTierLabel: chaseShortTier.applies ? chaseShortTier.label : null,
+          chaseShortTierReason: chaseShortTier.applies ? chaseShortTier.reason : '',
           chaseConfirmation: chaseTest.confirmation,
           chaseNote: chaseTest.confirmation?.mode === 'RELAXED'
-            ? `CHASE_CANDLE_TEST_RELAXED: pending entry ${pendingEntry} missed by ${chaseTest.movePct.toFixed(2)}%; closed 5m confirmation temporarily disabled; test $${chaseMarginUsdt}${chaseBadGroupNote}`
-            : `CHASE_CANDLE_TEST: pending entry ${pendingEntry} missed by ${chaseTest.movePct.toFixed(2)}%; closed 5m confirmed ${side}; body=${(chaseTest.confirmation.bodyShare * 100).toFixed(1)}%; close=${chaseTest.confirmation.close}; previousClose=${chaseTest.confirmation.previousClose}; test $${chaseMarginUsdt}${chaseBadGroupNote}`,
+            ? `CHASE_CANDLE_TEST_RELAXED: pending entry ${pendingEntry} missed by ${chaseTest.movePct.toFixed(2)}%; closed 5m confirmation temporarily disabled; test $${chaseMarginUsdt}${chaseBadGroupNote}${chaseShortTierNote}`
+            : `CHASE_CANDLE_TEST: pending entry ${pendingEntry} missed by ${chaseTest.movePct.toFixed(2)}%; closed 5m confirmed ${side}; body=${(chaseTest.confirmation.bodyShare * 100).toFixed(1)}%; close=${chaseTest.confirmation.close}; previousClose=${chaseTest.confirmation.previousClose}; test $${chaseMarginUsdt}${chaseBadGroupNote}${chaseShortTierNote}`,
         },
         ...variants,
       ];
@@ -22571,16 +28103,19 @@ async function createShakeoutPaperTrades(signals = []) {
         ? Number(v.marginUsdt ?? process.env.SHAKEOUT_RECLAIM_PAPER_CHASE_CANDLE_MARGIN_USDT ?? 2)
         : (uniformTestMargin > 0 ? uniformTestMargin : weakReclaimSizedMarginUsdt);
       const isBadChaseGroup = Boolean(v.chaseWeakGroup);
+      const hasChaseShortTier = ['A', 'B_TEST'].includes(String(v.chaseShortTier ?? '').toUpperCase());
       const variantMarginUsdt = Number(v.marginUsdt);
       // Explicit weak cohorts stay at $1 so they remain measurable instead of being hidden.
-      const preSideCandleMarginUsdt = btcUpShortBadSizeGroup.bad
+      const preSideCandleMarginUsdt = hasChaseShortTier
+        ? variantMarginUsdt
+        : btcUpShortBadSizeGroup.bad
         ? btcUpShortBadSizeMarginUsdt
         : Number.isFinite(variantMarginUsdt) && variantMarginUsdt > 0
           ? variantMarginUsdt
         : jumpRisk.block && !isBadChaseGroup
           ? highJumpRiskMarginUsdt
           : classifiedMarginUsdt;
-      const effectiveMarginUsdt = sideCandleGate.marginCapUsdt == null
+      const effectiveMarginUsdt = hasChaseShortTier || sideCandleGate.marginCapUsdt == null
         ? preSideCandleMarginUsdt
         : Math.min(preSideCandleMarginUsdt, sideCandleGate.marginCapUsdt);
       const geometryOk = side === 'LONG'
@@ -22668,6 +28203,12 @@ async function createShakeoutPaperTrades(signals = []) {
         stage: sig.stage,
         signalTimeframe,
         signalType: sig.type,
+        shakeoutSignalFactors: sig.factors,
+        shakeoutSignalChange24hPct: sig.change24h,
+        shakeoutSignalQuoteVolume: sig.volume,
+        shakeoutEntryMode: v.btcDynamicEntry
+          ? 'BTC_DYNAMIC'
+          : (sig.entryMode ?? (v.variant === 'MARKET' ? 'MARKET' : 'PENDING_LIMIT')),
         candlePattern5m: sig.candlePattern5m,
         candlePattern15m: sig.candlePattern15m,
         btcCandlePattern5m: sig.btcCandlePattern5m,
@@ -22721,7 +28262,12 @@ async function createShakeoutPaperTrades(signals = []) {
           marketScoreNote,
           v.chaseNote,
           v.chaseWeakGroup ? `CHASE_BAD_GROUP_TEST_1=${v.chaseWeakGroupReason}; margin=$${effectiveMarginUsdt.toFixed(0)}` : '',
-          btcUpShortBadSizeGroup.bad ? `BTC_UP_SHORT_BAD_GROUP_TEST_1=${btcUpShortBadSizeGroup.reason}; margin=$${effectiveMarginUsdt.toFixed(0)}` : '',
+              v.chaseShortTier
+            ? `CHASE_SHORT_TIER=${v.chaseShortTier}; ${v.chaseShortTierReason}; margin=$${effectiveMarginUsdt.toFixed(0)}`
+            : '',
+              btcUpShortBadSizeGroup.bad && !v.chaseShortTier
+            ? `BTC_UP_SHORT_BAD_GROUP_TEST_1=${btcUpShortBadSizeGroup.reason}; margin=$${effectiveMarginUsdt.toFixed(0)}`
+            : '',
           `SHAKEOUT_QUALITY=${v.shakeoutQualityOverride === 'CHASE' ? 'CHASE CANDLE TEST' : shakeoutQuality.label}; margin=$${effectiveMarginUsdt.toFixed(0)}; ${v.shakeoutQualityOverride === 'CHASE' ? (v.chaseConfirmation?.mode === 'RELAXED' ? 'pending missed; closed 5m confirmation temporarily disabled' : 'pending missed; closed 5m candle confirmed direction') : shakeoutQuality.reason}`,
           realGateNote,
           `SHAKEOUT_BTC_GATE=${shakeoutBtcGate.label}: ${shakeoutBtcGate.reason}`,
@@ -23796,20 +29342,21 @@ function queueTopReversalPaperProcessing(symbol, markPrice) {
 
 function startTopReversalPaperTicker() {
   if (topReversalPaperTicker) return;
-  topReversalPaperTicker = createAggTradeTicker({
-    logLabel: 'TopReversalTick',
-    onPrice: ({ symbol, markPrice }) => {
+  topReversalPaperTicker = sharedLastTicker.createClient(
+    'topReversalPaper',
+    ({ symbol, markPrice }) => {
       topReversalSocketMarks.set(symbol, markPrice);
       topReversalSocketMarkAt.set(symbol, Date.now());
       queueTopReversalPaperProcessing(symbol, markPrice);
       scheduleTopReversalPaperBroadcast();
     },
-  });
+  );
   syncTopReversalPaperTicker().catch(() => {});
   setInterval(() => syncTopReversalPaperTicker().catch(() => {}), 30_000);
 }
 
 async function handleShakeoutReclaimRealOrders(signals = []) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (process.env.SHAKEOUT_RECLAIM_REAL_ORDER_ENABLED !== 'true') return;
   if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
     console.log('[ShakeoutReclaimOrder] skip - real Binance order disabled/dry-run');
@@ -23970,7 +29517,7 @@ async function handleShakeoutReclaimRealOrders(signals = []) {
 function startPaperTradeTicker() {
   if (process.env.PAPER_TRADE_TICKER_ENABLED === 'false') return;
   if (paperTicker) return;
-  paperTicker = true; // guard flag — actual WS is sharedLastTicker
+  paperTicker = true; // guard flag — actual WS is sharedLastTicke
   sharedLastTicker.register('paperTrade', ({ symbol, markPrice }) => {
     paperMarkCache.set(symbol, { markPrice, at: Date.now(), source: 'ws' });
     processPaperPendingFillsForSymbol(symbol, markPrice).catch(() => {});
@@ -24099,6 +29646,7 @@ function startAutoTrader() {
 }
 
 async function runAutoTradeScan() {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (!runtimeSettings.autoTradeEnabled) return;
   if (isVnBlockHour()) { console.log('[AutoTrade] ⏰ Block 17-19h VN'); return; }
   try {
@@ -24285,6 +29833,7 @@ async function placeAutoTrade(row, setup, limitPrice = null, score = 0) {
 const avgDownTriggered = new Map();
 
 async function runAvgDownScan() {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (process.env.AVG_DOWN_ENABLED !== 'true') return;
   const triggerRoe = Number(process.env.AVG_DOWN_TRIGGER_ROE ?? -60);
   const marginUsdt = Number(process.env.AVG_DOWN_MARGIN_USDT ?? 2);
@@ -24444,6 +29993,8 @@ async function calculateEntryLevel(symbol, direction, markPrice, symbolInfo, sco
 function getAutoTradeStatus() {
   return {
     enabled: runtimeSettings.autoTradeEnabled,
+    blockedByExclusivePolicy: liveCardOnlyAutoBinanceEnabled(),
+    autoBinancePolicy: AUTO_BINANCE_ENTRY_POLICY_VERSION,
     dryRun: runtimeSettings.dryRun,
     threshold: Number(process.env.AUTO_TRADE_THRESHOLD ?? 0.7),
     marginUsdt: Number(process.env.AUTO_TRADE_MARGIN_USDT ?? 2),
@@ -24573,11 +30124,11 @@ function startLongShortRefresh() {
   setInterval(run, Number(process.env.LONG_SHORT_REFRESH_INTERVAL_MS ?? 15 * 60 * 1000));
 }
 
-async function getHedgeMode(token = null, credentialsOverride = null) {
+async function getHedgeMode(token = null, credentialsOverride = null, requestOptions = {}) {
   const { apiKey, apiSecret } = credentialsOverride ?? getApiCredentials(token);
   if (hedgeModeCache.has(apiKey)) return hedgeModeCache.get(apiKey);
   try {
-    const mode = await client.getPositionMode({ apiKey, apiSecret });
+    const mode = await client.getPositionMode({ apiKey, apiSecret, ...requestOptions });
     hedgeModeCache.set(apiKey, mode);
     console.log(`[PositionMode] Account is in ${mode ? 'Hedge' : 'One-way'} mode.`);
     return mode;
@@ -24596,57 +30147,171 @@ function getApiCredentials(token = null) {
     if (!apiKey || !apiSecret) throw new Error('Missing Binance API credentials. Enter API key on login or set BINANCE_API_KEY in .env.');
     return { apiKey, apiSecret };
   }
-  // Background (token=null): ưu tiên session, fallback env để socket/manual order guards vẫn chạy sau restart.
+  // Background (token=null): luôn ưu tiên credential cố định trong .env.
+  // Trang Orders có thể tự đăng nhập lại bằng credential cũ trong localStorage;
+  // không để session UI đầu tiên ghi đè socket/auto-order/TP-SL background.
+  if (process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET) {
+    return { apiKey: process.env.BINANCE_API_KEY, apiSecret: process.env.BINANCE_API_SECRET };
+  }
+  // Chỉ fallback session khi server thực sự không được cấu hình credential nền.
   if (sessionCredentials.size > 0) {
     const first = sessionCredentials.values().next().value;
     if (first?.apiKey && first?.apiSecret) return { apiKey: first.apiKey, apiSecret: first.apiSecret };
-  }
-  if (process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET) {
-    return { apiKey: process.env.BINANCE_API_KEY, apiSecret: process.env.BINANCE_API_SECRET };
   }
   throw new Error('Chưa đăng nhập. Vào /orders và nhập API key để sử dụng.');
 }
 
 let _balanceCache = null;
 let _balanceCacheAt = 0;
+let _balanceInflight = null;
 const BALANCE_TTL_MS = 60_000; // 1 phút — balance không cần real-time
 
 async function getAccountBalance(token = null) {
   if (_balanceCache && Date.now() - _balanceCacheAt < BALANCE_TTL_MS) return _balanceCache;
+  if (_balanceInflight) return _balanceInflight;
   if (shouldDeferAlgoRest()) return _balanceCache ?? [];
   const { apiKey, apiSecret } = getApiCredentials(token);
-  const rows = await client.getBalance({ apiKey, apiSecret });
-  _balanceCache = rows.filter((b) => Number(b.balance) > 0 || Number(b.crossUnPnl) !== 0);
-  _balanceCacheAt = Date.now();
-  return _balanceCache;
+  _balanceInflight = client.getBalance({ apiKey, apiSecret })
+    .then((rows) => {
+      _balanceCache = rows.filter((b) => Number(b.balance) > 0 || Number(b.crossUnPnl) !== 0);
+      _balanceCacheAt = Date.now();
+      return _balanceCache;
+    })
+    .finally(() => { _balanceInflight = null; });
+  return _balanceInflight;
 }
 
 let _dailyPnlCache = null;
 let _dailyPnlCacheAt = 0;
+let _dailyPnlInflight = null;
 const DAILY_PNL_TTL_MS = 300_000; // 5 phút — income API weight=30, không cần real-time
 
 async function getDailyPnl(token = null) {
   if (_dailyPnlCache && Date.now() - _dailyPnlCacheAt < DAILY_PNL_TTL_MS) return _dailyPnlCache;
+  if (_dailyPnlInflight) return _dailyPnlInflight;
   if (shouldDeferAlgoRest()) return _dailyPnlCache ?? { realized: 0, commission: 0, funding: 0, net: 0, since: new Date().toISOString() };
   const { apiKey, apiSecret } = getApiCredentials(token);
   const startOfDay = new Date();
   startOfDay.setUTCHours(0, 0, 0, 0);
-  const rows = await client.getIncome({ startTime: startOfDay.getTime(), limit: 1000, apiKey, apiSecret });
-  let realized = 0; let commission = 0; let funding = 0;
-  for (const r of rows) {
-    const v = Number(r.income);
-    if (r.incomeType === 'REALIZED_PNL') realized += v;
-    else if (r.incomeType === 'COMMISSION') commission += v;
-    else if (r.incomeType === 'FUNDING_FEE') funding += v;
+  _dailyPnlInflight = client.getIncome({ startTime: startOfDay.getTime(), limit: 1000, apiKey, apiSecret })
+    .then((rows) => {
+      let realized = 0; let commission = 0; let funding = 0;
+      for (const r of rows) {
+        const v = Number(r.income);
+        if (r.incomeType === 'REALIZED_PNL') realized += v;
+        else if (r.incomeType === 'COMMISSION') commission += v;
+        else if (r.incomeType === 'FUNDING_FEE') funding += v;
+      }
+      _dailyPnlCache = { realized, commission, funding, net: realized + commission + funding, since: startOfDay.toISOString() };
+      _dailyPnlCacheAt = Date.now();
+      return _dailyPnlCache;
+    })
+    .finally(() => { _dailyPnlInflight = null; });
+  return _dailyPnlInflight;
+}
+
+let _liveCardClosedPnlIncomeCache = null;
+let _liveCardClosedPnlIncomeInflight = null;
+const LIVE_CARD_CLOSED_PNL_INCOME_TTL_MS = 60_000;
+
+async function fetchLiveCardIncomeRange({ startTime, endTime, apiKey, apiSecret, depth = 0 }) {
+  const rows = await client.getIncome({ startTime, endTime, limit: 1000, apiKey, apiSecret });
+  if (!Array.isArray(rows) || rows.length < 1000 || depth >= 8 || endTime - startTime <= 60_000) {
+    return Array.isArray(rows) ? rows : [];
   }
-  _dailyPnlCache = { realized, commission, funding, net: realized + commission + funding, since: startOfDay.toISOString() };
-  _dailyPnlCacheAt = Date.now();
-  return _dailyPnlCache;
+  const midpoint = Math.floor((startTime + endTime) / 2);
+  const [left, right] = await Promise.all([
+    fetchLiveCardIncomeRange({ startTime, endTime: midpoint, apiKey, apiSecret, depth: depth + 1 }),
+    fetchLiveCardIncomeRange({ startTime: midpoint + 1, endTime, apiKey, apiSecret, depth: depth + 1 }),
+  ]);
+  return [...left, ...right];
+}
+
+async function syncLiveCardClosedPnl(token, executions = []) {
+  const pending = (Array.isArray(executions) ? executions : []).filter((row) => (
+    row?.status === 'POSITION_CLOSED'
+    && row?.closedPnlKnown !== true
+    && Number.isFinite(Date.parse(row?.positionClosedAt ?? ''))
+  ));
+  if (!pending.length) return { attempted: false, reconciled: 0, incomeRows: 0, error: null };
+
+  const startTime = Math.min(...pending.map((row) => {
+    const parsed = Date.parse(row.entrySubmittedAt ?? row.attemptedAt ?? row.entryFilledAt ?? '');
+    return Number.isFinite(parsed) ? parsed - 60_000 : Date.parse(row.positionClosedAt) - 24 * 60 * 60_000;
+  }));
+  const endTime = Math.min(Date.now(), Math.max(...pending.map((row) => Date.parse(row.positionClosedAt) + 60_000)));
+  if (isBinanceRestCongested()) {
+    return { attempted: false, reconciled: 0, incomeRows: 0, error: 'BINANCE_REST_GATE_CONGESTED' };
+  }
+  const cached = _liveCardClosedPnlIncomeCache;
+  if (cached && Date.now() - cached.at < LIVE_CARD_CLOSED_PNL_INCOME_TTL_MS
+    && cached.startTime <= startTime && cached.endTime >= endTime) {
+    const updated = await liveCardBinanceLifecycle.reconcileClosedPnl(cached.rows);
+    return { attempted: true, reconciled: updated.length, incomeRows: cached.rows.length, error: null, cached: true };
+  }
+  if (_liveCardClosedPnlIncomeInflight) return _liveCardClosedPnlIncomeInflight;
+
+  _liveCardClosedPnlIncomeInflight = (async () => {
+    try {
+      const { apiKey, apiSecret } = getApiCredentials(token);
+      const rawRows = await fetchLiveCardIncomeRange({ startTime, endTime, apiKey, apiSecret });
+      const deduped = [...new Map(rawRows.map((row) => [[
+        row?.tranId ?? '', row?.tradeId ?? '', row?.symbol ?? '', row?.incomeType ?? '', row?.time ?? '', row?.income ?? '',
+      ].join(':'), row])).values()];
+      _liveCardClosedPnlIncomeCache = { at: Date.now(), startTime, endTime, rows: deduped };
+      const updated = await liveCardBinanceLifecycle.reconcileClosedPnl(deduped);
+      return { attempted: true, reconciled: updated.length, incomeRows: deduped.length, error: null, cached: false };
+    } catch (error) {
+      return {
+        attempted: true,
+        reconciled: 0,
+        incomeRows: 0,
+        error: String(error?.message ?? error).slice(0, 500),
+      };
+    } finally {
+      _liveCardClosedPnlIncomeInflight = null;
+    }
+  })();
+  return _liveCardClosedPnlIncomeInflight;
 }
 
 async function getPositions(token = null) {
+  const socketStatus = posMonitor?.getStatus?.() ?? null;
+  const socketRows = posMonitor?.getActivePositions?.() ?? null;
+  const socketSnapshotReady = Array.isArray(socketRows)
+    && Number.isFinite(Number(socketStatus?.lastRestSyncAt))
+    && Date.now() - Number(socketStatus.lastRestSyncAt) < 90_000;
+  if (socketSnapshotReady) {
+    const restBySymbol = new Map(
+      (_posStore.positions ?? []).map((position) => [position.symbol, position]),
+    );
+    return socketRows.map((position) => {
+      const rest = restBySymbol.get(position.symbol) ?? {};
+      const markPrice = Number(position.markPrice) > 0
+        ? position.markPrice
+        : rest.markPrice ?? 0;
+      const unRealizedProfit = Number(position.markPrice) > 0
+        ? position.unRealizedProfit
+        : rest.unRealizedProfit ?? 0;
+      return {
+        ...rest,
+        ...position,
+        markPrice,
+        unRealizedProfit,
+        liquidationPrice: Number(position.liquidationPrice) > 0
+          ? position.liquidationPrice
+          : rest.liquidationPrice ?? 0,
+        pnlSource: 'BINANCE_POSITION_MONITOR_SOCKET',
+        pnlStreamVersion: ORDERS_POSITION_PNL_STREAM_VERSION,
+      };
+    });
+  }
   const { positions } = await getSharedPositionData();
-  return positions;
+  return positions.map((position) => ({
+    ...position,
+    pnlSource: 'BINANCE_REST_FALLBACK',
+    pnlStreamVersion: ORDERS_POSITION_PNL_STREAM_VERSION,
+  }));
 }
 
 // ── Shared position data store ─────────────────────────────────────────────
@@ -24694,6 +30359,7 @@ function invalidatePosStore() { _posStore = { ..._posStore, fetchedAt: 0 }; }
 // Invalidate bằng invalidateOpenOrdersCache() sau mỗi lần đặt/hủy lệnh hoặc fill
 let _openOrdersCache = null;      // cached array (all symbols, no-token)
 let _openOrdersCacheAt = 0;
+let _openOrdersInflight = null;
 const OPEN_ORDERS_TTL = 30_000;   // 30s TTL fallback nếu không invalidate
 
 function invalidateOpenOrdersCache() {
@@ -24706,9 +30372,15 @@ async function getCachedOpenOrders(apiKey, apiSecret) {
   if (_openOrdersCache && Date.now() - _openOrdersCacheAt < OPEN_ORDERS_TTL) {
     return _openOrdersCache;
   }
-  _openOrdersCache = await client.getOpenOrders({ apiKey, apiSecret });
-  _openOrdersCacheAt = Date.now();
-  return _openOrdersCache;
+  if (_openOrdersInflight) return _openOrdersInflight;
+  _openOrdersInflight = client.getOpenOrders({ apiKey, apiSecret })
+    .then((rows) => {
+      _openOrdersCache = rows;
+      _openOrdersCacheAt = Date.now();
+      return _openOrdersCache;
+    })
+    .finally(() => { _openOrdersInflight = null; });
+  return _openOrdersInflight;
 }
 
 async function getOpenOrders(symbol, token = null) {
@@ -24773,14 +30445,60 @@ async function cancelAllOrdersForSymbol(symbol, apiKey, apiSecret) {
   return { symbol, regularCount, algoCount };
 }
 
+function autoCancelEntryLimitOrdersEnabled() {
+  return isAutoCancelEntryLimitEnabled(process.env.AUTO_CANCEL_ENTRY_LIMIT_ORDERS);
+}
+
+async function cancelAutomaticProtectionOrdersForSymbol(symbol, apiKey, apiSecret) {
+  const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+  const regularOrders = await client.getOpenOrders({ symbol, apiKey, apiSecret, recvWindow }).catch((error) => {
+    console.warn(`[ProtectionCleanup] ${symbol} regular fetch: ${error.message}`);
+    return [];
+  });
+  const protectionOrders = selectAutomaticProtectionCleanupOrders(regularOrders);
+  let regularCount = 0;
+  for (const order of protectionOrders) {
+    if (order?.orderId == null) continue;
+    await client.cancelOrder({ symbol, orderId: order.orderId, apiKey, apiSecret, recvWindow })
+      .then(() => { regularCount += 1; })
+      .catch((error) => console.warn(`[ProtectionCleanup] ${symbol} orderId=${order.orderId}: ${error.message}`));
+  }
+
+  const algoResult = await client.getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow }).catch((error) => {
+    console.warn(`[ProtectionCleanup] ${symbol} algo fetch: ${error.message}`);
+    return { orders: [] };
+  });
+  const algoOrders = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+  let algoCount = 0;
+  for (const order of algoOrders.filter((row) => row?.symbol === symbol)) {
+    if (order?.algoId == null) continue;
+    await client.cancelAlgoOrder({ algoId: order.algoId, apiKey, apiSecret, recvWindow })
+      .then(() => { algoCount += 1; })
+      .catch((error) => console.warn(`[ProtectionCleanup] ${symbol} algoId=${order.algoId}: ${error.message}`));
+  }
+  const retainedLimits = (Array.isArray(regularOrders) ? regularOrders : []).filter(isRegularLimitOrder).length;
+  if (regularCount || algoCount || retainedLimits) {
+    console.log(
+      `[ProtectionCleanup] ${symbol} regular=${regularCount} algo=${algoCount} `
+      + `LIMIT retained=${retainedLimits} version=${LIMIT_ORDER_RETENTION_VERSION}`,
+    );
+  }
+  return { symbol, regularCount, algoCount, retainedLimits };
+}
+
 // ── BTC Trend Monitor — cancel contra-trend LIMIT orders on bias shift ──────────
 
 let _prevBtcBias = { bear: 'neutral', bull: 'neutral' };
+let _btcHealthMonitorRunning = false;
 
 async function cancelContraTrendLimitOrders(direction, health, webhookUrl) {
+  if (!autoCancelEntryLimitOrdersEnabled()) {
+    console.log(`[BtcTrend] ${direction} LIMIT retained; automatic cancellation disabled (${LIMIT_ORDER_RETENTION_VERSION})`);
+    return;
+  }
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
-    const allOrders = await client.getOpenOrders({ apiKey, apiSecret });
+    const allOrders = await getCachedOpenOrders(apiKey, apiSecret);
     const isReduceOnly = (o) => o.reduceOnly === true || o.reduceOnly === 'true';
     const isLimit = (o) => ['LIMIT', 'LIMIT_MAKER'].includes(String(o.type ?? o.origType ?? '').toUpperCase());
     const side = direction === 'LONG' ? 'BUY' : 'SELL';
@@ -24816,6 +30534,8 @@ async function cancelContraTrendLimitOrders(direction, health, webhookUrl) {
 }
 
 async function runBtcHealthMonitor() {
+  if (_btcHealthMonitorRunning) return;
+  _btcHealthMonitorRunning = true;
   try {
     // Force refresh để luôn đọc data mới nhất
     btcHealthCache.expiresAt = 0;
@@ -24844,6 +30564,8 @@ async function runBtcHealthMonitor() {
   } catch (e) {
     if (e.message?.includes('Missing Binance API')) return;
     console.warn('[BtcTrend] monitor error:', e.message);
+  } finally {
+    _btcHealthMonitorRunning = false;
   }
 }
 
@@ -24874,9 +30596,9 @@ async function runStaleOrderCleaner() {
           delete slTracking.positions[sym];
           saveSlTracking();
         }
-        console.log(`[StaleOrders] ${sym} closed → cancelling open orders`);
-        cancelAllOrdersForSymbol(sym, apiKey, apiSecret).catch((err) =>
-          console.warn(`[StaleOrders] ${sym}: ${err.message}`),
+        console.log(`[StaleOrders] ${sym} closed → cleaning TP/SL, retaining LIMIT orders`);
+        cancelAutomaticProtectionOrdersForSymbol(sym, apiKey, apiSecret).catch((err) =>
+          console.warn(`[StaleOrders] protection cleanup ${sym}: ${err.message}`),
         );
 
         // Detect SL: fetch last few trades, if closing trade has negative realizedPnl → blacklist 2h
@@ -24898,9 +30620,9 @@ async function runStaleOrderCleaner() {
     lastKnownPositions.clear();
     for (const [sym, data] of activeMap) lastKnownPositions.set(sym, data);
 
-    // Cancel LIMIT orders older than STALE_ORDER_TIMEOUT_MS (default 30 min)
+    // Entry LIMIT auto-cancel is opt-in. Default keeps pending LIMIT orders until manual cancel/fill.
     const staleMs = Number(process.env.STALE_ORDER_TIMEOUT_MS ?? 30 * 60 * 1000);
-    if (staleMs > 0) {
+    if (autoCancelEntryLimitOrdersEnabled() && staleMs > 0) {
       const allOrders = await client.getOpenOrders({ apiKey, apiSecret });
       const now = Date.now();
       const isReduceOnly = (o) => o.reduceOnly === true || o.reduceOnly === 'true';
@@ -24937,6 +30659,50 @@ function getTargetLockRoe(roe) {
   return null;
 }
 
+function getBinanceProfitLockTargetRoe(roe) {
+  return resolveBinanceProfitLockRoe(roe, {
+    triggerRoe: Number(process.env.BINANCE_PROFIT_LOCK_TRIGGER_ROE ?? 5),
+    firstLockRoe: Number(process.env.BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE ?? 1),
+  });
+}
+
+async function rememberBinanceProfitLock(symbol, stopLossPrice, lockRoe) {
+  const tracking = slTracking.positions?.[symbol] ?? null;
+  const lifecycleId = tracking?.lifecycleId ?? signalProtectionPlans.get(symbol)?.lifecycleId ?? null;
+  if (tracking) {
+    if (tracking.preserveSignalProtection === true) tracking.signalSl = Number(stopLossPrice);
+    tracking.slPlaced = true;
+    tracking.slPrice = Number(stopLossPrice);
+    tracking.slPlacedAt = new Date().toISOString();
+    tracking.profitLockVersion = BINANCE_PROFIT_LOCK_VERSION;
+    tracking.profitLockRoe = Number(lockRoe);
+    tracking.profitLockStopLossPrice = Number(stopLossPrice);
+    tracking.profitLockUpdatedAt = new Date().toISOString();
+    saveSlTracking();
+  }
+  if (lifecycleId) {
+    await liveCardBinanceLifecycle.upsert({
+      lifecycleId,
+      stopLossPrice: Number(stopLossPrice),
+      profitLockVersion: BINANCE_PROFIT_LOCK_VERSION,
+      profitLockRoe: Number(lockRoe),
+      profitLockStopLossPrice: Number(stopLossPrice),
+      profitLockUpdatedAt: new Date().toISOString(),
+    }, 'PROFIT_LOCK_SL_MOVED', {
+      symbol,
+      lockRoe: Number(lockRoe),
+      stopLossPrice: Number(stopLossPrice),
+    }).catch((error) => console.warn(`[ProfitLock] lifecycle ${symbol}:`, error.message));
+    broadcastOrdersPositionPnl('live-card-lifecycle', {
+      version: ORDERS_POSITION_PNL_STREAM_VERSION,
+      lifecycleId,
+      symbol,
+      eventType: 'PROFIT_LOCK_SL_MOVED',
+      eventAt: Date.now(),
+    });
+  }
+}
+
 const slTrailRunning = new Set();
 const slTrailLockRoe = new Map(); // symbol → current lock ROE level (in-memory dedup)
 const slTrailLastRun = new Map(); // symbol → timestamp of last API call
@@ -24948,7 +30714,7 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
   const lastRun = slTrailLastRun.get(symbol) ?? 0;
   if (Date.now() - lastRun < SL_TRAIL_COOLDOWN_MS) return;
 
-  const targetLockRoe = getTargetLockRoe(roe);
+  const targetLockRoe = getBinanceProfitLockTargetRoe(roe);
   if (targetLockRoe === null) return;
 
   const currentLockRoe = slTrailLockRoe.get(symbol) ?? -Infinity;
@@ -24972,14 +30738,17 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
     const entry = Number(pos.entry);
     if (!isFinite(entry) || entry <= 0) return;
 
-    // Algo SL: type=CONDITIONAL, closing side, triggerPrice on loss side of entry
+    // Prefer explicit STOP type. Old algo JSON may only expose CONDITIONAL, where
+    // the loss-side trigger remains the compatibility fallback.
     const algoSl = allAlgo.find((o) => {
       if (o.symbol !== symbol) return false;
       const side = String(o.side ?? '').toUpperCase();
       const closingSide = (isLong && side === 'SELL') || (!isLong && side === 'BUY');
+      const orderType = String(o.orderType ?? o.origType ?? o.type ?? '').toUpperCase();
+      const isStopType = orderType === 'STOP_MARKET' || orderType === 'STOP';
       const triggerP = Number(o.triggerPrice ?? o.stopPrice ?? 0);
       const isSLSide = triggerP > 0 && (isLong ? triggerP < entry : triggerP > entry);
-      return closingSide && isSLSide;
+      return closingSide && (isStopType || (orderType === 'CONDITIONAL' && isSLSide));
     });
     // Regular SL: STOP_MARKET or STOP type
     const regularSl = allOpen.find((o) => {
@@ -24994,9 +30763,12 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
 
     const leverage = pos.leverage || 10;
 
-    const rawSlPrice = isLong
-      ? entry * (1 + (targetLockRoe / 100) / leverage)
-      : entry * (1 - (targetLockRoe / 100) / leverage);
+    const rawSlPrice = binanceProfitLockStopPrice({
+      side: isLong ? 'LONG' : 'SHORT',
+      entryPrice: entry,
+      leverage,
+      lockRoe: targetLockRoe,
+    });
     if (!isFinite(rawSlPrice) || rawSlPrice <= 0) return;
     const newSlPrice = priceFromTick(symbolInfo, rawSlPrice);
     if (!newSlPrice || newSlPrice === 'NaN' || Number(newSlPrice) <= 0) return;
@@ -25018,6 +30790,7 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
       const curSl = Number(slOrder.triggerPrice ?? slOrder.stopPrice ?? 0);
       if ((isLong && curSl >= newSlPrice) || (!isLong && curSl <= newSlPrice)) {
         slTrailLockRoe.set(symbol, targetLockRoe);
+        await rememberBinanceProfitLock(symbol, curSl, targetLockRoe);
         return;
       }
     }
@@ -25058,7 +30831,8 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
     }
 
     slTrailLockRoe.set(symbol, targetLockRoe);
-    console.log(`[SlTrail] ✅ ${symbol} ROE=${roe.toFixed(1)}% → ${slOrder ? 'SL dời lên' : 'SL mới'} +${targetLockRoe}% ROE @ ${newSlPrice}`);
+    await rememberBinanceProfitLock(symbol, newSlPrice, targetLockRoe);
+    console.log(`[SlTrail] ✅ ${symbol} ROE=${roe.toFixed(1)}% → ${slOrder ? 'SL dời lên' : 'SL mới'} +${targetLockRoe}% ROE @ ${newSlPrice} version=${BINANCE_PROFIT_LOCK_VERSION}`);
   } catch (err) {
     console.error(`[SlTrail] ❌ ${symbol}:`, err.message);
   } finally {
@@ -25217,13 +30991,15 @@ function liqAutoBlockReason(symbol, side) {
 function getLiqHighProbThreshold() {
   const thresholds = [];
   if (process.env.PAPER_LIQ_ENABLED !== 'false') thresholds.push(Number(process.env.PAPER_LIQ_MIN_PROB ?? 80));
-  if (process.env.AUTO_LIQ_ORDER_ENABLED === 'true') thresholds.push(Number(process.env.AUTO_LIQ_ORDER_MIN_PROB ?? 90));
+  if (!liveCardOnlyAutoBinanceEnabled() && process.env.AUTO_LIQ_ORDER_ENABLED === 'true') {
+    thresholds.push(Number(process.env.AUTO_LIQ_ORDER_MIN_PROB ?? 90));
+  }
   return thresholds.length ? Math.min(...thresholds) : 80;
 }
 
 function getLiqHighProbHandler() {
   const paperEnabled = process.env.PAPER_LIQ_ENABLED !== 'false';
-  const realEnabled = process.env.AUTO_LIQ_ORDER_ENABLED === 'true';
+  const realEnabled = !liveCardOnlyAutoBinanceEnabled() && process.env.AUTO_LIQ_ORDER_ENABLED === 'true';
   if (!paperEnabled && !realEnabled) return null;
 
   return async (payload) => {
@@ -25268,6 +31044,7 @@ function countPumpShortEdgeAutoExposure() {
 }
 
 async function handlePumpAutoOrder(signal, openOrders = null) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (!runtimeSettings.pumpAutoOrderEnabled) return;
   if (isVnBlockHour()) { console.log(`[PumpAuto] ⏰ Block 17-19h VN — ${signal.symbol}`); return; }
   const { symbol, action, score, marketOk, entry, sl, factors, type: signalType } = signal;
@@ -25602,6 +31379,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
 }
 
 async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPrice, sweepProb, confirmation = null }) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   // Dedup theo symbol (không theo price) — tránh đặt nhiều lệnh khi price thay đổi nhẹ giữa các scan
   const last = liqAutoOrderFired.get(symbol) ?? 0;
   if (Date.now() - last < 2 * 3600 * 1000) {
@@ -26161,10 +31939,12 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
   const isLong = amt > 0;
   const closeSide = isLong ? 'SELL' : 'BUY';
   const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+  const preserveSignalProtection = hasPreservedLiveCardSignalProtection(symbol);
+  const expectedWorkingType = preserveSignalProtection ? 'CONTRACT_PRICE' : 'MARK_PRICE';
   const roeInfo = await getPositionRoeForTpGuard(pos, { fetchMark: options.force });
   const negTpRoe = Number(process.env.NEG_TP_ROE ?? -30);
   const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
-  if (roeInfo.ready && (roeInfo.roe <= negTpRoe || roeInfo.roe <= tpGuardRoe)) {
+  if (!preserveSignalProtection && roeInfo.ready && (roeInfo.roe <= negTpRoe || roeInfo.roe <= tpGuardRoe)) {
     console.log(`[AutoTP] ${symbol} ROE=${roeInfo.roe.toFixed(2)}% <= guard (${Math.max(negTpRoe, tpGuardRoe)}%) -> move TP to entry`);
     await handleNegativeTimeoutTp(symbol, {
       amt,
@@ -26199,6 +31979,7 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
 
   // Ưu tiên TP gốc của signal đã lưu khi socket fill.
   const trackedSignalTp = Number(slTracking.positions[symbol]?.signalTp ?? 0);
+  const trackedSignalSl = Number(slTracking.positions[symbol]?.signalSl ?? 0);
   const pumpRecord = [...pumpPendingOrders, ...pumpWatchingOrders].find(
     (r) => r.symbol === symbol && r.tp && Math.abs((Number(r.fillPrice ?? r.entry) - entry) / entry) < 0.01,
   );
@@ -26206,6 +31987,9 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
   if (Number.isFinite(trackedSignalTp) && trackedSignalTp > 0) {
     rawTpPrice = trackedSignalTp;
     console.log(`[AutoTP] 📌 ${symbol} giữ signal TP=${rawTpPrice} source=${slTracking.positions[symbol]?.signalSource ?? '-'}`);
+  } else if (preserveSignalProtection) {
+    console.warn(`[AutoTP] ${symbol} giữ protection tín hiệu nhưng thiếu signalTp; không dùng TP ROE cố định`);
+    return;
   } else if (pumpRecord?.tp) {
     rawTpPrice = Number(pumpRecord.tp);
     console.log(`[AutoTP] 📌 ${symbol} dùng signal TP=${rawTpPrice} thay vì ROE cố định`);
@@ -26239,22 +32023,26 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
   };
   const orderPrice = (o) => Number(o.triggerPrice ?? o.stopPrice ?? o.price);
   const orderQty = (o) => Number(o.origQty ?? o.quantity ?? o.executedQty ?? 0);
+  const orderWorkingType = (o) => String(o.workingType ?? 'MARK_PRICE').toUpperCase();
   const priceMatches = (p) => Number.isFinite(p) && Math.abs(p - expectedPrice) / expectedPrice <= priceTol;
   const qtyCovers = (q) => !Number.isFinite(q) || q <= 0 || q >= expectedQty * (1 - qtyTol);
+  const workingTypeMatches = (o) => orderWorkingType(o) === expectedWorkingType;
 
   const existingAlgoTp = algoRows.find((o) =>
     o.symbol === symbol &&
     String(o.side ?? '').toUpperCase() === closeSide &&
     isTpType(o.orderType ?? o.type) &&
     priceMatches(orderPrice(o)) &&
-    qtyCovers(orderQty(o)),
+    qtyCovers(orderQty(o)) &&
+    workingTypeMatches(o),
   );
   const existingRegularTp = openOrders.find((o) =>
     o.symbol === symbol &&
     o.side === closeSide &&
     isTpType(o.origType ?? o.type) &&
     priceMatches(orderPrice(o)) &&
-    qtyCovers(orderQty(o)),
+    qtyCovers(orderQty(o)) &&
+    workingTypeMatches(o),
   );
   if (existingAlgoTp || existingRegularTp) {
     tpConfirmedSet.add(tpKey);
@@ -26265,13 +32053,13 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
     o.symbol === symbol &&
     o.side === closeSide &&
     isTpType(o.origType ?? o.type) &&
-    (!priceMatches(orderPrice(o)) || !qtyCovers(orderQty(o))),
+    (!priceMatches(orderPrice(o)) || !qtyCovers(orderQty(o)) || !workingTypeMatches(o)),
   );
   const staleAlgoTp = algoRows.filter((o) =>
     o.symbol === symbol &&
     String(o.side ?? '').toUpperCase() === closeSide &&
     isTpType(o.orderType ?? o.type) &&
-    (!priceMatches(orderPrice(o)) || !qtyCovers(orderQty(o))),
+    (!priceMatches(orderPrice(o)) || !qtyCovers(orderQty(o)) || !workingTypeMatches(o)),
   );
   for (const o of staleRegularTp) {
     if (!o.orderId) continue;
@@ -26301,7 +32089,7 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
     type: 'TAKE_PROFIT_MARKET',
     triggerPrice: String(triggerPrice),
     quantity,
-    workingType: 'MARK_PRICE',
+    workingType: expectedWorkingType,
     recvWindow,
     newClientOrderId: `tp_scan_${Date.now()}`.slice(0, 36),
   };
@@ -26311,7 +32099,7 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
   try {
     const result = await client.placeAlgoOrder({ params: tpParams, apiKey, apiSecret });
     tpConfirmedSet.add(tpKey);
-    console.log(`[AutoTP] ✅ ${symbol} ${isLong ? 'LONG' : 'SHORT'} entry=${entry} lev=${leverage}x → TP @ ${triggerPrice} qty=${quantity} algoId=${result.algoId}`);
+    console.log(`[AutoTP] ✅ ${symbol} ${isLong ? 'LONG' : 'SHORT'} entry=${entry} lev=${leverage}x → TP @ ${triggerPrice} qty=${quantity} workingType=${expectedWorkingType} algoId=${result.algoId}`);
   } catch (err) {
     const isMaxStop = err.message?.toLowerCase().includes('max stop') || err.message?.toLowerCase().includes('too many stop');
     if (!isMaxStop) { console.error(`[AutoTP] ❌ ${symbol}:`, err.message); return; }
@@ -26334,14 +32122,18 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
     // Đặt lại SL
     const slRoeEnv = isLong ? process.env.AUTO_TRADE_LONG_SL_ROE : process.env.AUTO_TRADE_SHORT_SL_ROE;
     const slRoePct = slRoeEnv ? Math.abs(Number(slRoeEnv)) : Number(process.env.AUTO_SL_ROE ?? 25);
-    if (slRoePct > 0) {
-      const rawSl = isLong
-        ? entry * (1 - slRoePct / 100 / leverage)
-        : entry * (1 + slRoePct / 100 / leverage);
+    const rawSl = preserveSignalProtection && Number.isFinite(trackedSignalSl) && trackedSignalSl > 0
+      ? trackedSignalSl
+      : slRoePct > 0
+        ? (isLong
+          ? entry * (1 - slRoePct / 100 / leverage)
+          : entry * (1 + slRoePct / 100 / leverage))
+        : null;
+    if (rawSl && Number.isFinite(rawSl) && rawSl > 0) {
       const slPrice = priceFromTick(symbolInfo, rawSl);
       if (slPrice && Number(slPrice) > 0) {
         const slParams = {
-          symbol, side: closeSide === 'SELL' ? 'BUY' : 'SELL',
+          symbol, side: closeSide,
           type: 'STOP_MARKET', stopPrice: String(slPrice), quantity,
           workingType: 'MARK_PRICE', reduceOnly: 'true', recvWindow,
           newClientOrderId: `sl_retry_${Date.now()}`.slice(0, 36),
@@ -26357,7 +32149,7 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
               }
               throw e;
             });
-          console.log(`[AutoTP] 🛡 ${symbol} SL @${slPrice} (${slRoePct}% ROE)`);
+          console.log(`[AutoTP] 🛡 ${symbol} SL @${slPrice} (${preserveSignalProtection ? 'signal' : `${slRoePct}% ROE`})`);
         } catch (slErr) {
           console.warn(`[AutoTP] ⚠ ${symbol} SL retry failed:`, slErr.message);
         }
@@ -26545,6 +32337,7 @@ const NEG_TP_COOLDOWN_MS = 120_000; // 2 min minimum between API calls per symbo
 const avgDownFired = new Map(); // symbol → entryPrice when avg-down was placed
 
 async function handleAvgDown(symbol, pos, roe) {
+  if (liveCardOnlyAutoBinanceEnabled()) return;
   if (process.env.AVG_DOWN_ENABLED !== 'true') return;
 
   const entry = pos.entry;
@@ -26615,9 +32408,9 @@ async function closePosition(payload, token = null) {
   }
 
   const result = await client.placeFuturesOrder({ params: closeParams, apiKey, apiSecret });
-  // Cancel all dangling TP/SL/algo orders for this symbol (non-blocking)
-  cancelAllOrdersForSymbol(symbol, apiKey, apiSecret).catch((err) =>
-    console.warn(`[CancelAll] post-close ${symbol}: ${err.message}`),
+  // Clean dangling TP/SL/algo orders but retain every regular LIMIT order.
+  cancelAutomaticProtectionOrdersForSymbol(symbol, apiKey, apiSecret).catch((err) =>
+    console.warn(`[ProtectionCleanup] post-close ${symbol}: ${err.message}`),
   );
   return result;
 }

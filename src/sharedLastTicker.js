@@ -28,6 +28,28 @@ function rebuildSymbols() {
 }
 
 export const sharedLastTicker = {
+  createClient(id, onPrice) {
+    ensureTicker();
+    const current = handlers.get(id);
+    if (current) current.onPrice = onPrice;
+    else handlers.set(id, { symbols: new Set(), onPrice });
+    rebuildSymbols();
+    return {
+      setSymbols(nextSymbols) {
+        const handler = handlers.get(id);
+        if (!handler) return;
+        handler.symbols = new Set(
+          nextSymbols.map((symbol) => String(symbol ?? '').toUpperCase()).filter(Boolean),
+        );
+        rebuildSymbols();
+      },
+      close() {
+        handlers.delete(id);
+        rebuildSymbols();
+      },
+    };
+  },
+
   register(id, onPrice) {
     ensureTicker();
     const current = handlers.get(id);

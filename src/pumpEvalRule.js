@@ -64,6 +64,93 @@ function candleNameOf(value) {
 }
 
 export const PUMP_STAGE_2_VERSION = 'PUMP_COMBO_STAGE_2_V1_20260723';
+export const PUMP_LIFT_VERSION = 'PUMP_LIFT_OBSERVE_V1_20260723';
+
+function safeMetric(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+/**
+ * Compare a Stage 2 cohort with its own Stage 1 parent.
+ *
+ * The result is observation-only. `basis=BOOTSTRAP` means the estimate still
+ * contains trades whose Stage 2 label was reconstructed after entry. Once a
+ * cohort has enough captured post-rule trades, `basis=OOS` is returned.
+ */
+export function evaluatePumpLiftEvidence({
+  cohort = {},
+  parent = {},
+  minClosed = 30,
+  minDays = 3,
+  minCapturedClosed = 30,
+  minDeltaRoe = 0.5,
+} = {}) {
+  const closed = safeMetric(cohort.closed);
+  const days = safeMetric(cohort.days);
+  const capturedClosed = safeMetric(cohort.capturedClosed);
+  const pnl = safeMetric(cohort.netPnl);
+  const avgRoe = safeMetric(cohort.avgNetRoe);
+  const parentAvgRoe = safeMetric(parent.avgNetRoe);
+  const profitFactor = safeMetric(cohort.profitFactor);
+  const positiveDays = safeMetric(cohort.positiveDays);
+  const negativeDays = safeMetric(cohort.negativeDays);
+  const deltaRoe = avgRoe - parentAvgRoe;
+  const stableDayTarget = Math.max(minDays, Math.ceil(days * 0.6));
+  const enoughSample = closed >= minClosed && days >= minDays;
+
+  let tier = 'NEUTRAL';
+  let code = 'PUMP_LIFT_COLLECT';
+  if (enoughSample
+      && pnl > 0
+      && profitFactor >= 1.15
+      && deltaRoe >= minDeltaRoe
+      && positiveDays >= stableDayTarget) {
+    tier = 'BOOST';
+    code = 'PUMP_LIFT_POSITIVE';
+  } else if (enoughSample
+      && pnl < 0
+      && profitFactor < 0.85
+      && deltaRoe <= -minDeltaRoe
+      && negativeDays >= stableDayTarget) {
+    tier = 'DEGRADE';
+    code = 'PUMP_LIFT_NEGATIVE';
+  } else if (enoughSample) {
+    code = 'PUMP_LIFT_UNSTABLE';
+  }
+
+  const basis = capturedClosed >= minCapturedClosed ? 'OOS' : 'BOOTSTRAP';
+  const actionable = basis === 'OOS' && tier !== 'NEUTRAL';
+  const signedDelta = `${deltaRoe >= 0 ? '+' : ''}${deltaRoe.toFixed(2)}%`;
+  const reason = enoughSample
+    ? `${closed} lệnh/${days} ngày; Net ${pnl >= 0 ? '+' : ''}${pnl.toFixed(3)}; PF ${profitFactor.toFixed(2)}; ΔROE so với combo cha ${signedDelta}; ${positiveDays} ngày dương/${negativeDays} ngày âm.`
+    : `Đang gom mẫu: ${closed}/${minClosed} lệnh đóng và ${days}/${minDays} ngày; ΔROE hiện tại ${signedDelta}.`;
+
+  return {
+    observationOnly: true,
+    affectsEntry: false,
+    affectsMargin: false,
+    affectsSl: false,
+    affectsTp: false,
+    tier,
+    label: `${tier} · ${basis}`,
+    code,
+    basis,
+    actionable,
+    reason,
+    version: PUMP_LIFT_VERSION,
+    closed,
+    days,
+    capturedClosed,
+    netPnl: +pnl.toFixed(4),
+    avgNetRoe: +avgRoe.toFixed(2),
+    parentAvgNetRoe: +parentAvgRoe.toFixed(2),
+    deltaRoe: +deltaRoe.toFixed(2),
+    profitFactor: +profitFactor.toFixed(2),
+    positiveDays,
+    negativeDays,
+  };
+}
 
 /**
  * Observation-only Pump classifier.

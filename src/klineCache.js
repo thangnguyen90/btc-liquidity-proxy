@@ -230,6 +230,10 @@ export class KlineCache extends EventEmitter {
     return symbols.filter((symbol) => (this._cache.get(this._key(symbol, interval))?.length ?? 0) >= minBars).length;
   }
 
+  missingReady(symbols, interval, minBars) {
+    return symbols.filter((symbol) => (this._cache.get(this._key(symbol, interval))?.length ?? 0) < minBars);
+  }
+
   stats(interval) {
     let count = 0;
     for (const k of this._cache.keys()) {

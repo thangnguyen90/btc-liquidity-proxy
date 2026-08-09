@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Liquid Sweep Scanner</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260729-market-wave-v2">
   </head>
   <body>
     <main class="shell wide-shell">
@@ -32,6 +32,93 @@
           <a class="nav-link" href="/paper">Paper</a>
           <a class="nav-link" href="/orders">Orders</a>
           <div class="status" id="scanStatus">Ready</div>
+        </div>
+      </section>
+
+      <section id="liquidMarketHealth" class="liquid-market-health is-loading" data-market-label="NO_DATA" aria-live="polite">
+        <div class="liquid-market-health-head">
+          <div>
+            <p class="eyebrow">Market Direction Health · nến đã đóng</p>
+            <div class="liquid-market-health-title-row">
+              <h2 id="liquidMarketHealthLabel">ĐANG CHẤM THỊ TRƯỜNG...</h2>
+              <span id="liquidMarketHealthConfidence" class="liquid-market-confidence">confidence --</span>
+            </div>
+            <p id="liquidMarketHealthDescription" class="liquid-market-health-description">Đang tổng hợp BTC và độ rộng nhóm thanh khoản lớn.</p>
+          </div>
+          <div id="liquidMarketHealthLive" class="liquid-market-health-live is-connecting" role="status">
+            <span class="liquid-market-live-dot" aria-hidden="true"></span>
+            <span id="liquidMarketHealthLiveText">Realtime đang kết nối...</span>
+          </div>
+        </div>
+
+        <div class="liquid-market-health-grid">
+          <article class="liquid-market-score-card is-long">
+            <span>LONG MARKET SCORE</span>
+            <strong id="liquidMarketLongScore">--</strong>
+            <div class="liquid-market-score-track"><i id="liquidMarketLongBar"></i></div>
+            <div id="liquidMarketLongWave" class="liquid-long-wave" data-long-wave="LONG_NO_DATA">LONG NO DATA</div>
+            <small id="liquidMarketLongDetail">Chờ breadth + BTC</small>
+          </article>
+          <article class="liquid-market-score-card is-short">
+            <span>SHORT MARKET SCORE</span>
+            <strong id="liquidMarketShortScore">--</strong>
+            <div class="liquid-market-score-track"><i id="liquidMarketShortBar"></i></div>
+            <div id="liquidMarketShortWave" class="liquid-short-wave" data-short-wave="SHORT_NO_DATA">SHORT NO DATA</div>
+            <small id="liquidMarketShortDetail">Chờ breadth + BTC</small>
+          </article>
+          <article class="liquid-market-context-card">
+            <span>ALT BREADTH · UP / DOWN</span>
+            <div class="liquid-market-horizon"><b>1h</b><strong id="liquidMarketBreadth1h">-- / --</strong></div>
+            <div class="liquid-market-horizon"><b>3h</b><strong id="liquidMarketBreadth3h">-- / --</strong></div>
+            <div class="liquid-market-horizon"><b>6h</b><strong id="liquidMarketBreadth6h">-- / --</strong></div>
+          </article>
+          <article class="liquid-market-context-card">
+            <span>BTC CONTEXT</span>
+            <div class="liquid-market-horizon"><b>15m</b><strong id="liquidMarketBtc15m">--</strong></div>
+            <div class="liquid-market-horizon"><b>1h</b><strong id="liquidMarketBtc1h">--</strong></div>
+            <div class="liquid-market-horizon"><b>6h</b><strong id="liquidMarketBtc6h">--</strong></div>
+          </article>
+          <article id="liquidShortEdgeCycle" class="liquid-market-edge-cycle-card" data-edge-phase="SHORT_EDGE_NO_DATA">
+            <div class="liquid-market-edge-cycle-head">
+              <div>
+                <span>SHORT CONTINUATION · EDGE CYCLE REALTIME</span>
+                <strong id="liquidShortEdgeCycleLabel">EDGE NO DATA</strong>
+              </div>
+              <em id="liquidShortEdgeCycleAge">--</em>
+            </div>
+            <div class="liquid-market-edge-cycle-metrics">
+              <span>SHORT slope <b id="liquidShortEdgeShortSlope">--</b></span>
+              <span>LONG slope <b id="liquidShortEdgeLongSlope">--</b></span>
+              <span>Drop khỏi peak <b id="liquidShortEdgeDrop">--</b></span>
+              <span>BTC 15m <b id="liquidShortEdgeBtc15m">--</b></span>
+              <span>Giảm liên tiếp <b id="liquidShortEdgeDeclineSamples">--</b></span>
+            </div>
+            <small id="liquidShortEdgeTransition">Chưa có dữ liệu đổi chu kỳ.</small>
+            <p>OBSERVE ONLY · không gate/chặn/đổi size · decay khi SHORT giảm + LONG tăng + BTC reclaim</p>
+          </article>
+        </div>
+
+        <div id="liquidMarketHealthReasons" class="liquid-market-reasons">
+          <span>Đang chờ dữ liệu...</span>
+        </div>
+        <div class="liquid-market-health-foot">
+          <span id="liquidMarketHealthSample">Sample --</span>
+          <span id="liquidMarketHealthPending">Hysteresis 2 nến 5m</span>
+          <strong>OBSERVE ONLY · không gate/chặn/đổi size</strong>
+        </div>
+      </section>
+
+      <section id="shortWaveStatsSection" class="panel short-wave-stats-section">
+        <div class="short-wave-stats-head">
+          <div>
+            <p class="eyebrow">MARKET SCORE WAVE · THỐNG KÊ THEO SNAPSHOT ENTRY</p>
+            <h2>Hiệu quả nhãn theo LONG / SHORT</h2>
+            <small>Liquid + Pump native/EMA + Short Edge · không tính clone Recommended để tránh trùng · OBSERVE ONLY</small>
+          </div>
+          <span id="shortWaveStatsMeta">Đang tải thống kê...</span>
+        </div>
+        <div id="shortWaveStatsGrid" class="short-wave-stats-grid">
+          <div class="short-wave-stats-empty">Chưa có snapshot nhịp SHORT.</div>
         </div>
       </section>
 
@@ -162,7 +249,13 @@
         <div class="panel-head">
           <div>
             <h2>Auto Paper Test</h2>
-            <span>Tự tạo paper trade cho tín hiệu liquidation có point cao hơn ngưỡng. <strong id="liquidPaperLiveStatus">Live: connecting...</strong></span>
+            <span>
+              Tự tạo paper trade cho tín hiệu liquidation có point cao hơn ngưỡng.
+              <strong id="liquidPaperLiveStatus" class="liquid-socket-status is-connecting" data-socket-state="connecting" role="status" aria-live="polite">
+                <span class="liquid-socket-dot" aria-hidden="true"></span>
+                <span id="liquidPaperSocketText" class="liquid-socket-text">Socket đang kết nối...</span>
+              </strong>
+            </span>
           </div>
           <div class="liquid-auto-controls">
             <label class="toggle">
@@ -178,13 +271,54 @@
               <input id="autoPaperMinDistInput" type="number" min="0" max="10" step="0.1" value="1">
             </label>
             <button id="autoPaperButton" class="primary" type="button">Run now</button>
-            <label class="field short">
-              <span>Theo ngay</span>
-              <select id="liquidPaperDayFilter">
-                <option value="all">Tat ca</option>
-              </select>
-            </label>
+            <div id="liquidPaperDateFilter" class="liquid-paper-date-filter" aria-label="Khoảng ngày paper trade">
+              <label class="field">
+                <span>Từ ngày</span>
+                <input id="liquidPaperDateFrom" type="date">
+              </label>
+              <label class="field">
+                <span>Đến ngày</span>
+                <input id="liquidPaperDateTo" type="date">
+              </label>
+              <div class="liquid-paper-date-actions">
+                <button id="liquidPaperTodayButton" class="btn-secondary" type="button">Hôm nay</button>
+                <button id="liquidPaperAllDatesButton" class="btn-secondary" type="button">Tất cả</button>
+              </div>
+              <button id="liquidPaperDateSearchButton" class="primary liquid-paper-date-search" type="button">Search</button>
+              <small id="liquidPaperDateStatus" class="liquid-paper-date-status">Tự chuyển ngày mới · Asia/Bangkok</small>
+            </div>
           </div>
+        </div>
+
+        <div id="liquidLiveCardStatus" class="liquid-live-card-status">
+          <strong>BINANCE CARD WHITELIST</strong>
+          <span>Đang tải trạng thái · mặc định không card nào được phép đánh thật.</span>
+        </div>
+
+        <div id="liquidComboTodaySection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Liquid Combo × Cycle · nhóm ổn định hôm nay</h3>
+              <span id="liquidComboTodaySummary">Chỉ lấy combo thuộc nhóm ổn định qua ngày · thống kê riêng ngày hiện tại</span>
+            </div>
+            <span class="pump-combo-tag hot">TODAY · OBSERVE ONLY</span>
+          </div>
+          <div id="liquidComboTodayGood" class="pump-combo-grid"></div>
+        </div>
+
+        <div id="liquidComboCycleSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Liquid Combo × Cycle · ổn định qua ngày</h3>
+              <span id="liquidComboCycleSummary">Thống kê toàn bộ lịch sử · episode 15 phút · chỉ quan sát, không quản lý vào lệnh</span>
+            </div>
+            <span class="pump-combo-tag hot">OBSERVE ONLY</span>
+          </div>
+          <div id="liquidComboCycleStable" class="pump-combo-grid"></div>
+          <details id="liquidComboCycleFormingWrap" class="liquid-combo-cycle-forming" style="display:none">
+            <summary id="liquidComboCycleFormingSummary">Nhóm tốt đang chờ đủ ngày xác nhận</summary>
+            <div id="liquidComboCycleForming" class="pump-combo-grid"></div>
+          </details>
         </div>
 
         <div id="liquidPaperStats" class="lp-stats" style="display:none"></div>
@@ -200,7 +334,7 @@
           <div class="lp-closed-head liquid-stage2-head">
             <div>
               <h3>Liquid Combo Stage 3</h3>
-              <span>Combo chronological · chỉ gắn nhãn quan sát, không đổi entry hoặc size</span>
+              <span>Combo chronological · thống kê tách LONG/SHORT · nhánh LONG chỉ quan sát, không đổi entry hoặc size</span>
             </div>
             <label class="field short">
               <span>Lọc nhãn</span>
@@ -215,9 +349,209 @@
           </div>
           <div id="liquidStage3Stats" class="pump-paper-overview"></div>
         </div>
+        <div id="liquidLongCorrReboundSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Stage 3B · LONG Corr Rebound</h3>
+              <span>LONG correlated counter-BTC · DAY FLAT + RSI4 RESET · lệnh auto mới PAPER TEST $10 · không nâng Stage 3 · Binance chỉ khi chủ động bật whitelist</span>
+            </div>
+          </div>
+          <div id="liquidLongCorrReboundStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidStableMechanismSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Stage 3C · LONG / SHORT Stable Mechanisms</h3>
+              <span>2 cơ chế LONG + 4 cơ chế SHORT nội suy từ combo ổn định qua ngày · snapshot trước entry · OBSERVE ONLY · không gate/chặn/đổi size/SL/TP/Binance</span>
+            </div>
+            <label class="field short">
+              <span>Lọc Stable Mechanism</span>
+              <select id="liquidStableMechanismFilter">
+                <option value="all">Tất cả</option>
+                <option value="LONG_SOFT_CORR_REBOUND">LONG Soft-corr Rebound</option>
+                <option value="LONG_DECOUPLED_RESET">LONG Decoupled Reset</option>
+                <option value="SHORT_CORR_FADE_CORE">SHORT Corr Fade Core</option>
+                <option value="SHORT_FAILED_BOUNCE">SHORT Failed Bounce</option>
+                <option value="SHORT_BEAR_DRIVE">SHORT Bear Drive</option>
+                <option value="SHORT_DECOUPLED_HOT_FADE">SHORT Decoupled Hot Fade</option>
+              </select>
+            </label>
+          </div>
+          <div id="liquidStableMechanismStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidLongBtcExpansionSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Stage 3D · LONG BTC Expansion</h3>
+              <span>SELECTED = signalPoint 70–89 · PRIME TEST = 70–79 · One-sided 90+ là badge xác nhận · cùng nằm trong LONG + BTC_UP_STRONG + Stage 3 RISK + target ngoài MAIN_ZONE · snapshot trước entry · OBSERVE ONLY · không gate/chặn/đổi size/entry/SL/TP/Binance</span>
+            </div>
+          </div>
+          <div id="liquidLongBtcExpansionStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidComboBtcBreadthSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Stage 3E · Combo × BTC Breadth theo LONG / SHORT</h3>
+              <span>Combo-cycle STABLE_GOOD trước entry + DOJI + |sweep| &lt;1% + BTC1h cùng chiều + breadth cùng chiều dẫn ít nhất 2/3 khung 1h/3h/6h · SHORT PRIME TEST · LONG WATCH LOW SAMPLE · OBSERVE ONLY · không gate/chặn/đổi size/entry/SL/TP/Binance</span>
+            </div>
+          </div>
+          <div id="liquidComboBtcBreadthStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidStage4Section" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Liquid Stage 4 · Cycle Edge</h3>
+              <span>ACTIVE / FADED / RECOVERY / NEW từ lịch sử causal trước entry · chỉ gắn nhãn và thống kê, không chặn hay đổi size</span>
+            </div>
+            <label class="field short">
+              <span>Lọc Cycle Edge</span>
+              <select id="liquidStage4Filter">
+                <option value="all">Tất cả</option>
+                <option value="ACTIVE">EDGE ACTIVE</option>
+                <option value="RECOVERY">EDGE RECOVERY</option>
+                <option value="FADED">EDGE FADED</option>
+                <option value="NEW">EDGE NEW</option>
+              </select>
+            </label>
+          </div>
+          <div id="liquidStage4Stats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidEdgeActivePointSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>SHORT GOOD+ × EDGE ACTIVE · Point Label</h3>
+              <span>EA POINT GOOD / WATCH / RISK / NO DATA từ snapshot point trước entry · chỉ đánh giá riêng cohort, không gate/chặn/đổi size</span>
+            </div>
+          </div>
+          <div id="liquidEdgeActivePointStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidBtcWaveSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Liquid Stage 4B · BTC Wave State</h3>
+              <span id="liquidBtcWaveRangeNote">CONTINUATION / EXHAUSTED / TRANSITION / NO DATA từ snapshot tại entry · thống kê theo date range đã chọn · chỉ gắn nhãn, không chặn hay đổi size</span>
+            </div>
+            <label class="field short">
+              <span>Lọc trạng thái sóng</span>
+              <select id="liquidBtcWaveFilter">
+                <option value="all">Tất cả</option>
+                <option value="CONTINUATION">WAVE CONTINUATION</option>
+                <option value="EXHAUSTED">WAVE EXHAUSTED</option>
+                <option value="TRANSITION">WAVE TRANSITION</option>
+                <option value="NO_DATA">WAVE NO DATA</option>
+              </select>
+            </label>
+          </div>
+          <div id="liquidBtcWaveStats" class="pump-paper-overview"></div>
+          <div class="lp-closed-head liquid-stage2-head" style="margin-top:12px">
+            <div>
+              <h3>SHORT Continuation × Edge Decay</h3>
+              <span>Tách riêng Stage 3 GOOD+ và GOOD · mốc causal: SHORT rơi khỏi peak/giảm liên tiếp + LONG score tăng + BTC bắt đầu reclaim; reset khi SHORT RELOAD/phục hồi · OBSERVE ONLY · không gate/chặn/đổi size</span>
+            </div>
+          </div>
+          <div id="liquidWaveContinuationStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidMarketPointPhaseSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Market Dispersion × Point Transition</h3>
+              <span>CROSS → LONG/SHORT · POST CROSS ≤30M · LONG/SHORT DOMINANT · POINT TIE; thống kê tách riêng hướng lệnh, snapshot causal trước entry · OBSERVE ONLY</span>
+            </div>
+          </div>
+          <div id="liquidMarketPointPhaseStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidLongSessionSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>LONG Session Health · Causal Daily Edge</h3>
+              <span>WARMUP / HEALTHY / WATCH / BREAKDOWN · chỉ dùng LONG đã đóng trước entry cùng ngày · reset mỗi ngày · observe only</span>
+            </div>
+            <label class="field short">
+              <span>Lọc sức khỏe LONG</span>
+              <select id="liquidLongSessionFilter">
+                <option value="all">Tất cả</option>
+                <option value="HEALTHY">LONG SESSION HEALTHY</option>
+                <option value="WATCH">LONG SESSION WATCH</option>
+                <option value="BREAKDOWN">LONG SESSION BREAKDOWN</option>
+                <option value="WARMUP">LONG SESSION WARMUP</option>
+                <option value="NO_DATA">LONG SESSION NO DATA</option>
+              </select>
+            </label>
+          </div>
+          <div id="liquidLongSessionStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidLongMarketSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>LONG Market State · Direction Evaluation</h3>
+              <span>TAILWIND / RECLAIM / LATE / HEADWIND / TRANSITION / NO DATA · toàn bộ + 5 ngày gần nhất · observe only</span>
+            </div>
+            <label class="field short">
+              <span>Lọc trạng thái LONG</span>
+              <select id="liquidLongMarketFilter">
+                <option value="all">Tất cả</option>
+                <option value="TAILWIND">LONG TAILWIND</option>
+                <option value="RECLAIM">LONG RECLAIM</option>
+                <option value="LATE">LONG LATE</option>
+                <option value="HEADWIND">LONG HEADWIND</option>
+                <option value="TRANSITION">LONG TRANSITION</option>
+                <option value="NO_DATA">LONG NO DATA</option>
+              </select>
+            </label>
+          </div>
+          <div id="liquidLongMarketStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidLongMechanismSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>LONG Independent Mechanisms</h3>
+              <span>CAPITULATION / CONTROLLED SELL / DECOUPLED REBOUND / BTC ABSORPTION · lịch sử + 5 ngày + độ ổn định ngày · observe only</span>
+            </div>
+          </div>
+          <div id="liquidLongMechanismStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidLongPointPhaseSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>LONG Independent × Market Point Phase</h3>
+              <span>SHORT PRESSURE / SHORT FADE / BALANCED / LONG TAKEOVER / SHORT RELOAD / TRANSITION / NO DATA · snapshot trước entry · observe only</span>
+            </div>
+          </div>
+          <div id="liquidLongPointPhaseStats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidRunner30Section" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Liquid Runner 30 Candidate</h3>
+              <span>Nhãn từ snapshot trước entry · chỉ quan sát, không đổi entry, size, SL/TP hoặc block lệnh</span>
+            </div>
+          </div>
+          <div id="liquidRunner30Stats" class="pump-paper-overview"></div>
+        </div>
+        <div id="liquidRunnerDirectionSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Liquid Runner Direction Edge</h3>
+              <span>LONG/SHORT riêng · PRIME / RECOVERY / WATCH / FADED / STRETCHED / NEW từ dữ liệu causal trước entry · observe only</span>
+            </div>
+            <label class="field short">
+              <span>Lọc Runner Edge</span>
+              <select id="liquidRunnerDirectionFilter">
+                <option value="all">Tất cả</option>
+                <option value="PRIME">R30 PRIME</option>
+                <option value="RECOVERY">R30 RECOVERY</option>
+                <option value="WATCH">R30 WATCH</option>
+                <option value="FADED">R30 FADED</option>
+                <option value="STRETCHED">R30 STRETCHED</option>
+                <option value="NEW">R30 NEW</option>
+              </select>
+            </label>
+          </div>
+          <div id="liquidRunnerDirectionStats" class="pump-paper-overview"></div>
+        </div>
         <div id="liquidComboStats" class="pump-combo-grid" style="display:none"></div>
 
-        <div class="table-wrap">
+        <div class="table-wrap" data-paper-scroll data-paper-scroll-label="Cuộn ngang phía trên bảng Liquid Paper đang mở">
           <table class="signal-table liquid-paper-table">
             <thead>
               <tr>
@@ -226,6 +560,16 @@
                 <th class="liquid-paper-sort" data-paper-sort="eval">Liquid Rule <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="stage2">Liquid Stage 2 <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="stage3">Combo Stage 3 <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="stage4">Cycle Edge Stage 4 <span class="sort-mark"></span></th>
+                <th>EA Point</th>
+                <th>Dispersion Point Phase</th>
+                <th class="liquid-paper-sort" data-paper-sort="btcWave">BTC Wave State <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="longSession">Long Session <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="longMarket">Long Market <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="longReversal">Long Reversal <span class="sort-mark"></span></th>
+                <th>Long Point Phase</th>
+                <th>Runner 30</th>
+                <th class="liquid-paper-sort" data-paper-sort="runnerDirection">Runner Edge <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="status">Status <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="entry">Entry <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="tp">TP <span class="sort-mark"></span></th>
@@ -245,7 +589,7 @@
               </tr>
             </thead>
             <tbody id="openPaperBody">
-              <tr><td colspan="21" class="table-empty">Chưa có paper test từ Liquid Scan.</td></tr>
+              <tr><td colspan="31" class="table-empty">Chưa có paper test từ Liquid Scan.</td></tr>
             </tbody>
           </table>
         </div>
@@ -254,7 +598,7 @@
           <h3>Closed Trades</h3>
           <span id="closedPaperCount" style="font-size:12px;color:var(--muted)">0 closed</span>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap" data-paper-scroll data-paper-scroll-label="Cuộn ngang phía trên bảng Liquid Paper đã đóng">
           <table class="signal-table liquid-paper-table">
             <thead>
               <tr>
@@ -263,6 +607,16 @@
                 <th class="liquid-paper-sort" data-paper-sort="eval">Liquid Rule <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="stage2">Liquid Stage 2 <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="stage3">Combo Stage 3 <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="stage4">Cycle Edge Stage 4 <span class="sort-mark"></span></th>
+                <th>EA Point</th>
+                <th>Dispersion Point Phase</th>
+                <th class="liquid-paper-sort" data-paper-sort="btcWave">BTC Wave State <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="longSession">Long Session <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="longMarket">Long Market <span class="sort-mark"></span></th>
+                <th class="liquid-paper-sort" data-paper-sort="longReversal">Long Reversal <span class="sort-mark"></span></th>
+                <th>Long Point Phase</th>
+                <th>Runner 30</th>
+                <th class="liquid-paper-sort" data-paper-sort="runnerDirection">Runner Edge <span class="sort-mark"></span></th>
                 <th>Outcome</th>
                 <th class="liquid-paper-sort" data-paper-sort="entry">Entry <span class="sort-mark"></span></th>
                 <th class="liquid-paper-sort" data-paper-sort="tp">TP <span class="sort-mark"></span></th>
@@ -279,14 +633,15 @@
               </tr>
             </thead>
             <tbody id="closedPaperBody">
-              <tr><td colspan="18" class="table-empty">Chưa có closed trade.</td></tr>
+              <tr><td colspan="28" class="table-empty">Chưa có closed trade.</td></tr>
             </tbody>
           </table>
         </div>
       </section>
       <pre id="actionResult" class="paper-result" style="display:none"></pre>
     </main>
-    <script src="/liquid-scan.js" type="module"></script>
+    <script src="/paper-top-scroll.js" defer></script>
+  <script src="/liquid-scan.js?v=20260808-live-card-whitelist-v6" type="module"></script>
   <script src="/btcHealth.js"></script>
 </body>
 </html>

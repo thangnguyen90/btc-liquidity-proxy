@@ -469,7 +469,25 @@
   };
   const addHeader = (row, index, kind, text) => {
     const th = document.createElement('th');
-    th.textContent = text;
+    const pumpSortKey = location.pathname === '/pump'
+      ? { signal: 'candle', btc: 'btcCandle', sideCandle: 'candleFlag' }[kind]
+      : null;
+    if (pumpSortKey) {
+      th.className = 'pump-paper-sort';
+      th.dataset.paperSort = pumpSortKey;
+      th.append(document.createTextNode(`${text} `));
+      const mark = document.createElement('span');
+      mark.className = 'sort-mark';
+      th.appendChild(mark);
+    } else if (location.pathname === '/recommended-signals' && kind === 'sideCandle') {
+      const button = document.createElement('button');
+      button.className = 'sort-btn';
+      button.dataset.sort = 'sideBtc';
+      button.textContent = text;
+      th.appendChild(button);
+    } else {
+      th.textContent = text;
+    }
     const datasetKey = kind === 'btc'
       ? 'paperBtcCandleColumn'
       : kind === 'sideCandle' ? 'paperSideCandleColumn' : 'paperCandleColumn';
@@ -511,7 +529,14 @@
       '/liquid-scan': 'Liquid candle flag',
     }[location.pathname] ?? 'Side x BTC';
     if (!sideCandle) sideCandle = addHeader(row, cells.indexOf(btc) + 1, 'sideCandle', flagHeader);
-    if (flagHeader !== 'Side x BTC' || sideCandle.dataset.paperCandleGenerated === 'true') {
+    const keepRecommendedSortButton = location.pathname === '/recommended-signals'
+      && sideCandle.querySelector('.sort-btn[data-sort="sideBtc"]');
+    const keepPumpSortHeader = location.pathname === '/pump'
+      && sideCandle.matches('.pump-paper-sort[data-paper-sort="candleFlag"]')
+      && sideCandle.querySelector('.sort-mark');
+    if (!keepRecommendedSortButton
+        && !keepPumpSortHeader
+        && (flagHeader !== 'Side x BTC' || sideCandle.dataset.paperCandleGenerated === 'true')) {
       sideCandle.textContent = flagHeader;
     }
     table.dataset.paperCandleColumns = 'true';

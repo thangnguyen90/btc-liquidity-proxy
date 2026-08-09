@@ -27,6 +27,41 @@ Open:
 http://127.0.0.1:19082
 ```
 
+### Chạy bền bằng PM2
+
+Production nên chạy đúng một instance qua ecosystem để PM2 tự khởi động lại khi
+Node crash hoặc vượt giới hạn RAM:
+
+```bash
+npm run pm2:start
+pm2 save
+pm2 list
+```
+
+Các lệnh vận hành:
+
+```bash
+npm run pm2:reload
+npm run pm2:logs
+npm run pm2:stop
+```
+
+Cấu hình nằm tại `ecosystem.config.cjs`: Node 22, fork mode một instance, heap
+16 GB, restart khi RSS vượt 18 GB, `min_uptime` 30 giây và exponential backoff
+5 giây để tránh crash-loop. Tiến trình `btc-liquidity-watchdog` gọi `/healthz`
+mỗi 15 giây và restart web sau 2 lần timeout liên tiếp; nhờ vậy trường hợp PID
+vẫn còn nhưng event loop đã treo sau OOM cũng được phục hồi. Log được PM2 ghi
+vào `~/.pm2/logs/` và module `pm2-logrotate` quản lý rotate.
+
+Để PM2 tự khôi phục cả sau khi WSL/systemd khởi động lại, chạy một lần lệnh sau
+(cần mật khẩu sudo), sau đó chạy lại `pm2 save`:
+
+```bash
+sudo env PATH=/home/thangnguyen/.nvm/versions/node/v22.16.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u thangnguyen --hp /home/thangnguyen
+pm2 save
+```
+
 ## Intraday Combo Forecast (Python)
 
 Trang dự đoán combo trong ngày đọc động toàn bộ file `data/*-paper-trades.json`, loại các log clone/experiment khỏi mô hình mặc định, rồi xếp hạng theo WR Bayesian, Avg ROE, PnL, độ mới của mẫu và xu hướng BTC hiện tại.

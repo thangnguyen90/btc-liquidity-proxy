@@ -677,9 +677,45 @@
       }
       .es-paper-table {
         width: 100%;
+        min-width: 2800px;
         border-collapse: collapse;
         font-size: 12px;
       }
+      .es-paper-scroll {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: visible;
+        scrollbar-gutter: stable;
+        overscroll-behavior-inline: contain;
+        padding-bottom: 6px;
+      }
+      .es-paper-scroll-top {
+        width: 100%;
+        max-width: 100%;
+        height: 18px;
+        margin: 5px 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-gutter: stable;
+        overscroll-behavior-inline: contain;
+      }
+      .es-paper-scroll-top-spacer { height: 1px; }
+      .es-paper-scroll::-webkit-scrollbar,
+      .es-paper-scroll-top::-webkit-scrollbar { height: 12px; }
+      .es-paper-scroll::-webkit-scrollbar-track,
+      .es-paper-scroll-top::-webkit-scrollbar-track {
+        background: var(--panel-2);
+        border-radius: 999px;
+      }
+      .es-paper-scroll::-webkit-scrollbar-thumb,
+      .es-paper-scroll-top::-webkit-scrollbar-thumb {
+        background: #475569;
+        border: 2px solid var(--panel-2);
+        border-radius: 999px;
+      }
+      .es-paper-scroll::-webkit-scrollbar-thumb:hover,
+      .es-paper-scroll-top::-webkit-scrollbar-thumb:hover { background: #64748b; }
       .es-paper-table th {
         text-align: left;
         padding: 7px 10px;
@@ -979,6 +1015,17 @@
         <h2>Paper Trades <span>EMA Squeeze auto log</span></h2>
         <div id="esPaperSummary">Loading...</div>
         <div id="esPaperOverview" class="es-paper-overview"></div>
+        <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <strong>Entry Support Flip · tín hiệu đẹp / tín hiệu xấu</strong>
+            <small style="color:var(--muted)">SNAPSHOT TRƯỚC ENTRY · OBSERVE ONLY · không gate/chặn/đổi size</small>
+          </div>
+          <div id="esSupportEntryGroups" class="es-paper-breakdown" style="margin-top:8px"></div>
+          <strong style="display:block;margin-top:10px">Chi tiết SHORT theo nguồn × pha</strong>
+          <div id="esSupportEntryShort" class="es-paper-breakdown" style="margin-top:6px"></div>
+          <strong style="display:block;margin-top:10px">Chi tiết LONG theo nguồn × pha</strong>
+          <div id="esSupportEntryLong" class="es-paper-breakdown" style="margin-top:6px"></div>
+        </div>
         <div class="es-paper-filters">
           <label>
             Signal type
@@ -1060,7 +1107,10 @@
         </div>
         <div class="es-paper-breakdown" id="esStageCandleStats"></div>
         <div class="es-paper-breakdown" id="esPaperBreakdown"></div>
-        <div style="overflow-x:auto">
+        <div id="esPaperScrollTop" class="es-paper-scroll-top" aria-label="Cuộn ngang phía trên bảng EMA Paper">
+          <div id="esPaperScrollTopSpacer" class="es-paper-scroll-top-spacer"></div>
+        </div>
+        <div id="esPaperScroll" class="es-paper-scroll" aria-label="Cuộn ngang bảng EMA Paper">
           <table class="es-paper-table">
             <thead>
               <tr>
@@ -1100,6 +1150,6 @@
     </main>
 
     <script src="/btcHealth.js"></script>
-    <script src="/ema-squeeze.js?v=20260723-ema-stage-candle1" type="module"></script>
+    <script src="/ema-squeeze.js?v=20260802-live-whitelist-v5-two-step" type="module"></script>
   </body>
 </html>

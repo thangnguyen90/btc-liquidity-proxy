@@ -231,7 +231,7 @@
           <h2>Open Trades</h2>
           <span class="refresh-note" id="lastUpdated">-</span>
         </div>
-        <div class="table-scroll">
+        <div class="table-scroll" data-paper-scroll data-paper-scroll-label="Cuộn ngang phía trên bảng Open Paper Trades">
           <table class="paper-table">
             <thead>
               <tr>
@@ -261,7 +261,7 @@
           <h2>Closed Trades</h2>
           <span class="refresh-note">History from JSON</span>
         </div>
-        <div class="table-scroll">
+        <div class="table-scroll" data-paper-scroll data-paper-scroll-label="Cuộn ngang phía trên bảng Closed Paper Trades">
           <table class="paper-table">
             <thead>
               <tr>
@@ -285,6 +285,7 @@
       </section>
     </main>
 
+    <script src="/paper-top-scroll.js" defer></script>
     <script src="/paper.js" type="module"></script>
   <script src="/btcHealth.js"></script>
 </body>

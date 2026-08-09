@@ -6,6 +6,12 @@ import {
   getPumpStage2Rule,
   pumpHardStopLossPrice,
 } from '../src/pumpEvalRule.js';
+import {
+  decoratePumpEvalTier,
+  mergePumpEvalTierStats,
+  pumpEvalTierSnapshot,
+  pumpEvalTierStats,
+} from '../src/pumpEvalTier.js';
 
 function decide(input) {
   return getPumpEvalRule({
@@ -92,5 +98,81 @@ assert.equal(getPumpStage2Rule({
   chasePct: 0.1,
 }).tier, 'WATCH');
 assert.equal(getPumpStage2Rule(stage2Base).observationOnly, true);
+
+const storedEval = decoratePumpEvalTier({
+  source: 'pump-92',
+  status: 'CLOSED',
+  pumpEvalTier: 'B',
+  pumpEvalLabel: 'PUMP_EVAL_SHORT_DUMP_VOL2_TEST',
+  pumpEvalVersion: 'PUMP_EVAL_V1_2026_07_20',
+});
+assert.equal(storedEval.pumpEvalTier, 'B');
+assert.equal(storedEval.pumpEvalDerived, false);
+
+const legacyEval = pumpEvalTierSnapshot({
+  source: 'pump-92',
+  side: 'SHORT',
+  status: 'CLOSED',
+  pumpSignalType: 'DUMP',
+  pumpSignalTimeframe: '15m',
+  pumpSignalMarketOk: true,
+  pumpSignalFactors: { volRatio: 3, chasePct: 0.1 },
+  btcTrendDir: 'down',
+  btcTrendScore: 55,
+  btcCorr: 0.2,
+  createdAt: '2026-07-25T06:00:00.000Z',
+});
+assert.equal(legacyEval.pumpEvalTier, 'B');
+assert.equal(legacyEval.pumpEvalDerived, true);
+
+const evalStats = pumpEvalTierStats([
+  {
+    ...legacyEval,
+    source: 'pump-92',
+    status: 'CLOSED',
+    pnl: 2,
+    roe: 20,
+  },
+  {
+    source: 'pump-85',
+    side: 'SHORT',
+    status: 'OPEN',
+    pumpSignalType: 'CLIMAX_TOP',
+    pumpSignalTimeframe: '15m',
+    pumpSignalMarketOk: true,
+    pumpSignalFactors: { volRatio: 3, chasePct: 0.1 },
+    pnl: -0.5,
+  },
+  {
+    source: 'emasq-15m-breakout-90',
+    status: 'CLOSED',
+    pnl: 99,
+    roe: 99,
+  },
+]);
+assert.equal(evalStats.find((row) => row.tier === 'B').closed, 1);
+assert.equal(evalStats.find((row) => row.tier === 'BLOCK').active, 1);
+assert.equal(evalStats.find((row) => row.tier === 'BLOCK').unrealizedPnl, -0.5);
+const mergedEvalStats = mergePumpEvalTierStats(
+  pumpEvalTierStats([{
+    ...legacyEval,
+    source: 'pump-92',
+    status: 'CLOSED',
+    pnl: 2,
+    roe: 20,
+  }]),
+  pumpEvalTierStats([{
+    source: 'pump-85',
+    side: 'SHORT',
+    status: 'OPEN',
+    pumpSignalType: 'CLIMAX_TOP',
+    pumpSignalTimeframe: '15m',
+    pumpSignalMarketOk: true,
+    pumpSignalFactors: { volRatio: 3, chasePct: 0.1 },
+    pnl: -0.5,
+  }]),
+);
+assert.equal(mergedEvalStats.find((row) => row.tier === 'B').closed, 1);
+assert.equal(mergedEvalStats.find((row) => row.tier === 'BLOCK').active, 1);
 
 console.log('Pump eval, Stage 2 observation labels, and hard SL cap: OK');

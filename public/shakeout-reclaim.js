@@ -28,6 +28,9 @@ const srPaperSummary = document.getElementById('srPaperSummary');
 const srSignalScoreStats = document.getElementById('srSignalScoreStats');
 const srChaseStats = document.getElementById('srChaseStats');
 const srStage2Stats = document.getElementById('srStage2Stats');
+const srObservationStats = document.getElementById('srObservationStats');
+const srMarketIndependentStats = document.getElementById('srMarketIndependentStats');
+const srShortWaveStats = document.getElementById('srShortWaveStats');
 const srComboStats = document.getElementById('srComboStats');
 const srMlStatus = document.getElementById('srMlStatus');
 const srMlSummary = document.getElementById('srMlSummary');
@@ -66,23 +69,73 @@ let srClassFilter = 'all';
 let srSideFilter = 'all';
 let srDayFilter = 'all';
 let srStage2Filter = 'all';
+let srPaperPage = 1;
+let srPaperPageSize = 100;
+let srPaperPagination = null;
+let srPaperLastSummary = {};
+let srPaperLastDaily = [];
+let srPaperLastVariant = [];
+let srPaperLastRealGate = [];
+let srPaperLastObservation = null;
+let srPaperLastAggregate = null;
+let srPaperLastAvailableClasses = [];
+let srPaperLastAvailableDays = [];
 const srClassSelect = document.getElementById('srClassFilter');
 const srSideSelect = document.getElementById('srSideFilter');
 const srDaySelect = document.getElementById('srDayFilter');
 const srStage2Select = document.getElementById('srStage2Filter');
-const rerenderPaper = () => renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant, realGateCompare: srPaperLastRealGate });
-if (srClassSelect) srClassSelect.addEventListener('change', () => { srClassFilter = srClassSelect.value || 'all'; rerenderPaper(); });
-if (srSideSelect) srSideSelect.addEventListener('change', () => { srSideFilter = srSideSelect.value || 'all'; rerenderPaper(); });
-if (srDaySelect) srDaySelect.addEventListener('change', () => { srDayFilter = srDaySelect.value || 'all'; rerenderPaper(); });
-if (srStage2Select) srStage2Select.addEventListener('change', () => { srStage2Filter = srStage2Select.value || 'all'; rerenderPaper(); });
+const srPaperPageSizeSelect = document.getElementById('srPaperPageSize');
+const srPaperPageStatsNote = document.getElementById('srPaperPageStatsNote');
+const srPaperPrevButtons = [...document.querySelectorAll('[data-sr-paper-prev]')];
+const srPaperNextButtons = [...document.querySelectorAll('[data-sr-paper-next]')];
+const srPaperPageMetas = [...document.querySelectorAll('.sr-paper-page-meta')];
+const rerenderPaper = () => renderPaperTrades({
+  trades: srPaperTrades,
+  summary: srPaperLastSummary,
+  daily: srPaperLastDaily,
+  variantCompare: srPaperLastVariant,
+  realGateCompare: srPaperLastRealGate,
+  observationStats: srPaperLastObservation,
+  aggregateStats: srPaperLastAggregate,
+  pagination: srPaperPagination,
+  availableClasses: srPaperLastAvailableClasses,
+  availableDays: srPaperLastAvailableDays,
+});
+const reloadPaperFromFirstPage = () => loadPaperTrades(1);
+if (srClassSelect) srClassSelect.addEventListener('change', () => {
+  srClassFilter = srClassSelect.value || 'all';
+  reloadPaperFromFirstPage();
+});
+if (srSideSelect) srSideSelect.addEventListener('change', () => {
+  srSideFilter = srSideSelect.value || 'all';
+  reloadPaperFromFirstPage();
+});
+if (srDaySelect) srDaySelect.addEventListener('change', () => {
+  srDayFilter = srDaySelect.value || 'all';
+  reloadPaperFromFirstPage();
+});
+if (srStage2Select) srStage2Select.addEventListener('change', () => {
+  srStage2Filter = srStage2Select.value || 'all';
+  reloadPaperFromFirstPage();
+});
+if (srPaperPageSizeSelect) srPaperPageSizeSelect.addEventListener('change', () => {
+  srPaperPageSize = Number(srPaperPageSizeSelect.value) || 100;
+  reloadPaperFromFirstPage();
+});
+srPaperPrevButtons.forEach((button) => button.addEventListener('click', () => {
+  if (srPaperPagination?.hasPrev) loadPaperTrades(srPaperPage - 1);
+}));
+srPaperNextButtons.forEach((button) => button.addEventListener('click', () => {
+  if (srPaperPagination?.hasNext) loadPaperTrades(srPaperPage + 1);
+}));
 
-function populateSrClassOptions(trades) {
+function populateSrClassOptions(classes = []) {
   if (!srClassSelect) return;
-  const classes = [...new Set(trades.map((t) => String(t.shakeoutClass || 'UNKNOWN')))].sort();
+  const normalized = [...new Set(classes.map((value) => String(value || 'UNKNOWN')))].sort();
   const prev = srClassFilter;
   srClassSelect.innerHTML = '<option value="all">Tất cả</option>'
-    + classes.map((c) => `<option value="${c}">${c}</option>`).join('');
-  srClassSelect.value = classes.includes(prev) || prev === 'all' ? prev : 'all';
+    + normalized.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  srClassSelect.value = normalized.includes(prev) || prev === 'all' ? prev : 'all';
   if (srClassSelect.value !== prev) srClassFilter = 'all';
 }
 
@@ -90,13 +143,13 @@ function paperTradeDay(t) {
   return String(t.createdAt ?? t.openedAt ?? t.closedAt ?? '').slice(0, 10);
 }
 
-function populateSrDayOptions(trades) {
+function populateSrDayOptions(days = []) {
   if (!srDaySelect) return;
-  const days = [...new Set(trades.map(paperTradeDay).filter(Boolean))].sort().reverse();
+  const normalized = [...new Set(days.map(String).filter(Boolean))].sort().reverse();
   const prev = srDayFilter;
   srDaySelect.innerHTML = '<option value="all">Tất cả</option>'
-    + days.map((d) => `<option value="${d}">${d}</option>`).join('');
-  srDaySelect.value = days.includes(prev) || prev === 'all' ? prev : 'all';
+    + normalized.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
+  srDaySelect.value = normalized.includes(prev) || prev === 'all' ? prev : 'all';
   if (srDaySelect.value !== prev) srDayFilter = 'all';
 }
 
@@ -302,6 +355,124 @@ function srStage2Badge(item = {}) {
     + '</span>';
 }
 
+function srObservationBadge(item = {}) {
+  const coverage = String(item.shakeoutObservationCoverage ?? 'LEGACY').toUpperCase();
+  const palette = {
+    FULL: ['#052e1a', '#34d399', '#d1fae5'],
+    PARTIAL: ['#422006', '#fbbf24', '#fde68a'],
+    LEGACY: ['#111827', '#64748b', '#cbd5e1'],
+  }[coverage] ?? ['#111827', '#64748b', '#cbd5e1'];
+  const captured = Number(item.shakeoutObservationCapturedFeatureCount ?? 0);
+  const expected = Number(item.shakeoutObservationExpectedFeatureCount ?? 27);
+  const buckets = item.shakeoutObservationBuckets ?? {};
+  const context = [
+    buckets.volume5m,
+    buckets.reclaim,
+    buckets.btcCorr,
+    buckets.rr,
+  ].filter(Boolean).join(' · ');
+  const title = [
+    'ANALYSIS ONLY - không tham gia gate/entry/size/SL/TP',
+    item.shakeoutObservationLayer1Key ? `L1 ${item.shakeoutObservationLayer1Key}` : '',
+    item.shakeoutObservationLayer2Key ? `L2 ${item.shakeoutObservationLayer2Key}` : '',
+    item.shakeoutObservationLayer3Key ? `L3 ${item.shakeoutObservationLayer3Key}` : '',
+  ].filter(Boolean).join('\n');
+  return `<span title="${escapeHtml(title)}" style="display:inline-block;max-width:210px;padding:4px 7px;border:1px solid ${palette[1]};color:${palette[2]};background:${palette[0]};border-radius:4px;font-size:10px;font-weight:950;white-space:normal;line-height:1.25">`
+    + `OBS ${escapeHtml(coverage)} · ${captured}/${expected}`
+    + `<small style="display:block;margin-top:2px;font-size:8px;opacity:.76">${escapeHtml(context || 'đang thu thập context')}</small>`
+    + '</span>';
+}
+
+function srMarketIndependentInfo(item = {}) {
+  const storedTier = String(item.shakeoutMarketIndependentTier ?? '').toUpperCase();
+  if (item.shakeoutMarketIndependentApplies
+    && ['LONG_EDGE', 'SHORT_PROBE', 'SHORT_NO_EDGE'].includes(storedTier)) {
+    const fallbackLabel = storedTier === 'LONG_EDGE'
+      ? 'OBS LONG EDGE'
+      : storedTier === 'SHORT_PROBE'
+        ? 'OBS SHORT PROBE'
+        : 'OBS SHORT NO EDGE';
+    return {
+      applies: true,
+      tier: storedTier,
+      label: item.shakeoutMarketIndependentLabel ?? fallbackLabel,
+      reason: item.shakeoutMarketIndependentReason ?? 'Observe/statistics only',
+      rank: storedTier === 'LONG_EDGE' ? 3 : storedTier === 'SHORT_PROBE' ? 2 : 1,
+    };
+  }
+  if (item.shakeoutMarketIndependentVersion) {
+    return {
+      applies: false,
+      tier: null,
+      label: null,
+      reason: item.shakeoutMarketIndependentReason ?? '',
+      rank: 0,
+    };
+  }
+  const variant = String(item.variant ?? '').toUpperCase();
+  const side = String(item.side ?? '').toUpperCase();
+  const entryDay = String(item.openedAt ?? item.createdAt ?? '').slice(0, 10);
+  const relationLabel = String(
+    item.btcRelationLabel
+      ?? item.shakeoutObservationSnapshot?.btcRelation
+      ?? '',
+  ).toUpperCase();
+  const bucket = String(item.shakeoutObservationBuckets?.btcCorr ?? '').toUpperCase();
+  const corr = Number(item.btcCorr ?? item.btcRelation?.corr);
+  const independent = relationLabel
+    ? relationLabel.includes('DOC_LAP')
+      || relationLabel.includes('INDEPENDENT')
+      || relationLabel.includes('CORR_RAC')
+    : bucket
+      ? bucket.includes('CORR_RAC') || bucket.includes('INDEPENDENT')
+      : Number.isFinite(corr) && Math.abs(corr) < 0.3;
+  if ((entryDay && entryDay < '2026-07-14')
+    || variant !== 'MARKET'
+    || !independent
+    || !['LONG', 'SHORT'].includes(side)) {
+    return { applies: false, tier: null, label: null, reason: '', rank: 0 };
+  }
+  const setup = String(
+    item.shakeoutClass
+      ?? item.shakeoutObservationSnapshot?.setup
+      ?? item.signalType
+      ?? '',
+  ).toUpperCase();
+  const shortProbe = side === 'SHORT'
+    && setup === 'WEAK_REJECT'
+    && Boolean(item.highJumpRisk);
+  const tier = side === 'LONG'
+    ? 'LONG_EDGE'
+    : shortProbe
+      ? 'SHORT_PROBE'
+      : 'SHORT_NO_EDGE';
+  const label = tier === 'LONG_EDGE'
+    ? 'OBS LONG EDGE'
+    : tier === 'SHORT_PROBE'
+      ? 'OBS SHORT PROBE'
+      : 'OBS SHORT NO EDGE';
+  return {
+    applies: true,
+    tier,
+    label,
+    reason: shortProbe
+      ? 'SHORT + MARKET + BTC independent + WEAK_REJECT + HIGH_JUMP at entry; observe/statistics only'
+      : `${side} + MARKET + BTC independent at entry; observe/statistics only`,
+    rank: tier === 'LONG_EDGE' ? 3 : tier === 'SHORT_PROBE' ? 2 : 1,
+  };
+}
+
+function srMarketIndependentBadge(item = {}) {
+  const info = srMarketIndependentInfo(item);
+  if (!info.applies) return '<span style="color:var(--muted)">-</span>';
+  const tone = info.tier === 'LONG_EDGE'
+    ? 'long'
+    : info.tier === 'SHORT_PROBE'
+      ? 'probe'
+      : 'short';
+  return `<span class="sr-mi-badge ${tone}" title="${escapeHtml(info.reason)}">${escapeHtml(info.label)}</span>`;
+}
+
 function srMlFlagBadge(item = {}, compact = false, model = 'candle') {
   if (srLearningData?.enabled === false) {
     return '<span class="sr-ml-flag muted" title="Python model đã tắt để giảm tải máy">PY OFF</span>';
@@ -503,9 +674,12 @@ function getShakeoutQuality(item = {}) {
     const qualityNote = String(item.note ?? '').match(/SHAKEOUT_QUALITY=([^|]+)/i)?.[1]?.trim();
     const isBadChaseGroup = /CHASE_BAD_GROUP_TEST_1/i.test(note);
     const isBtcUpShortBadGroup = /BTC_UP_SHORT_BAD_GROUP_TEST_1/i.test(note);
+    const chaseShortTier = getShakeoutChaseShortTier(item);
     return {
       tier: storedQuality,
-      label: isBtcUpShortBadGroup
+      label: storedQuality === 'CHASE' && chaseShortTier
+        ? `${chaseShortTier.label} · ${shakeoutPaperMarginLabel(item, chaseShortTier.targetMarginUsdt)}`
+        : isBtcUpShortBadGroup
         ? 'BTC UP SHORT WEAK $1'
         : storedQuality === 'GOOD'
         ? 'GOOD SHAKEOUT $10'
@@ -1039,6 +1213,116 @@ function renderRealGateCompare(rowsData) {
   `;
 }
 
+function shakeoutObservationBadgeKey(item = {}) {
+  const coverage = String(item.shakeoutObservationCoverage ?? 'LEGACY').toUpperCase();
+  const captured = Number(item.shakeoutObservationCapturedFeatureCount ?? 0);
+  const expected = Number(item.shakeoutObservationExpectedFeatureCount ?? 27);
+  const buckets = item.shakeoutObservationBuckets ?? {};
+  return [
+    `OBS ${coverage}`,
+    `${captured}/${expected}`,
+    buckets.volume5m ?? 'VOL_NO_DATA',
+    buckets.reclaim ?? 'RECLAIM_NO_DATA',
+    buckets.btcCorr ?? 'BTC_CORR_NO_DATA',
+    buckets.rr ?? 'RR_NO_DATA',
+  ].join(' | ');
+}
+
+function shakeoutObservationLiveByBadge(trades = []) {
+  const groups = new Map();
+  for (const trade of trades) {
+    if (trade.status !== 'OPEN') continue;
+    const key = shakeoutObservationBadgeKey(trade);
+    const row = groups.get(key) ?? { open: 0, activePnl: 0 };
+    row.open += 1;
+    row.activePnl += Number(trade.netPnl ?? trade.pnl ?? 0);
+    groups.set(key, row);
+  }
+  return groups;
+}
+
+function renderShakeoutObservationStats(data, liveTrades = []) {
+  if (!srObservationStats) return;
+  if (!data || !Array.isArray(data.coverage)) {
+    srObservationStats.innerHTML = '';
+    return;
+  }
+  const cls = (value) => (Number(value) >= 0 ? 'sr-daily-pos' : 'sr-daily-neg');
+  const sign = (value) => (Number(value) >= 0 ? '+' : '');
+  const liveByBadge = shakeoutObservationLiveByBadge(liveTrades);
+  const metricCells = (row) => `
+    <td>${row.total ?? 0}</td>
+    <td>${row.open ?? 0}${row.pending ? ` / ${row.pending} chờ` : ''}</td>
+    <td>${row.closed ?? 0}</td>
+    <td>${row.wins ?? 0}/${row.losses ?? 0}</td>
+    <td>${row.winRate == null ? '-' : `${Number(row.winRate).toFixed(1)}%`}</td>
+    <td class="${cls(row.pnl)}">${sign(row.pnl)}$${Number(row.pnl ?? 0).toFixed(2)}</td>
+    <td class="${cls(row.avgRoe)}">${row.avgRoe == null ? '-' : `${sign(row.avgRoe)}${Number(row.avgRoe).toFixed(1)}%`}</td>
+    <td>${row.positiveDays ?? 0}/${row.totalDays ?? 0}</td>`;
+  const coverageRows = data.coverage.map((row) => `
+    <tr>
+      <td class="sr-daily-date">${escapeHtml(row.label)}</td>
+      ${metricCells(row)}
+    </tr>`).join('');
+  const badgeRows = Array.isArray(data.badges) ? data.badges : [];
+  const badgeTable = badgeRows.length ? `
+    <div class="sr-daily-title" style="margin-top:8px">Thống kê đúng nhãn OBS đang hiển thị · toàn bộ lịch sử, không theo phân trang/filter</div>
+    <table class="sr-daily-table">
+      <thead>
+        <tr><th>Nhãn OBS</th><th>Tổng</th><th>Open/Chờ</th><th>Closed</th><th>W/L</th><th>WR</th><th>PnL đóng</th><th>PnL active</th><th>Tổng PnL</th><th>Avg ROE đóng</th><th>Ngày +/tổng</th></tr>
+      </thead>
+      <tbody>${badgeRows.map((row) => {
+        const live = liveByBadge.get(String(row.key ?? ''));
+        const activePnl = live && Number(live.open) === Number(row.open)
+          ? Number(live.activePnl ?? 0)
+          : Number(row.activePnl ?? 0);
+        const totalPnl = Number(row.pnl ?? 0) + activePnl;
+        return `
+          <tr>
+            <td class="sr-daily-date" title="${escapeHtml(row.key)}">${escapeHtml(String(row.label ?? row.key).replaceAll(' | ', ' · '))}</td>
+            <td>${row.total ?? 0}</td>
+            <td>${row.open ?? 0}${row.pending ? ` / ${row.pending} chờ` : ''}</td>
+            <td>${row.closed ?? 0}</td>
+            <td>${row.wins ?? 0}/${row.losses ?? 0}</td>
+            <td>${row.winRate == null ? '-' : `${Number(row.winRate).toFixed(1)}%`}</td>
+            <td class="${cls(row.pnl)}">${sign(row.pnl)}$${Number(row.pnl ?? 0).toFixed(2)}</td>
+            <td class="${cls(activePnl)}">${sign(activePnl)}$${activePnl.toFixed(2)}</td>
+            <td class="${cls(totalPnl)}">${sign(totalPnl)}$${totalPnl.toFixed(2)}</td>
+            <td class="${cls(row.avgRoe)}">${row.avgRoe == null ? '-' : `${sign(row.avgRoe)}${Number(row.avgRoe).toFixed(1)}%`}</td>
+            <td>${row.positiveDays ?? 0}/${row.totalDays ?? 0}</td>
+          </tr>`;
+      }).join('')}</tbody>
+    </table>` : '';
+  const detailTable = (title, rows = []) => {
+    if (!rows.length) return '';
+    return `
+      <details style="margin-top:7px">
+        <summary style="cursor:pointer;color:#cbd5e1;font-size:10px;font-weight:900;text-transform:uppercase">${escapeHtml(title)} · ${rows.length} cohort</summary>
+        <table class="sr-daily-table" style="margin-top:6px">
+          <thead><tr><th>Cohort</th><th>Tổng</th><th>Open/Chờ</th><th>Closed</th><th>W/L</th><th>WR</th><th>Net PnL</th><th>Avg ROE</th><th>Ngày +/tổng</th></tr></thead>
+          <tbody>${rows.map((row) => `
+            <tr>
+              <td class="sr-daily-date" title="${escapeHtml(row.key)}">${escapeHtml(String(row.label ?? row.key).slice(0, 150))}</td>
+              ${metricCells(row)}
+            </tr>`).join('')}</tbody>
+        </table>
+      </details>`;
+  };
+  srObservationStats.innerHTML = `
+    <div class="sr-daily-title">Shakeout Context Observation · snapshot trước/đúng lúc entry · toàn bộ lịch sử · ANALYSIS ONLY</div>
+    ${badgeTable}
+    <table class="sr-daily-table">
+      <thead><tr><th>Độ phủ dữ liệu</th><th>Tổng</th><th>Open/Chờ</th><th>Closed</th><th>W/L</th><th>WR</th><th>Net PnL</th><th>Avg ROE</th><th>Ngày +/tổng</th></tr></thead>
+      <tbody>${coverageRows}</tbody>
+    </table>
+    <div style="margin-top:5px;color:#94a3b8;font-size:10px;font-weight:800">FULL = đã lưu cấu trúc signal + execution + BTC/candle/liquidity. PARTIAL/LEGACY chỉ dùng tham khảo. Không cohort nào ở đây được phép mở, chặn hoặc đổi lệnh.</div>
+    ${detailTable('Lớp 1 · setup / side / stage / score', data.layer1)}
+    ${detailTable('Lớp 2 · variant / entry / RR / TP ROE', data.layer2)}
+    ${detailTable('Lớp 3 · BTC / volume / reclaim / wick / candle', data.layer3)}
+    ${detailTable('Ma trận 3 lớp · chỉ FULL; active hiện sớm, kết luận chờ ≥2 closed', data.matrix)}
+  `;
+}
+
 function getShakeoutComboKey(t) {
   const stored = String(t?.shakeoutCombo ?? t?.combo ?? '').trim();
   if (stored && stored !== '-') return stored;
@@ -1063,6 +1347,26 @@ function isShakeoutChaseTrade(t) {
     || tag.includes('CHASE')
     || /CHASE_CANDLE_TEST/i.test(note)
     || /pending missed but candle turned/i.test(note);
+}
+
+function getShakeoutChaseShortTier(t = {}) {
+  if (!isShakeoutChaseTrade(t) || String(t?.side ?? '').toUpperCase() !== 'SHORT') return null;
+  const stored = String(t?.shakeoutChaseShortTier ?? '').toUpperCase();
+  const score = Number(t?.score);
+  const btcPhase = String(t?.btcPhase ?? '').toUpperCase();
+  const tier = ['A', 'B_TEST'].includes(stored)
+    ? stored
+    : (Number.isFinite(score) && (
+      score >= 65
+      || (btcPhase === 'BTC_DOWN_MID' && score >= 55 && score <= 59)
+    ))
+      ? 'A'
+      : 'B_TEST';
+  return {
+    tier,
+    label: tier === 'A' ? 'CHASE SHORT A' : 'CHASE SHORT B/TEST',
+    targetMarginUsdt: tier === 'A' ? 10 : 5,
+  };
 }
 
 function buildShakeoutGroupStats(trades, keyFn) {
@@ -1113,22 +1417,42 @@ function buildShakeoutGroupStats(trades, keyFn) {
     || b.pnl - a.pnl);
 }
 
-function renderShakeoutChaseStats(trades) {
+function renderShakeoutChaseStats(source) {
   if (!srChaseStats) return;
-  const chaseTrades = trades.filter(isShakeoutChaseTrade);
-  if (!chaseTrades.length) {
+  let groups = [];
+  let total = null;
+  let sideRows = [];
+  let shortTierRows = [];
+  if (Array.isArray(source)) {
+    const chaseTrades = source.filter(isShakeoutChaseTrade);
+    groups = buildShakeoutGroupStats(chaseTrades, (t) => [
+      getShakeoutSignalType(t).toUpperCase(),
+      String(t?.side ?? '-').toUpperCase(),
+      String(t?.signalTimeframe ?? t?.timeframe ?? t?.interval ?? '-'),
+      `SCORE_${getShakeoutScoreBucket(t)}`,
+      String(t?.shakeoutBtcGateLabel ?? t?.btcGateLabel ?? t?.btcPhaseLabel ?? t?.btcPhase ?? 'BTC_NO_DATA').toUpperCase(),
+    ].join(' | ')).slice(0, 20);
+    total = buildShakeoutGroupStats(chaseTrades, () => 'ALL CHASE')[0] ?? null;
+    sideRows = buildShakeoutGroupStats(chaseTrades, (t) => `CHASE ${String(t?.side ?? '-').toUpperCase()}`);
+    shortTierRows = buildShakeoutGroupStats(
+      chaseTrades.filter((trade) => String(trade?.side ?? '').toUpperCase() === 'SHORT'),
+      (trade) => {
+        const tier = getShakeoutChaseShortTier(trade);
+        return tier
+          ? `${tier.label} · TARGET $${tier.targetMarginUsdt}`
+          : 'CHASE SHORT NO DATA';
+      },
+    );
+  } else {
+    groups = Array.isArray(source?.groups) ? source.groups : [];
+    total = source?.total ?? null;
+    sideRows = Array.isArray(source?.sides) ? source.sides : [];
+    shortTierRows = Array.isArray(source?.shortTiers) ? source.shortTiers : [];
+  }
+  if (!total && !groups.length) {
     srChaseStats.innerHTML = '';
     return;
   }
-  const groups = buildShakeoutGroupStats(chaseTrades, (t) => [
-    getShakeoutSignalType(t).toUpperCase(),
-    String(t?.side ?? '-').toUpperCase(),
-    String(t?.signalTimeframe ?? t?.timeframe ?? t?.interval ?? '-'),
-    `SCORE_${getShakeoutScoreBucket(t)}`,
-    String(t?.shakeoutBtcGateLabel ?? t?.btcGateLabel ?? t?.btcPhaseLabel ?? t?.btcPhase ?? 'BTC_NO_DATA').toUpperCase(),
-  ].join(' | ')).slice(0, 20);
-  const total = buildShakeoutGroupStats(chaseTrades, () => 'ALL CHASE')[0];
-  const sideRows = buildShakeoutGroupStats(chaseTrades, (t) => `CHASE ${String(t?.side ?? '-').toUpperCase()}`);
   const cls = (v) => (Number(v) >= 0 ? 'sr-daily-pos' : 'sr-daily-neg');
   const sign = (v) => (Number(v) >= 0 ? '+' : '');
   const rowHtml = (row) => `
@@ -1146,9 +1470,9 @@ function renderShakeoutChaseStats(trades) {
     </tr>
   `;
   srChaseStats.innerHTML = `
-    <div class="sr-daily-title">Thong ke rieng lenh duoi gia / CHASE CANDLE TEST $2</div>
+    <div class="sr-daily-title">Thong ke rieng CHASE · SHORT A $10 / SHORT B-TEST $5</div>
     <div class="sr-chase-summary">
-      ${[total, ...sideRows].filter(Boolean).map((row) => `
+      ${[total, ...sideRows, ...shortTierRows].filter(Boolean).map((row) => `
         <div class="sr-chase-card ${Number(row.pnl) >= 0 ? 'good' : 'bad'}">
           <div>${escapeHtml(row.key)}</div>
           <strong class="${cls(row.pnl)}">${sign(row.pnl)}$${Number(row.pnl ?? 0).toFixed(2)}</strong>
@@ -1227,9 +1551,11 @@ function buildShakeoutComboStats(trades) {
     });
 }
 
-function renderShakeoutComboStats(trades) {
+function renderShakeoutComboStats(source) {
   if (!srComboStats) return;
-  const rowsData = buildShakeoutComboStats(trades).slice(0, 40);
+  const rowsData = Array.isArray(source)
+    ? buildShakeoutComboStats(source).slice(0, 40)
+    : (Array.isArray(source?.rows) ? source.rows : []);
   if (!rowsData.length) {
     srComboStats.innerHTML = '';
     return;
@@ -1259,7 +1585,7 @@ function renderShakeoutComboStats(trades) {
     </tr>
   `).join('');
   srComboStats.innerHTML = `
-    <div class="sr-daily-title">Thong ke combo Shakeout - theo filter hien tai</div>
+    <div class="sr-daily-title">Thong ke combo Shakeout - toàn bộ dữ liệu khớp filter</div>
     <table class="sr-daily-table sr-score-stats-table sr-combo-stats-table">
       <thead>
         <tr>
@@ -1528,13 +1854,20 @@ function buildSrSignalScoreStats(trades) {
       || bucketOrder.indexOf(a.scoreBucket) - bucketOrder.indexOf(b.scoreBucket));
 }
 
-function renderSignalScoreStats(trades) {
+function renderSignalScoreStats(source) {
   if (!srSignalScoreStats) return;
-  const latestDays = getLatestSrPaperDays(trades, 5);
-  const scoped = srDayFilter === 'all'
-    ? trades.filter((t) => latestDays.includes(paperTradeDay(t)))
-    : trades;
-  const rowsData = buildSrSignalScoreStats(scoped);
+  let latestDays = [];
+  let rowsData = [];
+  if (Array.isArray(source)) {
+    latestDays = getLatestSrPaperDays(source, 5);
+    const scoped = srDayFilter === 'all'
+      ? source.filter((t) => latestDays.includes(paperTradeDay(t)))
+      : source;
+    rowsData = buildSrSignalScoreStats(scoped);
+  } else {
+    latestDays = Array.isArray(source?.latestDays) ? source.latestDays : [];
+    rowsData = Array.isArray(source?.rows) ? source.rows : [];
+  }
   if (!rowsData.length) {
     srSignalScoreStats.innerHTML = '';
     return;
@@ -1579,84 +1912,93 @@ function renderSignalScoreStats(trades) {
   `;
 }
 
-function renderShakeoutStage2Stats(trades) {
+function renderShakeoutStage2Stats(source) {
   if (!srStage2Stats) return;
-  const twoLayerTrades = trades.filter((trade) => srStage2Gate(trade).twoLayer);
-  const summarize = (all) => {
-    const closed = all.filter((trade) => trade.status === 'CLOSED' && trade.outcome !== 'INVALID');
-    const wins = closed.filter((trade) => Number(srNetPnlValue(trade) ?? 0) > 0).length;
-    const pnlRows = all.filter((trade) =>
-      trade.status === 'OPEN' || (trade.status === 'CLOSED' && trade.outcome !== 'INVALID'));
-    const pnl = pnlRows.reduce((sum, trade) => sum + Number(srNetPnlValue(trade) ?? 0), 0);
-    const avgRoe = closed.length
-      ? closed.reduce((sum, trade) => sum + Number(srNetRoeValue(trade) ?? 0), 0) / closed.length
-      : null;
-    return {
-      total: all.length,
-      captured: all.filter((trade) => Boolean(trade.shakeoutStage2AuditCaptured)).length,
-      open: all.filter((trade) => trade.status === 'OPEN').length,
-      pending: all.filter((trade) => trade.status === 'PENDING').length,
-      closed: closed.length,
-      wins,
-      losses: closed.length - wins,
-      winRate: closed.length ? wins / closed.length * 100 : null,
-      pnl,
-      avgRoe,
+  let rows = [];
+  let detailRows = [];
+  let auditGroups = [];
+  let twoLayerTotal = 0;
+  let scopeTotal = 0;
+  if (Array.isArray(source)) {
+    const twoLayerTrades = source.filter((trade) => srStage2Gate(trade).twoLayer);
+    const summarize = (all) => {
+      const closed = all.filter((trade) => trade.status === 'CLOSED' && trade.outcome !== 'INVALID');
+      const wins = closed.filter((trade) => Number(srNetPnlValue(trade) ?? 0) > 0).length;
+      const pnlRows = all.filter((trade) =>
+        trade.status === 'OPEN' || (trade.status === 'CLOSED' && trade.outcome !== 'INVALID'));
+      const pnl = pnlRows.reduce((sum, trade) => sum + Number(srNetPnlValue(trade) ?? 0), 0);
+      const avgRoe = closed.length
+        ? closed.reduce((sum, trade) => sum + Number(srNetRoeValue(trade) ?? 0), 0) / closed.length
+        : null;
+      return {
+        total: all.length,
+        captured: all.filter((trade) => Boolean(trade.shakeoutStage2AuditCaptured)).length,
+        open: all.filter((trade) => trade.status === 'OPEN').length,
+        pending: all.filter((trade) => trade.status === 'PENDING').length,
+        closed: closed.length,
+        wins,
+        losses: closed.length - wins,
+        winRate: closed.length ? wins / closed.length * 100 : null,
+        pnl,
+        avgRoe,
+      };
     };
-  };
-  const tiers = ['WATCH_PLUS', 'WATCH', 'RISK'];
-  const rows = tiers.map((tier) => {
-    const all = twoLayerTrades.filter((trade) => srStage2Gate(trade).tier === tier);
-    return {
+    rows = ['WATCH_PLUS', 'WATCH', 'RISK'].map((tier) => ({
       tier,
-      ...summarize(all),
-    };
-  });
-
-  const detailMap = new Map();
-  for (const trade of twoLayerTrades) {
-    const gate = srStage2Gate(trade);
-    const key = [
-      gate.layer1Tier,
-      gate.setup,
-      gate.variant,
-      gate.fillQuality,
-      gate.tier,
-    ].join('|');
-    const group = detailMap.get(key) ?? {
-      layer1Tier: gate.layer1Tier,
-      setup: gate.setup,
-      variant: gate.variant,
-      fillQuality: gate.fillQuality,
-      tier: gate.tier,
-      trades: [],
-    };
-    group.trades.push(trade);
-    detailMap.set(key, group);
+      ...summarize(twoLayerTrades.filter((trade) => srStage2Gate(trade).tier === tier)),
+    }));
+    const detailMap = new Map();
+    for (const trade of twoLayerTrades) {
+      const gate = srStage2Gate(trade);
+      const key = [
+        gate.layer1Tier,
+        gate.setup,
+        gate.variant,
+        gate.fillQuality,
+        gate.tier,
+      ].join('|');
+      const group = detailMap.get(key) ?? {
+        layer1Tier: gate.layer1Tier,
+        setup: gate.setup,
+        variant: gate.variant,
+        fillQuality: gate.fillQuality,
+        tier: gate.tier,
+        trades: [],
+      };
+      group.trades.push(trade);
+      detailMap.set(key, group);
+    }
+    detailRows = [...detailMap.values()]
+      .map((group) => ({ ...group, ...summarize(group.trades) }))
+      .sort((a, b) => b.total - a.total
+        || String(a.layer1Tier).localeCompare(String(b.layer1Tier))
+        || String(a.setup).localeCompare(String(b.setup))
+        || String(a.variant).localeCompare(String(b.variant))
+        || String(a.fillQuality).localeCompare(String(b.fillQuality)));
+    auditGroups = [
+      {
+        flag: 'AUDIT_CLEAN',
+        trades: twoLayerTrades.filter((trade) =>
+          trade.shakeoutStage2AuditCaptured && srStage2Gate(trade).flags.length === 0),
+      },
+      {
+        flag: 'AUDIT_NOT_CAPTURED',
+        trades: twoLayerTrades.filter((trade) => !trade.shakeoutStage2AuditCaptured),
+      },
+      ...['DUPLICATE_ACTIVE', 'BTC_CANDLE_CONFLICT', 'STALE_FILL', 'DRIFT_RISK'].map((flag) => ({
+        flag,
+        trades: twoLayerTrades.filter((trade) => srStage2Gate(trade).flags.includes(flag)),
+      })),
+    ].map((group) => ({ ...group, ...summarize(group.trades) }));
+    twoLayerTotal = twoLayerTrades.length;
+    scopeTotal = source.length;
+  } else {
+    rows = Array.isArray(source?.tiers) ? source.tiers : [];
+    detailRows = Array.isArray(source?.details) ? source.details : [];
+    auditGroups = Array.isArray(source?.audits) ? source.audits : [];
+    twoLayerTotal = Number(source?.twoLayerTotal ?? 0);
+    scopeTotal = Number(source?.scopeTotal ?? 0);
   }
-  const detailRows = [...detailMap.values()]
-    .map((group) => ({ ...group, ...summarize(group.trades) }))
-    .sort((a, b) => b.total - a.total
-      || String(a.layer1Tier).localeCompare(String(b.layer1Tier))
-      || String(a.setup).localeCompare(String(b.setup))
-      || String(a.variant).localeCompare(String(b.variant))
-      || String(a.fillQuality).localeCompare(String(b.fillQuality)));
-
-  const auditGroups = [
-    {
-      flag: 'AUDIT_CLEAN',
-      trades: twoLayerTrades.filter((trade) =>
-        trade.shakeoutStage2AuditCaptured && srStage2Gate(trade).flags.length === 0),
-    },
-    {
-      flag: 'AUDIT_NOT_CAPTURED',
-      trades: twoLayerTrades.filter((trade) => !trade.shakeoutStage2AuditCaptured),
-    },
-    ...['DUPLICATE_ACTIVE', 'BTC_CANDLE_CONFLICT', 'STALE_FILL', 'DRIFT_RISK'].map((flag) => ({
-      flag,
-      trades: twoLayerTrades.filter((trade) => srStage2Gate(trade).flags.includes(flag)),
-    })),
-  ].map((group) => ({ ...group, ...summarize(group.trades) }));
 
   const colors = { WATCH_PLUS: '#34d399', WATCH: '#fbbf24', RISK: '#fb7185' };
   const metricCells = (row) => `
@@ -1684,7 +2026,7 @@ function renderShakeoutStage2Stats(trades) {
           <td style="color:${row.avgRoe == null ? 'var(--muted)' : row.avgRoe >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:800">${row.avgRoe == null ? '-' : `${row.avgRoe >= 0 ? '+' : ''}${row.avgRoe.toFixed(1)}%`}</td>
         </tr>`).join('')}</tbody>
     </table>
-    <div style="margin-top:5px;color:#94a3b8;font-size:10px">${twoLayerTrades.length}/${trades.length} lệnh có snapshot L1 Side × BTC. Duplicate/stale/conflict/drift chỉ hiển thị ở dòng AUDIT; không được tự nâng hoặc hạ nhãn.</div>
+    <div style="margin-top:5px;color:#94a3b8;font-size:10px">${twoLayerTotal}/${scopeTotal} lệnh có snapshot L1 Side × BTC trong toàn bộ dữ liệu khớp filter. Duplicate/stale/conflict/drift chỉ hiển thị ở dòng AUDIT; không được tự nâng hoặc hạ nhãn.</div>
     <div class="sr-daily-title" style="margin-top:12px">Chi tiết từng loại L1 × setup × variant × chất lượng fill</div>
     <table class="sr-daily-table">
       <thead><tr><th>L1</th><th>Setup</th><th>Variant</th><th>Fill</th><th>Nhãn L2</th><th>Tổng</th><th>Open/Chờ</th><th>Closed</th><th>W/L</th><th>WR</th><th>Net PnL</th><th>Avg ROE</th></tr></thead>
@@ -1720,8 +2062,178 @@ function getSrFilteredTrades(trades = srPaperTrades) {
       || (srStage2Gate(t).twoLayer && srStage2Gate(t).tier === srStage2Filter)));
 }
 
-function renderSrPaperComputedStats(filtered) {
-  const stats = buildSrPaperStats(filtered);
+function renderShakeoutMarketIndependentStats(data) {
+  if (!srMarketIndependentStats) return;
+  const groups = Array.isArray(data?.groups) ? data.groups : [];
+  if (!groups.length) {
+    srMarketIndependentStats.innerHTML = '';
+    return;
+  }
+  const cls = (value) => (Number(value) >= 0 ? 'sr-daily-pos' : 'sr-daily-neg');
+  const sign = (value) => (Number(value) >= 0 ? '+' : '');
+  const allDays = [...new Set(groups.flatMap((group) => (
+    Array.isArray(group.daily) ? group.daily.map((row) => row.day) : []
+  )))].sort().slice(-14);
+  const fmtDay = (day) => {
+    const [year, month, date] = String(day).split('-');
+    return year && month && date ? `${date}/${month}` : day;
+  };
+  const chartFor = (group) => {
+    const rows = new Map((group.daily ?? []).map((row) => [row.day, row]));
+    const values = allDays.map((day) => Number(rows.get(day)?.closedPnl ?? 0));
+    const maxPnl = Math.max(0, ...values);
+    const minPnl = Math.min(0, ...values);
+    const span = Math.max(0.01, maxPnl - minPnl);
+    const zeroPct = maxPnl / span * 100;
+    const belowPct = Math.abs(minPnl) / span * 100;
+    const tone = group.tier === 'LONG_EDGE'
+      ? 'long'
+      : group.tier === 'SHORT_PROBE'
+        ? 'probe'
+        : 'short';
+    const cells = allDays.map((day) => {
+      const row = rows.get(day) ?? {};
+      const pnl = Number(row.closedPnl ?? 0);
+      const heightPct = Math.abs(pnl) / span * 100;
+      const direction = pnl >= 0 ? 'pos' : 'neg';
+      const style = `--zero:${zeroPct.toFixed(2)}%;--below:${belowPct.toFixed(2)}%;--h:${heightPct.toFixed(2)}%`;
+      const active = Number(row.open ?? 0);
+      return `
+        <div class="sr-mi-day" title="${escapeHtml(day)} · ${row.closed ?? 0} closed · PnL ${sign(pnl)}$${pnl.toFixed(2)}${active ? ` · ${active} active` : ''}">
+          <div class="sr-mi-zone" style="${style}">
+            ${Number(row.closed ?? 0) > 0
+              ? `<span class="sr-mi-pnl ${direction}" style="${style}">${sign(pnl)}$${pnl.toFixed(2)}</span><span class="sr-mi-bar ${direction}" style="${style}"></span>`
+              : ''}
+          </div>
+          <span class="sr-mi-date">${escapeHtml(fmtDay(day))}</span>
+          <span class="sr-mi-orders">${row.closed ?? 0} lệnh${active ? ` · ${active} active` : ''}</span>
+        </div>`;
+    }).join('');
+    return `
+      <div class="sr-mi-chart-title">
+        <span class="sr-mi-badge ${tone}">${escapeHtml(group.label)}</span>
+        <span>${group.closed ?? 0} closed · PnL <span class="${cls(group.closedPnl)}">${sign(group.closedPnl)}$${Number(group.closedPnl ?? 0).toFixed(2)}</span></span>
+      </div>
+      <div class="sr-mi-chart-scroll">
+        <div class="sr-mi-chart" style="--days:${Math.max(1, allDays.length)}">${cells}</div>
+      </div>`;
+  };
+  const cards = groups.map((group) => {
+    const tone = group.tier === 'LONG_EDGE'
+      ? 'long'
+      : group.tier === 'SHORT_PROBE'
+        ? 'probe'
+        : 'short';
+    return `
+      <div class="sr-mi-card ${tone}">
+        <div class="sr-mi-card-head">
+          <span class="sr-mi-badge ${tone}">${escapeHtml(group.label)}</span>
+          <strong class="${cls(group.totalPnl)}">${sign(group.totalPnl)}$${Number(group.totalPnl ?? 0).toFixed(2)}</strong>
+        </div>
+        <div class="sr-mi-card-line">${group.total ?? 0} tổng · ${group.closed ?? 0} đóng · ${group.open ?? 0} active · ${group.pending ?? 0} chờ · W/L ${group.wins ?? 0}/${group.losses ?? 0} · WR ${group.winRate == null ? '-' : `${Number(group.winRate).toFixed(1)}%`}</div>
+        <div class="sr-mi-card-line">PnL đóng <span class="${cls(group.closedPnl)}">${sign(group.closedPnl)}$${Number(group.closedPnl ?? 0).toFixed(2)}</span> · PnL active <span class="${cls(group.activePnl)}">${sign(group.activePnl)}$${Number(group.activePnl ?? 0).toFixed(2)}</span> · AvgROE episode <span class="${cls(group.avgEpisodeRoe)}">${group.avgEpisodeRoe == null ? '-' : `${sign(group.avgEpisodeRoe)}${Number(group.avgEpisodeRoe).toFixed(2)}%`}</span> · PF ${Number(group.profitFactor ?? 0).toFixed(2)} · ngày+ ${group.positiveDays ?? 0}/${group.totalDays ?? 0}</div>
+      </div>`;
+  }).join('');
+  const dataStart = String(data?.dataStart ?? '2026-07-14');
+  srMarketIndependentStats.innerHTML = `
+    <div class="sr-daily-title">Market Independent Observation · LONG EDGE / SHORT PROBE / SHORT NO EDGE · MARKET + BTC độc lập tại entry · từ ${escapeHtml(dataStart)} · toàn bộ dữ liệu khớp filter · OBSERVE ONLY</div>
+    <div class="sr-mi-summary">${cards}</div>
+    ${allDays.length ? groups.map(chartFor).join('') : ''}
+    <div style="margin-top:5px;color:var(--muted);font-size:10px;font-weight:800">Chart dùng PnL đã đóng và số lệnh theo ngày entry; mỗi chart tự scale để đọc được nhóm nhỏ. SHORT PROBE = WEAK_REJECT + HIGH_JUMP, chỉ là nhãn quan sát. AvgROE/PF gom theo episode 15 phút, không gate/chặn/đổi size.</div>`;
+}
+
+function renderShakeoutShortWaveStats(data) {
+  if (!srShortWaveStats) return;
+  const groups = Array.isArray(data?.groups) ? data.groups : [];
+  if (!groups.length) {
+    srShortWaveStats.innerHTML = '';
+    return;
+  }
+  const cls = (value) => (Number(value) >= 0 ? 'sr-daily-pos' : 'sr-daily-neg');
+  const sign = (value) => (Number(value) >= 0 ? '+' : '');
+  const allDays = [...new Set(groups.flatMap((group) => (
+    Array.isArray(group.daily) ? group.daily.map((row) => row.day) : []
+  )))].sort();
+  const fmtDay = (day) => {
+    const [year, month, date] = String(day).split('-');
+    return year && month && date ? `${date}/${month}` : day;
+  };
+  const toneOf = (group) => (group.tier === 'WAVE' ? 'long' : 'probe');
+  const chartFor = (group) => {
+    const rows = new Map((group.daily ?? []).map((row) => [row.day, row]));
+    const values = allDays.map((day) => Number(rows.get(day)?.closedPnl ?? 0));
+    const maxPnl = Math.max(0, ...values);
+    const minPnl = Math.min(0, ...values);
+    const span = Math.max(0.01, maxPnl - minPnl);
+    const zeroPct = maxPnl / span * 100;
+    const belowPct = Math.abs(minPnl) / span * 100;
+    const cells = allDays.map((day) => {
+      const row = rows.get(day) ?? {};
+      const pnl = Number(row.closedPnl ?? 0);
+      const heightPct = Math.abs(pnl) / span * 100;
+      const direction = pnl >= 0 ? 'pos' : 'neg';
+      const style = `--zero:${zeroPct.toFixed(2)}%;--below:${belowPct.toFixed(2)}%;--h:${heightPct.toFixed(2)}%`;
+      const active = Number(row.open ?? 0);
+      return `
+        <div class="sr-mi-day" title="${escapeHtml(day)} · ${row.closed ?? 0} closed · PnL ${sign(pnl)}$${pnl.toFixed(2)}${active ? ` · ${active} active` : ''}">
+          <div class="sr-mi-zone" style="${style}">
+            ${Number(row.closed ?? 0) > 0
+              ? `<span class="sr-mi-pnl ${direction}" style="${style}">${sign(pnl)}$${pnl.toFixed(2)}</span><span class="sr-mi-bar ${direction}" style="${style}"></span>`
+              : ''}
+          </div>
+          <span class="sr-mi-date">${escapeHtml(fmtDay(day))}</span>
+          <span class="sr-mi-orders">${row.closed ?? 0} closed${active ? ` · ${active} active` : ''}</span>
+        </div>`;
+    }).join('');
+    return `
+      <div class="sr-mi-chart-title">
+        <span class="sr-mi-badge ${toneOf(group)}">${escapeHtml(group.label)}</span>
+        <span>${group.closed ?? 0} closed · PnL <span class="${cls(group.closedPnl)}">${sign(group.closedPnl)}$${Number(group.closedPnl ?? 0).toFixed(2)}</span></span>
+      </div>
+      <div class="sr-mi-chart-scroll">
+        <div class="sr-mi-chart" style="--days:${Math.max(1, allDays.length)}">${cells}</div>
+      </div>`;
+  };
+  const cards = groups.map((group) => `
+    <div class="sr-mi-card ${toneOf(group)}">
+      <div class="sr-mi-card-head">
+        <span class="sr-mi-badge ${toneOf(group)}">${escapeHtml(group.label)}</span>
+        <strong class="${cls(group.totalPnl)}">${sign(group.totalPnl)}$${Number(group.totalPnl ?? 0).toFixed(2)}</strong>
+      </div>
+      <div class="sr-mi-card-line">${group.total ?? 0} total · ${group.closed ?? 0} closed · ${group.open ?? 0} active · ${group.pending ?? 0} pending · W/L ${group.wins ?? 0}/${group.losses ?? 0} · WR ${group.winRate == null ? '-' : `${Number(group.winRate).toFixed(1)}%`}</div>
+      <div class="sr-mi-card-line">PnL closed <span class="${cls(group.closedPnl)}">${sign(group.closedPnl)}$${Number(group.closedPnl ?? 0).toFixed(2)}</span> · PnL active <span class="${cls(group.activePnl)}">${sign(group.activePnl)}$${Number(group.activePnl ?? 0).toFixed(2)}</span> · AvgROE episode <span class="${cls(group.avgEpisodeRoe)}">${group.avgEpisodeRoe == null ? '-' : `${sign(group.avgEpisodeRoe)}${Number(group.avgEpisodeRoe).toFixed(2)}%`}</span> · PF ${Number(group.profitFactor ?? 0).toFixed(2)} · positive days ${group.positiveDays ?? 0}/${group.totalDays ?? 0}</div>
+    </div>`).join('');
+  const dataStart = String(data?.dataStart ?? '2026-06-21');
+  const windowMinutes = Number(data?.windowMinutes ?? 120);
+  srShortWaveStats.innerHTML = `
+    <div class="sr-daily-title">SHORT WAVE Observation · WEAK_REJECT score 60–79 · closed paper log from ${escapeHtml(dataStart)} · ${windowMinutes}m causal window · full data matching filter · OBSERVE ONLY</div>
+    <div class="sr-mi-summary">${cards}</div>
+    ${allDays.length ? groups.map(chartFor).join('') : ''}
+    <div style="margin-top:5px;color:var(--muted);font-size:10px;font-weight:800">WAVE requires an earlier distinct closed-paper signal family inside ${windowMinutes} minutes. Same-signal execution clones cannot confirm each other. Chart shows closed PnL and closed order count by signal day; labels do not gate, block, enter, or resize orders.</div>`;
+}
+
+function renderSrPaperAggregateStats(aggregateStats, fallbackTrades) {
+  if (aggregateStats?.scope?.paginated === false) {
+    renderShakeoutMarketIndependentStats(aggregateStats.marketIndependent);
+    renderShakeoutShortWaveStats(aggregateStats.shortWave);
+    renderShakeoutChaseStats(aggregateStats.chase);
+    renderShakeoutStage2Stats(aggregateStats.stage2);
+    renderShakeoutComboStats({ rows: aggregateStats.combos });
+    renderSignalScoreStats(aggregateStats.signalScore);
+    return;
+  }
+  renderShakeoutMarketIndependentStats(null);
+  renderShakeoutShortWaveStats(null);
+  renderShakeoutChaseStats(fallbackTrades);
+  renderShakeoutStage2Stats(fallbackTrades);
+  renderShakeoutComboStats(fallbackTrades);
+  renderSignalScoreStats(fallbackTrades);
+}
+
+function renderSrPaperComputedStats(filtered, data = {}) {
+  const stats = data?.summary && Object.keys(data.summary).length
+    ? data.summary
+    : buildSrPaperStats(filtered);
   const validClosed = Math.max(0, Number(stats.closed ?? 0) - Number(stats.invalid ?? 0));
   const winRate = validClosed > 0 ? Math.round(Number(stats.wins ?? 0) / validClosed * 100) : null;
   const filterText = [
@@ -1738,13 +2250,40 @@ function renderSrPaperComputedStats(filtered) {
     + (stats.invalid ? ` - ${stats.invalid} invalid` : '')
     + (winRate != null ? ` - WR ${winRate}% - avg ROE ${stats.avgRoe ?? '-'}%` : ' - auto confirmed >=60')
     + ` - ${liveText}`;
-  renderVariantCompare(buildSrPaperCompare(filtered, 'variant', ['MARKET', 'PENDING']));
-  renderRealGateCompare(buildSrPaperCompare(filtered, 'realGate', ['REAL_OK', 'REAL_TEST', 'REAL_BLOCK']));
-  renderShakeoutChaseStats(filtered);
-  renderShakeoutStage2Stats(filtered);
-  renderShakeoutComboStats(filtered);
-  renderSignalScoreStats(filtered);
-  renderDailyStats(buildSrDailyStats(filtered));
+  renderVariantCompare(Array.isArray(data?.variantCompare)
+    ? data.variantCompare
+    : buildSrPaperCompare(filtered, 'variant', ['MARKET', 'PENDING']));
+  renderRealGateCompare(Array.isArray(data?.realGateCompare)
+    ? data.realGateCompare
+    : buildSrPaperCompare(filtered, 'realGate', ['REAL_OK', 'REAL_TEST', 'REAL_BLOCK']));
+  renderShakeoutObservationStats(data?.observationStats, filtered);
+  renderSrPaperAggregateStats(data?.aggregateStats, filtered);
+  renderDailyStats(Array.isArray(data?.daily) ? data.daily : buildSrDailyStats(filtered));
+}
+
+function renderSrPaperPager(pagination = {}) {
+  const page = Math.max(1, Number(pagination.page) || 1);
+  const totalPages = Math.max(1, Number(pagination.totalPages) || 1);
+  const totalRows = Math.max(0, Number(pagination.total) || 0);
+  srPaperPage = page;
+  srPaperPagination = {
+    page,
+    limit: Number(pagination.limit) || srPaperPageSize,
+    total: totalRows,
+    totalPages,
+    hasPrev: Boolean(pagination.hasPrev),
+    hasNext: Boolean(pagination.hasNext),
+  };
+  srPaperPageSize = srPaperPagination.limit;
+  if (srPaperPageSizeSelect) srPaperPageSizeSelect.value = String(srPaperPageSize);
+  srPaperPrevButtons.forEach((button) => { button.disabled = !srPaperPagination.hasPrev; });
+  srPaperNextButtons.forEach((button) => { button.disabled = !srPaperPagination.hasNext; });
+  srPaperPageMetas.forEach((meta) => {
+    meta.textContent = `Trang ${page}/${totalPages} · ${totalRows} dòng`;
+  });
+  if (srPaperPageStatsNote) {
+    srPaperPageStatsNote.textContent = `Mọi thống kê tính trên toàn bộ ${totalRows} dòng khớp bộ lọc; chỉ bảng Paper Trades phân trang ${srPaperPageSize} dòng/trang.`;
+  }
 }
 
 function srPaperSortValue(t, key) {
@@ -1753,7 +2292,11 @@ function srPaperSortValue(t, key) {
     case 'pythonLegacy': return srPythonModelRank(getSrMlFlag(t, 'legacy'));
     case 'pythonCandle': return srPythonModelRank(getSrMlFlag(t, 'candle'));
     case 'sideCandle': return srSideCandleGate(t).rank;
+    case 'marketIndependent': return srMarketIndependentInfo(t).rank;
     case 'stage2': return srStage2Gate(t).rank;
+    case 'observation': return ({ LEGACY: 1, PARTIAL: 2, FULL: 3 })[
+      String(t.shakeoutObservationCoverage ?? 'LEGACY').toUpperCase()
+    ] ?? 0;
     case 'symbol': return String(t.symbol ?? '');
     case 'side': return String(t.side ?? '');
     case 'entry': return Number(t.entryPrice);
@@ -1846,16 +2389,11 @@ document.querySelectorAll('.sr-sort').forEach((th) => {
       srPaperSort.dir = srPaperSort.dir === 'asc' ? 'desc' : 'asc';
     } else {
       // số/giá mặc định desc, chữ mặc định asc
-      srPaperSort = { key, dir: ['symbol', 'side', 'variant', 'source', 'status', 'btcDetail', 'stage2'].includes(key) ? 'asc' : 'desc' };
+      srPaperSort = { key, dir: ['symbol', 'side', 'variant', 'source', 'status', 'btcDetail', 'stage2', 'marketIndependent'].includes(key) ? 'asc' : 'desc' };
     }
-    renderPaperTrades({ trades: srPaperTrades, summary: srPaperLastSummary, daily: srPaperLastDaily, variantCompare: srPaperLastVariant, realGateCompare: srPaperLastRealGate });
+    rerenderPaper();
   });
 });
-
-let srPaperLastSummary = {};
-let srPaperLastDaily = [];
-let srPaperLastVariant = [];
-let srPaperLastRealGate = [];
 
 function renderPaperTrades(data) {
   const trades = Array.isArray(data?.trades) ? data.trades : [];
@@ -1865,15 +2403,31 @@ function renderPaperTrades(data) {
   srPaperLastDaily = Array.isArray(data?.daily) ? data.daily : [];
   srPaperLastVariant = Array.isArray(data?.variantCompare) ? data.variantCompare : [];
   srPaperLastRealGate = Array.isArray(data?.realGateCompare) ? data.realGateCompare : [];
-  populateSrClassOptions(trades);
-  populateSrDayOptions(trades);
+  srPaperLastObservation = data?.observationStats ?? srPaperLastObservation;
+  srPaperLastAggregate = data?.aggregateStats ?? srPaperLastAggregate;
+  srPaperLastAvailableClasses = Array.isArray(data?.availableClasses)
+    ? data.availableClasses
+    : srPaperLastAvailableClasses;
+  srPaperLastAvailableDays = Array.isArray(data?.availableDays)
+    ? data.availableDays
+    : srPaperLastAvailableDays;
+  populateSrClassOptions(srPaperLastAvailableClasses);
+  populateSrDayOptions(srPaperLastAvailableDays);
+  renderSrPaperPager(data?.pagination ?? srPaperPagination ?? {});
   const filtered = getSrFilteredTrades(trades);
-  renderSrPaperComputedStats(filtered);
+  renderSrPaperComputedStats(filtered, {
+    summary: srPaperLastSummary,
+    daily: srPaperLastDaily,
+    variantCompare: srPaperLastVariant,
+    realGateCompare: srPaperLastRealGate,
+    observationStats: srPaperLastObservation,
+    aggregateStats: srPaperLastAggregate,
+  });
   const rows = sortSrPaperTrades(filtered);
   updateSrSortHeaders();
 
   if (!rows.length) {
-    srPaperBody.innerHTML = '<tr><td colspan="22" style="text-align:center;color:var(--muted);padding:16px">Khong co lenh khop filter (ngày/loại/side/Stage 2).</td></tr>';
+    srPaperBody.innerHTML = '<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:16px">Khong co lenh khop filter (ngày/loại/side/Stage 2).</td></tr>';
     return;
   }
 
@@ -1912,7 +2466,15 @@ function renderPaperTrades(data) {
         ? '<span class="sr-variant-badge pending waiting" title="Cách B: CHƯA khớp - đang chờ giá chạm entry, chưa có vị thế">B · CHỜ KHỚP</span>'
         : '<span class="sr-variant-badge pending" title="Cách B: ĐÃ khớp khi giá chạm entry">B · ĐÃ KHỚP</span>';
     } else if (variant === 'CHASE') {
-      variantBadge = '<span class="sr-variant-badge pending" style="color:#fde68a;border-color:#fbbf24;background:#422006" title="CHASE: không chạm pending entry nhưng giá đã quay đầu từ hỗ trợ/kháng cự, vào paper test $2">CHASE · TEST $2</span>';
+      const chaseShortTier = getShakeoutChaseShortTier(t);
+      const actualMargin = shakeoutPaperMarginLabel(t, chaseShortTier?.targetMarginUsdt ?? 2);
+      const chaseLabel = chaseShortTier
+        ? `${chaseShortTier.tier === 'A' ? 'A' : 'B/TEST'} · ${actualMargin}`
+        : `TEST · ${actualMargin}`;
+      const chaseTitle = chaseShortTier
+        ? `${chaseShortTier.label}; target $${chaseShortTier.targetMarginUsdt}; margin thực của dòng ${actualMargin}`
+        : `CHASE; margin thực của dòng ${actualMargin}`;
+      variantBadge = `<span class="sr-variant-badge pending" style="color:#fde68a;border-color:#fbbf24;background:#422006" title="${escapeHtml(chaseTitle)}">CHASE · ${escapeHtml(chaseLabel)}</span>`;
     } else {
       variantBadge = '<span class="sr-variant-badge none">-</span>';
     }
@@ -2019,7 +2581,9 @@ function renderPaperTrades(data) {
         <td data-srmark="${escapeHtml(t.id)}">${fmtPrice(t.markPrice)}</td>
         <td data-srpnl="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '<span style="color:var(--muted)">chưa khớp</span>' : formatSrNetPnl(t)}</td>
         <td>${srSideCandleGateBadge(t)}</td>
+        <td>${srMarketIndependentBadge(t)}</td>
         <td>${srStage2Badge(t)}</td>
+        <td>${srObservationBadge(t)}</td>
         <td data-srroe="${escapeHtml(t.id)}">${t.status === 'PENDING' ? '-' : fmtSigned(srNetRoeValue(t), '%')}</td>
         <td>${t.partialTpTaken
           ? `<span style="display:inline-block;padding:3px 7px;border:1px solid #22d3ee;color:#67e8f9;background:#083344;border-radius:4px;font-weight:900" title="${escapeHtml(t.note)}">${escapeHtml(
@@ -2045,13 +2609,35 @@ function renderPaperTrades(data) {
   }).join('');
 }
 
-async function loadPaperTrades() {
+let srPaperFetchController = null;
+async function loadPaperTrades(page = srPaperPage) {
+  if (srPaperFetchController) srPaperFetchController.abort();
+  const controller = new AbortController();
+  srPaperFetchController = controller;
+  const requestedPage = Math.max(1, Number(page) || 1);
+  // Persist the requested page before the fetch so an SSE refresh arriving
+  // mid-request cannot restore the previously rendered page.
+  srPaperPage = requestedPage;
   try {
-    const res = await fetch(PAPER_API_URL, { cache: 'no-store' });
+    const params = new URLSearchParams({
+      page: String(requestedPage),
+      limit: String(srPaperPageSize),
+      day: srDayFilter,
+      class: srClassFilter,
+      side: srSideFilter,
+      stage2: srStage2Filter,
+    });
+    const res = await fetch(`${PAPER_API_URL}?${params}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     renderPaperTrades(await res.json());
   } catch (err) {
+    if (err?.name === 'AbortError') return;
     srPaperSummary.textContent = `Paper loi: ${err.message}`;
+  } finally {
+    if (srPaperFetchController === controller) srPaperFetchController = null;
   }
 }
 
@@ -2098,6 +2684,7 @@ function connectSse() {
 
 function connectPaperSse() {
   const es = new EventSource(PAPER_SSE_URL);
+  let refreshTimer = null;
   es.onmessage = (ev) => {
     try {
       const data = JSON.parse(ev.data);
@@ -2105,7 +2692,13 @@ function connectPaperSse() {
         srPaperSummary.textContent = `Paper stream loi: ${data.error}`;
         return;
       }
-      renderPaperTrades(data);
+      if (data?.refresh || data?.type === 'SHAKEOUT_PAPER_REFRESH') {
+        if (refreshTimer) return;
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          loadPaperTrades(srPaperPage);
+        }, data?.initial ? 350 : 120);
+      }
     } catch (err) {
       srPaperSummary.textContent = `Paper stream parse loi: ${err.message}`;
     }
@@ -2160,7 +2753,11 @@ function applyLivePrices() {
   }
   if (changed && Date.now() - srPaperStatsLiveRefreshAt > 1500) {
     srPaperStatsLiveRefreshAt = Date.now();
-    renderSrPaperComputedStats(getSrFilteredTrades());
+    const liveFiltered = getSrFilteredTrades(srPaperTrades);
+    renderShakeoutObservationStats(srPaperLastObservation, liveFiltered);
+    if (srPaperLastAggregate?.scope?.paginated !== false) {
+      renderSrPaperAggregateStats(null, liveFiltered);
+    }
   }
 }
 
@@ -2211,7 +2808,10 @@ setInterval(() => {
 setInterval(fetchOnce, 90_000);
 setInterval(() => loadShakeoutLearning(), 5 * 60_000);
 function schedulePaperPoll() {
-  const delay = srPaperTrades.some((t) => t.status === 'OPEN') ? 3000 : 15000;
+  // SSE reloads immediately when paper state changes; this is only a fallback.
+  // Live mark/PnL already updates through Binance WebSocket, so avoid rebuilding
+  // the whole page every few seconds while positions are open.
+  const delay = 15000;
   setTimeout(async () => {
     await loadPaperTrades();
     schedulePaperPoll();

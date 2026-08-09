@@ -2,7 +2,7 @@
 
 > **Đọc trước:** [CURRENT_DECISION_AND_EMA_RULES.md](CURRENT_DECISION_AND_EMA_RULES.md) là bản tóm tắt logic Decision/Recommended/EMA đang chạy, cập nhật ngày 2026-07-20. File hiện tại giữ lịch sử và bối cảnh chi tiết; nếu nội dung cũ mâu thuẫn, ưu tiên bản current và kiểm tra code.
 
-Last updated: 2026-07-14
+Last updated: 2026-08-01
 
 Use this file as the first read before changing or evaluating trading logic. It summarizes the current intent, naming, pages, paper stores, and rule decisions from prior work so Codex does not need to rediscover everything from `src/server.js` and old chat history.
 
@@ -360,7 +360,8 @@ Result: this rule sometimes blocked but did not always improve. Keep labels visi
 - This is a paper-only test path for Shakeout, not a normal market entry quality upgrade.
 - Server gate:
   - `SHAKEOUT_RECLAIM_PAPER_CHASE_CANDLE_TEST=false` disables it.
-  - Default margin: `SHAKEOUT_RECLAIM_PAPER_CHASE_CANDLE_MARGIN_USDT=2`.
+  - Legacy/non-SHORT default margin: `SHAKEOUT_RECLAIM_PAPER_CHASE_CANDLE_MARGIN_USDT=2`.
+  - CHASE SHORT uses the dedicated A/B sizing rule documented below.
   - Default move window:
     - `SHAKEOUT_RECLAIM_PAPER_CHASE_CANDLE_MIN_MOVE_PCT=0.8`
     - `SHAKEOUT_RECLAIM_PAPER_CHASE_CANDLE_MAX_MOVE_PCT=6`
@@ -383,11 +384,11 @@ Result: this rule sometimes blocked but did not always improve. Keep labels visi
   - note contains `CHASE_CANDLE_TEST`
   - note also contains the 5m body share, close, previous close, and `pending missed; closed 5m candle confirmed direction`
 - UI:
-  - Signal/paper label: `CHASE CANDLE TEST $2`
+  - Signal/paper label shows the stored CHASE SHORT tier and actual row margin.
   - Row/card color should be yellow/amber to separate from GOOD `$10` and LOW QUALITY `$1`.
-  - Variant badge text: `CHASE · TEST $2`.
+  - Variant badge text is dynamic, for example `CHASE · A · $10` or `CHASE · B/TEST · $5`.
 - Stats:
-  - `/shakeout-reclaim` now has a dedicated `Thong ke rieng lenh duoi gia / CHASE CANDLE TEST $2` block.
+  - `/shakeout-reclaim` has a dedicated CHASE block with separate SHORT A/B summaries.
   - It respects the current day/type/side filters.
   - It shows summary for all chase, chase LONG, chase SHORT.
   - It also groups chase trades by:
@@ -401,6 +402,18 @@ Result: this rule sometimes blocked but did not always improve. Keep labels visi
   - closed-5m confirmation retained 17: 11W/6L, WR 64.7%, net PnL `+0.487`, AvgROE `+1.43%`
   - rejected 14 trades had net PnL `-1.315`
 - When user asks "thong ke rieng lenh duoi gia", read this section first, then inspect only `public/shakeout-reclaim.js` and `data/shakeout-paper-trades.json` if needed.
+
+### CHASE SHORT A / B sizing (2026-07-26)
+
+- Applies only to newly created Shakeout paper rows with `variant=CHASE` and `side=SHORT`.
+- `CHASE SHORT A`:
+  - signal score `>=65`, or
+  - `BTC_DOWN_MID` with score `55-59`.
+  - margin `$10` by default (`SHAKEOUT_RECLAIM_PAPER_CHASE_SHORT_A_MARGIN_USDT`).
+- Every remaining CHASE SHORT row is `CHASE SHORT B/TEST` with margin `$5` by default (`SHAKEOUT_RECLAIM_PAPER_CHASE_SHORT_B_MARGIN_USDT`).
+- This explicit two-tier sizing supersedes the older CHASE weak-group, BTC-up, side-candle and CHOP margin caps for CHASE SHORT only. It does not change entry eligibility, SL/TP, leverage, CHASE LONG, or historical trade sizes.
+- New trades persist the tier version, tier, label, reason, rule code and selected margin. Historical rows are classified for statistics from their pre-entry `score` and `btcPhase` without rewriting the store.
+- The CHASE stats block shows `CHASE SHORT A · TARGET $10` and `CHASE SHORT B/TEST · TARGET $5` over the complete filtered dataset; paper pagination does not truncate these totals.
 
 ## Top Reversal
 
@@ -732,3 +745,691 @@ Before major edits:
 - Lệnh V2 mới dùng SL lũy tiến theo peak ROE: `10→+1`, `15→+5`, `20→+10`, `25→+15`, sau đó tăng theo bước 5 điểm ROE. SL chỉ được dời theo hướng có lợi và không hạ ngược.
 - PnL Liquid hiển thị và thống kê theo net: gross trừ phí Binance dự tính hai chiều; mặc định `0.04%` mỗi chiều.
 - Rule version lưu trên lệnh mới: `LIQUID_SHADOW_V2_20260722`.
+
+## 2026-08-01 - Short Edge SE BEST L3B Profile
+
+- Rule version: `edge-short-best-profile-observe-v1`.
+- Chỉ phân loại các lệnh đã có `SE BEST`; nhãn dùng snapshot có trước entry và không
+  đọc PnL/outcome của chính lệnh.
+- `SE BEST SHORT FIT`: SHORT, Tier A, BTC DOWN, setup `EARLY_DUMP` hoặc `BC_UTAD`.
+- `SE BEST PHASE RISK`: `SHORT_FADE`, `SHORT_PEAK`, `BTC_CRASH_RECLAIM`, hoặc
+  `MARKET_DISPERSION` với SHORT score dưới 30.
+- Các nhóm đối chứng còn lại: `SE BEST SHORT OTHER`, `SE BEST TIER B TEST`,
+  `SE BEST LONG / UP`.
+- API thống kê mỗi nhóm theo closed/active, W/L/BE, WR, PnL đóng, PnL active theo
+  mark socket, AvgROE, PF và số ngày dương.
+- UI `/edge-short` hiển thị card L3B và badge con ngay trong cột `L3 Best`.
+- Lịch sử cũ được derive khi đọc; không bulk rewrite JSON. Lệnh mới lưu thêm snapshot
+  dưới các field `edgeShortBestProfile*`.
+- Toàn bộ lớp này là `OBSERVE ONLY`: không gate/chặn Binance, không đổi entry, size,
+  SL hoặc TP.
+
+## 2026-08-01 - Short Edge L3C Risk Day × Point Phase
+
+- Rule version: `edge-short-best-risk-day-point-observe-v1`.
+- Chỉ phân rã các lệnh đã mang `SE BEST PHASE RISK`; không thay đổi nhãn L3B hiện có.
+- Dữ liệu trước entry gồm BTC rolling 24h (`btcHealth.pct24h`), LONG/SHORT score và
+  LONG/SHORT wave/slope trong `marketDirectionAtSignal.scoreDynamics`.
+- `RISK DAY BEAR CONTINUE`: BTC 24h `<= -1%`, LONG không ở `BTC_RALLY_REJECT` và SHORT
+  không ở `SHORT_FADE/SHORT_PEAK`.
+- `RISK NEUTRAL REVERSAL`: BTC 24h nằm giữa `-1%` và `+1%`, LONG ở
+  `BTC_RALLY_REJECT`, SHORT ở `SHORT_FADE/SHORT_PEAK/BTC_CRASH_RECLAIM`.
+- `RISK MIXED WATCH`: phần PHASE RISK còn lại.
+- `/edge-short` hiển thị ba card thống kê toàn khoảng ngày và badge con trong cột `L3 Best`.
+  PnL đóng và PnL active được tách riêng; active lấy mark socket khi API trả dữ liệu.
+- Lệnh mới chỉ append field `edgeShortBestRisk*`; lệnh cũ derive khi đọc, không rewrite JSON.
+- `OBSERVE ONLY`: không gate/chặn Binance, không thay đổi entry, size/margin, SL hoặc TP.
+
+## 2026-08-01 - Backtest candidate L2B Short Edge theo BTC Wave
+
+- Research version `edge-short-wave-2b-backtest-v0-20260801`; chưa chạy runtime và chưa lưu
+  thêm field vào JSON.
+- Backtest 7 ngày `2026-07-26..2026-08-01` theo Asia/Bangkok, lần xác nhận cuối dùng 2,877 lệnh đóng;
+  ngày cuối còn đang chạy. Dữ liệu BTC core trước entry phủ 99.8%.
+- Phase dùng direction + EMA1h + regime + pct6h + RSI1h + OBV tại entry, rồi ghép riêng với
+  side tín hiệu. LONG/SHORT score dynamics chưa dùng làm điều kiện chính vì chỉ phủ 39.5% tuần.
+- Mapping relation đã sửa đúng `SHORT ↔ DOWN`, `LONG ↔ UP`; cùng hướng là ALIGNED, ngược hướng
+  là COUNTER.
+- SHORT tổng: 1,001 lệnh, WR 80.3%, PnL +$273.128, PF 1.50, dương 7/7 ngày.
+- `SHORT | WAVE TRANSITION`: 308 lệnh, WR 84.4%, PnL +$151.272, AvgROE +5.03%, PF 2.07,
+  dương 7/7 ngày.
+- `SHORT | WAVE DRIVE ALIGNED`: 234 lệnh, WR 79.5%, PnL +$29.465, PF 1.28.
+- `SHORT | WAVE COUNTER ACTIVE`: 150 lệnh, WR 79.3%, PnL +$36.062, PF 1.39.
+- `SHORT | WAVE COUNTER EXHAUSTED`: 211 lệnh, WR 75.8%, PnL +$36.331, PF 1.24.
+- LONG tổng: 1,876 lệnh, WR 63.9%, PnL -$329.533, PF 0.75, âm 6/7 ngày. Riêng
+  LONG counter-exhausted gần hòa vốn; các nhóm LONG lớn còn lại âm.
+- Điểm tách hữu ích nhất khỏi L2 cũ: `TIER BLOCK | SHORT | WAVE TRANSITION` vẫn có
+  239 lệnh, WR 84.5%, PnL +$118.446, PF 2.07 và dương 7/7 ngày.
+- Kết luận: candidate L2B phải tách `SIDE × BTC WAVE`, không gộp LONG/SHORT.
+
+## 2026-08-01 - Runtime L2B Short Edge SIDE × BTC Wave
+
+- Version `edge-short-wave-2b-observe-v1`.
+- Lệnh mới lưu snapshot tùy chọn `edgeShortWave2b*`; lịch sử derive khi đọc, không rewrite JSON.
+- Phân direction + EMA1h + regime thành TRANSITION hoặc confirmed; confirmed tiếp tục tách
+  CONTINUATION/EXHAUSTED bằng pct6h, RSI1h và OBV trước entry.
+- Có nhãn riêng cho SHORT/LONG × TRANSITION/ALIGNED/COUNTER × ACTIVE/EXHAUSTED và NO DATA.
+- `/edge-short` có card thống kê toàn range độc lập phân trang và badge con trong L2 Tier;
+  active PnL cập nhật theo mark socket.
+- `OBSERVE ONLY`: không gate/chặn Binance, không đổi direction, entry, size/margin, SL/TP.
+
+## 2026-08-01 - Backtest candidate L2C Tier A/B × BTC Wave
+
+- Research version `edge-short-wave-2c-ab-backtest-v0-20260801`; chưa chạy runtime.
+- Lấy 439 lệnh đóng Tier A/B trong range 7 ngày Asia/Bangkok, loại BLOCK/NO DATA.
+- A+B tổng: WR 74.7%, PnL +$74.040, AvgROE +2.03%, PF 1.34, dương 6/7 ngày.
+- A+B SHORT: 255 lệnh, WR 82.7%, PnL +$85.744, AvgROE +3.59%, PF 1.82, dương 5/6 ngày có mẫu.
+- A+B LONG: 184 lệnh, WR 63.6%, PnL -$11.704, PF 0.90.
+- SHORT transition: 60 lệnh, WR 85.0%, PnL +$35.446, PF 2.46, dương 4/4 ngày có mẫu.
+- SHORT drive-aligned: 141 lệnh, WR 82.3%, PnL +$31.851, PF 1.63, dương 5/6.
+- SHORT aligned-exhausted: 54 lệnh, WR 81.5%, PnL +$18.447, PF 1.61 nhưng mới phủ 2 ngày.
+- LONG drive-aligned và aligned-exhausted đều âm; LONG transition PnL dương nhẹ nhưng AvgROE âm
+  và chỉ dương 1/4 ngày nên không ổn định.
+- Kết luận: candidate L2C chỉ đáng giữ cho `A/B SHORT × BTC Wave`; chưa thêm nhãn/API/UI,
+  không rewrite JSON và không ảnh hưởng Binance/entry/size/SL/TP.
+
+## 2026-08-01 - Runtime L2C Short Edge Tier A/B × BTC Wave
+
+- Version `edge-short-wave-2c-ab-observe-v1`.
+- Chỉ Tier A/B eligible; BLOCK/NO DATA không tham gia thống kê L2C.
+- Nhãn từng paper giữ Tier A hay B và cohort SIDE × BTC Wave; card chính gộp A+B, khối chi tiết
+  tách A/B.
+- Toàn range được thống kê độc lập phân trang; active PnL dùng mark socket.
+- Lệnh mới append field tùy chọn `edgeShortWave2c*`; lịch sử derive khi đọc, không rewrite JSON.
+- `OBSERVE ONLY`: không gate/chặn Binance, không đổi direction, entry, size/margin, SL/TP.
+
+## 2026-08-01 - Pump Source/Wave Observation Layers
+
+- Version `pump-source-wave-observe-v1`.
+- Tách cứng `PUMP_NATIVE` và `EMA`; không trộn PnL hai nguồn và không lấy nhãn/tier Short Edge
+  làm kết luận cho Pump.
+- Dữ liệu trước entry: source/setup/side/timeframe, BTC correlation, BTC direction/score, EMA1h,
+  regime, pct6h, RSI1h, OBV và tier snapshot riêng của từng nguồn.
+- L1 chốt theo đầu ngày Asia/Bangkok từ prior closed; L2 là tier riêng nguồn; L2B là side × BTC wave;
+  L2C chỉ ghép Tier A/B × BTC wave; L3 `PUMP BEST` là prior-day walk-forward theo nguồn/setup/side.
+- Tất cả card dùng NET PnL sau phí round-trip ước tính; active PnL lấy mark socket. Thống kê chạy trên
+  toàn date range, không phụ thuộc page paper đang hiển thị.
+- Lịch sử được dựng nhãn một lần rồi cache theo ngày Asia/Bangkok; ghi/đóng lệnh mới không kích hoạt
+  quét lại toàn bộ kho, trong khi active mark/PnL vẫn được làm mới theo socket.
+- `/pump` có năm khối card mới và cột badge `Pump OBS`; các nhãn mới không thay thế các thống kê
+  Pump/EMA đang có.
+- Lệnh mới append field tùy chọn `pumpObs*`; lịch sử cũ derive khi đọc, không bulk rewrite và không
+  thay đổi schema bắt buộc/top-level JSON.
+- `OBSERVE ONLY`: không cấp quyền Binance, không gate/chặn, không thay đổi direction, entry,
+  size/margin, leverage, SL hoặc TP.
+
+## 2026-08-01 - Market Direction Health non-blocking refresh
+
+- Version runtime `LIQUID_MARKET_HEALTH_RUNTIME_V3_20260801`; không thay version/công thức chấm LONG/SHORT hiện tại.
+- Nguyên nhân point biến mất: refresh Market Health chờ chung market snapshot REST bị treo; endpoint quá 30 giây và
+  frontend chỉ còn trạng thái `ĐANG CHẤM THỊ TRƯỜNG`/`Sample --`.
+- Sửa runtime dùng universe snapshot trong memory trước, timeout REST cold-start 4 giây, dùng BTC Health cache trước và
+  timeout 2.5 giây; đồng thời dedupe refresh bằng `inflight` và giữ score cũ trong lúc refresh nền.
+- Dữ liệu trước entry, điều kiện phân loại, hysteresis và thống kê snapshot không đổi; API chỉ thêm object chẩn đoán
+  tùy chọn `runtime`.
+- Không sửa file JSON, không bulk rewrite và tương thích reader cũ vì field response mới có thể bị bỏ qua.
+- `OBSERVE ONLY`: không ảnh hưởng Binance, entry/direction, size/margin, leverage, SL hoặc TP.
+
+## 2026-08-01 - Recommended Entry Support source-quality split
+
+- Version `recommended-support-entry-shadow-v2-source-split`.
+- Giữ nguyên L9 GOOD/BAD; chỉ tách nhóm xanh thành bốn nhãn quan sát:
+  `EDGE CONFIRMED`, `EDGE WEAK`, `LIQUID CONFIRMED`, `LIQUID WEAK`.
+- Điều kiện chỉ dùng snapshot trước entry: source/side, Market Direction flip và Source L1 đã
+  chốt. `SOURCE GOOD → CONFIRMED`; `SOURCE WATCH/RISK/NO DATA → WEAK`.
+- `/recommended-signals` có bốn card thống kê toàn date range và badge trong Paper table;
+  PnL active tiếp tục lấy mark hiện tại, còn phân loại không dùng PnL/outcome.
+- Không rewrite JSON; field `recommendedSupportEntrySourceQuality*` là tùy chọn/derive khi đọc,
+  tương thích dữ liệu cũ.
+- `OBSERVE ONLY`: không gate/chặn Binance, không đổi entry, direction, size/margin, SL hoặc TP.
+
+## 2026-08-01 - Recommended card tone theo AvgROE
+
+- UI version `recommended-stats-avgroe-tone-v1-20260801`.
+- Toàn bộ card Recommended Paper: AvgROE `> 3.5%` mới xanh; AvgROE `< -1%` đỏ;
+  phần còn lại hoặc thiếu mẫu là WATCH/vàng.
+- Chỉ đổi màu card/badge hiển thị theo thống kê trong range; không sửa tier snapshot, không
+  rewrite JSON và không ảnh hưởng Binance, entry, size/margin, SL hoặc TP.
+
+## 2026-08-02 - Runtime Feed Recovery và EMA warmup missing-only
+
+- Version `RUNTIME_FEED_RECOVERY_V1_20260802`.
+- Chẩn đoán trước sửa: universe EMA 179 thường đạt `5m 179/179`, `15m 179/179`, `1h 178/179`, trong khi
+  cấu hình tuyệt đối 250 bị cap thành target 179; service gọi lại tiered warmup khoảng 90-96 giây/lần.
+- Runtime mới dùng target tỷ lệ 95% (`179 -> 171`) để một symbol thiếu không giữ toàn service trong retry 100%.
+  Dữ liệu thiếu vẫn retry riêng theo symbol/timeframe, backoff 90 giây tới 15 phút; khi target đã đạt chỉ gap-fill
+  nền mỗi 15 phút và không chạy lại Market Health/tier warmup.
+- Public last-price ticker nhận tick mới theo thứ tự với lag tối đa 10 giây thay vì loại mọi tick trên 2 giây;
+  watchdog theo giá đã chấp nhận và reconnect sau 15 giây không có accepted tick, kể cả raw message còn tới.
+- Hợp nhất bảy ticker paper riêng của Recommended/Cap/EMA/Pump/PPKS/Shakeout/Top Reversal vào một
+  `sharedLastTicker`; payload thị trường chỉ parse một lần, còn handler/symbol active vẫn tách theo từng nguồn.
+- Coalesce backlog `!ticker@arr`: trong lúc event loop bận chỉ frame mới nhất đang chờ được parse/dispatch,
+  không xử lý tuần tự các frame giá cũ khiến socket càng lúc càng tụt lại.
+- Watchdog PM2 kiểm tra `pm_uptime` của target và áp startup/restart grace 60 phút sau mọi lần web khởi động,
+  kể cả restart thủ công. Điều này ngăn health timeout trong cold warmup tạo vòng restart -> mất cache -> warmup lại.
+- Dữ liệu trước entry, điều kiện phân loại, nhãn/tier/combo và cách thống kê lịch sử không thay đổi. Active PnL
+  vẫn dùng socket mark nhưng cập nhật ổn định hơn; closed PnL không được tính lại.
+- Không sửa hoặc rewrite JSON; không thêm schema bắt buộc. Đây là runtime infrastructure, không phải gate/rule
+  Binance và không tác động direction, entry, size/margin, leverage, SL hoặc TP.
+
+## 2026-08-02 - EMA Squeeze và Short Edge SC Spring LONG Corr Rebound
+
+- Version `SOURCE_LONG_CORR_REBOUND_V1_20260802`.
+- Backtest 14 ngày trước triển khai xác định chỉ hai setup con đáng theo dõi: EMA `SQUEEZE`
+  đạt 8 closed, 7W/1L, `+$0.235`, AvgNetROE `+2.94%`, PF `4.74`; Short Edge `SC_SPRING`
+  đạt 5 closed, 5W/0L, `+$3.747`, AvgNetROE `+7.49%`. `PRE_BREAKOUT`, `PUMP_BREAKOUT`
+  và `KILL_SHORT` không được đưa vào nhãn.
+- Nhãn chỉ đọc snapshot trước entry: LONG, corr `>= 0.5`, BTC `DOWN` score `< 45`, BTC 24h
+  nằm trong `(-0.2%, +0.2%)` và RSI4h `< 50`, cộng đúng source/setup của từng page.
+- Lệnh mới đúng setup lưu field tùy chọn `sourceLongCorrRebound*`; lịch sử cũ derive lúc đọc,
+  không rewrite JSON và không thay đổi schema top-level.
+- `/pump` và `/edge-short` có card toàn date range, PnL đóng và PnL active NET tách riêng;
+  active dùng mark socket. Badge nằm trong Paper table và ghi `PROVISIONAL`.
+- Màu card chỉ là trình bày theo AvgROE: `> 3.5%` xanh, `< -1%` đỏ, còn lại WATCH/vàng.
+- `OBSERVE ONLY`: không Binance, không gate/chặn, không đổi entry/direction, size/margin,
+  leverage, SL hoặc TP.
+
+## 2026-08-02 - Liquid LONG Corr Rebound paper test $10
+
+- Version `LIQUID_LONG_CORR_REBOUND_V2_20260802`, thay thế V1 observe-only ở runtime.
+- Điều kiện phân loại không đổi và chỉ dùng snapshot trước entry: Stage 3 `WATCH` cùng tổ hợp
+  `LIQUID_KILL_ZONE · LONG · 15m · BTC_CORR_THEO · BTC_DOWN_WEAK · NGUOC_BTC ·
+  GATE_TEST_LIQUID_LONG_BTC_COUNTER · DAY_FLAT · RSI4_RESET`.
+- Lệnh auto mới khớp nhãn được paper test `$10`; nhãn trong Paper table hiển thị thêm
+  `TEST $10` khi size thực sự đã áp. Lệnh cũ chỉ derive nhãn và giữ nguyên size lịch sử.
+- Card thống kê tiếp tục dùng toàn date range và PnL active theo socket, không phụ thuộc trang Paper.
+- Không ảnh hưởng Binance, không gate/chặn/tạo entry, không đổi direction, leverage, SL hoặc TP;
+  thay đổi duy nhất là paper margin của lệnh auto mới khớp nhãn.
+- JSON tương thích ngược bằng các field tùy chọn `liquidLongCorrRebound*`; không rewrite dữ liệu cũ,
+  không đổi top-level và reader cũ có thể bỏ qua field mới.
+
+## 2026-08-02 - Liquid LONG Corr Rebound observe-only
+
+- Version `LIQUID_LONG_CORR_REBOUND_V1_20260802`.
+- Backtest trước khi triển khai: seed 25–26/07 đạt 12 closed, 10W/2L, PnL `+$0.739`,
+  AvgROE `+4.56%`, PF `2.43`; test 7 ngày 27/07–02/08 đạt 68 closed, 67W/1L,
+  PnL `+$5.234`, AvgROE `+7.64%`, 20/20 episode 15 phút dương nhưng chỉ có tín hiệu
+  trên 2/7 ngày.
+- Nhãn `LONG CORR REBOUND` chỉ được gắn khi Stage 3 hiện tại là `WATCH` và snapshot trước
+  entry khớp `LIQUID_KILL_ZONE · LONG · 15m · BTC_CORR_THEO · BTC_DOWN_WEAK ·
+  NGUOC_BTC · GATE_TEST_LIQUID_LONG_BTC_COUNTER · DAY_FLAT · RSI4_RESET`.
+- Nhãn không đọc kết quả của chính lệnh. Card thống kê theo range hiển thị closed/active,
+  W/L, WR, PnL đóng, PnL active theo socket, AvgROE và PF; badge nằm cạnh Stage 3 trên
+  paper table.
+- Không thay Stage 3 tier và không đưa nhãn này vào điều kiện Stage 4/4B. Lệnh `RISK`
+  luôn giữ `RISK` dù cùng market context.
+- JSON cũ không bị rewrite. Lệnh mới append field tùy chọn `liquidLongCorrRebound*`;
+  lịch sử cũ derive từ snapshot khi đọc, giữ nguyên top-level và tương thích reader cũ.
+- `OBSERVE ONLY`: không Binance, không gate/chặn, không đổi entry, direction, size/margin,
+  leverage, SL hoặc TP.
+
+## 2026-08-02 - Stage 3C: nội suy 2 LONG + 4 SHORT từ combo ổn định
+
+- Thêm version `LIQUID_STABLE_MECHANISM_V1_20260802` cho sáu nhãn
+  `LONG SOFT-CORR REBOUND`, `LONG DECOUPLED RESET`, `SHORT CORR FADE CORE`,
+  `SHORT FAILED BOUNCE`, `SHORT BEAR DRIVE` và `SHORT DECOUPLED HOT FADE`.
+- Rule chỉ đọc dữ liệu có trước entry: combo Liquid Kill Zone 15m, side, corr bucket,
+  BTC direction/score bucket, quan hệ với BTC, gate, day move từ BTC pct24h và RSI4h bucket.
+  Không dùng PnL/outcome của lệnh để gắn nhãn.
+- Hai cơ chế gộp nhiều cohort được giữ rõ điều kiện: `LONG DECOUPLED RESET` nhận
+  `DAY_FLAT/DAY_NEG + RSI4_RESET`; `SHORT FAILED BOUNCE` nhận corr theo hoặc corr yếu nhưng
+  bắt buộc `BTC_DOWN_WEAK + DAY_POS + RSI4_RESET + gate aligned`.
+- Card Stage 3C thống kê toàn range trước pagination và PnL active realtime theo socket;
+  nhãn xuất hiện cạnh Stage 3 trên cả Paper open/closed.
+- `SHORT BEAR DRIVE` giữ tier `TEST`, `SHORT DECOUPLED HOT FADE` giữ `WATCH`; các nhãn còn
+  lại là phân loại `GOOD` để quan sát, không phải gate hoặc quyền đánh thật.
+- Không ảnh hưởng Binance/entry/direction/size/margin/leverage/SL/TP và không thay Stage 3B.
+  JSON cũ không bị rewrite; lệnh mới append field tùy chọn `liquidStableMechanism*`, còn
+  lịch sử derive từ snapshot với `DERIVED_ENTRY_SNAPSHOT` để giữ tương thích reader cũ.
+
+## 2026-08-02 - Chỉ hiện Binance card khi AvgROE > 4%
+
+- Thêm policy UI dùng chung `BINANCE_CARD_AVG_ROE_VISIBILITY_V1_20260802`: card phải có
+  AvgROE đóng lớn hơn tuyệt đối `4.0%`; `4.0%`, thấp hơn hoặc no-data đều ẩn checkbox Binance.
+- Liquid Scan truyền AvgROE vào metadata của mọi card và xóa toggle khỏi DOM khi không đủ
+  ngưỡng. Short Edge và Recommended Signals nạp cùng guard nhưng không tự được thêm luồng
+  order/whitelist mới vì hiện chưa có checkbox Binance theo card trên hai trang này.
+- Whitelist Liquid nâng lên `LIQUID_LIVE_CARD_WHITELIST_V2_20260802`, bổ sung key
+  `stable-mechanism:` để các card Stage 3C đủ ngưỡng có thể opt-in đúng cohort.
+- Rule chỉ quyết định hiển thị, không tự sửa danh sách key đang bật. Không đổi snapshot,
+  paper JSON, entry, size, leverage, SL/TP hoặc order master/dry-run hiện tại.
+
+## 2026-08-02 - Filter Paper theo Stage 3C Stable Mechanism
+
+- Thêm UI version `LIQUID_STABLE_MECHANISM_FILTER_V1_20260802` với sáu lựa chọn Stage 3C
+  và `Tất cả`; dữ liệu đối chiếu là `liquidStableMechanismMatched/code` được gán từ snapshot
+  trước entry theo `LIQUID_STABLE_MECHANISM_V1_20260802`.
+- Filter chỉ thu hẹp các hàng Paper open/closed trong date range hiện tại. Các card Stage 3C
+  vẫn thống kê toàn range trước pagination; PnL active vẫn chạy theo mark socket như trước.
+- Badge Stage 3C vốn đã có trong ô Stage 3 được giữ cho cả open/closed, không tạo nhãn lặp.
+- `OBSERVE ONLY`: không ảnh hưởng Binance/entry/direction/size/margin/leverage/SL/TP và không
+  sửa JSON. Lịch sử cũ tiếp tục derive field tùy chọn lúc đọc, không bulk rewrite.
+
+## 2026-08-02 - Stage 3B LONG Corr Rebound Binance opt-in
+
+- Nâng whitelist lên `LIQUID_LIVE_CARD_WHITELIST_V3_20260802` và thêm key
+  `long-corr-rebound:GOOD` cho card Stage 3B.
+- Card chỉ hiện checkbox khi AvgROE đóng `> 4.0%`; mặc định không được chọn. Khi người dùng bật,
+  chỉ tín hiệu Liquid Scan auto mới có snapshot trước entry khớp Stage 3B mới được xét tiếp.
+- Điều kiện phân loại Stage 3B và paper test `$10` không đổi. Luồng Binance vẫn bắt buộc qua master
+  order, dry-run, thời gian cấm, TP/SL, Market Health freshness, dedupe và kiểm tra position/order.
+- Không tự bật, không hồi tố, không rewrite JSON, không thay entry/direction/paper size/SL/TP.
+  Prefix mới chỉ mở quyền opt-in rõ ràng; các key whitelist cũ vẫn tương thích.
+
+## 2026-08-02 - Whitelist Binance thống nhất Liquid / EMA / Short Edge / Recommended
+
+- Nâng version lên `LIVE_CARD_WHITELIST_V4_20260802`; mở namespace `ema:`, `edge:` và
+  `recommended:` bên cạnh toàn bộ key Liquid Scan hiện hữu. UI dùng controller chung để
+  đồng bộ nhiều card cùng key và lưu qua whitelist atomic hiện tại.
+- Điều kiện hiển thị giữ strict `closed AvgROE > 4.0%`; đúng 4%, no-data hoặc thấp hơn đều
+  không render checkbox. Checkbox mặc định OFF và thao tác bật/tắt yêu cầu token Orders.
+- Key của lệnh mới chỉ nội suy từ snapshot trước entry: combo/tier/label/cycle của nguồn,
+  không dùng PnL/outcome tương lai của chính lệnh. Thống kê card, date range, pagination và
+  mark socket active PnL không bị thay đổi.
+- Khi đã opt-in, lệnh auto mới khớp OR ít nhất một key mới được xét Binance. Master order,
+  dry-run, giờ cấm, TP/SL, Market Health freshness, dedupe, position/open-order và max position
+  vẫn là khóa bắt buộc; không có card nào được tự bật.
+- Có ảnh hưởng Binance thật theo cấu hình margin/leverage whitelist khi toàn bộ điều kiện đạt;
+  không đổi thuật toán sinh entry, side, paper size hoặc giá SL/TP. Recommended clone mới,
+  EMA và Short Edge ghi audit `liveCard*` tùy chọn trước khi persist.
+- Không bulk rewrite hoặc chuyển schema JSON. Whitelist vẫn dùng `enabledKeys`, giới hạn 2.000;
+  JSON cũ thiếu field audit được hiểu là chưa xét và mọi reader cũ vẫn có thể bỏ qua field mới.
+
+## 2026-08-02 - Whitelist hai bước: ứng viên tại card, lệnh thật tại Orders
+
+- Nâng version `LIVE_CARD_WHITELIST_V5_20260802`. Checkbox đủ closed `AvgROE > 4%` trên bốn trang
+  tín hiệu nay chỉ ghi whitelist ứng viên `data/liquid-live-card-whitelist.json`; label UI đổi thành
+  `WHITELIST` để không bị hiểu là đã bật Binance.
+- Thêm khu vực `Card Whitelist · Quyền lệnh thật` trên Orders. Checkbox `LỆNH THẬT` lưu riêng, atomic
+  vào `data/live-card-real-enabled.json`, được bảo vệ bằng Orders token. File mặc định rỗng và không
+  kế thừa các key V4, nên triển khai không tự mở lệnh thật.
+- Phân loại key vẫn dùng snapshot trước entry của Liquid/EMA/Short Edge/Recommended; thống kê và PnL
+  realtime không đổi. Chỉ tập key thực mới được luồng đặt lệnh đọc; gỡ ứng viên sẽ prune quyền thật.
+- Binance chỉ có thể bị ảnh hưởng sau xác nhận bước hai và vẫn qua Order Enabled, Dry Run, giờ cấm,
+  TP/SL, Market Health freshness, dedupe, position/open order và max positions. Không đổi entry, side,
+  paper size, margin/leverage rule, SL hoặc TP; không hồi tố.
+- Không rewrite paper JSON hay phá schema cũ. V4 `enabledKeys` được giữ làm ứng viên, file real-enabled
+  là cấu hình additive. Frontend/API chuyển sang parse phản hồi an toàn để lỗi HTML proxy không còn
+  hiện dưới dạng `Unexpected token '<'`.
+
+## 2026-08-02 - Live card MARKET lifecycle theo entry và bot close
+
+- Version chạy: `LIVE_CARD_BINANCE_LIFECYCLE_V1_20260802`.
+- Snapshot trước entry: key whitelist hai bước, paper/source id, source page và source gốc, symbol/side,
+  margin/leverage cấu hình, TP/SL tín hiệu. Phân loại nguồn lưu riêng `liquid`, `ema`, `pump`, `short-edge`,
+  `recommended`; Recommended còn giữ `originSourceType` để biết clone đến từ nguồn nào.
+- Entry thật chỉ phát khi paper vào `OPEN`: paper `PENDING` chờ socket chạm entry rồi mới Binance MARKET;
+  source đã OPEN gửi MARKET tại event mở. Không dùng LIMIT cho live-card lifecycle.
+- Socket `ORDER_TRADE_UPDATE` đối chiếu cả `orderId/clientOrderId`; partial fill chỉ log, full fill mới gọi đặt
+  TP/SL; fallback REST chỉ chạy khi xác nhận đủ vị thế nếu socket bỏ lỡ fill. Khi bot đóng paper, lifecycle gửi MARKET reduce-only/đúng hedge side với tối đa lượng bot đã fill,
+  không đóng phần tăng thêm không thuộc bot.
+- Thống kê: state atomic `data/live-card-binance-state.json`, event log append-only
+  `data/live-card-binance-events.ndjson`, card thống kê trên Orders và API token-protected. Các event gồm
+  requested/submitted/partial/full/protection/bot-close/position-closed/error để phân tích hiệu quả theo nguồn.
+- Ảnh hưởng Binance/entry/size/SL/TP: có ảnh hưởng thật chỉ cho card đã bật `LỆNH THẬT`; entry đổi sang MARKET
+  tại đúng paper fill, TP/SL giữ nguyên giá nhưng đặt sau full fill, bot close dùng MARKET. Không đổi side,
+  paper size, rule nhãn/tier/stat, margin/leverage cấu hình, master/dry-run/dedupe/giờ cấm/max position.
+- JSON cũ: không bulk rewrite hay đổi schema paper. Field lifecycle mới đều optional; lịch sử thiếu field vẫn
+  đọc bình thường và không được auto-close. State/event lifecycle là file mới độc lập, nên lỗi lifecycle không
+  phá cấu trúc JSON tín hiệu hiện có.
+- Bổ sung toggle hiển thị rõ trên card `LIQUID COMBO × CYCLE · ỔN ĐỊNH QUA NGÀY` khi closed AvgROE
+  `> 4%`; key dùng snapshot combo/cycle trước entry. Toggle chỉ ghi whitelist ứng viên, không tự mở
+  Binance và không thay thống kê, entry, size, SL/TP hoặc paper JSON.
+
+## 2026-08-02 - Giảm tải Pump persistence và retry Binance
+
+- Version `PUMP_PAPER_WAL_V1_20260802`: giữ nguyên snapshot JSON và toàn bộ lịch sử thống kê, nhưng mutation
+  realtime được append vào `pump-paper-trades.wal.ndjson`; startup replay theo `trade.id`. Không còn ghi lại
+  snapshot Pump hàng trăm MB mỗi khi fill/đóng/trailing thay đổi.
+- Version `BINANCE_AUTH_CIRCUIT_V1_20260802`: signed REST bị tạm ngắt 5 phút sau lỗi `-2015`; public REST/socket
+  không bị chặn. Mục tiêu là tránh queue retry làm Orders API timeout.
+- Không thay dữ liệu dùng trước entry hoặc cách phân loại nhãn/tier; thống kê vẫn chạy trên snapshot + WAL đầy đủ.
+  Không thay Binance whitelist, entry, side, size, margin/leverage, SL/TP hay bot-close. JSON cũ không rewrite;
+  WAL là lớp additive và dòng cuối không hoàn chỉnh được bỏ qua an toàn.
+
+## 2026-08-02 - Discord cho fill lệnh thật
+
+- Version `REAL_ORDER_FILL_DISCORD_V1_20260802`: cấu hình webhook riêng bằng `ORDER_FILL_WEBHOOK_URL`.
+- Chỉ gửi một lần khi user-data socket xác nhận `ORDER_TRADE_UPDATE/TRADE` đã `FILLED`, mở hoặc tăng vị thế
+  thật và không phải reduce-only close. Partial fill không gửi; lỗi Discord không ảnh hưởng order hay TP/SL.
+- Không đổi tín hiệu, nhãn/tier, thống kê, entry/side/size/margin/leverage/SL/TP, whitelist hoặc JSON.
+
+## 2026-08-02 - Binance background ưu tiên credential `.env`
+
+- Version `BINANCE_BACKGROUND_CREDENTIAL_PRIORITY_V1_20260802`.
+- Orders request có token tiếp tục dùng credential của phiên đăng nhập. Socket, auto-order, position monitor và
+  TP/SL background không token luôn ưu tiên credential cố định trong `.env`; session chỉ là fallback khi `.env` thiếu.
+- Ngăn localStorage/phiên Orders cũ gây `-2015` cho toàn bộ background sau khi tự đăng nhập lại.
+- Không thay tín hiệu, nhãn/tier, thống kê, whitelist, side, entry, size/margin, leverage, SL/TP hoặc JSON.
+
+## 2026-08-03 - Khóa Binance PPKS và tự hồi phục REST queue
+
+- Version `PPKS_BINANCE_HARD_OFF_V1_20260803`: `post-pump-kill-short` chỉ còn scan/paper/Discord tín hiệu/
+  thống kê; Binance hard OFF bất kể env legacy. Không thay setup, score, side, paper entry, size, SL/TP.
+- Version `BINANCE_REST_RECOVERY_V2_20260803`: GET giống nhau được coalesce, request queued quá 45 giây bị
+  loại, task active treo quá 30 giây tự nhả slot; read request drop nhanh khi congested còn mutation lệnh
+  thật vẫn ưu tiên cao. Signed timestamp tạo lúc dequeue thay vì lúc enqueue.
+- Bổ sung single-flight cho balance, daily PnL, symbols, open orders; BTC monitor và position REST sync không
+  overlap. `activeTop` cho biết source/endpoint/age của task active để chẩn đoán queue.
+- Binance REST alert chỉ dùng `BINANCE_REST_ALERT_WEBHOOK_URL`; nếu URL này trùng webhook PPKS thì alert bị
+  bỏ qua, không rơi vào kênh chiến lược PPKS.
+- Không đổi nhãn/tier/gate/stat của các trang khác, không dùng dữ liệu sau entry, không rewrite hay đổi schema
+  JSON cũ. Ảnh hưởng Binance chỉ là loại bỏ hoàn toàn PPKS và tăng an toàn/khả năng hồi phục REST chung.
+
+## 2026-08-03 - Khóa toàn bộ auto entry ngoài card checked tại Orders
+
+- Version `LIVE_CARD_ONLY_V1_20260803`: matcher dùng whitelist ứng viên + danh sách `LỆNH THẬT` trước entry rồi
+  cấp authorization nội bộ cho đúng request auto. Field/source giả không thể đi vòng khóa trung tâm.
+- AutoTrader, Pump Auto, AutoLiq/AutoProbe, EMA real cũ, Shakeout real, dump-risk và Avg-down đều bị tắt; paper,
+  snapshot, nhãn/tier và thống kê vẫn chạy. Manual Orders cùng TP/SL/protection/bot-close cho vị thế đã mở được giữ.
+- Không đổi entry MARKET/size/leverage/SL/TP của live-card, không rewrite JSON và không thêm field bắt buộc; env cũ
+  thiếu `LIVE_CARD_WHITELIST_ONLY_AUTO_BINANCE` mặc định vẫn an toàn ở chế độ chỉ card checked.
+
+## 2026-08-03 - Báo Discord khi live-card Binance thất bại
+
+- Version `LIVE_CARD_BINANCE_FAIL_DISCORD_V1_20260803`: chỉ card đã bật hai bước và khớp tín hiệu auto mới được
+  báo lỗi; card quan sát/không khớp không gửi.
+- Gửi vào `LIVE_CARD_ORDER_WEBHOOK_URL`, fallback `ORDER_FILL_WEBHOOK_URL`, khi preflight signed REST lỗi, submit
+  MARKET lỗi hoặc kết quả không `submitted`. Embed có nguồn/card/symbol/side/lỗi và trạng thái REST gate, không có
+  credential; chống trùng 30 phút.
+- Lỗi Discord không chặn hoặc retry order. Không đổi tín hiệu, thống kê, entry/side/size/margin/leverage/SL/TP,
+  whitelist, bot-close hay JSON cũ; audit lỗi mới chỉ giữ lại matched keys/version trong các field optional sẵn có.
+
+## 2026-08-03 - Signal TP/SL bất biến cho live-card
+
+- Version `LIVE_CARD_SIGNAL_PROTECTION_V1_20260803`.
+- Snapshot trước entry: source/page, card checked, symbol/side và TP/SL nguyên bản của tín hiệu. Phân loại áp dụng
+  khi source là `live-card-whitelist-*`; không dùng dữ liệu tương lai và không tạo nhãn/tier/stat mới.
+- Full fill đặt TP đúng giá signal bằng `CONTRACT_PRICE`, SL đúng giá signal bằng `MARK_PRICE`. AutoTP chỉ khôi phục
+  TP signal; không fallback TP cố định. Hai đường trailing SL chung và negative-TP guard không quản lý vị thế này;
+  nhánh phục hồi max-stop cũng dùng lại `signalSl` thay vì SL ROE. `REST_SYNC` sau restart dựng protection plan từ
+  `sl-tracking` rồi khôi phục đúng cặp giá signal, không gọi fallback guard mặc định.
+- Có ảnh hưởng Binance exit thật cho đúng vị thế live-card; không đổi entry MARKET, side, size/margin, leverage,
+  gate, dedupe, bot-close hay thống kê paper. Lệnh manual/nguồn khác giữ nguyên cơ chế cũ.
+- JSON tương thích ngược: field policy/working-type đều optional, không bulk rewrite. Record cũ có
+  `signalSource=live-card-whitelist-*` vẫn tự nhận diện; record cũ khác nguồn giữ default `MARK_PRICE`.
+
+## 2026-08-03 - Cô lập và tự hồi phục lỗi Binance `-2015`
+
+- Version `BINANCE_AUTH_CIRCUIT_SCOPED_RECOVERY_V2_20260803`: circuit được tách theo loại auth; signed REST dùng
+  fingerprint cặp API key+secret, listen-key socket dùng fingerprint API key riêng. Credential/session lỗi chỉ loại
+  queue của chính nó, không khóa credential `.env`, session khác hoặc vô tình được listen-key success xóa lỗi.
+- Trong block, mỗi credential thử hồi phục tối đa một lần mỗi 15 giây; request signed thành công đóng circuit sớm.
+  Log, runtime snapshot và alert Discord live-card ghi fingerprint rút gọn + source/method/path/probe ETA, tuyệt
+  đối không ghi key/secret.
+- Không đổi dữ liệu trước entry, nhãn/tier/gate/stat, side, MARKET entry, size/margin, leverage, TP/SL, bot-close,
+  whitelist hay dedupe. Tín hiệu đã fail không tự replay trễ; thay đổi chỉ giúp các request mới hồi phục sớm.
+- Không rewrite hoặc thay schema JSON cũ. `authBlocks` là field additive của snapshot gate runtime; hai field tổng
+  hợp auth circuit cũ vẫn giữ để frontend/monitor cũ tiếp tục hoạt động.
+
+## 2026-08-03 - Orders login có Binance preflight
+
+- Version `ORDERS_AUTH_PREFLIGHT_V1_20260803`: `/api/auth` gọi Futures balance read-only trước khi cấp session token;
+  credential bị `-2015` không còn được nhận là đăng nhập thành công.
+- Login preflight dùng gate tách biệt khỏi auto-order/position protection và cache fingerprint bị từ chối 1 giờ;
+  tab cũ retry không thể mở circuit của credential `.env` hoặc tạo thêm signed REST spam.
+- Auto re-auth thất bại xóa token + credential cũ trong localStorage và hiện lại form đăng nhập, ngăn tab Orders
+  polling vô hạn bằng key/secret cũ.
+- Không đặt lệnh, không đổi tín hiệu/nhãn/tier/stat, entry/side/size/leverage/TP/SL/bot-close/whitelist và không
+  thay hoặc rewrite JSON cũ.
+
+## 2026-08-03 - Live-card dùng margin 3 USDT
+
+- Version `LIVE_CARD_REAL_MARGIN_3_USDT_V1_20260803`.
+- Sau khi tín hiệu khớp card đã bật `LỆNH THẬT`, lệnh mới dùng `LIVE_CARD_REAL_MARGIN_USDT=3`; leverage giữ 10x,
+  tương ứng notional mục tiêu khoảng 30 USDT trước khi làm tròn quantity theo symbol.
+- Không đổi dữ liệu trước entry, phân loại/nhãn/tier/gate, thống kê paper, side, MARKET entry, TP/SL tín hiệu,
+  whitelist, dedupe, max positions hoặc bot-close. Vị thế đang mở không bị resize.
+- Không rewrite JSON và không thêm field bắt buộc; lifecycle mới dùng field `marginUsdt` hiện hữu, record cũ giữ
+  nguyên dữ liệu lịch sử.
+
+## 2026-08-04 - Nhãn LONG SPRING cho Short Edge
+
+- Versions `edge-short-long-spring-observe-v1-20260804` và
+  `edge-short-long-spring-whitelist-v1-20260804`; nhãn dùng duy nhất snapshot trước entry: setup/side,
+  entry-TP-SL, nến alt/BTC đã đóng và market point LONG/SHORT.
+- `LONG SPRING CONFIRMED` = `LONG + SC_SPRING + ALT BULLISH + BTC BULLISH + SHORT-LONG gap >= 15`.
+  `LONG SPRING PRIME` là tập con có thêm RR `abs(tp-entry)/abs(entry-sl) < 0.7`.
+- Short Edge hiển thị hai card thống kê bao hàm và badge trên Paper; thống kê gồm lệnh/WR/PF/PnL đóng/PnL active/
+  tổng PnL/AvgROE/ngày dương theo Bangkok. PRIME vẫn nằm trong số liệu CONFIRMED để giữ đúng hai cohort backtest.
+- Nhãn vẫn `OBSERVE ONLY`; card có checkbox WHITELIST khi AvgROE đóng `> 4%`. Đây chỉ là bước ứng viên. Chỉ khi
+  bật thêm `LỆNH THẬT` tại Orders, tín hiệu mới khớp key `edge:long-spring:CONFIRMED|PRIME` mới được đi vào lifecycle
+  Binance hiện hữu; toàn bộ master/dry-run/health/dedupe/max-position/TP-SL vẫn áp dụng và không có hồi tố.
+- Không đổi entry/size/margin/leverage/SL/TP/gate. Lệnh mới ghi field optional `edgeShortLongSpring*`; JSON cũ được
+  derive khi đọc, không rewrite hoặc phá schema. Whitelist được lưu riêng, không chèn vào paper JSON.
+
+## 2026-08-04 - Sửa combo Short Edge không khớp whitelist khi entry còn OPEN
+
+- Version `LIVE_CARD_COMBO_ENTRY_MATCH_V1_20260804`. Matcher tạo `edge:combo:*` trực tiếp từ combo snapshot trước
+  entry; không còn dùng bucket thống kê yêu cầu `closed > 0` để tạo authorization key cho lệnh mới.
+- Đây là sửa lỗi khớp key, không đổi cách sinh combo, nhãn/tier/gate hoặc thống kê. Card UI vẫn dùng toàn bộ lịch
+  sử đóng để tính PnL/WR/PF/AvgROE và vẫn chỉ hiện WHITELIST khi qua ngưỡng chung.
+- Chỉ tín hiệu Short Edge mới sau triển khai mới được hưởng sửa lỗi. Tín hiệu cũ `NO_CARD_MATCH` không replay;
+  checkbox không tự bật. Binance vẫn yêu cầu đồng thời whitelist ứng viên + `LỆNH THẬT` Orders và mọi khóa
+  master/dry-run/giờ cấm/health/dedupe/position/open-order/max-position/TP-SL.
+- Có thể ảnh hưởng Binance entry thật vì combo được chọn nay khớp đúng tại thời điểm OPEN, nhưng không đổi side,
+  MARKET entry, margin/size, leverage, TP/SL tín hiệu hoặc bot-close. JSON cũ không rewrite; chỉ audit mới có field
+  optional `liveCardComboEntryMatchVersion`, reader cũ có thể bỏ qua an toàn.
+
+## 2026-08-04 - Orders thống kê lifecycle theo whitelist + Binance closed PnL
+
+- Versions `LIVE_CARD_BINANCE_LIFECYCLE_V2_20260804` và
+  `LIVE_CARD_WHITELIST_PNL_STATS_V1_20260804`.
+- Cohort dùng đúng `matchedKeys` snapshot trước entry; không dùng source gộp hoặc PnL tương lai để phân loại.
+  Một lệnh khớp nhiều card được ghi ở từng card, vì vậy các hàng không phải tổng loại trừ lẫn nhau.
+- PnL đóng lấy từ Binance income theo symbol và cửa sổ lifecycle:
+  `REALIZED_PNL + COMMISSION + FUNDING_FEE`. Chỉ khi có income `REALIZED_PNL` mới coi PnL đã đối soát; thiếu dữ
+  liệu hiển thị rõ, không lấy PnL paper thay thế. Signed read-only income được cache 60 giây và nhường REST gate
+  khi đang congestion.
+- Thay đổi chỉ là hậu kiểm/stat trên Orders, không tác động Binance entry/side/size/margin/leverage/SL/TP,
+  bot-close, gate, whitelist hay dedupe. JSON cũ tương thích ngược bằng các field lifecycle optional
+  `closedPnl*`; không rewrite paper/snapshot/whitelist.
+
+## 2026-08-04 - Discord fill hiển thị whitelist/combo thật
+
+- Version `BINANCE_FILL_WHITELIST_CONTEXT_V1_20260804`.
+- Mỗi Discord full-fill mới hiển thị riêng exact `matchedKeys`, combo snapshot trước entry, execution page,
+  lifecycle ID và raw detector ID. Chuỗi như `emasq-5m-*` được ghi đúng là raw signal ID, không còn bị trình bày
+  như tên card whitelist.
+- Lifecycle mới append `signalCombo` optional; reader cũ vẫn dùng được và không có bulk rewrite JSON.
+- Chỉ đổi audit/khả năng kiểm tra lệnh; không đổi phân loại, whitelist matcher, Binance entry/side/size/margin/
+  leverage/TP/SL/bot-close, gate, dedupe hoặc thống kê.
+
+## 2026-08-04 - Open Positions realtime theo Binance socket
+
+- Version `ORDERS_POSITION_PNL_STREAM_V1_20260804`: Orders lấy position amount/entry từ Binance user-data socket,
+  ghép mark price mỗi giây và stream full-precision mark/unrealized PnL/ROE xuống table; REST chỉ là snapshot và
+  fallback. DCA/fill/close không còn phải chờ cache REST 30-60 giây mới phản ánh lên màn hình.
+- Công thức hiển thị PnL Futures là `(mark-entry)*signed positionAmt`; ROE display dùng position initial margin.
+  Giá đã format chỉ dùng để render, không được đưa ngược vào phép tính.
+- `managementRoe` của runtime được giữ riêng, nên không đổi avg-down/trailing/timeout hoặc bất kỳ quyết định
+  Binance nào. Không đổi tín hiệu/nhãn/tier/gate/stat, whitelist, entry/side/size/leverage/TP/SL/bot-close và
+  không rewrite hay mở rộng schema JSON cũ.
+## 2026-08-04 - Tăng trần vị thế whitelist lên 30
+
+- Version `LIVE_CARD_MAX_OPEN_POSITIONS_V2_20260804` nâng `LIVE_CARD_REAL_MAX_POSITIONS` từ fallback `10` lên `30`.
+- Chỉ áp dụng cho entry Binance mới đã qua hai bước card whitelist + bật `LỆNH THẬT`; dữ liệu kiểm tra là danh sách vị thế mở Binance tại preflight.
+- Không mở lại các nguồn auto ngoài whitelist và không đổi margin, leverage, entry MARKET, dedupe, TP/SL hay cách thống kê PnL.
+- Không thay đổi cấu trúc hoặc nội dung JSON lịch sử.
+
+## 2026-08-05 - Edge paper journal-first, Binance không vượt mất lịch sử bot
+
+- Version `EDGE_PAPER_ENTRY_JOURNAL_V1_2026_08_05` sửa race đọc-sửa-ghi khi nhiều Edge signal OPEN/fill đồng
+  thời. Bot fsync `PREPARED` theo `paperTradeId` trước Binance, sau phản hồi mới upsert row trên store mới nhất và
+  fsync `COMMITTED`; create/fill/close/delete cùng đi qua transaction queue.
+- Khi restart, journal chỉ khôi phục paper row bị thiếu hoặc patch OPEN chưa commit; không replay lệnh Binance.
+  Tombstone `DELETED` ngăn phục hồi row người dùng đã xóa. Backfill candle Edge cũng merge field theo ID thay vì
+  ghi đè full snapshot cũ.
+- Không đổi dữ liệu/snapshot trước entry, điều kiện nhãn/tier/card, cách thống kê, whitelist/gate, MARKET entry,
+  side, margin/size, leverage, dedupe, max positions, TP, SL hoặc bot-close. Thay đổi có ảnh hưởng đường thực thi
+  Binance ở mức durability/order sequencing, không mở thêm tín hiệu và không cấp quyền Binance mới.
+- `edge-paper-trades.json` giữ nguyên schema `{ trades: [] }`; journal NDJSON là file phụ additive, chịu được dòng
+  cuối dở dang và version lạ. Lịch sử JSON cũ không bị rewrite hay yêu cầu migration.
+
+## 2026-08-08 - Liquid LONG BTC Expansion Candidate
+
+- Version `LIQUID_LONG_BTC_EXPANSION_V1_20260808`. Snapshot trước entry dùng side, BTC phase, Stage 3, target kind,
+  nến BTC đã đóng và Market Point; không dùng PnL/ROE/outcome tương lai.
+- Nhãn = `LONG + BTC_UP_STRONG + Stage 3 RISK + target != MAIN_ZONE`. Ba badge `BTC CANDLE CONFIRMED`,
+  `POINT ALIGNED`, `FAR RUNNER` là tập con giải thích context, không phải tier/gate riêng.
+- UI thống kê closed/open/pending, net PnL, WR, AvgROE, PF và snapshot/backfill theo date range.
+- Nhãn vẫn `OBSERVE ONLY`; từ whitelist V6 card có key/checkbox ứng viên khi closed AvgROE `> 4%`. Mặc định tắt và
+  chỉ có thể ảnh hưởng entry Binance sau khi cùng key được bật thêm `LỆNH THẬT` tại Orders.
+- Lệnh mới lưu field optional `liquidLongBtcExpansion*`; JSON cũ được derive khi đọc, không rewrite, thiếu dữ liệu
+  thì `UNRATED`.
+
+## 2026-08-08 - Liquid LONG Expansion Selected / Prime Test
+
+- Nâng version lên `LIQUID_LONG_BTC_EXPANSION_V2_20260808`. Snapshot trước entry bổ sung `signalPoint` và
+  `entryPlan.killZoneCluster.oneSidedPct`; không dùng PnL/ROE/outcome/exit tương lai.
+- `EXPANSION SELECTED` = Candidate + `70 <= signalPoint < 90`; `EXPANSION PRIME TEST` = Candidate +
+  `70 <= signalPoint < 80`. `ONE-SIDED 90+` chỉ là badge xác nhận, không phải gate.
+- Backtest 26/07–08/08 tại lúc triển khai: Selected `72` lệnh, WR `68.1%`, PF `1.95`; Prime Test `19` lệnh,
+  WR `73.7%`, PF `3.21`. Episode 15 phút lần lượt là `53`/WR `67.9%`/PF `2.30` và
+  `18`/WR `72.2%`/PF `3.56`. Prime giữ trạng thái TEST vì
+  cỡ mẫu nhỏ và chưa có cohort ở cửa sổ 14 ngày liền trước để kiểm tra out-of-sample.
+- UI thêm card riêng và badge cao nhất trên dòng trade. Tất cả vẫn `OBSERVE ONLY`; whitelist V6 bổ sung key/checkbox
+  ứng viên khi closed AvgROE `> 4%`, mặc định tắt. Chỉ cơ chế hai bước với `LỆNH THẬT` Orders mới có thể cấp Binance.
+- JSON V1/cũ không bị rewrite: reader derive V2 từ snapshot sẵn có và chỉ thêm field optional trong response; thiếu
+  `signalPoint` thì vẫn có thể là Candidate nhưng không được gán Selected/Prime.
+
+## 2026-08-08 - Liquid Combo BTC-Breadth LONG/SHORT
+
+- Versions `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và `LIQUID_COMBO_CYCLE_STATS_V4_20260808`.
+- Nhãn chỉ dùng dữ liệu causal trước entry: exact combo-cycle có tối thiểu 12 closed/6 episode/3 ngày và đạt
+  `STABLE_GOOD`; coin candle `DOJI`; `|sweepDistancePct| < 1%`; Market Direction snapshot có
+  `sampleKey <= entryAt`; BTC return 1h cùng chiều side; breadth cùng chiều dẫn ít nhất 2/3 khung 1h/3h/6h.
+- Tách side rõ ràng: SHORT đồng thuận nhận `LIQ COMBO SHORT · BTC-BREADTH PRIME TEST`; LONG đồng thuận nhận
+  `LIQ COMBO LONG · BTC-BREADTH WATCH / LOW SAMPLE`. PRIME TEST và WATCH đều chỉ là nhãn quan sát, không phải gate.
+- Combo-cycle V4 nhóm ngày theo `Asia/Bangkok` thay cho UTC; điều kiện stable/recent và episode 15 phút giữ nguyên.
+- Parity runtime 26/07–08/08: SHORT `15` lệnh, WR `93.3%`, PF `3.31`, AvgROE `+3.20%`, `6/7` ngày dương;
+  holdout từ 03/08 là `9` lệnh, WR `88.9%`, PF `1.33`. LONG `9` lệnh, WR `100%` nhưng toàn bộ nằm trong một ngày,
+  nên chưa được nâng khỏi WATCH.
+- UI thêm Stage 3E với hai card LONG/SHORT và badge trên trade row; thống kê closed/open/pending, net PnL, WR,
+  AvgROE, PF, snapshot/backfill. Whitelist V6 bổ sung key riêng theo side/tier và checkbox khi closed AvgROE `> 4%`;
+  mặc định tắt, Binance chỉ được xét sau khi cùng key bật thêm `LỆNH THẬT` tại Orders.
+- Lệnh mới lưu `marketDirectionAtSignal` cùng field optional `liquidComboBtcBreadth*`. JSON cũ không rewrite;
+  reader backfill từ signal log theo `tradeId`, chỉ nhận sample causal và trả `UNRATED` khi thiếu dữ liệu.
+## 2026-08-08 - Hien co dinh Stage 3E theo tung side
+
+- UI version `LIQUID_COMBO_BTC_BREADTH_UI_V1_1_20260808` giu hai card
+  `LIQ COMBO LONG · BTC-BREADTH WATCH` va `LIQ COMBO SHORT · BTC-BREADTH PRIME TEST` luon hien.
+- Khoang ngay khong co mau se hien `NO DATA / 0 lenh`; cach lay du lieu truoc entry, dieu kien phan loai va cach
+  tinh WR/PF/AvgROE khong doi. Khong tao trade ao va khong anh huong Binance/entry/size/SL/TP.
+- JSON cu van duoc doc va backfill causal theo co che V1; nhan van la `OBSERVE ONLY`, khong phai gate giao dich.
+
+## 2026-08-08 - Whitelist V6 cho cac nhan thong ke moi
+
+- `LIVE_CARD_WHITELIST_V6_20260808` noi checkbox cho toan bo card Stage 3D BTC Expansion va Stage 3E Combo BTC Breadth.
+- UI key va runtime matcher dung chung `long-btc-expansion:<CODE>` va
+  `combo-btc-breadth:<SIDE>:<TIER>`; checkbox mac dinh tat, chi hien khi closed AvgROE `> 4%`.
+- Khong doi snapshot truoc entry, dieu kien nhan hay cong thuc thong ke. JSON paper cu khong rewrite; prefix moi additive
+  va whitelist key cu giu nguyen.
+- Nhan van `OBSERVE ONLY`; chi khi bat them dung key `LENH THAT` tai Orders va moi preflight dat thi Binance moi co
+  the mo entry. Khong doi size/leverage/SL/TP.
+## 2026-08-08 - Orders: history lệnh thật và hiệu quả từng whitelist key
+
+- Nâng stats lên `LIVE_CARD_WHITELIST_PNL_STATS_V2_20260808`; lifecycle schema vẫn V2.
+- API trả thêm overview unique lệnh bot đã fill và mỗi whitelist key có W/L, WR, PF, Avg NET cùng NET Binance sau
+  realized PnL, commission và funding. Exact `matchedKeys` được chụp trước entry, không relabel bằng config hiện tại.
+- Orders thêm bảng history tối đa 500 lệnh đã fill với giờ Bangkok, symbol/side, nhãn whitelist, trạng thái, entry,
+  margin/leverage, TP/SL, NET PnL và order ID. Một lệnh khớp nhiều key không được cộng chéo giữa các hàng thống kê.
+- Chỉ là audit/read-only: không đổi signal, whitelist, `LỆNH THẬT`, Binance entry, size, leverage, SL, TP hay bot-close.
+  JSON/NDJSON cũ không rewrite; thiếu closed income được giữ ở nhóm PnL missing.
+
+## 2026-08-08 - Báo Discord khi Binance chặn API key/IP
+
+- Thêm `BINANCE_AUTH_DISCORD_ALERT_V1_20260808`: monitor đọc signed REST auth circuit và phát
+  `[BINANCE AUTH BLOCKED]` một lần theo `scope + openedAt` khi Binance trả `-2015`.
+- Cảnh báo dùng kênh lệnh thật/tín hiệu đã có: `LIVE_CARD_ORDER_WEBHOOK_URL` -> `ORDER_FILL_WEBHOOK_URL` ->
+  `BINANCE_REST_ALERT_WEBHOOK_URL`; kèm source, endpoint, lỗi Binance và ETA probe. Probe lỗi tiếp không gây spam.
+- Không thay đổi dữ liệu/điều kiện nhãn trước entry, cách thống kê, whitelist, gate giao dịch, Binance entry, size,
+  leverage, SL hoặc TP. Chỉ append `openedAt` vào snapshot in-memory; không rewrite JSON cũ.
+
+## 2026-08-08 - Orders V3: đối chiếu lệnh thật với paper gốc theo nhãn
+
+- Nâng `LIVE_CARD_WHITELIST_PNL_STATS_V3_20260808`. Mỗi lifecycle Binance đã fill được exact-map bằng
+  `paperTradeId + originSourceType`, rồi kiểm tra symbol/side với paper gốc Liquid hoặc Short Edge.
+- Mỗi key whitelist có card Binance/Paper cùng cohort: W/L, WR, PF, AvgROE, PnL, số mapped/missing và delta; history
+  thêm status/outcome/PnL/ROE paper. Không ghép gần đúng record thiếu ID; snapshot hiện tại map `164/204`, thiếu `40`.
+- Không tạo label mới. Card dùng key hiện hữu và có checkbox `LỆNH THẬT` khi key còn là ứng viên; historical key không
+  tự có quyền. Đây là audit read-only, không đổi entry, size, leverage, SL/TP, bot-close hay JSON cũ; API chỉ append
+  field derive `paperOriginal` và stats so sánh.
+
+## 2026-08-09 - Giảm độ trễ live-card entry
+
+- Thêm `LIVE_CARD_ENTRY_FAST_PATH_V1_20260809`. Nhãn/tier và toàn bộ điều kiện pre-entry giữ nguyên; thay đổi chỉ tối
+  ưu đường Binance sau khi exact whitelist + `LỆNH THẬT` đã đạt.
+- Preflight positions/open-orders dùng priority 1 và namespace dedupe riêng; open-orders chỉ query symbol (weight 1
+  thay cho toàn account weight 40). `placeOrder` tái sử dụng positions cho max-position, và skip `setLeverage` khi
+  leverage hiện tại đã đúng. Các mutation Binance vẫn priority 0, concurrency/rate limit chung không đổi.
+- Path phổ biến giảm request weight khoảng `53 -> 8`. Lifecycle mới ghi timestamp preflight/order cùng cờ positions
+  reused/leverage skipped để đo latency thực tế.
+- Có ảnh hưởng thời điểm submit theo hướng nhanh hơn nhưng không đổi entry permission, MARKET type, margin/notional,
+  leverage mục tiêu, quantity rounding, TP, SL hay bot-close. JSON cũ không rewrite; field mới optional.
+
+## 2026-08-09 - Bóc bộ SHORT UTAD theo cấu trúc LONG SPRING
+
+- Thêm `edge-short-utad-observe-v1-20260809`, dùng đúng snapshot trước entry: side, setup `BC_UTAD`, nến ALT/BTC,
+  Market Direction point và RR từ entry/TP/SL; không nhìn outcome/PnL/ROE tương lai.
+- `SHORT UTAD CONFIRMED` yêu cầu SHORT, ALT + BTC cùng BEARISH và `LONG-SHORT gap >= 0`.
+  `SHORT UTAD PRIME TEST` là tập con thêm gap `>= 5` và RR `< 0.7`.
+- Backtest paper 14 ngày: Confirmed `34` closed, WR `85.3%`, PF `1.65`, AvgROE `+2.86%`, `7/11` ngày dương;
+  Prime Test `20` closed, WR `95.0%`, PF `4.59`, AvgROE `+5.39%`, `8/9` ngày dương. Holdout tuần sau Prime có
+  `7W/0L`, nhưng cohort Binance exact-map mới chỉ `3` filled/`2` closed-known, nên nhãn vẫn `OBSERVE ONLY`.
+- UI thêm hai card/badge và whitelist V7 với key `edge:short-utad:CONFIRMED` / `edge:short-utad:PRIME_TEST`.
+  Checkbox mặc định tắt, chỉ hiện khi closed AvgROE `> 4%`; muốn vào Binance vẫn phải bật thêm đúng key
+  `LỆNH THẬT` tại Orders.
+- Thống kê inclusive/subset gồm active/pending/closed, W/L, WR, PF, PnL, AvgROE và ngày dương Bangkok. Nhãn không
+  tự ảnh hưởng Binance, entry, size, leverage, SL hoặc TP; không được mô tả như gate giao dịch thật.
+- Trade mới lưu optional `edgeShortUtad*`; JSON cũ được derive khi đọc, không rewrite. Thiếu dữ liệu causal thì không
+  gán Prime Test và consumer cũ tiếp tục bỏ qua field mới.
+
+## 2026-08-09 - Fill-anchor V2, SHORT time-stop và live-card stats tách LONG/SHORT
+
+- Version: `LIVE_CARD_SIGNAL_PROTECTION_V2_20260809`, `LIVE_CARD_FILL_ANCHORED_PROTECTION_V1_20260809`,
+  `LIVE_CARD_SHORT_TIME_STOP_V1_20260809`, `LIVE_CARD_WHITELIST_PNL_STATS_V4_20260809_SIDE_SPLIT`.
+- Trước entry chỉ snapshot exact whitelist key, side, signal/paper entry, TP và SL; derive khoảng cách TP/SL từ bộ giá
+  causal này, không dùng PnL/outcome hay dữ liệu tương lai. Khi full fill, bot neo lại cùng khoảng cách phần trăm quanh
+  Binance `avgPrice` cho LONG/SHORT; không đặt TP 5%/10% chung.
+- SHORT live-card ở trạng thái còn mở được fail-safe đóng MARKET sau `24h` mặc định; thời gian và nhịp quét cấu hình
+  bằng env, LONG bị loại, `BOT_CLOSE_FAILED` được phép retry. Đây là rule thoát live thật, không phải nhãn quan sát.
+- Mỗi exact whitelist card derive thống kê Binance và paper same-cohort riêng `SHORT`/`LONG`, nhưng vẫn dùng đúng một
+  key và một checkbox `LỆNH THẬT`; không tạo nhãn hay whitelist permission mới.
+- Ảnh hưởng: không đổi gate, entry, margin/size, leverage hay quyền vào Binance; có đổi TP/SL live theo actual fill và
+  có time-stop cho SHORT. UI side split chỉ thống kê, không tác động lệnh.
+- JSON cũ không rewrite: thiếu fill-anchor metadata thì giữ nguyên TP/SL tuyệt đối; field/event mới đều optional,
+  time-stop dùng lifecycle bot-close sẵn có, còn `sideStats` được derive lúc đọc nên consumer/store cũ vẫn tương thích.
+
+## 2026-08-09 - Tắt tự động xóa regular LIMIT
+
+- Version `LIMIT_ORDER_RETENTION_V1_20260809`; `AUTO_CANCEL_ENTRY_LIMIT_ORDERS=false` là mặc định.
+- Không dùng snapshot/nhãn/PnL để phân loại: `LIMIT` và `LIMIT_MAKER` được giữ, không còn bị timeout 30 phút, đổi bias
+  BTC hoặc cleanup sau khi vị thế cùng symbol đóng tự động xóa.
+- Cleanup sau close vẫn hủy order không phải LIMIT và conditional/algo TP/SL. Cancel từng lệnh và Cancel all do người
+  dùng chủ động vẫn hoạt động; đặt master switch `true` mới khôi phục auto-cancel theo BTC/timeout.
+- Không tạo thống kê hay checkbox mới; log runtime ghi số protection cleanup và LIMIT retained. Không đổi entry price,
+  gate, size, margin, leverage, SL hoặc TP; chỉ đổi vòng đời pending LIMIT trên Binance.
+- Không thay đổi JSON/store cũ. `STALE_ORDER_TIMEOUT_MS` chỉ có hiệu lực khi master switch được bật rõ ràng.
+
+## 2026-08-09 - Live-card Binance history realtime
+
+- Version `LIVE_CARD_HISTORY_STREAM_V1_20260809` / `ORDERS_POSITION_PNL_STREAM_V2_20260809_LIVE_CARD`.
+- Bảng gồm mọi lifecycle đã fill, tách số đang mở/đã đóng. Lệnh mở dùng fill, quantity, side, margin/leverage lifecycle
+  cùng mark Binance socket để hiển thị uPnL/ROE; lệnh đóng vẫn dùng NET đã đối soát, không trộn uPnL vào closed stats.
+- SSE giữ kết nối cả khi không có position và phát event lifecycle khi fill/protection/bot-close/close để refresh cấu
+  trúc; mark tick chỉ cập nhật cell live. Cột nhãn whitelist thu còn `220px`, ellipsis nhưng tooltip giữ full exact key.
+- Không đổi nhãn, gate, whitelist checkbox, entry, size, leverage, SL/TP hay lệnh Binance; đây chỉ là hiển thị
+  `OBSERVE ONLY`. Không đổi/rewrite JSON cũ; record thiếu fill/quantity không bị tính uPnL giả.
+
+## 2026-08-09 - Binance profit-lock 5/1
+
+- Version `BINANCE_PROFIT_LOCK_V1_20260809`: sau khi position thật đạt `+5% ROE`, bot dời SL sang mức tương ứng
+  `+1% ROE` cho cả LONG và SHORT. Từ `+15%` trở lên tiếp tục thang `15 -> 5`, `20 -> 10`, `25 -> 15`...
+- Không đổi dữ liệu/nhãn phân loại trước entry. Rule sau entry dùng entry, mark, quantity, margin và leverage Binance;
+  không tạo thống kê, cohort hay checkbox whitelist mới. `sl-tracking`, lifecycle event và API status chỉ ghi telemetry
+  của mức khóa lời.
+- Có tác động SL thật trên Binance, gồm cả live-card signal protection: đặt SL mới trước khi hủy SL cũ và không hạ
+  một SL đang tốt hơn. Không đổi gate, entry, size/margin, leverage hay TP.
+- Tương thích JSON cũ bằng field optional, không rewrite. Record thiếu lifecycle vẫn được dời SL; nhận diện
+  `STOP/STOP_MARKET` mới hỗ trợ SL đã qua vùng lời, còn type `CONDITIONAL` cũ giữ fallback phía lỗ.

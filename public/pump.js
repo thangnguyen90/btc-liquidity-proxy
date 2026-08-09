@@ -591,11 +591,42 @@ async function fetchAndApply(attempt = 0) {
 
 const pumpPaperBody  = document.getElementById('pumpPaperBody');
 const pumpPaperCount = document.getElementById('pumpPaperCount');
-const pumpPaperDayFilter = document.getElementById('pumpPaperDayFilter');
+const pumpPaperDateFromInput = document.getElementById('pumpPaperDateFrom');
+const pumpPaperDateToInput = document.getElementById('pumpPaperDateTo');
+const pumpPaperTodayButton = document.getElementById('pumpPaperTodayButton');
+const pumpPaperAllDatesButton = document.getElementById('pumpPaperAllDatesButton');
+const pumpPaperDateSearchButton = document.getElementById('pumpPaperDateSearchButton');
+const pumpPaperDateStatus = document.getElementById('pumpPaperDateStatus');
 const pumpComboStatsEl = document.getElementById('pumpComboStats');
 const pumpPaperOverview = document.getElementById('pumpPaperOverview');
+const pumpSourceStatsEl = document.getElementById('pumpSourceStats');
+const pumpObservationL1El = document.getElementById('pumpObservationL1');
+const pumpObservationL2El = document.getElementById('pumpObservationL2');
+const pumpObservationL2bEl = document.getElementById('pumpObservationL2b');
+const pumpObservationL2cEl = document.getElementById('pumpObservationL2c');
+const pumpObservationL3El = document.getElementById('pumpObservationL3');
+const pumpSourceLongCorrReboundStatsEl = document.getElementById('pumpSourceLongCorrReboundStats');
+const pumpSupportEntryGroupsEl = document.getElementById('pumpSupportEntryGroups');
+const pumpSupportEntryShortEl = document.getElementById('pumpSupportEntryShort');
+const pumpSupportEntryLongEl = document.getElementById('pumpSupportEntryLong');
+const pumpComboCycleStableEl = document.getElementById('pumpComboCycleStable');
+const pumpComboCycleFormingEl = document.getElementById('pumpComboCycleForming');
+const pumpComboCycleFormingRowsEl = document.getElementById('pumpComboCycleFormingRows');
+const emaLayerAnalysisSectionEl = document.getElementById('emaLayerAnalysisSection');
+const emaLayerAnalysisMetaEl = document.getElementById('emaLayerAnalysisMeta');
+const emaLayerModelNoteEl = document.getElementById('emaLayerModelNote');
+const emaLayer1StatsEl = document.getElementById('emaLayer1Stats');
+const emaLayer2StatsEl = document.getElementById('emaLayer2Stats');
+const emaLayer3StatsEl = document.getElementById('emaLayer3Stats');
+const emaLayerCandidateRowsEl = document.getElementById('emaLayerCandidateRows');
+const pumpCanonicalStatsEl = document.getElementById('pumpCanonicalStats');
+const pumpEvalStatsEl = document.getElementById('pumpEvalStats');
 const pumpStage2FilterEl = document.getElementById('pumpStage2Filter');
 const pumpStage2StatsEl = document.getElementById('pumpStage2Stats');
+const pumpLiftFilterEl = document.getElementById('pumpLiftFilter');
+const pumpLiftStatsEl = document.getElementById('pumpLiftStats');
+const pumpSelectorFilterEl = document.getElementById('pumpSelectorFilter');
+const pumpSelectorStatsEl = document.getElementById('pumpSelectorStats');
 
 let pumpPaperTradesCache  = [];
 let pumpPaperSummaryCache = null;
@@ -603,11 +634,33 @@ let pumpPaperSort = { key: 'status', dir: 'asc' };
 let pumpPaperPage = 1;
 let pumpPaperLimit = 300;
 let pumpPaperPagination = null;
-let pumpPaperDay = 'all';
-let pumpPaperAvailableDays = [];
+let pumpPaperDateFrom = '';
+let pumpPaperDateTo = '';
+let pumpPaperDateMode = 'today';
+let pumpPaperDraftDateFrom = '';
+let pumpPaperDraftDateTo = '';
+let pumpPaperDraftDateMode = 'today';
+let pumpPaperDateDirty = false;
+let pumpPaperKnownToday = '';
+let pumpPaperDateRolloverTimer = null;
 let pumpPaperComboStats = [];
+let pumpSourceStats = [];
+let pumpObservationStats = null;
+let pumpSourceLongCorrReboundStats = [];
+let pumpSupportEntryStats = null;
+let pumpComboCycleStats = null;
+let emaLayerAnalysis = null;
+let pumpCanonicalStats = [];
+let pumpCanonicalModel = null;
+let pumpEvalStats = [];
 let pumpStage2Filter = 'all';
 let pumpStage2Stats = [];
+let pumpLiftFilter = 'all';
+let pumpLiftStats = [];
+let pumpLiftModel = null;
+let pumpSelectorFilter = 'all';
+let pumpSelectorStats = [];
+let pumpSelectorModel = null;
 
 function normalizePumpComboPart(value, fallback = '-') {
   const text = String(value ?? fallback).trim();
@@ -667,27 +720,529 @@ function pumpTradeCombo(t) {
   return '-';
 }
 
-function renderPumpPaperDayOptions(days = pumpPaperAvailableDays) {
-  if (!pumpPaperDayFilter) return;
-  const normalized = Array.isArray(days) ? days : [];
-  const current = pumpPaperDayFilter.value || pumpPaperDay || 'all';
-  pumpPaperDayFilter.innerHTML = [
-    '<option value="all">Tất cả</option>',
-    ...normalized.map((day) => `<option value="${day}">${day}</option>`),
-  ].join('');
-  pumpPaperDayFilter.value = normalized.includes(current) ? current : 'all';
-  pumpPaperDay = pumpPaperDayFilter.value;
+const PUMP_PAPER_DAY_TIME_ZONE = 'Asia/Bangkok';
+const pumpPaperDayFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: PUMP_PAPER_DAY_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function pumpPaperDayKey(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const parts = Object.fromEntries(
+    pumpPaperDayFormatter
+      .formatToParts(date)
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
-pumpPaperDayFilter?.addEventListener('change', () => {
-  pumpPaperDay = pumpPaperDayFilter.value || 'all';
+function pumpPaperDateLabel() {
+  if (pumpPaperDateMode === 'all') return '';
+  if (pumpPaperDateFrom && pumpPaperDateTo) {
+    return pumpPaperDateFrom === pumpPaperDateTo
+      ? pumpPaperDateFrom
+      : `${pumpPaperDateFrom} → ${pumpPaperDateTo}`;
+  }
+  if (pumpPaperDateFrom) return `từ ${pumpPaperDateFrom}`;
+  if (pumpPaperDateTo) return `đến ${pumpPaperDateTo}`;
+  return '';
+}
+
+function syncPumpPaperDateControls() {
+  if (pumpPaperDateFromInput) pumpPaperDateFromInput.value = pumpPaperDraftDateFrom;
+  if (pumpPaperDateToInput) pumpPaperDateToInput.value = pumpPaperDraftDateTo;
+  pumpPaperTodayButton?.classList.toggle('is-active', pumpPaperDraftDateMode === 'today');
+  pumpPaperAllDatesButton?.classList.toggle('is-active', pumpPaperDraftDateMode === 'all');
+  pumpPaperTodayButton?.setAttribute('aria-pressed', String(pumpPaperDraftDateMode === 'today'));
+  pumpPaperAllDatesButton?.setAttribute('aria-pressed', String(pumpPaperDraftDateMode === 'all'));
+  if (pumpPaperDateStatus) {
+    pumpPaperDateStatus.textContent = pumpPaperDateDirty
+      ? `Chưa áp dụng · bấm Search · ${PUMP_PAPER_DAY_TIME_ZONE}`
+      : pumpPaperDateMode === 'today'
+        ? `Tự chuyển ngày mới · ${PUMP_PAPER_DAY_TIME_ZONE}`
+        : pumpPaperDateMode === 'all'
+          ? 'Toàn bộ lịch sử'
+          : `Khoảng ngày cố định · ${PUMP_PAPER_DAY_TIME_ZONE}`;
+  }
+}
+
+function setPumpPaperDateSearchLoading(loading) {
+  if (pumpPaperDateSearchButton) {
+    pumpPaperDateSearchButton.disabled = loading;
+    pumpPaperDateSearchButton.classList.toggle('is-loading', loading);
+    pumpPaperDateSearchButton.textContent = loading ? 'Đang tải...' : 'Search';
+  }
+  for (const control of [
+    pumpPaperDateFromInput,
+    pumpPaperDateToInput,
+    pumpPaperTodayButton,
+    pumpPaperAllDatesButton,
+  ]) {
+    if (control) control.disabled = loading;
+  }
+  if (loading && pumpPaperDateStatus) {
+    pumpPaperDateStatus.textContent = `Đang tải ${pumpPaperDateLabel() || 'toàn bộ lịch sử'} · ${PUMP_PAPER_DAY_TIME_ZONE}`;
+  } else if (!loading) {
+    syncPumpPaperDateControls();
+  }
+}
+
+function setPumpPaperToday({ reload = true, showLoading = false } = {}) {
+  const today = pumpPaperDayKey();
+  pumpPaperKnownToday = today;
+  pumpPaperDateFrom = today;
+  pumpPaperDateTo = today;
+  pumpPaperDateMode = 'today';
+  pumpPaperDraftDateFrom = today;
+  pumpPaperDraftDateTo = today;
+  pumpPaperDraftDateMode = 'today';
+  pumpPaperDateDirty = false;
+  syncPumpPaperDateControls();
+  if (reload) loadPumpPaperTrades(1, true, showLoading);
+}
+
+function stagePumpPaperAllDates() {
+  pumpPaperDraftDateFrom = '';
+  pumpPaperDraftDateTo = '';
+  pumpPaperDraftDateMode = 'all';
+  pumpPaperDateDirty = pumpPaperDateMode !== 'all';
+  syncPumpPaperDateControls();
+}
+
+function stagePumpPaperDateInputs(changedField) {
+  let from = pumpPaperDateFromInput?.value || '';
+  let to = pumpPaperDateToInput?.value || '';
+  if (from && to && from > to) {
+    if (changedField === 'from') to = from;
+    else from = to;
+  }
+  pumpPaperDraftDateFrom = from;
+  pumpPaperDraftDateTo = to;
+  const today = pumpPaperDayKey();
+  pumpPaperDraftDateMode = from === today && to === today
+    ? 'today'
+    : (!from && !to ? 'all' : 'custom');
+  pumpPaperDateDirty =
+    from !== pumpPaperDateFrom ||
+    to !== pumpPaperDateTo ||
+    pumpPaperDraftDateMode !== pumpPaperDateMode;
+  syncPumpPaperDateControls();
+}
+
+function applyPumpPaperDateSearch() {
+  pumpPaperDateFrom = pumpPaperDraftDateFrom;
+  pumpPaperDateTo = pumpPaperDraftDateTo;
+  pumpPaperDateMode = pumpPaperDraftDateMode;
+  pumpPaperDateDirty = false;
+  syncPumpPaperDateControls();
+  loadPumpPaperTrades(1, true, true);
+}
+
+function checkPumpPaperDateRollover() {
+  const today = pumpPaperDayKey();
+  if (!today || today === pumpPaperKnownToday) return;
+  pumpPaperKnownToday = today;
+  if (pumpPaperDateMode !== 'today') return;
+  pumpPaperDateFrom = today;
+  pumpPaperDateTo = today;
+  if (!pumpPaperDateDirty) {
+    pumpPaperDraftDateFrom = today;
+    pumpPaperDraftDateTo = today;
+    pumpPaperDraftDateMode = 'today';
+  }
+  syncPumpPaperDateControls();
   loadPumpPaperTrades(1, true);
-});
+}
+
+function initializePumpPaperDateRange() {
+  setPumpPaperToday({ reload: false });
+  if (!pumpPaperDateRolloverTimer) {
+    pumpPaperDateRolloverTimer = window.setInterval(checkPumpPaperDateRollover, 30_000);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkPumpPaperDateRollover();
+  });
+  window.addEventListener('focus', checkPumpPaperDateRollover);
+}
+
+pumpPaperDateFromInput?.addEventListener('change', () => stagePumpPaperDateInputs('from'));
+pumpPaperDateToInput?.addEventListener('change', () => stagePumpPaperDateInputs('to'));
+pumpPaperTodayButton?.addEventListener('click', () => setPumpPaperToday({ showLoading: true }));
+pumpPaperAllDatesButton?.addEventListener('click', stagePumpPaperAllDates);
+pumpPaperDateSearchButton?.addEventListener('click', applyPumpPaperDateSearch);
 
 pumpStage2FilterEl?.addEventListener('change', () => {
   pumpStage2Filter = pumpStage2FilterEl.value || 'all';
   loadPumpPaperTrades(1, true);
 });
+
+pumpLiftFilterEl?.addEventListener('change', () => {
+  pumpLiftFilter = pumpLiftFilterEl.value || 'all';
+  loadPumpPaperTrades(1, true);
+});
+
+pumpSelectorFilterEl?.addEventListener('change', () => {
+  pumpSelectorFilter = pumpSelectorFilterEl.value || 'all';
+  loadPumpPaperTrades(1, true);
+});
+
+function renderPumpEvalStats(rows = pumpEvalStats) {
+  if (!pumpEvalStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    pumpEvalStatsEl.innerHTML = '';
+    pumpEvalStatsEl.style.display = 'none';
+    return;
+  }
+  pumpEvalStatsEl.style.display = '';
+  pumpEvalStatsEl.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'BLOCK').toUpperCase();
+    const cls = tier === 'A' ? 'good' : tier === 'BLOCK' ? 'bad' : 'neutral';
+    const pnl = Number(row.pnl ?? 0);
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    return `<div class="pump-paper-metric ${cls}">
+      <span class="pump-paper-metric-label">Pump Eval · ${escapePumpHtml(row.label ?? tier)}</span>
+      <strong class="${pnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(pnl)}</strong>
+      <small>${row.total ?? 0} total · ${row.open ?? 0} open · ${row.pending ?? 0} pending · ${row.closed ?? 0} closed<br>
+      WR ${wr} · ${row.wins ?? 0}W/${row.losses ?? 0}L · AvgROE ${avgRoe} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}<br>
+      đóng ${fmtPumpMoney(row.realizedPnl)} · active ${fmtPumpMoney(row.unrealizedPnl)} · snapshot ${row.snapshot ?? 0} · backfill ${row.backfill ?? 0}</small>
+    </div>`;
+  }).join('');
+}
+
+function renderPumpCanonicalStats(rows = pumpCanonicalStats) {
+  if (!pumpCanonicalStatsEl) return;
+  const list = (Array.isArray(rows) ? rows : []).filter((row) => Number(row.total ?? 0) > 0);
+  if (!list.length) {
+    pumpCanonicalStatsEl.innerHTML = '';
+    pumpCanonicalStatsEl.style.display = 'none';
+    return;
+  }
+  pumpCanonicalStatsEl.style.display = '';
+  pumpCanonicalStatsEl.innerHTML = list.map((row) => {
+    const pnl = Number(row.pnl ?? 0);
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    return `<div class="pump-paper-metric neutral">
+      <span class="pump-paper-metric-label">PUMP V2 · COLLECT</span>
+      <strong class="${pnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(pnl)}</strong>
+      <small>${row.total ?? 0} total · ${row.active ?? 0} active · ${row.closed ?? 0} closed<br>
+      WR ${wr} · ${row.wins ?? 0}W/${row.losses ?? 0}L · AvgROE ${avgRoe} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}<br>
+      đóng ${fmtPumpMoney(row.realizedPnl)} · active ${fmtPumpMoney(row.unrealizedPnl)}<br>
+      Walk-forward chưa đạt · observe only · cùng luồng paper gốc</small>
+    </div>`;
+  }).join('');
+}
+
+function renderPumpSourceStats(rows = pumpSourceStats) {
+  if (!pumpSourceStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    pumpSourceStatsEl.innerHTML = '';
+    pumpSourceStatsEl.style.display = 'none';
+    return;
+  }
+  pumpSourceStatsEl.style.display = '';
+  pumpSourceStatsEl.innerHTML = list.map((row) => {
+    const family = String(row.sourceFamily ?? row.key ?? '').toUpperCase();
+    const panelClass = family === 'PUMP_NATIVE' ? 'pump-native' : 'ema';
+    const netPnl = Number(row.netPnl ?? 0);
+    const grossPnl = Number(row.grossPnl ?? 0);
+    const fee = Number(row.estimatedFeeUsdt ?? 0);
+    const avgNetRoe = row.avgNetRoe == null
+      ? '-'
+      : `${Number(row.avgNetRoe) >= 0 ? '+' : ''}${Number(row.avgNetRoe).toFixed(2)}%`;
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const margins = (Array.isArray(row.byMargin) ? row.byMargin : [])
+      .filter((item) => Number(item.total ?? 0) > 0)
+      .map((item) => {
+        const itemNet = Number(item.netPnl ?? 0);
+        const itemRoe = item.avgNetRoe == null
+          ? '-'
+          : `${Number(item.avgNetRoe) >= 0 ? '+' : ''}${Number(item.avgNetRoe).toFixed(2)}%`;
+        return `<div class="pump-source-subcard">
+          <strong>${escapePumpHtml(item.label ?? item.key)}</strong>
+          <small>${item.closed ?? 0} closed · ${item.active ?? 0} active<br>
+          Net <span class="${itemNet >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(itemNet)}</span>
+          · Fee -$${Number(item.estimatedFeeUsdt ?? 0).toFixed(3)}<br>
+          AvgNetROE ${itemRoe} · PF ${Number(item.profitFactor ?? 0).toFixed(2)}</small>
+        </div>`;
+      }).join('');
+    const types = (Array.isArray(row.byType) ? row.byType : [])
+      .filter((item) => Number(item.total ?? 0) > 0)
+      .slice(0, 12)
+      .map((item) => {
+        const itemNet = Number(item.netPnl ?? 0);
+        const itemRoe = item.avgNetRoe == null
+          ? '-'
+          : `${Number(item.avgNetRoe) >= 0 ? '+' : ''}${Number(item.avgNetRoe).toFixed(1)}%`;
+        return `<div class="pump-source-type-row">
+          <span title="${escapePumpHtml(item.label ?? item.key)}">${escapePumpHtml(item.label ?? item.key)}</span>
+          <span>${item.closed ?? 0}C/${item.active ?? 0}A</span>
+          <span class="${itemNet >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(itemNet)}</span>
+          <span>${itemRoe} · PF ${Number(item.profitFactor ?? 0).toFixed(2)}</span>
+        </div>`;
+      }).join('');
+    return `<section class="pump-source-panel ${panelClass}">
+      <div class="pump-source-head">
+        <div class="pump-source-title">
+          ${escapePumpHtml(row.label ?? family)}
+          <small>${row.total ?? 0} total · ${row.closed ?? 0} closed · ${row.active ?? 0} active</small>
+        </div>
+        <div class="pump-source-net ${netPnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(netPnl)}</div>
+      </div>
+      <div class="pump-source-line">
+        Gross ${fmtPumpMoney(grossPnl)} · Fee -$${fee.toFixed(3)} · Net ${fmtPumpMoney(netPnl)}<br>
+        Closed net ${fmtPumpMoney(row.netRealizedPnl)} · Active net ${fmtPumpMoney(row.netUnrealizedPnl)}<br>
+        Net WR ${wr} · ${row.wins ?? 0}W/${row.losses ?? 0}L · AvgNetROE ${avgNetRoe} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}
+      </div>
+      <div class="pump-source-breakdown">${margins}</div>
+      <details class="pump-source-types">
+        <summary>Chi tiết theo ${family === 'PUMP_NATIVE' ? 'loại Pump' : 'stage EMA'}</summary>
+        ${types || '<div class="pump-source-line">Chưa có dữ liệu.</div>'}
+      </details>
+    </section>`;
+  }).join('');
+}
+
+function pumpObservationClass(tone) {
+  const value = String(tone ?? 'WATCH').toUpperCase();
+  if (value === 'GOOD') return 'good';
+  if (value === 'RISK') return 'bad';
+  return 'neutral';
+}
+
+function renderPumpObservationLayerCards(element, rows = []) {
+  if (!element) return;
+  const list = (Array.isArray(rows) ? rows : []).filter((row) => Number(row.total ?? 0) > 0);
+  element.innerHTML = list.length
+    ? list.map((row) => {
+        const pnl = Number(row.totalPnl ?? 0);
+        const toneClass = pumpObservationClass(row.tone);
+        const toneLabel = toneClass === 'good' ? 'GOOD' : toneClass === 'bad' ? 'RISK' : 'WATCH';
+        const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+        const avgRoe = row.avgRoe == null
+          ? '-'
+          : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(2)}%`;
+        const avgRoeTone = Number(row.avgRoe ?? 0) >= 0 ? 'positive' : 'negative';
+        const closedPnl = Number(row.closedPnl ?? 0);
+        const activePnl = Number(row.activePnl ?? 0);
+        return `<div class="pump-paper-metric pump-observation-card ${toneClass}">
+          <div class="pump-observation-head">
+            <span class="pump-observation-title">${escapePumpHtml(row.label ?? row.key)}</span>
+            <span class="pump-observation-tag ${toneClass}">${toneLabel}</span>
+          </div>
+          <div class="pump-observation-pnl ${pnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(pnl)}</div>
+          <div class="pump-observation-stats">
+            ${row.total ?? 0} total · ${row.closed ?? 0} closed · ${row.active ?? 0} active<br>
+            ${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${wr} · AvgNetROE <span class="pump-observation-value ${avgRoeTone}">${avgRoe}</span> · PF ${Number(row.profitFactor ?? 0).toFixed(2)}<br>
+            đóng <span class="pump-observation-value ${closedPnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(closedPnl)}</span>
+            · active <span class="pump-observation-value ${activePnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(activePnl)}</span>
+            · ngày dương ${row.positiveDays ?? 0}/${row.totalDays ?? 0}
+          </div>
+        </div>`;
+      }).join('')
+    : '<div class="pump-source-line">Chưa có dữ liệu cho lớp này trong khoảng ngày đã chọn.</div>';
+}
+
+function renderPumpObservationStats(stats = pumpObservationStats) {
+  const layers = stats?.layers ?? {};
+  renderPumpObservationLayerCards(pumpObservationL1El, layers.l1);
+  renderPumpObservationLayerCards(pumpObservationL2El, layers.l2);
+  renderPumpObservationLayerCards(pumpObservationL2bEl, layers.l2b);
+  renderPumpObservationLayerCards(pumpObservationL2cEl, layers.l2c);
+  renderPumpObservationLayerCards(pumpObservationL3El, layers.l3);
+}
+
+function renderPumpSourceLongCorrReboundStats(rows = pumpSourceLongCorrReboundStats) {
+  renderPumpObservationLayerCards(pumpSourceLongCorrReboundStatsEl, rows);
+}
+
+function pumpObservationBadgeClass(tone) {
+  const value = String(tone ?? 'WATCH').toUpperCase();
+  if (value === 'GOOD') return 'good';
+  if (value === 'RISK') return 'risk';
+  return 'watch';
+}
+
+function renderPumpObservationBadges(t = {}) {
+  if (!t.pumpObsVersion) return '<span style="color:var(--muted)">-</span>';
+  const tierTone = t.pumpObsSourceTier === 'A'
+    ? 'GOOD'
+    : t.pumpObsSourceTier === 'BLOCK' ? 'RISK' : 'WATCH';
+  const labels = [
+    [t.pumpObsL1Label ?? 'PUMP L1 · NO DATA', t.pumpObsL1Tone, t.pumpObsL1Reason],
+    [t.pumpObsTierLabel ?? 'PUMP TIER · NO DATA', tierTone, t.pumpObsWaveReason],
+    [t.pumpObsWaveLabel ?? 'BTC WAVE · NO DATA', t.pumpObsWaveTone, t.pumpObsWaveReason],
+  ];
+  if (['A', 'B'].includes(String(t.pumpObsSourceTier ?? '').toUpperCase())) {
+    labels.push([
+      `2C ${t.pumpObsSourceTier} × ${t.pumpObsWaveLabel ?? 'NO DATA'}`,
+      t.pumpObsWaveTone,
+      t.pumpObsWaveReason,
+    ]);
+    labels.push([t.pumpObsBestLabel, t.pumpObsBestTone, t.pumpObsBestReason]);
+  }
+  return `<div class="ema-layer-badge-stack">${labels.filter(([label]) => label).map(([label, tone, reason]) => (
+    `<span class="ema-layer-badge ${pumpObservationBadgeClass(tone)}" title="${escapePumpHtml(reason ?? '')}">${escapePumpHtml(label)}</span>`
+  )).join('')}</div>`;
+}
+
+function renderPumpSourceLongCorrReboundBadge(t = {}) {
+  if (t.sourceLongCorrReboundMatched !== true) return '';
+  const title = t.sourceLongCorrReboundReason
+    ?? 'EMA SQUEEZE LONG CORR REBOUND · provisional · OBSERVE ONLY';
+  return `<div class="ema-layer-badge-stack" style="margin-top:3px">`
+    + `<span class="ema-layer-badge watch" title="${escapePumpHtml(title)}">${escapePumpHtml(t.sourceLongCorrReboundLabel ?? 'EMA SQUEEZE CORR REBOUND')}</span>`
+    + '</div>';
+}
+
+function emaLayerClass(tier) {
+  return String(tier ?? 'WATCH').toLowerCase().replaceAll('_', '-');
+}
+
+function renderEmaLayerCards(target, rows = []) {
+  if (!target) return;
+  const list = (Array.isArray(rows) ? rows : [])
+    .filter((row) => Number(row.total ?? 0) > 0);
+  target.innerHTML = list.length
+    ? list.map((row) => {
+        const net = Number(row.netPnl ?? 0);
+        const avg = row.avgNetRoe == null
+          ? '-'
+          : `${Number(row.avgNetRoe) >= 0 ? '+' : ''}${Number(row.avgNetRoe).toFixed(2)}%`;
+        const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+        return `<div class="ema-layer-card ${emaLayerClass(row.tier)}">
+          <strong>${escapePumpHtml(String(row.tier ?? 'WATCH').replace('_PLUS', '+'))}</strong>
+          <small>${row.total ?? 0} total · ${row.closed ?? 0} closed · ${row.active ?? 0} active<br>
+          Net <span class="${net >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(net)}</span>
+          · đóng ${fmtPumpMoney(row.netRealizedPnl)} · active ${fmtPumpMoney(row.netUnrealizedPnl)}<br>
+          WR ${wr} · AvgNetROE ${avg} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</small>
+        </div>`;
+      }).join('')
+    : '<div class="pump-source-line">Chưa có dữ liệu EMA cho lớp này.</div>';
+}
+
+function renderEmaLayerAnalysis(analysis = emaLayerAnalysis) {
+  if (!emaLayerAnalysisSectionEl) return;
+  if (!analysis?.layers) {
+    emaLayerAnalysisSectionEl.style.display = 'none';
+    return;
+  }
+  emaLayerAnalysisSectionEl.style.display = '';
+  const historyDays = Array.isArray(analysis.historyDays) ? analysis.historyDays : [];
+  const minimumDays = Number(analysis.minimumConfirmedDays ?? 3);
+  const ready = analysis.modelReady === true;
+  if (emaLayerAnalysisMetaEl) {
+    emaLayerAnalysisMetaEl.textContent = [
+      'SETUP EMA → MARKET FIT → COMBO',
+      `prior-only ${historyDays.length}/${minimumDays} ngày`,
+      analysis.version ?? 'EMA 3L',
+      'OBSERVE ONLY',
+    ].join(' · ');
+  }
+  if (emaLayerModelNoteEl) {
+    const cohortNote = ` Các thẻ bên dưới là kết quả cohort ${escapePumpHtml(analysis.cutoffDay ?? pumpPaperDateTo ?? pumpPaperDateFrom ?? '-')}, được nhóm theo nhãn prior-only.`;
+    emaLayerModelNoteEl.innerHTML = ready
+      ? `<strong>Model đủ số ngày tối thiểu.</strong> Chỉ nhãn GOOD+ mới được xem là tổ hợp đã xác nhận; vẫn chưa chặn entry hoặc đổi size/SL/TP. Lookback: ${escapePumpHtml(historyDays.join(', ') || '-')}.${cohortNote}`
+      : `<strong>Chưa đủ để chọn chính thức.</strong> Hiện có ${historyDays.length}/${minimumDays} ngày schema EMA đầy đủ; GOOD chỉ là PROVISIONAL, GOOD+ sẽ chỉ xuất hiện sau khi đủ mẫu. Lookback: ${escapePumpHtml(historyDays.join(', ') || '-')}.${cohortNote}`;
+  }
+  renderEmaLayerCards(emaLayer1StatsEl, analysis.layers.setup);
+  renderEmaLayerCards(emaLayer2StatsEl, analysis.layers.market);
+  renderEmaLayerCards(emaLayer3StatsEl, analysis.layers.combo);
+
+  if (emaLayerCandidateRowsEl) {
+    const candidates = Array.isArray(analysis.candidates) ? analysis.candidates : [];
+    emaLayerCandidateRowsEl.innerHTML = candidates.length
+      ? candidates.map((row) => {
+          const history = row.history ?? {};
+          const current = row.current ?? {};
+          const currentNet = Number(current.netPnl ?? 0);
+          const badge = row.selectionReady
+            ? 'GOOD+ · READY'
+            : 'GOOD · PROVISIONAL';
+          return `<div class="ema-layer-candidate-row" title="${escapePumpHtml(row.reason ?? '')}">
+            <span class="ema-layer-badge ${emaLayerClass(row.tier)}">${escapePumpHtml(badge)}</span>
+            <span class="combo-name">${escapePumpHtml(row.label ?? row.key)}</span>
+            <span>${history.closed ?? 0}H/${history.days ?? 0}D · Avg ${Number(history.avgNetRoe ?? 0).toFixed(2)}% · PF ${Number(history.profitFactor ?? 0).toFixed(2)}</span>
+            <span>${current.closed ?? 0}C/${current.active ?? 0}A</span>
+            <span class="${currentNet >= 0 ? 'positive' : 'negative'}">nay ${fmtPumpMoney(currentNet)}</span>
+          </div>`;
+        }).join('')
+      : '<div class="pump-source-line">Chưa có tổ hợp GOOD+/GOOD prior-only trong ngày đang xem.</div>';
+  }
+}
+
+function renderEmaLayerBadges(t = {}) {
+  if (!String(t.source ?? '').startsWith('emasq-')) {
+    return '<span style="color:var(--muted)">-</span>';
+  }
+  const layers = [
+    ['L1 SETUP', t.emaLayer1Tier, t.emaLayer1Reason],
+    ['L2 MARKET', t.emaLayer2Tier, t.emaLayer2Reason],
+    [
+      t.emaLayer3SelectionReady ? 'L3 SELECT' : t.emaLayer3Provisional ? 'L3 PROV' : 'L3 COMBO',
+      t.emaLayer3Tier,
+      t.emaLayer3Reason,
+    ],
+  ];
+  return `<div class="ema-layer-badge-stack">${layers.map(([label, tier, reason]) => (
+    `<span class="ema-layer-badge ${emaLayerClass(tier)}" title="${escapePumpHtml(reason ?? '')}">${escapePumpHtml(label)} · ${escapePumpHtml(String(tier ?? 'WATCH').replace('_PLUS', '+'))}</span>`
+  )).join('')}</div>`;
+}
+
+function renderPumpCanonicalBadge(t) {
+  const nativePump = /^pump-\d+(?:-|$)/i.test(String(t?.source ?? ''));
+  if (!nativePump) return '<span style="color:var(--muted)">-</span>';
+  const candidate = String(t.pumpCanonicalCandidateTier ?? 'WATCH').toUpperCase();
+  const reason = [
+    t.pumpCanonicalReason ?? 'Walk-forward chưa đạt.',
+    `Candidate diagnostic: ${candidate}`,
+    t.pumpCanonicalCandidateReason,
+    `Expected net ROE ${Number(t.pumpCanonicalExpectedNetRoe ?? 0).toFixed(2)}%`,
+    `N exact ${t.pumpCanonicalExactClosed ?? 0} · support ${t.pumpCanonicalSupportClosed ?? 0}`,
+    t.pumpCanonicalExactKey,
+    t.pumpCanonicalVersion ?? pumpCanonicalModel?.version,
+    'Observe-only: không chọn/chặn và không đổi size, SL hoặc TP.',
+  ].filter(Boolean).join(' | ');
+  return `<span class="pump-eval-badge collect" title="${escapePumpHtml(reason)}">
+    PUMP V2 · COLLECT
+    <small>${t.pumpCanonicalDerived ? 'BACKFILL' : 'SNAPSHOT'} · CAND ${escapePumpHtml(candidate)}</small>
+  </span>`;
+}
+
+function renderPumpEvalBadge(t) {
+  const tier = String(t?.pumpEvalTier ?? '').toUpperCase();
+  if (!tier) return '<span style="color:var(--muted)">-</span>';
+  const cls = tier === 'A' ? 'tier-a' : tier === 'B' ? 'tier-b' : 'block';
+  const label = tier === 'A'
+    ? 'PUMP TIER A'
+    : tier === 'B'
+      ? 'PUMP TIER B · TEST'
+      : 'PUMP TIER BLOCK';
+  const reason = [
+    t.pumpEvalLabel,
+    t.pumpEvalReason,
+    t.pumpEvalContextKey,
+    t.pumpEvalVersion,
+    t.pumpEvalDerived
+      ? 'Suy ra từ snapshot lịch sử để thống kê; không sửa log cũ.'
+      : 'Snapshot runtime lưu tại entry.',
+  ].filter(Boolean).join(' | ');
+  return `<span class="pump-eval-badge ${cls}" title="${escapePumpHtml(reason)}">
+    ${escapePumpHtml(label)}
+    <small>${t.pumpEvalDerived ? 'BACKFILL' : 'SNAPSHOT'}</small>
+  </span>`;
+}
 
 function renderPumpStage2Stats(rows = pumpStage2Stats) {
   if (!pumpStage2StatsEl) return;
@@ -731,6 +1286,124 @@ function renderPumpStage2Badge(t) {
   return `<span class="pump-stage2-badge ${cls}" title="${escapePumpHtml(reason)}">
     ${escapePumpHtml(label)}
     ${code ? `<small>${escapePumpHtml(code.replace(/^PUMP_S2_/, ''))}</small>` : ''}
+  </span>`;
+}
+
+function renderPumpLiftStats(rows = pumpLiftStats) {
+  if (!pumpLiftStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    pumpLiftStatsEl.innerHTML = '';
+    pumpLiftStatsEl.style.display = 'none';
+    return;
+  }
+  pumpLiftStatsEl.style.display = '';
+  const history = Array.isArray(pumpLiftModel?.historyDays)
+    ? pumpLiftModel.historyDays.join(', ')
+    : '-';
+  pumpLiftStatsEl.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'NEUTRAL').toUpperCase();
+    const cls = tier === 'BOOST' ? 'good' : tier === 'DEGRADE' ? 'bad' : 'neutral';
+    const pnl = Number(row.pnl ?? 0);
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    return `<div class="pump-paper-metric ${cls}" title="Lookback: ${escapePumpHtml(history)}">
+      <span class="pump-paper-metric-label">Lift L2 · ${escapePumpHtml(tier)}</span>
+      <strong class="${pnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(pnl)}</strong>
+      <small>${row.total ?? 0} total · ${row.open ?? 0} open · ${row.pending ?? 0} pending · ${row.closed ?? 0} closed<br>
+      WR ${wr} · ${row.wins ?? 0}W/${row.losses ?? 0}L · AvgROE ${avgRoe}<br>
+      OOS ${row.oos ?? 0} · Bootstrap ${row.bootstrap ?? 0}</small>
+    </div>`;
+  }).join('');
+}
+
+function renderPumpLiftBadge(t) {
+  const tier = String(t?.pumpLiftTier ?? '').toUpperCase();
+  if (!tier) return '<span style="color:var(--muted)">-</span>';
+  const cls = tier === 'BOOST' ? 'boost' : tier === 'DEGRADE' ? 'degrade' : 'neutral';
+  const basis = String(t.pumpLiftBasis ?? 'BOOTSTRAP').toUpperCase();
+  const label = String(t.pumpLiftLabel ?? `${tier} · ${basis}`);
+  const reason = [
+    t.pumpLiftReason,
+    `ΔROE ${Number(t.pumpLiftDeltaRoe ?? 0) >= 0 ? '+' : ''}${Number(t.pumpLiftDeltaRoe ?? 0).toFixed(2)}%`,
+    `PF ${Number(t.pumpLiftProfitFactor ?? 0).toFixed(2)}`,
+    `${t.pumpLiftClosed ?? 0} lệnh/${t.pumpLiftDays ?? 0} ngày`,
+    t.pumpLiftCohortKey,
+    t.pumpLiftVersion,
+    t.pumpLiftDerived ? 'Nhãn suy ra để quan sát.' : 'Snapshot lưu tại entry.',
+    'Observe-only: không đổi entry, size, SL hoặc TP.',
+  ].filter(Boolean).join(' | ');
+  return `<span class="pump-lift-badge ${cls}" title="${escapePumpHtml(reason)}">
+    ${escapePumpHtml(label)}
+    <small>Δ ${Number(t.pumpLiftDeltaRoe ?? 0) >= 0 ? '+' : ''}${Number(t.pumpLiftDeltaRoe ?? 0).toFixed(2)}%</small>
+  </span>`;
+}
+
+function renderPumpSelectorStats(rows = pumpSelectorStats) {
+  if (!pumpSelectorStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    pumpSelectorStatsEl.innerHTML = '';
+    pumpSelectorStatsEl.style.display = 'none';
+    return;
+  }
+  pumpSelectorStatsEl.style.display = '';
+  const history = Array.isArray(pumpSelectorModel?.historyDays)
+    ? pumpSelectorModel.historyDays.join(', ')
+    : '-';
+  pumpSelectorStatsEl.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'WATCH').toUpperCase();
+    const cls = tier === 'CORE' || tier === 'PROBE'
+      ? 'good'
+      : tier === 'AVOID'
+        ? 'bad'
+        : 'neutral';
+    const pnl = Number(row.pnl ?? 0);
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const avgPnl = row.avgPnl == null ? '-' : fmtPumpMoney(row.avgPnl);
+    return `<div class="pump-paper-metric ${cls}" title="Prior-only: ${escapePumpHtml(history)}">
+      <span class="pump-paper-metric-label">Selector · ${escapePumpHtml(tier)}</span>
+      <strong class="${pnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(pnl)}</strong>
+      <small>${row.total ?? 0} total · ${row.open ?? 0} open · ${row.pending ?? 0} pending · ${row.closed ?? 0} closed<br>
+      Net WR ${wr} · ${row.wins ?? 0}W/${row.losses ?? 0}L · Avg net ROE ${avgRoe}<br>
+      Net/trade ${avgPnl} · Gross ${fmtPumpMoney(row.grossPnl)} · Fee -$${Number(row.estimatedFeeUsdt ?? 0).toFixed(3)}<br>
+      Snapshot ${row.snapshot ?? 0} · Backfill ${row.backfill ?? 0}</small>
+    </div>`;
+  }).join('');
+}
+
+function renderPumpSelectorBadge(t) {
+  const tier = String(t?.pumpSelectorTier ?? '').toUpperCase();
+  if (!tier) return '<span style="color:var(--muted)">-</span>';
+  const cls = ['core', 'probe', 'watch', 'avoid'].includes(tier.toLowerCase())
+    ? tier.toLowerCase()
+    : 'watch';
+  const label = String(t.pumpSelectorLabel ?? tier);
+  const edge = Number(t.pumpSelectorExpectedNetRoe ?? 0);
+  const lcb = Number(t.pumpSelectorConservativeEdge ?? 0);
+  const reason = [
+    t.pumpSelectorReason,
+    `Expected net ROE ${edge >= 0 ? '+' : ''}${edge.toFixed(2)}%`,
+    `Conservative edge ${lcb >= 0 ? '+' : ''}${lcb.toFixed(2)}%`,
+    `PF ${Number(t.pumpSelectorProfitFactor ?? 0).toFixed(2)}`,
+    `SL rate ${(Number(t.pumpSelectorSlRate ?? 0) * 100).toFixed(1)}%`,
+    `${t.pumpSelectorExactClosed ?? 0} exact / ${t.pumpSelectorExactDays ?? 0} ngày / ${t.pumpSelectorSupportClosed ?? 0} support`,
+    `${t.pumpSelectorPositiveWindows ?? 0} cửa sổ dương / ${t.pumpSelectorNegativeWindows ?? 0} âm`,
+    t.pumpSelectorRecentConflict ? 'Cửa sổ 1d đang xung đột 7d.' : null,
+    t.pumpSelectorSourceFamily,
+    t.pumpSelectorExactKey,
+    t.pumpSelectorVersion,
+    t.pumpSelectorDerived ? 'Backfill để quan sát.' : 'Snapshot lưu tại entry.',
+    'Observe-only: không đổi entry, size, SL hoặc TP.',
+  ].filter(Boolean).join(' | ');
+  return `<span class="pump-selector-badge ${cls}" title="${escapePumpHtml(reason)}">
+    ${escapePumpHtml(label)}
+    <small>Edge ${edge >= 0 ? '+' : ''}${edge.toFixed(2)}% · N ${t.pumpSelectorExactClosed ?? 0}</small>
   </span>`;
 }
 
@@ -779,6 +1452,53 @@ function renderPumpComboStats(rows = pumpPaperComboStats) {
   }).join('');
 }
 
+function renderPumpComboCycleRows(target, rows = []) {
+  if (!target) return;
+  target.innerHTML = rows.map((row, index) => {
+    const comboParts = String(row.comboKey ?? '-').split('|').map((part) => part.trim()).filter(Boolean);
+    const title = comboParts.slice(0, 3).join(' · ') || row.comboKey || '-';
+    const tags = [
+      ...comboParts.slice(3),
+      row.cycleKey,
+    ].filter(Boolean).map((part) => `<span class="pump-combo-tag hot" title="${escapePumpHtml(part)}">${escapePumpHtml(part)}</span>`).join('');
+    const history = row.history ?? {};
+    const recent = row.recent ?? {};
+    const pnl = Number(history.pnl ?? 0);
+    const avgRoe = Number(history.avgRoe ?? 0);
+    const activePnl = Number(row.activePnl ?? 0);
+    return `<div class="pump-combo-card good">
+      <div class="pump-combo-head">
+        <div class="pump-combo-title">#${index + 1} ${escapePumpHtml(title)}</div>
+        <span class="pump-combo-tag hot">${row.tier === 'STABLE_GOOD' ? 'ỔN ĐỊNH' : 'ĐANG XÁC NHẬN'}</span>
+      </div>
+      <div class="pump-combo-tags">${tags}</div>
+      <div class="pump-combo-stats">
+        <div>${history.wins ?? 0}W/${history.losses ?? 0}L · Closed ${history.closed ?? 0}/${row.total ?? 0} · ${history.episodes ?? 0} episode</div>
+        <div>Ngày dương ${history.positiveDays ?? 0}/${history.days ?? 0} (${Number(history.positiveDayRate ?? 0).toFixed(0)}%) · PF ${Number(history.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="pump-combo-pnl ${pnl >= 0 ? 'pos' : 'neg'}">PnL đóng ${fmtPumpMoney(pnl)} · AvgROE ${avgRoe >= 0 ? '+' : ''}${avgRoe.toFixed(1)}%</div>
+        <div>Gần đây ${recent.positiveDays ?? 0}/${recent.days ?? 0} ngày dương · PF ${Number(recent.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="pump-combo-pnl ${activePnl >= 0 ? 'pos' : 'neg'}">Active ${row.active ?? 0} · PnL active ${fmtPumpMoney(activePnl)} · Pending ${row.pending ?? 0}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderPumpComboCycleStats(stats = pumpComboCycleStats) {
+  if (!pumpComboCycleStableEl) return;
+  const stable = Array.isArray(stats?.stableGood) ? stats.stableGood : [];
+  const forming = Array.isArray(stats?.formingGood) ? stats.formingGood : [];
+  renderPumpComboCycleRows(pumpComboCycleStableEl, stable);
+  if (!stable.length) {
+    pumpComboCycleStableEl.innerHTML = '<div style="color:var(--muted);font-size:11px">Chưa có combo Pump native đạt đủ chuẩn ổn định qua ngày.</div>';
+  }
+  if (pumpComboCycleFormingEl && pumpComboCycleFormingRowsEl) {
+    pumpComboCycleFormingEl.style.display = forming.length ? '' : 'none';
+    const summary = pumpComboCycleFormingEl.querySelector('summary');
+    if (summary) summary.textContent = `Đang xác nhận thêm ngày: ${forming.length} combo tốt`;
+    renderPumpComboCycleRows(pumpComboCycleFormingRowsEl, forming);
+  }
+}
+
 document.addEventListener('click', (e) => {
   const th = e.target.closest('[data-paper-sort]');
   if (!th || !th.classList.contains('pump-paper-sort')) return;
@@ -786,7 +1506,20 @@ document.addEventListener('click', (e) => {
   if (pumpPaperSort.key === key) {
     pumpPaperSort.dir = pumpPaperSort.dir === 'asc' ? 'desc' : 'asc';
   } else {
-    pumpPaperSort = { key, dir: key === 'status' ? 'asc' : 'desc' };
+    pumpPaperSort = {
+      key,
+      dir: [
+        'status',
+        'symbol',
+        'side',
+        'candle',
+        'btcCandle',
+        'combo',
+        'source',
+      ].includes(key)
+        ? 'asc'
+        : 'desc',
+    };
   }
   renderPumpPaperTrades(pumpPaperTradesCache, pumpPaperSummaryCache);
 });
@@ -854,9 +1587,18 @@ function renderPumpBtcTrendBadge(t) {
   }
   const relColor = aligned == null ? 'var(--muted)' : aligned ? '#34d399' : '#fb7185';
   const relText = aligned == null ? '-' : aligned ? 'THUẬN BTC' : 'NGƯỢC BTC';
+  const wave = t?.marketDirectionAtSignal?.scoreDynamics;
+  const waveHtml = wave?.shortWaveState
+    ? `<span class="liquid-short-wave" data-short-wave="${escapePumpHtml(wave.shortWaveState)}" title="${escapePumpHtml(wave.shortWaveDescription ?? 'Snapshot nhịp SHORT tại entry')}">${escapePumpHtml(wave.shortWaveLabel ?? wave.shortWaveState)}</span>`
+    : '';
+  const longWaveHtml = wave?.longWaveState
+    ? `<span class="liquid-long-wave" data-long-wave="${escapePumpHtml(wave.longWaveState)}" title="${escapePumpHtml(wave.longWaveDescription ?? 'Snapshot nhịp LONG tại entry')}">${escapePumpHtml(wave.longWaveLabel ?? wave.longWaveState)}</span>`
+    : '';
   return `<div title="${escapePumpHtml(title)}" style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">
     <span style="display:inline-flex;gap:4px;align-items:center;max-width:128px;padding:2px 6px;border-radius:4px;border:1px solid ${color};background:${bg};color:${color};font-size:10px;font-weight:950;line-height:1.15">${escapePumpHtml(trendText)}${pctText ? `<small style="font-size:9px;font-weight:850;color:${color}">${escapePumpHtml(pctText)}</small>` : ''}</span>
     <span style="font-size:10px;font-weight:950;color:${relColor}">${relText}</span>
+    ${waveHtml}
+    ${longWaveHtml}
   </div>`;
 }
 
@@ -864,6 +1606,57 @@ function fmtPumpMoney(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '-';
   return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(3)}`;
+}
+
+function renderPumpSupportEntryCards(element, rows = [], emptyLabel = 'Chưa có cohort đủ điều kiện') {
+  if (!element) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    element.innerHTML = `<div class="pump-paper-metric neutral">
+      <span class="pump-paper-metric-label">${escapePumpHtml(emptyLabel)}</span>
+      <strong>0 lệnh</strong>
+      <small>Chỉ thống kê · OBSERVE ONLY</small>
+    </div>`;
+    return;
+  }
+  element.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'WATCH').toUpperCase();
+    const cls = tier === 'GOOD' ? 'good' : tier === 'RISK' ? 'bad' : 'neutral';
+    const totalPnl = Number(row.pnl ?? 0);
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const streak = Number(row.negativeDayStreak ?? 0) > 0
+      ? ` · chuỗi âm ${Number(row.negativeDayStreak)} ngày`
+      : '';
+    return `<div class="pump-paper-metric ${cls}">
+      <span class="pump-paper-metric-label">${escapePumpHtml(row.label ?? 'ENTRY SUPPORT')}</span>
+      <strong class="${totalPnl >= 0 ? 'positive' : 'negative'}">${fmtPumpMoney(totalPnl)}</strong>
+      <small>${row.total ?? 0} lệnh · ${row.open ?? 0} mở · ${row.closed ?? 0} đóng<br>
+      ${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${wr} · AvgROE ${avgRoe}<br>
+      PnL đóng ${fmtPumpMoney(row.closedPnl)} · active ${fmtPumpMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}<br>
+      ngày dương ${row.positiveDays ?? 0}/${row.days ?? 0} · ngày âm ${row.negativeDays ?? 0}${streak}</small>
+    </div>`;
+  }).join('');
+}
+
+function renderPumpSupportEntryStats(stats = pumpSupportEntryStats) {
+  renderPumpSupportEntryCards(
+    pumpSupportEntryGroupsEl,
+    stats?.groups,
+    'Chưa có tín hiệu đẹp/xấu trong khoảng ngày',
+  );
+  renderPumpSupportEntryCards(
+    pumpSupportEntryShortEl,
+    stats?.shortSourceGroups,
+    'Chưa có SHORT đủ điều kiện sau flip',
+  );
+  renderPumpSupportEntryCards(
+    pumpSupportEntryLongEl,
+    stats?.longSourceGroups,
+    'Chưa có LONG đủ điều kiện sau flip',
+  );
 }
 
 function appendPumpSummaryPnl(countTxt, summary) {
@@ -913,9 +1706,53 @@ function renderPumpPaperOverview(summary) {
   }).join('');
 }
 
+function pumpPaperCandleSortName(value) {
+  const raw = typeof value === 'object' ? value?.name : value;
+  const normalized = String(raw ?? '').trim().toUpperCase();
+  return ['NO_DATA', 'UNKNOWN', '-'].includes(normalized) ? '' : normalized;
+}
+
 function pumpPaperSortValue(t, key) {
   if (key === 'symbol') return t.symbol ?? '';
   if (key === 'side') return t.side ?? '';
+  if (key === 'candle') {
+    const timeframe = String(
+      t.candlePatternTimeframe ?? t.timeframe ?? t.interval ?? t.tf ?? '',
+    ).toUpperCase();
+    return pumpPaperCandleSortName(
+      t.candlePatternAtEntry
+        ?? (timeframe === '5M' ? t.candlePattern5m : t.candlePattern15m)
+        ?? t.candlePattern5m
+        ?? t.brCandleKind,
+    );
+  }
+  if (key === 'btcCandle') {
+    return pumpPaperCandleSortName(
+      t.btcCandlePatternAtEntry
+        ?? t.btcCandleAtEntry
+        ?? t.btcCandlePattern5m,
+    );
+  }
+  if (key === 'candleFlag') {
+    const evaluation = window.PaperCandleColumns?.evaluate?.(t);
+    const label = String(
+      evaluation?.label ?? evaluation?.tier ?? '',
+    ).toUpperCase();
+    const rank = label.includes('GOOD')
+      ? 5
+      : label.includes('WATCH+')
+        ? 4
+        : label.includes('WATCH')
+          ? 3
+          : label.includes('RISK')
+            ? 1
+            : 0;
+    return rank * 100 + (
+      { GOOD: 5, WATCH: 3, RISK: 1 }[
+        String(evaluation?.tier ?? '').toUpperCase()
+      ] ?? 0
+    );
+  }
   if (key === 'entry') return Number(t.entryPrice);
   if (key === 'sl') return t.sl == null ? null : Number(t.sl);
   if (key === 'tp') return t.tp == null ? null : Number(t.tp);
@@ -926,8 +1763,34 @@ function pumpPaperSortValue(t, key) {
   if (key === 'roe') return t.roe == null ? null : Number(t.roe);
   if (key === 'source') return t.source ?? '';
   if (key === 'combo') return pumpTradeCombo(t);
+  if (key === 'canonical') {
+    return { A: 4, B: 3, WATCH: 2, BLOCK: 1 }[
+      String(t.pumpCanonicalCandidateTier ?? 'WATCH').toUpperCase()
+    ] ?? 0;
+  }
+  if (key === 'pumpObs') {
+    const best = t.pumpObsBestSelected === true ? 100 : 0;
+    const tier = { A: 40, B: 30, WATCH: 20, BLOCK: 10 }[
+      String(t.pumpObsSourceTier ?? 'WATCH').toUpperCase()
+    ] ?? 0;
+    const l1 = { PRIME: 5, GOOD: 4, WATCH: 3, RISK: 2, NO_DATA: 1 }[
+      String(t.pumpObsL1Tier ?? 'NO_DATA').toUpperCase()
+    ] ?? 0;
+    return best + tier + l1;
+  }
+  if (key === 'evalTier') {
+    return { A: 3, B: 2, BLOCK: 1 }[String(t.pumpEvalTier ?? '').toUpperCase()] ?? 0;
+  }
   if (key === 'stage2') {
     return { WATCH_PLUS: 3, WATCH: 2, RISK: 1 }[String(t.pumpStage2Tier ?? '').toUpperCase()] ?? 0;
+  }
+  if (key === 'lift') {
+    return { BOOST: 3, NEUTRAL: 2, DEGRADE: 1 }[String(t.pumpLiftTier ?? '').toUpperCase()] ?? 0;
+  }
+  if (key === 'selector') {
+    return { CORE: 4, PROBE: 3, WATCH: 2, AVOID: 1 }[
+      String(t.pumpSelectorTier ?? '').toUpperCase()
+    ] ?? 0;
   }
   if (key === 'score') return Number((t.source ?? '').replace(/\D/g, '')) || 0;
   if (key === 'time') return Date.parse(t.createdAt ?? '') || 0;
@@ -1007,7 +1870,9 @@ function renderPumpPaperTrades(trades, summary) {
   const all    = sortPumpPaperTrades([...open, ...closed]);
   const totalOpen = summary?.open ?? open.length;
   const totalClosed = summary?.closed ?? closed.length;
-  let countTxt = `${pumpPaperDay && pumpPaperDay !== 'all' ? `${pumpPaperDay} · ` : ''}${totalOpen} đang mở · ${totalClosed} đã đóng`;
+  const dateLabel = pumpPaperDateLabel();
+  const datePrefix = dateLabel ? `${dateLabel} · ` : '';
+  let countTxt = `${datePrefix}${totalOpen} đang mở · ${totalClosed} đã đóng`;
   if (pumpPaperPagination) {
     countTxt += ` · page ${pumpPaperPagination.page}/${pumpPaperPagination.totalPages} (${all.length}/${pumpPaperPagination.total})`;
   }
@@ -1019,12 +1884,22 @@ function renderPumpPaperTrades(trades, summary) {
   countTxt = appendPumpSummaryPnl(countTxt, summary);
   pumpPaperCount.textContent = countTxt;
   renderPumpPaperOverview(summary);
+  renderPumpSourceStats(pumpSourceStats);
+  renderPumpObservationStats(pumpObservationStats);
+  renderPumpSourceLongCorrReboundStats(pumpSourceLongCorrReboundStats);
+  renderPumpSupportEntryStats(pumpSupportEntryStats);
+  renderPumpComboCycleStats(pumpComboCycleStats);
+  renderEmaLayerAnalysis(emaLayerAnalysis);
+  renderPumpCanonicalStats(pumpCanonicalStats);
+  renderPumpEvalStats(pumpEvalStats);
   renderPumpStage2Stats(pumpStage2Stats);
+  renderPumpLiftStats(pumpLiftStats);
+  renderPumpSelectorStats(pumpSelectorStats);
   renderPumpComboStats(pumpPaperComboStats);
   renderPumpPaperPager();
 
   if (!all.length) {
-    pumpPaperBody.innerHTML = '<tr><td colspan="18" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
+    pumpPaperBody.innerHTML = '<tr><td colspan="20" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>';
     return;
   }
 
@@ -1082,7 +1957,9 @@ function renderPumpPaperTrades(trades, summary) {
       <td style="font-size:11px">${outcomeHtml}</td>
       <td style="font-size:11px;color:var(--text);font-weight:700">${scoreNum || '-'}</td>
       <td style="font-size:10px;color:var(--cyan);max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${combo.replace(/"/g, '&quot;')}">${comboShort}</td>
-      <td>${renderPumpStage2Badge(t)}</td>
+      <td>${renderEmaLayerBadges(t)}</td>
+      <td>${renderPumpCanonicalBadge(t)}</td>
+      <td>${renderPumpObservationBadges(t)}${renderPumpSourceLongCorrReboundBadge(t)}</td>
       <td style="font-size:10px;color:var(--muted)">${t.source ?? '-'}</td>
       <td style="font-size:11px;color:var(--muted)">${new Date(t.createdAt).toLocaleTimeString('vi')}</td>
       <td>${actionBtns}</td>
@@ -1121,7 +1998,9 @@ function refreshPumpPaperPnl(trades) {
   const summary = pumpPaperSummaryCache;
   const totalOpen = summary?.open ?? open;
   const totalClosed = summary?.closed ?? closed;
-  let countTxt = `${pumpPaperDay && pumpPaperDay !== 'all' ? `${pumpPaperDay} · ` : ''}${totalOpen} đang mở · ${totalClosed} đã đóng`;
+  const dateLabel = pumpPaperDateLabel();
+  const datePrefix = dateLabel ? `${dateLabel} · ` : '';
+  let countTxt = `${datePrefix}${totalOpen} đang mở · ${totalClosed} đã đóng`;
   if (pumpPaperPagination) {
     countTxt += ` · page ${pumpPaperPagination.page}/${pumpPaperPagination.totalPages} (${trades.length}/${pumpPaperPagination.total})`;
   }
@@ -1133,30 +2012,86 @@ function refreshPumpPaperPnl(trades) {
   countTxt = appendPumpSummaryPnl(countTxt, summary);
   pumpPaperCount.textContent = countTxt;
   renderPumpPaperOverview(summary);
+  renderPumpSourceStats(pumpSourceStats);
+  renderPumpObservationStats(pumpObservationStats);
+  renderPumpSourceLongCorrReboundStats(pumpSourceLongCorrReboundStats);
+  renderPumpSupportEntryStats(pumpSupportEntryStats);
+  renderPumpComboCycleStats(pumpComboCycleStats);
+  renderEmaLayerAnalysis(emaLayerAnalysis);
+  renderPumpCanonicalStats(pumpCanonicalStats);
+  renderPumpEvalStats(pumpEvalStats);
   renderPumpStage2Stats(pumpStage2Stats);
+  renderPumpLiftStats(pumpLiftStats);
+  renderPumpSelectorStats(pumpSelectorStats);
   renderPumpComboStats(pumpPaperComboStats);
   renderPumpPaperPager();
 }
 
 let _pumpPaperFetching = false;
-async function loadPumpPaperTrades(page = pumpPaperPage, forceRender = false) {
-  if (_pumpPaperFetching) return;
+let _pumpPaperPendingReload = null;
+async function loadPumpPaperTrades(page = pumpPaperPage, forceRender = false, showDateLoading = false) {
+  if (showDateLoading) setPumpPaperDateSearchLoading(true);
+  if (_pumpPaperFetching) {
+    if (forceRender || showDateLoading) {
+      const pendingDateLoading = Boolean(_pumpPaperPendingReload?.dateLoading) || showDateLoading;
+      _pumpPaperPendingReload = {
+        page,
+        forceRender,
+        stage2: pumpStage2Filter,
+        lift: pumpLiftFilter,
+        selector: pumpSelectorFilter,
+        dateLoading: pendingDateLoading,
+      };
+    }
+    return;
+  }
   _pumpPaperFetching = true;
+  const requestedStage2Filter = pumpStage2Filter;
+  const requestedLiftFilter = pumpLiftFilter;
+  const requestedSelectorFilter = pumpSelectorFilter;
   try {
     const nextPage = Math.max(1, Number(page) || 1);
-    const dayParam = encodeURIComponent(pumpPaperDay || 'all');
-    const stage2Param = encodeURIComponent(pumpStage2Filter || 'all');
-    const res = await fetch(`/api/pump-paper-trades?page=${nextPage}&limit=${pumpPaperLimit}&day=${dayParam}&stage2=${stage2Param}`);
+    const query = new URLSearchParams({
+      page: String(nextPage),
+      limit: String(pumpPaperLimit),
+      stage2: pumpStage2Filter || 'all',
+      lift: pumpLiftFilter || 'all',
+      selector: pumpSelectorFilter || 'all',
+    });
+    if (pumpPaperDateFrom) query.set('from', pumpPaperDateFrom);
+    if (pumpPaperDateTo) query.set('to', pumpPaperDateTo);
+    const res = await fetch(`/api/pump-paper-trades?${query}`);
     if (!res.ok) return;
     const data = await res.json();
     pumpPaperPage = data.pagination?.page ?? nextPage;
     pumpPaperPagination = data.pagination ?? null;
-    pumpPaperAvailableDays = data.availableDays ?? pumpPaperAvailableDays;
     pumpPaperComboStats = data.comboStats ?? [];
+    pumpSourceStats = data.sourceStats ?? [];
+    pumpObservationStats = data.pumpObservationStats ?? null;
+    pumpSourceLongCorrReboundStats = data.sourceLongCorrReboundStats ?? [];
+    pumpSupportEntryStats = data.supportEntryStats ?? null;
+    pumpComboCycleStats = data.comboCycleStats ?? null;
+    emaLayerAnalysis = data.emaLayerAnalysis ?? null;
+    pumpCanonicalStats = data.canonicalStats ?? [];
+    pumpCanonicalModel = data.canonicalModel ?? null;
+    pumpEvalStats = data.pumpEvalStats ?? [];
     pumpStage2Stats = data.stage2Stats ?? [];
-    pumpStage2Filter = data.filter?.stage2 ?? pumpStage2Filter;
+    pumpLiftStats = data.liftStats ?? [];
+    pumpLiftModel = data.liftModel ?? null;
+    pumpSelectorStats = data.selectorStats ?? [];
+    pumpSelectorModel = data.selectorModel ?? null;
+    if (pumpStage2Filter === requestedStage2Filter) {
+      pumpStage2Filter = data.filter?.stage2 ?? pumpStage2Filter;
+    }
+    if (pumpLiftFilter === requestedLiftFilter) {
+      pumpLiftFilter = data.filter?.lift ?? pumpLiftFilter;
+    }
+    if (pumpSelectorFilter === requestedSelectorFilter) {
+      pumpSelectorFilter = data.filter?.selector ?? pumpSelectorFilter;
+    }
     if (pumpStage2FilterEl) pumpStage2FilterEl.value = pumpStage2Filter;
-    renderPumpPaperDayOptions(pumpPaperAvailableDays);
+    if (pumpLiftFilterEl) pumpLiftFilterEl.value = pumpLiftFilter;
+    if (pumpSelectorFilterEl) pumpSelectorFilterEl.value = pumpSelectorFilter;
     const trades = data.trades ?? [];
     pumpPaperSummaryCache = data.summary;
     // Nếu bảng đã có rows → in-place update, ngược lại full render
@@ -1168,6 +2103,20 @@ async function loadPumpPaperTrades(page = pumpPaperPage, forceRender = false) {
     }
   } catch {} finally {
     _pumpPaperFetching = false;
+    const pending = _pumpPaperPendingReload;
+    _pumpPaperPendingReload = null;
+    if (pending) {
+      pumpStage2Filter = pending.stage2;
+      pumpLiftFilter = pending.lift;
+      pumpSelectorFilter = pending.selector;
+      queueMicrotask(() => loadPumpPaperTrades(
+        pending.page,
+        pending.forceRender,
+        pending.dateLoading || showDateLoading,
+      ));
+    } else if (showDateLoading) {
+      setPumpPaperDateSearchLoading(false);
+    }
   }
 }
 
@@ -1246,11 +2195,15 @@ window.deletePumpPaperTrade = async function(id) {
   } catch {}
 };
 
+initializePumpPaperDateRange();
+
 (async () => {
-  await fetchAndApply();
   connect();
-  await loadOpenLimitOrders();
+  const paperLoad = loadPumpPaperTrades();
+  const signalLoad = fetchAndApply();
+  const orderLoad = loadOpenLimitOrders();
   setInterval(loadOpenLimitOrders, 30_000);
-  await loadPumpPaperTrades();
+  await paperLoad;
   schedulePumpPaperPoll();
+  await Promise.allSettled([signalLoad, orderLoad]);
 })();

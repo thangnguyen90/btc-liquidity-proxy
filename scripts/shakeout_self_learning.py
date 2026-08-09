@@ -65,9 +65,126 @@ def btc_trend_bucket(record: dict[str, Any]) -> str:
     return f"BTC_{direction}_{strength}"
 
 
+def numeric_bucket(value: Any, thresholds: list[tuple[float, str]], fallback: str) -> str:
+    parsed = number(value)
+    if parsed is None:
+        return fallback
+    for threshold, label in thresholds:
+        if parsed >= threshold:
+            return label
+    return thresholds[-1][1] if thresholds else fallback
+
+
+def observation_features(record: dict[str, Any]) -> dict[str, str]:
+    snapshot = record.get("shakeoutObservationSnapshot")
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    factors = record.get("shakeoutSignalFactors")
+    if not isinstance(factors, dict):
+        factors = record.get("factors")
+    if not isinstance(factors, dict):
+        factors = snapshot.get("factors")
+    factors = factors if isinstance(factors, dict) else {}
+    buckets = record.get("shakeoutObservationBuckets")
+    buckets = buckets if isinstance(buckets, dict) else {}
+    raw_count = sum(
+        1 for key in (
+            "move5mPct", "move15mPct", "drop5mPct", "retrace5mPct",
+            "vol5mX", "vol15mX", "emaZoneDistPct", "reclaimPct",
+            "pullbackAge5m", "wickRejectPct", "rsi5m", "rsi15m",
+        )
+        if number(factors.get(key)) is not None
+    )
+    coverage = text(record.get("shakeoutObservationCoverage"), "")
+    if not coverage:
+        context_count = sum([
+            1 if number(record.get("btcCorr") or snapshot.get("btcCorr")) is not None else 0,
+            1 if pattern_name(record.get("candlePatternAtEntry") or record.get("candlePattern5m")) != "UNKNOWN" else 0,
+            1 if pattern_name(record.get("btcCandlePatternAtEntry") or record.get("btcCandlePattern5m")) != "UNKNOWN" else 0,
+            1 if text(record.get("btcPhase") or snapshot.get("btcPhase"), "") else 0,
+        ])
+        coverage = "FULL" if raw_count >= 10 and context_count >= 3 else "PARTIAL" if raw_count >= 5 else "LEGACY"
+    score = record.get("score") if record.get("score") is not None else snapshot.get("score")
+    quote_volume = (
+        record.get("shakeoutSignalQuoteVolume")
+        if record.get("shakeoutSignalQuoteVolume") is not None
+        else snapshot.get("quoteVolume")
+    )
+    entry_distance = (
+        record.get("entryDistancePct")
+        if record.get("entryDistancePct") is not None
+        else snapshot.get("entryDistancePct")
+    )
+    rr = (
+        record.get("shakeoutObservationRr")
+        if record.get("shakeoutObservationRr") is not None
+        else snapshot.get("rr")
+    )
+    return {
+        "coverage": coverage,
+        "setup": text(
+            record.get("shakeoutClass")
+            or record.get("subtype")
+            or record.get("signalType")
+            or snapshot.get("setup"),
+            "SETUP_NO_DATA",
+        ),
+        "stage": text(record.get("stage") or snapshot.get("stage"), "STAGE_NO_DATA"),
+        "entryMode": text(
+            record.get("shakeoutEntryMode") or record.get("entryMode") or snapshot.get("entryMode"),
+            "ENTRY_MODE_NO_DATA",
+        ),
+        "score": buckets.get("score") or numeric_bucket(
+            score,
+            [(85, "SCORE_85_PLUS"), (75, "SCORE_75_84"), (65, "SCORE_65_74"), (55, "SCORE_55_64"), (-math.inf, "SCORE_LT_55")],
+            "SCORE_NO_DATA",
+        ),
+        "move5m": buckets.get("move5m") or numeric_bucket(
+            factors.get("move5mPct"),
+            [(30, "MOVE_30_PLUS"), (20, "MOVE_20_30"), (12, "MOVE_12_20"), (-math.inf, "MOVE_LT_12")],
+            "MOVE_NO_DATA",
+        ),
+        "volume5m": buckets.get("volume5m") or numeric_bucket(
+            factors.get("vol5mX"),
+            [(5, "VOL_5X_PLUS"), (3, "VOL_3_5X"), (1.7, "VOL_1_7_3X"), (-math.inf, "VOL_LT_1_7X")],
+            "VOL_NO_DATA",
+        ),
+        "reclaim": buckets.get("reclaim") or numeric_bucket(
+            factors.get("reclaimPct"),
+            [(7, "RECLAIM_7_PLUS"), (4.5, "RECLAIM_4_5_7"), (2.5, "RECLAIM_2_5_4_5"), (-math.inf, "RECLAIM_LT_2_5")],
+            "RECLAIM_NO_DATA",
+        ),
+        "wick": buckets.get("wick") or numeric_bucket(
+            factors.get("wickRejectPct"),
+            [(55, "WICK_55_PLUS"), (35, "WICK_35_55"), (-math.inf, "WICK_LT_35")],
+            "WICK_NO_DATA",
+        ),
+        "pullbackAge": buckets.get("pullbackAge") or numeric_bucket(
+            -(number(factors.get("pullbackAge5m")) or 0),
+            [(-3, "AGE_0_3"), (-6, "AGE_4_6"), (-10, "AGE_7_10"), (-math.inf, "AGE_11_PLUS")],
+            "AGE_NO_DATA",
+        ) if number(factors.get("pullbackAge5m")) is not None else "AGE_NO_DATA",
+        "entryDistance": buckets.get("entryDistance") or numeric_bucket(
+            -(abs(number(entry_distance) or 0)),
+            [(-1, "ENTRY_DIST_0_1"), (-3, "ENTRY_DIST_1_3"), (-5, "ENTRY_DIST_3_5"), (-math.inf, "ENTRY_DIST_5_PLUS")],
+            "ENTRY_DIST_NO_DATA",
+        ) if number(entry_distance) is not None else "ENTRY_DIST_NO_DATA",
+        "rr": buckets.get("rr") or numeric_bucket(
+            rr,
+            [(2, "RR_2_PLUS"), (1, "RR_1_2"), (0.5, "RR_0_5_1"), (-math.inf, "RR_LT_0_5")],
+            "RR_NO_DATA",
+        ),
+        "liquidity": buckets.get("liquidity") or numeric_bucket(
+            quote_volume,
+            [(100_000_000, "LIQ_100M_PLUS"), (20_000_000, "LIQ_20_100M"), (5_000_000, "LIQ_5_20M"), (-math.inf, "LIQ_LT_5M")],
+            "LIQ_NO_DATA",
+        ),
+    }
+
+
 def record_features(record: dict[str, Any]) -> dict[str, str]:
     relation_obj = record.get("btcRelation") if isinstance(record.get("btcRelation"), dict) else {}
     factors = record.get("factors") if isinstance(record.get("factors"), dict) else {}
+    observation = observation_features(record)
     side = text(record.get("side") or record.get("action"), "SIDE_UNKNOWN")
     timeframe = text(record.get("signalTimeframe") or record.get("interval") or factors.get("timeframe"), "TF_UNKNOWN")
     relation = text(record.get("btcRelationLabel"), "")
@@ -85,12 +202,18 @@ def record_features(record: dict[str, Any]) -> dict[str, str]:
         "btcTrend": btc_trend_bucket(record),
         "relation": relation,
         "session": hour_bucket(record),
+        **observation,
     }
 
 
 def group_candidates(features: dict[str, str]) -> list[tuple[str, str, int]]:
     f = features
-    return [
+    observation_groups = [] if f["coverage"] != "FULL" else [
+        ("OBS_STRUCTURE", "|".join([f["setup"], f["side"], f["stage"], f["score"], f["move5m"], f["volume5m"], f["reclaim"]]), 9),
+        ("OBS_EXECUTION", "|".join([f["setup"], f["side"], f["variant"], f["entryMode"], f["entryDistance"], f["rr"], f["btcTrend"], f["relation"]]), 8),
+        ("OBS_FLOW_CANDLE", "|".join([f["side"], f["volume5m"], f["reclaim"], f["wick"], f["pullbackAge"], f["pattern5m"], f["btcPattern5m"], f["btcTrend"], f["liquidity"]]), 7),
+    ]
+    return observation_groups + [
         ("CANDLE_BTC_PAIR", "|".join([f["pattern5m"], f["pattern15m"], f["side"], f["timeframe"], f["variant"], f["btcTrend"], f["btcPattern5m"], f["relation"], f["highJumpRisk"]]), 6),
         ("CANDLE_BTC", "|".join([f["pattern5m"], f["side"], f["variant"], f["btcTrend"], f["btcPattern5m"]]), 5),
         ("CANDLE_TREND", "|".join([f["pattern5m"], f["side"], f["variant"], f["btcTrend"]]), 4),
@@ -339,7 +462,7 @@ def candle_context_prior(record: dict[str, Any]) -> dict[str, Any]:
         "groupLevel": "CANDLE_BTC_PRIOR",
         "group": "|".join([pattern, side, variant, btc_trend, btc_pattern]),
         "learned": False,
-        "model": "CANDLE_WALK_FORWARD_V2",
+        "model": "CANDLE_WALK_FORWARD_V3_CONTEXT",
     }
 
 
@@ -599,7 +722,7 @@ def score_record(record: dict[str, Any], groups: dict[tuple[str, str], dict[str,
         "group": key,
         "metrics": metrics,
         "learned": True,
-        "model": "CANDLE_WALK_FORWARD_V2",
+        "model": "CANDLE_WALK_FORWARD_V3_CONTEXT",
     })
     return result
 
@@ -759,7 +882,7 @@ def main() -> None:
                 "group": "-",
                 "learned": False,
                 "scoredCausally": False,
-                "model": "CANDLE_WALK_FORWARD_V2",
+                "model": "CANDLE_WALK_FORWARD_V3_CONTEXT",
             }
     # Rows outside the active legacy lookback remain explicitly unscored instead
     # of receiving a label learned from their own or future outcomes.
@@ -811,7 +934,7 @@ def main() -> None:
     )
 
     output = {
-        "schemaVersion": 5,
+        "schemaVersion": 6,
         "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "mode": "ANALYSIS_ONLY",
         "guardrail": {
@@ -833,7 +956,7 @@ def main() -> None:
                 "global": candle_global,
                 "learnedGroups": candle_learned_count,
                 "method": "CAUSAL_WALK_FORWARD",
-                "model": "CANDLE_WALK_FORWARD_V2",
+                "model": "CANDLE_WALK_FORWARD_V3_CONTEXT",
             },
             "legacy": {
                 "closedSamples": len(legacy_training_rows),

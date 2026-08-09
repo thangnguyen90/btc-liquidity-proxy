@@ -3,6 +3,36 @@ import { binanceRateGate } from './binanceRateGate.js';
 
 const FUTURES_BASE_URL = 'https://fapi.binance.com';
 
+function apiKeyFingerprint(apiKey) {
+  return crypto.createHash('sha256').update(String(apiKey ?? '')).digest('hex').slice(0, 12);
+}
+
+function credentialFingerprint(apiKey, apiSecret) {
+  return crypto.createHash('sha256')
+    .update(`${String(apiKey ?? '')}\0${String(apiSecret ?? '')}`)
+    .digest('hex')
+    .slice(0, 12);
+}
+
+function stableParamsKey(params = {}) {
+  return Object.entries(params)
+    .filter(([key, value]) => key !== 'timestamp' && key !== 'signature' && value !== undefined && value !== null && value !== '')
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join('&');
+}
+
+async function fetchWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  timeout.unref?.();
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export class BinanceRateLimitError extends Error {
   constructor(message, { status, retryAfterMs, blockedUntil }) {
     super(message);
@@ -10,6 +40,15 @@ export class BinanceRateLimitError extends Error {
     this.status = status;
     this.retryAfterMs = retryAfterMs;
     this.blockedUntil = blockedUntil;
+  }
+}
+
+export class BinanceApiError extends Error {
+  constructor(message, { status, code } = {}) {
+    super(message);
+    this.name = 'BinanceApiError';
+    this.status = status;
+    this.code = code;
   }
 }
 
@@ -29,13 +68,18 @@ function parseRateLimitMeta(response, bodyText = '') {
 async function throwIfRateLimited(response, label) {
   if (response.ok) return;
   const text = await response.text().catch(() => '');
+  let body = {};
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { msg: text }; }
   if (response.status === 429 || response.status === 418) {
-    throw new BinanceRateLimitError(`${label} ${response.status}: ${text}`, {
+    throw new BinanceRateLimitError(`${label} ${response.status}: ${body?.msg ?? text}`, {
       status: response.status,
       ...parseRateLimitMeta(response, text),
     });
   }
-  throw new Error(`${label} ${response.status}: ${text}`);
+  throw new BinanceApiError(`${label} ${response.status}: ${body?.msg ?? text}`, {
+    status: response.status,
+    code: Number(body?.code),
+  });
 }
 
 function endpointWeight(method, path, params = {}) {
@@ -119,8 +163,8 @@ export class BinanceClient {
     return this.get('/futures/data/topLongShortAccountRatio', { symbol, period, limit }, options);
   }
 
-  async getPositionMode({ apiKey, apiSecret }) {
-    const res = await this.signedRequest('GET', '/fapi/v1/positionSide/dual', {}, { apiKey, apiSecret });
+  async getPositionMode({ apiKey, apiSecret, ...options }) {
+    const res = await this.signedRequest('GET', '/fapi/v1/positionSide/dual', {}, { apiKey, apiSecret, ...options });
     return res.dualSidePosition; // true = hedge mode
   }
 
@@ -156,14 +200,14 @@ export class BinanceClient {
     return this.signedRequest('GET', '/fapi/v2/balance', { recvWindow }, { apiKey, apiSecret });
   }
 
-  async getPositions({ apiKey, apiSecret, recvWindow = 5000 }) {
-    return this.signedRequest('GET', '/fapi/v2/positionRisk', { recvWindow }, { apiKey, apiSecret });
+  async getPositions({ apiKey, apiSecret, recvWindow = 5000, ...options }) {
+    return this.signedRequest('GET', '/fapi/v2/positionRisk', { recvWindow }, { apiKey, apiSecret, ...options });
   }
 
-  async getOpenOrders({ symbol, apiKey, apiSecret, recvWindow = 5000 }) {
+  async getOpenOrders({ symbol, apiKey, apiSecret, recvWindow = 5000, ...options }) {
     const params = { recvWindow };
     if (symbol) params.symbol = symbol;
-    return this.signedRequest('GET', '/fapi/v1/openOrders', params, { apiKey, apiSecret });
+    return this.signedRequest('GET', '/fapi/v1/openOrders', params, { apiKey, apiSecret, ...options });
   }
 
   async getUserTrades({ symbol, limit = 50, apiKey, apiSecret, recvWindow = 5000 }) {
@@ -191,11 +235,14 @@ export class BinanceClient {
       method: 'POST',
       path: '/fapi/v1/listenKey',
       weight: endpointWeight('POST', '/fapi/v1/listenKey'),
+      priority: 0,
+      requiresAuth: true,
+      authScope: `listen:${apiKeyFingerprint(apiKey)}`,
     }, async () => {
-      const res = await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
+      const res = await fetchWithTimeout(`${this.baseUrl}/fapi/v1/listenKey`, {
         method: 'POST',
         headers: { 'X-MBX-APIKEY': apiKey, 'user-agent': 'btc-liquidity-proxy/0.1.0' },
-      });
+      }, this.timeoutMs);
       await throwIfRateLimited(res, 'createListenKey');
       return res.json();
     });
@@ -206,11 +253,14 @@ export class BinanceClient {
       method: 'PUT',
       path: '/fapi/v1/listenKey',
       weight: endpointWeight('PUT', '/fapi/v1/listenKey'),
+      priority: 0,
+      requiresAuth: true,
+      authScope: `listen:${apiKeyFingerprint(apiKey)}`,
     }, async () => {
-      const res = await fetch(`${this.baseUrl}/fapi/v1/listenKey`, {
+      const res = await fetchWithTimeout(`${this.baseUrl}/fapi/v1/listenKey`, {
         method: 'PUT',
         headers: { 'X-MBX-APIKEY': apiKey, 'user-agent': 'btc-liquidity-proxy/0.1.0' },
-      });
+      }, this.timeoutMs);
       await throwIfRateLimited(res, 'keepAliveListenKey');
       return null;
     });
@@ -231,57 +281,56 @@ export class BinanceClient {
   }
 
   async getAccountUid({ apiKey, apiSecret, recvWindow = 5000 }) {
-    // Spot API endpoint trả về UID
     const params = { recvWindow };
-    const payload = { ...params, timestamp: Date.now() };
-    const query = new URLSearchParams();
-    Object.entries(payload).forEach(([k, v]) => { if (v !== undefined) query.set(k, String(v)); });
-    const sig = (await import('node:crypto')).createHmac('sha256', apiSecret).update(query.toString()).digest('hex');
-    query.set('signature', sig);
+    const authScope = `signed:${credentialFingerprint(apiKey, apiSecret)}`;
     return this.rateGate.schedule({
       method: 'GET',
       path: '/sapi/v1/account/uid',
       weight: 1,
+      priority: 5,
+      dropOnCongestion: true,
+      dedupeKey: `${authScope}:/sapi/v1/account/uid?${stableParamsKey(params)}`,
+      requiresAuth: true,
+      authScope,
     }, async () => {
-      const res = await fetch(`https://api.binance.com/sapi/v1/account/uid?${query}`, {
+      const query = new URLSearchParams({ ...params, timestamp: String(Date.now()) });
+      const sig = crypto.createHmac('sha256', apiSecret).update(query.toString()).digest('hex');
+      query.set('signature', sig);
+      const res = await fetchWithTimeout(`https://api.binance.com/sapi/v1/account/uid?${query}`, {
         headers: { 'X-MBX-APIKEY': apiKey },
-      });
+      }, this.timeoutMs);
       await throwIfRateLimited(res, 'getAccountUid');
       return res.json();
     });
   }
 
-  async signedRequest(method, path, params, { apiKey, apiSecret }) {
-    const payload = {
-      ...params,
-      timestamp: Date.now(),
-    };
-    const query = new URLSearchParams();
-
-    Object.entries(payload).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== '') {
-        query.set(key, String(value));
-      }
-    });
-
-    const signature = crypto
-      .createHmac('sha256', apiSecret)
-      .update(query.toString())
-      .digest('hex');
-
-    query.set('signature', signature);
-
-    const url = new URL(path, this.baseUrl);
+  async signedRequest(method, path, params, {
+    apiKey,
+    apiSecret,
+    priority,
+    dropOnCongestion,
+    dedupe = true,
+    dedupeKey,
+    source,
+  }) {
     const useQueryString = method === 'GET' || method === 'DELETE';
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
-    if (useQueryString) {
-      query.forEach((value, key) => url.searchParams.set(key, value));
-    }
+    const isRead = method === 'GET';
+    const authScope = `signed:${credentialFingerprint(apiKey, apiSecret)}`;
 
     const doFetch = async () => {
-      const response = await fetch(url, {
+      // Timestamp/signature must be created when the task actually leaves the
+      // queue; signing before a long wait can exceed recvWindow.
+      const payload = { ...params, timestamp: Date.now() };
+      const query = new URLSearchParams();
+      Object.entries(payload).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
+      });
+      const signature = crypto.createHmac('sha256', apiSecret).update(query.toString()).digest('hex');
+      query.set('signature', signature);
+      const url = new URL(path, this.baseUrl);
+      if (useQueryString) query.forEach((value, key) => url.searchParams.set(key, value));
+
+      const response = await fetchWithTimeout(url, {
         method,
         headers: {
           accept: 'application/json',
@@ -290,8 +339,7 @@ export class BinanceClient {
           'X-MBX-APIKEY': apiKey,
         },
         body: useQueryString ? undefined : query.toString(),
-        signal: controller.signal,
-      });
+      }, this.timeoutMs);
       const text = await response.text();
       let body = {};
       try { body = text ? JSON.parse(text) : {}; } catch { body = { msg: text }; }
@@ -303,21 +351,28 @@ export class BinanceClient {
             ...parseRateLimitMeta(response, text),
           });
         }
-        throw new Error(body?.msg ?? `Binance ${response.status} ${response.statusText}`);
+        throw new BinanceApiError(body?.msg ?? `Binance ${response.status} ${response.statusText}`, {
+          status: response.status,
+          code: Number(body?.code),
+        });
       }
 
       return body;
     };
 
-    try {
-      return await this.rateGate.schedule({
-        method,
-        path,
-        weight: endpointWeight(method, path, params),
-      }, doFetch);
-    } finally {
-      clearTimeout(timeout);
-    }
+    return this.rateGate.schedule({
+      method,
+      path,
+      weight: endpointWeight(method, path, params),
+      priority: Number.isFinite(Number(priority)) ? Number(priority) : isRead ? 5 : 0,
+      dropOnCongestion: dropOnCongestion ?? isRead,
+      source,
+      dedupeKey: isRead && dedupe !== false
+        ? `${authScope}:${dedupeKey ? `custom:${dedupeKey}` : `${path}?${stableParamsKey(params)}`}`
+        : '',
+      requiresAuth: true,
+      authScope,
+    }, doFetch);
   }
 
   async get(path, params = {}, options = {}) {
@@ -329,17 +384,13 @@ export class BinanceClient {
       }
     });
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
     const doFetch = async () => {
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         headers: {
           accept: 'application/json',
           'user-agent': 'btc-liquidity-proxy/0.1.0',
         },
-        signal: controller.signal,
-      });
+      }, this.timeoutMs);
 
       if (!response.ok) {
         const body = await response.text();
@@ -357,17 +408,16 @@ export class BinanceClient {
       return response.json();
     };
 
-    try {
-      return await this.rateGate.schedule({
-        method: 'GET',
-        path,
-        weight: endpointWeight('GET', path, params),
-        priority: options.priority,
-        dropOnCongestion: options.dropOnCongestion,
-        source: options.source,
-      }, doFetch);
-    } finally {
-      clearTimeout(timeout);
-    }
+    return this.rateGate.schedule({
+      method: 'GET',
+      path,
+      weight: endpointWeight('GET', path, params),
+      priority: options.priority,
+      dropOnCongestion: options.dropOnCongestion ?? true,
+      source: options.source,
+      dedupeKey: options.dedupe === false
+        ? ''
+        : `public:${options.dedupeKey ? `custom:${options.dedupeKey}` : `${path}?${stableParamsKey(params)}`}`,
+    }, doFetch);
   }
 }

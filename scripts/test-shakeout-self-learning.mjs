@@ -22,6 +22,21 @@ const dir = await mkdtemp(join(tmpdir(), 'shakeout-ml-test-'));
 const paperFile = join(dir, 'paper.json');
 const script = resolve('scripts/shakeout_self_learning.py');
 
+const observationFactors = {
+  move5mPct: 18,
+  move15mPct: 24,
+  drop5mPct: 7,
+  retrace5mPct: 38,
+  vol5mX: 4.2,
+  vol15mX: 3.4,
+  emaZoneDistPct: 0.8,
+  reclaimPct: 5.1,
+  pullbackAge5m: 4,
+  wickRejectPct: 48,
+  rsi5m: 58,
+  rsi15m: 55,
+};
+
 const makeTrade = (id, klass, side, pnl, roe) => ({
   id,
   status: 'CLOSED',
@@ -40,6 +55,12 @@ const makeTrade = (id, klass, side, pnl, roe) => ({
   btcCandlePattern5m: { name: 'DOJI' },
   btcPhase: 'BTC_FLAT',
   btcRelationLabel: 'DOC_LAP',
+  btcCorr: 0.2,
+  entryDistancePct: 0.4,
+  shakeoutEntryMode: 'MARKET',
+  shakeoutObservationRr: 2,
+  shakeoutSignalQuoteVolume: 35_000_000,
+  factors: observationFactors,
   netPnl: pnl,
   netRoe: roe,
 });
@@ -69,8 +90,8 @@ const before = await readFile(paperFile, 'utf8');
 
 try {
   const signals = [
-    { symbol: 'GOODUSDT', action: 'LONG', signalType: 'shakeout_reclaim_long', variant: 'MARKET', trapRisk: 'LOW', stage: 'RECLAIM_CONFIRMED', interval: '5m', candlePattern5m: { name: 'BULLISH_ENGULFING' }, candlePattern15m: { name: 'HAMMER' }, btcCandlePattern5m: { name: 'DOJI' }, btcPhase: 'BTC_FLAT', btcRelationLabel: 'DOC_LAP' },
-    { symbol: 'RISKUSDT', action: 'SHORT', signalType: 'shakeout_reject_short', variant: 'MARKET', trapRisk: 'LOW', stage: 'RECLAIM_CONFIRMED', interval: '5m', candlePattern5m: { name: 'BEARISH_ENGULFING' }, candlePattern15m: { name: 'SHOOTING_STAR' }, btcCandlePattern5m: { name: 'DOJI' }, btcPhase: 'BTC_FLAT', btcRelationLabel: 'DOC_LAP' },
+    { symbol: 'GOODUSDT', action: 'LONG', signalType: 'shakeout_reclaim_long', shakeoutClass: 'TEST_GOOD', variant: 'MARKET', trapRisk: 'LOW', stage: 'RECLAIM_CONFIRMED', interval: '5m', candlePattern5m: { name: 'BULLISH_ENGULFING' }, candlePattern15m: { name: 'HAMMER' }, btcCandlePattern5m: { name: 'DOJI' }, btcPhase: 'BTC_FLAT', btcRelationLabel: 'DOC_LAP', btcCorr: 0.2, entryDistancePct: 0.4, shakeoutEntryMode: 'MARKET', shakeoutObservationRr: 2, shakeoutSignalQuoteVolume: 35_000_000, factors: observationFactors },
+    { symbol: 'RISKUSDT', action: 'SHORT', signalType: 'shakeout_reject_short', shakeoutClass: 'TEST_RISK', variant: 'MARKET', trapRisk: 'LOW', stage: 'RECLAIM_CONFIRMED', interval: '5m', candlePattern5m: { name: 'BEARISH_ENGULFING' }, candlePattern15m: { name: 'SHOOTING_STAR' }, btcCandlePattern5m: { name: 'DOJI' }, btcPhase: 'BTC_FLAT', btcRelationLabel: 'DOC_LAP', btcCorr: 0.2, entryDistancePct: 0.4, shakeoutEntryMode: 'MARKET', shakeoutObservationRr: 2, shakeoutSignalQuoteVolume: 35_000_000, factors: observationFactors },
     { symbol: 'CHASEUSDT', action: 'LONG', signalType: 'shakeout_reclaim_long', variant: 'CHASE', trapRisk: 'LOW', stage: 'RECLAIM_CONFIRMED', interval: '5m', candlePattern5m: { name: 'BULLISH_ENGULFING' }, candlePattern15m: { name: 'HAMMER' }, btcCandlePattern5m: { name: 'DOJI' }, btcPhase: 'BTC_FLAT', btcRelationLabel: 'DOC_LAP' },
   ];
   const { stdout } = await execFileAsync('python3', [
@@ -85,6 +106,7 @@ try {
   assert.equal(result.guardrail.writesPaperStore, false);
   assert.equal(result.signalFlags.find((row) => row.symbol === 'GOODUSDT')?.flag, 'PYTHON_GOOD');
   assert.equal(result.signalFlags.find((row) => row.symbol === 'GOODUSDT')?.learned, true);
+  assert.match(result.signalFlags.find((row) => row.symbol === 'GOODUSDT')?.groupLevel ?? '', /^OBS_/);
   assert.equal(result.signalFlags.find((row) => row.symbol === 'RISKUSDT')?.flag, 'PYTHON_RISK');
   assert.equal(result.signalFlags.find((row) => row.symbol === 'CHASEUSDT')?.label, 'PY CHASE PRIOR');
   assert.equal(result.signalFlags.find((row) => row.symbol === 'CHASEUSDT')?.priorType, 'CHASE');
@@ -92,7 +114,7 @@ try {
   assert.equal(result.signalFlags.find((row) => row.symbol === 'CHASEUSDT')?.learned, false);
   assert.equal(result.tradeFlags['good-0']?.label, 'PY PRIOR WATCH', 'historical candle row must not learn from its own outcome');
   assert.equal(result.tradeFlags['good-0']?.scoredCausally, true);
-  assert.equal(result.schemaVersion, 5);
+  assert.equal(result.schemaVersion, 6);
   assert.equal(result.training.candle.closedSamples, 24);
   assert.equal(result.training.legacy.closedSamples, 80);
   assert.equal(result.training.legacy.method, 'CAUSAL_WALK_FORWARD');

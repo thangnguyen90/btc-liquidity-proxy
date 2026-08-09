@@ -1336,6 +1336,451 @@ pre {
   margin-bottom: 14px;
 }
 
+.liquid-auto-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 8px;
+  align-items: end;
+  width: min(100%, 330px);
+}
+
+.liquid-auto-controls > .toggle,
+.liquid-auto-controls > .primary,
+.liquid-paper-date-filter {
+  grid-column: 1 / -1;
+}
+
+.liquid-paper-date-filter {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 8px;
+  padding-top: 2px;
+}
+
+.liquid-paper-date-filter input[type="date"] {
+  min-width: 0;
+  padding: 0 8px;
+  color-scheme: dark;
+}
+
+.liquid-paper-date-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+
+.liquid-paper-date-actions .btn-secondary {
+  height: 34px;
+  padding: 4px 10px;
+}
+
+.liquid-paper-date-actions .btn-secondary.is-active {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 12%, var(--panel-2));
+}
+
+.liquid-paper-date-search {
+  grid-column: 1 / -1;
+  min-height: 36px;
+}
+
+.liquid-paper-date-search.is-loading {
+  cursor: wait;
+  opacity: 0.82;
+}
+
+.liquid-paper-date-search.is-loading::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 7px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: liquid-paper-date-spin 0.7s linear infinite;
+}
+
+@keyframes liquid-paper-date-spin {
+  to { transform: rotate(360deg); }
+}
+
+.liquid-paper-date-status {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.liquid-market-health {
+  --market-tone: var(--blue);
+  position: relative;
+  display: grid;
+  gap: 13px;
+  margin: 0 0 14px;
+  padding: 16px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--market-tone) 58%, var(--line));
+  border-radius: 9px;
+  background:
+    linear-gradient(115deg, color-mix(in srgb, var(--market-tone) 9%, transparent), transparent 42%),
+    var(--panel);
+  box-shadow: inset 4px 0 0 color-mix(in srgb, var(--market-tone) 80%, transparent);
+}
+
+.liquid-market-health[data-market-label="LONG_FAVORED"] { --market-tone: var(--green); }
+.liquid-market-health[data-market-label="SHORT_FAVORED"] { --market-tone: var(--red); }
+.liquid-market-health[data-market-label="MARKET_CHOP"] { --market-tone: var(--amber); }
+.liquid-market-health[data-market-label="MARKET_DISPERSION"] { --market-tone: #a78bfa; }
+.liquid-market-health[data-market-label="MARKET_SHOCK"] { --market-tone: #fb4d64; }
+.liquid-market-health[data-market-label="NO_DATA"] { --market-tone: var(--muted); }
+
+.liquid-market-health-head,
+.liquid-market-health-title-row,
+.liquid-market-health-foot,
+.liquid-market-health-live,
+.liquid-market-horizon {
+  display: flex;
+  align-items: center;
+}
+
+.liquid-market-health-head {
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.liquid-market-health-title-row {
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.liquid-market-health-title-row h2 {
+  color: var(--market-tone);
+  font-size: clamp(18px, 2vw, 25px);
+  letter-spacing: .02em;
+}
+
+.liquid-market-confidence {
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--market-tone) 55%, var(--line));
+  border-radius: 999px;
+  color: var(--market-tone);
+  background: color-mix(in srgb, var(--market-tone) 10%, transparent);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.liquid-market-health-description {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.liquid-market-health-live {
+  flex: 0 0 auto;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.liquid-market-live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.liquid-market-health-live.is-live { color: var(--green); }
+.liquid-market-health-live.is-stale { color: var(--red); }
+.liquid-market-health-live.is-connecting { color: var(--amber); }
+.liquid-market-health-live.is-live .liquid-market-live-dot {
+  animation: liquid-socket-pulse 1.8s ease-in-out infinite;
+  box-shadow: 0 0 0 3px rgba(54, 211, 153, .14);
+}
+
+.liquid-market-health-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 1.05fr 1fr 1fr;
+  gap: 9px;
+}
+
+.liquid-market-score-card,
+.liquid-market-context-card {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(10, 14, 13, .38);
+}
+
+.liquid-market-score-card > span,
+.liquid-market-context-card > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .045em;
+}
+
+.liquid-market-score-card > strong {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.liquid-market-score-card.is-long > strong { color: var(--green); }
+.liquid-market-score-card.is-short > strong { color: var(--red); }
+.liquid-market-score-card small { color: var(--muted); font-size: 10px; }
+
+.liquid-market-edge-cycle-card {
+  --edge-cycle-tone: var(--muted);
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--edge-cycle-tone) 62%, var(--line));
+  border-left: 4px solid var(--edge-cycle-tone);
+  border-radius: 7px;
+  background: linear-gradient(100deg, color-mix(in srgb, var(--edge-cycle-tone) 9%, transparent), rgba(10,14,13,.38) 38%);
+}
+
+.liquid-market-edge-cycle-card[data-edge-phase="SHORT_EDGE_INTACT"] { --edge-cycle-tone: var(--green); }
+.liquid-market-edge-cycle-card[data-edge-phase="SHORT_EDGE_DECAY"] { --edge-cycle-tone: var(--red); }
+.liquid-market-edge-cycle-card[data-edge-phase="SHORT_EDGE_RECOVERY"] { --edge-cycle-tone: var(--amber); }
+
+.liquid-market-edge-cycle-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.liquid-market-edge-cycle-head > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.liquid-market-edge-cycle-head span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .045em;
+}
+
+.liquid-market-edge-cycle-head strong {
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--edge-cycle-tone) 70%, var(--line));
+  border-radius: 4px;
+  color: var(--edge-cycle-tone);
+  background: color-mix(in srgb, var(--edge-cycle-tone) 11%, transparent);
+  font-size: 12px;
+}
+
+.liquid-market-edge-cycle-head em {
+  color: var(--edge-cycle-tone);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.liquid-market-edge-cycle-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  gap: 7px;
+}
+
+.liquid-market-edge-cycle-metrics span {
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  background: rgba(10,14,13,.28);
+  font-size: 10px;
+}
+
+.liquid-market-edge-cycle-metrics b { color: var(--text); }
+.liquid-market-edge-cycle-card > small { color: var(--text); font-size: 10px; }
+.liquid-market-edge-cycle-card > p { margin: 0; color: var(--muted); font-size: 9px; }
+
+.liquid-short-wave {
+  width: fit-content;
+  margin-top: 7px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  background: rgba(148, 163, 184, .08);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .04em;
+}
+.liquid-short-wave[data-short-wave="SHORT_BUILDUP"] { color: #fbbf24; border-color: rgba(251,191,36,.65); background: rgba(251,191,36,.10); }
+.liquid-short-wave[data-short-wave="SHORT_IMPULSE"] { color: #fb7185; border-color: rgba(251,113,133,.75); background: rgba(251,113,133,.13); }
+.liquid-short-wave[data-short-wave="SHORT_PEAK"] { color: #f472b6; border-color: rgba(244,114,182,.75); background: rgba(244,114,182,.13); }
+.liquid-short-wave[data-short-wave="SHORT_FADE"] { color: #c4b5fd; border-color: rgba(196,181,253,.70); background: rgba(196,181,253,.11); }
+.liquid-short-wave[data-short-wave="BTC_CRASH_RECLAIM"] { color: #34d399; border-color: rgba(52,211,153,.80); background: rgba(52,211,153,.13); }
+.liquid-short-wave[data-short-wave="SHORT_RELOAD"] { color: #ff4d6d; border-color: rgba(255,77,109,.85); background: rgba(255,77,109,.16); }
+
+.liquid-long-wave {
+  width: fit-content;
+  margin-top: 7px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  background: rgba(148,163,184,.08);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .04em;
+}
+.liquid-long-wave[data-long-wave="LONG_BUILDUP"] { color:#fbbf24; border-color:rgba(251,191,36,.65); background:rgba(251,191,36,.10); }
+.liquid-long-wave[data-long-wave="LONG_IMPULSE"] { color:#34d399; border-color:rgba(52,211,153,.80); background:rgba(52,211,153,.13); }
+.liquid-long-wave[data-long-wave="LONG_PEAK"] { color:#2dd4bf; border-color:rgba(45,212,191,.75); background:rgba(45,212,191,.12); }
+.liquid-long-wave[data-long-wave="LONG_FADE"] { color:#c4b5fd; border-color:rgba(196,181,253,.70); background:rgba(196,181,253,.11); }
+.liquid-long-wave[data-long-wave="BTC_RALLY_REJECT"] { color:#fb7185; border-color:rgba(251,113,133,.80); background:rgba(251,113,133,.14); }
+.liquid-long-wave[data-long-wave="LONG_RELOAD"] { color:#10b981; border-color:rgba(16,185,129,.85); background:rgba(16,185,129,.16); }
+
+.short-wave-stats-section { margin-top: 12px; padding: 16px; }
+.short-wave-stats-head { display:flex; justify-content:space-between; align-items:flex-end; gap:12px; margin-bottom:12px; }
+.short-wave-stats-head h2 { margin:2px 0 3px; font-size:16px; }
+.short-wave-stats-head small, #shortWaveStatsMeta { color:var(--muted); font-size:10px; }
+.short-wave-stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:8px; }
+.short-wave-stat-card { border:1px solid var(--line); border-radius:7px; padding:10px; background:rgba(15,23,42,.18); color:var(--muted); font-size:11px; line-height:1.55; }
+.short-wave-stat-card[data-side="SHORT"] { border-left:3px solid #fb7185; }
+.short-wave-stat-card[data-side="LONG"] { border-left:3px solid #34d399; }
+.short-wave-stat-title { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:5px; }
+.short-wave-stat-title em { margin-left:auto; color:var(--muted); font-size:8px; font-style:normal; font-weight:900; }
+.short-wave-side { font-size:10px; color:var(--text); }
+.short-wave-stat-card > strong { display:block; font-size:14px; }
+.short-wave-stat-card .is-positive { color:var(--green); font-weight:900; }
+.short-wave-stat-card .is-negative { color:var(--red); font-weight:900; }
+.short-wave-stat-card small { color:var(--muted); }
+.short-wave-stats-empty { color:var(--muted); font-size:11px; padding:8px 0; }
+
+.liquid-market-score-track {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, .16);
+}
+
+.liquid-market-score-track i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  transition: width .35s ease;
+}
+
+.liquid-market-score-card.is-long .liquid-market-score-track i { background: var(--green); }
+.liquid-market-score-card.is-short .liquid-market-score-track i { background: var(--red); }
+
+.liquid-market-horizon {
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.liquid-market-horizon b { font-weight: 700; }
+.liquid-market-horizon strong { color: var(--text); font-size: 12px; }
+
+.liquid-market-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.liquid-market-reasons span {
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, .26);
+  font-size: 10px;
+}
+
+.liquid-market-health-foot {
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.liquid-market-health-foot strong {
+  margin-left: auto;
+  color: var(--market-tone);
+  font-size: 10px;
+}
+
+.liquid-socket-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  color: var(--muted);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.liquid-socket-status .liquid-socket-text {
+  color: inherit;
+  font-size: inherit;
+}
+
+.liquid-socket-status .liquid-socket-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  color: inherit;
+  background: currentColor;
+}
+
+.liquid-socket-status.is-live {
+  color: var(--green);
+}
+
+.liquid-socket-status.is-live .liquid-socket-dot {
+  animation: liquid-socket-pulse 1.8s ease-in-out infinite;
+  box-shadow: 0 0 0 3px rgba(54, 211, 153, 0.16);
+}
+
+.liquid-socket-status.is-slow {
+  color: var(--amber);
+}
+
+.liquid-socket-status.is-down {
+  color: var(--red);
+}
+
+@keyframes liquid-socket-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: .55;
+    transform: scale(.78);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liquid-socket-status.is-live .liquid-socket-dot {
+    animation: none;
+  }
+}
+
 .liquid-table td:last-child {
   min-width: 280px;
 }
@@ -1487,6 +1932,12 @@ pre {
 .lp-stats .lp-stat strong.positive { color: var(--green); }
 .lp-stats .lp-stat strong.negative { color: var(--red); }
 .lp-stats .lp-divider { width: 1px; background: var(--line); align-self: stretch; }
+.lp-stats .lp-stat-live {
+  padding: 5px 8px;
+  border: 1px solid rgba(96, 165, 250, .28);
+  border-radius: 5px;
+  background: rgba(96, 165, 250, .08);
+}
 
 .liquid-stage2-head {
   margin-top: 12px;
@@ -1522,6 +1973,114 @@ pre {
 }
 .pump-paper-metric strong { font-size: 18px; font-weight: 950; }
 .pump-paper-metric small { display: block; margin-top: 3px; color: var(--muted); line-height: 1.35; }
+.liquid-live-card-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, .42);
+  border-radius: 7px;
+  background: rgba(15, 23, 42, .24);
+  color: var(--muted);
+  font-size: 11px;
+}
+.liquid-live-card-status strong { color: var(--text); font-size: 11px; }
+.liquid-live-card-status.is-ready { border-color: rgba(251, 113, 133, .75); background: rgba(127, 29, 29, .16); }
+.liquid-live-card-status.is-ready strong { color: #fb7185; }
+.liquid-live-card-status.is-blocked { border-color: rgba(251, 191, 36, .55); }
+[data-liquid-live-key] {
+  position: relative;
+  padding-bottom: 35px;
+}
+[data-live-card-key] {
+  position: relative;
+  padding-bottom: 35px !important;
+}
+[data-liquid-live-key].liquid-live-enabled {
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, .78), 0 0 14px rgba(96, 165, 250, .12);
+}
+[data-live-card-key].live-card-enabled {
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, .78), 0 0 14px rgba(96, 165, 250, .12) !important;
+}
+.liquid-live-card-toggle {
+  position: absolute;
+  right: 9px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border: 1px solid rgba(148, 163, 184, .45);
+  border-radius: 4px;
+  background: rgba(2, 6, 23, .72);
+  color: #94a3b8;
+  font-size: 9px;
+  font-weight: 950;
+  cursor: pointer;
+  user-select: none;
+}
+.live-card-toggle {
+  position: absolute;
+  right: 9px;
+  bottom: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border: 1px solid rgba(148, 163, 184, .45);
+  border-radius: 4px;
+  background: rgba(2, 6, 23, .82);
+  color: #94a3b8;
+  font-size: 9px;
+  font-weight: 950;
+  cursor: pointer;
+  user-select: none;
+}
+.liquid-live-card-toggle:has(input:checked) {
+  border-color: #60a5fa;
+  color: #60a5fa;
+  background: rgba(30, 64, 175, .24);
+}
+.live-card-toggle:has(input:checked) {
+  border-color: #60a5fa;
+  color: #60a5fa;
+  background: rgba(30, 64, 175, .24);
+}
+.liquid-live-card-toggle input { margin: 0; accent-color: #60a5fa; cursor: pointer; }
+.liquid-live-card-toggle input:disabled { cursor: wait; }
+.live-card-toggle input { margin: 0; accent-color: #60a5fa; cursor: pointer; }
+.live-card-toggle input:disabled { cursor: wait; }
+.liquid-closed-pnl,
+.liquid-avg-roe {
+  display: inline-block;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-weight: 950;
+  letter-spacing: .01em;
+}
+.liquid-closed-pnl.positive,
+.liquid-avg-roe.positive {
+  color: #5eead4;
+  background: rgba(45, 212, 191, .14);
+  box-shadow: inset 0 0 0 1px rgba(94, 234, 212, .24);
+  text-shadow: 0 0 8px rgba(45, 212, 191, .38);
+}
+.liquid-closed-pnl.negative,
+.liquid-avg-roe.negative {
+  color: #ff8fa3;
+  background: rgba(251, 113, 133, .15);
+  box-shadow: inset 0 0 0 1px rgba(255, 143, 163, .26);
+  text-shadow: 0 0 8px rgba(251, 113, 133, .40);
+}
+.liquid-closed-pnl.neutral,
+.liquid-avg-roe.neutral {
+  color: #fde047;
+  background: rgba(250, 204, 21, .12);
+  box-shadow: inset 0 0 0 1px rgba(253, 224, 71, .22);
+}
 
 .pump-combo-grid {
   display: grid;
@@ -1580,6 +2139,7 @@ pre {
   .order-fields,
   .quick-order-grid,
   .liquid-total-grid,
+  .liquid-market-health-grid,
   .token-unlock-grid,
   .signal-controls,
   .kv {
@@ -1588,6 +2148,10 @@ pre {
 
   .field:first-child {
     grid-column: 1 / -1;
+  }
+
+  .liquid-market-edge-cycle-metrics {
+    grid-template-columns: repeat(3, minmax(100px, 1fr));
   }
 }
 
@@ -1607,14 +2171,42 @@ pre {
   .order-fields,
   .quick-order-grid,
   .liquid-total-grid,
+  .liquid-market-health-grid,
   .token-unlock-grid,
   .kv,
   .bar-pair {
     grid-template-columns: 1fr;
   }
 
+  .panel-head {
+    align-items: stretch;
+  }
+
+  .liquid-auto-controls {
+    width: 100%;
+  }
+
   .topbar {
     align-items: start;
+  }
+
+  .liquid-market-health-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .liquid-market-health-foot strong {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .liquid-market-edge-cycle-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .liquid-market-edge-cycle-metrics {
+    grid-template-columns: 1fr 1fr;
   }
 
   .status {
@@ -1636,3 +2228,22 @@ pre {
 }
 .lev-badge.ok   { background: rgba(54,211,153,.15); color: var(--green); }
 .lev-badge.warn { background: rgba(251,191,36,.18);  color: var(--amber); }
+.liquid-combo-cycle-forming {
+  margin: 10px 0 16px;
+}
+
+.liquid-combo-cycle-forming > summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.liquid-combo-cycle-empty {
+  grid-column: 1 / -1;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  padding: 14px;
+}

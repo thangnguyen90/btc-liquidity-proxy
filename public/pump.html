@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Pump / Climax Signals</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260729-market-wave-v2">
     <style>
       .pump-controls {
         grid-template-columns: minmax(220px, 1fr) 130px 130px 110px auto;
@@ -393,6 +393,7 @@
         gap: 12px;
         flex-wrap: wrap;
       }
+      .pump-paper-date-filter { width: min(100%, 330px); }
       .pump-paper-overview {
         display: grid;
         grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -429,12 +430,327 @@
       .pump-paper-metric.good { border-color: rgba(45,212,191,.55); }
       .pump-paper-metric.bad { border-color: rgba(251,113,133,.55); }
       .pump-paper-metric.neutral { border-color: rgba(251,191,36,.50); }
+      .pump-observation-grid {
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 8px;
+      }
+      .pump-observation-grid .pump-observation-card {
+        min-height: 94px;
+        border-color: var(--line);
+        background: rgba(15,23,42,.18);
+      }
+      .pump-observation-grid .pump-observation-card.good {
+        border-color: rgba(45,212,191,.8);
+        background: linear-gradient(115deg, rgba(20,184,166,.18), rgba(15,23,42,.16));
+      }
+      .pump-observation-grid .pump-observation-card.bad {
+        border-color: rgba(251,113,133,.8);
+        background: linear-gradient(115deg, rgba(251,113,133,.20), rgba(15,23,42,.16));
+      }
+      .pump-observation-grid .pump-observation-card.neutral {
+        border-color: rgba(251,191,36,.75);
+        background: linear-gradient(115deg, rgba(251,191,36,.13), rgba(15,23,42,.16));
+      }
+      .pump-observation-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 5px;
+      }
+      .pump-observation-title {
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 950;
+      }
+      .pump-observation-tag {
+        flex: 0 0 auto;
+        padding: 2px 5px;
+        border: 1px solid rgba(148,163,184,.35);
+        border-radius: 3px;
+        background: rgba(15,23,42,.25);
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 900;
+        line-height: 1.2;
+      }
+      .pump-observation-tag.good { color: #34d399; border-color: rgba(52,211,153,.75); }
+      .pump-observation-tag.bad { color: #fb7185; border-color: rgba(251,113,133,.75); }
+      .pump-observation-tag.neutral { color: #fbbf24; border-color: rgba(251,191,36,.75); }
+      .pump-observation-pnl {
+        margin: 2px 0 3px;
+        font-size: 17px;
+        font-weight: 950;
+      }
+      .pump-observation-stats {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.5;
+      }
+      .pump-observation-value {
+        border-radius: 3px;
+        padding: 1px 3px;
+        font-weight: 950;
+      }
+      .pump-observation-value.positive {
+        background: rgba(45,212,191,.14);
+        color: #5eead4;
+      }
+      .pump-observation-value.negative {
+        background: rgba(251,113,133,.14);
+        color: #fb7185;
+      }
       .pump-stage2-grid {
         margin: 0;
         padding: 10px 14px 4px;
         border-top: 1px solid var(--line);
       }
       .pump-stage2-grid .pump-paper-metric { min-height: 76px; }
+      .pump-tier-heading {
+        padding: 10px 14px 0;
+        border-top: 1px solid var(--line);
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 950;
+      }
+      .pump-tier-heading small {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 800;
+      }
+      .pump-source-stats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        padding: 10px 14px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .pump-source-panel {
+        min-width: 0;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: rgba(15,23,42,.22);
+      }
+      .pump-source-panel.pump-native { border-color: rgba(251,191,36,.55); }
+      .pump-source-panel.ema { border-color: rgba(45,212,191,.55); }
+      .pump-source-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 10px;
+      }
+      .pump-source-title {
+        font-size: 12px;
+        font-weight: 950;
+        color: var(--text);
+      }
+      .pump-source-title small {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 9px;
+      }
+      .pump-source-net {
+        text-align: right;
+        font-size: 18px;
+        font-weight: 950;
+      }
+      .pump-source-line {
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.45;
+      }
+      .pump-source-breakdown {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        margin-top: 9px;
+      }
+      .pump-source-subcard {
+        min-width: 0;
+        padding: 7px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: rgba(2,6,23,.22);
+      }
+      .pump-source-subcard strong {
+        display: block;
+        color: var(--text);
+        font-size: 11px;
+      }
+      .pump-source-subcard small {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.4;
+      }
+      .pump-source-types {
+        margin-top: 9px;
+        padding-top: 8px;
+        border-top: 1px solid var(--line);
+      }
+      .pump-source-types summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+      }
+      .pump-source-type-row {
+        display: grid;
+        grid-template-columns: minmax(100px, 1fr) auto auto auto;
+        gap: 8px;
+        padding: 5px 0;
+        border-bottom: 1px dashed rgba(148,163,184,.18);
+        color: var(--muted);
+        font-size: 9px;
+      }
+      .pump-source-type-row span:first-child {
+        color: var(--text);
+        font-weight: 850;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .ema-layer-section {
+        padding: 10px 14px 14px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(13,148,136,.035);
+      }
+      .ema-layer-model-note {
+        margin: 0 0 10px;
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.45;
+      }
+      .ema-layer-model-note strong { color: var(--text); }
+      .ema-layer-block + .ema-layer-block { margin-top: 10px; }
+      .ema-layer-block h4 {
+        margin: 0 0 6px;
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 950;
+      }
+      .ema-layer-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 7px;
+      }
+      .ema-layer-card {
+        min-width: 0;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: rgba(2,6,23,.24);
+      }
+      .ema-layer-card.good-plus,
+      .ema-layer-card.good { border-color: rgba(45,212,191,.6); }
+      .ema-layer-card.watch { border-color: rgba(251,191,36,.52); }
+      .ema-layer-card.risk { border-color: rgba(251,113,133,.58); }
+      .ema-layer-card strong {
+        display: block;
+        color: var(--text);
+        font-size: 10px;
+      }
+      .ema-layer-card small {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 9px;
+        line-height: 1.4;
+      }
+      .ema-layer-candidates {
+        margin-top: 10px;
+        border-top: 1px dashed rgba(148,163,184,.24);
+        padding-top: 8px;
+      }
+      .ema-layer-candidates summary {
+        cursor: pointer;
+        color: var(--cyan);
+        font-size: 10px;
+        font-weight: 950;
+      }
+      .ema-layer-candidate-row {
+        display: grid;
+        grid-template-columns: auto minmax(240px, 1fr) auto auto auto;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 0;
+        border-bottom: 1px dashed rgba(148,163,184,.15);
+        color: var(--muted);
+        font-size: 9px;
+      }
+      .ema-layer-candidate-row .combo-name {
+        color: var(--text);
+        font-weight: 850;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ema-layer-badge-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 102px;
+      }
+      .ema-layer-badge {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        max-width: 150px;
+        padding: 2px 5px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font-size: 8px;
+        font-weight: 950;
+        line-height: 1.15;
+        white-space: nowrap;
+      }
+      .ema-layer-badge.good-plus,
+      .ema-layer-badge.good { color: #34d399; border-color: rgba(52,211,153,.75); background:rgba(20,184,166,.10); }
+      .ema-layer-badge.watch { color: #fbbf24; border-color: rgba(251,191,36,.75); background:rgba(251,191,36,.08); }
+      .ema-layer-badge.risk { color: #fb7185; border-color: rgba(251,113,133,.75); background:rgba(251,113,133,.10); }
+      @media (max-width: 980px) {
+        .pump-source-stats { grid-template-columns: 1fr; }
+        .ema-layer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .ema-layer-candidate-row { grid-template-columns: auto minmax(180px, 1fr) auto; }
+        .ema-layer-candidate-row span:nth-child(4),
+        .ema-layer-candidate-row span:nth-child(5) { display: none; }
+      }
+      .pump-eval-badge {
+        display: inline-flex;
+        flex-direction: column;
+        gap: 2px;
+        max-width: 170px;
+        padding: 4px 6px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font-size: 9px;
+        font-weight: 950;
+        line-height: 1.15;
+        white-space: normal;
+      }
+      .pump-eval-badge.tier-a { color: #34d399; border-color: #34d399; background: rgba(52,211,153,.12); }
+      .pump-eval-badge.tier-b { color: #fbbf24; border-color: #fbbf24; background: rgba(251,191,36,.12); }
+      .pump-eval-badge.block { color: #fb7185; border-color: #fb7185; background: rgba(251,113,133,.13); }
+      .pump-eval-badge.collect { color: #67e8f9; border-color: #22d3ee; background: rgba(34,211,238,.10); }
+      .pump-eval-badge small { color: inherit; opacity: .8; font-size: 8px; }
+      .pump-diagnostic-details {
+        border-top: 1px solid var(--line);
+      }
+      .pump-diagnostic-details > summary {
+        cursor: pointer;
+        padding: 10px 14px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 900;
+      }
+      .pump-diagnostic-details[open] > summary {
+        color: var(--amber);
+      }
       .pump-stage2-badge {
         display: inline-flex;
         flex-direction: column;
@@ -452,6 +768,41 @@
       .pump-stage2-badge.watch { color: #fbbf24; border-color: #fbbf24; background: rgba(251,191,36,.12); }
       .pump-stage2-badge.risk { color: #fb7185; border-color: #fb7185; background: rgba(251,113,133,.13); }
       .pump-stage2-badge small { color: inherit; opacity: .8; font-size: 8px; }
+      .pump-lift-badge {
+        display: inline-flex;
+        flex-direction: column;
+        gap: 2px;
+        max-width: 155px;
+        padding: 4px 6px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font-size: 9px;
+        font-weight: 950;
+        line-height: 1.15;
+        white-space: normal;
+      }
+      .pump-lift-badge.boost { color: #34d399; border-color: #34d399; background: rgba(52,211,153,.12); }
+      .pump-lift-badge.neutral { color: #fbbf24; border-color: #fbbf24; background: rgba(251,191,36,.12); }
+      .pump-lift-badge.degrade { color: #fb7185; border-color: #fb7185; background: rgba(251,113,133,.13); }
+      .pump-lift-badge small { color: inherit; opacity: .8; font-size: 8px; }
+      .pump-selector-badge {
+        display: inline-flex;
+        flex-direction: column;
+        gap: 2px;
+        max-width: 165px;
+        padding: 4px 6px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font-size: 9px;
+        font-weight: 950;
+        line-height: 1.15;
+        white-space: normal;
+      }
+      .pump-selector-badge.core { color: #34d399; border-color: #34d399; background: rgba(52,211,153,.12); }
+      .pump-selector-badge.probe { color: #67e8f9; border-color: #22d3ee; background: rgba(34,211,238,.11); }
+      .pump-selector-badge.watch { color: #fbbf24; border-color: #fbbf24; background: rgba(251,191,36,.12); }
+      .pump-selector-badge.avoid { color: #fb7185; border-color: #fb7185; background: rgba(251,113,133,.13); }
+      .pump-selector-badge small { color: inherit; opacity: .85; font-size: 8px; }
       .pump-paper-close-btn {
         font-size: 10px; padding: 2px 8px; border-radius: 4px;
         border: 1px solid var(--line); background: var(--panel-2);
@@ -649,12 +1000,22 @@
           </div>
           <div>
             <div class="pump-paper-controls">
-              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);font-weight:800">
-                Ngày
-              <select id="pumpPaperDayFilter" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;font-weight:800">
-                  <option value="all">Tất cả</option>
-                </select>
-              </label>
+              <div class="liquid-paper-date-filter pump-paper-date-filter" aria-label="Khoảng ngày Pump paper trade">
+                <label class="field">
+                  <span>Từ ngày</span>
+                  <input id="pumpPaperDateFrom" type="date">
+                </label>
+                <label class="field">
+                  <span>Đến ngày</span>
+                  <input id="pumpPaperDateTo" type="date">
+                </label>
+                <div class="liquid-paper-date-actions">
+                  <button id="pumpPaperTodayButton" class="btn-secondary" type="button">Hôm nay</button>
+                  <button id="pumpPaperAllDatesButton" class="btn-secondary" type="button">Tất cả</button>
+                </div>
+                <button id="pumpPaperDateSearchButton" class="primary liquid-paper-date-search" type="button">Search</button>
+                <small id="pumpPaperDateStatus" class="liquid-paper-date-status">Tự chuyển ngày mới · Asia/Bangkok</small>
+              </div>
               <div id="pumpPaperPager" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:12px"></div>
             </div>
             <div id="pumpPaperOverview" class="pump-paper-overview"></div>
@@ -669,20 +1030,110 @@
               <option value="strong">STRONG: >=8 lenh | WR >=90% | AvgROE >=5%</option>
             </select>
           </label>
-          <label>
-            <span>Pump Combo Stage 2</span>
-            <select id="pumpStage2Filter">
-              <option value="all">Tất cả nhãn</option>
-              <option value="WATCH_PLUS">WATCH+</option>
-              <option value="WATCH">WATCH</option>
-              <option value="RISK">RISK</option>
-            </select>
-          </label>
           <span id="pumpComboQualityMeta" class="pump-combo-quality-meta"></span>
         </div>
-        <div id="pumpStage2Stats" class="pump-paper-overview pump-stage2-grid"></div>
+        <div class="pump-tier-heading">
+          Phân tích theo nguồn
+          <small>PUMP NATIVE và EMA tách riêng · cùng chuẩn NET = gross − phí round-trip ước tính</small>
+        </div>
+        <div id="pumpSourceStats" class="pump-source-stats"></div>
+        <div class="pump-tier-heading">
+          LONG CORR REBOUND · EMA SQUEEZE
+          <small>LONG · corr ≥ 0.5 · BTC DOWN score &lt; 45 · DAY FLAT · RSI4h &lt; 50 · PROVISIONAL · OBSERVE ONLY · không gate/chặn/đổi size/SL/TP/Binance</small>
+        </div>
+        <div id="pumpSourceLongCorrReboundStats" class="pump-paper-overview pump-stage2-grid pump-observation-grid"></div>
+        <div class="pump-tier-heading">
+          PUMP · ĐÁNH GIÁ THEO KHUNG SHORT EDGE
+          <small>Tách PUMP NATIVE / EMA · nhãn prior-only trước entry · PnL NET sau phí ước tính · OBSERVE ONLY · không gate/chặn/đổi size/SL/TP</small>
+        </div>
+        <div class="pump-tier-heading pump-observation-subheading">
+          Lớp 1 · Chất lượng nguồn cố định theo ngày
+          <small>Source × setup × side × timeframe × quan hệ BTC · freeze Asia/Bangkok</small>
+        </div>
+        <div id="pumpObservationL1" class="pump-paper-overview pump-stage2-grid pump-observation-grid"></div>
+        <div class="pump-tier-heading pump-observation-subheading">
+          Lớp 2 · Tier riêng theo nguồn
+          <small>PUMP NATIVE dùng candidate canonical · EMA dùng EMA Combo L3 · không lấy tier Short Edge</small>
+        </div>
+        <div id="pumpObservationL2" class="pump-paper-overview pump-stage2-grid pump-observation-grid"></div>
+        <details class="pump-diagnostic-details" open>
+          <summary>Lớp 2B · Side × BTC Wave Phase</summary>
+          <div id="pumpObservationL2b" class="pump-paper-overview pump-stage2-grid pump-observation-grid"></div>
+        </details>
+        <details class="pump-diagnostic-details" open>
+          <summary>Lớp 2C · Tier A/B × BTC Wave Phase</summary>
+          <div id="pumpObservationL2c" class="pump-paper-overview pump-stage2-grid pump-observation-grid"></div>
+        </details>
+        <div class="pump-tier-heading pump-observation-subheading">
+          Lớp 3 · Best Candidate prior-day
+          <small>Source × tier A/B × setup × side · tối thiểu 10 lệnh · AvgNetROE ≥ 1% · PF ≥ 1.2 · ngày dương ≥ 50%</small>
+        </div>
+        <div id="pumpObservationL3" class="pump-paper-overview pump-stage2-grid pump-observation-grid"></div>
+        <div class="pump-tier-heading">
+          Entry Support Flip · tín hiệu đẹp / tín hiệu xấu
+          <small>Gap LONG/SHORT ≥15 · xác nhận 2 snapshot · tối đa 180 phút sau flip · OBSERVE ONLY · không gate/chặn/đổi size/SL/TP</small>
+        </div>
+        <div id="pumpSupportEntryGroups" class="pump-paper-overview pump-stage2-grid"></div>
+        <div class="pump-tier-heading">
+          Nhãn cụ thể · SHORT theo nguồn
+          <small>PUMP / EMA × SHORT × trạng thái sau flip</small>
+        </div>
+        <div id="pumpSupportEntryShort" class="pump-paper-overview pump-stage2-grid"></div>
+        <div class="pump-tier-heading">
+          Nhãn cụ thể · LONG theo nguồn
+          <small>PUMP / EMA × LONG × trạng thái sau flip</small>
+        </div>
+        <div id="pumpSupportEntryLong" class="pump-paper-overview pump-stage2-grid"></div>
+        <div class="pump-tier-heading">
+          PUMP COMBO × CYCLE · ỔN ĐỊNH QUA NGÀY
+          <small>Toàn bộ lịch sử Pump native · gom episode 15 phút · ổn định ≥ 3 ngày · ngày dương ≥ 60% · PF ≥ 1.2 · OBSERVE ONLY</small>
+        </div>
+        <div id="pumpComboCycleStable" class="pump-combo-grid"></div>
+        <details id="pumpComboCycleForming" class="pump-diagnostic-details" style="display:none">
+          <summary></summary>
+          <div id="pumpComboCycleFormingRows" class="pump-combo-grid"></div>
+        </details>
+        <div class="pump-tier-heading">
+          EMA · phân tích 3 lớp để chọn tổ hợp
+          <small id="emaLayerAnalysisMeta">SETUP EMA → MARKET FIT → COMBO · prior-only tại entry · OBSERVE ONLY</small>
+        </div>
+        <section id="emaLayerAnalysisSection" class="ema-layer-section" style="display:none">
+          <p id="emaLayerModelNote" class="ema-layer-model-note"></p>
+          <div class="ema-layer-block">
+            <h4>Lớp 1 · Setup EMA: stage × side × timeframe × score</h4>
+            <div id="emaLayer1Stats" class="ema-layer-grid"></div>
+          </div>
+          <div class="ema-layer-block">
+            <h4>Lớp 2 · Market fit: quan hệ BTC × chất lượng nến tại entry</h4>
+            <div id="emaLayer2Stats" class="ema-layer-grid"></div>
+          </div>
+          <div class="ema-layer-block">
+            <h4>Lớp 3 · Ma trận Setup × Market fit</h4>
+            <div id="emaLayer3Stats" class="ema-layer-grid"></div>
+          </div>
+          <details id="emaLayerCandidates" class="ema-layer-candidates" open>
+            <summary>Tổ hợp GOOD+/GOOD tìm được từ dữ liệu trước ngày đang xem</summary>
+            <div id="emaLayerCandidateRows"></div>
+          </details>
+        </section>
+        <div class="pump-tier-heading">
+          Pump V2 · COLLECT
+          <small>CHỈ PUMP NATIVE · OBSERVE ONLY · không chọn/chặn lệnh, không đổi size/SL/TP</small>
+        </div>
+        <div id="pumpCanonicalStats" class="pump-paper-overview pump-stage2-grid"></div>
+        <details class="pump-diagnostic-details">
+          <summary>Nhãn cũ / diagnostic — không dùng để chọn hoặc chặn</summary>
+          <div id="pumpEvalStats" class="pump-paper-overview pump-stage2-grid"></div>
+          <div id="pumpStage2Stats" class="pump-paper-overview pump-stage2-grid"></div>
+          <div id="pumpLiftStats" class="pump-paper-overview pump-stage2-grid"></div>
+          <div class="pump-tier-heading">
+            Selector diagnostic · chỉ Pump native
+            <small>EMA đã được tách khỏi thống kê này để tránh trộn hai nguồn khác nhau.</small>
+          </div>
+          <div id="pumpSelectorStats" class="pump-paper-overview pump-stage2-grid"></div>
+        </details>
         <div id="pumpComboStats" class="pump-combo-grid" style="display:none"></div>
-        <div class="table-wrap">
+        <div class="table-wrap" data-paper-scroll data-paper-scroll-label="Cuộn ngang phía trên bảng Pump Paper">
           <table class="signal-table">
             <thead>
               <tr>
@@ -699,7 +1150,9 @@
                 <th class="pump-paper-sort active" data-paper-sort="status">Status <span class="sort-mark">^</span></th>
                 <th class="pump-paper-sort" data-paper-sort="score">Score <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="combo">Combo <span class="sort-mark"></span></th>
-                <th class="pump-paper-sort" data-paper-sort="stage2">Pump Stage 2 <span class="sort-mark"></span></th>
+                <th>EMA 3L</th>
+                <th class="pump-paper-sort" data-paper-sort="canonical">Pump V2 <span class="sort-mark"></span></th>
+                <th class="pump-paper-sort" data-paper-sort="pumpObs">Pump OBS <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="source">Source <span class="sort-mark"></span></th>
                 <th class="pump-paper-sort" data-paper-sort="time">Time <span class="sort-mark"></span></th>
                 <th></th>
@@ -707,7 +1160,7 @@
               </tr>
             </thead>
             <tbody id="pumpPaperBody">
-              <tr><td colspan="18" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>
+              <tr><td colspan="20" class="empty-cell">Chưa có paper trade nào từ pump signals.</td></tr>
             </tbody>
           </table>
         </div>
@@ -715,6 +1168,8 @@
     </main>
 
     <script src="/btcHealth.js"></script>
-    <script src="/pump.js" type="module"></script>
+    <script src="/paper-candle-columns.js?v=20260723-pump-sort"></script>
+    <script src="/paper-top-scroll.js" defer></script>
+    <script src="/pump.js?v=20260802-source-long-corr-rebound-v1" type="module"></script>
   </body>
 </html>

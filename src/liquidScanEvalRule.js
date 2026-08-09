@@ -1,6 +1,8 @@
 export const LIQUID_SCAN_EVAL_RULE_VERSION = 'LIQUID_SHADOW_V2_20260722';
 export const LIQUID_SCAN_STAGE_2_VERSION = 'LIQUID_STAGE_2_V1_20260722';
-export const LIQUID_SCAN_STAGE_3_VERSION = 'LIQUID_COMBO_STAGE_3_V1_20260723';
+export const LIQUID_SCAN_STAGE_3_VERSION = 'LIQUID_COMBO_STAGE_3_V3_LONG_OBSERVE_20260724';
+export const LIQUID_RUNNER_30_LABEL_VERSION = 'LIQUID_RUNNER_30_V1_20260724';
+const LIQUID_SCAN_STAGE_3_LONG_SAMPLE_FROM_MS = Date.parse('2026-07-23T00:00:00.000Z');
 
 function finiteNumber(value, fallback = null) {
   const parsed = Number(value);
@@ -159,11 +161,12 @@ function liquidScanCandleName(value) {
 }
 
 /**
- * Observation-only combo label layered after Liquid Stage 2.
+ * Combo label layered after Liquid Stage 2.
  *
  * The thresholds are deliberately fixed from the 2026-07-23 chronological
- * backtest. No PnL or outcome from the current trade is read here, and the
- * result must never be used to mutate entry, margin, leverage, SL or TP.
+ * backtest. No PnL or outcome from the current trade is read here. Stage 3
+ * does not change entry, leverage, SL or TP. Only GOOD_PLUS may select the
+ * dedicated paper-size cap requested by the operator.
  */
 export function evaluateLiquidScanStage3(trade = {}) {
   const side = String(trade.side ?? '').toUpperCase();
@@ -216,7 +219,8 @@ export function evaluateLiquidScanStage3(trade = {}) {
     rrBucket,
     symbolCandle,
     btcCandle,
-    observationOnly: true,
+    observationOnly: tier !== 'GOOD_PLUS',
+    sizingEligible: tier === 'GOOD_PLUS',
   });
 
   // These cohorts failed in the newest chronological sample. Candle is only a
@@ -247,6 +251,112 @@ export function evaluateLiquidScanStage3(trade = {}) {
   }
   if (stage2.tier === 'RISK') {
     return finish('RISK', 'RISK', 'RISK · STAGE 2', stage2.reason);
+  }
+
+  // LONG is evaluated independently from the original SHORT-only Stage 2.
+  // These observation cohorts were selected from entry-time fields only and
+  // remained net-positive across the compatible 2026-07-23..24 chronological
+  // sample: 38 closed, 36 wins, net +3.075 after estimated Binance fees. They never
+  // qualify for GOOD_PLUS, so this branch cannot raise paper size.
+  if (side === 'LONG') {
+    const tradeAtMs = Date.parse(trade.openedAt ?? trade.createdAt ?? trade.entryReadyAt ?? '');
+    const compatibleLongSample = !Number.isFinite(tradeAtMs)
+      || tradeAtMs >= LIQUID_SCAN_STAGE_3_LONG_SAMPLE_FROM_MS;
+    if (!compatibleLongSample) {
+      return finish(
+        'WATCH',
+        'WATCH_LONG_PRE_V3_DATA',
+        'WATCH · LONG PRE-V3 DATA',
+        'Lệnh trước 2026-07-23 thuộc schema/entry regime cũ; không dùng để suy nhãn LONG Stage 3 V3',
+      );
+    }
+
+    const corrIndependent = corr != null && Math.abs(corr) < 0.3;
+    const rrAtLeastOne = rr != null && rr >= 1;
+    const oneSided50To89 = oneSidedPct != null && oneSidedPct >= 50 && oneSidedPct < 90;
+    const oneSided90Plus = oneSidedPct != null && oneSidedPct >= 90;
+    const feasibilityBelow50 = feasibilityScore != null && feasibilityScore < 50;
+    const feasibility50To69 = feasibilityScore != null && feasibilityScore >= 50 && feasibilityScore < 70;
+    const distanceBelow1 = distance < 1;
+    const distance1To2 = distance >= 1 && distance < 2;
+
+    if (
+      corrIndependent
+      && rrAtLeastOne
+      && targetKind === 'EXHAUSTION'
+      && btcPhase === 'BTC_DOWN_MID'
+      && distanceBelow1
+      && oneSided50To89
+      && feasibilityBelow50
+    ) {
+      return finish(
+        'GOOD',
+        'GOOD_LONG_EXHAUST',
+        'GOOD · LONG EXHAUST',
+        `LONG exhaustion + BTC_DOWN_MID + dist ${distance.toFixed(2)}% + corr độc lập ${corr.toFixed(2)} + one-sided ${oneSidedPct.toFixed(1)}% + feasibility ${feasibilityScore.toFixed(0)}; observe-only`,
+      );
+    }
+
+    if (
+      corrIndependent
+      && rrAtLeastOne
+      && targetKind === 'LOCAL_SWEEP'
+      && btcPhase === 'BTC_DOWN_WEAK'
+      && distance1To2
+      && oneSidedPct != null
+      && oneSidedPct >= 50
+      && feasibility50To69
+    ) {
+      return finish(
+        'GOOD',
+        'GOOD_LONG_LOCAL_WEAK',
+        'GOOD · LONG LOCAL WEAK',
+        `LONG local sweep + BTC_DOWN_WEAK + dist ${distance.toFixed(2)}% + corr độc lập ${corr.toFixed(2)} + one-sided ${oneSidedPct.toFixed(1)}% + feasibility ${feasibilityScore.toFixed(0)}; observe-only`,
+      );
+    }
+
+    if (
+      corrIndependent
+      && rrAtLeastOne
+      && targetKind === 'LOCAL_SWEEP'
+      && btcPhase === 'BTC_DOWN_MID'
+      && distanceBelow1
+      && oneSided90Plus
+      && feasibilityBelow50
+    ) {
+      return finish(
+        'GOOD',
+        'GOOD_LONG_LOCAL_MID',
+        'GOOD · LONG LOCAL MID',
+        `LONG local sweep + BTC_DOWN_MID + dist ${distance.toFixed(2)}% + corr độc lập ${corr.toFixed(2)} + one-sided ${oneSidedPct.toFixed(1)}% + feasibility ${feasibilityScore.toFixed(0)}; observe-only`,
+      );
+    }
+
+    const mainZoneWatch = corrIndependent
+      && rrAtLeastOne
+      && targetKind === 'MAIN_ZONE'
+      && btcPhase === 'BTC_DOWN_MID'
+      && distanceBelow1
+      && oneSided50To89
+      && feasibilityBelow50;
+    const localMidWatch = corrIndependent
+      && rrAtLeastOne
+      && targetKind === 'LOCAL_SWEEP'
+      && btcPhase === 'BTC_DOWN_MID'
+      && (
+        (distanceBelow1 && oneSided50To89 && feasibilityBelow50)
+        || (distance1To2 && oneSided50To89 && feasibility50To69)
+      );
+    if (mainZoneWatch || localMidWatch) {
+      return finish(
+        'WATCH',
+        mainZoneWatch ? 'WATCH_PLUS_LONG_MAIN' : 'WATCH_PLUS_LONG_LOCAL',
+        mainZoneWatch ? 'WATCH+ · LONG MAIN' : 'WATCH+ · LONG LOCAL MID',
+        mainZoneWatch
+          ? 'LONG MAIN_ZONE đang tốt trong ngày nhưng net lịch sử gần hòa vốn; giữ WATCH+ để thu thêm mẫu'
+          : 'LONG LOCAL BTC_DOWN_MID có win rate tốt nhưng biên net lịch sử còn mỏng; giữ WATCH+ để thu thêm mẫu',
+      );
+    }
   }
 
   if (stage2Good) {
@@ -319,6 +429,15 @@ export function evaluateLiquidScanStage3(trade = {}) {
     'WATCH · OUTSIDE COHORT',
     'Combo chưa có hiệu quả ổn định đồng thời trên mẫu cũ và mẫu mới',
   );
+}
+
+export function liquidScanStage3MarginCap(stage3 = {}, {
+  goodPlusMarginUsdt = 10,
+  fallbackMarginUsdt = 1,
+} = {}) {
+  const fallback = Math.max(0.01, finiteNumber(fallbackMarginUsdt, 1));
+  if (String(stage3.tier ?? '').toUpperCase() !== 'GOOD_PLUS') return fallback;
+  return Math.max(0.01, finiteNumber(goodPlusMarginUsdt, 10));
 }
 
 export function evaluateLiquidScanShadow(trade = {}) {
@@ -413,4 +532,52 @@ export function liquidPaperFinancialMetrics(trade = {}, currentPrice = null, fee
   const netPnl = grossPnl - estimatedFeeUsdt;
   const netRoe = margin > 0 ? (netPnl / margin) * 100 : null;
   return { grossPnl, feeRate: safeFeeRate, estimatedFeeUsdt, feeUsdt: estimatedFeeUsdt, netPnl, netRoe };
+}
+
+/**
+ * Pre-entry, observation-only label for Liquid trades that can develop into
+ * 30%+ ROE runners. Only entry snapshot fields are read; realized/peak PnL,
+ * status and outcome are deliberately ignored.
+ */
+export function evaluateLiquidRunner30Candidate(trade = {}) {
+  const side = String(trade.side ?? '').toUpperCase();
+  const entry = finiteNumber(trade.entryPrice ?? trade.entryPlan?.entryPrice);
+  const takeProfit = finiteNumber(
+    trade.takeProfitPrice
+      ?? trade.tp
+      ?? trade.entryPlan?.takeProfitPrice
+      ?? trade.entryPlan?.targetPrice,
+  );
+  const leverage = finiteNumber(trade.leverage);
+  const targetKind = liquidScanTargetKind(trade);
+  const plannedTpRoe = entry > 0 && takeProfit > 0 && leverage > 0
+    ? (side === 'LONG'
+      ? ((takeProfit - entry) / entry) * 100 * leverage
+      : side === 'SHORT'
+        ? ((entry - takeProfit) / entry) * 100 * leverage
+        : null)
+    : null;
+  const matched = side === 'SHORT'
+    && targetKind === 'LOCAL_SWEEP'
+    && plannedTpRoe != null
+    && plannedTpRoe >= 30;
+  const reasons = [];
+  if (side !== 'SHORT') reasons.push('chưa có gate LONG ổn định cho runner 30%');
+  if (targetKind !== 'LOCAL_SWEEP') reasons.push(`target ${targetKind} không phải LOCAL_SWEEP`);
+  if (plannedTpRoe == null) reasons.push('thiếu entry/TP/leverage tại snapshot');
+  else if (plannedTpRoe < 30) reasons.push(`TP dự kiến ${plannedTpRoe.toFixed(1)}% ROE < 30%`);
+  return {
+    matched,
+    tier: matched ? 'CANDIDATE' : 'NO_LABEL',
+    code: matched ? 'RUNNER_30_CANDIDATE' : 'NO_LABEL',
+    label: matched ? 'RUNNER 30 · CANDIDATE' : null,
+    reason: matched
+      ? `SHORT + LOCAL_SWEEP + TP dự kiến ${plannedTpRoe.toFixed(1)}% ROE >= 30%`
+      : reasons.join('; ') || 'không thuộc gate runner 30%',
+    plannedTpRoe,
+    targetKind,
+    version: LIQUID_RUNNER_30_LABEL_VERSION,
+    observationOnly: true,
+    affectsTrading: false,
+  };
 }

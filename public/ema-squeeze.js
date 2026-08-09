@@ -1,3 +1,8 @@
+import { installBinanceCardAvgRoeGuard } from './binance-card-visibility.js';
+import { installLiveCardWhitelistUi, liveCardAttrs } from './live-card-whitelist-ui.js?v=20260802-live-whitelist-v5-two-step';
+
+installBinanceCardAvgRoeGuard();
+
 const SSE_URL = '/api/ema-squeeze-stream';
 const API_URL = '/api/ema-squeeze-signals';
 
@@ -17,6 +22,7 @@ let esPaperLimit = 300;
 let esPaperPagination = null;
 let esPaperServerSummary = null; // summary tổng từ server (gồm net PnL realized+unrealized theo mark live)
 let esPaperAvailableDays = [];
+let esSupportEntryStats = null;
 
 const grid          = document.getElementById('esGrid');
 const breakoutCount = document.getElementById('breakoutCount');
@@ -41,12 +47,44 @@ const esPaperTfSelect = document.getElementById('esPaperTfFilter');
 const esPaperCandleFlagSelect = document.getElementById('esPaperCandleFlagFilter');
 const esStageCandleSelect = document.getElementById('esStageCandleFilter');
 const esPaperOverview = document.getElementById('esPaperOverview');
+const esSupportEntryGroups = document.getElementById('esSupportEntryGroups');
+const esSupportEntryShort = document.getElementById('esSupportEntryShort');
+const esSupportEntryLong = document.getElementById('esSupportEntryLong');
+const esPaperScrollTop = document.getElementById('esPaperScrollTop');
+const esPaperScrollTopSpacer = document.getElementById('esPaperScrollTopSpacer');
+const esPaperScroll = document.getElementById('esPaperScroll');
+const esPaperTable = esPaperScroll?.querySelector('.es-paper-table');
 const btcSqueezeContextEl = document.getElementById('btcSqueezeContext');
 const emaSqueezeAutoOrderChk = document.getElementById('emaSqueezeAutoOrderChk');
 const emaSqueezeAutoOrderWrap = document.getElementById('emaSqueezeAutoOrderWrap');
 const emaSqueezeAutoOrderText = document.getElementById('emaSqueezeAutoOrderText');
 
 let btcSqueezeContext = null;
+
+installLiveCardWhitelistUi({
+  page: 'ema',
+  label: 'EMA',
+  mountBefore: esPaperOverview,
+});
+
+if (esPaperScrollTop && esPaperScrollTopSpacer && esPaperScroll && esPaperTable) {
+  let syncingPaperScroll = false;
+  const syncPaperScroll = (source, target) => {
+    if (syncingPaperScroll) return;
+    syncingPaperScroll = true;
+    target.scrollLeft = source.scrollLeft;
+    requestAnimationFrame(() => { syncingPaperScroll = false; });
+  };
+  const updatePaperScrollWidth = () => {
+    esPaperScrollTopSpacer.style.width = `${esPaperTable.scrollWidth}px`;
+    esPaperScrollTop.scrollLeft = esPaperScroll.scrollLeft;
+  };
+  esPaperScrollTop.addEventListener('scroll', () => syncPaperScroll(esPaperScrollTop, esPaperScroll), { passive: true });
+  esPaperScroll.addEventListener('scroll', () => syncPaperScroll(esPaperScroll, esPaperScrollTop), { passive: true });
+  if (typeof ResizeObserver === 'function') new ResizeObserver(updatePaperScrollWidth).observe(esPaperTable);
+  window.addEventListener('resize', updatePaperScrollWidth, { passive: true });
+  requestAnimationFrame(updatePaperScrollWidth);
+}
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 
@@ -621,6 +659,7 @@ if (esPaperTypeSelect) {
   esPaperTypeSelect.addEventListener('change', () => {
     esPaperTypeFilter = esPaperTypeSelect.value || 'all';
     loadEsPaperTrades(1);
+    connectEsPaperStream();
   });
 }
 
@@ -628,6 +667,7 @@ if (esPaperDaySelect) {
   esPaperDaySelect.addEventListener('change', () => {
     esPaperDayFilter = esPaperDaySelect.value || 'all';
     loadEsPaperTrades(1);
+    connectEsPaperStream();
   });
 }
 
@@ -635,6 +675,7 @@ if (esPaperTfSelect) {
   esPaperTfSelect.addEventListener('change', () => {
     esPaperTfFilter = esPaperTfSelect.value || 'all';
     loadEsPaperTrades(1);
+    connectEsPaperStream();
   });
 }
 
@@ -670,6 +711,7 @@ if (esStageCandleSelect) {
   esStageCandleSelect.addEventListener('change', () => {
     esStageCandleFilter = esStageCandleSelect.value || 'all';
     loadEsPaperTrades(1);
+    connectEsPaperStream();
   });
 }
 
@@ -777,7 +819,8 @@ function renderEsPaperOverview(trades, serverSummary = null) {
     const cls = index === 1 ? ' test10' : index === 2 ? ' test1' : '';
     const wr = group.wr == null ? '-' : `${group.wr.toFixed(0)}%`;
     const avgRoe = group.avgRoe == null ? '-' : fmtPct(group.avgRoe, 1);
-    return `<article class="es-paper-margin-card${cls}">
+    const liveKey = ['all', 'test10', 'test1', 'other'][index] ?? group.label;
+    return `<article class="es-paper-margin-card${cls}" ${liveCardAttrs('ema', 'overview', liveKey, group.avgRoe)}>
       <strong>${escapeHtml(group.label)}</strong>
       <div class="pnl" style="color:${pnlColor}">${formatEsMoney(pnl)}</div>
       <small>${group.total} total · ${group.open} open · ${group.closed} closed</small>
@@ -1568,15 +1611,75 @@ function groupEsTrades(trades, keyFn) {
   return Array.from(map.entries());
 }
 
-function renderEsStageCandleStatCard(row = {}) {
+function renderEsStageCandleStatCard(row = {}, liveGroup = 'stage-tier') {
   const pnl = Number(row.closedNetPnl ?? 0);
   const color = pnl > 0 ? '#34d399' : pnl < 0 ? '#fb7185' : 'var(--muted)';
-  return `<div class="es-paper-mini">
+  return `<div class="es-paper-mini" ${liveCardAttrs('ema', liveGroup, row.key ?? row.label, row.avgRoe)}>
     <strong>${escapeHtml(row.label ?? row.key ?? '-')}</strong><br>
     ${Number(row.total ?? 0)} total · ${Number(row.open ?? 0)} open · ${Number(row.pending ?? 0)} pending · ${Number(row.closed ?? 0)} closed<br>
     ${Number(row.wins ?? 0)}W/${Number(row.losses ?? 0)}L${Number(row.breakeven ?? 0) ? `/${Number(row.breakeven)}BE` : ''} · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`}<br>
     <span style="color:${color};font-weight:900">Net ${formatEsMoney(pnl)} · AvgROE ${row.avgRoe == null ? '-' : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(2)}%`}</span>
   </div>`;
+}
+
+function renderEsSupportEntryCards(element, rows = [], emptyLabel = 'Chưa có cohort đủ điều kiện') {
+  if (!element) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    element.innerHTML = `<div class="es-paper-mini" style="color:var(--muted)">
+      <strong>${escapeHtml(emptyLabel)}</strong><br>0 lệnh · OBSERVE ONLY
+    </div>`;
+    return;
+  }
+  const liveGroup = element === esSupportEntryShort
+    ? 'support-short-source'
+    : element === esSupportEntryLong
+      ? 'support-long-source'
+      : 'support-entry';
+  element.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'WATCH').toUpperCase();
+    const color = tier === 'GOOD' ? '#34d399' : tier === 'RISK' ? '#fb7185' : '#fbbf24';
+    const bg = tier === 'GOOD'
+      ? 'rgba(52,211,153,.08)'
+      : tier === 'RISK'
+        ? 'rgba(251,113,133,.08)'
+        : 'rgba(251,191,36,.08)';
+    const totalPnl = Number(row.pnl ?? 0);
+    const pnlColor = totalPnl >= 0 ? '#34d399' : '#fb7185';
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const streak = Number(row.negativeDayStreak ?? 0) > 0
+      ? ` · chuỗi âm ${Number(row.negativeDayStreak)} ngày`
+      : '';
+    return `<div class="es-paper-mini" ${liveCardAttrs('ema', liveGroup, row.key ?? row.label, row.avgRoe)} style="border-color:${color};background:${bg}">
+      <strong style="color:${color}">${escapeHtml(row.label ?? 'ENTRY SUPPORT')}</strong><br>
+      <span style="color:${pnlColor};font-size:16px;font-weight:950">${formatEsMoney(totalPnl)}</span><br>
+      ${row.total ?? 0} lệnh · ${row.open ?? 0} mở · ${row.pending ?? 0} pending · ${row.closed ?? 0} đóng<br>
+      ${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${wr} · AvgROE ${avgRoe}<br>
+      PnL đóng ${formatEsMoney(row.closedPnl)} · active ${formatEsMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}<br>
+      ngày dương ${row.positiveDays ?? 0}/${row.days ?? 0} · ngày âm ${row.negativeDays ?? 0}${streak}
+    </div>`;
+  }).join('');
+}
+
+function renderEsSupportEntryStats(stats = esSupportEntryStats) {
+  renderEsSupportEntryCards(
+    esSupportEntryGroups,
+    stats?.groups,
+    'Chưa có tín hiệu đẹp/xấu trong bộ lọc EMA',
+  );
+  renderEsSupportEntryCards(
+    esSupportEntryShort,
+    stats?.shortSourceGroups,
+    'Chưa có EMA SHORT đủ điều kiện sau flip',
+  );
+  renderEsSupportEntryCards(
+    esSupportEntryLong,
+    stats?.longSourceGroups,
+    'Chưa có EMA LONG đủ điều kiện sau flip',
+  );
 }
 
 function renderEmaStageCandleStats(stats) {
@@ -1614,10 +1717,10 @@ function renderEmaStageCandleStats(stats) {
         </div>
         <span style="color:var(--muted);font-size:10px">${escapeHtml(stats.version ?? '-')}</span>
       </div>
-      <div class="es-paper-breakdown" style="margin-top:10px">${tiers.map(renderEsStageCandleStatCard).join('')}</div>
+      <div class="es-paper-breakdown" style="margin-top:10px">${tiers.map((row) => renderEsStageCandleStatCard(row, 'stage-tier')).join('')}</div>
       <details open style="margin-top:10px">
         <summary style="cursor:pointer;color:var(--text);font-weight:900">Theo stage × nhãn (${stageTiers.length})</summary>
-        <div class="es-paper-breakdown" style="margin-top:8px">${stageTiers.map(renderEsStageCandleStatCard).join('')}</div>
+        <div class="es-paper-breakdown" style="margin-top:8px">${stageTiers.map((row) => renderEsStageCandleStatCard(row, 'stage-tier-matrix')).join('')}</div>
       </details>
       <details style="margin-top:10px">
         <summary style="cursor:pointer;color:var(--text);font-weight:900">Chi tiết stage × ALT candle × BTC candle (${Math.min(contexts.length, 100)}/${Number(stats.contextTotal ?? contexts.length)})</summary>
@@ -1715,7 +1818,7 @@ function updateEsPaperStats(trades = esPaperTrades) {
         .slice(0, 18)
         .map((row) => {
           const tone = getEsComboTone(row);
-          return `<div class="es-paper-mini" style="position:relative;overflow:hidden;border-color:${tone.border};background:${tone.bg};box-shadow:${tone.shadow};padding-left:13px">
+          return `<div class="es-paper-mini" ${liveCardAttrs('ema', 'combo', row.key, row.avgRoe)} style="position:relative;overflow:hidden;border-color:${tone.border};background:${tone.bg};box-shadow:${tone.shadow};padding-left:13px">
             <span style="position:absolute;left:0;top:0;bottom:0;width:4px;background:${tone.sideColor}"></span>
             ${formatEsServerComboBucket(row)}
           </div>`;
@@ -1756,6 +1859,7 @@ function renderEsPaperTable() {
   }
   renderEsPaperPager();
   renderEsPaperOverview(filteredTrades, esPaperCandleFlagFilter === 'all' ? esPaperServerSummary : null);
+  renderEsSupportEntryStats();
   renderEmaStageCandleStats(esPaperServerSummary?.emaStageCandleStats);
   updateEsPaperStats(filteredTrades);
 
@@ -1890,6 +1994,7 @@ async function loadEsPaperTrades(page = esPaperPage) {
     esPaperPage = data.pagination?.page ?? nextPage;
     esPaperPagination = data.pagination ?? null;
     if (data.summary) esPaperServerSummary = data.summary;
+    if (data.supportEntryStats) esSupportEntryStats = data.supportEntryStats;
     if (Array.isArray(data.availableDays)) esPaperAvailableDays = data.availableDays;
     esPaperTrades = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('emasq-'));
     updateEsDayFilterOptions();
@@ -1902,8 +2007,19 @@ async function loadEsPaperTrades(page = esPaperPage) {
 let esPaperStream = null;
 let esPaperFallbackTimer = null;
 
+function esPaperStreamUrl() {
+  const query = new URLSearchParams({
+    type: esPaperTypeFilter || 'all',
+    day: esPaperDayFilter || 'all',
+    tf: esPaperTfFilter || 'all',
+    stageCandle: esStageCandleFilter || 'all',
+  });
+  return `/api/ema-squeeze-paper-trades-stream?${query}`;
+}
+
 function applyEsPaperData(data) {
   const incoming = (data.trades ?? []).filter((t) => String(t.source ?? '').startsWith('emasq-'));
+  if (data.supportEntryStats) esSupportEntryStats = data.supportEntryStats;
   // KHÔNG dùng summary từ stream (stream không lọc theo filter) — Net PnL lấy từ loadEsPaperTrades đã lọc
   if (data.partial) {
     const merged = new Map(esPaperTrades.map((t) => [t.id, t]));
@@ -1920,7 +2036,7 @@ function applyEsPaperData(data) {
 
 function connectEsPaperStream() {
   esPaperStream?.close();
-  esPaperStream = new EventSource('/api/ema-squeeze-paper-trades-stream');
+  esPaperStream = new EventSource(esPaperStreamUrl());
   esPaperStream.onmessage = (event) => {
     try {
       applyEsPaperData(JSON.parse(event.data));

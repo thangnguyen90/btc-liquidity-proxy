@@ -2,6 +2,36 @@ import crypto from "node:crypto";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  RECOMMENDED_DAY_REGIME_VERSION,
+  RECOMMENDED_DAY_SELECTION_VERSION,
+  buildRecommendedDayRegimeSnapshot,
+  classifyRecommendedDaySelection,
+  decorateRecommendedDayRegimeSnapshots,
+} from "./recommendedDayRegime.js";
+import {
+  RECOMMENDED_BACKTEST_CONFIDENCE_RULES,
+  RECOMMENDED_BACKTEST_CONFIDENCE_VERSION,
+  RECOMMENDED_BACKTEST_RELIABILITY_VERSION,
+  buildRecommendedBacktestConfidenceSnapshot,
+  decorateRecommendedBacktestConfidenceSnapshots,
+} from "./recommendedBacktestConfidence.js";
+import {
+  RECOMMENDED_MARKET_POINT_FIT_VERSION,
+  buildRecommendedMarketPointFitSnapshot,
+  decorateRecommendedMarketPointFitSnapshots,
+} from "./recommendedMarketPointFit.js";
+import {
+  RECOMMENDED_MARKET_DISPERSION_VERSION,
+  buildRecommendedMarketDispersionSnapshot,
+  decorateRecommendedMarketDispersionSnapshots,
+} from "./recommendedMarketDispersion.js";
+import {
+  RECOMMENDED_SUPPORT_ENTRY_RULES,
+  RECOMMENDED_SUPPORT_ENTRY_VERSION,
+  decorateRecommendedSupportEntrySnapshots,
+} from "./recommendedSupportEntry.js";
+import { liveCardKeysFromRows } from "./liquidLiveCardWhitelist.js";
 
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const recommendationFile = join(rootDir, "data", "recommended-signals.json");
@@ -33,11 +63,38 @@ const RECOMMENDED_DEFAULT_SL_ROE = 16;
 const RECOMMENDED_DEFAULT_TP_ROE = 15;
 const RECOMMENDED_PAPER_MODE = "INDEPENDENT_SOCKET_V2";
 const RECOMMENDED_DIRECT_EVENT_MODE = "SOURCE_OPEN_EVENT_V3";
+const RECOMMENDED_TWO_LAYER_VERSION = "recommended-clone-shadow-v1";
+const RECOMMENDED_MARKET_FIT_VERSION = "recommended-market-fit-shadow-v1";
+const RECOMMENDED_MARKET_FIT_MIN_SAMPLE = 10;
+const RECOMMENDED_MARKET_FIT_DECISION_SAMPLE = 30;
+const RECOMMENDED_CLONE_GOOD_DRIFT_PCT = 0.08;
+const RECOMMENDED_CLONE_RISK_DRIFT_PCT = 0.3;
 const socketProcessAtBySymbol = new Map();
 
 function number(value, fallback = null) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function recommendedMarketDirectionSnapshot(explicitSnapshot, sourceTrade = {}) {
+  const snapshot = explicitSnapshot && typeof explicitSnapshot === "object"
+    ? explicitSnapshot
+    : sourceTrade?.marketDirectionAtSignal && typeof sourceTrade.marketDirectionAtSignal === "object"
+      ? sourceTrade.marketDirectionAtSignal
+      : null;
+  if (!snapshot) return null;
+  return {
+    ...snapshot,
+    scores: snapshot.scores && typeof snapshot.scores === "object" ? { ...snapshot.scores } : null,
+    breadth: snapshot.breadth && typeof snapshot.breadth === "object" ? { ...snapshot.breadth } : null,
+    btc: snapshot.btc && typeof snapshot.btc === "object" ? { ...snapshot.btc } : null,
+    scoreDynamics: snapshot.scoreDynamics && typeof snapshot.scoreDynamics === "object"
+      ? { ...snapshot.scoreDynamics, observationOnly: true, affectsOrders: false }
+      : null,
+    reasons: Array.isArray(snapshot.reasons) ? snapshot.reasons.map(String) : [],
+    observationOnly: true,
+    affectsOrders: false,
+  };
 }
 
 function normalizePart(value) {
@@ -48,6 +105,204 @@ function normalizePart(value) {
       .replace(/[|]/g, "_")
       .toUpperCase()
       .slice(0, 96) || "-"
+  );
+}
+
+const RECOMMENDED_PAPER_FILTER_KEYS = [
+  "sourceLayer",
+  "cloneLayer",
+  "twoLayer",
+  "marketFit",
+  "daySelection",
+  "backtestConfidence",
+  "backtestReliability",
+  "marketPointFit",
+  "marketDispersion",
+];
+
+function recommendedPaperFilterValue(trade, key) {
+  if (key === "sourceLayer") {
+    return normalizePart(trade?.recommendedSourceLayer ?? "WATCH");
+  }
+  if (key === "cloneLayer") {
+    return normalizePart(trade?.recommendedCloneLayer ?? "WATCH");
+  }
+  if (key === "twoLayer") {
+    return normalizePart(trade?.recommendedTwoLayerTier ?? "WATCH");
+  }
+  if (key === "marketFit") {
+    const label = normalizePart(trade?.recommendedMarketFitLabel ?? "");
+    if (label && label !== "-") return label.replace(/^M4_/, "");
+    const sampleStatus = normalizePart(
+      trade?.recommendedMarketFitSampleStatus ?? "",
+    );
+    if (sampleStatus === "NO_DATA") return "NO_DATA";
+    return normalizePart(trade?.recommendedMarketFitTier ?? "WATCH");
+  }
+  if (key === "daySelection") {
+    return normalizePart(
+      trade?.recommendedDaySelectionAtEntry?.key ?? "REC_DAY_NO_DATA",
+    );
+  }
+  if (key === "backtestConfidence") {
+    const value = normalizePart(
+      trade?.recommendedBacktestConfidenceClass ?? "NO_DATA",
+    );
+    return ["PRIME", "GOOD", "WATCH", "RISK", "NO_DATA"].includes(value)
+      ? value
+      : "NO_DATA";
+  }
+  if (key === "backtestReliability") {
+    const value = normalizePart(
+      trade?.recommendedBacktestReliabilityClass ?? "LOW",
+    );
+    return ["HIGH", "MEDIUM", "LOW"].includes(value) ? value : "LOW";
+  }
+  if (key === "marketPointFit") {
+    const value = normalizePart(
+      trade?.recommendedMarketPointFitClass ?? "NO_DATA",
+    );
+    return [
+      "STRONG",
+      "SUPPORT",
+      "TRANSITION",
+      "EXHAUSTED",
+      "HEADWIND",
+      "NO_DATA",
+    ].includes(value)
+      ? value
+      : "NO_DATA";
+  }
+  if (key === "marketDispersion") {
+    const value = normalizePart(
+      trade?.recommendedMarketDispersionSegment ??
+        trade?.recommendedMarketDispersionClass ??
+        "DISP_NO_DATA",
+    );
+    return [
+      "DISP_REENTER_FROM_TRANSITION",
+      "DISP_REENTER_FROM_CHOP",
+      "DISP_REENTER_OTHER",
+      "DISP_HOLD_LONG_LEAD",
+      "DISP_HOLD_BALANCED",
+      "DISP_HOLD_SHORT_LEAD",
+      "DISP_EXIT_TO_TRANSITION",
+      "DISP_EXIT_TO_CHOP",
+      "DISP_EXIT_OTHER",
+      "DISP_OUTSIDE",
+      "DISP_NO_DATA",
+    ].includes(value)
+      ? value
+      : "DISP_NO_DATA";
+  }
+  return "";
+}
+
+function recommendedPaperFilterLabel(trade, key, value) {
+  if (key === "sourceLayer") return `SOURCE ${value.replaceAll("_", " ")}`;
+  if (key === "cloneLayer") return `CLONE ${value.replaceAll("_", " ")}`;
+  if (key === "twoLayer") return value.replaceAll("_", " ");
+  if (key === "marketFit") return `M4 ${value.replaceAll("_", " ")}`;
+  if (key === "daySelection") {
+    return String(
+      trade?.recommendedDaySelectionAtEntry?.label ??
+        value.replaceAll("_", " "),
+    );
+  }
+  if (key === "backtestConfidence") {
+    return `BT ${value.replaceAll("_", " ")}`;
+  }
+  if (key === "backtestReliability") {
+    return `CONF ${value.replaceAll("_", " ")}`;
+  }
+  if (key === "marketPointFit") {
+    return `POINT ${value.replaceAll("_", " ")}`;
+  }
+  if (key === "marketDispersion") {
+    return value.replace(/^DISP_/, "DISP ").replaceAll("_", " ");
+  }
+  return value.replaceAll("_", " ");
+}
+
+export function normalizeRecommendedPaperFilters(filters = {}) {
+  return Object.fromEntries(
+    RECOMMENDED_PAPER_FILTER_KEYS.map((key) => {
+      const value = normalizePart(filters?.[key] ?? "");
+      return [key, ["", "-", "ALL"].includes(value) ? "" : value];
+    }),
+  );
+}
+
+export function filterRecommendedPaperTrades(trades = [], filters = {}) {
+  const normalized = normalizeRecommendedPaperFilters(filters);
+  return (trades ?? []).filter((trade) =>
+    RECOMMENDED_PAPER_FILTER_KEYS.every(
+      (key) =>
+        !normalized[key] ||
+        recommendedPaperFilterValue(trade, key) === normalized[key],
+    ),
+  );
+}
+
+export function recommendedPaperFilterOptions(trades = []) {
+  const tierRank = {
+    PRIME: 0,
+    HIGH: 0,
+    GOOD: 1,
+    MEDIUM: 1,
+    WATCH: 2,
+    LOW: 2,
+    RISK: 3,
+    STRONG: 0,
+    SUPPORT: 1,
+    TRANSITION: 2,
+    EXHAUSTED: 3,
+    HEADWIND: 4,
+    ENTER: 0,
+    HOLD_LONG_LEAD: 1,
+    HOLD_BALANCED: 2,
+    HOLD_SHORT_LEAD: 3,
+    EXIT_PENDING: 4,
+    OUTSIDE: 5,
+    NO_DATA: 5,
+    DISP_REENTER_FROM_TRANSITION: 0,
+    DISP_REENTER_FROM_CHOP: 1,
+    DISP_REENTER_OTHER: 2,
+    DISP_HOLD_LONG_LEAD: 3,
+    DISP_HOLD_BALANCED: 4,
+    DISP_HOLD_SHORT_LEAD: 5,
+    DISP_EXIT_TO_TRANSITION: 6,
+    DISP_EXIT_TO_CHOP: 7,
+    DISP_EXIT_OTHER: 8,
+    DISP_OUTSIDE: 9,
+    DISP_NO_DATA: 10,
+  };
+  return Object.fromEntries(
+    RECOMMENDED_PAPER_FILTER_KEYS.map((key) => {
+      const values = new Map();
+      for (const trade of trades ?? []) {
+        const value = recommendedPaperFilterValue(trade, key);
+        if (!value || value === "-") continue;
+        const current = values.get(value) ?? {
+          value,
+          label: recommendedPaperFilterLabel(trade, key, value),
+          count: 0,
+        };
+        current.count += 1;
+        values.set(value, current);
+      }
+      return [
+        key,
+        [...values.values()].sort(
+          (left, right) =>
+            (tierRank[left.value] ?? 9) - (tierRank[right.value] ?? 9) ||
+            left.label.localeCompare(right.label, "vi", {
+              numeric: true,
+              sensitivity: "base",
+            }),
+        ),
+      ];
+    }),
   );
 }
 
@@ -424,6 +679,7 @@ export async function processRecommendedPaperSocketPrice(
   symbol,
   markPrice,
   eventTime = Date.now(),
+  { onTradeClosed = null } = {},
 ) {
   const normalizedSymbol = String(symbol ?? "").trim().toUpperCase();
   const mark = number(markPrice);
@@ -432,6 +688,7 @@ export async function processRecommendedPaperSocketPrice(
   if (now - (socketProcessAtBySymbol.get(normalizedSymbol) ?? 0) < 200) return 0;
   socketProcessAtBySymbol.set(normalizedSymbol, now);
   let closed = 0;
+  const closedTrades = [];
   writeLock = writeLock.then(async () => {
     const store = await readJsonCached(paperFile, { version: 2, trades: [] });
     const nextTrades = (store.trades ?? []).map((row) => {
@@ -442,7 +699,10 @@ export async function processRecommendedPaperSocketPrice(
         { ...row, markPrice: mark },
         new Date(eventTime).toISOString(),
       );
-      if (normalizePart(evaluated?.status) === "CLOSED") closed += 1;
+      if (normalizePart(evaluated?.status) === "CLOSED") {
+        closed += 1;
+        closedTrades.push(evaluated);
+      }
       return evaluated;
     });
     if (!closed) return;
@@ -455,6 +715,9 @@ export async function processRecommendedPaperSocketPrice(
     });
   });
   await writeLock;
+  if (typeof onTradeClosed === "function" && closedTrades.length) {
+    await Promise.allSettled(closedTrades.map((trade) => onTradeClosed(trade)));
+  }
   return closed;
 }
 
@@ -633,6 +896,31 @@ function comboWindow(value) {
     sampleDays: days,
     label: days === 1 ? "Trong ngày" : `${days} ngày`,
   };
+}
+
+function normalizedDateKey(value) {
+  const text = String(value ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
+  const parsed = Date.parse(`${text}T00:00:00.000Z`);
+  return Number.isFinite(parsed) ? text : "";
+}
+
+export function recommendedPaperDateRange(fromDay, toDay) {
+  const from = normalizedDateKey(fromDay);
+  const to = normalizedDateKey(toDay);
+  if (!from && !to) return null;
+  const left = from || to;
+  const right = to || from;
+  return left <= right
+    ? { fromDay: left, toDay: right }
+    : { fromDay: right, toDay: left };
+}
+
+export function tradeInRecommendedDateRange(trade, range) {
+  const day = normalizedDateKey(trade?.activeDateUtc ?? tradeDay(trade));
+  return Boolean(
+    day && range && day >= range.fromDay && day <= range.toDay,
+  );
 }
 
 function subtractUtcDays(day, amount) {
@@ -1158,13 +1446,418 @@ function directEventTiming({ trade, marketEntry, now = Date.now() }) {
   return { sourceEntry, marketPrice, marketAt, receivedAt, sourceAt, eventLatencyMs, marketAgeMs, rawDrift, adverseChasePct };
 }
 
+function recommendedSourceLayer(strengthValue) {
+  const strength = normalizePart(strengthValue);
+  if (strength === "STRONG") {
+    return {
+      tier: "GOOD",
+      reason: "Recommendation STRONG tại thời điểm clone.",
+    };
+  }
+  if (["BAD", "NEUTRAL"].includes(strength)) {
+    return {
+      tier: "RISK",
+      reason: `Recommendation ${strength}; chưa có edge nguồn đủ mạnh.`,
+    };
+  }
+  return {
+    tier: "WATCH",
+    reason:
+      strength === "GOOD"
+        ? "Recommendation GOOD nhưng chưa đạt mức STRONG."
+        : "Thiếu nhãn chất lượng nguồn tại thời điểm clone.",
+  };
+}
+
+function recommendedCloneLayer({
+  entryMode,
+  eventLatencyMs,
+  marketAgeMs,
+  entryVsSourcePct,
+  adverseChasePct,
+  duplicateActiveCount = 0,
+} = {}) {
+  const mode = normalizePart(entryMode);
+  const latency = number(eventLatencyMs);
+  const marketAge = number(marketAgeMs);
+  const drift = number(entryVsSourcePct);
+  const adverseChase = number(adverseChasePct);
+  const absoluteDrift = drift == null ? null : Math.abs(drift);
+  const duplicateCount = Math.max(0, number(duplicateActiveCount, 0) ?? 0);
+  const riskReasons = [];
+  const watchReasons = [];
+
+  if (mode !== RECOMMENDED_DIRECT_EVENT_MODE)
+    riskReasons.push("không phải đường clone source-open trực tiếp");
+  if (duplicateCount > 0)
+    riskReasons.push(`${duplicateCount} lệnh cùng symbol/side còn mở trong cụm 15 phút`);
+  if (latency == null) watchReasons.push("thiếu latency sự kiện");
+  else if (latency > 10_000) riskReasons.push(`latency ${latency}ms > 10s`);
+  if (marketAge == null) watchReasons.push("thiếu tuổi market tick");
+  else if (marketAge > 5_000) riskReasons.push(`market tick ${marketAge}ms > 5s`);
+  if (
+    adverseChase != null &&
+    adverseChase > RECOMMENDED_CLONE_GOOD_DRIFT_PCT
+  ) {
+    riskReasons.push(`chase bất lợi ${adverseChase.toFixed(3)}% > 0.08%`);
+  }
+  if (
+    absoluteDrift != null &&
+    absoluteDrift > RECOMMENDED_CLONE_RISK_DRIFT_PCT
+  ) {
+    riskReasons.push(`lệch giá nguồn ${absoluteDrift.toFixed(3)}% > 0.30%`);
+  } else if (
+    absoluteDrift != null &&
+    absoluteDrift > RECOMMENDED_CLONE_GOOD_DRIFT_PCT
+  ) {
+    watchReasons.push(`lệch giá nguồn ${absoluteDrift.toFixed(3)}% > 0.08%`);
+  }
+  if (absoluteDrift == null) watchReasons.push("thiếu độ lệch giá nguồn");
+
+  if (riskReasons.length) {
+    return { tier: "RISK", reason: riskReasons.join("; ") };
+  }
+  if (watchReasons.length) {
+    return { tier: "WATCH", reason: watchReasons.join("; ") };
+  }
+  return {
+    tier: "GOOD",
+    reason: `source-open trực tiếp; lệch giá ${absoluteDrift?.toFixed(3) ?? "-"}%`,
+  };
+}
+
+function recommendedPaperLayerSnapshot({
+  recommendationStrength,
+  entryMode,
+  eventLatencyMs,
+  marketAgeMs,
+  entryVsSourcePct,
+  adverseChasePct,
+  duplicateActiveCount = 0,
+} = {}) {
+  const source = recommendedSourceLayer(recommendationStrength);
+  const clone = recommendedCloneLayer({
+    entryMode,
+    eventLatencyMs,
+    marketAgeMs,
+    entryVsSourcePct,
+    adverseChasePct,
+    duplicateActiveCount,
+  });
+  const combinedTier =
+    source.tier === "RISK" || clone.tier === "RISK"
+      ? "RISK"
+      : source.tier === "GOOD" && clone.tier === "GOOD"
+        ? "GOOD"
+        : "WATCH";
+  return {
+    recommendedSourceLayer: source.tier,
+    recommendedSourceLayerReason: source.reason,
+    recommendedCloneLayer: clone.tier,
+    recommendedCloneLayerReason: clone.reason,
+    recommendedTwoLayerTier: combinedTier,
+    recommendedTwoLayerReason: `SOURCE ${source.tier} × CLONE ${clone.tier}`,
+    recommendedCloneDuplicateActiveCount: Math.max(
+      0,
+      number(duplicateActiveCount, 0) ?? 0,
+    ),
+    recommendedLayerVersion: RECOMMENDED_TWO_LAYER_VERSION,
+    recommendedLayerObservationOnly: true,
+  };
+}
+
+function recommendedBtcAlignment(trade = {}) {
+  const sideValue = normalizePart(trade?.side ?? trade?.action);
+  const side = sideValue.includes("SHORT")
+    ? "SHORT"
+    : sideValue.includes("LONG")
+      ? "LONG"
+      : sideValue;
+  const phase = normalizePart(
+    trade?.recommendationBtcPhase ??
+      trade?.btcPhase ??
+      trade?.btcPhaseLabel ??
+      trade?.btcRegimeAtEntry,
+  );
+  const direction = phase.includes("DOWN")
+    ? "DOWN"
+    : phase.includes("UP")
+      ? "UP"
+      : null;
+  if (!["LONG", "SHORT"].includes(side) || !direction) {
+    return {
+      key: "BTC_NO_DATA",
+      label: "BTC NO DATA",
+    };
+  }
+  const followsBtc =
+    (side === "LONG" && direction === "UP") ||
+    (side === "SHORT" && direction === "DOWN");
+  return followsBtc
+    ? { key: "THEO_BTC", label: "THEO BTC" }
+    : { key: "NGUOC_BTC", label: "NGƯỢC BTC" };
+}
+
+function recommendedMarketFitGroup(trade = {}) {
+  const twoLayerTier = ["GOOD", "WATCH", "RISK"].includes(
+    normalizePart(trade?.recommendedTwoLayerTier),
+  )
+    ? normalizePart(trade?.recommendedTwoLayerTier)
+    : "WATCH";
+  const alignment = recommendedBtcAlignment(trade);
+  return {
+    key: `${twoLayerTier}_X_${alignment.key}`,
+    label: `${twoLayerTier} × ${alignment.label}`,
+    twoLayerTier,
+    btcAlignment: alignment.key,
+    btcAlignmentLabel: alignment.label,
+  };
+}
+
+function emptyRecommendedMarketFitStats() {
+  return {
+    closed: 0,
+    wins: 0,
+    losses: 0,
+    breakeven: 0,
+    closedPnl: 0,
+    roeTotal: 0,
+  };
+}
+
+function addRecommendedMarketFitClosedTrade(stats, trade) {
+  const pnl = number(trade?.pnl ?? trade?.netPnl, 0) ?? 0;
+  const roe = number(trade?.roe ?? trade?.roePct, 0) ?? 0;
+  stats.closed += 1;
+  stats.closedPnl += pnl;
+  stats.roeTotal += roe;
+  if (pnl > 0) stats.wins += 1;
+  else if (pnl < 0) stats.losses += 1;
+  else stats.breakeven += 1;
+  return stats;
+}
+
+function recommendedMarketFitMetrics(stats = emptyRecommendedMarketFitStats()) {
+  const decisive = stats.wins + stats.losses;
+  return {
+    closed: stats.closed,
+    wins: stats.wins,
+    losses: stats.losses,
+    breakeven: stats.breakeven,
+    closedPnl: stats.closedPnl,
+    wr: decisive ? (stats.wins / decisive) * 100 : null,
+    avgRoe: stats.closed ? stats.roeTotal / stats.closed : null,
+  };
+}
+
+function recommendedMarketFitVerdict(stats, btcAlignment = "BTC_NO_DATA") {
+  const metrics =
+    Object.prototype.hasOwnProperty.call(stats ?? {}, "roeTotal")
+      ? recommendedMarketFitMetrics(stats)
+      : stats;
+  if (btcAlignment === "BTC_NO_DATA" || metrics.closed < RECOMMENDED_MARKET_FIT_MIN_SAMPLE) {
+    return {
+      tier: "WATCH",
+      label: "NO DATA",
+      sampleStatus: "NO_DATA",
+    };
+  }
+  if (metrics.closed < RECOMMENDED_MARKET_FIT_DECISION_SAMPLE) {
+    return {
+      tier: "WATCH",
+      label: "WATCH",
+      sampleStatus: "PROVISIONAL",
+    };
+  }
+  if (
+    metrics.closedPnl > 0 &&
+    metrics.avgRoe > 0 &&
+    metrics.wr >= 55
+  ) {
+    return { tier: "GOOD", label: "GOOD", sampleStatus: "READY" };
+  }
+  if (
+    metrics.closedPnl < 0 &&
+    metrics.avgRoe < 0 &&
+    metrics.wr < 50
+  ) {
+    return { tier: "RISK", label: "RISK", sampleStatus: "READY" };
+  }
+  return { tier: "WATCH", label: "WATCH", sampleStatus: "READY" };
+}
+
+function recommendedMarketFitSnapshot(trade, stats = emptyRecommendedMarketFitStats()) {
+  const group = recommendedMarketFitGroup(trade);
+  const metrics = recommendedMarketFitMetrics(stats);
+  const verdict = recommendedMarketFitVerdict(metrics, group.btcAlignment);
+  const wrLabel = metrics.wr == null ? "-" : `${metrics.wr.toFixed(1)}%`;
+  const pnlLabel = `${metrics.closedPnl >= 0 ? "+" : ""}${metrics.closedPnl.toFixed(3)}`;
+  const roeLabel =
+    metrics.avgRoe == null
+      ? "-"
+      : `${metrics.avgRoe >= 0 ? "+" : ""}${metrics.avgRoe.toFixed(1)}%`;
+  return {
+    recommendedMarketFitKey: group.key,
+    recommendedMarketFitGroupLabel: group.label,
+    recommendedMarketFitAlignment: group.btcAlignment,
+    recommendedMarketFitAlignmentLabel: group.btcAlignmentLabel,
+    recommendedMarketFitTier: verdict.tier,
+    recommendedMarketFitLabel: `M4 ${verdict.label}`,
+    recommendedMarketFitReason:
+      `${group.label} · trước entry: ${metrics.closed} đóng · WR ${wrLabel}` +
+      ` · PnL ${pnlLabel} · AvgROE ${roeLabel} · OBSERVE ONLY`,
+    recommendedMarketFitSampleStatus: verdict.sampleStatus,
+    recommendedMarketFitSamplesBeforeEntry: metrics.closed,
+    recommendedMarketFitWrBeforeEntry: metrics.wr,
+    recommendedMarketFitPnlBeforeEntry: metrics.closedPnl,
+    recommendedMarketFitAvgRoeBeforeEntry: metrics.avgRoe,
+    recommendedMarketFitVersion: RECOMMENDED_MARKET_FIT_VERSION,
+    recommendedMarketFitObservationOnly: true,
+  };
+}
+
+function recommendedMarketFitStatsBefore(trades, trade, beforeAt) {
+  const targetGroup = recommendedMarketFitGroup(trade);
+  const stats = emptyRecommendedMarketFitStats();
+  for (const prior of trades) {
+    const closedAt = Date.parse(prior?.closedAt ?? "") || 0;
+    if (!closedAt || closedAt > beforeAt) continue;
+    if (recommendedMarketFitGroup(prior).key !== targetGroup.key) continue;
+    addRecommendedMarketFitClosedTrade(stats, prior);
+  }
+  return stats;
+}
+
+function decorateRecommendedMarketFitSnapshots(trades = []) {
+  const entries = trades
+    .map((trade, index) => ({
+      trade,
+      index,
+      openedAt:
+        Date.parse(trade?.clonedAt ?? trade?.openedAt ?? trade?.createdAt ?? "") ||
+        0,
+    }))
+    .sort((left, right) => left.openedAt - right.openedAt);
+  const closeEvents = trades
+    .map((trade) => ({
+      trade,
+      closedAt: Date.parse(trade?.closedAt ?? "") || 0,
+    }))
+    .filter((event) => event.closedAt > 0)
+    .sort((left, right) => left.closedAt - right.closedAt);
+  const statsByGroup = new Map();
+  const decorated = [...trades];
+  let closeIndex = 0;
+
+  for (const entry of entries) {
+    while (
+      closeIndex < closeEvents.length &&
+      closeEvents[closeIndex].closedAt <= entry.openedAt
+    ) {
+      const closedTrade = closeEvents[closeIndex].trade;
+      const group = recommendedMarketFitGroup(closedTrade);
+      const stats =
+        statsByGroup.get(group.key) ?? emptyRecommendedMarketFitStats();
+      addRecommendedMarketFitClosedTrade(stats, closedTrade);
+      statsByGroup.set(group.key, stats);
+      closeIndex += 1;
+    }
+    const hasSnapshot =
+      entry.trade?.recommendedMarketFitVersion &&
+      entry.trade?.recommendedMarketFitKey &&
+      entry.trade?.recommendedMarketFitTier &&
+      entry.trade?.recommendedMarketFitLabel;
+    if (hasSnapshot) continue;
+    const group = recommendedMarketFitGroup(entry.trade);
+    decorated[entry.index] = {
+      ...entry.trade,
+      ...recommendedMarketFitSnapshot(
+        entry.trade,
+        statsByGroup.get(group.key) ?? emptyRecommendedMarketFitStats(),
+      ),
+    };
+  }
+  return decorated;
+}
+
+function decorateRecommendedPaperLayers(trades = []) {
+  const chronological = [...trades].sort(
+    (left, right) =>
+      Date.parse(left?.clonedAt ?? left?.openedAt ?? left?.createdAt ?? 0) -
+      Date.parse(right?.clonedAt ?? right?.openedAt ?? right?.createdAt ?? 0),
+  );
+  const priorBySymbolSide = new Map();
+  const decoratedById = new Map();
+
+  for (const trade of chronological) {
+    const openedAt =
+      Date.parse(trade?.clonedAt ?? trade?.openedAt ?? trade?.createdAt ?? "") ||
+      0;
+    const key = `${normalizePart(trade?.symbol)}|${normalizePart(trade?.side)}`;
+    const priorRows = priorBySymbolSide.get(key) ?? [];
+    const duplicateActiveCount = openedAt
+      ? priorRows.filter((prior) => {
+          const priorOpenedAt =
+            Date.parse(
+              prior?.clonedAt ?? prior?.openedAt ?? prior?.createdAt ?? "",
+            ) || 0;
+          const priorClosedAt = Date.parse(prior?.closedAt ?? "") || 0;
+          return (
+            priorOpenedAt > 0 &&
+            openedAt - priorOpenedAt <= RECOMMENDED_CLUSTER_WINDOW_MS &&
+            (!priorClosedAt || priorClosedAt > openedAt)
+          );
+        }).length
+      : 0;
+    const hasSnapshot =
+      trade?.recommendedLayerVersion &&
+      trade?.recommendedSourceLayer &&
+      trade?.recommendedCloneLayer &&
+      trade?.recommendedTwoLayerTier;
+    const decorated = hasSnapshot
+      ? trade
+      : {
+          ...trade,
+          ...recommendedPaperLayerSnapshot({
+            recommendationStrength: trade?.recommendationStrength,
+            entryMode: trade?.recommendedEntryMode,
+            eventLatencyMs: trade?.sourceEventLatencyMs,
+            marketAgeMs: trade?.marketEntrySourceAgeMs,
+            entryVsSourcePct: trade?.entryVsSourcePct,
+            adverseChasePct: trade?.adverseChasePct,
+            duplicateActiveCount,
+          }),
+        };
+    decoratedById.set(String(trade?.id ?? ""), decorated);
+    priorRows.push(trade);
+    priorBySymbolSide.set(key, priorRows);
+  }
+
+  const layerDecorated = trades.map(
+    (trade) => decoratedById.get(String(trade?.id ?? "")) ?? trade,
+  );
+  return decorateRecommendedSupportEntrySnapshots(
+    decorateRecommendedMarketDispersionSnapshots(
+      decorateRecommendedMarketPointFitSnapshots(
+        decorateRecommendedBacktestConfidenceSnapshots(
+          decorateRecommendedDayRegimeSnapshots(
+            decorateRecommendedMarketFitSnapshots(layerDecorated),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 export async function processRecommendedSourceOpenEvent({
   page,
   trade,
   marketEntry,
+  marketDirectionAtSignal = null,
   learningFlagsByRecommendationId = null,
   catalogOverride = null,
   paperFileOverride = null,
+  liveOrderEvaluator = null,
 } = {}) {
   const sourcePage = String(page ?? "").trim().toLowerCase();
   const sourceStatus = normalizePart(trade?.status);
@@ -1236,6 +1929,11 @@ export async function processRecommendedSourceOpenEvent({
       && Date.parse(row.openedAt ?? "") >= clusterCutoff
       && !String(row.recommendedTradePlanLabel ?? "").includes("TEST $1")
       && number(row.marginUsdt, 0) > RECOMMENDED_TEST_MARGIN_USDT).length;
+    const duplicateActiveCount = independentPaperTrades.filter((row) =>
+      normalizePart(row.symbol) === normalizePart(trade.symbol)
+      && normalizePart(row.side) === normalizePart(trade.side)
+      && ["OPEN", "PENDING", "ENTRY_READY"].includes(normalizePart(row.status))
+      && Date.parse(row.openedAt ?? row.createdAt ?? "") >= clusterCutoff).length;
     const plan = recommendedTradePlan({ sourcePage, page: sourcePage, trade, recommendation, clusterFullSizeCount });
     const marketTrade = {
       ...scaleTradeForMargin(trade, plan.marginUsdt),
@@ -1252,7 +1950,7 @@ export async function processRecommendedSourceOpenEvent({
     }
     const cloneOpenedAt = new Date(now).toISOString();
     const learningFlag = learningFlagsByRecommendationId?.[recommendation.id] ?? null;
-    const clone = {
+    const baseClone = {
       ...plannedTrade,
       id: cloneId,
       paperMode: RECOMMENDED_PAPER_MODE,
@@ -1285,8 +1983,10 @@ export async function processRecommendedSourceOpenEvent({
       sourceSignalStatus: sourceStatus,
       sourceSignalOutcome: trade?.outcome ?? null,
       sourceBreakoutAge: breakoutAge,
+      marketDirectionAtSignal: recommendedMarketDirectionSnapshot(marketDirectionAtSignal, trade),
       recommendationIds: [recommendation.id],
       recommendationStrength: recommendation.strength,
+      recommendationStrengthAtEntry: recommendation.strength,
       recommendationWindows: recommendation.matchedWindows,
       recommendationCombo: recommendation.combo,
       recommendationBtcPhase: recommendation.btcPhase,
@@ -1300,35 +2000,126 @@ export async function processRecommendedSourceOpenEvent({
       marketEntrySourceAgeMs: timing.marketAgeMs,
       entryVsSourcePct: +timing.rawDrift.toFixed(5),
       adverseChasePct: +timing.adverseChasePct.toFixed(5),
+      ...recommendedPaperLayerSnapshot({
+        recommendationStrength: recommendation.strength,
+        entryMode: RECOMMENDED_DIRECT_EVENT_MODE,
+        eventLatencyMs: timing.eventLatencyMs,
+        marketAgeMs: timing.marketAgeMs,
+        entryVsSourcePct: timing.rawDrift,
+        adverseChasePct: timing.adverseChasePct,
+        duplicateActiveCount,
+      }),
       activeDateUtc: day,
       createdAt: cloneOpenedAt,
       openedAt: cloneOpenedAt,
       clonedAt: cloneOpenedAt,
       syncedAt: cloneOpenedAt,
     };
+    const dayRegimeAtEntry = buildRecommendedDayRegimeSnapshot(
+      baseClone,
+      independentPaperTrades,
+      now,
+    );
+    const baseCloneWithDay = {
+      ...baseClone,
+      recommendedDayRegimeAtEntry: dayRegimeAtEntry,
+      recommendedDaySelectionAtEntry: classifyRecommendedDaySelection(
+        baseClone,
+        dayRegimeAtEntry,
+      ),
+    };
+    const priorLayerTrades = decorateRecommendedPaperLayers(
+      independentPaperTrades,
+    );
+    const cloneWithMarketFit = {
+      ...baseCloneWithDay,
+      ...recommendedMarketFitSnapshot(
+        baseCloneWithDay,
+        recommendedMarketFitStatsBefore(
+          priorLayerTrades,
+          baseCloneWithDay,
+          now,
+        ),
+      ),
+    };
+    const cloneWithMarketPoint = {
+      ...cloneWithMarketFit,
+      ...buildRecommendedMarketPointFitSnapshot(cloneWithMarketFit),
+    };
+    const cloneWithMarketDispersion = {
+      ...cloneWithMarketPoint,
+      ...buildRecommendedMarketDispersionSnapshot(cloneWithMarketPoint),
+    };
+    const clone = {
+      ...cloneWithMarketDispersion,
+      ...buildRecommendedBacktestConfidenceSnapshot(
+        cloneWithMarketDispersion,
+        priorLayerTrades,
+        now,
+      ),
+    };
+    let persistedClone = clone;
+    if (typeof liveOrderEvaluator === "function") {
+      let liveDecision;
+      try {
+        liveDecision = await liveOrderEvaluator(clone, independentPaperTrades);
+      } catch (error) {
+        liveDecision = {
+          decision: "ERROR",
+          matchedKeys: error?.liveCardMatchedKeys ?? [],
+          version: error?.liveCardWhitelistVersion ?? null,
+          attemptedAt: new Date().toISOString(),
+          error: String(error?.message ?? error).slice(0, 500),
+        };
+      }
+      persistedClone = {
+        ...clone,
+        liveCardAutoEligible: true,
+        liveCardDecision: liveDecision?.decision ?? null,
+        liveCardMatchedKeys: Array.isArray(liveDecision?.matchedKeys)
+          ? liveDecision.matchedKeys
+          : [],
+        liveCardWhitelistVersion: liveDecision?.version ?? null,
+        liveCardAttemptedAt: liveDecision?.attemptedAt ?? null,
+        liveCardPlacedAt: liveDecision?.placedAt ?? null,
+        liveCardOrderId: liveDecision?.orderId ?? null,
+        liveCardClientOrderId: liveDecision?.clientOrderId ?? null,
+        liveCardLifecycleId: liveDecision?.lifecycleId ?? null,
+        liveCardExecutionVersion: liveDecision?.executionVersion ?? null,
+        liveCardSourceType: liveDecision?.sourceType ?? null,
+        liveCardSignalSource: liveDecision?.signalSource ?? null,
+        liveCardEntryOrderType: liveDecision?.entryOrderType ?? null,
+        liveCardError: liveDecision?.error ?? null,
+      };
+    }
     await writeJsonAtomic(targetPaperFile, {
       ...store,
       version: 3,
       paperMode: RECOMMENDED_PAPER_MODE,
       updatedAt: cloneOpenedAt,
-      trades: [clone, ...(store.trades ?? [])],
+      trades: [persistedClone, ...(store.trades ?? [])],
     });
-    result = { created: true, reason: "SOURCE_OPEN_EVENT", trade: clone };
+    result = { created: true, reason: "SOURCE_OPEN_EVENT", trade: persistedClone };
   });
   await writeLock;
   return result;
 }
 
-function paperSummary(trades) {
+export function paperSummary(trades) {
   const closed = trades.filter(
     (trade) =>
       !["OPEN", "PENDING"].includes(String(trade.status ?? "").toUpperCase()),
   );
   const open = trades.length - closed.length;
-  const pnl = trades.reduce(
-    (sum, trade) => sum + (number(trade.pnl, 0) ?? 0),
+  const closedPnl = closed.reduce(
+    (sum, trade) => sum + (number(trade.pnl ?? trade.netPnl, 0) ?? 0),
     0,
   );
+  const activePnl = trades.reduce((sum, trade) => {
+    if (normalizePart(trade?.status) !== "OPEN") return sum;
+    return sum + (number(trade?.pnl ?? trade?.netPnl, 0) ?? 0);
+  }, 0);
+  const pnl = closedPnl + activePnl;
   const wins = closed.filter((trade) => (number(trade.pnl, 0) ?? 0) > 0).length;
   const avgRoe = closed.length
     ? closed.reduce((sum, trade) => sum + (number(trade.roe, 0) ?? 0), 0) /
@@ -1348,12 +2139,728 @@ function paperSummary(trades) {
     losses: closed.length - wins,
     wr: closed.length ? (wins / closed.length) * 100 : null,
     pnl,
+    closedPnl,
+    activePnl,
     avgRoe,
     avgScore,
   };
 }
 
-function paperComboStats(trades, activeRecommendationKeys = new Set()) {
+function isRecommendedPaperLiveStatus(trade) {
+  return ["OPEN", "PENDING", "ENTRY_READY"].includes(
+    normalizePart(trade?.status),
+  );
+}
+
+export function recommendedLivePricingStats(trades = []) {
+  const active = trades.filter(
+    (trade) => normalizePart(trade?.status) === "OPEN",
+  );
+  let pricedActive = 0;
+  let socketPricedActive = 0;
+  let latestMarkAt = null;
+  const sources = {};
+  for (const trade of active) {
+    const mark = liveMarkOf(trade);
+    if (mark == null || mark <= 0) continue;
+    pricedActive += 1;
+    const source = String(trade?.markSource ?? "persisted");
+    sources[source] = (sources[source] ?? 0) + 1;
+    if (source.toLowerCase().includes("socket")) socketPricedActive += 1;
+    const at = number(trade?.markUpdatedAt);
+    if (at != null && (latestMarkAt == null || at > latestMarkAt)) {
+      latestMarkAt = at;
+    }
+  }
+  return {
+    mode: "SOCKET_FIRST",
+    active: active.length,
+    pricedActive,
+    socketPricedActive,
+    missingActive: Math.max(0, active.length - pricedActive),
+    latestMarkAt:
+      latestMarkAt == null ? null : new Date(latestMarkAt).toISOString(),
+    sources,
+    pollMs: 5000,
+    persistsTickPnl: false,
+  };
+}
+
+export function paperLayerGroupStats(trades, groupOf) {
+  const groups = new Map();
+  for (const trade of trades) {
+    const group = groupOf(trade);
+    const key = String(group?.key ?? "NO_DATA");
+    const current = groups.get(key) ?? {
+      key,
+      label: group?.label ?? key,
+      tier: group?.tier ?? "WATCH",
+      sourceTier: group?.sourceTier ?? null,
+      cloneTier: group?.cloneTier ?? null,
+      twoLayerTier: group?.twoLayerTier ?? null,
+      btcAlignment: group?.btcAlignment ?? null,
+      verdictLabel: group?.verdictLabel ?? null,
+      total: 0,
+      open: 0,
+      pending: 0,
+      closed: 0,
+      wins: 0,
+      losses: 0,
+      breakeven: 0,
+      pnl: 0,
+      activePnl: 0,
+      closedPnl: 0,
+      roeTotal: 0,
+    };
+    const status = normalizePart(trade?.status);
+    const pnl = number(trade?.pnl ?? trade?.netPnl, 0) ?? 0;
+    const roe = number(trade?.roe ?? trade?.roePct, 0) ?? 0;
+    current.total += 1;
+    if (["PENDING", "ENTRY_READY"].includes(status)) current.pending += 1;
+    else if (status === "OPEN") {
+      current.open += 1;
+      current.activePnl += pnl;
+      current.pnl += pnl;
+    }
+    else {
+      current.closed += 1;
+      current.closedPnl += pnl;
+      current.pnl += pnl;
+      current.roeTotal += roe;
+      if (pnl > 0) current.wins += 1;
+      else if (pnl < 0) current.losses += 1;
+      else current.breakeven += 1;
+    }
+    groups.set(key, current);
+  }
+  const rank = { GOOD: 0, WATCH: 1, RISK: 2 };
+  return [...groups.values()]
+    .map(({ roeTotal, ...group }) => {
+      const decisive = group.wins + group.losses;
+      return {
+        ...group,
+        wr: decisive ? (group.wins / decisive) * 100 : null,
+        avgRoe: group.closed ? roeTotal / group.closed : null,
+      };
+    })
+    .sort(
+      (left, right) =>
+        (rank[left.tier] ?? 9) - (rank[right.tier] ?? 9) ||
+        right.total - left.total,
+    );
+}
+
+function paperTwoLayerStats(trades) {
+  const source = paperLayerGroupStats(trades, (trade) => {
+    const tier = normalizePart(trade?.recommendedSourceLayer);
+    return { key: tier, label: `SOURCE ${tier}`, tier };
+  });
+  const clone = paperLayerGroupStats(trades, (trade) => {
+    const tier = normalizePart(trade?.recommendedCloneLayer);
+    return { key: tier, label: `CLONE ${tier}`, tier };
+  });
+  const matrix = paperLayerGroupStats(trades, (trade) => {
+    const sourceTier = normalizePart(trade?.recommendedSourceLayer);
+    const cloneTier = normalizePart(trade?.recommendedCloneLayer);
+    const tier = normalizePart(trade?.recommendedTwoLayerTier);
+    return {
+      key: `${sourceTier}_X_${cloneTier}`,
+      label: `${sourceTier} × ${cloneTier}`,
+      sourceTier,
+      cloneTier,
+      tier,
+    };
+  });
+  const rank = { GOOD: 0, WATCH: 1, RISK: 2 };
+  const marketFit = paperLayerGroupStats(trades, (trade) => {
+    const group = recommendedMarketFitGroup(trade);
+    return {
+      ...group,
+      tier: "WATCH",
+    };
+  })
+    .map((group) => {
+      const verdict = recommendedMarketFitVerdict(
+        group,
+        group.btcAlignment,
+      );
+      return {
+        ...group,
+        tier: verdict.tier,
+        verdictLabel:
+          verdict.sampleStatus === "NO_DATA"
+            ? "NO DATA"
+            : verdict.sampleStatus === "PROVISIONAL"
+              ? "WATCH 10–29"
+              : verdict.label,
+        sampleStatus: verdict.sampleStatus,
+      };
+    })
+    .sort(
+      (left, right) =>
+        (rank[left.tier] ?? 9) - (rank[right.tier] ?? 9) ||
+        right.total - left.total,
+    );
+  const marketFitLabels = paperLayerGroupStats(trades, (trade) => {
+    const tier = ["GOOD", "WATCH", "RISK"].includes(
+      normalizePart(trade?.recommendedMarketFitTier),
+    )
+      ? normalizePart(trade?.recommendedMarketFitTier)
+      : "WATCH";
+    const label =
+      String(trade?.recommendedMarketFitLabel ?? "").trim() ||
+      `M4 ${tier}`;
+    return {
+      key: normalizePart(label),
+      label,
+      tier,
+      verdictLabel: label.replace(/^M4\s+/i, ""),
+    };
+  });
+  return {
+    version: RECOMMENDED_TWO_LAYER_VERSION,
+    marketFitVersion: RECOMMENDED_MARKET_FIT_VERSION,
+    observationOnly: true,
+    source,
+    clone,
+    matrix,
+    marketFit,
+    marketFitLabels,
+  };
+}
+
+function paperDayRegimeStats(trades) {
+  const regime = paperLayerGroupStats(trades, (trade) => {
+    const snapshot = trade?.recommendedDayRegimeAtEntry ?? {};
+    const label = normalizePart(snapshot?.label ?? "DAY_NO_DATA");
+    const presentation = {
+      DAY_LONG: { tier: "GOOD", verdictLabel: "LONG" },
+      DAY_SHORT: { tier: "RISK", verdictLabel: "SHORT" },
+      DAY_MIXED: { tier: "WATCH", verdictLabel: "MIXED" },
+      DAY_NO_DATA: { tier: "WATCH", verdictLabel: "NO DATA" },
+    }[label] ?? { tier: "WATCH", verdictLabel: "NO DATA" };
+    return {
+      key: label,
+      label: label.replaceAll("_", " "),
+      ...presentation,
+    };
+  });
+  const selection = paperLayerGroupStats(trades, (trade) => {
+    const snapshot = trade?.recommendedDaySelectionAtEntry ??
+      classifyRecommendedDaySelection(
+        trade,
+        trade?.recommendedDayRegimeAtEntry,
+      );
+    const tier = ["GOOD", "WATCH", "RISK"].includes(
+      normalizePart(snapshot?.tier),
+    )
+      ? normalizePart(snapshot.tier)
+      : "WATCH";
+    return {
+      key: normalizePart(snapshot?.key ?? "REC_DAY_NO_DATA"),
+      label: String(snapshot?.label ?? "DAY NO DATA"),
+      tier,
+      verdictLabel: tier,
+    };
+  });
+  const sideMatrix = paperLayerGroupStats(trades, (trade) => {
+    const side = ["LONG", "SHORT"].includes(normalizePart(trade?.side))
+      ? normalizePart(trade.side)
+      : "NO_SIDE";
+    const state = normalizePart(
+      trade?.recommendedDayRegimeAtEntry?.direction ?? "NO_DATA",
+    );
+    let tier = "WATCH";
+    if (side === "SHORT" && ["SHORT", "MIXED"].includes(state)) tier = "GOOD";
+    else if (side === "LONG" && state === "MIXED") tier = "GOOD";
+    else if (side === "LONG" && ["LONG", "SHORT"].includes(state)) tier = "RISK";
+    return {
+      key: `${side}_X_DAY_${state}`,
+      label: `${side} × DAY ${state}`,
+      tier,
+      verdictLabel: tier,
+    };
+  });
+  return {
+    version: RECOMMENDED_DAY_REGIME_VERSION,
+    selectionVersion: RECOMMENDED_DAY_SELECTION_VERSION,
+    method: "7 BTC votes at entry · rolling 3 × 15m · threshold ±2.5",
+    timezone: "Asia/Bangkok",
+    observationOnly: true,
+    affectsOrders: false,
+    regime,
+    selection,
+    sideMatrix,
+  };
+}
+
+export function paperBacktestConfidenceStats(trades) {
+  const groups = paperLayerGroupStats(trades, (trade) => {
+    const classification = ["PRIME", "GOOD", "WATCH", "RISK", "NO_DATA"].includes(
+      normalizePart(trade?.recommendedBacktestConfidenceClass),
+    )
+      ? normalizePart(trade.recommendedBacktestConfidenceClass)
+      : "NO_DATA";
+    const tier = classification === "RISK"
+      ? "RISK"
+      : ["PRIME", "GOOD"].includes(classification)
+        ? "GOOD"
+        : "WATCH";
+    return {
+      key: `BT_${classification}`,
+      label: `BT ${classification.replaceAll("_", " ")}`,
+      tier,
+      verdictLabel: classification,
+    };
+  });
+  const rank = { PRIME: 0, GOOD: 1, WATCH: 2, RISK: 3, NO_DATA: 4 };
+  groups.sort(
+    (left, right) =>
+      (rank[normalizePart(left.verdictLabel)] ?? 9) -
+        (rank[normalizePart(right.verdictLabel)] ?? 9) ||
+      right.total - left.total,
+  );
+  const reliabilityGroups = paperLayerGroupStats(trades, (trade) => {
+    const classification = ["HIGH", "MEDIUM", "LOW"].includes(
+      normalizePart(trade?.recommendedBacktestReliabilityClass),
+    )
+      ? normalizePart(trade.recommendedBacktestReliabilityClass)
+      : "LOW";
+    const tier = classification === "HIGH"
+      ? "GOOD"
+      : classification === "MEDIUM"
+        ? "WATCH"
+        : "RISK";
+    return {
+      key: `CONF_${classification}`,
+      label: `CONF ${classification}`,
+      tier,
+      verdictLabel: classification,
+    };
+  });
+  const reliabilityRank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+  reliabilityGroups.sort(
+    (left, right) =>
+      (reliabilityRank[normalizePart(left.verdictLabel)] ?? 9) -
+        (reliabilityRank[normalizePart(right.verdictLabel)] ?? 9) ||
+      right.total - left.total,
+  );
+  return {
+    version: RECOMMENDED_BACKTEST_CONFIDENCE_VERSION,
+    reliabilityVersion: RECOMMENDED_BACKTEST_RELIABILITY_VERSION,
+    method:
+      "3 ngày trước: source × side × tier 2L × M4; xác nhận realtime bằng cohort/side đã đóng trước entry",
+    rules: RECOMMENDED_BACKTEST_CONFIDENCE_RULES,
+    observationOnly: true,
+    affectsOrders: false,
+    groups,
+    reliabilityGroups,
+  };
+}
+
+export function paperMarketPointFitStats(trades) {
+  const classRank = {
+    STRONG: 0,
+    SUPPORT: 1,
+    TRANSITION: 2,
+    EXHAUSTED: 3,
+    HEADWIND: 4,
+    NO_DATA: 5,
+  };
+  const presentation = (trade) => {
+    const classification = [
+      "STRONG",
+      "SUPPORT",
+      "TRANSITION",
+      "EXHAUSTED",
+      "HEADWIND",
+      "NO_DATA",
+    ].includes(normalizePart(trade?.recommendedMarketPointFitClass))
+      ? normalizePart(trade.recommendedMarketPointFitClass)
+      : "NO_DATA";
+    const tier = ["STRONG", "SUPPORT"].includes(classification)
+      ? "GOOD"
+      : ["EXHAUSTED", "HEADWIND"].includes(classification)
+        ? "RISK"
+        : "WATCH";
+    return { classification, tier };
+  };
+  const groups = paperLayerGroupStats(trades, (trade) => {
+    const { classification, tier } = presentation(trade);
+    return {
+      key: `POINT_${classification}`,
+      label: `POINT ${classification.replaceAll("_", " ")}`,
+      tier,
+      verdictLabel: classification,
+    };
+  }).sort(
+    (left, right) =>
+      (classRank[normalizePart(left.verdictLabel)] ?? 9) -
+        (classRank[normalizePart(right.verdictLabel)] ?? 9) ||
+      right.total - left.total,
+  );
+  const sourceSideMatrix = paperLayerGroupStats(trades, (trade) => {
+    const { classification, tier } = presentation(trade);
+    const source = normalizePart(trade?.sourcePage ?? "UNKNOWN");
+    const side = normalizePart(trade?.side ?? "NO_SIDE");
+    return {
+      key: `${source}_${side}_X_POINT_${classification}`,
+      label:
+        `${source} · ${side} × POINT ${classification.replaceAll("_", " ")}`,
+      tier,
+      verdictLabel: classification,
+    };
+  }).sort(
+    (left, right) =>
+      (classRank[normalizePart(left.verdictLabel)] ?? 9) -
+        (classRank[normalizePart(right.verdictLabel)] ?? 9) ||
+      right.total - left.total,
+  );
+  return {
+    version: RECOMMENDED_MARKET_POINT_FIT_VERSION,
+    method:
+      "snapshot tại entry: score cùng hướng × chênh LONG/SHORT × slope × drop khỏi peak × wave state",
+    observationOnly: true,
+    affectsOrders: false,
+    groups,
+    sourceSideMatrix,
+  };
+}
+
+function paperDispersionGroupStats(trades, groupOf) {
+  const groups = paperLayerGroupStats(trades, groupOf);
+  const extras = new Map();
+  for (const trade of trades ?? []) {
+    const group = groupOf(trade);
+    const key = String(group?.key ?? "NO_DATA");
+    const status = normalizePart(trade?.status);
+    if (["OPEN", "PENDING", "ENTRY_READY"].includes(status)) continue;
+    const pnl = number(trade?.pnl ?? trade?.netPnl, 0) ?? 0;
+    const current = extras.get(key) ?? {
+      grossWin: 0,
+      grossLoss: 0,
+      dayPnl: new Map(),
+    };
+    if (pnl > 0) current.grossWin += pnl;
+    else if (pnl < 0) current.grossLoss += Math.abs(pnl);
+    const day = normalizedDateKey(
+      trade?.activeDateUtc ?? tradeDay(trade),
+    );
+    if (day) current.dayPnl.set(day, (current.dayPnl.get(day) ?? 0) + pnl);
+    extras.set(key, current);
+  }
+  return groups.map((group) => {
+    const extra = extras.get(group.key) ?? {
+      grossWin: 0,
+      grossLoss: 0,
+      dayPnl: new Map(),
+    };
+    const orderedDayValues = [...extra.dayPnl.entries()]
+      .sort(([left], [right]) => right.localeCompare(left));
+    const dayValues = orderedDayValues.map(([, value]) => value);
+    let negativeDayStreak = 0;
+    let positiveDayStreak = 0;
+    for (const value of dayValues) {
+      if (value < 0 && positiveDayStreak === 0) negativeDayStreak += 1;
+      else if (value > 0 && negativeDayStreak === 0) positiveDayStreak += 1;
+      else break;
+    }
+    return {
+      ...group,
+      profitFactor:
+        extra.grossLoss > 0
+          ? extra.grossWin / extra.grossLoss
+          : extra.grossWin > 0
+            ? 9.99
+            : 0,
+      days: dayValues.length,
+      positiveDays: dayValues.filter((value) => value > 0).length,
+      negativeDays: dayValues.filter((value) => value < 0).length,
+      negativeDayStreak,
+      positiveDayStreak,
+      latestDay: orderedDayValues[0]?.[0] ?? null,
+      latestDayPnl: orderedDayValues[0]?.[1] ?? null,
+    };
+  });
+}
+
+export function paperMarketDispersionStats(trades) {
+  const classRank = {
+    DISP_REENTER_FROM_TRANSITION: 0,
+    DISP_REENTER_FROM_CHOP: 1,
+    DISP_REENTER_OTHER: 2,
+    DISP_HOLD_LONG_LEAD: 3,
+    DISP_HOLD_BALANCED: 4,
+    DISP_HOLD_SHORT_LEAD: 5,
+    DISP_EXIT_TO_TRANSITION: 6,
+    DISP_EXIT_TO_CHOP: 7,
+    DISP_EXIT_OTHER: 8,
+    DISP_NO_DATA: 9,
+  };
+  const eligible = (trades ?? []).filter(
+    (trade) =>
+      normalizePart(trade?.recommendedMarketDispersionClass) !==
+      "OUTSIDE",
+  );
+  const presentation = (trade) => {
+    const segment = [
+      "DISP_REENTER_FROM_TRANSITION",
+      "DISP_REENTER_FROM_CHOP",
+      "DISP_REENTER_OTHER",
+      "DISP_HOLD_LONG_LEAD",
+      "DISP_HOLD_BALANCED",
+      "DISP_HOLD_SHORT_LEAD",
+      "DISP_EXIT_TO_TRANSITION",
+      "DISP_EXIT_TO_CHOP",
+      "DISP_EXIT_OTHER",
+      "DISP_NO_DATA",
+    ].includes(normalizePart(trade?.recommendedMarketDispersionSegment))
+      ? normalizePart(trade.recommendedMarketDispersionSegment)
+      : "DISP_NO_DATA";
+    const tier = ["GOOD", "WATCH", "RISK"].includes(
+      normalizePart(trade?.recommendedMarketDispersionTier),
+    )
+      ? normalizePart(trade.recommendedMarketDispersionTier)
+      : "WATCH";
+    const label =
+      String(trade?.recommendedMarketDispersionLabel ?? "").trim() ||
+      segment.replaceAll("_", " ");
+    return { segment, tier, label };
+  };
+  const groups = paperDispersionGroupStats(eligible, (trade) => {
+    const { segment, label } = presentation(trade);
+    return {
+      key: segment,
+      label,
+      tier: "WATCH",
+      verdictLabel: segment,
+    };
+  }).sort(
+    (left, right) =>
+      (classRank[normalizePart(left.verdictLabel)] ?? 9) -
+        (classRank[normalizePart(right.verdictLabel)] ?? 9) ||
+      right.total - left.total,
+  );
+  const sourceSideMatrix = paperDispersionGroupStats(
+    eligible,
+    (trade) => {
+      const { segment, tier, label } = presentation(trade);
+      const source = normalizePart(trade?.sourcePage ?? "UNKNOWN");
+      const side = normalizePart(trade?.side ?? "NO_SIDE");
+      return {
+        key: `${source}_${side}_X_${segment}`,
+        label: `${source} · ${side} × ${label}`,
+        tier,
+        verdictLabel:
+          tier === "GOOD"
+            ? "CANDIDATE"
+            : tier === "RISK"
+              ? "RISK"
+              : segment,
+      };
+    },
+  ).sort(
+    (left, right) =>
+      (classRank[
+        normalizePart(left.key.split("_X_")[1])
+      ] ?? 9) -
+        (classRank[
+          normalizePart(right.key.split("_X_")[1])
+        ] ?? 9) ||
+      right.total - left.total,
+  );
+  return {
+    version: RECOMMENDED_MARKET_DISPERSION_VERSION,
+    method:
+      "snapshot tại entry: RE-ENTER theo TRANSITION/CHOP × HOLD BALANCED/LONG LEAD/SHORT LEAD × EXIT theo TRANSITION/CHOP × source × side",
+    observationOnly: true,
+    affectsOrders: false,
+    groups,
+    sourceSideMatrix,
+  };
+}
+
+export function paperSupportEntryStats(trades) {
+  const eligible = (trades ?? []).filter((trade) =>
+    ["GOOD", "BAD"].includes(
+      normalizePart(trade?.recommendedSupportEntryClass),
+    ),
+  );
+  const presentation = (trade) => {
+    const classification = normalizePart(
+      trade?.recommendedSupportEntryClass ?? "NO_DATA",
+    );
+    const tier = classification === "GOOD" ? "GOOD" : "RISK";
+    return {
+      classification,
+      tier,
+      label:
+        classification === "GOOD"
+          ? "TÍN HIỆU ĐẸP · ENTRY SUPPORT"
+          : "TÍN HIỆU XẤU · THEO DÕI CHUỖI",
+    };
+  };
+  const measuredGroups = paperDispersionGroupStats(eligible, (trade) => {
+    const { classification, tier, label } = presentation(trade);
+    return {
+      key: `SUPPORT_ENTRY_${classification}`,
+      label,
+      tier,
+      verdictLabel: classification,
+    };
+  });
+  const measuredByVerdict = new Map(
+    measuredGroups.map((group) => [normalizePart(group.verdictLabel), group]),
+  );
+  const emptyGroup = (template) => ({
+    key: template.key,
+    label: template.label,
+    tier: template.tier,
+    sourceTier: null,
+    cloneTier: null,
+    twoLayerTier: null,
+    btcAlignment: null,
+    verdictLabel: template.verdictLabel ?? template.classification,
+    total: 0,
+    open: 0,
+    pending: 0,
+    closed: 0,
+    wins: 0,
+    losses: 0,
+    breakeven: 0,
+    pnl: 0,
+    activePnl: 0,
+    closedPnl: 0,
+    wr: null,
+    avgRoe: null,
+    profitFactor: 0,
+    days: 0,
+    positiveDays: 0,
+    negativeDays: 0,
+    negativeDayStreak: 0,
+    positiveDayStreak: 0,
+    latestDay: null,
+    latestDayPnl: null,
+  });
+  const groups = [
+    {
+      classification: "GOOD",
+      key: "SUPPORT_ENTRY_GOOD",
+      label: "TÍN HIỆU ĐẸP · ENTRY SUPPORT",
+      tier: "GOOD",
+    },
+    {
+      classification: "BAD",
+      key: "SUPPORT_ENTRY_BAD",
+      label: "TÍN HIỆU XẤU · THEO DÕI CHUỖI",
+      tier: "RISK",
+    },
+  ].map(
+    (template) =>
+      measuredByVerdict.get(template.classification) ?? emptyGroup(template),
+  );
+  const sourceQualityTemplates = [
+    {
+      key: "EDGE_CONFIRMED",
+      label: "ENTRY SUPPORT · EDGE CONFIRMED",
+      tier: "GOOD",
+    },
+    {
+      key: "EDGE_WEAK",
+      label: "ENTRY SUPPORT · EDGE WEAK",
+      tier: "RISK",
+    },
+    {
+      key: "LIQUID_CONFIRMED",
+      label: "ENTRY SUPPORT · LIQUID CONFIRMED",
+      tier: "GOOD",
+    },
+    {
+      key: "LIQUID_WEAK",
+      label: "ENTRY SUPPORT · LIQUID WEAK",
+      tier: "RISK",
+    },
+  ];
+  const measuredSourceQualityGroups = paperDispersionGroupStats(
+    eligible.filter(
+      (trade) =>
+        normalizePart(trade?.recommendedSupportEntryClass) === "GOOD" &&
+        Boolean(trade?.recommendedSupportEntrySourceQualityKey),
+    ),
+    (trade) => ({
+      key: normalizePart(trade?.recommendedSupportEntrySourceQualityKey),
+      label:
+        trade?.recommendedSupportEntrySourceQualityLabel ??
+        "ENTRY SUPPORT · SOURCE NO DATA",
+      tier: normalizePart(
+        trade?.recommendedSupportEntrySourceQualityTier ?? "WATCH",
+      ),
+      verdictLabel: normalizePart(
+        trade?.recommendedSupportEntrySourceQualityKey ?? "NO_DATA",
+      ),
+    }),
+  );
+  const measuredSourceQualityByKey = new Map(
+    measuredSourceQualityGroups.map((group) => [normalizePart(group.key), group]),
+  );
+  const sourceQualityGroups = sourceQualityTemplates.map(
+    (template) =>
+      measuredSourceQualityByKey.get(template.key) ??
+      emptyGroup({ ...template, verdictLabel: template.key }),
+  );
+  const sourceGroups = (rows) =>
+    paperDispersionGroupStats(rows, (trade) => {
+      const { classification, tier } = presentation(trade);
+      const source = normalizePart(trade?.sourcePage ?? "UNKNOWN");
+      const side = normalizePart(trade?.side ?? "NO_SIDE");
+      const code = normalizePart(
+        trade?.recommendedSupportEntryCode ?? "NO_DATA",
+      );
+      const cohortLabel =
+        String(trade?.recommendedSupportEntryCohortLabel ?? "").trim() ||
+        `ENTRY NO DATA · ${source} ${side}`;
+      return {
+        key: `${classification}_${source}_${side}_${code}`,
+        label: cohortLabel,
+        tier,
+        verdictLabel: classification,
+      };
+    }).sort(
+      (left, right) =>
+        (normalizePart(left.verdictLabel) === "GOOD" ? 0 : 1) -
+          (normalizePart(right.verdictLabel) === "GOOD" ? 0 : 1) ||
+        right.total - left.total,
+    );
+  const sourceSideMatrix = sourceGroups(eligible);
+  const shortSourceGroups = sourceGroups(
+    eligible.filter((trade) => normalizePart(trade?.side) === "SHORT"),
+  );
+  const longSourceGroups = sourceGroups(
+    eligible.filter((trade) => normalizePart(trade?.side) === "LONG"),
+  );
+  const classified = new Set(eligible.map((trade) => String(trade?.id ?? "")));
+  return {
+    version: RECOMMENDED_SUPPORT_ENTRY_VERSION,
+    method:
+      `gap >= ${RECOMMENDED_SUPPORT_ENTRY_RULES.minScoreGap} · xác nhận ${RECOMMENDED_SUPPORT_ENTRY_RULES.confirmationSamples} snapshot · tối đa ${RECOMMENDED_SUPPORT_ENTRY_RULES.maxFlipAgeMinutes} phút sau khi đổi bên dẫn · source × side`,
+    observationOnly: true,
+    affectsEntry: false,
+    affectsOrders: false,
+    affectsMargin: false,
+    affectsSize: false,
+    affectsSl: false,
+    affectsTp: false,
+    classified: eligible.length,
+    other: Math.max(0, (trades ?? []).length - classified.size),
+    groups,
+    sourceQualityGroups,
+    sourceSideMatrix,
+    shortSourceGroups,
+    longSourceGroups,
+  };
+}
+
+export function paperComboStats(trades, activeRecommendationKeys = new Set()) {
   const groups = new Map();
   for (const trade of trades) {
     const combo =
@@ -1377,6 +2884,8 @@ function paperComboStats(trades, activeRecommendationKeys = new Set()) {
       losses: 0,
       breakeven: 0,
       pnl: 0,
+      activePnl: 0,
+      closedPnl: 0,
       roeTotal: 0,
       fullSize: 0,
       testSize: 0,
@@ -1390,11 +2899,16 @@ function paperComboStats(trades, activeRecommendationKeys = new Set()) {
     const isPending = ["PENDING", "ENTRY_READY"].includes(status);
     const isOpen = status === "OPEN";
     current.total += 1;
-    current.pnl += pnl;
     if (isPending) current.pending += 1;
-    else if (isOpen) current.open += 1;
+    else if (isOpen) {
+      current.open += 1;
+      current.activePnl += pnl;
+      current.pnl += pnl;
+    }
     else {
       current.closed += 1;
+      current.closedPnl += pnl;
+      current.pnl += pnl;
       current.roeTotal += roe;
       if (pnl > 0) current.wins += 1;
       else if (pnl < 0) current.losses += 1;
@@ -1412,9 +2926,9 @@ function paperComboStats(trades, activeRecommendationKeys = new Set()) {
       const wr = decisive ? (group.wins / decisive) * 100 : null;
       const avgRoe = group.closed ? group.roeTotal / group.closed : null;
       const verdict =
-        group.closed > 0 && group.pnl > 0 && avgRoe >= 0.5
+        group.closed > 0 && group.closedPnl > 0 && avgRoe >= 0.5
           ? "GOOD"
-          : group.closed > 0 && (group.pnl < 0 || avgRoe < -0.2)
+          : group.closed > 0 && (group.closedPnl < 0 || avgRoe < -0.2)
             ? "BAD"
             : "NEUTRAL";
       const { roeTotal, ...result } = group;
@@ -1434,7 +2948,7 @@ function paperComboStats(trades, activeRecommendationKeys = new Set()) {
     );
 }
 
-function paperRuleSizeStats(trades) {
+export function paperRuleSizeStats(trades) {
   const groups = new Map();
   for (const trade of trades) {
     const rawLabel = String(trade?.recommendedTradePlanLabel ?? "").trim();
@@ -1457,6 +2971,8 @@ function paperRuleSizeStats(trades) {
       tp: 0,
       sl: 0,
       pnl: 0,
+      activePnl: 0,
+      closedPnl: 0,
       roeTotal: 0,
     };
     const status = normalizePart(trade?.status);
@@ -1467,11 +2983,16 @@ function paperRuleSizeStats(trades) {
     const isPending = ["PENDING", "ENTRY_READY"].includes(status);
     const isOpen = status === "OPEN";
     current.total += 1;
-    current.pnl += pnl;
     if (isPending) current.pending += 1;
-    else if (isOpen) current.open += 1;
+    else if (isOpen) {
+      current.open += 1;
+      current.activePnl += pnl;
+      current.pnl += pnl;
+    }
     else {
       current.closed += 1;
+      current.closedPnl += pnl;
+      current.pnl += pnl;
       current.roeTotal += roe;
       if (pnl > 0) current.wins += 1;
       else if (pnl < 0) current.losses += 1;
@@ -1501,9 +3022,9 @@ function paperRuleSizeStats(trades) {
       const wr = decisive ? (group.wins / decisive) * 100 : null;
       const avgRoe = group.closed ? group.roeTotal / group.closed : null;
       const verdict =
-        group.closed >= 8 && group.pnl > 0 && avgRoe >= 0.5
+        group.closed >= 8 && group.closedPnl > 0 && avgRoe >= 0.5
           ? "GOOD"
-          : group.closed >= 8 && (group.pnl < 0 || avgRoe < -0.2)
+          : group.closed >= 8 && (group.closedPnl < 0 || avgRoe < -0.2)
             ? "BAD"
             : "NEUTRAL";
       const { roeTotal, ...result } = group;
@@ -1515,6 +3036,41 @@ function paperRuleSizeStats(trades) {
         right.total - left.total ||
         (right.avgRoe ?? -Infinity) - (left.avgRoe ?? -Infinity),
     );
+}
+
+export function recommendedLiveCardKeysOfTrade(trade = {}) {
+  const row = decorateRecommendedPaperLayers([trade])[0] ?? trade;
+  const keys = new Set();
+  const add = (group, rows, keyOf = (item) => item?.key) => {
+    for (const key of liveCardKeysFromRows('recommended', group, rows, keyOf)) keys.add(key);
+  };
+  add('combo', paperComboStats([row]), (item) => item?.combo);
+  add('rule-size', paperRuleSizeStats([row]));
+  const twoLayer = paperTwoLayerStats([row]);
+  add('source-layer', twoLayer.source);
+  add('clone-layer', twoLayer.clone);
+  add('two-layer', twoLayer.matrix);
+  add('market-fit-matrix', twoLayer.marketFit);
+  add('market-fit-label', twoLayer.marketFitLabels);
+  const day = paperDayRegimeStats([row]);
+  add('day-regime', day.regime);
+  add('day-selection', day.selection);
+  add('day-side', day.sideMatrix);
+  const backtest = paperBacktestConfidenceStats([row]);
+  add('backtest-confidence', backtest.groups);
+  add('backtest-reliability', backtest.reliabilityGroups);
+  const point = paperMarketPointFitStats([row]);
+  add('market-point-fit', point.groups);
+  add('market-point-source-side', point.sourceSideMatrix);
+  const dispersion = paperMarketDispersionStats([row]);
+  add('market-dispersion', dispersion.groups);
+  add('market-dispersion-source-side', dispersion.sourceSideMatrix);
+  const support = paperSupportEntryStats([row]);
+  add('support-entry', support.groups);
+  add('support-source-quality', support.sourceQualityGroups);
+  add('support-short-source', support.shortSourceGroups);
+  add('support-long-source', support.longSourceGroups);
+  return [...keys];
 }
 
 function classifyExit(trade) {
@@ -1564,6 +3120,127 @@ function classifyExit(trade) {
   return { exitType: "UNKNOWN", exitTypeLabel: "-" };
 }
 
+function paperCandleSortName(value) {
+  const raw = typeof value === "object" ? value?.name : value;
+  const name = normalizePart(raw);
+  return !name || name === "NO_DATA" || name === "UNKNOWN" || name === "-"
+    ? null
+    : name;
+}
+
+function recommendedBtcRegimeSortValue(trade) {
+  const direct = normalizePart(
+    trade?.recommendationBtcRegime ??
+      trade?.btcRegimeAtEntry ??
+      trade?.btcRegime ??
+      trade?.btcRegimeShape ??
+      trade?.btcRegimeLabel,
+  );
+  if (
+    direct &&
+    direct !== "-" &&
+    direct !== "NO_DATA" &&
+    direct !== "BTC_NO_DATA"
+  )
+    return direct;
+
+  const comboText = normalizePart(
+    [trade?.recommendationCombo, trade?.combo, trade?.recommendationGate]
+      .filter(Boolean)
+      .join(" | "),
+  );
+  const matched = [
+    "SIDEWAY_UP",
+    "SIDEWAY_DOWN",
+    "WEAK_UP",
+    "WEAK_DOWN",
+    "STRONG_UP",
+    "STRONG_DOWN",
+    "CHOP",
+    "FLAT",
+  ].find((pattern) => comboText.includes(pattern));
+  if (matched) return matched;
+
+  const phase = normalizePart(
+    trade?.recommendationBtcPhase ??
+      trade?.btcPhase ??
+      trade?.btcPhaseLabel,
+  );
+  if (phase === "BTC_UP_WEAK") return "WEAK_UP";
+  if (phase === "BTC_DOWN_WEAK") return "WEAK_DOWN";
+  if (phase === "BTC_UP_STRONG") return "STRONG_UP";
+  if (phase === "BTC_DOWN_STRONG") return "STRONG_DOWN";
+  return null;
+}
+
+function recommendedSideBtcSortValue(trade) {
+  const sideRaw = normalizePart(trade?.side ?? trade?.action);
+  const side = sideRaw.includes("SHORT")
+    ? "SHORT"
+    : sideRaw.includes("LONG")
+      ? "LONG"
+      : sideRaw;
+  const storedTier = normalizePart(
+    trade?.shakeoutSideCandleTier ?? trade?.sideCandleTier,
+  );
+  let tier = ["GOOD", "WATCH", "RISK"].includes(storedTier)
+    ? storedTier
+    : "WATCH";
+
+  const direction = normalizePart(
+    trade?.btcTrendDir ??
+      trade?.btcHealth?.btcTrendDir ??
+      trade?.btcTrend?.direction,
+  );
+  const phase = normalizePart(
+    trade?.btcPhase ??
+      trade?.btcPhaseLabel ??
+      trade?.btcRegimeAtEntry ??
+      trade?.btcRegime ??
+      trade?.recommendationBtcPhase ??
+      trade?.btcHealth?.regime,
+  );
+  const pct6h = number(
+    trade?.btcPct6hAtEntry ?? trade?.btcHealth?.pct6h ?? trade?.btcPct6h,
+  );
+  const explicitRegime = normalizePart(trade?.regimeAtEntry);
+  const regime = ["SW_UP", "SW_DOWN", "SW_FLAT"].includes(explicitRegime)
+    ? explicitRegime
+    : direction === "UP"
+      ? "SW_UP"
+      : direction === "DOWN"
+        ? "SW_DOWN"
+        : phase.includes("DOWN") || ["WEAK", "WEAK_DOWN"].includes(phase)
+          ? "SW_DOWN"
+          : phase.includes("UP") || ["STRONG", "WEAK_UP"].includes(phase)
+            ? "SW_UP"
+            : pct6h != null && pct6h > 0
+              ? "SW_UP"
+              : pct6h != null && pct6h < 0
+                ? "SW_DOWN"
+                : "SW_FLAT";
+
+  if (!["GOOD", "WATCH", "RISK"].includes(storedTier)) {
+    const btcPattern =
+      trade?.btcCandlePatternAtEntry ?? trade?.btcCandlePattern5m;
+    const btcDirection = normalizePart(
+      typeof btcPattern === "object"
+        ? btcPattern?.direction ?? btcPattern?.name
+        : btcPattern,
+    );
+    const bullish = btcDirection.includes("BULLISH") || btcDirection === "HAMMER";
+    const bearish =
+      btcDirection.includes("BEARISH") || btcDirection === "SHOOTING_STAR";
+    if (regime === "SW_DOWN" && side === "LONG" && bearish) tier = "RISK";
+    else if (regime === "SW_DOWN" && side === "SHORT" && bearish) tier = "GOOD";
+    else if (regime === "SW_UP" && side === "SHORT" && bullish) tier = "RISK";
+    else if (regime === "SW_UP" && side === "LONG" && bullish) tier = "GOOD";
+  }
+
+  const rank = { GOOD: 1, WATCH: 2, RISK: 3 }[tier] ?? 2;
+  return `${rank}|${tier}|${regime}|${side}`;
+}
+
 function sortPaperTrades(trades, sortBy, sortDir) {
   const key = String(sortBy ?? "time");
   const direction = String(sortDir ?? "desc").toLowerCase() === "asc" ? 1 : -1;
@@ -1575,6 +3252,68 @@ function sortPaperTrades(trades, sortBy, sortDir) {
     score: (trade) => number(trade?.score),
     tradePlan: (trade) =>
       number(trade?.recommendedTargetMarginUsdt ?? trade?.marginUsdt),
+    sourceLayer: (trade) => trade?.recommendedSourceLayer,
+    cloneLayer: (trade) => trade?.recommendedCloneLayer,
+    twoLayer: (trade) => trade?.recommendedTwoLayerTier,
+    marketFit: (trade) =>
+      `${trade?.recommendedMarketFitTier ?? "WATCH"}|${trade?.recommendedMarketFitKey ?? ""}`,
+    backtestConfidence: (trade) => {
+      const classification = normalizePart(
+        trade?.recommendedBacktestConfidenceClass ?? "NO_DATA",
+      );
+      const rank = { PRIME: 1, GOOD: 2, WATCH: 3, RISK: 4, NO_DATA: 5 };
+      return `${rank[classification] ?? 9}|${classification}`;
+    },
+    marketPointFit: (trade) => {
+      const classification = normalizePart(
+        trade?.recommendedMarketPointFitClass ?? "NO_DATA",
+      );
+      const rank = {
+        STRONG: 1,
+        SUPPORT: 2,
+        TRANSITION: 3,
+        EXHAUSTED: 4,
+        HEADWIND: 5,
+        NO_DATA: 6,
+      };
+      return `${rank[classification] ?? 9}|${classification}`;
+    },
+    marketDispersion: (trade) => {
+      const segment = normalizePart(
+        trade?.recommendedMarketDispersionSegment ??
+          trade?.recommendedMarketDispersionClass ??
+          "DISP_NO_DATA",
+      );
+      const rank = {
+        DISP_REENTER_FROM_TRANSITION: 1,
+        DISP_REENTER_FROM_CHOP: 2,
+        DISP_REENTER_OTHER: 3,
+        DISP_HOLD_LONG_LEAD: 4,
+        DISP_HOLD_BALANCED: 5,
+        DISP_HOLD_SHORT_LEAD: 6,
+        DISP_EXIT_TO_TRANSITION: 7,
+        DISP_EXIT_TO_CHOP: 8,
+        DISP_EXIT_OTHER: 9,
+        DISP_OUTSIDE: 10,
+        DISP_NO_DATA: 11,
+      };
+      return `${rank[segment] ?? 99}|${segment}`;
+    },
+    supportEntry: (trade) => {
+      const classification = normalizePart(
+        trade?.recommendedSupportEntryClass ?? "NO_DATA",
+      );
+      const rank = { GOOD: 1, BAD: 2, OTHER: 3, NO_DATA: 4 };
+      return `${rank[classification] ?? 9}|${classification}|${trade?.recommendedSupportEntryCode ?? ""}`;
+    },
+    daySelection: (trade) =>
+      `${trade?.recommendedDaySelectionAtEntry?.tier ?? "WATCH"}|${trade?.recommendedDaySelectionAtEntry?.key ?? "REC_DAY_NO_DATA"}`,
+    candle: (trade) => paperCandleSortName(trade?.candlePatternAtEntry),
+    btcCandle: (trade) =>
+      paperCandleSortName(
+        trade?.btcCandlePatternAtEntry ?? trade?.btcCandlePattern5m,
+      ),
+    sideBtc: (trade) => recommendedSideBtcSortValue(trade),
     entry: (trade) => number(trade?.entryPrice ?? trade?.entry),
     mark: (trade) =>
       number(trade?.markPrice ?? trade?.lastPrice ?? trade?.exitPrice),
@@ -1584,6 +3323,7 @@ function sortPaperTrades(trades, sortBy, sortDir) {
     exitType: (trade) => trade?.exitTypeLabel,
     highJumpRisk: (trade) => (trade?.highJumpRisk ? 1 : 0),
     btcPhase: (trade) => trade?.recommendationBtcPhase,
+    btcRegime: (trade) => recommendedBtcRegimeSortValue(trade),
     btcTrend: (trade) => number(trade?.btcTrendSnapshotScore, -1),
     combo: (trade) => trade?.recommendationCombo,
     time: (trade) =>
@@ -1612,7 +3352,18 @@ function sortPaperTrades(trades, sortBy, sortDir) {
 
 export async function getRecommendedPaper({
   day = "",
+  fromDay = "",
+  toDay = "",
   window = "1",
+  sourceLayer = "",
+  cloneLayer = "",
+  twoLayer = "",
+  marketFit = "",
+  daySelection = "",
+  backtestConfidence = "",
+  backtestReliability = "",
+  marketPointFit = "",
+  marketDispersion = "",
   page = 1,
   pageSize = 300,
   sortBy = "time",
@@ -1620,33 +3371,65 @@ export async function getRecommendedPaper({
   prepareTrades = null,
   enrichTrade = null,
 } = {}) {
-  const catalog = await getRecommendedSignals(day);
-  await syncDay(
-    catalog.selectedDay,
-    catalog.recommendations ?? [],
-    catalog.basedOnDateUtc ?? "",
-  );
+  const requestedRange = recommendedPaperDateRange(fromDay, toDay);
+  const catalog = await getRecommendedSignals(day || requestedRange?.toDay || "");
+  const latestCatalogDay = catalog.availableDays?.[0] ?? catalog.selectedDay;
+  // Historical range searches are read-only. Scanning the large source stores
+  // for an old recommendation day can block the page for a minute and cannot
+  // create a legitimate live clone for that day anyway.
+  if (catalog.selectedDay && catalog.selectedDay === latestCatalogDay) {
+    await syncDay(
+      catalog.selectedDay,
+      catalog.recommendations ?? [],
+      catalog.basedOnDateUtc ?? "",
+    );
+  }
   const selectedWindow = comboWindow(window);
   const store = await readJsonCached(paperFile, {
     version: 1,
     updatedAt: null,
     trades: [],
   });
-  const validTrades = (store.trades ?? []).filter(
-    (trade) => trade?.paperMode === RECOMMENDED_PAPER_MODE,
+  const validTrades = decorateRecommendedPaperLayers(
+    (store.trades ?? []).filter(
+      (trade) => trade?.paperMode === RECOMMENDED_PAPER_MODE,
+    ),
   );
+  const availablePaperDays = [
+    ...new Set(
+      validTrades
+        .map((trade) => normalizedDateKey(trade?.activeDateUtc ?? tradeDay(trade)))
+        .filter(Boolean),
+    ),
+  ].sort();
   const filtered = validTrades.filter(
-    (trade) =>
-      !catalog.selectedDay || trade.activeDateUtc === catalog.selectedDay,
+    (trade) => requestedRange
+      ? tradeInRecommendedDateRange(trade, requestedRange)
+      : !catalog.selectedDay || trade.activeDateUtc === catalog.selectedDay,
   );
-  const comboFiltered = validTrades.filter((trade) =>
-    tradeInComboWindow(trade, catalog.selectedDay, selectedWindow),
+  const comboFiltered = requestedRange
+    ? validTrades.filter((trade) =>
+        tradeInRecommendedDateRange(trade, requestedRange),
+      )
+    : validTrades.filter((trade) =>
+        tradeInComboWindow(trade, catalog.selectedDay, selectedWindow),
+      );
+  // The table and every backtest-classification card must see the same live
+  // mark. Subscribe all still-live rows used by either view, while leaving
+  // historical closed rows untouched and cheap to aggregate.
+  const liveEligible = [...new Set([...filtered, ...comboFiltered])].filter(
+    isRecommendedPaperLiveStatus,
   );
-  if (typeof prepareTrades === "function") prepareTrades(filtered);
-  const liveRows =
-    typeof enrichTrade === "function"
-      ? filtered.map((trade) => enrichTrade(trade))
-      : filtered;
+  if (typeof prepareTrades === "function") prepareTrades(liveEligible);
+  const liveTradeBySource = new Map();
+  if (typeof enrichTrade === "function") {
+    for (const trade of liveEligible) {
+      liveTradeBySource.set(trade, enrichTrade(trade));
+    }
+  }
+  const liveRows = filtered.map(
+    (trade) => liveTradeBySource.get(trade) ?? trade,
+  );
   await persistRecommendedPaperLiveStops(liveRows);
   const recommendationById = new Map(
     (catalog.recommendations ?? []).map((item, index) => [
@@ -1677,15 +3460,16 @@ export async function getRecommendedPaper({
       ...classifyExit(trade),
     };
   });
-  // Combo windows use the persisted source outcome. Re-running live enrichment
-  // across several days is expensive and can make historical totals drift.
+  // Closed history stays persisted/frozen. Only OPEN/PENDING rows are overlaid
+  // with the in-memory socket mark so active PnL changes without JSON churn.
   const comboEnriched = comboFiltered.map((trade) => {
+    const liveTrade = liveTradeBySource.get(trade) ?? trade;
     const item = (trade.recommendationIds ?? [])
       .map((id) => recommendationById.get(id))
       .filter(Boolean)
       .sort((a, b) => a.rank - b.rank)[0];
     return {
-      ...trade,
+      ...liveTrade,
       recommendationLabel:
         item?.label ??
         `${String(trade?.sourcePage ?? "-").toUpperCase()} · ${String(trade?.recommendationCombo ?? "COMBO").split("|").slice(0, 3).join(" · ")}`,
@@ -1707,26 +3491,77 @@ export async function getRecommendedPaper({
       )
       .map((item) => recommendationKey(item.page, item.btcPhase, item.combo)),
   );
-  const sorted = sortPaperTrades(enriched, sortBy, sortDir);
+  const normalizedPaperFilters = normalizeRecommendedPaperFilters({
+    sourceLayer,
+    cloneLayer,
+    twoLayer,
+    marketFit,
+    daySelection,
+    backtestConfidence,
+    backtestReliability,
+    marketPointFit,
+    marketDispersion,
+  });
+  const paperFilterOptions = recommendedPaperFilterOptions(enriched);
+  const tableEnriched = filterRecommendedPaperTrades(
+    enriched,
+    normalizedPaperFilters,
+  );
+  const sorted = sortPaperTrades(tableEnriched, sortBy, sortDir);
   const safeSize = Math.max(20, Math.min(500, Number(pageSize) || 300));
   const pages = Math.max(1, Math.ceil(sorted.length / safeSize));
   const safePage = Math.max(1, Math.min(pages, Number(page) || 1));
   return {
     selectedDay: catalog.selectedDay,
     availableDays: catalog.availableDays,
+    availablePaperDays,
     updatedAt: store.updatedAt,
-    summary: paperSummary(enriched),
-    comboWindow: {
-      ...selectedWindow,
-      fromDay:
-        selectedWindow.days == null
-          ? null
-          : subtractUtcDays(catalog.selectedDay, selectedWindow.days - 1),
-      toDay: catalog.selectedDay,
-      totalTrades: comboEnriched.length,
+    summary: paperSummary(tableEnriched),
+    livePricing: recommendedLivePricingStats(tableEnriched),
+    comboWindow: requestedRange
+      ? {
+          ...selectedWindow,
+          value: "range",
+          label:
+            requestedRange.fromDay === requestedRange.toDay
+              ? requestedRange.fromDay
+              : `${requestedRange.fromDay} → ${requestedRange.toDay}`,
+          fromDay: requestedRange.fromDay,
+          toDay: requestedRange.toDay,
+          totalTrades: comboEnriched.length,
+        }
+      : {
+          ...selectedWindow,
+          fromDay:
+            selectedWindow.days == null
+              ? null
+              : subtractUtcDays(catalog.selectedDay, selectedWindow.days - 1),
+          toDay: catalog.selectedDay,
+          totalTrades: comboEnriched.length,
+        },
+    dateRange: {
+      explicit: Boolean(requestedRange),
+      fromDay: requestedRange?.fromDay ?? catalog.selectedDay,
+      toDay: requestedRange?.toDay ?? catalog.selectedDay,
+      totalTrades: filtered.length,
+    },
+    paperFilters: {
+      applied: normalizedPaperFilters,
+      options: paperFilterOptions,
+      activeCount: Object.values(normalizedPaperFilters).filter(Boolean).length,
+      totalBefore: enriched.length,
+      totalAfter: tableEnriched.length,
+      observationOnly: true,
+      affectsOrders: false,
     },
     ruleSizeStats: paperRuleSizeStats(comboEnriched),
     comboStats: paperComboStats(comboEnriched, activeRecommendationKeys),
+    twoLayerStats: paperTwoLayerStats(comboEnriched),
+    dayRegimeStats: paperDayRegimeStats(comboEnriched),
+    backtestConfidenceStats: paperBacktestConfidenceStats(comboEnriched),
+    marketPointFitStats: paperMarketPointFitStats(comboEnriched),
+    marketDispersionStats: paperMarketDispersionStats(comboEnriched),
+    supportEntryStats: paperSupportEntryStats(comboEnriched),
     postBaselineComboStats: paperComboStats(
       postBaselineComboEnriched,
       activeRecommendationKeys,

@@ -1,3 +1,8 @@
+import { installBinanceCardAvgRoeGuard } from './binance-card-visibility.js';
+import { installLiveCardWhitelistUi, liveCardAttrs } from './live-card-whitelist-ui.js?v=20260802-live-whitelist-v5-two-step';
+
+installBinanceCardAvgRoeGuard();
+
 const SOURCES = [
   { id: 'pump',      label: 'Pump',       url: '/api/pump-signals',           stream: '/api/pump-stream' },
   { id: 'cap',       label: 'Cap',        url: '/api/cap-signals',            stream: '/api/cap-stream' },
@@ -40,22 +45,78 @@ const visibleCount = document.getElementById('visibleCount');
 const metaSources = document.getElementById('metaSources');
 const edgePaperBody = document.getElementById('edgePaperBody');
 const edgePaperCount = document.getElementById('edgePaperCount');
-const edgePaperDayFilter = document.getElementById('edgePaperDayFilter');
+const edgePaperDateFromInput = document.getElementById('edgePaperDateFrom');
+const edgePaperDateToInput = document.getElementById('edgePaperDateTo');
+const edgePaperTodayButton = document.getElementById('edgePaperTodayButton');
+const edgePaperAllDatesButton = document.getElementById('edgePaperAllDatesButton');
+const edgePaperDateSearchButton = document.getElementById('edgePaperDateSearchButton');
+const edgePaperDateStatus = document.getElementById('edgePaperDateStatus');
 const edgePaperPrev = document.getElementById('edgePaperPrev');
 const edgePaperNext = document.getElementById('edgePaperNext');
 const edgePaperPageLabel = document.getElementById('edgePaperPageLabel');
 const edgePaperPageSizeSelect = document.getElementById('edgePaperPageSize');
 const edgeComboStatsEl = document.getElementById('edgeComboStats');
+const edgeLabelStatsEl = document.getElementById('edgeLabelStats');
+const edgeTierStatsEl = document.getElementById('edgeTierStats');
+const edgeWave2bStatsEl = document.getElementById('edgeWave2bStats');
+const edgeWave2cStatsEl = document.getElementById('edgeWave2cStats');
+const edgeWave2cTierStatsEl = document.getElementById('edgeWave2cTierStats');
+const edgeBestStatsEl = document.getElementById('edgeBestStats');
+const edgeBestProfileStatsEl = document.getElementById('edgeBestProfileStats');
+const edgeBestRiskPhaseStatsEl = document.getElementById('edgeBestRiskPhaseStats');
+const edgeLiveStatsEl = document.getElementById('edgeLiveStats');
+const edgeSupportEntryGroupsEl = document.getElementById('edgeSupportEntryGroups');
+const edgeSupportEntryShortEl = document.getElementById('edgeSupportEntryShort');
+const edgeSupportEntryLongEl = document.getElementById('edgeSupportEntryLong');
+const edgeSourceLongCorrReboundStatsEl = document.getElementById('edgeSourceLongCorrReboundStats');
+const edgeLongSpringStatsEl = document.getElementById('edgeLongSpringStats');
+const edgeShortUtadStatsEl = document.getElementById('edgeShortUtadStats');
+const edgeLiquidComboTodaySection = document.getElementById('edgeLiquidComboTodaySection');
+const edgeLiquidComboTodaySummary = document.getElementById('edgeLiquidComboTodaySummary');
+const edgeLiquidComboTodayGood = document.getElementById('edgeLiquidComboTodayGood');
+const edgeLiquidComboCycleSection = document.getElementById('edgeLiquidComboCycleSection');
+const edgeLiquidComboCycleSummary = document.getElementById('edgeLiquidComboCycleSummary');
+const edgeLiquidComboCycleStable = document.getElementById('edgeLiquidComboCycleStable');
+const edgeLiquidComboCycleFormingWrap = document.getElementById('edgeLiquidComboCycleFormingWrap');
+const edgeLiquidComboCycleFormingSummary = document.getElementById('edgeLiquidComboCycleFormingSummary');
+const edgeLiquidComboCycleForming = document.getElementById('edgeLiquidComboCycleForming');
 
 let edgePaperTradesCache = [];
 let edgePaperSummaryCache = null;
 let edgePaperSort = { key: 'status', dir: 'asc' };
-let edgePaperDay = 'all';
-let edgePaperAvailableDays = [];
+let edgePaperDateFrom = '';
+let edgePaperDateTo = '';
+let edgePaperDateMode = 'today';
+let edgePaperDraftDateFrom = '';
+let edgePaperDraftDateTo = '';
+let edgePaperDraftDateMode = 'today';
+let edgePaperDateDirty = false;
+let edgePaperKnownToday = '';
+let edgePaperDateRolloverTimer = null;
 let edgePaperComboStats = [];
+let edgePaperLabelStats = [];
+let edgePaperTierStats = [];
+let edgePaperWave2bStats = [];
+let edgePaperWave2cStats = [];
+let edgePaperWave2cTierStats = [];
+let edgePaperBestStats = [];
+let edgePaperBestProfileStats = [];
+let edgePaperBestRiskPhaseStats = [];
+let edgePaperLiveStats = [];
+let edgeSourceLongCorrReboundStats = [];
+let edgePaperLongSpringStats = [];
+let edgePaperShortUtadStats = [];
+let edgeSupportEntryStats = null;
+let edgeLiquidComboTodayStats = null;
 let edgePaperPage = 1;
 let edgePaperPageSize = Number(edgePaperPageSizeSelect?.value || 300);
 let edgePaperPagination = { page: 1, pageSize: 300, totalRows: 0, totalPages: 1 };
+
+installLiveCardWhitelistUi({
+  page: 'edge',
+  label: 'SHORT EDGE',
+  mountBefore: edgeComboStatsEl,
+});
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -81,6 +142,171 @@ function fmtPct(value, digits = 2) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '-';
   return `${n >= 0 ? '+' : ''}${n.toFixed(digits)}%`;
+}
+
+function fmtSignedMoney(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '-';
+  return `${number >= 0 ? '+' : '-'}$${Math.abs(number).toFixed(3)}`;
+}
+
+function edgeMetricClass(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return 'neutral';
+  return number > 0 ? 'positive' : 'negative';
+}
+
+function renderEdgeLiquidComboToday() {
+  if (!edgeLiquidComboTodaySection || !edgeLiquidComboTodayGood) return;
+  const stats = edgeLiquidComboTodayStats;
+  if (!stats) {
+    edgeLiquidComboTodaySection.style.display = 'none';
+    edgeLiquidComboTodayGood.innerHTML = '';
+    return;
+  }
+  const rows = Array.isArray(stats.stableToday) ? stats.stableToday : [];
+  edgeLiquidComboTodaySection.style.display = 'block';
+  if (edgeLiquidComboTodaySummary) {
+    edgeLiquidComboTodaySummary.textContent = [
+      stats.day ?? '-',
+      stats.timeZone ?? 'Asia/Bangkok',
+      `${rows.length}/${stats.stableHistoryCount ?? '-'} nhóm ổn định có lệnh hôm nay`,
+      'nguồn Liquid Scan',
+      'chỉ thống kê, không quản lý vào lệnh',
+    ].join(' · ');
+  }
+  edgeLiquidComboTodayGood.innerHTML = rows.length
+    ? rows.map((row, index) => {
+      const parts = String(row.comboKey ?? '-')
+        .split('|')
+        .map((part) => part.trim())
+        .filter(Boolean);
+      const title = parts.slice(0, 3).join(' · ') || String(row.comboKey ?? '-');
+      const tags = parts.slice(3).map((part) => {
+        const upper = part.toUpperCase();
+        const cls = upper.includes('COUNTER') || upper.includes('RAC') || upper.includes('BLOCK')
+          ? 'bad'
+          : upper.includes('THUAN') || upper.includes('ALIGNED') || upper.includes('THEO')
+            ? 'hot'
+            : '';
+        return `<span class="pump-combo-tag ${cls}" title="${escapeHtml(part)}">${escapeHtml(part)}</span>`;
+      }).join('');
+      const today = row.today ?? {};
+      const closedPnl = Number(today.pnl ?? 0);
+      const avgRoe = Number(today.avgRoe ?? 0);
+      const activePnl = Number(row.activePnl ?? 0);
+      return `<div class="pump-combo-card good">
+        <div class="pump-combo-head">
+          <div class="pump-combo-title">#${index + 1} ${escapeHtml(title)}</div>
+          <span class="pump-combo-tag hot">ỔN ĐỊNH · HÔM NAY</span>
+        </div>
+        <div class="pump-combo-tags">
+          ${tags}
+          <span class="pump-combo-tag hot">${escapeHtml(row.dayMove ?? '-')}</span>
+          <span class="pump-combo-tag hot">${escapeHtml(row.rsi4h ?? '-')}</span>
+        </div>
+        <div class="pump-combo-stats">
+          <div>${today.wins ?? 0}W/${today.losses ?? 0}L · Closed ${today.closed ?? 0}/${row.total ?? 0} · ${today.episodes ?? 0} episode</div>
+          <div>WR ${Number(row.winRate ?? 0).toFixed(1)}% · PF ${Number(today.profitFactor ?? 0).toFixed(2)}</div>
+          <div class="pump-combo-pnl ${closedPnl >= 0 ? 'pos' : 'neg'}">PnL đóng <span class="liquid-closed-pnl ${edgeMetricClass(closedPnl)}">${fmtSignedMoney(closedPnl)}</span> · AvgROE <span class="liquid-avg-roe ${edgeMetricClass(avgRoe)}">${avgRoe >= 0 ? '+' : ''}${avgRoe.toFixed(1)}%</span></div>
+          <div class="pump-combo-pnl ${activePnl >= 0 ? 'pos' : 'neg'}">Active ${row.active ?? 0} · PnL active ${fmtSignedMoney(activePnl)} · Pending ${row.pending ?? 0}</div>
+        </div>
+      </div>`;
+    }).join('')
+    : '<div class="table-empty liquid-combo-cycle-empty">Hôm nay chưa có lệnh Liquid nào thuộc các combo đã được xác nhận ổn định qua ngày.</div>';
+}
+
+function renderEdgeLiquidComboCycleCards(rows = [], { forming = false } = {}) {
+  return rows.map((row, index) => {
+    const parts = String(row.comboKey ?? '-')
+      .split('|')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const title = parts.slice(0, 3).join(' · ') || String(row.comboKey ?? '-');
+    const tags = parts.slice(3).map((part) => {
+      const upper = part.toUpperCase();
+      const cls = upper.includes('COUNTER') || upper.includes('RAC') || upper.includes('BLOCK')
+        ? 'bad'
+        : upper.includes('THUAN') || upper.includes('ALIGNED') || upper.includes('THEO')
+          ? 'hot'
+          : '';
+      return `<span class="pump-combo-tag ${cls}" title="${escapeHtml(part)}">${escapeHtml(part)}</span>`;
+    }).join('');
+    const history = row.history ?? {};
+    const recent = row.recent ?? {};
+    const closedPnl = Number(history.pnl ?? 0);
+    const avgRoe = Number(history.avgRoe ?? 0);
+    const activePnl = Number(row.activePnl ?? 0);
+    return `<div class="pump-combo-card ${forming ? 'neutral' : 'good'}">
+      <div class="pump-combo-head">
+        <div class="pump-combo-title">#${index + 1} ${escapeHtml(title)}</div>
+        <span class="pump-combo-tag ${forming ? '' : 'hot'}">${forming ? 'ĐANG XÁC NHẬN' : 'ỔN ĐỊNH'}</span>
+      </div>
+      <div class="pump-combo-tags">
+        ${tags}
+        <span class="pump-combo-tag hot">${escapeHtml(row.dayMove ?? '-')}</span>
+        <span class="pump-combo-tag hot">${escapeHtml(row.rsi4h ?? '-')}</span>
+      </div>
+      <div class="pump-combo-stats">
+        <div>${history.wins ?? 0}W/${history.losses ?? 0}L · Closed ${history.closed ?? 0}/${row.total ?? 0} · ${history.episodes ?? 0} episode</div>
+        <div>Ngày dương ${history.positiveDays ?? 0}/${history.days ?? 0} (${Number(history.positiveDayRate ?? 0).toFixed(0)}%) · PF ${Number(history.profitFactor ?? 0).toFixed(2)} · ngày lớn nhất ${Number(history.maxDayShare ?? 0).toFixed(0)}%</div>
+        <div class="pump-combo-pnl ${closedPnl >= 0 ? 'pos' : 'neg'}">PnL đóng <span class="liquid-closed-pnl ${edgeMetricClass(closedPnl)}">${fmtSignedMoney(closedPnl)}</span> · AvgROE <span class="liquid-avg-roe ${edgeMetricClass(avgRoe)}">${avgRoe >= 0 ? '+' : ''}${avgRoe.toFixed(1)}%</span></div>
+        <div>Gần đây ${recent.positiveDays ?? 0}/${recent.days ?? 0} ngày dương · PF ${Number(recent.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="pump-combo-pnl ${activePnl >= 0 ? 'pos' : 'neg'}">Active ${row.active ?? 0} · PnL active ${fmtSignedMoney(activePnl)} · Pending ${row.pending ?? 0}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeLiquidComboCycle() {
+  if (!edgeLiquidComboCycleSection || !edgeLiquidComboCycleStable) return;
+  const stats = edgeLiquidComboTodayStats;
+  if (!stats) {
+    edgeLiquidComboCycleSection.style.display = 'none';
+    edgeLiquidComboCycleStable.innerHTML = '';
+    return;
+  }
+  const stable = Array.isArray(stats.stableGood) ? stats.stableGood : [];
+  const forming = Array.isArray(stats.formingGood) ? stats.formingGood : [];
+  const criteria = stats.criteria?.stable ?? stats.historyCriteria ?? {};
+  edgeLiquidComboCycleSection.style.display = 'block';
+  if (edgeLiquidComboCycleSummary) {
+    edgeLiquidComboCycleSummary.textContent = [
+      'Toàn bộ lịch sử Liquid Scan',
+      `episode ${stats.criteria?.episodeMinutes ?? 15} phút`,
+      `ổn định ≥ ${criteria.minDays ?? 3} ngày`,
+      `ngày dương ≥ ${criteria.minPositiveDayRate ?? 60}%`,
+      `PF ≥ ${criteria.minProfitFactor ?? 1.2}`,
+      'chỉ thống kê, không quản lý vào lệnh',
+    ].join(' · ');
+  }
+  edgeLiquidComboCycleStable.innerHTML = stable.length
+    ? renderEdgeLiquidComboCycleCards(stable)
+    : '<div class="table-empty liquid-combo-cycle-empty">Chưa có combo Liquid nào đủ chuẩn ổn định qua ngày.</div>';
+  if (edgeLiquidComboCycleFormingWrap && edgeLiquidComboCycleForming) {
+    edgeLiquidComboCycleFormingWrap.style.display = forming.length ? 'block' : 'none';
+    if (edgeLiquidComboCycleFormingSummary) {
+      edgeLiquidComboCycleFormingSummary.textContent = `Đang xác nhận thêm ngày: ${forming.length} combo tốt`;
+    }
+    edgeLiquidComboCycleForming.innerHTML = renderEdgeLiquidComboCycleCards(forming, { forming: true });
+  }
+}
+
+let _edgeLiquidComboTodayFetching = false;
+async function loadEdgeLiquidComboToday() {
+  if (_edgeLiquidComboTodayFetching) return;
+  _edgeLiquidComboTodayFetching = true;
+  try {
+    const response = await fetch('/api/liquid-combo-cycle-today', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    edgeLiquidComboTodayStats = await response.json();
+    renderEdgeLiquidComboToday();
+    renderEdgeLiquidComboCycle();
+  } catch (error) {
+    console.warn('[EdgeLiquidComboToday] Load error:', error.message);
+  } finally {
+    _edgeLiquidComboTodayFetching = false;
+  }
 }
 
 function timeLabel(ts) {
@@ -516,7 +742,14 @@ function renderEdgeBtcTrendBadge(t) {
   const cls = dir.includes('UP') ? 'good' : dir.includes('DOWN') ? 'bad' : 'warn';
   const move = Number(h.btcMove6hPct);
   const tail = Number.isFinite(move) ? ` · ${move >= 0 ? '+' : ''}${move.toFixed(2)}%/6h` : '';
-  return `<span class="edge-chip ${cls}" title="BTC trend lúc vào">${escapeHtml(`BTC ${dir} ${Number.isFinite(score) ? score.toFixed(0) : '-'}${tail}`)}</span>`;
+  const wave = t?.marketDirectionAtSignal?.scoreDynamics;
+  const waveHtml = wave?.shortWaveState
+    ? `<span class="liquid-short-wave" data-short-wave="${escapeHtml(wave.shortWaveState)}" title="${escapeHtml(wave.shortWaveDescription ?? 'Snapshot nhịp SHORT tại entry')}">${escapeHtml(wave.shortWaveLabel ?? wave.shortWaveState)}</span>`
+    : '';
+  const longWaveHtml = wave?.longWaveState
+    ? `<span class="liquid-long-wave" data-long-wave="${escapeHtml(wave.longWaveState)}" title="${escapeHtml(wave.longWaveDescription ?? 'Snapshot nhịp LONG tại entry')}">${escapeHtml(wave.longWaveLabel ?? wave.longWaveState)}</span>`
+    : '';
+  return `<span style="display:flex;flex-direction:column;gap:3px;align-items:flex-start"><span class="edge-chip ${cls}" title="BTC trend lúc vào">${escapeHtml(`BTC ${dir} ${Number.isFinite(score) ? score.toFixed(0) : '-'}${tail}`)}</span>${waveHtml}${longWaveHtml}</span>`;
 }
 
 function renderEdgeGateBadge(t) {
@@ -528,23 +761,163 @@ function renderEdgeGateBadge(t) {
   return `<span class="edge-chip ${cls}"${title}>${escapeHtml(gate)}</span>`;
 }
 
-function renderEdgePaperDayOptions(days = edgePaperAvailableDays) {
-  if (!edgePaperDayFilter) return;
-  const normalized = Array.isArray(days) ? days : [];
-  const current = edgePaperDayFilter.value || edgePaperDay || 'all';
-  edgePaperDayFilter.innerHTML = [
-    '<option value="all">Tất cả</option>',
-    ...normalized.map((day) => `<option value="${escapeHtml(day)}">${escapeHtml(day)}</option>`),
-  ].join('');
-  edgePaperDayFilter.value = normalized.includes(current) ? current : 'all';
-  edgePaperDay = edgePaperDayFilter.value;
+const EDGE_PAPER_DAY_TIME_ZONE = 'Asia/Bangkok';
+const edgePaperDayFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: EDGE_PAPER_DAY_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+function edgePaperDayKey(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const parts = Object.fromEntries(
+    edgePaperDayFormatter
+      .formatToParts(date)
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
-edgePaperDayFilter?.addEventListener('change', () => {
-  edgePaperDay = edgePaperDayFilter.value || 'all';
+function edgePaperDateLabel() {
+  if (edgePaperDateMode === 'all') return '';
+  if (edgePaperDateFrom && edgePaperDateTo) {
+    return edgePaperDateFrom === edgePaperDateTo
+      ? edgePaperDateFrom
+      : `${edgePaperDateFrom} → ${edgePaperDateTo}`;
+  }
+  if (edgePaperDateFrom) return `từ ${edgePaperDateFrom}`;
+  if (edgePaperDateTo) return `đến ${edgePaperDateTo}`;
+  return '';
+}
+
+function syncEdgePaperDateControls() {
+  if (edgePaperDateFromInput) edgePaperDateFromInput.value = edgePaperDraftDateFrom;
+  if (edgePaperDateToInput) edgePaperDateToInput.value = edgePaperDraftDateTo;
+  edgePaperTodayButton?.classList.toggle('is-active', edgePaperDraftDateMode === 'today');
+  edgePaperAllDatesButton?.classList.toggle('is-active', edgePaperDraftDateMode === 'all');
+  edgePaperTodayButton?.setAttribute('aria-pressed', String(edgePaperDraftDateMode === 'today'));
+  edgePaperAllDatesButton?.setAttribute('aria-pressed', String(edgePaperDraftDateMode === 'all'));
+  if (edgePaperDateStatus) {
+    edgePaperDateStatus.textContent = edgePaperDateDirty
+      ? `Chưa áp dụng · bấm Search · ${EDGE_PAPER_DAY_TIME_ZONE}`
+      : edgePaperDateMode === 'today'
+        ? `Tự chuyển ngày mới · ${EDGE_PAPER_DAY_TIME_ZONE}`
+        : edgePaperDateMode === 'all'
+          ? 'Toàn bộ lịch sử'
+          : `Khoảng ngày cố định · ${EDGE_PAPER_DAY_TIME_ZONE}`;
+  }
+}
+
+function setEdgePaperDateSearchLoading(loading) {
+  if (edgePaperDateSearchButton) {
+    edgePaperDateSearchButton.disabled = loading;
+    edgePaperDateSearchButton.classList.toggle('is-loading', loading);
+    edgePaperDateSearchButton.textContent = loading ? 'Đang tải...' : 'Search';
+  }
+  for (const control of [
+    edgePaperDateFromInput,
+    edgePaperDateToInput,
+    edgePaperTodayButton,
+    edgePaperAllDatesButton,
+  ]) {
+    if (control) control.disabled = loading;
+  }
+  if (loading && edgePaperDateStatus) {
+    edgePaperDateStatus.textContent = `Đang tải ${edgePaperDateLabel() || 'toàn bộ lịch sử'} · ${EDGE_PAPER_DAY_TIME_ZONE}`;
+  } else if (!loading) {
+    syncEdgePaperDateControls();
+  }
+}
+
+function setEdgePaperToday({ reload = true, showLoading = false } = {}) {
+  const today = edgePaperDayKey();
+  edgePaperKnownToday = today;
+  edgePaperDateFrom = today;
+  edgePaperDateTo = today;
+  edgePaperDateMode = 'today';
+  edgePaperDraftDateFrom = today;
+  edgePaperDraftDateTo = today;
+  edgePaperDraftDateMode = 'today';
+  edgePaperDateDirty = false;
   edgePaperPage = 1;
+  syncEdgePaperDateControls();
+  if (reload) loadEdgePaperTrades(true, showLoading);
+}
+
+function stageEdgePaperAllDates() {
+  edgePaperDraftDateFrom = '';
+  edgePaperDraftDateTo = '';
+  edgePaperDraftDateMode = 'all';
+  edgePaperDateDirty = edgePaperDateMode !== 'all';
+  syncEdgePaperDateControls();
+}
+
+function stageEdgePaperDateInputs(changedField) {
+  let from = edgePaperDateFromInput?.value || '';
+  let to = edgePaperDateToInput?.value || '';
+  if (from && to && from > to) {
+    if (changedField === 'from') to = from;
+    else from = to;
+  }
+  edgePaperDraftDateFrom = from;
+  edgePaperDraftDateTo = to;
+  const today = edgePaperDayKey();
+  edgePaperDraftDateMode = from === today && to === today
+    ? 'today'
+    : (!from && !to ? 'all' : 'custom');
+  edgePaperDateDirty =
+    from !== edgePaperDateFrom ||
+    to !== edgePaperDateTo ||
+    edgePaperDraftDateMode !== edgePaperDateMode;
+  syncEdgePaperDateControls();
+}
+
+function applyEdgePaperDateSearch() {
+  edgePaperDateFrom = edgePaperDraftDateFrom;
+  edgePaperDateTo = edgePaperDraftDateTo;
+  edgePaperDateMode = edgePaperDraftDateMode;
+  edgePaperDateDirty = false;
+  edgePaperPage = 1;
+  syncEdgePaperDateControls();
+  loadEdgePaperTrades(true, true);
+}
+
+function checkEdgePaperDateRollover() {
+  const today = edgePaperDayKey();
+  if (!today || today === edgePaperKnownToday) return;
+  edgePaperKnownToday = today;
+  if (edgePaperDateMode !== 'today') return;
+  edgePaperDateFrom = today;
+  edgePaperDateTo = today;
+  if (!edgePaperDateDirty) {
+    edgePaperDraftDateFrom = today;
+    edgePaperDraftDateTo = today;
+    edgePaperDraftDateMode = 'today';
+  }
+  edgePaperPage = 1;
+  syncEdgePaperDateControls();
   loadEdgePaperTrades(true);
-});
+}
+
+function initializeEdgePaperDateRange() {
+  setEdgePaperToday({ reload: false });
+  if (!edgePaperDateRolloverTimer) {
+    edgePaperDateRolloverTimer = window.setInterval(checkEdgePaperDateRollover, 30_000);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkEdgePaperDateRollover();
+  });
+  window.addEventListener('focus', checkEdgePaperDateRollover);
+}
+
+edgePaperDateFromInput?.addEventListener('change', () => stageEdgePaperDateInputs('from'));
+edgePaperDateToInput?.addEventListener('change', () => stageEdgePaperDateInputs('to'));
+edgePaperTodayButton?.addEventListener('click', () => setEdgePaperToday({ showLoading: true }));
+edgePaperAllDatesButton?.addEventListener('click', stageEdgePaperAllDates);
+edgePaperDateSearchButton?.addEventListener('click', applyEdgePaperDateSearch);
 
 function renderEdgePaperPager(pagination = edgePaperPagination) {
   edgePaperPagination = pagination || edgePaperPagination;
@@ -605,7 +978,7 @@ function renderEdgeComboStats(rows = edgePaperComboStats) {
     const planMargin = Number(plan.marginUsdt);
     const planCls = Number.isFinite(planMargin) && planMargin <= 1.01 ? 'bad' : 'hot';
     const planTitle = plan.reason ? ` title="${escapeHtml(plan.reason)}"` : '';
-    return `<div class="edge-combo-card ${cardCls}">
+    return `<div class="edge-combo-card ${cardCls}" ${liveCardAttrs('edge', 'combo', row.key, row.avgRoe)}>
       <div class="edge-combo-head">
         <div class="edge-combo-title">#${index + 1} ${escapeHtml(title)}</div>
         <span class="edge-combo-tag ${planCls}"${planTitle}>${escapeHtml(planLabel)}</span>
@@ -619,6 +992,527 @@ function renderEdgeComboStats(rows = edgePaperComboStats) {
   }).join('');
 }
 
+function renderEdgeSupportEntryCards(element, rows = [], emptyLabel = 'Chưa có cohort đủ điều kiện') {
+  if (!element) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    element.innerHTML = `<div class="edge-combo-card neutral">
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(emptyLabel)}</div>
+        <span class="edge-combo-tag">OBSERVE ONLY</span>
+      </div>
+      <div class="edge-combo-stats"><div>0 lệnh đủ điều kiện</div></div>
+    </div>`;
+    return;
+  }
+  const liveGroup = element === edgeSupportEntryShortEl
+    ? 'support-short-source'
+    : element === edgeSupportEntryLongEl
+      ? 'support-long-source'
+      : 'support-entry';
+  element.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'WATCH').toUpperCase();
+    const cardCls = tier === 'GOOD' ? 'good' : tier === 'RISK' ? 'bad' : 'neutral';
+    const tagCls = tier === 'GOOD' ? 'hot' : tier === 'RISK' ? 'bad' : '';
+    const totalPnl = Number(row.pnl ?? 0);
+    const wr = row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`;
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const streak = Number(row.negativeDayStreak ?? 0) > 0
+      ? ` · chuỗi âm ${Number(row.negativeDayStreak)} ngày`
+      : '';
+    return `<div class="edge-combo-card ${cardCls}" ${liveCardAttrs('edge', liveGroup, row.key ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? 'ENTRY SUPPORT')}</div>
+        <span class="edge-combo-tag ${tagCls}">${escapeHtml(tier)}</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.total ?? 0} lệnh · ${row.open ?? 0} mở · ${row.closed ?? 0} đóng</div>
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${wr} · AvgROE ${avgRoe}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · active ${fmtEdgeMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · ngày dương ${row.positiveDays ?? 0}/${row.days ?? 0} · ngày âm ${row.negativeDays ?? 0}${streak}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeSupportEntryStats(stats = edgeSupportEntryStats) {
+  renderEdgeSupportEntryCards(
+    edgeSupportEntryGroupsEl,
+    stats?.groups,
+    'Chưa có tín hiệu đẹp/xấu trong khoảng ngày',
+  );
+  renderEdgeSupportEntryCards(
+    edgeSupportEntryShortEl,
+    stats?.shortSourceGroups,
+    'Chưa có EDGE SHORT đủ điều kiện sau flip',
+  );
+  renderEdgeSupportEntryCards(
+    edgeSupportEntryLongEl,
+    stats?.longSourceGroups,
+    'Chưa có EDGE LONG đủ điều kiện sau flip',
+  );
+}
+
+function renderEdgeLabelStats(rows = edgePaperLabelStats) {
+  if (!edgeLabelStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    edgeLabelStatsEl.innerHTML = '';
+    return;
+  }
+  edgeLabelStatsEl.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'NO_DATA').toUpperCase();
+    const cardCls = tier === 'PRIME' || tier === 'GOOD'
+      ? 'good'
+      : tier === 'RISK'
+        ? 'bad'
+        : 'neutral';
+    const tagCls = tier === 'PRIME' || tier === 'GOOD'
+      ? 'hot'
+      : tier === 'RISK'
+        ? 'bad'
+        : '';
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const totalPnl = Number(row.totalPnl ?? 0);
+    return `<div class="edge-combo-card ${cardCls}" ${liveCardAttrs('edge', 'label', row.key ?? row.tier ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? 'SE NO DATA')}</div>
+        <span class="edge-combo-tag ${tagCls}" title="Kết quả thực tế của các lệnh mang nhãn này trong ngày đang lọc">KQ NGÀY</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · đóng ${row.closed ?? 0} · active ${row.active ?? 0}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeSourceLongCorrReboundStats(rows = edgeSourceLongCorrReboundStats) {
+  if (!edgeSourceLongCorrReboundStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  edgeSourceLongCorrReboundStatsEl.innerHTML = list.map((row) => {
+    const tone = String(row.tone ?? 'NO_DATA').toUpperCase();
+    const cardClass = tone === 'GOOD' ? 'good' : tone === 'RISK' ? 'bad' : 'neutral';
+    const tagClass = tone === 'GOOD' ? 'hot' : tone === 'RISK' ? 'bad' : '';
+    const totalPnl = Number(row.totalPnl ?? 0);
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(2)}%`;
+    return `<div class="edge-combo-card ${cardClass}" ${liveCardAttrs('edge', 'source-long-corr', row.key ?? row.code ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? 'SE SC SPRING CORR REBOUND')}</div>
+        <span class="edge-combo-tag ${tagClass}">PROVISIONAL</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.total ?? 0} total · ${row.closed ?? 0} đóng · ${row.active ?? 0} active · ${row.pending ?? 0} chờ</div>
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe} · ngày dương ${row.positiveDays ?? 0}/${row.totalDays ?? 0}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeLongSpringStats(rows = edgePaperLongSpringStats) {
+  if (!edgeLongSpringStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  edgeLongSpringStatsEl.innerHTML = list.map((row) => {
+    const prime = String(row.key ?? '').toUpperCase() === 'PRIME';
+    const totalPnl = Number(row.totalPnl ?? 0);
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const scope = row.inclusive === true ? 'GỒM CẢ PRIME' : 'TẬP CON PRIME';
+    return `<div class="edge-combo-card good" ${liveCardAttrs('edge', 'long-spring', row.key ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? row.key)}</div>
+        <span class="edge-combo-tag hot" title="Snapshot trước entry; chỉ gắn nhãn và thống kê">${scope}</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.total ?? 0} lệnh · ${row.active ?? 0} active · ${row.pending ?? 0} chờ · ${row.closed ?? 0} đóng</div>
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe} · ngày + ${row.positiveDays ?? 0}/${row.totalDays ?? 0}</div>
+        <div style="color:var(--muted);font-size:10px">${prime ? 'CONFIRMED + RR < 0.7' : 'SC_SPRING + ALT/BTC BULLISH + SHORT-LONG gap ≥ 15'} · OBSERVE ONLY</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeShortUtadStats(rows = edgePaperShortUtadStats) {
+  if (!edgeShortUtadStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  edgeShortUtadStatsEl.innerHTML = list.map((row) => {
+    const prime = String(row.key ?? '').toUpperCase() === 'PRIME_TEST';
+    const totalPnl = Number(row.totalPnl ?? 0);
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const scope = row.inclusive === true ? 'GỒM CẢ PRIME TEST' : 'TẬP CON PRIME TEST';
+    return `<div class="edge-combo-card good" ${liveCardAttrs('edge', 'short-utad', row.key ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? row.key)}</div>
+        <span class="edge-combo-tag hot" title="Snapshot trước entry; chỉ gắn nhãn và thống kê">${scope}</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.total ?? 0} lệnh · ${row.active ?? 0} active · ${row.pending ?? 0} chờ · ${row.closed ?? 0} đóng</div>
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe} · ngày + ${row.positiveDays ?? 0}/${row.totalDays ?? 0}</div>
+        <div style="color:var(--muted);font-size:10px">${prime ? 'CONFIRMED + LONG-SHORT gap ≥ 5 + RR < 0.7' : 'BC_UTAD + ALT/BTC BEARISH + LONG-SHORT gap ≥ 0'} · OBSERVE ONLY</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeTierStats(rows = edgePaperTierStats) {
+  if (!edgeTierStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    edgeTierStatsEl.innerHTML = '';
+    return;
+  }
+  edgeTierStatsEl.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'BLOCK').toUpperCase();
+    const cardCls = tier === 'A' ? 'good' : tier === 'BLOCK' ? 'bad' : 'neutral';
+    const tagCls = tier === 'A' ? 'hot' : tier === 'BLOCK' ? 'bad' : '';
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const totalPnl = Number(row.totalPnl ?? 0);
+    return `<div class="edge-combo-card ${cardCls}" ${liveCardAttrs('edge', 'tier', row.key ?? row.tier, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? `SE TIER ${tier}`)}</div>
+        <span class="edge-combo-tag ${tagCls}" title="Chỉ là nhãn và thống kê; không gate/chặn lệnh, không đổi size">OBSERVE ONLY</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · đóng ${row.closed ?? 0} · active ${row.active ?? 0}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeWave2bStats(rows = edgePaperWave2bStats) {
+  if (!edgeWave2bStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    edgeWave2bStatsEl.innerHTML = '';
+    return;
+  }
+  edgeWave2bStatsEl.innerHTML = list.map((row) => {
+    const tone = String(row.tone ?? 'WATCH').toUpperCase();
+    const cardCls = tone === 'GOOD' ? 'good' : tone === 'RISK' ? 'bad' : 'neutral';
+    const tagCls = tone === 'GOOD' ? 'hot' : tone === 'RISK' ? 'bad' : '';
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const totalPnl = Number(row.totalPnl ?? 0);
+    return `<div class="edge-combo-card ${cardCls}" ${liveCardAttrs('edge', 'wave-2b', row.key ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? row.key)}</div>
+        <span class="edge-combo-tag ${tagCls}" title="SIDE × BTC wave snapshot trước entry; chỉ thống kê, không tác động lệnh">OBSERVE ONLY</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · đóng ${row.closed ?? 0} · active ${row.active ?? 0}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe} · ngày + ${row.positiveDays ?? 0}/${row.totalDays ?? 0}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeWave2cRows(element, rows = []) {
+  if (!element) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    element.innerHTML = '';
+    return;
+  }
+  const liveGroup = element === edgeWave2cTierStatsEl ? 'wave-2c-tier' : 'wave-2c';
+  element.innerHTML = list.map((row) => {
+    const tone = String(row.tone ?? 'WATCH').toUpperCase();
+    const cardCls = tone === 'GOOD' ? 'good' : tone === 'RISK' ? 'bad' : 'neutral';
+    const tagCls = tone === 'GOOD' ? 'hot' : tone === 'RISK' ? 'bad' : '';
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    const totalPnl = Number(row.totalPnl ?? 0);
+    return `<div class="edge-combo-card ${cardCls}" ${liveCardAttrs('edge', liveGroup, row.key ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? row.key)}</div>
+        <span class="edge-combo-tag ${tagCls}" title="Chỉ Tier A/B × BTC wave snapshot trước entry; không tác động lệnh">OBSERVE ONLY</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · đóng ${row.closed ?? 0} · active ${row.active ?? 0}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe} · ngày + ${row.positiveDays ?? 0}/${row.totalDays ?? 0}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeWave2cStats() {
+  renderEdgeWave2cRows(edgeWave2cStatsEl, edgePaperWave2cStats);
+  renderEdgeWave2cRows(edgeWave2cTierStatsEl, edgePaperWave2cTierStats);
+}
+
+function renderEdgeBestStats(rows = edgePaperBestStats) {
+  if (!edgeBestStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    edgeBestStatsEl.innerHTML = '';
+    return;
+  }
+  edgeBestStatsEl.innerHTML = list.map((row) => {
+    const selected = row.key === 'BEST';
+    const totalPnl = Number(row.totalPnl ?? 0);
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    return `<div class="edge-combo-card ${selected ? 'good' : 'neutral'}" ${liveCardAttrs('edge', 'best', row.key ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? row.key)}</div>
+        <span class="edge-combo-tag ${selected ? 'hot' : ''}" title="Nhãn walk-forward chỉ dùng prior-day closed; không tác động lệnh">OBSERVE ONLY</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · đóng ${row.closed ?? 0} · active ${row.active ?? 0}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe} · ngày + ${row.positiveDays ?? 0}/${row.totalDays ?? 0}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeBestProfileStats(rows = edgePaperBestProfileStats) {
+  if (!edgeBestProfileStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    edgeBestProfileStatsEl.innerHTML = '';
+    return;
+  }
+  edgeBestProfileStatsEl.innerHTML = list.map((row) => {
+    const tone = String(row.tone ?? 'WATCH').toUpperCase();
+    const cardCls = tone === 'GOOD' ? 'good' : tone === 'RISK' ? 'bad' : 'neutral';
+    const tagCls = tone === 'GOOD' ? 'hot' : tone === 'RISK' ? 'bad' : '';
+    const totalPnl = Number(row.totalPnl ?? 0);
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    return `<div class="edge-combo-card ${cardCls}" ${liveCardAttrs('edge', 'best-profile', row.key ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? row.key)}</div>
+        <span class="edge-combo-tag ${tagCls}" title="Snapshot trước entry; không dùng kết quả của chính lệnh">OBSERVE ONLY</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · đóng ${row.closed ?? 0} · active ${row.active ?? 0}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe} · ngày + ${row.positiveDays ?? 0}/${row.totalDays ?? 0}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeBestRiskPhaseStats(rows = edgePaperBestRiskPhaseStats) {
+  if (!edgeBestRiskPhaseStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    edgeBestRiskPhaseStatsEl.innerHTML = '';
+    return;
+  }
+  edgeBestRiskPhaseStatsEl.innerHTML = list.map((row) => {
+    const tone = String(row.tone ?? 'WATCH').toUpperCase();
+    const cardCls = tone === 'GOOD' ? 'good' : tone === 'RISK' ? 'bad' : 'neutral';
+    const tagCls = tone === 'GOOD' ? 'hot' : tone === 'RISK' ? 'bad' : '';
+    const totalPnl = Number(row.totalPnl ?? 0);
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    return `<div class="edge-combo-card ${cardCls}" ${liveCardAttrs('edge', 'best-risk-phase', row.key ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? row.key)}</div>
+        <span class="edge-combo-tag ${tagCls}" title="BTC rolling 24h và pha điểm LONG/SHORT đều là snapshot trước entry; không tác động lệnh">OBSERVE ONLY</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · đóng ${row.closed ?? 0} · active ${row.active ?? 0}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe} · ngày + ${row.positiveDays ?? 0}/${row.totalDays ?? 0}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeLiveStats(rows = edgePaperLiveStats) {
+  if (!edgeLiveStatsEl) return;
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) {
+    edgeLiveStatsEl.innerHTML = '';
+    return;
+  }
+  edgeLiveStatsEl.innerHTML = list.map((row) => {
+    const tier = String(row.tier ?? 'NEW').toUpperCase();
+    const cardCls = tier === 'HOT' || tier === 'OK'
+      ? 'good'
+      : tier === 'COOL'
+        ? 'bad'
+        : 'neutral';
+    const tagCls = tier === 'HOT' || tier === 'OK'
+      ? 'hot'
+      : tier === 'COOL'
+        ? 'bad'
+        : '';
+    const totalPnl = Number(row.totalPnl ?? 0);
+    const avgRoe = row.avgRoe == null
+      ? '-'
+      : `${Number(row.avgRoe) >= 0 ? '+' : ''}${Number(row.avgRoe).toFixed(1)}%`;
+    return `<div class="edge-combo-card ${cardCls}" ${liveCardAttrs('edge', 'live-health', row.key ?? row.tier ?? row.label, row.avgRoe)}>
+      <div class="edge-combo-head">
+        <div class="edge-combo-title">${escapeHtml(row.label ?? `SE LIVE ${tier}`)}</div>
+        <span class="edge-combo-tag ${tagCls}" title="Snapshot chỉ dùng các lệnh đóng trước entry; không tác động lệnh">OBSERVE ONLY</span>
+      </div>
+      <div class="edge-combo-stats">
+        <div>${row.wins ?? 0}W/${row.losses ?? 0}L · WR ${row.wr == null ? '-' : `${Number(row.wr).toFixed(1)}%`} · đóng ${row.closed ?? 0} · active ${row.active ?? 0}</div>
+        <div>PnL đóng ${fmtEdgeMoney(row.closedPnl)} · PnL active ${fmtEdgeMoney(row.activePnl)} · PF ${Number(row.profitFactor ?? 0).toFixed(2)}</div>
+        <div class="edge-combo-pnl ${totalPnl >= 0 ? 'pos' : 'neg'}">Tổng ${fmtEdgeMoney(totalPnl)} · AvgROE ${avgRoe}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderEdgeShortLabelBadge(trade = {}) {
+  const tier = String(trade.edgeShortLabelTier ?? 'NO_DATA').toUpperCase();
+  const cls = tier === 'PRIME' || tier === 'GOOD'
+    ? 'good'
+    : tier === 'RISK'
+      ? 'bad'
+      : 'warn';
+  const title = trade.edgeShortLabelReason
+    ?? `${trade.edgeShortLabelGroup ?? '-'} · snapshot before entry · OBSERVE ONLY`;
+  const samples = Number(trade.edgeShortLabelSamplesBeforeEntry);
+  const frozenDay = String(trade.edgeShortLabelFrozenDay ?? '').trim();
+  const sampleText = Number.isFinite(samples)
+    ? `<small style="display:block;color:var(--muted);font-size:9px;margin-top:2px">n=${samples}${frozenDay ? ` · khóa ${escapeHtml(frozenDay)}` : ''}</small>`
+    : '';
+  return `<span class="edge-chip ${cls}" title="${escapeHtml(title)}">${escapeHtml(trade.edgeShortLabel ?? 'SE NO DATA')}</span>${sampleText}`;
+}
+
+function renderEdgeShortTierBadge(trade = {}) {
+  const tier = String(trade.edgeShortTier ?? 'BLOCK').toUpperCase();
+  const cls = tier === 'A' ? 'good' : tier === 'BLOCK' ? 'bad' : 'warn';
+  const title = trade.edgeShortTierReason
+    ?? 'SE tier 2 lớp · OBSERVE ONLY · không gate/chặn lệnh';
+  const core = String(trade.edgeShortCoreTier ?? 'WATCH').toUpperCase();
+  const sideBtc = String(trade.edgeShortSideBtcTier ?? 'WATCH').toUpperCase();
+  const derived = trade.edgeShortTierDerived === true ? ' · derived history' : '';
+  const waveTone = String(trade.edgeShortWave2bTone ?? 'WATCH').toUpperCase();
+  const waveCls = waveTone === 'GOOD' ? 'good' : waveTone === 'RISK' ? 'bad' : 'warn';
+  const waveTitle = trade.edgeShortWave2bReason
+    ?? 'L2B SIDE × BTC wave snapshot before entry · OBSERVE ONLY';
+  const waveDerived = trade.edgeShortWave2bDerived === true ? ' · derived history' : '';
+  const waveBadge = `<small style="display:block;margin-top:3px"><span class="edge-chip ${waveCls}" title="${escapeHtml(waveTitle)}">${escapeHtml(trade.edgeShortWave2bLabel ?? '2B BTC WAVE · NO DATA')}</span></small>`;
+  const wave2cTone = String(trade.edgeShortWave2cTone ?? 'WATCH').toUpperCase();
+  const wave2cCls = wave2cTone === 'GOOD' ? 'good' : wave2cTone === 'RISK' ? 'bad' : 'warn';
+  const wave2cTitle = trade.edgeShortWave2cReason
+    ?? 'L2C Tier A/B × BTC wave snapshot before entry · OBSERVE ONLY';
+  const wave2cBadge = trade.edgeShortWave2cEligible === true
+    ? `<small style="display:block;margin-top:3px"><span class="edge-chip ${wave2cCls}" title="${escapeHtml(wave2cTitle)}">${escapeHtml(trade.edgeShortWave2cLabel ?? '2C TIER A/B · NO DATA')}</span></small>`
+    : '';
+  return `<span class="edge-chip ${cls}" title="${escapeHtml(title)}">${escapeHtml(trade.edgeShortTierLabel ?? `SE TIER ${tier}`)}</span>`
+    + `<small style="display:block;color:var(--muted);font-size:9px;margin-top:2px">CORE ${escapeHtml(core)} × SIDE-BTC ${escapeHtml(sideBtc)}${derived}</small>`
+    + waveBadge
+    + wave2cBadge
+    + (waveDerived ? `<small style="display:block;color:var(--muted);font-size:9px;margin-top:2px">${escapeHtml(waveDerived.trim())}</small>` : '');
+}
+
+function renderEdgeShortBestBadge(trade = {}) {
+  if (trade.edgeShortBestSelected !== true) {
+    return '<span style="color:var(--muted)">-</span>';
+  }
+  const samples = Number(trade.edgeShortBestSamplesBeforeDay ?? 0);
+  const pf = Number(trade.edgeShortBestProfitFactorBeforeDay);
+  const frozenDay = String(trade.edgeShortBestFrozenDay ?? '').trim();
+  const title = trade.edgeShortBestReason
+    ?? 'SE BEST · prior-day walk-forward · OBSERVE ONLY';
+  const profileTone = String(trade.edgeShortBestProfileTone ?? 'WATCH').toUpperCase();
+  const profileCls = profileTone === 'GOOD'
+    ? 'good'
+    : profileTone === 'RISK'
+      ? 'bad'
+      : 'warn';
+  const profileTitle = trade.edgeShortBestProfileReason
+    ?? 'SE BEST profile · snapshot before entry · OBSERVE ONLY';
+  const profileBadge = trade.edgeShortBestProfileEligible === true
+    ? `<small style="display:block;margin-top:3px"><span class="edge-chip ${profileCls}" title="${escapeHtml(profileTitle)}">${escapeHtml(trade.edgeShortBestProfileLabel ?? 'SE BEST PROFILE')}</span></small>`
+    : '';
+  const riskPhaseTone = String(trade.edgeShortBestRiskPhaseTone ?? 'WATCH').toUpperCase();
+  const riskPhaseCls = riskPhaseTone === 'GOOD'
+    ? 'good'
+    : riskPhaseTone === 'RISK'
+      ? 'bad'
+      : 'warn';
+  const riskPhaseTitle = trade.edgeShortBestRiskPhaseReason
+    ?? 'PHASE RISK × BTC day × LONG/SHORT wave · snapshot before entry · OBSERVE ONLY';
+  const riskPhaseBadge = trade.edgeShortBestRiskPhaseEligible === true
+    ? `<small style="display:block;margin-top:3px"><span class="edge-chip ${riskPhaseCls}" title="${escapeHtml(riskPhaseTitle)}">${escapeHtml(trade.edgeShortBestRiskPhaseLabel ?? 'RISK MIXED WATCH')}</span></small>`
+    : '';
+  return `<span class="edge-chip good" title="${escapeHtml(title)}">${escapeHtml(trade.edgeShortBestLabel ?? 'SE BEST')}</span>`
+    + profileBadge
+    + riskPhaseBadge
+    + `<small style="display:block;color:var(--muted);font-size:9px;margin-top:2px">n=${samples}`
+    + `${Number.isFinite(pf) ? ` · PF ${pf.toFixed(2)}` : ''}`
+    + `${frozenDay ? ` · khóa ${escapeHtml(frozenDay)}` : ''}</small>`;
+}
+
+function renderEdgeShortLiveBadge(trade = {}) {
+  if (trade.edgeShortLiveEligible !== true) {
+    return '<span style="color:var(--muted)">-</span>';
+  }
+  const tier = String(trade.edgeShortLiveTier ?? 'NEW').toUpperCase();
+  const cls = tier === 'HOT' || tier === 'OK'
+    ? 'good'
+    : tier === 'COOL'
+      ? 'bad'
+      : 'warn';
+  const samples = Number(trade.edgeShortLiveSamplesBeforeEntry ?? 0);
+  const pf = Number(trade.edgeShortLiveProfitFactorBeforeEntry);
+  const scope = String(trade.edgeShortLiveScope ?? '').replaceAll('_', ' ');
+  const title = trade.edgeShortLiveReason
+    ?? 'SE LIVE · rolling closed strictly before entry · OBSERVE ONLY';
+  return `<span class="edge-chip ${cls}" title="${escapeHtml(title)}">${escapeHtml(trade.edgeShortLiveLabel ?? `SE LIVE ${tier}`)}</span>`
+    + `<small style="display:block;color:var(--muted);font-size:9px;margin-top:2px">n=${samples}`
+    + `${Number.isFinite(pf) ? ` · PF ${pf.toFixed(2)}` : ''}`
+    + `${scope ? ` · ${escapeHtml(scope)}` : ''}</small>`;
+}
+
+function renderEdgeSourceLongCorrReboundBadge(trade = {}) {
+  if (trade.sourceLongCorrReboundMatched !== true) return '';
+  const title = trade.sourceLongCorrReboundReason
+    ?? 'SC_SPRING LONG CORR REBOUND · provisional · OBSERVE ONLY';
+  return `<small style="display:block;margin-top:3px"><span class="edge-chip warn" title="${escapeHtml(title)}">${escapeHtml(trade.sourceLongCorrReboundLabel ?? 'SE SC SPRING CORR REBOUND')}</span></small>`;
+}
+
+function renderEdgeLongSpringBadge(trade = {}) {
+  if (trade.edgeShortLongSpringEligible !== true) return '';
+  const prime = trade.edgeShortLongSpringPrime === true;
+  const title = trade.edgeShortLongSpringReason
+    ?? 'LONG SPRING · snapshot before entry · OBSERVE ONLY';
+  return `<small style="display:block;margin-top:3px"><span class="edge-chip good" title="${escapeHtml(title)}">${escapeHtml(trade.edgeShortLongSpringLabel ?? (prime ? 'LONG SPRING PRIME' : 'LONG SPRING CONFIRMED'))}</span></small>`;
+}
+
+function renderEdgeShortUtadBadge(trade = {}) {
+  if (trade.edgeShortUtadConfirmed !== true) return '';
+  const prime = trade.edgeShortUtadPrimeTest === true;
+  const title = trade.edgeShortUtadReason
+    ?? 'SHORT UTAD · snapshot before entry · OBSERVE ONLY';
+  return `<small style="display:block;margin-top:3px"><span class="edge-chip good" title="${escapeHtml(title)}">${escapeHtml(trade.edgeShortUtadLabel ?? (prime ? 'SHORT UTAD PRIME TEST' : 'SHORT UTAD CONFIRMED'))}</span></small>`;
+}
+
 function edgePaperSortValue(trade, key) {
   if (key === 'symbol') return trade.symbol ?? '';
   if (key === 'side') return trade.side ?? '';
@@ -628,6 +1522,21 @@ function edgePaperSortValue(trade, key) {
   if (key === 'mark') return Number(trade.markPrice ?? trade.exitPrice);
   if (key === 'pnl') return trade.pnl == null ? null : Number(trade.pnl);
   if (key === 'roe') return trade.roe == null ? null : Number(trade.roe);
+  if (key === 'label') return trade.edgeShortLabel ?? 'SE NO DATA';
+  if (key === 'tier') {
+    return { A: 3, B: 2, BLOCK: 1 }[String(trade.edgeShortTier ?? 'BLOCK').toUpperCase()] ?? 0;
+  }
+  if (key === 'best') return trade.edgeShortBestSelected === true ? 1 : 0;
+  if (key === 'live') {
+    return {
+      HOT: 5,
+      OK: 4,
+      WATCH: 3,
+      COOL: 2,
+      NEW: 1,
+      N_A: 0,
+    }[String(trade.edgeShortLiveTier ?? 'N_A').toUpperCase()] ?? 0;
+  }
   if (key === 'source') return trade.source ?? '';
   if (key === 'time') return Date.parse(trade.createdAt ?? '') || 0;
   if (key === 'status') {
@@ -673,9 +1582,11 @@ function renderEdgePaperTrades(trades, summary) {
   const open = trades.filter((trade) => trade.status === 'OPEN' || trade.status === 'PENDING' || trade.status === 'ENTRY_READY');
   const closed = trades.filter((trade) => trade.status === 'CLOSED');
   const all = sortEdgePaperTrades([...open, ...closed]);
-  let countText = `${edgePaperDay && edgePaperDay !== 'all' ? `${edgePaperDay} · ` : ''}${open.length} open - ${closed.length} closed`;
+  const dateLabel = edgePaperDateLabel();
+  const datePrefix = dateLabel ? `${dateLabel} · ` : '';
+  let countText = `${datePrefix}${open.length} open - ${closed.length} closed`;
   const totalRows = Number(edgePaperPagination?.totalRows ?? summary?.total ?? trades.length);
-  countText = `${edgePaperDay && edgePaperDay !== 'all' ? `${edgePaperDay} · ` : ''}${summary?.open ?? open.length} open - ${summary?.closed ?? closed.length} closed · page ${edgePaperPagination.page || 1}/${edgePaperPagination.totalPages || 1} (${all.length}/${totalRows} rows)`;
+  countText = `${datePrefix}${summary?.open ?? open.length} open - ${summary?.closed ?? closed.length} closed · page ${edgePaperPagination.page || 1}/${edgePaperPagination.totalPages || 1} (${all.length}/${totalRows} rows)`;
   if (summary && summary.closed > 0) {
     const winRate = summary.closed > 0 ? Math.round(summary.wins / summary.closed * 100) : 0;
     countText += ` - TP ${summary.tpHits ?? 0} SL ${summary.slHits ?? 0} - WR ${winRate}%`;
@@ -686,10 +1597,22 @@ function renderEdgePaperTrades(trades, summary) {
     countText += ` - PnL ${net >= 0 ? '+' : ''}$${net.toFixed(3)}`;
   }
   edgePaperCount.textContent = countText;
+  renderEdgeSupportEntryStats(edgeSupportEntryStats);
+  renderEdgeLabelStats(edgePaperLabelStats);
+  renderEdgeTierStats(edgePaperTierStats);
+  renderEdgeWave2bStats(edgePaperWave2bStats);
+  renderEdgeWave2cStats();
+  renderEdgeBestStats(edgePaperBestStats);
+  renderEdgeBestProfileStats(edgePaperBestProfileStats);
+  renderEdgeBestRiskPhaseStats(edgePaperBestRiskPhaseStats);
+  renderEdgeLiveStats(edgePaperLiveStats);
+  renderEdgeSourceLongCorrReboundStats(edgeSourceLongCorrReboundStats);
+  renderEdgeLongSpringStats(edgePaperLongSpringStats);
+  renderEdgeShortUtadStats(edgePaperShortUtadStats);
   renderEdgeComboStats(edgePaperComboStats);
 
   if (!all.length) {
-    edgePaperBody.innerHTML = '<tr><td colspan="17" class="empty-cell">No paper trades from Short Edge yet.</td></tr>';
+    edgePaperBody.innerHTML = '<tr><td colspan="24" class="empty-cell">No paper trades from Short Edge yet.</td></tr>';
     updateEdgePaperSortHeaders();
     return;
   }
@@ -747,6 +1670,10 @@ function renderEdgePaperTrades(trades, summary) {
       <td>${renderEdgeBtcCorrBadge(trade)}</td>
       <td>${renderEdgeBtcTrendBadge(trade)}</td>
       <td>${renderEdgeGateBadge(trade)}</td>
+      <td>${renderEdgeShortLabelBadge(trade)}</td>
+      <td>${renderEdgeShortTierBadge(trade)}</td>
+      <td>${renderEdgeShortBestBadge(trade)}</td>
+      <td>${renderEdgeShortLiveBadge(trade)}${renderEdgeSourceLongCorrReboundBadge(trade)}${renderEdgeLongSpringBadge(trade)}${renderEdgeShortUtadBadge(trade)}</td>
       <td data-cell-mark="${trade.id}">${fmtPrice(mark)}</td>
       <td data-cell-pnl="${trade.id}">${fmtPnlEdge(trade.pnl)}</td>
       <td data-cell-roe="${trade.id}">${trade.roe != null ? `<span style="color:${Number(trade.roe)>=0?'var(--green)':'var(--red)'}">${Number(trade.roe)>=0?'+':''}${Number(trade.roe).toFixed(1)}%</span>` : '-'}</td>
@@ -783,9 +1710,11 @@ function refreshEdgePaperPnl(trades) {
   const open = trades.filter((t) => t.status !== 'CLOSED').length;
   const closed = trades.filter((t) => t.status === 'CLOSED').length;
   const summary = edgePaperSummaryCache;
-  let countText = `${open} open - ${closed} closed`;
+  const dateLabel = edgePaperDateLabel();
+  const datePrefix = dateLabel ? `${dateLabel} · ` : '';
+  let countText = `${datePrefix}${open} open - ${closed} closed`;
   const totalRows = Number(edgePaperPagination?.totalRows ?? summary?.total ?? trades.length);
-  countText = `${edgePaperDay && edgePaperDay !== 'all' ? `${edgePaperDay} · ` : ''}${summary?.open ?? open} open - ${summary?.closed ?? closed} closed · page ${edgePaperPagination.page || 1}/${edgePaperPagination.totalPages || 1} (${trades.length}/${totalRows} rows)`;
+  countText = `${datePrefix}${summary?.open ?? open} open - ${summary?.closed ?? closed} closed · page ${edgePaperPagination.page || 1}/${edgePaperPagination.totalPages || 1} (${trades.length}/${totalRows} rows)`;
   if (summary && summary.closed > 0) {
     const wr = Math.round(summary.wins / summary.closed * 100);
     countText += ` - TP ${summary.tpHits ?? 0} SL ${summary.slHits ?? 0} - WR ${wr}%`;
@@ -796,28 +1725,60 @@ function refreshEdgePaperPnl(trades) {
     countText += ` - PnL ${net >= 0 ? '+' : ''}$${net.toFixed(3)}`;
   }
   edgePaperCount.textContent = countText;
+  renderEdgeSupportEntryStats(edgeSupportEntryStats);
+  renderEdgeLabelStats(edgePaperLabelStats);
+  renderEdgeTierStats(edgePaperTierStats);
+  renderEdgeWave2bStats(edgePaperWave2bStats);
+  renderEdgeWave2cStats();
+  renderEdgeBestStats(edgePaperBestStats);
+  renderEdgeBestProfileStats(edgePaperBestProfileStats);
+  renderEdgeBestRiskPhaseStats(edgePaperBestRiskPhaseStats);
+  renderEdgeLiveStats(edgePaperLiveStats);
+  renderEdgeSourceLongCorrReboundStats(edgeSourceLongCorrReboundStats);
+  renderEdgeLongSpringStats(edgePaperLongSpringStats);
+  renderEdgeShortUtadStats(edgePaperShortUtadStats);
   renderEdgeComboStats(edgePaperComboStats);
 }
 
 let _edgePaperFetching = false;
-async function loadEdgePaperTrades(forceRender = false) {
-  if (_edgePaperFetching) return;
+let _edgePaperReloadPending = false;
+let _edgePaperDateLoadingPending = false;
+async function loadEdgePaperTrades(forceRender = false, showDateLoading = false) {
+  if (showDateLoading) setEdgePaperDateSearchLoading(true);
+  if (_edgePaperFetching) {
+    if (forceRender || showDateLoading) _edgePaperReloadPending = true;
+    _edgePaperDateLoadingPending ||= showDateLoading;
+    return;
+  }
   _edgePaperFetching = true;
   try {
-    const dayParam = encodeURIComponent(edgePaperDay || 'all');
     const pageParam = encodeURIComponent(edgePaperPage || 1);
     const pageSizeParam = encodeURIComponent(edgePaperPageSize || 300);
-    const response = await fetch(`/api/edge-paper-trades?day=${dayParam}&page=${pageParam}&pageSize=${pageSizeParam}`, { cache: 'no-store' });
+    const query = new URLSearchParams({ page: pageParam, pageSize: pageSizeParam });
+    if (edgePaperDateFrom) query.set('from', edgePaperDateFrom);
+    if (edgePaperDateTo) query.set('to', edgePaperDateTo);
+    const response = await fetch(`/api/edge-paper-trades?${query}`, { cache: 'no-store' });
     if (!response.ok) { console.warn('[EdgePaper] Load failed HTTP', response.status); return; }
     const data = await response.json();
     const trades = data.trades ?? [];
     edgePaperSummaryCache = data.summary;
-    edgePaperAvailableDays = data.availableDays ?? edgePaperAvailableDays;
     edgePaperComboStats = data.comboStats ?? [];
+    edgeSupportEntryStats = data.supportEntryStats ?? null;
+    edgePaperLabelStats = data.labelStats ?? [];
+    edgePaperTierStats = data.tierStats ?? [];
+    edgePaperWave2bStats = data.wave2bStats ?? [];
+    edgePaperWave2cStats = data.wave2cStats ?? [];
+    edgePaperWave2cTierStats = data.wave2cTierStats ?? [];
+    edgePaperBestStats = data.bestStats ?? [];
+    edgePaperBestProfileStats = data.bestProfileStats ?? [];
+    edgePaperBestRiskPhaseStats = data.bestRiskPhaseStats ?? [];
+    edgePaperLiveStats = data.liveStats ?? [];
+    edgeSourceLongCorrReboundStats = data.sourceLongCorrReboundStats ?? [];
+    edgePaperLongSpringStats = data.longSpringStats ?? [];
+    edgePaperShortUtadStats = data.shortUtadStats ?? [];
     edgePaperPagination = data.pagination ?? edgePaperPagination;
     edgePaperPage = Number(edgePaperPagination.page || edgePaperPage || 1);
     edgePaperPageSize = Number(edgePaperPagination.pageSize || edgePaperPageSize || 300);
-    renderEdgePaperDayOptions(edgePaperAvailableDays);
     renderEdgePaperPager(edgePaperPagination);
     if (edgePaperTradesCache.length > 0 && !forceRender) {
       edgePaperTradesCache = trades;
@@ -829,6 +1790,15 @@ async function loadEdgePaperTrades(forceRender = false) {
     console.warn('[EdgePaper] Load error:', err.message);
   } finally {
     _edgePaperFetching = false;
+    const reloadPending = _edgePaperReloadPending;
+    const dateLoadingPending = _edgePaperDateLoadingPending;
+    _edgePaperReloadPending = false;
+    _edgePaperDateLoadingPending = false;
+    if (reloadPending) {
+      loadEdgePaperTrades(true, dateLoadingPending || showDateLoading);
+    } else if (showDateLoading) {
+      setEdgePaperDateSearchLoading(false);
+    }
   }
 }
 
@@ -1184,5 +2154,8 @@ document.addEventListener('click', (event) => {
 SOURCES.forEach((s) => fetchSourceRest(s));
 SOURCES.forEach((s) => connectSse(s));
 loadEdgeOpenLimitOrders();
+initializeEdgePaperDateRange();
 loadEdgePaperTrades().then(() => scheduleEdgePaperPoll());
+loadEdgeLiquidComboToday();
 setInterval(loadEdgeOpenLimitOrders, 30_000);
+setInterval(loadEdgeLiquidComboToday, 20_000);

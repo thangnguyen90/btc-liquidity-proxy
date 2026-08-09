@@ -6,6 +6,10 @@ const DEFAULT_BLOCK_BUFFER_MS = 5000;
 const DEFAULT_MIN_429_BLOCK_MS = 5 * 60_000;
 const DEFAULT_MAX_QUEUE = 2500;
 const DEFAULT_HIGH_WATERMARK = 700;
+const DEFAULT_AUTH_BLOCK_MS = 5 * 60_000;
+const DEFAULT_AUTH_RECOVERY_PROBE_MS = 15_000;
+const DEFAULT_TASK_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_QUEUE_AGE_MS = 45_000;
 
 function toNumber(value, fallback) {
   const n = Number(value);
@@ -47,6 +51,26 @@ export class BinanceRestQueueOverflowError extends Error {
   }
 }
 
+export class BinanceRestTaskTimeoutError extends Error {
+  constructor(meta, timeoutMs) {
+    super(`Binance REST task timed out after ${timeoutMs}ms: ${meta?.source ?? 'unknown'} ${meta?.method ?? 'GET'} ${meta?.path ?? ''}`);
+    this.name = 'BinanceRestTaskTimeoutError';
+    this.status = 504;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+export class BinanceAuthBlockedError extends Error {
+  constructor(blockedUntil, reason = 'Binance signed REST disabled after authentication failure') {
+    const remainingSec = Math.max(0, Math.ceil((blockedUntil - Date.now()) / 1000));
+    super(`${reason}; retry signed REST in ${remainingSec}s`);
+    this.name = 'BinanceAuthBlockedError';
+    this.status = 503;
+    this.code = -2015;
+    this.blockedUntil = blockedUntil;
+  }
+}
+
 export class BinanceRateGate {
   constructor({
     limitPerMin = toNumber(process.env.BINANCE_REST_WEIGHT_PER_MIN, DEFAULT_LIMIT_PER_MIN),
@@ -54,12 +78,18 @@ export class BinanceRateGate {
     blockBufferMs = toNumber(process.env.BINANCE_REST_BLOCK_BUFFER_MS, DEFAULT_BLOCK_BUFFER_MS),
     maxQueue = toNumber(process.env.BINANCE_REST_MAX_QUEUE, DEFAULT_MAX_QUEUE),
     highWatermark = toNumber(process.env.BINANCE_REST_HIGH_WATERMARK, DEFAULT_HIGH_WATERMARK),
+    taskTimeoutMs = toNumber(process.env.BINANCE_REST_TASK_TIMEOUT_MS, DEFAULT_TASK_TIMEOUT_MS),
+    maxQueueAgeMs = toNumber(process.env.BINANCE_REST_MAX_QUEUE_AGE_MS, DEFAULT_MAX_QUEUE_AGE_MS),
+    authRecoveryProbeMs = toNumber(process.env.BINANCE_AUTH_RECOVERY_PROBE_MS, DEFAULT_AUTH_RECOVERY_PROBE_MS),
   } = {}) {
     this.limitPerMin = Math.max(60, limitPerMin);
     this.concurrency = Math.max(1, Math.floor(concurrency));
     this.blockBufferMs = blockBufferMs;
     this.maxQueue = Math.max(50, Math.floor(maxQueue));
     this.highWatermark = Math.min(this.maxQueue, Math.max(20, Math.floor(highWatermark)));
+    this.taskTimeoutMs = Math.max(5_000, Math.floor(taskTimeoutMs));
+    this.maxQueueAgeMs = Math.max(5_000, Math.floor(maxQueueAgeMs));
+    this.authRecoveryProbeMs = Math.max(10, Math.floor(authRecoveryProbeMs));
     this.tokens = this.limitPerMin;
     this.lastRefillAt = Date.now();
     this.queue = [];
@@ -67,6 +97,12 @@ export class BinanceRateGate {
     this.pumpTimer = null;
     this.blockedUntil = 0;
     this.blockReason = '';
+    this.authBlockedUntil = 0;
+    this.authBlockReason = '';
+    this.authBlocks = new Map();
+    this.pendingByKey = new Map();
+    this.activeTasks = new Map();
+    this.taskSequence = 0;
     this.minuteStats = new Map();
     this.statsTimer = setInterval(() => this.flushStats(), 60_000);
     this.statsTimer.unref?.();
@@ -80,7 +116,41 @@ export class BinanceRateGate {
     return this.isBlocked() ? this.blockedUntil : 0;
   }
 
+  authScope(metaOrScope = '') {
+    const raw = typeof metaOrScope === 'object' && metaOrScope !== null
+      ? metaOrScope.authScope
+      : metaOrScope;
+    return String(raw ?? '').trim() || 'legacy';
+  }
+
+  refreshAuthBlockAggregate(now = Date.now()) {
+    let latest = null;
+    for (const [scope, block] of this.authBlocks) {
+      if (Number(block?.blockedUntil ?? 0) <= now) {
+        this.authBlocks.delete(scope);
+        continue;
+      }
+      if (!latest || block.blockedUntil > latest.blockedUntil) latest = block;
+    }
+    this.authBlockedUntil = Number(latest?.blockedUntil ?? 0);
+    this.authBlockReason = String(latest?.reason ?? '');
+    return latest;
+  }
+
+  getAuthBlock(metaOrScope, now = Date.now()) {
+    const scope = this.authScope(metaOrScope);
+    const block = this.authBlocks.get(scope);
+    if (!block || Number(block.blockedUntil ?? 0) <= now) {
+      if (block) this.authBlocks.delete(scope);
+      this.refreshAuthBlockAggregate(now);
+      return null;
+    }
+    return block;
+  }
+
   snapshot() {
+    const now = Date.now();
+    this.refreshAuthBlockAggregate(now);
     const queuedBySource = new Map();
     for (const item of this.queue) {
       const key = `${item.meta.source}|${item.meta.method} ${item.meta.path}`;
@@ -101,9 +171,33 @@ export class BinanceRateGate {
       queue: this.queue.length,
       queueTop,
       active: this.active,
+      activeTop: [...this.activeTasks.values()]
+        .map((row) => ({
+          source: row.meta.source,
+          method: row.meta.method,
+          path: row.meta.path,
+          ageMs: Math.max(0, Date.now() - row.startedAt),
+        }))
+        .sort((a, b) => b.ageMs - a.ageMs)
+        .slice(0, 8),
       tokens: Math.floor(this.tokens),
       blockedUntil: this.getBlockedUntil(),
       blockReason: this.isBlocked() ? this.blockReason : '',
+      authBlockedUntil: Date.now() < this.authBlockedUntil ? this.authBlockedUntil : 0,
+      authBlockReason: Date.now() < this.authBlockedUntil ? this.authBlockReason : '',
+      authBlocks: [...this.authBlocks.entries()]
+        .filter(([, block]) => Number(block?.blockedUntil ?? 0) > now)
+        .map(([scope, block]) => ({
+          scope,
+          openedAt: block.openedAt,
+          blockedUntil: block.blockedUntil,
+          nextProbeAt: block.nextProbeAt,
+          reason: block.reason,
+          source: block.source,
+          method: block.method,
+          path: block.path,
+        }))
+        .sort((a, b) => b.blockedUntil - a.blockedUntil),
       congested: this.isCongested(),
     };
   }
@@ -115,6 +209,10 @@ export class BinanceRateGate {
   async schedule(meta, fn) {
     const weight = Math.max(1, Number(meta?.weight ?? 1));
     const priority = Number.isFinite(Number(meta?.priority)) ? Number(meta.priority) : 5;
+    const dedupeKey = String(meta?.dedupeKey ?? '').trim();
+    if (dedupeKey && this.pendingByKey.has(dedupeKey)) {
+      return this.pendingByKey.get(dedupeKey);
+    }
     const item = {
       meta: {
         method: meta?.method || 'GET',
@@ -122,11 +220,34 @@ export class BinanceRateGate {
         weight,
         priority,
         source: meta?.source || inferSource(),
+        requiresAuth: meta?.requiresAuth === true,
+        authScope: meta?.requiresAuth === true ? this.authScope(meta) : '',
+        authRecoveryProbe: false,
+        dedupeKey,
       },
       fn,
     };
-    return new Promise((resolve, reject) => {
-      const queueLength = this.queue.length;
+    const scheduled = new Promise((resolve, reject) => {
+      if (item.meta.requiresAuth) {
+        const now = Date.now();
+        const block = this.getAuthBlock(item.meta.authScope, now);
+        if (block) {
+          if (now >= Number(block.nextProbeAt ?? 0)) {
+            block.nextProbeAt = now + this.authRecoveryProbeMs;
+            item.meta.authRecoveryProbe = true;
+          } else {
+            reject(new BinanceAuthBlockedError(block.blockedUntil, block.reason));
+            return;
+          }
+        }
+      }
+      let queueLength = this.queue.length;
+      if (queueLength >= this.maxQueue && priority <= 1) {
+        // A stale read backlog must not prevent an explicit order/cancel/close
+        // mutation from entering the gate.
+        this.pruneLowPriorityQueue({ minPriority: 5, keepNewest: 20 });
+        queueLength = this.queue.length;
+      }
       if (queueLength >= this.maxQueue) {
         reject(new BinanceRestQueueOverflowError(queueLength, 'Binance REST queue full'));
         return;
@@ -136,12 +257,37 @@ export class BinanceRateGate {
         return;
       }
       if (this.isCongested()) this.pruneLowPriorityQueue();
-      const queued = { ...item, resolve, reject };
+      const queued = { ...item, resolve, reject, queuedAt: Date.now() };
       const insertAt = this.queue.findIndex((row) => row.meta.priority > priority);
       if (insertAt >= 0) this.queue.splice(insertAt, 0, queued);
       else this.queue.push(queued);
       this.pump();
     });
+    if (dedupeKey) {
+      this.pendingByKey.set(dedupeKey, scheduled);
+      scheduled.then(
+        () => this.pendingByKey.delete(dedupeKey),
+        () => this.pendingByKey.delete(dedupeKey),
+      );
+    }
+    return scheduled;
+  }
+
+  pruneExpiredQueue() {
+    const cutoff = Date.now() - this.maxQueueAgeMs;
+    const keep = [];
+    const expired = [];
+    for (const item of this.queue) {
+      if (Number(item.queuedAt ?? 0) < cutoff) expired.push(item);
+      else keep.push(item);
+    }
+    if (!expired.length) return 0;
+    this.queue = keep;
+    for (const item of expired) {
+      item.reject(new BinanceRestQueueOverflowError(this.queue.length, 'Binance REST queued request expired'));
+    }
+    console.warn(`[BinanceGate] Expired ${expired.length} stale queued request(s); queue=${this.queue.length}`);
+    return expired.length;
   }
 
   pruneLowPriorityQueue({ minPriority = 7, keepNewest = 40 } = {}) {
@@ -187,6 +333,48 @@ export class BinanceRateGate {
       ? Math.max(until, now + min429BlockMs)
       : until;
     this.setBlockedUntil(guardedUntil, `Binance ${error?.status ?? 'rate-limit'}`);
+  }
+
+  reportAuthFailure(error, meta = {}) {
+    const now = Date.now();
+    const scope = this.authScope(meta);
+    const previous = this.getAuthBlock(scope, now);
+    const blockMs = toNumber(process.env.BINANCE_AUTH_FAILURE_BLOCK_MS, DEFAULT_AUTH_BLOCK_MS);
+    const until = now + blockMs;
+    const reason = String(error?.message ?? 'Binance API key, IP, or permission rejected').slice(0, 300);
+    const block = {
+      blockedUntil: until,
+      nextProbeAt: now + this.authRecoveryProbeMs,
+      reason,
+      source: String(meta?.source ?? 'unknown').slice(0, 160),
+      method: String(meta?.method ?? 'GET').slice(0, 12),
+      path: compactPath(meta?.path),
+      openedAt: Number(previous?.openedAt ?? now),
+      lastFailureAt: now,
+    };
+    this.authBlocks.set(scope, block);
+    this.refreshAuthBlockAggregate(now);
+    const keep = [];
+    const reject = [];
+    for (const item of this.queue) {
+      if (item.meta.requiresAuth && this.authScope(item.meta) === scope) reject.push(item);
+      else keep.push(item);
+    }
+    this.queue = keep;
+    const blockedError = new BinanceAuthBlockedError(block.blockedUntil, block.reason);
+    for (const item of reject) item.reject(blockedError);
+    const action = previous ? 'recovery probe failed' : 'circuit opened';
+    console.warn(`[BinanceGate] Signed REST ${action} scope=${scope} source=${block.source} ${block.method} ${block.path} after -2015; probe in ${Math.ceil(this.authRecoveryProbeMs / 1000)}s; rejected ${reject.length} same-scope queued request(s).`);
+  }
+
+  reportAuthSuccess(meta = {}) {
+    if (!meta?.requiresAuth) return;
+    const scope = this.authScope(meta);
+    const block = this.getAuthBlock(scope);
+    if (!block) return;
+    this.authBlocks.delete(scope);
+    this.refreshAuthBlockAggregate();
+    console.warn(`[BinanceGate] Signed REST circuit recovered scope=${scope} via ${meta?.source ?? 'unknown'} ${meta?.method ?? 'GET'} ${compactPath(meta?.path)}.`);
   }
 
   resetBlock() {
@@ -237,6 +425,7 @@ export class BinanceRateGate {
 
   async _pumpNow() {
     this.refill();
+    this.pruneExpiredQueue();
     const now = Date.now();
     if (now < this.blockedUntil) {
       const err = new BinanceRestBlockedError(this.blockedUntil, this.blockReason);
@@ -257,15 +446,33 @@ export class BinanceRateGate {
       this.tokens -= next.meta.weight;
       this.active += 1;
       this.record(next.meta);
-      next.fn()
-        .then(next.resolve)
+      const taskId = ++this.taskSequence;
+      this.activeTasks.set(taskId, { meta: next.meta, startedAt: Date.now() });
+      let taskTimer = null;
+      const timeoutPromise = new Promise((_, reject) => {
+        taskTimer = setTimeout(
+          () => reject(new BinanceRestTaskTimeoutError(next.meta, this.taskTimeoutMs)),
+          this.taskTimeoutMs,
+        );
+        taskTimer.unref?.();
+      });
+      Promise.race([Promise.resolve().then(() => next.fn()), timeoutPromise])
+        .then((value) => {
+          this.reportAuthSuccess(next.meta);
+          next.resolve(value);
+        })
         .catch((err) => {
           if (err?.name === 'BinanceRateLimitError' || err?.status === 429 || err?.status === 418) {
             this.reportRateLimit(err);
           }
+          if (next.meta.requiresAuth && (Number(err?.code) === -2015 || /invalid api-key|permissions for action/i.test(String(err?.message ?? '')))) {
+            this.reportAuthFailure(err, next.meta);
+          }
           next.reject(err);
         })
         .finally(() => {
+          clearTimeout(taskTimer);
+          this.activeTasks.delete(taskId);
           this.active -= 1;
           this.pump();
         });

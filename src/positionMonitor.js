@@ -71,7 +71,10 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
   }
 
   // ── REST position sync ─────────────────────────────────────────────────────
+  let restSyncRunning = false;
   async function syncPositions() {
+    if (restSyncRunning) return;
+    restSyncRunning = true;
     try {
       const { apiKey, apiSecret } = resolveCredentials();
       const positions = await client.getPositions({ apiKey, apiSecret });
@@ -87,7 +90,11 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
           entry: Number(p.entryPrice),
           leverage: Number(p.leverage) || 1,
           isolatedMargin: Number(p.isolatedMargin),
-          initialMargin: Number(p.initialMargin),
+          initialMargin: Number(p.positionInitialMargin ?? p.initialMargin),
+          liquidationPrice: Number(p.liquidationPrice),
+          breakEvenPrice: Number(p.breakEvenPrice),
+          marginType: p.marginType ?? null,
+          updateTime: Number(p.updateTime) || null,
           positionSide: p.positionSide ?? 'BOTH',
         };
         // Always update structural fields; skip if already tracked with same entry
@@ -114,6 +121,8 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
     } catch (err) {
       if (err.message?.includes('Missing Binance API')) return;
       console.warn('[PosMonitor] REST sync failed:', err.message);
+    } finally {
+      restSyncRunning = false;
     }
   }
 
@@ -197,14 +206,19 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
           const avgPrice = Number(o.ap || 0) > 0 ? Number(o.ap) : Number(o.L || o.p);
           console.log(`[PosMonitor] SOCKET_FILL ${o.s} side=${o.S} qty=${o.l} avg=${avgPrice} status=${o.X} exec=${o.x}`);
           await syncPositions();
-          onOrderFill(o.s, {
+          await onOrderFill(o.s, {
             side: o.S,
             filledQty: Number(o.l),
+            cumulativeFilledQty: Number(o.z),
+            originalQty: Number(o.q),
             avgPrice,
             positionSide: o.ps ?? 'BOTH',
             fillTime: Number(o.T),
             orderStatus: o.X,
             orderId: o.i,
+            clientOrderId: o.c ?? null,
+            orderType: o.o ?? null,
+            reduceOnly,
             source: 'ORDER_TRADE_UPDATE',
           });
         }
@@ -345,12 +359,27 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
     // Returns position-like objects compatible with client.getPositions() shape
     getActivePositions() {
       return [...posCache.entries()].map(([symbol, pos]) => ({
+        ...(() => {
+          const leverage = Number(pos.leverage) || 1;
+          const calculatedInitialMargin = Math.abs(Number(pos.amt) || 0)
+            * (Number(pos.entry) || 0) / leverage;
+          const positionInitialMargin = Number(pos.initialMargin) > 0
+            ? Number(pos.initialMargin)
+            : calculatedInitialMargin;
+          return {
+            positionInitialMargin: String(positionInitialMargin || 0),
+            initialMargin: String(positionInitialMargin || 0),
+          };
+        })(),
         symbol,
         positionAmt: String(pos.amt),
         entryPrice: String(pos.entry),
         leverage: String(pos.leverage ?? 10),
         isolatedMargin: String(pos.isolatedMargin ?? 0),
-        initialMargin: String(pos.initialMargin ?? 0),
+        liquidationPrice: String(pos.liquidationPrice ?? 0),
+        breakEvenPrice: String(pos.breakEvenPrice ?? 0),
+        marginType: pos.marginType ?? null,
+        updateTime: pos.updateTime ?? null,
         positionSide: pos.positionSide ?? 'BOTH',
         markPrice: String(pos.markPrice ?? 0),
         unRealizedProfit: String(pos.unRealizedProfit ?? 0),

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Short Edge Board</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=20260729-market-wave-v2">
     <style>
       .edge-controls {
         grid-template-columns: minmax(220px, 1fr) 130px 140px 150px 130px auto auto;
@@ -309,6 +309,7 @@
       .edge-order-btn.error { background: rgba(251,113,133,.3); color: var(--red); }
 
       .edge-paper-section { margin-top: 20px; }
+      .edge-paper-date-filter { width: min(100%, 330px); }
 
       .edge-paper-btn,
       .edge-paper-close-btn {
@@ -382,6 +383,19 @@
       .edge-combo-stats { font-size:11px; color:var(--muted); line-height:1.5; }
       .edge-combo-pnl.pos { color:var(--green); font-weight:950; }
       .edge-combo-pnl.neg { color:var(--red); font-weight:950; }
+      .edge-label-heading {
+        padding: 10px 14px 0;
+        border-top: 1px solid var(--line);
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 950;
+      }
+      .edge-label-heading small {
+        margin-left: 6px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 800;
+      }
       .edge-chip {
         display: inline-block;
         max-width: 180px;
@@ -582,12 +596,22 @@
         <div class="panel-head">
           <h2>Paper Trades - Short Edge Signals</h2>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);font-weight:800">
-              Ngày
-              <select id="edgePaperDayFilter" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;font-weight:800">
-                <option value="all">Tất cả</option>
-              </select>
-            </label>
+            <div class="liquid-paper-date-filter edge-paper-date-filter" aria-label="Khoảng ngày Short Edge paper trade">
+              <label class="field">
+                <span>Từ ngày</span>
+                <input id="edgePaperDateFrom" type="date">
+              </label>
+              <label class="field">
+                <span>Đến ngày</span>
+                <input id="edgePaperDateTo" type="date">
+              </label>
+              <div class="liquid-paper-date-actions">
+                <button id="edgePaperTodayButton" class="btn-secondary" type="button">Hôm nay</button>
+                <button id="edgePaperAllDatesButton" class="btn-secondary" type="button">Tất cả</button>
+              </div>
+              <button id="edgePaperDateSearchButton" class="primary liquid-paper-date-search" type="button">Search</button>
+              <small id="edgePaperDateStatus" class="liquid-paper-date-status">Tự chuyển ngày mới · Asia/Bangkok</small>
+            </div>
             <button id="edgePaperPrev" class="btn-small" type="button">Prev</button>
             <span id="edgePaperPageLabel" style="font-size:12px;color:var(--muted);font-weight:800">Page 1/1</span>
             <button id="edgePaperNext" class="btn-small" type="button">Next</button>
@@ -599,8 +623,106 @@
             <span id="edgePaperCount" style="font-size:12px;color:var(--muted)">0 trades</span>
           </div>
         </div>
+        <div id="edgeLiquidComboTodaySection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Liquid Combo × Cycle · nhóm ổn định hôm nay</h3>
+              <span id="edgeLiquidComboTodaySummary">Nguồn Liquid Scan · chỉ lấy combo thuộc nhóm ổn định qua ngày</span>
+            </div>
+            <span class="pump-combo-tag hot">TODAY · OBSERVE ONLY</span>
+          </div>
+          <div id="edgeLiquidComboTodayGood" class="pump-combo-grid"></div>
+        </div>
+        <div id="edgeLiquidComboCycleSection" style="display:none">
+          <div class="lp-closed-head liquid-stage2-head">
+            <div>
+              <h3>Liquid Combo × Cycle · ổn định qua ngày</h3>
+              <span id="edgeLiquidComboCycleSummary">Toàn bộ lịch sử Liquid Scan · episode 15 phút · chỉ thống kê, không quản lý vào lệnh</span>
+            </div>
+            <span class="pump-combo-tag hot">OBSERVE ONLY</span>
+          </div>
+          <div id="edgeLiquidComboCycleStable" class="pump-combo-grid"></div>
+          <details id="edgeLiquidComboCycleFormingWrap" class="liquid-combo-cycle-forming" style="display:none">
+            <summary id="edgeLiquidComboCycleFormingSummary">Nhóm tốt đang chờ đủ ngày xác nhận</summary>
+            <div id="edgeLiquidComboCycleForming" class="pump-combo-grid"></div>
+          </details>
+        </div>
+        <div class="edge-label-heading">
+          Entry Support Flip · tín hiệu đẹp / tín hiệu xấu
+          <small>Gap LONG/SHORT ≥15 · xác nhận 2 snapshot · tối đa 180 phút sau flip · OBSERVE ONLY · không gate/chặn/đổi size/SL/TP</small>
+        </div>
+        <div id="edgeSupportEntryGroups" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          Nhãn cụ thể · SHORT theo nguồn
+          <small>EDGE × SHORT × trạng thái sau flip</small>
+        </div>
+        <div id="edgeSupportEntryShort" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          Nhãn cụ thể · LONG theo nguồn
+          <small>EDGE × LONG × trạng thái sau flip</small>
+        </div>
+        <div id="edgeSupportEntryLong" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          LONG CORR REBOUND · SC_SPRING
+          <small>LONG · corr ≥ 0.5 · BTC DOWN score &lt; 45 · DAY FLAT · RSI4h &lt; 50 · PROVISIONAL · OBSERVE ONLY · không gate/chặn/đổi size/SL/TP/Binance</small>
+        </div>
+        <div id="edgeSourceLongCorrReboundStats" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          LONG SPRING REVERSAL · xác nhận kép
+          <small>SC_SPRING LONG · ALT + BTC cùng BULLISH · SHORT score cao hơn LONG ≥ 15 · PRIME thêm RR &lt; 0.7 · SNAPSHOT TRƯỚC ENTRY · OBSERVE ONLY</small>
+        </div>
+        <div id="edgeLongSpringStats" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          SHORT UTAD REVERSAL · xác nhận kép
+          <small>BC_UTAD SHORT · ALT + BTC cùng BEARISH · LONG score ≥ SHORT · PRIME TEST thêm gap ≥ 5 + RR &lt; 0.7 · SNAPSHOT TRƯỚC ENTRY · OBSERVE ONLY</small>
+        </div>
+        <div id="edgeShortUtadStats" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          Lớp 1 · Nhãn Short Edge cố định theo ngày
+          <small>SNAPSHOT TRƯỚC NGÀY · HYSTERESIS · thẻ bên dưới là kết quả thực tế · không gate/chặn lệnh</small>
+        </div>
+        <div id="edgeLabelStats" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          Lớp 2 · Tier A / B / BLOCK
+          <small>CORE × SIDE-BTC SNAPSHOT TRƯỚC ENTRY · OBSERVE ONLY · BLOCK chỉ là nhãn, không chặn/đổi size</small>
+        </div>
+        <div id="edgeTierStats" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          Lớp 2B · SIDE × BTC Wave Phase
+          <small>TRANSITION / ALIGNED / COUNTER × ACTIVE / EXHAUSTED · SNAPSHOT TRƯỚC ENTRY · TÁCH RIÊNG LONG/SHORT · OBSERVE ONLY</small>
+        </div>
+        <div id="edgeWave2bStats" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          Lớp 2C · Tier A/B × BTC Wave
+          <small>CHỈ TIER A/B · CARD CHÍNH GỘP A+B · BADGE PAPER GIỮ RÕ A/B · OBSERVE ONLY</small>
+        </div>
+        <div id="edgeWave2cStats" class="edge-combo-grid"></div>
+        <details style="margin-top:8px">
+          <summary style="cursor:pointer;color:var(--muted);font-size:12px;font-weight:800">Chi tiết L2C tách riêng Tier A và Tier B</summary>
+          <div id="edgeWave2cTierStats" class="edge-combo-grid" style="margin-top:8px"></div>
+        </details>
+        <div class="edge-label-heading">
+          Lớp 3 · Best Candidate trong Tier A/B
+          <small>TIER × SETUP · PRIOR-DAY WALK-FORWARD · FREEZE THEO NGÀY · OBSERVE ONLY · không gate/chặn/đổi lệnh</small>
+        </div>
+        <div id="edgeBestStats" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          Lớp 3B · Tách SE BEST theo cấu trúc thị trường
+          <small>SHORT FIT / PHASE RISK / LONG-UP / TIER B TEST / SHORT OTHER · SNAPSHOT TRƯỚC ENTRY · OBSERVE ONLY</small>
+        </div>
+        <div id="edgeBestProfileStats" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          Lớp 3C · PHASE RISK × xu hướng BTC ngày × pha điểm LONG/SHORT
+          <small>BTC ROLLING 24H TẠI ENTRY · LONG/SHORT WAVE TẠI ENTRY · OBSERVE ONLY · không gate/chặn/đổi size/SL/TP</small>
+        </div>
+        <div id="edgeBestRiskPhaseStats" class="edge-combo-grid"></div>
+        <div class="edge-label-heading">
+          Lớp 4 · Sức khỏe realtime của SE BEST
+          <small>12 LỆNH ĐÓNG GẦN NHẤT TRƯỚC ENTRY · SETUP × SIDE × BTC PHASE, FALLBACK SETUP × SIDE · OBSERVE ONLY</small>
+        </div>
+        <div id="edgeLiveStats" class="edge-combo-grid"></div>
         <div id="edgeComboStats" class="edge-combo-grid" style="display:none"></div>
-        <div class="table-wrap">
+        <div class="table-wrap" data-paper-scroll data-paper-scroll-label="Cuộn ngang phía trên bảng Edge Paper">
           <table class="signal-table">
             <thead>
               <tr>
@@ -612,6 +734,10 @@
                 <th>BTC?</th>
                 <th>BTC Trend</th>
                 <th>Gate</th>
+                <th class="edge-paper-sort" data-edge-paper-sort="label">L1 Nhãn SE <span class="sort-mark"></span></th>
+                <th class="edge-paper-sort" data-edge-paper-sort="tier">L2 Tier SE <span class="sort-mark"></span></th>
+                <th class="edge-paper-sort" data-edge-paper-sort="best">L3 Best <span class="sort-mark"></span></th>
+                <th class="edge-paper-sort" data-edge-paper-sort="live">L4 Live <span class="sort-mark"></span></th>
                 <th class="edge-paper-sort" data-edge-paper-sort="mark">Last <span class="sort-mark"></span></th>
                 <th class="edge-paper-sort" data-edge-paper-sort="pnl">PnL <span class="sort-mark"></span></th>
                 <th class="edge-paper-sort" data-edge-paper-sort="roe">ROE <span class="sort-mark"></span></th>
@@ -624,14 +750,15 @@
               </tr>
             </thead>
             <tbody id="edgePaperBody">
-              <tr><td colspan="17" class="empty-cell">No paper trades from Short Edge yet.</td></tr>
+              <tr><td colspan="24" class="empty-cell">No paper trades from Short Edge yet.</td></tr>
             </tbody>
           </table>
         </div>
       </section>
     </main>
 
-    <script src="/edge-short.js" type="module"></script>
+    <script src="/paper-top-scroll.js" defer></script>
+    <script src="/edge-short.js?v=20260809-short-utad-v1" type="module"></script>
   <script src="/btcHealth.js"></script>
 </body>
 </html>
