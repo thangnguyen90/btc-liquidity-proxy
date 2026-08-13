@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises
 import { dirname } from 'node:path';
 
 export const LIVE_CARD_BINANCE_LIFECYCLE_VERSION = 'LIVE_CARD_BINANCE_LIFECYCLE_V2_20260804';
-export const LIVE_CARD_WHITELIST_PNL_STATS_VERSION = 'LIVE_CARD_WHITELIST_PNL_STATS_V4_20260809_SIDE_SPLIT';
+export const LIVE_CARD_WHITELIST_PNL_STATS_VERSION = 'LIVE_CARD_WHITELIST_PNL_STATS_V5_20260811_BANGKOK_CALENDAR';
 export const LIVE_CARD_ENTRY_FAST_PATH_VERSION = 'LIVE_CARD_ENTRY_FAST_PATH_V1_20260809';
 
 const CLOSABLE_STATUSES = new Set([
@@ -25,6 +25,50 @@ const finite = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
+
+const LIVE_CARD_CALENDAR_TIME_ZONE = 'Asia/Bangkok';
+const LIVE_CARD_DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const liveCardDateFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: LIVE_CARD_CALENDAR_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+export function liveCardExecutionDateKey(row = {}) {
+  const value = row?.entryFilledAt ?? row?.entrySubmittedAt ?? row?.attemptedAt ?? null;
+  if (value == null || value === '') return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = Object.fromEntries(liveCardDateFormatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+export function normalizeLiveCardDateRange(fromDay, toDay) {
+  let from = LIVE_CARD_DATE_KEY_PATTERN.test(String(fromDay ?? '')) ? String(fromDay) : null;
+  let to = LIVE_CARD_DATE_KEY_PATTERN.test(String(toDay ?? '')) ? String(toDay) : null;
+  if (!from && !to) return { fromDay: null, toDay: null };
+  if (!from) from = to;
+  if (!to) to = from;
+  if (from > to) [from, to] = [to, from];
+  return { fromDay: from, toDay: to };
+}
+
+export function filterLiveCardExecutionsByDateRange(executions = [], range = {}) {
+  const normalized = normalizeLiveCardDateRange(range?.fromDay, range?.toDay);
+  const rows = Array.isArray(executions) ? executions : [];
+  if (!normalized.fromDay || !normalized.toDay) return [...rows];
+  return rows.filter((row) => {
+    const key = liveCardExecutionDateKey(row);
+    return key != null && key >= normalized.fromDay && key <= normalized.toDay;
+  });
+}
+
+export function availableLiveCardExecutionDays(executions = []) {
+  return [...new Set((Array.isArray(executions) ? executions : [])
+    .map(liveCardExecutionDateKey)
+    .filter(Boolean))].sort();
+}
 
 const normalizedPaperSource = (value) => {
   const source = String(value ?? '').trim().toLowerCase();

@@ -187,6 +187,23 @@
         font-size: 12px;
         line-height: 1.55;
       }
+      .live-card-calendar {
+        display: flex;
+        align-items: flex-end;
+        gap: 9px;
+        flex-wrap: wrap;
+        margin: 16px 0 4px;
+        padding: 11px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: rgba(9, 20, 18, .55);
+      }
+      .live-card-calendar label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; text-transform: uppercase; }
+      .live-card-calendar input[type="date"] { width: 154px; height: 36px; color-scheme: dark; }
+      .live-card-calendar-actions { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+      .live-card-calendar button { height: 36px; padding: 0 12px; }
+      .live-card-calendar button.is-active { border-color: var(--green); color: var(--green); }
+      .live-card-calendar-status { color: var(--muted); font-size: 11px; min-width: 190px; padding-bottom: 2px; }
       .live-card-overview {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -349,6 +366,7 @@
         <a class="nav-link" href="/coin-flow">Coin Flow</a>
             <a class="nav-link" href="/edge-short">Short Edge</a>
             <a class="nav-link" href="/liquid-scan">Liquid Scan</a>
+            <a class="nav-link" href="/liquid-flow-v2">Liquid Flow V2</a>
             <a class="nav-link" href="/highvol">High Vol</a>
             <a class="nav-link" href="/lsratio">L/S Ratio</a>
             <a class="nav-link" href="/paper">Paper</a>
@@ -390,7 +408,7 @@
           </label>
           <label class="field">
             <span>Take Profit</span>
-            <input id="orderTpInput" type="number" min="0" step="any" placeholder="Tùy chọn">
+            <input id="orderTpInput" type="number" min="0" step="any" placeholder="Mặc định 30% ROE">
           </label>
           <label class="field">
             <span>Stop Loss</span>
@@ -485,6 +503,20 @@
               <tr><td colspan="4" class="empty-cell">Loading...</td></tr>
             </tbody>
           </table>
+        </div>
+        <div class="live-card-calendar" aria-label="Lọc ngày thống kê Orders">
+          <label>Từ ngày · Bangkok
+            <input id="liveCardFromDay" type="date">
+          </label>
+          <label>Đến ngày · Bangkok
+            <input id="liveCardToDay" type="date">
+          </label>
+          <div class="live-card-calendar-actions">
+            <button class="secondary" id="liveCardTodayBtn" type="button">Hôm nay</button>
+            <button class="secondary" id="liveCardAllDaysBtn" type="button">Tất cả</button>
+            <button class="primary" id="liveCardApplyRangeBtn" type="button">Search</button>
+          </div>
+          <span class="live-card-calendar-status" id="liveCardDateRangeStatus">Mặc định ngày hiện tại · Asia/Bangkok</span>
         </div>
         <div class="panel-head" style="margin-top:18px">
           <h3 style="margin:0">So sánh nhãn · Binance thật vs paper gốc</h3>
@@ -607,7 +639,7 @@
                 <th data-sort>Unrealised PnL</th>
                 <th data-sort>ROE%</th>
                 <th>Action</th>
-                <th title="Tắt trailing stop & auto position management cho vị thế này">Skip TSL</th>
+                <th title="Check: chỉ giữ ROE ≥10% → SL +1%; không nâng tiếp ở 15%/20%+">Cap TSL</th>
               </tr>
             </thead>
             <tbody id="positionsBody">
@@ -682,7 +714,7 @@
 
       <pre id="actionResult" style="margin-top:14px;display:none"></pre>
     </main>
-    <script src="/orders.js?v=20260809-live-card-history-stream-v1" type="module"></script>
+    <script src="/orders.js?v=20260811-live-history-total-pnl-v2" type="module"></script>
   <script src="/btcHealth.js"></script>
 </body>
 </html>

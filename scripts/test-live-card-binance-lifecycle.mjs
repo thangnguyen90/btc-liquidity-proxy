@@ -7,9 +7,13 @@ import {
   aggregateLiveCardBinanceStats,
   aggregateLiveCardHistoryOverview,
   aggregateLiveCardWhitelistStats,
+  availableLiveCardExecutionDays,
   attachLiveCardPaperOriginals,
   classifyLiveCardSignalSource,
   entryFillMatchesLifecycle,
+  filterLiveCardExecutionsByDateRange,
+  liveCardExecutionDateKey,
+  normalizeLiveCardDateRange,
   reconcileLiveCardClosedPnl,
   safeBotClosePlan,
 } from '../src/liveCardBinanceLifecycle.js';
@@ -158,6 +162,26 @@ assert.equal(historyOverview.closedPnlNet, 0.26);
 assert.equal(historyOverview.paperMapped, 2);
 assert.equal(historyOverview.paperMissing, 1);
 assert.equal(historyOverview.paperClosed, 2);
+
+const calendarRows = [
+  { lifecycleId: 'bkk-10', entryFilledAt: '2026-08-10T16:59:59.000Z' },
+  { lifecycleId: 'bkk-11', entryFilledAt: '2026-08-10T17:00:01.000Z' },
+  { lifecycleId: 'submitted-11', entrySubmittedAt: '2026-08-11T02:00:00.000Z' },
+  { lifecycleId: 'undated' },
+];
+assert.equal(liveCardExecutionDateKey(calendarRows[0]), '2026-08-10');
+assert.equal(liveCardExecutionDateKey(calendarRows[1]), '2026-08-11');
+assert.deepEqual(availableLiveCardExecutionDays(calendarRows), ['2026-08-10', '2026-08-11']);
+assert.deepEqual(normalizeLiveCardDateRange('2026-08-11', '2026-08-10'), {
+  fromDay: '2026-08-10',
+  toDay: '2026-08-11',
+});
+assert.deepEqual(
+  filterLiveCardExecutionsByDateRange(calendarRows, { fromDay: '2026-08-11', toDay: '2026-08-11' })
+    .map((row) => row.lifecycleId),
+  ['bkk-11', 'submitted-11'],
+);
+assert.equal(filterLiveCardExecutionsByDateRange(calendarRows).length, 4);
 
 const dir = await mkdtemp(join(tmpdir(), 'live-card-life-'));
 try {

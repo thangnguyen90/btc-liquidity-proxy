@@ -13,10 +13,72 @@
 
 import WebSocket from 'ws';
 
-const USER_WS_BASE = 'wss://fstream.binance.com/private/ws';
-const MARKET_WS_BASE = 'wss://fstream.binance.com/ws';
+export const POSITION_MONITOR_MARK_STREAM_VERSION = 'POSITION_MONITOR_PER_SYMBOL_MARK_STREAM_V4_20260812';
+export const POSITION_PROTECTION_TRIGGER_VERSION = 'POSITION_PROTECTION_SOCKET_FILL_V3_DURABLE_WATERMARK_20260812';
+export const POSITION_MONITOR_MARK_STREAM_URL = 'wss://fstream.binance.com/market/stream';
+export const POSITION_MONITOR_MARK_STREAM_STALE_MS = 15_000;
 
-export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, onPositionClose = null, getCredentials = null }) {
+export function isBinanceSocketFullEntryFill(order = {}) {
+  const reduceOnly = order?.R === true || String(order?.R).toLowerCase() === 'true';
+  return order?.x === 'TRADE'
+    && String(order?.X ?? '').toUpperCase() === 'FILLED'
+    && !reduceOnly
+    && Number(order?.l) > 0;
+}
+
+export function isBinanceTradeLiteExecution(message = {}) {
+  return message?.e === 'TRADE_LITE'
+    && Boolean(String(message?.s ?? '').trim())
+    && message?.i != null
+    && Number(message?.l) > 0;
+}
+
+export function parsePositionMarkPriceMessage(message) {
+  const payload = message?.data && typeof message.data === 'object' ? message.data : message;
+  if (!payload || typeof payload !== 'object') return null;
+  if (message?.stream && !String(message.stream).endsWith('@markPrice@1s')) return null;
+  if (payload.e && payload.e !== 'markPriceUpdate') return null;
+  const symbol = String(payload.s ?? '').trim().toUpperCase();
+  const markPrice = Number(payload.p);
+  if (!symbol || !Number.isFinite(markPrice) || markPrice <= 0) return null;
+  return { symbol, markPrice };
+}
+
+export function buildPositionMarkPriceStreamUrl(symbols = []) {
+  const streams = [...new Set(
+    (Array.isArray(symbols) ? symbols : [])
+      .map((symbol) => String(symbol ?? '').trim().toLowerCase())
+      .filter(Boolean),
+  )]
+    .sort()
+    .map((symbol) => `${symbol}@markPrice@1s`);
+  return streams.length
+    ? `${POSITION_MONITOR_MARK_STREAM_URL}?streams=${streams.join('/')}`
+    : null;
+}
+
+export function resolvePositionRoeMargin(position = {}) {
+  const initialMargin = Number(position.positionInitialMargin ?? position.initialMargin);
+  if (Number.isFinite(initialMargin) && initialMargin > 0) return initialMargin;
+  const isolatedMargin = Number(position.isolatedMargin);
+  if (Number.isFinite(isolatedMargin) && isolatedMargin > 0) return isolatedMargin;
+  const amount = Math.abs(Number(position.amt ?? position.positionAmt));
+  const entry = Number(position.entry ?? position.entryPrice);
+  const leverage = Number(position.leverage);
+  return amount > 0 && entry > 0 && leverage > 0 ? amount * entry / leverage : 0;
+}
+
+const USER_WS_BASE = 'wss://fstream.binance.com/private/ws';
+const MARKET_WS_BASE = POSITION_MONITOR_MARK_STREAM_URL;
+
+export function startPositionMonitor({
+  client,
+  onRoeUpdate,
+  onOrderFill = null,
+  onPositionClose = null,
+  onFullFillObserved = null,
+  getCredentials = null,
+}) {
   // symbol → { amt, entry, leverage, isolatedMargin, initialMargin }
   const posCache = new Map();
   const stats = {
@@ -25,49 +87,27 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
     lastRestSyncSymbols: [],
     lastMarkConnectedAt: null,
     lastMarkTickAt: null,
+    lastMarkStaleAt: null,
+    markReconnectCount: 0,
     lastRoeUpdateAt: null,
     lastRoeSymbol: null,
     lastUserDataConnectedAt: null,
     lastAccountUpdateAt: null,
     lastOrderTradeUpdateAt: null,
+    lastTradeLiteAt: null,
+    lastTradeLiteVerifiedAt: null,
     lastDetectedOpenAt: null,
   };
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function calcMargin(pos) {
-    if (pos.isolatedMargin > 0) return pos.isolatedMargin;
-    if (pos.initialMargin > 0) return pos.initialMargin;
-    const lev = pos.leverage > 0 ? pos.leverage : 1;
-    return Math.abs(pos.amt) * pos.entry / lev;
+    return resolvePositionRoeMargin(pos);
   }
 
   function upsert(symbol, fields) {
     const prev = posCache.get(symbol) ?? {};
     posCache.set(symbol, { ...prev, ...fields });
     updateMarkPriceSubscriptions();
-  }
-
-  function shouldNotifyOpen(prev, next) {
-    if (!onOrderFill || !next?.amt || !next?.entry) return false;
-    if (!prev || !prev.amt || !prev.entry) return true;
-    const sameSide = Math.sign(prev.amt) === Math.sign(next.amt);
-    const sizeIncreased = sameSide && Math.abs(next.amt) > Math.abs(prev.amt) + 1e-12;
-    const entryChanged = Math.abs(next.entry - prev.entry) / Math.max(Math.abs(prev.entry), 1e-9) > 0.0001;
-    return sizeIncreased || entryChanged;
-  }
-
-  function notifyOpen(symbol, prev, next, source, eventTime = Date.now()) {
-    if (!shouldNotifyOpen(prev, next)) return;
-    stats.lastDetectedOpenAt = Date.now();
-    console.log(`[PosMonitor] detected ${source} open/increase ${symbol} amt=${next.amt} entry=${next.entry}`);
-    onOrderFill(symbol, {
-      side: next.amt > 0 ? 'BUY' : 'SELL',
-      filledQty: Math.abs((next.amt ?? 0) - (prev?.amt ?? 0)) || Math.abs(next.amt),
-      avgPrice: next.entry,
-      positionSide: next.positionSide ?? 'BOTH',
-      fillTime: eventTime,
-      source,
-    });
   }
 
   // ── REST position sync ─────────────────────────────────────────────────────
@@ -97,13 +137,12 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
           updateTime: Number(p.updateTime) || null,
           positionSide: p.positionSide ?? 'BOTH',
         };
-        // Always update structural fields; skip if already tracked with same entry
+        // REST sync only refreshes the position/ROE cache. It must never emulate
+        // an entry fill or place protection; only Binance ORDER_TRADE_UPDATE may.
         if (!existing || Math.abs(Number(p.entryPrice) - existing.entry) / (existing.entry || 1) > 0.0001) {
           upsert(symbol, next);
-          notifyOpen(symbol, existing, next, 'REST_SYNC');
         } else if (existing && Math.abs(next.amt) > Math.abs(existing.amt) + 1e-12) {
           upsert(symbol, next);
-          notifyOpen(symbol, existing, next, 'REST_SYNC');
         } else {
           upsert(symbol, next);
         }
@@ -130,6 +169,213 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
   let listenKey = null;
   let keepAliveTimer = null;
   const userDataEventLogAt = new Map();
+  const fullFillDeliveryRunning = new Map();
+  const deliveredFullFills = new Map();
+  const tradeLiteVerificationRunning = new Map();
+
+  function fillKey(symbol, orderId) {
+    return `${String(symbol ?? '').toUpperCase()}:${String(orderId ?? '')}`;
+  }
+
+  function pruneDeliveredFullFills() {
+    const cutoff = Date.now() - 24 * 60 * 60_000;
+    for (const [key, at] of deliveredFullFills) {
+      if (at < cutoff) deliveredFullFills.delete(key);
+    }
+  }
+
+  async function deliverSocketFullFill(symbol, fill) {
+    if (!onOrderFill) return;
+    const key = fillKey(symbol, fill.orderId ?? fill.clientOrderId);
+    pruneDeliveredFullFills();
+    if (deliveredFullFills.has(key)) return;
+    if (fullFillDeliveryRunning.has(key)) return fullFillDeliveryRunning.get(key);
+
+    const delivery = (async () => {
+      await syncPositions();
+      const current = posCache.get(symbol);
+      const fillSide = String(fill.side ?? '').toUpperCase();
+      const currentAmount = Number(current?.amt);
+      const opensCurrentDirection = current
+        && ((fillSide === 'BUY' && currentAmount > 0) || (fillSide === 'SELL' && currentAmount < 0));
+      if (!opensCurrentDirection) {
+        console.log(`[PosMonitor] SOCKET_FULL_FILL_IGNORED ${symbol} orderId=${fill.orderId ?? '-'}: no matching open position after fill`);
+        return;
+      }
+      const deliveryResult = await onOrderFill(symbol, {
+        ...fill,
+        // A DCA fill changes the position's average entry. Protection for a
+        // manual position must use this post-fill average, not the last fill.
+        positionEntryPrice: Number(current.entry) || null,
+        positionLeverage: Number(current.leverage) || null,
+        positionAmount: currentAmount,
+      });
+      if (deliveryResult?.protectionComplete !== true) {
+        throw new Error(`${symbol} full fill callback did not confirm protection completion`);
+      }
+      if (onFullFillObserved && fill.deferWatermark !== true) {
+        await onFullFillObserved(symbol, {
+          ...fill,
+          positionEntryPrice: Number(current.entry) || null,
+          positionLeverage: Number(current.leverage) || null,
+          positionAmount: currentAmount,
+        });
+      }
+      // In-memory dedupe is committed only after the durable watermark write.
+      // If persistence fails, TRADE_LITE or a later startup must still retry.
+      deliveredFullFills.set(key, Date.now());
+    })().finally(() => fullFillDeliveryRunning.delete(key));
+    fullFillDeliveryRunning.set(key, delivery);
+    return delivery;
+  }
+
+  async function recoverMissedFullFills({ since = 0, handledOrderIds = [] } = {}) {
+    if (!onOrderFill) return { checkedSymbols: 0, candidates: 0, recovered: 0, failed: 0 };
+    await syncPositions();
+    const handled = new Set((Array.isArray(handledOrderIds) ? handledOrderIds : []).map(String));
+    const minTime = Math.max(0, Number(since) || 0);
+    const summary = {
+      checkedSymbols: 0,
+      candidates: 0,
+      recovered: 0,
+      failed: 0,
+      maxObservedTradeAt: minTime,
+    };
+    const recoveredFills = [];
+    const { apiKey, apiSecret } = resolveCredentials();
+
+    for (const [symbol, current] of posCache) {
+      summary.checkedSymbols += 1;
+      try {
+        const trades = await client.getUserTrades({ symbol, limit: 100, apiKey, apiSecret });
+        const symbolTrades = Array.isArray(trades) ? trades : [];
+        summary.maxObservedTradeAt = Math.max(
+          summary.maxObservedTradeAt,
+          ...symbolTrades.map((trade) => Number(trade?.time) || 0),
+        );
+        const orderIds = [...new Set(symbolTrades
+          .filter((trade) => Number(trade?.time) > minTime)
+          .map((trade) => String(trade?.orderId ?? ''))
+          .filter((orderId) => orderId && !handled.has(orderId)))];
+        const candidates = [];
+        for (const orderId of orderIds) {
+          const order = await client.getOrder({ symbol, orderId, apiKey, apiSecret });
+          const status = String(order?.status ?? '').toUpperCase();
+          const reduceOnly = order?.reduceOnly === true || String(order?.reduceOnly).toLowerCase() === 'true';
+          const closePosition = order?.closePosition === true || String(order?.closePosition).toLowerCase() === 'true';
+          const side = String(order?.side ?? '').toUpperCase();
+          const amount = Number(current?.amt);
+          const opensCurrentDirection = (side === 'BUY' && amount > 0) || (side === 'SELL' && amount < 0);
+          if (status !== 'FILLED' || reduceOnly || closePosition || !opensCurrentDirection) continue;
+          candidates.push(order);
+        }
+        if (candidates.length === 0) continue;
+        // One protection pair always covers the whole current position. Replay
+        // only the newest missed opening/DCA fill so the durable watermark
+        // advances past every earlier fill in the same outage window.
+        candidates.sort((left, right) => Number(right.updateTime ?? right.time) - Number(left.updateTime ?? left.time));
+        summary.candidates += candidates.length;
+        for (const order of candidates) {
+          const avgPrice = Number(order?.avgPrice || 0) > 0 ? Number(order.avgPrice) : Number(order?.price);
+          await deliverSocketFullFill(symbol, {
+            side: order.side,
+            filledQty: Number(order.executedQty),
+            cumulativeFilledQty: Number(order.executedQty),
+            originalQty: Number(order.origQty),
+            avgPrice,
+            positionSide: order.positionSide ?? current.positionSide ?? 'BOTH',
+            fillTime: Number(order.updateTime ?? order.time ?? Date.now()),
+            orderStatus: 'FILLED',
+            orderId: order.orderId,
+            clientOrderId: order.clientOrderId ?? null,
+            orderType: order.type ?? order.origType ?? null,
+            reduceOnly: false,
+            source: 'MISSED_FILL_RECOVERY',
+            // Recovery uses one account-wide watermark. Persist it only after
+            // every active symbol has completed successfully (see below).
+            deferWatermark: true,
+          });
+          handled.add(String(order.orderId));
+          recoveredFills.push({
+            orderId: order.orderId,
+            clientOrderId: order.clientOrderId ?? null,
+            fillTime: Number(order.updateTime ?? order.time ?? Date.now()),
+          });
+          summary.recovered += 1;
+          break;
+        }
+      } catch (error) {
+        summary.failed += 1;
+        console.warn(`[PosMonitor] missed-fill recovery ${symbol}: ${error.message}`);
+      }
+    }
+    // A single durable watermark is shared by all symbols. Advance it beyond
+    // close/reduce-only trades only after every active symbol was scanned and
+    // every opening candidate was protected successfully. Advancing it inside
+    // the symbol loop could otherwise hide a missed fill on a later symbol.
+    if (summary.failed === 0
+      && summary.maxObservedTradeAt > minTime
+      && onFullFillObserved) {
+      // Preserve the exact handled ids too. Sorting is defensive because the
+      // watermark timestamp is monotonic and shared across symbols.
+      recoveredFills.sort((left, right) => Number(left.fillTime) - Number(right.fillTime));
+      for (const fill of recoveredFills) await onFullFillObserved(null, fill);
+      await onFullFillObserved(null, { fillTime: summary.maxObservedTradeAt });
+    }
+    return summary;
+  }
+
+  async function verifyTradeLiteFullFill(message) {
+    if (!isBinanceTradeLiteExecution(message) || !onOrderFill) return;
+    const symbol = String(message.s).toUpperCase();
+    const key = fillKey(symbol, message.i);
+    if (deliveredFullFills.has(key)) return;
+    if (tradeLiteVerificationRunning.has(key)) return tradeLiteVerificationRunning.get(key);
+
+    const verification = (async () => {
+      const delays = [0, 150, 350, 750, 1_250];
+      for (let attempt = 0; attempt < delays.length; attempt += 1) {
+        if (delays[attempt] > 0) await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+        try {
+          const { apiKey, apiSecret } = resolveCredentials();
+          const order = await client.getOrder({ symbol, orderId: message.i, apiKey, apiSecret });
+          const status = String(order?.status ?? '').toUpperCase();
+          if (status !== 'FILLED') continue;
+          const reduceOnly = order?.reduceOnly === true || String(order?.reduceOnly).toLowerCase() === 'true';
+          const closePosition = order?.closePosition === true || String(order?.closePosition).toLowerCase() === 'true';
+          if (reduceOnly || closePosition || Number(order?.executedQty) <= 0) return;
+          const avgPrice = Number(order?.avgPrice || 0) > 0
+            ? Number(order.avgPrice)
+            : Number(message.L || order?.price || message.p);
+          stats.lastTradeLiteVerifiedAt = Date.now();
+          console.log(`[PosMonitor] TRADE_LITE_VERIFIED ${symbol} side=${order.side ?? message.S} qty=${order.executedQty} avg=${avgPrice} orderId=${order.orderId ?? message.i} version=${POSITION_PROTECTION_TRIGGER_VERSION}`);
+          await deliverSocketFullFill(symbol, {
+            side: order.side ?? message.S,
+            filledQty: Number(message.l),
+            cumulativeFilledQty: Number(order.executedQty),
+            originalQty: Number(order.origQty),
+            avgPrice,
+            positionSide: order.positionSide ?? message.ps ?? 'BOTH',
+            fillTime: Number(message.T ?? message.E ?? order.updateTime ?? Date.now()),
+            orderStatus: status,
+            orderId: order.orderId ?? message.i,
+            clientOrderId: order.clientOrderId ?? message.c ?? null,
+            orderType: order.type ?? order.origType ?? null,
+            reduceOnly,
+            source: 'TRADE_LITE_VERIFIED',
+          });
+          return;
+        } catch (err) {
+          if (attempt === delays.length - 1) {
+            console.warn(`[PosMonitor] TRADE_LITE_VERIFY_FAILED ${symbol} orderId=${message.i}: ${err.message}`);
+          }
+        }
+      }
+      console.log(`[PosMonitor] TRADE_LITE_NOT_FULL ${symbol} orderId=${message.i}; waiting for next socket trade event`);
+    })().finally(() => tradeLiteVerificationRunning.delete(key));
+    tradeLiteVerificationRunning.set(key, verification);
+    return verification;
+  }
 
   function resolveCredentials() {
     if (getCredentials) return getCredentials();
@@ -171,6 +417,12 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
         }
       }
 
+      if (msg.e === 'ALGO_UPDATE') {
+        const detail = msg.o ?? msg.a ?? msg;
+        console.log(`[PosMonitor] ALGO_UPDATE_DETAIL ${JSON.stringify(detail)}`);
+        return;
+      }
+
       if (msg.e === 'ACCOUNT_UPDATE') {
         stats.lastAccountUpdateAt = Date.now();
         for (const p of msg.a?.P ?? []) {
@@ -197,30 +449,50 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
         return;
       }
 
+      if (msg.e === 'TRADE_LITE') {
+        stats.lastTradeLiteAt = Date.now();
+        if (isBinanceTradeLiteExecution(msg)) {
+          console.log(`[PosMonitor] TRADE_LITE ${msg.s} side=${msg.S} lastQty=${msg.l} orderId=${msg.i}; verifying exact order status`);
+          verifyTradeLiteFullFill(msg).catch((err) => {
+            console.warn(`[PosMonitor] TRADE_LITE_VERIFY_ERROR ${msg.s ?? '-'}: ${err.message}`);
+          });
+        }
+        return;
+      }
+
       if (msg.e === 'ORDER_TRADE_UPDATE' && onOrderFill) {
         stats.lastOrderTradeUpdateAt = Date.now();
         const o = msg.o;
         // Only care about fills that open/increase a position (not reduceOnly)
         const reduceOnly = o?.R === true || String(o?.R).toLowerCase() === 'true';
-        if (o && o.x === 'TRADE' && !reduceOnly && Number(o.l) > 0) {
+        if (isBinanceSocketFullEntryFill(o)) {
           const avgPrice = Number(o.ap || 0) > 0 ? Number(o.ap) : Number(o.L || o.p);
-          console.log(`[PosMonitor] SOCKET_FILL ${o.s} side=${o.S} qty=${o.l} avg=${avgPrice} status=${o.X} exec=${o.x}`);
-          await syncPositions();
-          await onOrderFill(o.s, {
-            side: o.S,
-            filledQty: Number(o.l),
-            cumulativeFilledQty: Number(o.z),
-            originalQty: Number(o.q),
-            avgPrice,
-            positionSide: o.ps ?? 'BOTH',
-            fillTime: Number(o.T),
-            orderStatus: o.X,
-            orderId: o.i,
-            clientOrderId: o.c ?? null,
-            orderType: o.o ?? null,
-            reduceOnly,
-            source: 'ORDER_TRADE_UPDATE',
-          });
+          stats.lastDetectedOpenAt = Date.now();
+          console.log(`[PosMonitor] SOCKET_FULL_FILL ${o.s} side=${o.S} qty=${o.z} avg=${avgPrice} status=${o.X} version=${POSITION_PROTECTION_TRIGGER_VERSION}`);
+          try {
+            await deliverSocketFullFill(o.s, {
+              side: o.S,
+              filledQty: Number(o.l),
+              cumulativeFilledQty: Number(o.z),
+              originalQty: Number(o.q),
+              avgPrice,
+              positionSide: o.ps ?? 'BOTH',
+              fillTime: Number(o.T),
+              orderStatus: o.X,
+              orderId: o.i,
+              clientOrderId: o.c ?? null,
+              orderType: o.o ?? null,
+              reduceOnly,
+              source: 'ORDER_TRADE_UPDATE',
+            });
+          } catch (error) {
+            // Keep the user-data socket alive. TRADE_LITE verification and the
+            // next startup recovery can retry because the fill is not marked
+            // delivered until both protection orders are verified on Binance.
+            console.error(`[PosMonitor] SOCKET_FULL_FILL_PROTECTION_FAILED ${o.s} orderId=${o.i}: ${error.message}`);
+          }
+        } else if (o && o.x === 'TRADE' && !reduceOnly && Number(o.l) > 0) {
+          console.log(`[PosMonitor] SOCKET_PARTIAL_FILL ${o.s} status=${o.X}; waiting for FILLED before SL/TP`);
         }
       }
     });
@@ -248,61 +520,117 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
   let markWs = null;
   let subscribedSymbols = new Set();
   let wsReady = false;
-  const pendingSubscribe = new Set();
+  let markSubscriptionStartedAt = null;
+  let connectionLastMarkTickAt = null;
+  let markStreamWatchdog = null;
+  let markReconnectTimer = null;
+  let markGeneration = 0;
+  let markStreamStarted = false;
+
+  function clearMarkStreamWatchdog() {
+    if (!markStreamWatchdog) return;
+    clearInterval(markStreamWatchdog);
+    markStreamWatchdog = null;
+  }
+
+  function armMarkStreamWatchdog() {
+    clearMarkStreamWatchdog();
+    markStreamWatchdog = setInterval(() => {
+      if (!wsReady || subscribedSymbols.size === 0) return;
+      const freshnessAt = connectionLastMarkTickAt ?? markSubscriptionStartedAt;
+      if (!freshnessAt || Date.now() - freshnessAt <= POSITION_MONITOR_MARK_STREAM_STALE_MS) return;
+
+      stats.lastMarkStaleAt = Date.now();
+      stats.markReconnectCount += 1;
+      console.error(
+        `[PosMonitor] Mark price stream stale: no usable tick for ${Math.round((Date.now() - freshnessAt) / 1000)}s `
+        + `while tracking ${subscribedSymbols.size} symbol(s); forcing reconnect.`,
+      );
+      wsReady = false;
+      clearMarkStreamWatchdog();
+      markWs?.terminate();
+    }, 5_000);
+    markStreamWatchdog.unref?.();
+  }
 
   function updateMarkPriceSubscriptions() {
     const wanted = new Set([...posCache.keys()].map((s) => s.toLowerCase()));
-    const toAdd = [...wanted].filter((s) => !subscribedSymbols.has(s));
-    const toRemove = [...subscribedSymbols].filter((s) => !wanted.has(s));
-
-    if (markWs && wsReady) {
-      if (toAdd.length) {
-        markWs.send(JSON.stringify({ method: 'SUBSCRIBE', params: toAdd.map((s) => `${s}@markPrice@1s`), id: Date.now() }));
-        for (const s of toAdd) subscribedSymbols.add(s);
-      }
-      if (toRemove.length) {
-        markWs.send(JSON.stringify({ method: 'UNSUBSCRIBE', params: toRemove.map((s) => `${s}@markPrice@1s`), id: Date.now() }));
-        for (const s of toRemove) subscribedSymbols.delete(s);
-      }
-    } else {
-      for (const s of toAdd) pendingSubscribe.add(s);
+    const same = wanted.size === subscribedSymbols.size
+      && [...wanted].every((symbol) => subscribedSymbols.has(symbol));
+    if (same) return;
+    subscribedSymbols = wanted;
+    if (!markStreamStarted) return;
+    if (!markWs) {
+      scheduleMarkPriceReconnect(0, 'position-added-without-stream');
+      return;
     }
+    // Binance's dynamic SUBSCRIBE route was repeatedly closing while many
+    // symbols were tracked. Rebuild one documented combined stream URL when
+    // the active position set changes instead.
+    scheduleMarkPriceReconnect(250, 'position-set-changed');
   }
 
   let _markStreamBackoffMs = 5_000;
   const _markStreamBackoffMax = 5 * 60_000;
 
+  function scheduleMarkPriceReconnect(delayMs, reason) {
+    if (markReconnectTimer) return;
+    markReconnectTimer = setTimeout(() => {
+      markReconnectTimer = null;
+      if (markWs) {
+        // Invalidate callbacks from the socket we are intentionally replacing;
+        // its close event must not schedule another reconnect over the new one.
+        markGeneration += 1;
+        const staleSocket = markWs;
+        markWs = null;
+        staleSocket.terminate();
+      }
+      startMarkPriceStream();
+    }, Math.max(0, delayMs));
+    markReconnectTimer.unref?.();
+    if (reason) console.warn(`[PosMonitor] Mark stream rebuild scheduled reason=${reason} delay=${delayMs}ms`);
+  }
+
   function startMarkPriceStream() {
-    markWs = new WebSocket(MARKET_WS_BASE);
+    markStreamStarted = true;
+    const wanted = [...posCache.keys()].map((symbol) => symbol.toLowerCase());
+    subscribedSymbols = new Set(wanted);
+    const url = buildPositionMarkPriceStreamUrl(wanted);
+    if (!url) {
+      markWs = null;
+      wsReady = false;
+      clearMarkStreamWatchdog();
+      return;
+    }
+    const generation = ++markGeneration;
+    markWs = new WebSocket(url);
     wsReady = false;
+    connectionLastMarkTickAt = null;
+    markSubscriptionStartedAt = null;
 
     markWs.addEventListener('open', () => {
       _markStreamBackoffMs = 5_000; // reset backoff on successful connect
       wsReady = true;
       stats.lastMarkConnectedAt = Date.now();
-      const all = new Set([...posCache.keys()].map((s) => s.toLowerCase()));
-      for (const s of pendingSubscribe) all.add(s);
-      pendingSubscribe.clear();
-      if (all.size > 0) {
-        markWs.send(JSON.stringify({ method: 'SUBSCRIBE', params: [...all].map((s) => `${s}@markPrice@1s`), id: 1 }));
-        subscribedSymbols = all;
-      }
-      console.log(`[PosMonitor] Mark price stream connected. Tracking ${all.size} symbol(s).`);
+      markSubscriptionStartedAt = Date.now();
+      armMarkStreamWatchdog();
+      console.log(`[PosMonitor] Mark price combined stream connected. Tracking ${subscribedSymbols.size} symbol(s).`);
     });
 
     markWs.addEventListener('message', ({ data }) => {
       let msg;
       try { msg = JSON.parse(data); } catch { return; }
 
-      const stream = msg.stream ?? '';
-      if (!stream.endsWith('@markPrice@1s')) return;
+      const update = parsePositionMarkPriceMessage(msg);
+      if (!update) return;
 
-      const d = msg.data;
-      if (!d?.s || !d?.p) return;
-
-      const symbol = d.s;
-      const markPrice = Number(d.p);
+      const { symbol, markPrice } = update;
+      connectionLastMarkTickAt = Date.now();
+      const isFirstMarkTick = stats.lastMarkTickAt == null;
       stats.lastMarkTickAt = Date.now();
+      if (isFirstMarkTick) {
+        console.log(`[PosMonitor] First mark-price tick ${symbol}=${markPrice} version=${POSITION_MONITOR_MARK_STREAM_VERSION}`);
+      }
       const pos = posCache.get(symbol);
       if (!pos || !pos.entry || !pos.amt) return;
 
@@ -322,13 +650,17 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
     });
 
     markWs.addEventListener('close', () => {
+      if (generation !== markGeneration) return;
       wsReady = false;
-      subscribedSymbols.clear();
+      clearMarkStreamWatchdog();
+      connectionLastMarkTickAt = null;
+      markSubscriptionStartedAt = null;
       const delay = _markStreamBackoffMs;
       _markStreamBackoffMs = Math.min(_markStreamBackoffMs * 2, _markStreamBackoffMax);
       const delaySec = Math.round(delay / 1000);
       console.warn(`[PosMonitor] Mark price stream closed — reconnecting in ${delaySec}s`);
-      setTimeout(startMarkPriceStream, delay);
+      markWs = null;
+      scheduleMarkPriceReconnect(delay, 'socket-closed');
     });
 
     markWs.addEventListener('error', (e) => {
@@ -385,13 +717,15 @@ export function startPositionMonitor({ client, onRoeUpdate, onOrderFill = null, 
         unRealizedProfit: String(pos.unRealizedProfit ?? 0),
       }));
     },
+    recoverMissedFullFills,
     getStatus() {
       return {
         ...stats,
+        markStreamUrl: MARKET_WS_BASE,
         wsReady,
         cachedSymbols: [...posCache.keys()].sort(),
         subscribedSymbols: [...subscribedSymbols].map((s) => s.toUpperCase()).sort(),
-        pendingSymbols: [...pendingSubscribe].map((s) => s.toUpperCase()).sort(),
+        pendingSymbols: [],
       };
     },
   };

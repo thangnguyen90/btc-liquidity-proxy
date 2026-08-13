@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  LIQUID_LIVE_CARD_WHITELIST_VERSION,
   LIVE_CARD_COMBO_ENTRY_MATCH_VERSION,
   liveCardComboKeyAtEntry,
   liveCardKey,
@@ -10,6 +11,11 @@ import {
   normalizeLiquidLiveCardKey,
   normalizeLiquidLiveCardKeys,
 } from '../src/liquidLiveCardWhitelist.js';
+
+assert.equal(
+  LIQUID_LIVE_CARD_WHITELIST_VERSION,
+  'LIVE_CARD_WHITELIST_V9_LIQ_SPRING_REVERSAL_20260811',
+);
 
 const trade = {
   side: 'SHORT',
@@ -30,6 +36,7 @@ const trade = {
   liquidLongBtcExpansionMatched: true,
   liquidLongBtcExpansionSelected: true,
   liquidLongBtcExpansionPrimeTest: true,
+  liquidShortUpthrustMatched: true,
   liquidComboBtcBreadthMatched: true,
   liquidComboBtcBreadthSide: 'SHORT',
   liquidComboBtcBreadthTier: 'PRIME_TEST',
@@ -46,6 +53,7 @@ assert(keys.includes('stable-mechanism:SHORT_FAILED_BOUNCE'));
 assert(keys.includes('long-btc-expansion:CANDIDATE'));
 assert(keys.includes('long-btc-expansion:SELECTED'));
 assert(keys.includes('long-btc-expansion:PRIME_TEST'));
+assert(keys.includes('spring-reversal:SHORT_UPTHRUST'));
 assert(keys.includes('combo-btc-breadth:SHORT:PRIME_TEST'));
 assert(keys.includes('stage4:SHORT:GOOD_PLUS:ACTIVE'));
 assert(keys.includes('edge-point:GOOD'));
@@ -60,6 +68,10 @@ assert.equal(matchLiquidLiveCardWhitelist(trade, ['long-corr-rebound:GOOD']).all
 assert.equal(matchLiquidLiveCardWhitelist(trade, ['stage4:LONG:GOOD_PLUS:ACTIVE']).allowed, false);
 assert.deepEqual(normalizeLiquidLiveCardKeys(['stage2:A', 'stage2:A', 'bad:key']), ['stage2:A']);
 assert.equal(normalizeLiquidLiveCardKey('bad:key'), null);
+assert.equal(
+  normalizeLiquidLiveCardKey('spring-reversal:LONG_SPRING'),
+  'spring-reversal:LONG_SPRING',
+);
 assert.equal(normalizeLiquidLiveCardKey('stage2:A\nB'), null);
 
 const emaKey = liveCardKey('ema', 'combo', 'SQUEEZE | LONG | 15m');
@@ -71,6 +83,26 @@ assert.equal(recommendedKey, 'recommended:backtest-confidence:BT_PRIME');
 assert.equal(normalizeLiquidLiveCardKey(emaKey), emaKey);
 assert.equal(normalizeLiquidLiveCardKey(edgeKey), edgeKey);
 assert.equal(normalizeLiquidLiveCardKey(recommendedKey), recommendedKey);
+assert.equal(
+  normalizeLiquidLiveCardKey('heatmap-v2:UP_SWEEP_SHORT_READY'),
+  'heatmap-v2:UP_SWEEP_SHORT_READY',
+);
+assert.equal(
+  normalizeLiquidLiveCardKey('heatmap-v2:HTF_BEAR_15M_EMA99_PUMP_REJECT'),
+  'heatmap-v2:HTF_BEAR_15M_EMA99_PUMP_REJECT',
+);
+assert.equal(
+  normalizeLiquidLiveCardKey('heatmap-v2:HTF_BULL_15M_EMA99_DUMP_RECLAIM'),
+  'heatmap-v2:HTF_BULL_15M_EMA99_DUMP_RECLAIM',
+);
+assert.equal(
+  normalizeLiquidLiveCardKey('heatmap-v2:PUMP_DISTRIBUTION_WATCH'),
+  'heatmap-v2:PUMP_DISTRIBUTION_WATCH',
+);
+assert.equal(
+  normalizeLiquidLiveCardKey('heatmap-v2:PUMP_DISTRIBUTION_SHORT_READY'),
+  'heatmap-v2:PUMP_DISTRIBUTION_SHORT_READY',
+);
 assert.deepEqual(
   liveCardKeysFromRows('ema', 'combo', [
     { key: 'GOOD', total: 2 },

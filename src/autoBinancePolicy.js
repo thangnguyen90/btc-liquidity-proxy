@@ -1,6 +1,7 @@
-export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'LIVE_CARD_ONLY_V1_20260803';
+export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'LIVE_CARD_AND_LIQ_FLOW_READY_V7_HTF5_20260813';
 
 const LIVE_CARD_AUTO_ORDER_AUTHORIZATION = Symbol('live-card-auto-order-authorization');
+const LIQUID_FLOW_V2_AUTO_ORDER_AUTHORIZATION = Symbol('liquid-flow-v2-auto-order-authorization');
 
 export function liveCardOnlyAutoBinanceEnabled(env = process.env) {
   return env.LIVE_CARD_WHITELIST_ONLY_AUTO_BINANCE !== 'false';
@@ -9,6 +10,17 @@ export function liveCardOnlyAutoBinanceEnabled(env = process.env) {
 export function authorizeLiveCardAutoOrder(payload = {}) {
   const authorized = { ...payload };
   Object.defineProperty(authorized, LIVE_CARD_AUTO_ORDER_AUTHORIZATION, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return authorized;
+}
+
+export function authorizeLiquidFlowV2AutoOrder(payload = {}) {
+  const authorized = { ...payload };
+  Object.defineProperty(authorized, LIQUID_FLOW_V2_AUTO_ORDER_AUTHORIZATION, {
     value: true,
     enumerable: false,
     configurable: false,
@@ -37,6 +49,9 @@ export function evaluateAutoBinanceEntryPolicy({
   }
   if (payload?.[LIVE_CARD_AUTO_ORDER_AUTHORIZATION] === true) {
     return { allowed: true, exclusive: true, reason: 'CHECKED_LIVE_CARD' };
+  }
+  if (payload?.[LIQUID_FLOW_V2_AUTO_ORDER_AUTHORIZATION] === true) {
+    return { allowed: true, exclusive: true, reason: 'LIQUID_FLOW_V2_READY_FILL' };
   }
   return {
     allowed: false,

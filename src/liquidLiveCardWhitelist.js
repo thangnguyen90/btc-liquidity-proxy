@@ -1,4 +1,4 @@
-export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V7_20260809';
+export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V9_LIQ_SPRING_REVERSAL_20260811';
 export const LIVE_CARD_COMBO_ENTRY_MATCH_VERSION = 'LIVE_CARD_COMBO_ENTRY_MATCH_V1_20260804';
 
 const ALLOWED_PREFIXES = [
@@ -16,6 +16,7 @@ const ALLOWED_PREFIXES = [
   'long-session:',
   'long-market:',
   'long-mechanism:',
+  'spring-reversal:',
   'long-point:',
   'runner30:',
   'runner-direction:',
@@ -27,6 +28,7 @@ const ALLOWED_PREFIXES = [
   'ema:',
   'edge:',
   'recommended:',
+  'heatmap-v2:',
 ];
 
 function upper(value) {
@@ -175,6 +177,8 @@ export function liquidLiveCardKeysOfTrade(trade = {}) {
   if (trade.liquidLongControlledSellMatched === true) keys.add('long-mechanism:CONTROLLED_SELL');
   if (trade.liquidLongDecoupledReboundMatched === true) keys.add('long-mechanism:DECOUPLED_REBOUND');
   if (trade.liquidLongBtcAbsorptionMatched === true) keys.add('long-mechanism:BTC_ABSORPTION');
+  if (trade.liquidLongSpringMatched === true) keys.add('spring-reversal:LONG_SPRING');
+  if (trade.liquidShortUpthrustMatched === true) keys.add('spring-reversal:SHORT_UPTHRUST');
   if (trade.liquidRunner30Matched === true) keys.add('runner30:CANDIDATE');
 
   const combo = String(trade.liquidCombo ?? '').trim();

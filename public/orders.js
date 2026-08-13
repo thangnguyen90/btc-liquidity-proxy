@@ -1,5 +1,6 @@
 import {
   LIVE_CARD_HISTORY_STREAM_VERSION,
+  calculateLiveCardHistoryPnlTotals,
   calculateLiveCardOpenPnl,
   isLiveCardExecutionOpen,
 } from './live-card-history-live.js';
@@ -30,6 +31,7 @@ const authApiSecretInput = document.getElementById('authApiSecretInput');
 const authSubmitBtn = document.getElementById('authSubmitBtn');
 const authError = document.getElementById('authError');
 const mainContent = document.getElementById('mainContent');
+let silentAuthError = '';
 
 function getToken() { return localStorage.getItem(TOKEN_KEY) ?? ''; }
 
@@ -48,6 +50,26 @@ async function doAuth(apiKey, apiSecret) {
   localStorage.setItem(TOKEN_KEY, data.token);
   localStorage.setItem(CREDS_KEY, JSON.stringify({ apiKey, apiSecret }));
   return data.token;
+}
+
+async function tryLocalEnvAuth() {
+  try {
+    const res = await fetch('/api/auth/env', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status !== 404) silentAuthError = data.error ?? 'Không thể tạo phiên Binance từ .env.';
+      return false;
+    }
+    if (!data.token) return false;
+    localStorage.setItem(TOKEN_KEY, data.token);
+    // Env credentials stay server-side. Remove any secret saved by the legacy browser login.
+    localStorage.removeItem(CREDS_KEY);
+    silentAuthError = '';
+    return true;
+  } catch (error) {
+    silentAuthError = error.message ?? 'Không thể kết nối máy chủ để auto-login.';
+    return false;
+  }
 }
 
 async function tryLogin() {
@@ -89,6 +111,11 @@ async function tryAutoReauth() {
   }
 }
 
+async function trySilentAuth() {
+  if (await tryLocalEnvAuth()) return true;
+  return tryAutoReauth();
+}
+
 function showApp() {
   authOverlay.style.display = 'none';
   mainContent.style.display = '';
@@ -125,6 +152,7 @@ function showApp() {
 function showAuthOverlay() {
   authOverlay.style.display = '';
   mainContent.style.display = 'none';
+  if (silentAuthError) authError.textContent = silentAuthError;
   const raw = localStorage.getItem(CREDS_KEY);
   if (raw) {
     try {
@@ -154,10 +182,11 @@ document.getElementById('logoutBtn').addEventListener('click', async () => {
   const token = getToken();
   if (token) {
     const r = await fetch('/api/balance', { headers: { 'x-orders-token': token } }).catch(() => null);
-    if (r && r.status !== 401) { showApp(); return; }
+    if (r?.ok) { showApp(); return; }
+    localStorage.removeItem(TOKEN_KEY);
   }
   // Token missing or expired — try stored credentials
-  const ok = await tryAutoReauth();
+  const ok = await trySilentAuth();
   if (ok) { showApp(); } else { showAuthOverlay(); }
 })();
 
@@ -289,8 +318,73 @@ const liveCardPaperComparisonStatus = document.getElementById('liveCardPaperComp
 const liveCardPaperComparisonCards = document.getElementById('liveCardPaperComparisonCards');
 const liveCardHistoryStatus = document.getElementById('liveCardHistoryStatus');
 const liveCardHistoryBody = document.getElementById('liveCardHistoryBody');
+const liveCardFromDay = document.getElementById('liveCardFromDay');
+const liveCardToDay = document.getElementById('liveCardToDay');
+const liveCardTodayBtn = document.getElementById('liveCardTodayBtn');
+const liveCardAllDaysBtn = document.getElementById('liveCardAllDaysBtn');
+const liveCardApplyRangeBtn = document.getElementById('liveCardApplyRangeBtn');
+const liveCardDateRangeStatus = document.getElementById('liveCardDateRangeStatus');
 let liveCardRealKeys = new Set();
 let liveCardCandidateKeys = new Set();
+const LIVE_CARD_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const liveCardRangeParams = new URLSearchParams(window.location.search);
+const liveCardBangkokDateFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
+});
+const liveCardBangkokTodayParts = Object.fromEntries(
+  liveCardBangkokDateFormatter.formatToParts(new Date()).map((part) => [part.type, part.value]),
+);
+const liveCardBangkokToday = `${liveCardBangkokTodayParts.year}-${liveCardBangkokTodayParts.month}-${liveCardBangkokTodayParts.day}`;
+let liveCardDateRange = {
+  fromDay: LIVE_CARD_DATE_PATTERN.test(liveCardRangeParams.get('fromDay') ?? '')
+    ? liveCardRangeParams.get('fromDay')
+    : liveCardBangkokToday,
+  toDay: LIVE_CARD_DATE_PATTERN.test(liveCardRangeParams.get('toDay') ?? '')
+    ? liveCardRangeParams.get('toDay')
+    : liveCardBangkokToday,
+  all: liveCardRangeParams.get('range') === 'all',
+  availableDays: [],
+};
+
+function normalizeLiveCardUiRange(fromDay, toDay) {
+  let from = LIVE_CARD_DATE_PATTERN.test(String(fromDay ?? '')) ? String(fromDay) : null;
+  let to = LIVE_CARD_DATE_PATTERN.test(String(toDay ?? '')) ? String(toDay) : null;
+  if (!from && !to) return { fromDay: liveCardBangkokToday, toDay: liveCardBangkokToday };
+  if (!from) from = to;
+  if (!to) to = from;
+  if (from > to) [from, to] = [to, from];
+  return { fromDay: from, toDay: to };
+}
+
+function liveCardRangeLabel() {
+  if (liveCardDateRange.all) return 'Tất cả lịch sử · Asia/Bangkok';
+  if (liveCardDateRange.fromDay === liveCardDateRange.toDay) {
+    return `${liveCardDateRange.fromDay}${liveCardDateRange.fromDay === liveCardBangkokToday ? ' · Hôm nay' : ''} · Asia/Bangkok`;
+  }
+  return `${liveCardDateRange.fromDay} → ${liveCardDateRange.toDay} · Asia/Bangkok`;
+}
+
+function syncLiveCardCalendarControls() {
+  if (!liveCardFromDay || !liveCardToDay) return;
+  liveCardFromDay.value = liveCardDateRange.all ? '' : liveCardDateRange.fromDay;
+  liveCardToDay.value = liveCardDateRange.all ? '' : liveCardDateRange.toDay;
+  liveCardTodayBtn?.classList.toggle('is-active', !liveCardDateRange.all
+    && liveCardDateRange.fromDay === liveCardBangkokToday
+    && liveCardDateRange.toDay === liveCardBangkokToday);
+  liveCardAllDaysBtn?.classList.toggle('is-active', liveCardDateRange.all);
+  if (liveCardDateRangeStatus) liveCardDateRangeStatus.textContent = liveCardRangeLabel();
+  const url = new URL(window.location.href);
+  if (liveCardDateRange.all) {
+    url.searchParams.set('range', 'all');
+    url.searchParams.delete('fromDay');
+    url.searchParams.delete('toDay');
+  } else {
+    url.searchParams.delete('range');
+    url.searchParams.set('fromDay', liveCardDateRange.fromDay);
+    url.searchParams.set('toDay', liveCardDateRange.toDay);
+  }
+  window.history.replaceState({}, '', url);
+}
 
 function showAction(text) {
   actionResult.style.display = 'block';
@@ -317,7 +411,7 @@ async function apiFetch(url, opts = {}) {
   if (res.status === 401) {
     localStorage.removeItem(TOKEN_KEY);
     // Try silent re-auth with stored credentials before showing overlay
-    const ok = await tryAutoReauth();
+    const ok = await trySilentAuth();
     if (ok) {
       // Retry the original request with new token
       const headers2 = { 'x-orders-token': getToken(), ...(opts.headers ?? {}) };
@@ -489,13 +583,8 @@ function renderLiveCardHistory(data) {
   const rows = (Array.isArray(data?.executions) ? data.executions : [])
     .filter((row) => row?.entryFilledAt)
     .sort((a, b) => Date.parse(b.entryFilledAt) - Date.parse(a.entryFilledAt));
-  const totalFilled = Number(data?.overview?.filled ?? rows.length);
-  const active = rows.filter(isLiveCardExecutionOpen).length;
-  const closed = rows.filter((row) => String(row?.status ?? '').toUpperCase() === 'POSITION_CLOSED').length;
-  if (liveCardHistoryStatus) {
-    liveCardHistoryStatus.dataset.version = LIVE_CARD_HISTORY_STREAM_VERSION;
-    liveCardHistoryStatus.innerHTML = `<span class="live-dot"></span>Socket · ${totalFilled} đã fill · mở ${active} · đóng ${closed}`;
-  }
+  liveCardHistoryExecutions = rows;
+  renderLiveCardHistoryStatus();
   if (!rows.length) {
     liveCardHistoryBody.innerHTML = '<tr><td colspan="12" class="empty-cell">Chưa có lệnh Binance do bot fill.</td></tr>';
     return;
@@ -543,6 +632,7 @@ function renderLiveCardHistory(data) {
     </tr>`;
   }).join('');
   for (const tick of liveCardLatestPositionTicks.values()) applyLiveCardHistoryTick(tick);
+  renderLiveCardHistoryStatus();
 }
 
 function renderLiveCardWhitelist(data) {
@@ -580,8 +670,10 @@ function renderLiveCardLifecycle(data) {
   if (!liveCardLifecycleBody) return;
   const rows = Array.isArray(data?.stats) ? data.stats : [];
   const total = Number(data?.total ?? data?.executions?.length ?? 0);
+  liveCardDateRange.availableDays = Array.isArray(data?.availableDays) ? data.availableDays : [];
   const syncError = String(data?.closedPnlSync?.error ?? '');
-  liveCardLifecycleStatus.textContent = `${total} lifecycle · ${rows.length} key whitelist${syncError ? ` · PnL chờ đối soát: ${syncError}` : ''}`;
+  liveCardLifecycleStatus.textContent = `${total}/${Number(data?.unfilteredTotal ?? total)} lifecycle · ${rows.length} key whitelist${syncError ? ` · PnL chờ đối soát: ${syncError}` : ''}`;
+  syncLiveCardCalendarControls();
   renderLiveCardOverview(data?.overview ?? {});
   renderLiveCardPaperComparison(rows, data?.overview ?? {});
   renderLiveCardHistory(data);
@@ -627,7 +719,12 @@ function renderLiveCardLifecycle(data) {
 async function loadLiveCardLifecycle() {
   if (!liveCardLifecycleBody) return;
   try {
-    renderLiveCardLifecycle(await apiFetch('/api/live-card-binance-lifecycle?limit=500'));
+    const params = new URLSearchParams({ limit: '500' });
+    if (!liveCardDateRange.all) {
+      params.set('fromDay', liveCardDateRange.fromDay);
+      params.set('toDay', liveCardDateRange.toDay);
+    }
+    renderLiveCardLifecycle(await apiFetch(`/api/live-card-binance-lifecycle?${params}`));
   } catch (error) {
     liveCardLifecycleStatus.textContent = 'Lỗi';
     liveCardLifecycleBody.innerHTML = `<tr><td colspan="14" class="empty-cell">${escapeHtml(error.message)}</td></tr>`;
@@ -685,6 +782,29 @@ liveCardPaperComparisonCards?.addEventListener('change', (event) => {
   if (input) updateLiveCardRealToggle(input);
 });
 refreshLiveCardWhitelistBtn?.addEventListener('click', loadLiveCardWhitelist);
+liveCardApplyRangeBtn?.addEventListener('click', async () => {
+  const normalized = normalizeLiveCardUiRange(liveCardFromDay?.value, liveCardToDay?.value);
+  liveCardDateRange = { ...liveCardDateRange, ...normalized, all: false };
+  syncLiveCardCalendarControls();
+  liveCardApplyRangeBtn.disabled = true;
+  try { await loadLiveCardLifecycle(); } finally { liveCardApplyRangeBtn.disabled = false; }
+});
+liveCardTodayBtn?.addEventListener('click', async () => {
+  liveCardDateRange = {
+    ...liveCardDateRange,
+    fromDay: liveCardBangkokToday,
+    toDay: liveCardBangkokToday,
+    all: false,
+  };
+  syncLiveCardCalendarControls();
+  await loadLiveCardLifecycle();
+});
+liveCardAllDaysBtn?.addEventListener('click', async () => {
+  liveCardDateRange = { ...liveCardDateRange, all: true };
+  syncLiveCardCalendarControls();
+  await loadLiveCardLifecycle();
+});
+syncLiveCardCalendarControls();
 
 // ── Sections ────────────────────────────────────────────────
 async function loadDailyPnl() {
@@ -748,6 +868,21 @@ let markWsWantedSymbols = new Set();
 let positionSnapshotRefreshTimer = null;
 let liveCardLifecycleRefreshTimer = null;
 const liveCardLatestPositionTicks = new Map();
+let liveCardHistoryExecutions = [];
+
+function renderLiveCardHistoryStatus() {
+  if (!liveCardHistoryStatus) return;
+  const rows = liveCardHistoryExecutions;
+  const totalFilled = rows.length;
+  const active = rows.filter(isLiveCardExecutionOpen).length;
+  const closed = rows.filter((row) => String(row?.status ?? '').toUpperCase() === 'POSITION_CLOSED').length;
+  const totals = calculateLiveCardHistoryPnlTotals(rows, liveCardLatestPositionTicks);
+  const totalKnown = totals.closedKnown + totals.openKnown > 0;
+  const missing = totals.closedMissing + totals.openMissing;
+  const pnlSpan = (value, known) => `<strong class="${Number(value) >= 0 ? 'positive' : 'negative'}">${escapeHtml(liveCardPnlText(value, known))}</strong>`;
+  liveCardHistoryStatus.dataset.version = LIVE_CARD_HISTORY_STREAM_VERSION;
+  liveCardHistoryStatus.innerHTML = `<span class="live-dot"></span>Socket · ${totalFilled} đã fill · mở ${active} · đóng ${closed} · NET đóng ${pnlSpan(totals.closedNet, totals.closedKnown > 0)} · uPnL mở ${pnlSpan(totals.openUnrealized, totals.openKnown > 0)} · tổng ${pnlSpan(totals.totalPnl, totalKnown)}${missing ? ` · thiếu ${missing}` : ''}`;
+}
 
 // Avg-down state: symbol → entryPrice when triggered (cleared when position closes)
 const avgDownTriggered = new Map();
@@ -798,6 +933,7 @@ function applyLiveCardHistoryTick(payload) {
     pnlCell.innerHTML = `<strong>${escapeHtml(liveCardPnlText(live.pnl, true))}</strong><small>ROE ${escapeHtml(liveCardPercentText(live.roe))} · socket</small>`;
     pnlCell.dataset.v = String(live.pnl);
   }
+  renderLiveCardHistoryStatus();
 }
 
 function applyPositionPnlTick(d) {
@@ -921,7 +1057,7 @@ async function connectPositionPnlStream() {
       cache: 'no-store',
       signal: controller.signal,
     });
-    if (response.status === 401 && await tryAutoReauth()) {
+    if (response.status === 401 && await trySilentAuth()) {
       throw new Error('REAUTH_RECONNECT');
     }
     if (!response.ok || !response.body) throw new Error(`Position stream HTTP ${response.status}`);
@@ -994,7 +1130,7 @@ function _buildPositionRows(rows) {
           <button class="dca-toggle-btn" data-sym="${sym}">DCA</button>
         </td>
         <td style="text-align:center">
-          <input type="checkbox" class="tsl-exclude-cb" data-sym="${sym}" title="Skip trailing stop & auto management"
+          <input type="checkbox" class="tsl-exclude-cb" data-sym="${sym}" title="Chỉ giữ ROE ≥10% → SL +1%; không nâng tiếp ở 15%/20%+"
             ${tslExcluded.has(sym) ? 'checked' : ''}
             style="width:16px;height:16px;cursor:pointer;accent-color:var(--red)">
         </td>
@@ -1298,8 +1434,8 @@ async function loadTsl() {
   try {
     const data = await apiFetch('/api/trailing-stop/status');
     tslStatus.textContent = data.enabled
-      ? `Enabled · trigger ROE ≥ ${data.triggerRoe}% → lock ${data.lockMarginPct}% margin`
-      : 'Disabled (set TRAILING_STOP_ENABLED=true)';
+      ? `ProfitLock · Manual/V2: 10→1, 15→5, 20→10 · Cap TSL checked: 10→1 tối đa · TSL cũ OFF`
+      : 'ProfitLock disabled (AUTO_SL_ENABLED=false)';
 
     const entries = Object.entries(data.protected ?? {});
     if (!entries.length) {

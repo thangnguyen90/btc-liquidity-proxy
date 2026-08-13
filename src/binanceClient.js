@@ -274,10 +274,10 @@ export class BinanceClient {
     return this.signedRequest('DELETE', '/fapi/v1/algoOrder', { algoId, recvWindow }, { apiKey, apiSecret });
   }
 
-  async getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow = 5000 }) {
+  async getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow = 5000, ...options }) {
     const params = { recvWindow };
     if (symbol) params.symbol = symbol;
-    return this.signedRequest('GET', '/fapi/v1/openAlgoOrders', params, { apiKey, apiSecret });
+    return this.signedRequest('GET', '/fapi/v1/openAlgoOrders', params, { apiKey, apiSecret, ...options });
   }
 
   async getAccountUid({ apiKey, apiSecret, recvWindow = 5000 }) {

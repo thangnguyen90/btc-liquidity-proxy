@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kill Long / Kill Short Flow V2</title>
+    <link rel="stylesheet" href="/styles.css?v=20260809-flow-v2">
+    <link rel="stylesheet" href="/liquid-flow-v2.css?v=20260810-v6">
+  </head>
+  <body>
+    <main class="flow-v2-shell">
+      <header class="flow-v2-topbar">
+        <div>
+          <p class="flow-v2-eyebrow">BINANCE FREE FLOW · TOP GAINERS / LOSERS · 5M CLOSED CANDLE</p>
+          <h1>Kill Long / Kill Short Flow V2</h1>
+          <p class="flow-v2-lead">Vùng heatmap V1 là điểm hút. V2 chỉ gắn nhãn thời điểm sau khi ghép nến đóng, taker flow, OI và force-liquidation.</p>
+        </div>
+        <nav class="flow-v2-nav" aria-label="Điều hướng">
+          <a class="active" href="/liquid-flow-v2" aria-current="page">Liquid Flow V2</a>
+          <a href="/liquid-scan">Liquid Scan V1</a>
+          <a href="/highvol">High Vol</a>
+          <a href="/lsratio">L/S Ratio</a>
+          <a href="/orders">Orders</a>
+        </nav>
+      </header>
+
+      <section class="flow-v2-health" aria-live="polite">
+        <div class="flow-v2-health-copy">
+          <span id="socketDot" class="flow-v2-socket-dot is-connecting"></span>
+          <div>
+            <strong id="socketStatus">Đang kết nối realtime...</strong>
+            <small id="generatedAt">Chưa có snapshot</small>
+          </div>
+        </div>
+        <div class="flow-v2-safety">
+          <strong>NHÃN OBSERVE · BASE PAPER TEST REAL</strong>
+          <span>Nhãn không gate/chặn; PRE thử Binance $5 × 5x, BASE LONG/SHORT giữ $2 × 5x</span>
+        </div>
+      </section>
+
+      <section id="summaryGrid" class="flow-v2-summary" aria-label="Tổng quan">
+        <article><span>UNIVERSE</span><strong id="candidateCount">--</strong><small>top movers đủ thanh khoản</small></article>
+        <article class="is-ready"><span>READY</span><strong id="readyCount">--</strong><small>sweep + nến xác nhận</small></article>
+        <article class="is-active"><span>SQUEEZE ACTIVE</span><strong id="activeCount">--</strong><small>chờ, không bắt đỉnh/đáy</small></article>
+        <article class="is-warm"><span>WARMING UP</span><strong id="warmupCount">--</strong><small>thiếu OI/force-order/nến</small></article>
+      </section>
+
+      <section class="flow-v2-entry-rule">
+        <div class="flow-v2-entry-rule-head">
+          <div>
+            <p class="flow-v2-eyebrow">KHI NÀO VÀO PAPER?</p>
+            <h2>Chỉ vào lần đầu chuyển READY; PRE đo mark live với EMA99 từ nến 5m đã đóng</h2>
+          </div>
+          <label class="flow-v2-auto-paper">
+            <input id="autoPaperEnabled" type="checkbox">
+            <span>AUTO PAPER</span>
+            <strong id="autoPaperState">ĐANG TẢI</strong>
+          </label>
+        </div>
+        <div class="flow-v2-entry-steps">
+          <article><b>1 · ACTIVE = CHƯA VÀO</b><span>Đang kill LONG/SHORT thì tiếp tục chờ, không bắt đỉnh hoặc bắt đáy.</span></article>
+          <article><b>2 · PRE EMA99 HOẶC NẾN XÁC NHẬN</b><span>PRE dùng mark live sắp chạm EMA99 causal; SWEEP/BASE READY vẫn cần nến 5m đóng và flow cùng hướng.</span></article>
+          <article><b>3 · READY = TẠO PAPER</b><span>Mọi nhãn dùng 5x, hard SL -20% và TP tối thiểu +10% gross ROE; PRE/đảo chiều vào mark live, BASE SWEEP chờ retest mép breakout.</span></article>
+        </div>
+        <p id="autoPaperRuleNote" class="flow-v2-entry-note">Paper $10 · mọi nhãn 5x · SL -20% / TP tối thiểu +10% gross ROE; HTF 15m chỉ paper đánh giá; PRE thử Binance $5 × 5x, BASE LONG/SHORT giữ $2 × 5x.</p>
+      </section>
+
+      <section class="flow-v2-label-section">
+        <div class="flow-v2-section-head">
+          <div>
+            <p class="flow-v2-eyebrow">NHÃN V2 · LONG / SHORT TÁCH RIÊNG</p>
+            <h2>Thống kê nhãn trong phiên</h2>
+          </div>
+          <p>Checkbox chỉ lưu whitelist thống kê, không cấp lệnh. Auto Paper chạy độc lập và chỉ mở khi nhãn lần đầu chuyển sang READY.</p>
+        </div>
+        <div id="labelStats" class="flow-v2-label-grid">
+          <div class="flow-v2-empty">Đang tải nhãn...</div>
+        </div>
+      </section>
+
+      <section class="flow-v2-board">
+        <div class="flow-v2-board-head">
+          <div>
+            <p class="flow-v2-eyebrow">SMALL-CAP PROXY · XẾP THEO BIẾN ĐỘNG + QUOTE VOLUME</p>
+            <h2>Tín hiệu kiểu BLUAI: đang squeeze hay đã sweep?</h2>
+          </div>
+          <div class="flow-v2-filters" role="group" aria-label="Lọc tín hiệu">
+            <button class="is-active" data-filter="ALL" type="button">Tất cả</button>
+            <button data-filter="READY" type="button">Ready</button>
+            <button data-filter="SHORT" type="button">Short</button>
+            <button data-filter="LONG" type="button">Long</button>
+            <button id="refreshButton" type="button">Làm mới</button>
+          </div>
+        </div>
+        <div id="signalGrid" class="flow-v2-signal-grid">
+          <div class="flow-v2-empty">Đang tổng hợp dữ liệu...</div>
+        </div>
+      </section>
+
+      <section class="flow-v2-paper-section">
+        <div class="flow-v2-section-head">
+          <div>
+            <p class="flow-v2-eyebrow">AUTO PAPER V2 · TÁCH RIÊNG LIQUID PAPER V1</p>
+            <h2>Lệnh paper đã vào theo nhãn READY</h2>
+          </div>
+          <p id="paperUpdatedAt">Chưa có paper trade.</p>
+        </div>
+        <div class="flow-v2-paper-summary">
+          <article><span>OPEN / PENDING</span><strong id="paperOpenCount">0 / 0</strong></article>
+          <article><span>CLOSED</span><strong id="paperClosedCount">0</strong></article>
+          <article><span>W / L</span><strong id="paperWinLoss">0 / 0</strong></article>
+          <article><span>WIN RATE</span><strong id="paperWinRate">--</strong></article>
+          <article><span>NET PNL</span><strong id="paperNetPnl">$0.000</strong></article>
+          <article><span>AVG ROE</span><strong id="paperAvgRoe">--</strong></article>
+        </div>
+        <div class="flow-v2-paper-columns">
+          <div>
+            <h3>Đang mở / chờ retest</h3>
+            <div id="paperOpenList" class="flow-v2-paper-list"><div class="flow-v2-empty">Chưa có lệnh mở.</div></div>
+          </div>
+          <div>
+            <h3>Đã đóng / hủy gần nhất</h3>
+            <div id="paperClosedList" class="flow-v2-paper-list"><div class="flow-v2-empty">Chưa có lệnh đóng.</div></div>
+            <nav id="paperClosedPagination" class="flow-v2-pagination" aria-label="Phân trang lệnh paper đã đóng">
+              <button id="paperClosedPrev" type="button">‹ Trước</button>
+              <span id="paperClosedPageInfo">Trang 1 / 1 · 0 lệnh</span>
+              <button id="paperClosedNext" type="button">Sau ›</button>
+            </nav>
+          </div>
+        </div>
+      </section>
+
+      <section class="flow-v2-method">
+        <h2>Cách đọc</h2>
+        <div class="flow-v2-method-grid">
+          <article><b>UP SQUEEZE ACTIVE</b><span>Coin đang bơm/kill SHORT. Không SHORT chỉ vì nằm top tăng.</span></article>
+          <article><b>UP SWEEP · SHORT READY</b><span>Đã chạm vùng trên, nến đóng reject và tối thiểu một flow xác nhận suy yếu.</span></article>
+          <article><b>DOWN SQUEEZE ACTIVE</b><span>Coin đang dump/kill LONG. Không LONG chỉ vì RSI thấp hoặc giảm sâu.</span></article>
+          <article><b>DOWN SWEEP · LONG READY</b><span>Đã chạm vùng dưới, nến đóng reclaim và tối thiểu một flow xác nhận hấp thụ.</span></article>
+          <article><b>UP BASE SWEEP · LONG READY</b><span>Top tăng quét đáy base, giữ reclaim rồi đóng breakout với volume và taker mua; không chấp nhận nến reject đỉnh.</span></article>
+          <article><b>DOWN BASE SWEEP · SHORT READY</b><span>Top giảm quét đỉnh base, giữ reject rồi đóng breakdown với volume và taker bán; không chấp nhận nến reclaim đáy.</span></article>
+          <article><b>PRE UP BASE · LONG</b><span>Râu nến 5m live chạm EMA99 rồi bật/reclaim, EMA13/25/99 còn xếp tăng và không đuổi quá +1,2%; tạo paper và thử Binance MARKET $5 × 5x ở transition mới.</span></article>
+          <article><b>PRE DOWN BASE · SHORT</b><span>Râu nến 5m live chạm EMA99 rồi reject xuống, EMA13/25/99 còn xếp giảm và không đuổi quá -1,2%; tạo paper và thử Binance MARKET $5 × 5x ở transition mới.</span></article>
+          <article><b>HTF BEAR · 5M/15M EMA99 PUMP REJECT</b><span>Ít nhất một khung 1h/4h giảm, pump 5m hoặc 15m quét EMA99 rồi nến đóng reject xuống với volume/taker guard. Khi nhãn READY mới phát: Auto Paper và Binance MARKET margin $5, mặc định 5x.</span></article>
+          <article><b>HTF BULL · 5M/15M EMA99 DUMP RECLAIM</b><span>Ít nhất một khung 1h/4h tăng, dump 5m hoặc 15m quét EMA99 rồi nến đóng reclaim lên với volume/taker guard. Khi nhãn READY mới phát: Auto Paper và Binance MARKET margin $5, mặc định 5x.</span></article>
+          <article><b>PUMP DISTRIBUTION · WATCH</b><span>Nhìn lại tối đa 48 giờ nến 15m và chu kỳ 1h: pump mạnh đã chuyển sang co hẹp, đỉnh thấp dần, râu trên và volume/taker suy yếu. Đây là nhãn theo dõi độc lập, chưa vào paper.</span></article>
+          <article><b>PUMP DISTRIBUTION · SHORT READY</b><span>Đã thủng support và có retest thất bại hoặc hai nến đóng giữ dưới support. Tạo Auto Paper SHORT để đánh giá; không cấp lệnh Binance thật và không đuổi khi đã xả quá sâu.</span></article>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/liquid-flow-v2.js?v=20260811-v22"></script>
+  </body>
+</html>

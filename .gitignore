@@ -1,3 +1,14 @@
 node_modules/
 .env
 *.log
+data/liquid-flow-v2-paper.json
+data/liquid-flow-v2-paper.json.tmp-*
+# Runtime append-only stores and interrupted atomic-write files are local data,
+# not source. Keeping them out of Codex/Git checkpoints prevents 700MB+ loose
+# blobs from being recreated on every turn.
+data/*.wal.ndjson
+data/*-journal.ndjson
+data/*.json.*.tmp
+data/*.json.tmp
+scripts/__pycache__/
+reports/

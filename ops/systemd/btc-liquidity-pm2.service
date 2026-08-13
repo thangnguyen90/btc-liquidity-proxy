@@ -1,0 +1,24 @@
+[Unit]
+Description=BTC Liquidity Proxy PM2 supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=thangnguyen
+Group=thangnguyen
+WorkingDirectory=/home/thangnguyen/project/btc-liquidity-proxy
+Environment=HOME=/home/thangnguyen
+Environment=PM2_HOME=/home/thangnguyen/.pm2
+Environment=PATH=/home/thangnguyen/.nvm/versions/node/v22.16.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PIDFile=/home/thangnguyen/.pm2/pm2.pid
+ExecStart=/usr/bin/pm2 resurrect
+ExecReload=/usr/bin/pm2 reload all --update-env
+ExecStop=/usr/bin/pm2 kill
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

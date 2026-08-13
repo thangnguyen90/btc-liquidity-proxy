@@ -104,6 +104,8 @@ const els = {
   liquidLongSessionFilter: document.getElementById('liquidLongSessionFilter'),
   liquidLongMechanismSection: document.getElementById('liquidLongMechanismSection'),
   liquidLongMechanismStats: document.getElementById('liquidLongMechanismStats'),
+  liquidSpringReversalSection: document.getElementById('liquidSpringReversalSection'),
+  liquidSpringReversalStats: document.getElementById('liquidSpringReversalStats'),
   liquidLongPointPhaseSection: document.getElementById('liquidLongPointPhaseSection'),
   liquidLongPointPhaseStats: document.getElementById('liquidLongPointPhaseStats'),
   liquidRunner30Section: document.getElementById('liquidRunner30Section'),
@@ -1925,6 +1927,22 @@ function renderLiquidLongReversalBadge(t) {
   return `<span title="${escapeHtml(title)}" style="display:flex;flex-direction:column;align-items:flex-start;gap:3px">${badges.join('')}</span>`;
 }
 
+function renderLiquidSpringReversalBadge(t) {
+  if (t.liquidSpringReversalMatched !== true) return '';
+  const isLong = t.liquidLongSpringMatched === true;
+  const color = isLong ? '#34d399' : '#fb7185';
+  const title = [
+    t.liquidSpringReversalReason,
+    `${t.liquidSpringStructureAtEntry?.timeframe ?? '-'} · sweep ${fmt(t.liquidSpringReversalSweepPct, 2)}% · reclaim/reject ${fmt(t.liquidSpringReversalReclaimPct, 2)}%`,
+    `ALT ${t.liquidSpringReversalAltDirection ?? '-'} · BTC ${t.liquidSpringReversalBtcDirection ?? '-'}`,
+    `LONG ${t.liquidSpringReversalLongScore ?? '-'} · SHORT ${t.liquidSpringReversalShortScore ?? '-'} · opposite gap ${t.liquidSpringReversalOppositePointGap ?? '-'}`,
+    t.liquidSpringReversalBasis,
+    t.liquidSpringReversalVersion,
+    'OBSERVE ONLY · không gate/chặn/đổi entry/size/SL/TP/Binance',
+  ].filter(Boolean).join(' | ');
+  return `<span title="${escapeHtml(title)}" style="display:inline-flex;margin-top:3px;padding:3px 6px;border:1px solid ${color};border-radius:4px;color:${color};font-size:10px;font-weight:950;white-space:nowrap">${escapeHtml(t.liquidSpringReversalLabel)}</span>`;
+}
+
 function renderLiquidLongPointPhaseBadge(t) {
   const tier = String(t.liquidLongPointPhaseTier ?? 'UNRATED').toUpperCase();
   if (tier === 'UNRATED') return '<span class="muted">-</span>';
@@ -2218,6 +2236,7 @@ function getLiquidPaperClosedGroupStats() {
     longMarket: summarizeLiquidLongMarket(closedRows),
     longSession: summarizeLiquidLongSession(closedRows),
     longMechanism: summarizeLiquidLongMechanisms(closedRows),
+    springReversal: summarizeLiquidSpringReversal(closedRows),
     longPointPhase: summarizeLiquidLongPointPhases(closedRows),
     runnerDirection: summarizeLiquidRunnerDirection(closedRows),
     runner30: {
@@ -3419,6 +3438,57 @@ function summarizeLiquidLongMechanisms(rows) {
   }).filter((row) => row.total > 0);
 }
 
+function summarizeLiquidSpringReversal(rows) {
+  const configs = [
+    {
+      key: 'LONG_SPRING',
+      field: 'liquidLongSpringMatched',
+      label: 'LIQ LONG SPRING REVERSAL',
+      condition: 'LONG · quét đáy ≥0.15% · đóng reclaim ≥0.05% · coin/BTC bullish · SHORT−LONG point ≥15',
+    },
+    {
+      key: 'SHORT_UPTHRUST',
+      field: 'liquidShortUpthrustMatched',
+      label: 'LIQ SHORT UPTHRUST REVERSAL',
+      condition: 'SHORT · quét đỉnh ≥0.15% · đóng reject ≥0.05% · coin/BTC bearish · LONG−SHORT point ≥15',
+    },
+  ];
+  return configs.map((config) => {
+    const matched = rows.filter((trade) => trade[config.field] === true);
+    const closed = matched.filter((trade) => trade.status === 'CLOSED');
+    const open = matched.filter((trade) => trade.status === 'OPEN');
+    const wins = closed.filter((trade) => liquidNetPnl(trade) > 0);
+    const losses = closed.filter((trade) => liquidNetPnl(trade) < 0);
+    const grossWin = wins.reduce((sum, trade) => sum + liquidNetPnl(trade), 0);
+    const grossLoss = Math.abs(losses.reduce((sum, trade) => sum + liquidNetPnl(trade), 0));
+    const days = new Map();
+    for (const trade of closed) {
+      const day = liquidPaperTradeDayKey(trade);
+      if (day) days.set(day, (days.get(day) ?? 0) + liquidNetPnl(trade));
+    }
+    return {
+      ...config,
+      total: matched.length,
+      open: open.length,
+      pending: matched.length - closed.length - open.length,
+      closed: closed.length,
+      wins: wins.length,
+      losses: losses.length,
+      wr: closed.length ? (wins.length / closed.length) * 100 : null,
+      avgRoe: closed.length
+        ? closed.reduce((sum, trade) => sum + liquidNetRoe(trade), 0) / closed.length
+        : null,
+      profitFactor: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 9.99 : 0,
+      realizedPnl: closed.reduce((sum, trade) => sum + liquidNetPnl(trade), 0),
+      unrealizedPnl: open.reduce((sum, trade) => sum + liquidNetPnl(trade), 0),
+      positiveDays: [...days.values()].filter((value) => value > 0).length,
+      observedDays: days.size,
+      snapshot: matched.filter((trade) => trade.liquidSpringReversalBasis === 'ENTRY_CLOSED_KLINES_SNAPSHOT').length,
+      backfill: matched.filter((trade) => String(trade.liquidSpringReversalBasis ?? '').startsWith('DERIVED')).length,
+    };
+  });
+}
+
 function summarizeLiquidRunnerDirection(rows) {
   const sides = ['LONG', 'SHORT'];
   const order = ['PRIME', 'RECOVERY', 'WATCH', 'FADED', 'STRETCHED', 'NEW'];
@@ -3735,6 +3805,29 @@ function renderLiquidLongMechanismStats(activeRows = []) {
       <span class="pump-paper-metric-label">${escapeHtml(row.label)}</span>
       <strong class="${activePnl >= 0 ? 'positive' : 'negative'}">${fmtMoney(activePnl)}</strong>
       <small>${escapeHtml(row.condition)}<br>Đã đóng ${row.closed} · PnL đóng ${renderClosedPnl(realizedPnl)}<br>Active ${row.open} · PnL active ${fmtMoney(activePnl)} · Pending ${row.pending}<br>Lịch sử: WR ${row.wr == null ? '-' : `${row.wr.toFixed(1)}%`} · PF ${Number(row.profitFactor ?? 0).toFixed(2)} · AvgROE ${renderAvgRoe(row.avgRoe)}<br>5D ${recentRange}: ${row.recentClosed ?? 0} đóng · PnL ${renderClosedPnl(row.recentPnl)} · WR ${row.recentWr == null ? '-' : `${row.recentWr.toFixed(1)}%`} · PF ${Number(row.recentProfitFactor ?? 0).toFixed(2)} · AvgROE ${renderAvgRoe(row.recentAvgRoe)}<br>Ổn định ngày 5D ${row.recentPositiveDays ?? 0}/${row.recentDayCount ?? 0} · toàn bộ ${row.positiveDays ?? 0}/${row.observedDays ?? 0}<br>Snapshot ${row.snapshot ?? 0} · Backfill ${row.backfill ?? 0}</small>
+    </div>`;
+  }).join('');
+}
+
+function renderLiquidSpringReversalStats(activeRows = []) {
+  const section = els.liquidSpringReversalSection;
+  const el = els.liquidSpringReversalStats;
+  if (!section || !el) return;
+  const closedStats = getLiquidPaperClosedGroupStats();
+  const stats = combineLiquidStageStats(
+    closedStats.springReversal,
+    summarizeLiquidSpringReversal(activeRows),
+    (row) => row.key,
+  );
+  section.style.display = 'block';
+  el.innerHTML = stats.map((row) => {
+    const activePnl = Number(row.unrealizedPnl ?? 0);
+    const realizedPnl = Number(row.realizedPnl ?? 0);
+    const cardClass = realizedPnl > 0 ? 'good' : realizedPnl < 0 ? 'bad' : 'neutral';
+    return `<div class="pump-paper-metric ${cardClass}" ${liquidLiveCardAttr(`spring-reversal:${row.key}`, row.avgRoe)}>
+      <span class="pump-paper-metric-label">${escapeHtml(row.label)}</span>
+      <strong class="${activePnl >= 0 ? 'positive' : 'negative'}">${fmtMoney(activePnl)}</strong>
+      <small>${escapeHtml(row.condition)}<br>Đã đóng ${row.closed} · PnL đóng ${renderClosedPnl(realizedPnl)}<br>Active ${row.open} · PnL active ${fmtMoney(activePnl)} · Pending ${row.pending}<br>WR ${row.wr == null ? '-' : `${row.wr.toFixed(1)}%`} · ${row.wins}W/${row.losses}L · PF ${Number(row.profitFactor ?? 0).toFixed(2)} · AvgROE ${renderAvgRoe(row.avgRoe)}<br>Ngày dương ${row.positiveDays ?? 0}/${row.observedDays ?? 0} · Snapshot ${row.snapshot ?? 0} · Backfill causal ${row.backfill ?? 0}<br>OBSERVE ONLY · checkbox chỉ hiện khi closed AvgROE &gt; 4%</small>
     </div>`;
   }).join('');
 }
@@ -4532,6 +4625,7 @@ function renderAutoPaperTrades({ liveOnly = false } = {}) {
   renderLiquidLongSessionStats(statsActiveRows);
   renderLiquidLongMarketStats(statsActiveRows);
   renderLiquidLongMechanismStats(statsActiveRows);
+  renderLiquidSpringReversalStats(statsActiveRows);
   renderLiquidLongPointPhaseStats(statsActiveRows);
   renderLiquidRunner30Stats(statsActiveRows);
   renderLiquidRunnerDirectionStats(statsActiveRows);
@@ -4609,7 +4703,7 @@ function renderAutoPaperTrades({ liveOnly = false } = {}) {
           <td>${renderLiquidBtcWaveBadge(trade)}</td>
           <td>${renderLiquidLongSessionBadge(trade)}</td>
           <td>${renderLiquidLongMarketBadge(trade)}</td>
-          <td>${renderLiquidLongReversalBadge(trade)}</td>
+          <td>${renderLiquidLongReversalBadge(trade)}${renderLiquidSpringReversalBadge(trade)}</td>
           <td>${renderLiquidLongPointPhaseBadge(trade)}</td>
           <td>${renderLiquidRunner30Badge(trade)}</td>
           <td>${renderLiquidRunnerDirectionBadge(trade)}</td>
@@ -4663,7 +4757,7 @@ function renderAutoPaperTrades({ liveOnly = false } = {}) {
           <td>${renderLiquidBtcWaveBadge(trade)}</td>
           <td>${renderLiquidLongSessionBadge(trade)}</td>
           <td>${renderLiquidLongMarketBadge(trade)}</td>
-          <td>${renderLiquidLongReversalBadge(trade)}</td>
+          <td>${renderLiquidLongReversalBadge(trade)}${renderLiquidSpringReversalBadge(trade)}</td>
           <td>${renderLiquidLongPointPhaseBadge(trade)}</td>
           <td>${renderLiquidRunner30Badge(trade)}</td>
           <td>${renderLiquidRunnerDirectionBadge(trade)}</td>
