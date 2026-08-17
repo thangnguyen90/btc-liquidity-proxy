@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
+  BINANCE_DCA_KEEP_PROTECTION_VERSION,
   LIQUID_FLOW_V2_MANUAL_ORDER_VERSION,
   buildLiquidFlowV2ManualOrderPayload,
   inspectLiquidFlowV2DcaPositions,
+  isBinanceSameSideDcaFill,
 } from '../src/liquidFlowV2ManualOrder.js';
 
 const trade = {
@@ -15,7 +17,7 @@ const trade = {
   takeProfit: 0.047857,
   stopLoss: 0.0450419,
 };
-const settings = { baseBinanceMarginUsdt: 2, baseBinanceLeverage: 5 };
+const settings = { baseBinanceMarginUsdt: 2, baseBinanceLeverage: 20 };
 const limit = buildLiquidFlowV2ManualOrderPayload({
   trade, orderType: 'LIMIT', entryPrice: 0.0465, settings, clientOrderId: 'lfv2ui_test',
 });
@@ -39,14 +41,20 @@ assert.equal(market.orderType, 'MARKET');
 assert.equal(market.limitPrice, undefined);
 assert.equal(market.side, 'SELL');
 assert.equal(market.notionalUsdt, 10);
+assert.throws(() => buildLiquidFlowV2ManualOrderPayload({
+  trade: { ...trade, labelKey: 'EMA_FAN_LONG_READY', status: 'PENDING_ENTRY' },
+  orderType: 'MARKET',
+  settings,
+  clientOrderId: 'lfv2ui_ema_fan_too_early',
+}), /chờ nến 5m đóng xác nhận/);
 
 const customSize = buildLiquidFlowV2ManualOrderPayload({
   trade, orderType: 'MARKET', settings, marginUsdt: 7, leverage: 8,
   clientOrderId: 'lfv2ui_custom_size',
 });
 assert.equal(customSize.marginUsdt, 7);
-assert.equal(customSize.leverage, 8);
-assert.equal(customSize.notionalUsdt, 56);
+assert.equal(customSize.leverage, 5);
+assert.equal(customSize.notionalUsdt, 35);
 
 const baseLongDefault = buildLiquidFlowV2ManualOrderPayload({
   trade: { ...trade, labelKey: 'UP_BASE_SWEEP_LONG_READY' },
@@ -81,6 +89,30 @@ const hedgeOppositeDcaState = inspectLiquidFlowV2DcaPositions({
   side: 'LONG',
 });
 assert.equal(hedgeOppositeDcaState.canAdd, false);
+assert.equal(isBinanceSameSideDcaFill({
+  side: 'BUY',
+  positionSide: 'BOTH',
+  cumulativeFilledQty: 2,
+  positionAmount: 7,
+}), true);
+assert.equal(isBinanceSameSideDcaFill({
+  side: 'SELL',
+  positionSide: 'SHORT',
+  cumulativeFilledQty: 2,
+  positionAmount: -7,
+}), true);
+assert.equal(isBinanceSameSideDcaFill({
+  side: 'BUY',
+  positionSide: 'BOTH',
+  cumulativeFilledQty: 2,
+  positionAmount: 2,
+}), false, 'A brand-new position must still receive its first TP/SL protection.');
+assert.equal(isBinanceSameSideDcaFill({
+  side: 'SELL',
+  positionSide: 'SHORT',
+  cumulativeFilledQty: 2,
+  positionAmount: 7,
+}), false, 'An order not opening the resulting direction is not a same-side DCA.');
 
 assert.throws(() => buildLiquidFlowV2ManualOrderPayload({
   trade: { ...trade, status: 'CLOSED' }, orderType: 'MARKET', settings,
@@ -91,28 +123,38 @@ assert.throws(() => buildLiquidFlowV2ManualOrderPayload({
 assert.throws(() => buildLiquidFlowV2ManualOrderPayload({
   trade, orderType: 'MARKET', settings, marginUsdt: 0,
 }), /Margin/);
-assert.throws(() => buildLiquidFlowV2ManualOrderPayload({
+const fractionalLeverageIgnored = buildLiquidFlowV2ManualOrderPayload({
   trade, orderType: 'MARKET', settings, leverage: 5.5,
-}), /Leverage/);
-assert.throws(() => buildLiquidFlowV2ManualOrderPayload({
+});
+assert.equal(fractionalLeverageIgnored.leverage, 5);
+const excessiveLeverageIgnored = buildLiquidFlowV2ManualOrderPayload({
   trade, orderType: 'MARKET', settings, leverage: 126,
-}), /Leverage/);
+});
+assert.equal(excessiveLeverageIgnored.leverage, 5);
 
 const [serverSource, uiSource] = await Promise.all([
   readFile(new URL('../src/server.js', import.meta.url), 'utf8'),
   readFile(new URL('../public/liquid-flow-v2.js', import.meta.url), 'utf8'),
 ]);
-assert.equal(LIQUID_FLOW_V2_MANUAL_ORDER_VERSION, 'LIQUID_FLOW_V2_MANUAL_BINANCE_UI_V4_SAME_SIDE_DCA_20260810');
+assert.equal(LIQUID_FLOW_V2_MANUAL_ORDER_VERSION, 'LIQUID_FLOW_V2_MANUAL_BINANCE_UI_V7_EMA_FAN_RETEST_CONFIRM_20260816');
+assert.equal(BINANCE_DCA_KEEP_PROTECTION_VERSION, 'BINANCE_DCA_KEEP_EXISTING_TP_SL_V1_20260814');
 assert.match(serverSource, /\/api\/liquid-flow-v2-binance-order/);
 assert.match(serverSource, /ordersTokens\.has\(token\)/);
 assert.match(serverSource, /inspectLiquidFlowV2DcaPositions/);
 assert.match(serverSource, /dcaPositionState\.canAdd/);
+assert.match(serverSource, /dcaPositionState\.hasExistingSameSide/);
+assert.match(serverSource, /protectionSuppressedForDca/);
+assert.match(serverSource, /isBinanceSameSideDcaFill/);
+assert.match(serverSource, /sameSideDcaFill/);
+assert.match(serverSource, /DCA_KEEP_EXISTING_PROTECTION/);
 assert.match(serverSource, /position ngược chiều/);
 assert.doesNotMatch(serverSource, /đã có position Binance/);
 assert.match(uiSource, /data-flow-order-type="LIMIT"/);
 assert.match(uiSource, /data-flow-order-type="MARKET"/);
 assert.match(uiSource, /data-flow-margin/);
 assert.match(uiSource, /data-flow-leverage/);
+assert.match(uiSource, /data-flow-leverage[^>]+min="5" max="5"[^>]+readonly/);
+assert.match(uiSource, /const leverage = 5;/);
 assert.match(uiSource, /marginUsdt, leverage/);
 assert.match(uiSource, /x-orders-token/);
 assert.match(uiSource, /recoverOrdersToken/);
@@ -120,8 +162,10 @@ assert.match(uiSource, /orders_creds/);
 assert.match(uiSource, /error\.status !== 401/);
 assert.match(uiSource, /location\.host/);
 assert.match(uiSource, /const lockedByServer = serverOrderState === 'SUBMITTING'/);
+assert.match(uiSource, /CHỜ NẾN 5M XÁC NHẬN/);
 assert.doesNotMatch(uiSource, /uiState\?\.success === true/);
 assert.match(uiSource, /ĐÃ VÀO LỆNH GIÁ/);
 assert.match(uiSource, /ĐÃ ĐẶT LIMIT GIÁ/);
+assert.match(uiSource, /DCA GIỮ TP\/SL CŨ/);
 
 console.log('Liquid Flow V2 manual Binance order tests passed');

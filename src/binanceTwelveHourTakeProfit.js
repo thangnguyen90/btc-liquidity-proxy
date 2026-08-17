@@ -1,6 +1,8 @@
 export const BINANCE_TWELVE_HOUR_TAKE_PROFIT_VERSION = 'BINANCE_TP_TO_ROE1_AFTER_12H_V1_20260812';
 export const DEFAULT_BINANCE_TP_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 export const DEFAULT_BINANCE_TP_TARGET_ROE_PCT = 1;
+export const BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION = 'BINANCE_NEGATIVE_TP_TO_ENTRY_AFTER_8H_V1_20260816';
+export const DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 
 function finitePositive(value) {
   const numeric = Number(value);
@@ -77,6 +79,49 @@ export function evaluateBinanceTwelveHourTakeProfit({
     closeSide: side === 'LONG' ? 'SELL' : 'BUY',
     targetPrice,
     targetRoePct: Number(targetRoePct),
+  };
+}
+
+export function evaluateBinanceEightHourNegativeTakeProfit({
+  enabled = true,
+  now = Date.now(),
+  openedAt,
+  entryPrice,
+  positionAmount,
+  currentRoe,
+  capTsl = false,
+  maxAgeMs = DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+} = {}) {
+  if (!enabled) return { eligible: false, reason: 'disabled' };
+  if (capTsl === true) return { eligible: false, reason: 'cap_tsl_excluded' };
+  const openedAtMs = parseBinancePositionOpenedAt(openedAt);
+  if (!openedAtMs) return { eligible: false, reason: 'missing_opened_at' };
+
+  const timestamp = Number(now);
+  const ageLimit = finitePositive(maxAgeMs);
+  if (!Number.isFinite(timestamp) || !ageLimit) return { eligible: false, reason: 'invalid_time_config' };
+  const ageMs = Math.max(0, timestamp - openedAtMs);
+  if (ageMs < ageLimit) return { eligible: false, reason: 'not_expired', ageMs };
+
+  const amount = Number(positionAmount);
+  if (!Number.isFinite(amount) || amount === 0) return { eligible: false, reason: 'position_closed', ageMs };
+  const entry = finitePositive(entryPrice);
+  if (!entry) return { eligible: false, reason: 'invalid_position', ageMs };
+  if (currentRoe == null || currentRoe === '') return { eligible: false, reason: 'missing_roe', ageMs };
+  const roe = Number(currentRoe);
+  if (!Number.isFinite(roe)) return { eligible: false, reason: 'missing_roe', ageMs };
+  if (roe >= 0) return { eligible: false, reason: 'not_negative', ageMs, currentRoe: roe };
+
+  const side = amount > 0 ? 'LONG' : 'SHORT';
+  return {
+    eligible: true,
+    reason: 'negative_after_8h',
+    ageMs,
+    currentRoe: roe,
+    side,
+    closeSide: side === 'LONG' ? 'SELL' : 'BUY',
+    targetPrice: entry,
+    targetRoePct: 0,
   };
 }
 

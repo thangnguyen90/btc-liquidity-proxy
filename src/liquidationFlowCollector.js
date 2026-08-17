@@ -120,13 +120,29 @@ export class LiquidationFlowCollector {
     const symbol = normalizeSymbol(symbolValue);
     const rows = this.oiHistory.get(symbol) ?? [];
     const current = rows.at(-1) ?? null;
-    const baseline = [...rows].reverse().find((row) => row.at <= at - 55_000) ?? null;
+    const reversed = [...rows].reverse();
+    const baseline = reversed.find((row) => row.at <= at - 55_000) ?? null;
+    const priorBaseline = reversed.find((row) => row.at <= at - 115_000) ?? null;
+    const fiveMinuteBaseline = reversed.find((row) => row.at <= at - 295_000) ?? null;
     const deltaPct = current && baseline && baseline.value > 0 && current !== baseline
       ? (current.value - baseline.value) / baseline.value * 100
       : null;
+    const priorDeltaPct = baseline && priorBaseline && priorBaseline.value > 0 && baseline !== priorBaseline
+      ? (baseline.value - priorBaseline.value) / priorBaseline.value * 100
+      : null;
+    const delta5mPct = current && fiveMinuteBaseline && fiveMinuteBaseline.value > 0 && current !== fiveMinuteBaseline
+      ? (current.value - fiveMinuteBaseline.value) / fiveMinuteBaseline.value * 100
+      : null;
+    const stabilizing = deltaPct != null && (
+      (priorDeltaPct != null && priorDeltaPct <= -0.15 && deltaPct >= priorDeltaPct + 0.1)
+      || (delta5mPct != null && delta5mPct <= -0.5 && deltaPct >= -0.1)
+    );
     return {
       value: current?.value ?? null,
       deltaPct,
+      priorDeltaPct,
+      delta5mPct,
+      stabilizing,
       samples: rows.length,
       sampledAt: current?.at ?? null,
     };
@@ -137,11 +153,14 @@ export class LiquidationFlowCollector {
     this._prune(symbol, at);
     const rows = this.events.get(symbol) ?? [];
     const recentCutoff = at - 5 * 60_000;
-    const priorCutoff = at - 15 * 60_000;
+    const priorCutoff = at - 10 * 60_000;
+    const olderCutoff = at - 15 * 60_000;
     let recentBuy = 0;
     let recentSell = 0;
     let priorBuy = 0;
     let priorSell = 0;
+    let olderBuy = 0;
+    let olderSell = 0;
     for (const row of rows) {
       if (row.at >= recentCutoff) {
         if (row.side === 'BUY') recentBuy += row.notionalUsd;
@@ -149,16 +168,29 @@ export class LiquidationFlowCollector {
       } else if (row.at >= priorCutoff) {
         if (row.side === 'BUY') priorBuy += row.notionalUsd;
         else priorSell += row.notionalUsd;
+      } else if (row.at >= olderCutoff) {
+        if (row.side === 'BUY') olderBuy += row.notionalUsd;
+        else olderSell += row.notionalUsd;
       }
     }
-    const priorBuyPer5m = priorBuy / 2;
-    const priorSellPer5m = priorSell / 2;
+    const priorBuyPer5m = (priorBuy + olderBuy) / 2;
+    const priorSellPer5m = (priorSell + olderSell) / 2;
     return {
       // Binance force-order BUY closes a SHORT; SELL closes a LONG.
       shortLiquidationUsd: recentBuy,
       longLiquidationUsd: recentSell,
       shortBurstRatio: priorBuyPer5m > 0 ? recentBuy / priorBuyPer5m : (recentBuy > 0 ? 2 : null),
       longBurstRatio: priorSellPer5m > 0 ? recentSell / priorSellPer5m : (recentSell > 0 ? 2 : null),
+      prior5mShortLiquidationUsd: priorBuy,
+      prior5mLongLiquidationUsd: priorSell,
+      older5mShortLiquidationUsd: olderBuy,
+      older5mLongLiquidationUsd: olderSell,
+      shortLiquidationDecayRatio: priorBuy > 0 ? recentBuy / priorBuy : null,
+      longLiquidationDecayRatio: priorSell > 0 ? recentSell / priorSell : null,
+      shortLiquidationDecaying: priorBuy > 0 && recentBuy <= priorBuy * 0.7,
+      longLiquidationDecaying: priorSell > 0 && recentSell <= priorSell * 0.7,
+      shortLiquidationPeakUsd: Math.max(recentBuy, priorBuy, olderBuy),
+      longLiquidationPeakUsd: Math.max(recentSell, priorSell, olderSell),
       events: rows.filter((row) => row.at >= recentCutoff).length,
       socketState: this.socketState,
       connectedAt: this.connectedAt,

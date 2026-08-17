@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   POSITION_MONITOR_MARK_STREAM_VERSION,
   POSITION_MONITOR_MARK_STREAM_STALE_MS,
   POSITION_MONITOR_MARK_STREAM_URL,
   POSITION_PROTECTION_TRIGGER_VERSION,
+  POSITION_USER_DATA_STREAM_VERSION,
   buildPositionMarkPriceStreamUrl,
+  isBinanceListenKeyExpiredEvent,
+  isBinanceListenKeyInvalidError,
   isBinanceSocketFullEntryFill,
   isBinanceTradeLiteExecution,
   parsePositionMarkPriceMessage,
@@ -24,8 +28,14 @@ assert.equal(
 );
 assert.equal(
   POSITION_PROTECTION_TRIGGER_VERSION,
-  'POSITION_PROTECTION_SOCKET_FILL_V3_DURABLE_WATERMARK_20260812',
+  'POSITION_PROTECTION_SOCKET_FILL_V4_LISTEN_KEY_RECONNECT_20260816',
 );
+assert.equal(POSITION_USER_DATA_STREAM_VERSION, 'POSITION_USER_DATA_STREAM_V2_LISTEN_KEY_RECOVERY_20260816');
+assert.equal(isBinanceListenKeyExpiredEvent({ e: 'listenKeyExpired' }), true);
+assert.equal(isBinanceListenKeyExpiredEvent({ e: 'ORDER_TRADE_UPDATE' }), false);
+assert.equal(isBinanceListenKeyInvalidError(new Error('This listenKey does not exist.')), true);
+assert.equal(isBinanceListenKeyInvalidError(new Error('-1125: This listen key does not exist.')), true);
+assert.equal(isBinanceListenKeyInvalidError(new Error('fetch failed')), false);
 assert.equal(isBinanceSocketFullEntryFill({ x: 'TRADE', X: 'FILLED', l: '2', R: false }), true);
 assert.equal(isBinanceSocketFullEntryFill({ x: 'TRADE', X: 'PARTIALLY_FILLED', l: '1', R: false }), false);
 assert.equal(isBinanceSocketFullEntryFill({ x: 'TRADE', X: 'FILLED', l: '2', R: true }), false);
@@ -50,5 +60,16 @@ assert.equal(resolvePositionRoeMargin({
   initialMargin: '0', isolatedMargin: '25.46', positionAmt: '62', entryPrice: '1.2042', leverage: '5',
 }), 25.46);
 assert.equal(resolvePositionRoeMargin({ positionAmt: '62', entryPrice: '1.2042', leverage: '5' }), 14.93208);
+
+const monitorSource = await readFile(new URL('../src/positionMonitor.js', import.meta.url), 'utf8');
+assert.match(monitorSource, /scheduleUserDataReconnect\(0, 'listen-key-expired'\)/);
+assert.match(monitorSource, /scheduleUserDataReconnect\(0, 'keepalive-listen-key-invalid'\)/);
+assert.match(monitorSource, /onUserDataReconnect\(\{/);
+
+const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+assert.match(serverSource, /onUserDataReconnect: async \(\{ reason, reconnected \}\)/);
+assert.match(serverSource, /runMissedFillProtectionRecovery\(`USER_DATA_RECONNECT:\$\{reason\}`\)/);
+assert.match(serverSource, /missedFillProtectionRecoveryRunning/);
+assert.match(serverSource, /MISSED_FILL_RECONNECT_RECOVERY/);
 
 console.log('Position monitor mark stream tests passed');

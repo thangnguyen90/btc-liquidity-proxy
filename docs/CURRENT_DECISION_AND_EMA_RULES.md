@@ -1,10 +1,113 @@
 # Logic hiện tại: Decision Paper, Recommended Paper và EMA Paper
 
-> Cập nhật: 2026-08-12 (Asia/Bangkok, UTC+7)
+> Cập nhật: 2026-08-16 (Asia/Bangkok, UTC+7)
 >
 > Đây là tài liệu đọc nhanh về **logic đang chạy hiện tại**. Khi tài liệu cũ mâu thuẫn với file này, kiểm tra lại code tại `src/intradayDecisionPaper.js`, `src/recommendedSignals.js` và `src/server.js`; code vẫn là nguồn chuẩn cuối cùng.
 
+### Liquid Flow V2: bật Binance $2 cho PRIMARY panic reclaim và POST-PUMP squeeze READY (2026-08-16)
+
+- Versions đang chạy: detector/registry `LIQUID_HEATMAP_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V20_20260816`, paper `LIQUID_FLOW_V2_PAPER_V29_PRIMARY_POST_PUMP_BINANCE_2USDT_20260816`, selective route `LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V1_2USDT_20260816`, auto-order policy `LIVE_CARD_AND_LIQ_FLOW_READY_V14_PRIMARY_POST_PUMP_2USDT_20260816`; whitelist giữ `LIVE_CARD_WHITELIST_V14_SWEEP_WATCH_CONFIRM_20260816` vì không thêm nhãn/card/key mới.
+- Dữ liệu causal trước entry và điều kiện phân loại không đổi. `PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY` vẫn chỉ dùng top tăng rank 1-20, change/quote-volume hiện tại, EMA99 và OHLC/volume/taker của 5m, pullback/rebound/lower-reclaim và trend 1h/4h đã có trước entry: bối cảnh flush 24h `>=8%`, pullback `3-20%` về EMA99, rồi rebound `>=0,3%`, mark reclaim EMA99 `0,1-3%`, lower-reclaim và taker phục hồi `>=-25%`. `POST_PUMP_SHORT_SQUEEZE_LONG_READY` vẫn dùng top 150 theo quote-volume và tối đa 340 nến 5m đã đóng: pump `>=30%`, drawdown `25-75%`, base 12 nến range `<=6%`, volume fade, đáy giữ; READY cần close vượt base-high `0,2%`, trên EMA25, volume `>=1,8x`, taker `>=+5%` và close-position `>=65%`. Không dùng outcome/PnL tương lai để vào lệnh.
+- Routing Binance chỉ mở cho đúng hai exact label trên. Khi transition READY tạo paper `OPEN`, bot gửi MARKET với margin `$2`, leverage khóa `5x`, notional yêu cầu `$10`; có thể tắt/đổi size riêng qua `LIQ_FLOW_V2_PRIMARY_PANIC_BINANCE_ENABLED`, `LIQ_FLOW_V2_PRIMARY_PANIC_BINANCE_MARGIN_USDT`, `LIQ_FLOW_V2_POST_PUMP_READY_BINANCE_ENABLED`, `LIQ_FLOW_V2_POST_PUMP_READY_BINANCE_MARGIN_USDT`. Vẫn fail-closed khi Orders tắt/dry-run, đã có position cùng symbol, vượt max-position, claim trùng, preflight/quantity hoặc Binance API lỗi. `PRIMARY_EMA99_PANIC_FLUSH_ACTIVE`, `POST_PUMP_BASE_ABSORPTION_WATCH`, `POST_PUMP_SHORT_SQUEEZE_PRIME`, extended panic và các nhãn lân cận không được bật.
+- Entry/TP/SL: cả hai dùng `IMMEDIATE_MARK` sau điều kiện READY; không hồi tố trade OPEN cũ. Post-pump giữ TP cố định `+10% ROE`, SL `-20% ROE`, max hold 4h. Primary giữ plan hiện hữu: TP theo opposite-zone với floor `+10% ROE` và cap reward hiện tại, SL `-20% ROE`, max hold 4h. Khi MARKET fill, khoảng cách TP/SL từ signal plan được neo lại theo average fill; thay đổi chỉ thêm routing và margin thật, không đổi công thức protection hoặc vị thế đang mở.
+- Thống kê/WHITELIST: tại thời điểm bật, paper CLOSED hiển thị `PRIMARY...READY` 19 lệnh, 16W/3L, WR `84,2%`, PF `2,51`, Net PnL `+9,2400 USDT`, AvgROE `+4,9%`; `POST_PUMP...READY` 7 lệnh, 6W/1L, WR `85,7%`, PF `3,85`, Net PnL `+4,2618 USDT`, AvgROE `+6,1%`. Đây là số audit hậu nghiệm, không phải gate cho từng entry. Hai card/key exact `heatmap-v2:PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY` và `heatmap-v2:POST_PUMP_SHORT_SQUEEZE_LONG_READY` đã tồn tại, matcher UI/runtime giữ nguyên, checkbox mặc định tắt và chỉ hiện khi CLOSED AvgROE `>4%`; auto route Liquid V2 theo profile riêng không tự tick whitelist.
+- Tương thích JSON cũ: sáu setting `primaryPanicBinance*`/`postPumpReadyBinance*` cùng audit `binanceEntryCohort`/`binanceEntryPolicyVersion` là optional; persisted JSON thiếu setting được normalize bằng runtime default enabled, `$2`, `5x` nhưng không migrate/rewrite file lịch sử. Trade OPEN/CLOSED cũ không bị submit lại hoặc sửa TP/SL; chỉ event OPEN mới sau transition được claim. Feature/snapshot và exact label cũ tiếp tục đọc nguyên trạng, cách tính W/L/WR/PF/AvgROE/Net PnL vẫn chỉ dựa trên CLOSED exact label.
+
+### Liquid Flow V2 sweep quality gates: WATCH → nến 5m xác nhận → READY (2026-08-16)
+
+- Container versions đang chạy: detector `LIQUID_HEATMAP_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V20_20260816`, paper `LIQUID_FLOW_V2_PAPER_V29_PRIMARY_POST_PUMP_BINANCE_2USDT_20260816`; sweep entry guard vẫn là `LIQUID_FLOW_V2_SWEEP_ENTRY_GUARD_V1_20260816`, whitelist `LIVE_CARD_WHITELIST_V14_SWEEP_WATCH_CONFIRM_20260816`. Hai nhãn WAIT là `UP_SWEEP_SHORT_WATCH` và `DOWN_SWEEP_LONG_WATCH`; exact key UI/runtime lần lượt là `heatmap-v2:UP_SWEEP_SHORT_WATCH` và `heatmap-v2:DOWN_SWEEP_LONG_WATCH`.
+- Dữ liệu causal trước entry: chỉ dùng heatmap zone hiện tại, ba nến 5m đã đóng gần nhất (OHLC, quote-volume, taker-buy quote-volume), SMA13/25 của nến đóng, change 24h hiện tại, return 1h từ closed 5m, OI delta hiện tại và Binance force-order SHORT/LONG liquidation window hiện tại. Không dùng outcome, closed-paper PnL, thống kê datepicker hoặc nến live để quyết định. Feature optional `sweepConfirmation5m` ghi sweep time, confirmation close/time, EMA13/25 và taker delta của đúng nến xác nhận.
+- Phân loại UP: nến quét/reject vùng trên chỉ tạo `UP_SWEEP_SHORT_WATCH`. `UP_SWEEP_SHORT_READY` chỉ phát ở nến 5m kế tiếp khi nến này bearish, không tạo high vượt sweep quá 0,2%, đóng thấp hơn nến sweep và dưới EMA13, taker delta nến đóng `<=0`, OI delta `<=-0,25%`, force-order socket đang `OPEN`, `shortLiquidationUsd==0`, đồng thời context vẫn là up-move (`24h >=10%` hoặc `1h >=3%`). Liquidation còn xuất hiện hoặc socket không mở luôn giữ WATCH, không được dùng làm confirmation. Confidence bỏ thưởng theo độ cực đoan của change 24h/1h.
+- Phân loại DOWN: quét/reclaim vùng dưới generic chỉ tạo `DOWN_SWEEP_LONG_WATCH`. `DOWN_SWEEP_LONG_READY` chỉ dành cho pullback khi ngày còn tăng `0..10%` và 1h `<=-3%`; nến 5m kế tiếp phải bullish, low không thủng sweep quá 0,2%, close cao hơn nến sweep, taker delta nến đóng `>=+2%` và close trên cả EMA13/25. Coin ngày đang âm không được generic READY; phải đi qua nhãn HTF/panic/exhaustion riêng. WATCH là `OBSERVE ONLY`, không tạo paper/order.
+- Entry/paper/statistics: READY vẫn entry paper immediate tại mark của scan sau nến confirmation, margin `$10 x 5`, TP floor `+10% ROE`, SL `-20% ROE`, max hold 4h và phí hiện hữu; không đổi công thức size/SL/TP. Với exact hai READY, chỉ nhận lệnh đầu tiên của mỗi symbol trong mỗi ngày Asia/Bangkok và khóa 4h tính từ `exitAt` sau SL, kể cả qua nửa đêm. W/L, WR, PF, Net PnL và AvgROE tiếp tục chỉ tính CLOSED theo exact label; lịch sử V1-V27 không backfill sang WATCH hay rule mới.
+- Binance/WHITELIST: cả hai READY và hai WATCH tiếp tục `eligible=false` trong auto Binance profile, nên không mở lệnh thật; thay đổi chỉ ảnh hưởng paper entry frequency. Hai card WATCH đã nối generic stats/WHITELIST matcher với exact key, mặc định tắt; vì WATCH không có CLOSED paper nên `whitelistEligible=false`, checkbox chỉ có thể hiện theo policy chung CLOSED AvgROE `>4%`. Checkbox không nâng WATCH thành gate/order.
+- Tương thích JSON cũ: `sweepConfirmation5m`, `sweepEntryPolicyVersion` và `sweepEntryDayBangkok` đều optional; loader không migrate/rewrite history. Trade cũ thiếu field vẫn được thống kê/đóng theo plan cũ. Dedupe ngày đọc `entryAt`, fallback `pendingSince`; cooldown sau SL đọc `exitAt`, fallback thời điểm bắt đầu để fail-safe.
+
+### Thống kê Liquid Flow V2 paper theo nhãn và datepicker (2026-08-16)
+
+- Version: `LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_V1_20260816`. Bộ lọc mới trên `/liquid-flow-v2` đọc toàn bộ `data/liquid-flow-v2-paper.json` ở backend, không bị giới hạn bởi snapshot 300 record gần nhất.
+- Dữ liệu trước entry/phân loại: thay đổi không tạo hoặc sửa tín hiệu. Cohort ngày dùng `entryAt`, fallback `pendingSince`, với biên ngày `Asia/Bangkok`; nhãn nhóm theo exact `labelKey`, fallback `label`, cuối cùng `UNLABELED`. Trade đóng ngày sau vẫn thuộc ngày đã vào paper, không dùng outcome/close-time để đổi cohort.
+- Cách thống kê: từ/đến đều inclusive theo ngày Bangkok; lọc một nhãn hoặc tất cả. `OPEN` và `PENDING_ENTRY` hiển thị riêng; W/L, WR, PF, Net PnL và AvgROE chỉ tính `CLOSED` bằng công thức paper hiện hữu. `CANCELLED` có trong danh sách đóng/hủy nhưng không là loss/PnL. Danh sách phân trang backend 10 record/trang; bảng theo nhãn có open/pending, closed, W/L, WR, PF, Net PnL và AvgROE.
+- Ảnh hưởng giao dịch: chỉ là API/UI thống kê; không ảnh hưởng Binance, gate, entry, size, leverage, SL hoặc TP. Không thêm nhãn/card tín hiệu hay runtime matcher nên không thêm checkbox `WHITELIST`; policy hiện hữu mặc định tắt và chỉ hiện khi CLOSED AvgROE `>4%` không đổi.
+- Tương thích JSON cũ: không migrate/rewrite paper. Record thiếu `labelKey` dùng `label`; thiếu `entryAt` dùng `pendingSince`; thiếu cả hai nhãn gom `UNLABELED`. Snapshot API cũ giữ nguyên, endpoint thống kê mới chỉ bổ sung.
+
 ## 1. Quy ước chung
+
+### Binance position mở 8 giờ còn âm: TP về entry (2026-08-16)
+
+- Version đang chạy: `BINANCE_NEGATIVE_TP_TO_ENTRY_AFTER_8H_V1_20260816`; rule âm sâu hiện hữu vẫn là `BINANCE_NEGATIVE_TP_TO_ENTRY_V3_CAP_TSL_EXCLUDED_ROE20_20260815`, còn rule position 12 giờ không âm vẫn giữ `BINANCE_TP_TO_ROE1_AFTER_12H_V1_20260812`.
+- Dữ liệu causal sau entry: chỉ dùng active Binance position hiện tại gồm average `entryPrice`, `positionAmt`/side, Mark Price hoặc unrealized PnL để tính ROE hiện tại, `openedAt` đã lưu từ fill trong `sl-tracking` (fallback thận trọng là lần runtime đầu tiên nhìn thấy position), và trạng thái `Cap TSL`. Khi thực thi mới đọc regular/algo open orders và symbol tick/lot metadata. Không dùng candle, signal outcome, paper PnL hay dữ liệu tương lai.
+- Điều kiện phân loại: position phải còn mở đủ `8h` (`28800000ms`) và **ROE hiện tại < 0%**. Đủ 8h nhưng ROE bằng 0 hoặc dương thì không đổi TP. Symbol đang check `Cap TSL` tiếp tục được loại trừ. Rule cứu lỗ sâu ROE `<=-20%` vẫn có thể đưa TP về entry trước 8h; fallback cũ dựa trên thời gian âm liên tục 4h đã bỏ, `NEG_TP_TIMEOUT_MS` không còn được dùng. Có thể tắt rule mới bằng `BINANCE_NEGATIVE_TP_AFTER_8H_ENABLED=false` hoặc đổi tuổi qua `BINANCE_NEGATIVE_TP_AFTER_8H_MS`.
+- Thực thi Binance/TP/SL: tái sử dụng pipeline negative-TP idempotent. Nếu chưa có close order gần entry, chỉ hủy TP close-side cũ nằm xa entry rồi đặt `LIMIT GTC` cho toàn bộ quantity còn lại tại average entry, `reduceOnly=true` ở one-way hoặc đúng `positionSide` ở hedge mode. LIMIT có thể khớp tại entry hoặc tốt hơn khi giá hồi; không MARKET-close lúc đang âm. SL/profit-lock được giữ nguyên, không đổi entry, side, margin, size hoặc leverage. Rule 8h có ưu tiên trước rule TP +1% sau 12h nên hai worker không kéo TP ngược nhau.
+- Thống kê/nhãn/WHITELIST: đây là protection lifecycle sau entry, không thêm signal/label/tier/card/cohort, không thay W/L, WR, PF, AvgROE hay Net PnL và không thêm checkbox whitelist. Log ghi version, tuổi position, ROE và target entry; dedupe theo symbol + entry và cooldown API 2 phút giữ idempotency.
+- Tương thích JSON cũ: không thêm field bắt buộc, không migrate/rewrite trade, tracking hoặc lifecycle JSON. Các field `twelveHourTakeProfit*` cũ vẫn được đọc/giữ cho rule 12h; map dedupe của rule 8h chỉ ở runtime và open order Binance được kiểm tra lại sau restart. Record thiếu `openedAt` dùng fallback first-seen nên không giả định position cũ đã đủ 8h ngay sau restart.
+
+### Liquid Flow V2 PUMP FLUSH RECLAIM LONG READY + Binance $1.5 (2026-08-16)
+
+- Version pump-flush giữ `PUMP_FLUSH_RECLAIM_5M_V1_20260816`; auto policy/container hiện là `LIVE_CARD_AND_LIQ_FLOW_READY_V14_PRIMARY_POST_PUMP_2USDT_20260816`, `LIQUID_HEATMAP_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V20_20260816`, `LIQUID_FLOW_V2_PAPER_V29_PRIMARY_POST_PUMP_BINANCE_2USDT_20260816`, whitelist `LIVE_CARD_WHITELIST_V14_SWEEP_WATCH_CONFIRM_20260816`, không đổi rule pump-flush bên dưới.
+- Du lieu causal truoc entry: universe top 150 Binance USDT perpetual theo quote-volume hien tai, `change24hPct >= 0`, va toi da 220 nen 5m **da dong**. Detector dung OHLC, median quote-volume 20 nen truoc pump, ATR 14 nen truoc pump, EMA13/25, RSI14, quote-volume va taker-buy quote-volume cua nen reclaim. Chi tim spike trong 8 nen gan nhat va reclaim toi da 6 nen sau spike; khong doc nen dang mo, outcome, paper PnL hay du lieu tuong lai. Stage `FLUSH_BASE_HOLD` la state noi bo de theo doi, khong phai nhan giao dich va khong tao lenh.
+- Dieu kien phan loai exact `PUMP_FLUSH_RECLAIM_LONG_READY`: bien pump tu launch-base den high `>=8%`, range `>=2.5 ATR`, volume spike `>=3x`; cung nen co upper-wick `>=35%`/close-position `<=65%` hoac cac nen sau retrace `55-105%` bien pump; low/close giu launch-base trong tolerance `max(0.25 ATR, 0.1%)`. Chi READY khi mot nen 5m sau do da dong bullish tren `max(EMA13, EMA25, launch-base + 25% bien pump)`, low khong thap hon flush-low qua `0.2%`, hoi tu low `>=1.8%`, volume `>=1.5x`, taker delta `>=+5%`, close o `>=65%` range va RSI14 trong `45-78`.
+- Entry/Binance/size: transition READY tao paper `IMMEDIATE_MARK` theo `PUMP_FLUSH_RECLAIM_5M_CLOSED_MARK`; exact label nam trong allowlist auto-real va profile `PUMP_FLUSH_RECLAIM` duoc bat mac dinh, co the tat bang `LIQ_FLOW_V2_PUMP_FLUSH_BINANCE_ENABLED=false`. Binance dat MARKET sau paper OPEN, margin co dinh `$1.5`, leverage khoa `5x`, notional yeu cau `$7.5`; setting size la `LIQ_FLOW_V2_PUMP_FLUSH_BINANCE_MARGIN_USDT` mac dinh `1.5`. Van fail-closed neu Orders tat/dry-run, da co position cung symbol, vuot max-position, preflight/quantity hoac API Binance loi. Khong vao o nen pump, pha flush/base-hold hay reclaim chua dong.
+- SL/TP: khong tao cong thuc protection moi. Paper cohort giu V2 default margin `$10 x 5`, SL `-20% ROE`, TP toi thieu `+10% ROE` va co the lay opposite-zone trong cap reward hien huu, max hold 4 gio. Lenh that gui khoang cach TP/SL tu plan va neo lai theo average fill bang fill-anchored protection; thay doi nay chi them routing/size cho cohort moi, khong sua TP/SL cua lenh cu hoac cohort khac.
+- Thong ke/UI/WHITELIST: card dung exact key UI/runtime `heatmap-v2:PUMP_FLUSH_RECLAIM_LONG_READY`; stats dem ca primary va secondary classification, con ket qua chi tong hop trade `CLOSED` cua dung label. Checkbox moi mac dinh tat va chi hien khi closed `AvgROE > 4%`; key da duoc noi vao normalizer/matcher va test. Checkbox nay la whitelist thong ke/live-card chung; auto-real truc tiep cua Liquid V2 duoc user bat rieng qua profile tren, nen khong tu dong bat checkbox va cung khong phu thuoc checkbox.
+- Tuong thich JSON cu: `pumpFlushReclaim5m`, `pumpFlushReadyAt`, snapshot detector va ba setting `pumpFlushBinance*` deu optional. Loader giu nguyen trade/cache/history cu, khong migrate hay rewrite; record cu thieu feature khong match nhan moi. Persisted settings cu duoc normalize bang default va runtime env hien tai de bao dam cohort moi co size `$1.5 x 5`; TP/SL/open position cu khong bi thay doi.
+
+### Binance user-data socket tự reconnect và replay full-fill bị lỡ (2026-08-16)
+
+- Version đang chạy: user-data stream `POSITION_USER_DATA_STREAM_V2_LISTEN_KEY_RECOVERY_20260816`; fill trigger `POSITION_PROTECTION_SOCKET_FILL_V4_LISTEN_KEY_RECONNECT_20260816`; durable watermark tiếp tục dùng `POSITION_PROTECTION_FILL_WATERMARK_V1_20260812`. Thay đổi xuất phát từ sự cố thực tế: Binance phát `listenKeyExpired` lúc 14:40 nhưng socket cũ không đóng/reconnect, nên fill ONG lúc 17:15 không đi qua protection callback.
+- Dữ liệu dùng và tính causal: chỉ đọc event user-data Binance hiện tại (`listenKeyExpired`, `ORDER_TRADE_UPDATE`, `TRADE_LITE`), kết quả keepalive hiện tại, Position Risk, User Trades/Order REST sau reconnect và watermark full-fill đã xử lý. Recovery chỉ xét order FILLED mới hơn watermark, không reduce-only/close-position, cùng hướng với vị thế đang mở; không dùng candle, outcome, paper PnL hoặc dữ liệu tương lai để quyết định.
+- Điều kiện phân loại/lifecycle: `listenKeyExpired` hoặc keepalive trả listen-key invalid/`-1125` thì invalidate socket generation cũ, dừng timer cũ, terminate socket và tạo listenKey mới ngay; close/error socket dùng reconnect 5 giây. Generation guard và một reconnect timer duy nhất chặn socket cũ/close callback tạo kết nối đè hoặc trùng. Sau một kết nối đã từng hoạt động được nối lại, server chạy missed-fill recovery dùng chung single-flight và durable watermark; startup one-shot và reconnect recovery không chạy chồng nhau.
+- Cách thống kê/audit: status position monitor bổ sung `userDataReady`, connect/reconnect count, listen-key-expired count, keepalive-failure count, reconnect reason/time và stream version. Recovery log reason cùng `checkedSymbols/candidates/recovered/failed` và chỉ advance watermark sau khi toàn bộ active symbol được scan không lỗi. Đây không phải signal/tier/card nên không có WR/PF/AvgROE, không thêm checkbox `WHITELIST`.
+- Ảnh hưởng Binance/entry/size/SL/TP: không mở entry mới, không đổi giá/size/leverage hay target TP/SL. Khi reconnect, recovery có thể đặt lại đúng protection TP/SL đã được rule trước entry xác định cho một full-fill bị socket bỏ lỡ; manual fill không có plan vẫn dùng fallback hiện hữu. Không quét/sửa tất cả vị thế cũ chỉ vì thiếu SL. Lỗi Binance từ chối protection thứ hai `GTE_GTC closePosition` là vấn đề riêng, chưa được thay đổi trong patch socket này.
+- Tương thích JSON cũ: không đổi schema paper/lifecycle. File watermark V1 và `handledOrderIds` cũ được đọc nguyên trạng, không migrate/rewrite history; stats reconnect chỉ ở RAM và optional qua status. Record cũ thiếu metadata socket vẫn hợp lệ.
+
+### Liquid Kill Zone SHORT yếu/up-mid/day-flat/reset: Binance test thật $1, TP +5% ROE (2026-08-16)
+
+- Version đang chạy: test profile `LIQUID_KZ_SHORT_YEU_UPMID_FLAT_RESET_TEST_V1_20260816`; SHORT entry policy `LIVE_CARD_SHORT_ENTRY_GUARD_V2_LIQUID_KZ_LIMIT_RETEST_20260816`; whitelist `LIVE_CARD_WHITELIST_V12_LIQUID_KZ_YEU_UPMID_TEST_20260816`; lifecycle `LIVE_CARD_BINANCE_LIFECYCLE_V3_LIMIT_RETEST_20260816`; expiry worker `LIVE_CARD_LIMIT_RETEST_EXPIRY_V1_20260816`.
+- Phạm vi phân loại là exact causal key đã tồn tại: `cycle-stable:LIQUID_KILL_ZONE | SHORT | 15m | BTC_CORR_YEU | BTC_UP_MID | THEO_YEU | GATE_TEST_LIQUID_SHORT_BTC_COUNTER || CYCLE DAY_FLAT | RSI4_RESET`. Chỉ trade có snapshot tại lúc paper entry khớp đủ source/side/timeframe/BTC correlation/BTC position/direction/gate/cycle/RSI mới nhận profile; không dùng tên card `cycle-today` hoặc kết quả cuối ngày để phân loại. Không thêm label, card hay matcher mới.
+- Dữ liệu dùng trước entry: exact key từ snapshot paper lúc signal, paper/signal entry price, Binance last price hiện tại sau preflight, side, leverage cấu hình live-card, cùng trạng thái position/open order/dedupe hiện tại. Adverse slippage SHORT tính `(paperEntry - currentPrice) / paperEntry * 100`; không đọc outcome, PnL tương lai hoặc thống kê sau entry. Cohort được user bật sau thống kê tham khảo 29 paper CLOSED, 27W/2L, AvgROE `+8.67%`, PF `25.57`; các số này không được tính lại để gate từng lệnh mới.
+- Xác nhận entry: nếu adverse slippage `<=0.05%`, gửi MARKET. Nếu giá đã tốt hơn paper hoặc xấu hơn paper quá `0.05%`, nhánh tốt hơn vẫn MARKET còn nhánh xấu hơn chuyển thành `SELL LIMIT GTC` đúng paper entry, chờ tối đa 60 giây và tuyệt đối không fallback sang MARKET. Hết hạn không fill thì hủy và ghi `ENTRY_EXPIRED`; partial fill thì hủy phần còn lại rồi đóng phần đã fill để không giữ vị thế thiếu protection. Các guard position/open-order/dedupe/giờ chạy/dry-run hiện hữu vẫn giữ nguyên.
+- Ảnh hưởng Binance/size/SL/TP: exact key đã được bật đồng thời trong candidate `WHITELIST` và real-enabled theo yêu cầu test, vì vậy có thể mở lệnh Binance thật. Margin cố định `$1`; leverage dùng cấu hình live-card đang chạy (mặc định hiện tại `10x`), nên notional là `margin x leverage`. TP riêng của profile là `+5% gross ROE`, công thức SHORT `fillEntry * (1 - 0.05 / leverage)` và được neo lại theo fill thật; tại `10x` tương đương giá giảm `0.5%`. SL tiếp tục lấy từ paper signal và dùng cơ chế fill-anchor hiện hữu; rule không thay SL. Không ảnh hưởng nhóm/key khác.
+- Thống kê/hiển thị: paper CLOSED vẫn được gom theo exact key như trước; real lifecycle lưu matched key, entry type, limit/expiry, margin/leverage và TP profile để đối soát. `ENTRY_EXPIRED` không bị tính thành một closed loss; partial abort được ghi lifecycle riêng. Card tổng hợp `TODAY · OBSERVE ONLY` vẫn chỉ là card thống kê và không được đổi tên thành gate Binance; quyền thật nằm ở exact `cycle-stable` key. Vì đây là key/card đã tồn tại, không tạo checkbox mới; policy chỉ-hiện-checkbox khi closed AvgROE `>4%` đã được thỏa và trạng thái được bật tường minh theo yêu cầu user.
+- Tương thích JSON cũ: các field `shortEntryOrderType`, `shortEntryLimitPrice`, `shortEntryRetestExpiresAt`, `testProfileVersion`, `testTakeProfitRoePct` và expiry-state đều optional. Loader vẫn đọc state V2/V11 cũ; execution cũ không được migrate/rewrite, vị thế đang mở không bị sửa, và record thiếu field mới giữ routing cũ. Hai file enable được nâng version V12 nhưng giữ nguyên toàn bộ key cũ.
+
+### Liquid Flow V2 EMA FAN LONG retest-confirm entry (2026-08-16)
+
+- Version đang chạy: detector `LIQUID_HEATMAP_FLOW_V2_EMA_FAN_RETEST_CONFIRM_V17_20260816`; paper `LIQUID_FLOW_V2_PAPER_V26_EMA_FAN_RETEST_CONFIRM_20260816`; entry confirmation `EMA_FAN_LONG_RETEST_CONFIRM_V1_20260816`; auto-Binance policy `LIVE_CARD_AND_LIQ_FLOW_READY_V12_EMA_FAN_RETEST_CONFIRM_20260816`; manual-order policy `LIQUID_FLOW_V2_MANUAL_BINANCE_UI_V7_EMA_FAN_RETEST_CONFIRM_20260816`.
+- Dữ liệu dùng trước entry và tính causal: bước READY vẫn chỉ dùng universe/rank hiện tại và nến 5m đã đóng của detector EMA fan. Sau READY, paper dùng tick mark hiện tại để nhận biết giá chạm mức retest `EMA13 tại signal +1%`; sau khi chạm chỉ đọc nến 5m đã đóng có `closeTime` lớn hơn thời điểm touch, gồm OHLC, EMA13/25/99, hai gap EMA so với nến trước, taker-buy quote-volume/quote-volume của chính nến đó, cờ bullish và higher-low. Giá paper xác nhận dùng mark hiện tại tại scan xác nhận. Symbol pending được giữ trong candidate/kline scan tới khi confirm/cancel/timeout kể cả khi rơi khỏi top hiện tại. Không đọc outcome, nến chưa đóng hoặc dữ liệu tương lai.
+- Điều kiện phân loại không đổi: `EMA_FAN_LONG_READY` thường vẫn là top gainer rank 1-50, ngày tăng, có compression/breakout 5m hợp lệ, EMA13 > EMA25 > EMA99 và fan mở rộng theo detector; `EMA_FAN_LONG_IMPULSE_RUNNER` vẫn là nhánh riêng volume `>=5x`, body `>=1%`, distance EMA13 `<=3%` và vào ngay. V17 chỉ bổ sung telemetry `gap1325PrevPct`, `gap2599PrevPct`, hai cờ widening và closed-candle taker delta để xác nhận entry của nhánh thường; không thêm hoặc đổi label/tier.
+- Rule entry nhánh thường: transition READY tạo paper `PENDING_ENTRY`, planned trigger bằng `EMA13_signal * 1.01` và hết hạn 15 phút tính từ signal. Tick chạm trigger chỉ chuyển `WAIT_RETEST_TOUCH -> WAIT_CLOSED_CONFIRMATION`, chưa fill paper và chưa cấp Binance. Nến 5m đóng sau touch chỉ xác nhận khi bullish, close `>= EMA13`, `higherLowConfirmed=true`, taker delta của nến `>0`, EMA13 > EMA25 > EMA99 và ít nhất một trong hai gap EMA vẫn widening. Mất thứ tự fan, nến đóng dưới EMA25, hoặc cả hai gap cùng co thì cancel với `ENTRY_CONFIRMATION_INVALIDATED`; thiếu một điều kiện xác nhận nhưng chưa invalid thì tiếp tục chờ trong phần thời gian còn lại, quá 15 phút cancel `ENTRY_TIMEOUT`.
+- Sau xác nhận: paper chuyển `OPEN` tại mark hiện tại với `entryMode=RETEST_CONFIRMATION_MARKET`, đồng thời neo lại TP/SL theo entry xác nhận. Auto Binance được **giữ bật** và chỉ nhận event paper `OPEN`, dùng profile `EMA_FAN_RETEST_CONFIRM`, MARKET margin `$1` ở `5x`, sau full fill neo protection như pipeline hiện hữu. Nút Binance thủ công bị khóa cho riêng `EMA_FAN_LONG_READY` còn PENDING để không bypass xác nhận. Paper vẫn margin `$10`, `5x`, TP `+10% ROE`, SL `-25% ROE`, max hold 12 giờ; thay đổi ảnh hưởng thời điểm/giá entry và do re-anchor nên ảnh hưởng giá TP/SL, không đổi size/leverage/ROE target. Nhánh IMPULSE không đổi: paper/Binance immediate, Binance `$5 x 5`.
+- Cách thống kê và whitelist: không thêm card hoặc key mới; tiếp tục gom theo exact key `heatmap-v2:EMA_FAN_LONG_READY`, W/L, WR, PF, AvgROE và Net PnL chỉ lấy paper CLOSED theo pipeline hiện hữu. PENDING/CANCELLED không được ép thành lệnh thua closed. Checkbox `WHITELIST` hiện hữu giữ nguyên key, mặc định tắt và policy chỉ hiện khi closed `AvgROE >4%`; thay đổi này không tự bật checkbox. Lịch sử trước V26 không backfill nên card có thể chứa kết quả của cả routing cũ và mới, phân biệt bằng `trade.version`/confirmation metadata khi audit.
+- Tương thích JSON cũ: `plannedEntryPrice`, `entryConfirmationRequired`, `entryConfirmationVersion/State/Reason`, `retestTouchedAt/Price`, confirmation candle/snapshot và các gap/taker field đều optional. OPEN/CLOSED/CANCELLED cũ không bị migrate, rewrite hay đổi TP/SL. Một record V18-V25 còn `PENDING_ENTRY` với label `EMA_FAN_LONG_READY` nhưng thiếu field mới được fail-safe coi là cần confirmation: lần touch kế tiếp chỉ arm chờ nến đóng, không tự OPEN/Binance. Các label pending khác giữ logic fill cũ.
+
+### Liquid Flow V2 kill-LONG exhaustion reclaim (2026-08-15)
+
+- Version detector: `LIQUID_HEATMAP_FLOW_V2_KILL_LONG_EXHAUSTION_V16_20260815`; paper: `LIQUID_FLOW_V2_PAPER_V25_KILL_LONG_EXHAUSTION_20260815`; Discord: `LIQUID_FLOW_V2_KILL_LONG_EXHAUSTION_DISCORD_V1_20260815`; whitelist: `LIVE_CARD_WHITELIST_V11_KILL_LONG_EXHAUSTION_20260815`.
+- Dữ liệu dùng trước entry và tính causal: chỉ dùng các nến 5m đã đóng cùng mark hiện tại, OHLC, EMA13/25, quote-volume và taker-buy quote-volume; Open Interest được lấy mẫu liên tục để tính delta khoảng 1 phút hiện tại, 1 phút trước và 5 phút; Binance force-order SELL (đóng LONG) được gom theo ba cửa sổ trượt `0-5m`, `5-10m`, `10-15m`. Nhãn này **không dùng vùng Liquid Map V1** và không đọc outcome/nến tương lai.
+- Điều kiện phân loại `KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY`: phải đồng thời có cascade context (pullback từ đỉnh gần nhất `>=4%` hoặc return 1h `<=-3%`), volume `>=1.5x`; force SELL ở cửa sổ 5m trước lớn hơn 0 và cửa sổ hiện tại giảm còn `<=0.70x`; OI 5m `<=-0.5%` rồi ổn định (delta 1m hiện tại cải thiện ít nhất `0.1` điểm so với phút trước sau một phút `<=-0.15%`, hoặc delta 5m `<=-0.5%` và delta 1m hiện tại `>=-0.1%`); taker delta `>=+2%`; nến 5m tăng đóng ở `>=65%` range, hồi từ low `>=0.6%`, close trên cả EMA13/25 và xác nhận higher-low (low không thấp hơn quá `0.2%`, close cao hơn nến trước). Thiếu bất kỳ điều kiện nào vẫn giữ nhãn squeeze/wait hiện hữu, không bắt đáy chỉ vì giá giảm sâu.
+- Cách thống kê: card riêng trên `/liquid-flow-v2`, key runtime/UI chính xác `heatmap-v2:KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY`. Transition READY mới tạo paper `IMMEDIATE_MARK` tại scan sau nến đóng, margin `$10`, leverage `5x`, TP cố định `+10% ROE`, SL `-20% ROE`, timeout `4h`; target không phụ thuộc vùng V1. Checkbox whitelist mặc định tắt và chỉ xuất hiện khi cohort paper đã CLOSED có `AvgROE > 4%`.
+- Ảnh hưởng giao dịch: có ảnh hưởng entry/size/SL/TP **paper** như trên nhưng `affectsBinance=false`; `liquidFlowV2AutoBinanceProfile()` trả `eligible=false` với cohort `KILL_LONG_EXHAUSTION_PAPER`, nhãn không nằm trong `LIQUID_FLOW_V2_AUTO_REAL_LABELS`, vì vậy không mở/sửa/hủy lệnh Binance thật. Discord chỉ gửi một lần ở transition READY vào webhook riêng, embed xanh cho xác nhận và embed cam cho điều kiện vô hiệu; dedupe mặc định 24 giờ.
+- Tương thích JSON cũ: các field `openInterestPriorDeltaPct`, `openInterestDelta5mPct`, `openInterestStabilizing`, force-liquidation window/decay/peak và snapshot paper đều optional. Cache/trade JSON cũ thiếu field được xem là không match nhãn mới; không migrate, không rewrite và không thay đổi TP/SL của paper đang mở hay history cũ.
+
+### Liquid Flow V2 post-pump base absorption / short-squeeze LONG (rule gốc 2026-08-15, routing cập nhật 2026-08-16)
+
+- Runtime hiện tại dùng detector `LIQUID_HEATMAP_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V20_20260816`, paper `LIQUID_FLOW_V2_PAPER_V29_PRIMARY_POST_PUMP_BINANCE_2USDT_20260816`, route `LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V1_2USDT_20260816`, whitelist `LIVE_CARD_WHITELIST_V14_SWEEP_WATCH_CONFIRM_20260816`. Điều kiện ba nhãn post-pump gốc không đổi; version mới chỉ tách routing Binance của exact READY thường.
+- Dữ liệu trước entry và tính causal: quét top 150 Binance USDT perpetual theo quote-volume hiện tại, tối thiểu mặc định `$2M`; chỉ dùng tối đa 340 nến 5m đã đóng. Context tìm pump lịch sử `>=30%`, drawdown từ đỉnh `25-75%`, 12 nến base ngay trước signal và nến breakout đã đóng. Dùng OHLC, quote-volume, taker-buy quote-volume và EMA25 tính từ các nến đã đóng; OI/liquidation chỉ là telemetry, không bắt buộc và không dùng outcome tương lai.
+- Điều kiện phân loại: `POST_PUMP_BASE_ABSORPTION_WATCH` khi base range `<=6%`, tuyệt đối base-return `<=3.5%`, đáy nửa sau không thấp hơn đáy nửa đầu quá `1.5%`, median volume base / peak volume crash `<=0.65`; nhãn này `OBSERVE ONLY`. `POST_PUMP_SHORT_SQUEEZE_LONG_READY` yêu cầu thêm close vượt base-high `0.2%`, close trên EMA25, breakout volume `>=1.8x`, taker delta `>=+5%`, thân tăng và close-position `>=0.65`. `POST_PUMP_SHORT_SQUEEZE_PRIME` là READY cộng aggregate taker delta trong 12 nến base `<=-1%` để tách nhóm sell-flow được hấp thụ.
+- Cách thống kê: ba nhãn là card riêng trên `/liquid-flow-v2`; primary và `secondaryLabels` đều được đếm active/transition. READY/PRIME tạo cohort paper riêng, entry `IMMEDIATE_MARK` ở scan sau nến đóng, margin `$10`, leverage `5x`, TP `+10% ROE` (giá `+2%`), SL `-20% ROE` (giá `-4%`), timeout `4h`, phí theo paper V2. Card có key chính xác `heatmap-v2:<LABEL_KEY>`, mặc định whitelist tắt và checkbox chỉ hiện sau khi paper CLOSED `AvgROE > 4%`; WATCH không thể đủ điều kiện nếu không có paper closed.
+- Ảnh hưởng giao dịch hiện tại: WATCH không tạo paper/order. Exact `POST_PUMP_SHORT_SQUEEZE_LONG_READY` có `affectsBinance=true`, profile auto-real enabled mặc định và MARKET `$2 x 5`; `POST_PUMP_SHORT_SQUEEZE_PRIME` vẫn `affectsBinance=false`/`eligible=false` và chỉ chạy paper. Checkbox whitelist chỉ lưu lựa chọn card/live-card chung, không thay thế selective auto profile này.
+- Tương thích JSON cũ: `postPumpUniverse`, `postPumpShortSqueeze5m` và snapshot paper là field optional. Record/cache/paper JSON cũ thiếu field được xem là không match, không migrate/rewrite và không đổi kết quả nhãn cũ. Paper cũ vẫn được load bằng normalizer leverage/risk hiện hữu.
+- Cơ sở đánh giá lịch sử: backtest 14 ngày, top 150 thanh khoản, entry open nến kế tiếp, 5x, TP giá `+2%`, SL giá `-4%`, timeout 4h, fee `0.4% ROE`, cùng nến tính SL trước TP. Price-only READY có 25 lệnh, WR `76.0%`, AvgROE `+3.875%`, PF `2.13`; PRIME sell-absorption có 6/6 thắng, AvgROE `+9.6%` nhưng mẫu nhỏ. Routing mới chỉ bật exact READY thường theo thống kê paper mới ở đầu tài liệu; PRIME vẫn paper-only.
+
+### TP về hòa vốn khi Binance ROE âm 20% (2026-08-15)
+
+- Version: `BINANCE_NEGATIVE_TP_TO_ENTRY_V3_CAP_TSL_EXCLUDED_ROE20_20260815`.
+- Dữ liệu dùng và tính causal: đây là protection sau entry, chỉ dùng active position Binance với average `entryPrice`, `markPrice`/unrealized PnL, margin và leverage lấy từ user-data socket hoặc shared REST snapshot hiện tại. Không dùng nến tương lai, paper outcome hay PnL đóng để quyết định.
+- Điều kiện phân loại: vị thế đang mở, gồm bot, Liquid Flow V2 và lệnh vào tay, pass khi Binance ROE `<= -20%` (bao gồm đúng `-20%`), **trừ symbol đang check `Cap TSL` trên Orders**. Cap TSL chặn đồng nhất socket, scanner dự phòng, deep guard và rule tuổi position 8 giờ; bỏ check thì position lại dùng rule âm ở tick/scan kế tiếp. Socket kích hoạt ngay theo tick; scanner cấu hình hiện tại 90 giây là đường dự phòng. Dedupe theo symbol + entry và cooldown API 2 phút tránh đặt lặp.
+- Cách thống kê: đây không phải signal/label/tier/card mới; không tạo WR/PF/PnL cohort và không thêm checkbox `WHITELIST`. Log runtime ghi version, symbol và giá entry để audit execution.
+- Ảnh hưởng giao dịch: với symbol không Cap TSL, có hủy riêng TP close-side cũ nằm xa entry rồi đặt một lệnh `LIMIT GTC reduceOnly` tại average entry. Với symbol Cap TSL, TP hiện hữu được giữ nguyên và rule này không write/cancel Binance. Không mở lệnh, không đổi entry, size/margin/leverage, không hủy/đặt/sửa SL. Nếu đã có TP/close order gần entry thì giữ và skip. Profit-lock dương vẫn chạy theo rule riêng; emergency âm sâu và rule tuổi 8h có ưu tiên hơn TP 12 giờ khi đang âm.
+- Tương thích JSON cũ: không đổi schema giao dịch và không migrate/rewrite trade JSON. Tiếp tục dùng đúng key/API/localStorage `Cap TSL` hiện hữu; không thêm checkbox/field mới. Trạng thái checkbox server được tách khỏi legacy signal-exclude và lưu bền vững optional trong `data/orders-cap-tsl.json` version `ORDERS_CAP_TSL_STATE_V1_DURABLE_20260815`; file chưa tồn tại được xem là danh sách rỗng, sau đó browser Orders đẩy localStorage cũ lên qua API như trước. Map dedupe chỉ ở runtime; restart vẫn đọc order Binance hiện hữu để nhận ra TP tại entry.
 
 ### Startup recovery chi bo sung TP con thieu (2026-08-12)
 
@@ -2946,8 +3049,8 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
   Nếu ROE realtime đã `>=1%`, bot gửi reduce-only LIMIT marketable tại giá +1% (khớp tại mục tiêu hoặc tốt hơn) vì conditional TP đã
   nằm phía sau Mark sẽ bị Binance coi là immediately-triggering. Nếu chưa đạt, bot thay TP bằng `TAKE_PROFIT_MARKET` ở +1%; SL hiện hữu
   không bị hủy/thay.
-- Ưu tiên an toàn: rule âm sâu/âm liên tục đưa TP về entry vẫn giữ ưu tiên cho vị thế bot không thuộc manual/Liquid Flow V2, tránh hai
-  rule tranh nhau. Rule mới chạy event-driven trên position socket, có cooldown/in-flight guard và kiểm tra target hiện hữu để idempotent;
+- Ưu tiên an toàn: rule âm sâu và rule position đủ 8h còn âm đưa TP về entry giữ ưu tiên trước target +1%, tránh hai
+  rule tranh nhau. Rule chạy event-driven trên position socket, có cooldown/in-flight guard và kiểm tra target hiện hữu để idempotent;
   đây không phải scanner dựng lại TP/SL bị thiếu.
 - Thống kê/nhãn/whitelist: không thêm nhãn, card, tier, cohort hay checkbox; chỉ ghi audit optional vào tracking/lifecycle
   (`twelveHourTakeProfit*`, event `TWELVE_HOUR_TP_MOVED`). Không thay đổi cách tính WR/PF/AvgROE/NET hiện tại.
@@ -2974,10 +3077,10 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
 - Thống kê/whitelist: hai card dùng key exact `heatmap-v2:PRIMARY_EMA99_PANIC_FLUSH_ACTIVE` và
   `heatmap-v2:PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY`; mặc định tắt, matcher UI/runtime trùng key. Checkbox chỉ hiện
   khi CLOSED paper cùng nhãn có `AvgROE > 4%`; ACTIVE không tạo paper nên mặc định vẫn khóa.
-- Ảnh hưởng giao dịch: cả hai nhãn là `OBSERVE ONLY`; READY chỉ tạo paper và gửi Discord qua
-  `LIQ_FLOW_V2_PANIC_WEBHOOK_URL`, fallback `LIQ_FLOW_V2_EXTENDED_PANIC_WEBHOOK_URL`. Không cấp Binance, không đổi
-  entry/size/SL/TP của lệnh thật. JSON cũ tương thích vì chỉ bổ sung label/stat; paper JSON cũ được nạp bằng policy runtime
-  mới và không cần migrate.
+- Ảnh hưởng giao dịch hiện tại: `PRIMARY_EMA99_PANIC_FLUSH_ACTIVE` vẫn `OBSERVE ONLY`; exact
+  `PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY` tạo paper, gửi Discord và được selective auto profile cấp Binance MARKET
+  `$2 x 5` theo V1 ở đầu tài liệu. Rule detect/entry/SL/TP không đổi. JSON cũ tương thích; paper JSON cũ được nạp bằng
+  policy runtime mới nhưng trade OPEN lịch sử không được replay submit và không cần migrate.
 ## 2026-08-12 - Profit-lock Binance V12 theo lifecycle, retry nhanh và fail-safe
 
 - Version: `BINANCE_PROFIT_LOCK_V12_LIFECYCLE_FAST_FAILSAFE_20260812`. Dữ liệu dùng trước quyết định chỉ gồm vị thế
@@ -3101,3 +3204,172 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
   dùng claim/clientOrderId chống trùng và `LIQ_FLOW_V2_BINANCE_MAX_POSITIONS`; TP/SL giữ target paper và được neo theo exact fill hiện hành.
 - Tương thích JSON cũ: chỉ thêm settings có default runtime, không thêm field bắt buộc, không migrate/rewrite trade cũ. Event paper cũ đã OPEN
   không được replay tự động khi restart; chỉ transition READY mới sau triển khai mới có thể phát lệnh.
+
+## 2026-08-13 - PRE EMA99 siết entry theo backtest
+
+- Version classifier: `LIQUID_HEATMAP_FLOW_V2_PRE_ENTRY_CAP_V11_20260813`; paper:
+  `LIQUID_FLOW_V2_PAPER_V19_PRE_ENTRY_CAP_20260813`; entry policy:
+  `LIVE_CARD_AND_LIQ_FLOW_READY_V8_PRE_ENTRY_CAP_20260813`.
+- Dữ liệu causal trước entry không đổi: 180-220 nến 5m đã đóng để tính EMA13/25/99, dốc EMA99, high/low 12 nến,
+  volumeX và taker delta; OHLC nến 5m live và mark tại đúng tick hiện tại; change 24h/1h và mover side/rank hiện hành.
+  Không dùng nến tương lai, outcome hay dữ liệu sau entry.
+- Điều kiện mới: `PRE_UP_BASE_LONG` vẫn cần râu 5m chạm EMA99, EMA stack/dốc/pullback/volume/taker guard cũ,
+  nhưng mark chỉ được nằm `+0.1%..+0.5%` trên EMA99 và phải bật ít nhất `0.6%` từ low tiếp cận.
+  `PRE_DOWN_BASE_SHORT` giữ reject/EMA stack/dốc/bounce/volume/taker guard cũ nhưng mark chỉ được nằm
+  `-0.5%..-0.1%` dưới EMA99. Biên touch của râu vẫn giữ LONG `-0.5%..+1.2%`, SHORT `-1.2%..+0.5%`.
+- Cơ sở thống kê: 62 paper CLOSED từ 2026-08-10 12:10 đến 2026-08-13 12:02 Bangkok được đối chiếu Binance Futures 1m.
+  Cohort cũ LONG 20 lệnh có WR 40%, AvgROE -6.92%, PF 0.29; SHORT 42 lệnh có WR 57.1%, AvgROE -1.54%, PF 0.72.
+  Lọc causal `|mark-EMA99| <= 0.5%` cho SHORT còn 12 mẫu, WR 66.7%, AvgROE +1.92%, PF 1.71; LONG cùng cap còn 6 mẫu,
+  AvgROE -0.09%, nên thêm rebound tối thiểu 0.6% và tiếp tục thu thập. Đây là walk-forward filter cho tín hiệu mới, không ghi lại outcome cũ.
+- Thống kê/whitelist giữ đúng hai card/key `heatmap-v2:PRE_UP_BASE_LONG` và `heatmap-v2:PRE_DOWN_BASE_SHORT`.
+  Checkbox `WHITELIST` cũ vẫn mặc định tắt, matcher runtime không đổi và chỉ hiện khi closed AvgROE `> 4%`; không thêm card hay key mới.
+- Ảnh hưởng Binance/entry/size/SL/TP: có giảm số transition PRE được phép tạo paper và gửi MARKET Binance thật.
+  Tín hiệu vượt cap không READY nên không entry. Tín hiệu pass vẫn MARKET `$5 × 5x`; không đổi entry mode, margin, leverage,
+  công thức TP/SL, fill-anchor hay cơ chế chống duplicate.
+- Tương thích JSON cũ: không thêm field bắt buộc và không migrate/rewrite lịch sử. Trade V1-V18 vẫn đọc/thống kê theo label key cũ;
+  trade mới mang paper V19 và classifier version mới trong snapshot để audit. Baseline/restart/cooldown hiện hành tiếp tục chặn replay.
+
+## 2026-08-13 - Khóa toàn bộ Binance Liquid Flow V2 ở 5x
+
+- Version policy: `LIVE_CARD_AND_LIQ_FLOW_READY_V9_LFV2_FIXED_5X_20260813`; paper:
+  `LIQUID_FLOW_V2_PAPER_V20_FIXED_5X_20260813`; manual UI/API:
+  `LIQUID_FLOW_V2_MANUAL_BINANCE_UI_V5_FIXED_5X_20260813`. Hằng số server duy nhất là
+  `LIQUID_FLOW_V2_BINANCE_LEVERAGE = 5`.
+- Dữ liệu trước entry và điều kiện phân loại không đổi: classifier vẫn dùng snapshot causal của từng label trước entry; không thêm gate,
+  không dùng outcome/future candle. Các label/card/tier, cách tính paper W/L, WR, PF, NET và AvgROE giữ nguyên.
+- Phạm vi: mọi order Binance tự động từ Liquid Flow V2 (BASE, PRE EMA99, HTF EMA99) và mọi MARKET/LIMIT thủ công từ
+  `/liquid-flow-v2` đều bị server ép `5x`. Giá trị leverage do client gửi, settings JSON cũ hoặc các env
+  `LIQ_FLOW_V2_*_LEVERAGE` không thể nâng/hạ leverage của lệnh V2 mới. UI vẫn hiển thị ô LEV nhưng khóa read-only ở 5.
+- Ảnh hưởng Binance/entry/size/SL/TP: có thay đổi leverage và notional của lệnh mới thành `margin × 5`; margin theo từng cohort và margin
+  người dùng nhập trên UI không đổi. MARKET/LIMIT, signal entry, TP/SL theo plan, fill-anchor, DCA cùng chiều, duplicate guard và max-position
+  giữ nguyên. Không chạy scan đổi hồi tố position đang mở; nếu người dùng gửi DCA V2 mới thì symbol được set 5x trước order mới.
+- Thống kê/whitelist: không thêm label/card/key. Checkbox `WHITELIST` hiện hữu vẫn mặc định tắt, matcher cũ và policy chỉ hiện khi closed
+  AvgROE `> 4%`; leverage lock không cấp thêm quyền Binance.
+- Tương thích JSON cũ: field leverage cũ vẫn đọc được nhưng runtime settings V2 được normalize về 5. Trade lịch sử giữ nguyên leverage,
+  PnL/outcome và không bị tính lại hoặc rewrite; trade mới mang paper V20/manual V5 để audit.
+
+## 2026-08-13 - EMA FAN LONG READY cho Liquid Flow V2
+
+- Version classifier: `LIQUID_HEATMAP_FLOW_V2_EMA_FAN_V12_20260813`; paper:
+  `LIQUID_FLOW_V2_PAPER_V21_EMA_FAN_20260813`; entry policy:
+  `LIVE_CARD_AND_LIQ_FLOW_READY_V10_EMA_FAN_20260813`.
+- Dữ liệu dùng trước entry: chỉ top tăng Binance Futures hạng 1-50 có quote volume 24h tối thiểu `$2M` theo snapshot hiện tại và tối đa 220 nến 5m đã đóng.
+  EMA13/25/99, RSI14, OHLC, quote volume, high 12 nến và volume nền 20 nến đều được tính tại hoặc trước nến tín hiệu;
+  không đọc nến 5m đang chạy, OI/liquidation tương lai, outcome hay giá sau entry. Hạng 21-50 chỉ được giữ trong deep scan khi pha
+  WATCH đang hoạt động, còn hạng 1-20 tiếp tục nằm trong universe chính.
+- Phân loại `EMA_FAN_LONG_READY`: trong 12 nến trước breakout, median độ rộng ba EMA không quá `1%` và ít nhất `8/12` nến có
+  độ rộng không quá `1.5%`; tại nến WATCH độ rộng không quá `0.8%`, close vượt cả band EMA và high 12 nến, thân tăng ít nhất
+  `0.4%`, volume ít nhất `2.5x`, EMA13/25 cùng dốc lên, RSI14 `50..78`, close cách EMA13 không quá `3%`. Trong tối đa 4 nến đã
+  đóng tiếp theo phải có `EMA13 > EMA25 > EMA99`, hai gap EMA cùng nới rộng, RSI14 không quá `85` và close cách EMA13 không quá
+  `4%`. Nhãn được gắn dạng secondary label để không che hoặc đổi nhãn Liquid V2 chính.
+- Thống kê ban đầu: replay cohort top 50 tăng của ngày 2026-08-13 với entry open nến 5m kế tiếp, 5x, TP `+10% ROE`, SL
+  `-25% ROE`, timeout 12h cho kết quả 24 READY: 19 TP, 0 SL, 1 TIME và 4 còn OPEN. Đây là cohort chọn theo top tăng sau khi ngày
+  đã diễn ra nên có survivor/winner bias; chỉ dùng để đặt cấu hình paper walk-forward, không coi là xác suất live đã xác nhận.
+- Card/whitelist: thêm đúng key `heatmap-v2:EMA_FAN_LONG_READY`; matcher runtime/UI dùng cùng key, mặc định tắt. Checkbox chỉ hiện
+  khi paper CLOSED của riêng nhãn có `AvgROE > 4%`; OPEN/PENDING không tham gia AvgROE. Card hiển thị active/transition, số paper
+  closed và AvgROE riêng, không trộn với nhãn primary đang che phía trước.
+- Ảnh hưởng Binance/entry/size/SL/TP: transition READY mới tạo paper margin `$10`, leverage `5x`, MARKET theo mark lúc scan,
+  TP cố định `+10% ROE`, SL `-25% ROE`, tối đa 12h. Cùng transition được claim một lần để đặt Binance MARKET margin `$1`, `5x`
+  (notional yêu cầu `$5`), chặn position cùng symbol, dùng clientOrderId/dedupe/max-position và neo TP/SL theo exact fill. Có thể tắt
+  bằng `LIQ_FLOW_V2_EMA_FAN_BINANCE_ENABLED=false`; margin paper/real và TP/SL/timeout có env riêng. Tín hiệu đã tồn tại trước restart
+  không bị replay; first observation chỉ được phát nếu nến READY đóng sau session start và còn mới trong 15 phút.
+- Tương thích JSON cũ: chỉ thêm label, snapshot `emaFanLong5m` và settings optional có default runtime. Store/trade cũ không migrate,
+  không rewrite và không tính lại outcome. Signal key gồm symbol + exact label + closeTime nến READY nên restart/reconnect vẫn idempotent.
+
+## 2026-08-13 - EMA FAN SHORT READY paper-only cho Liquid Flow V2
+
+- Version classifier: `LIQUID_HEATMAP_FLOW_V2_EMA_FAN_SHORT_PAPER_V13_20260813`; paper:
+  `LIQUID_FLOW_V2_PAPER_V22_EMA_FAN_SHORT_20260813`. Entry policy Binance vẫn giữ
+  `LIVE_CARD_AND_LIQ_FLOW_READY_V10_EMA_FAN_20260813` vì nhãn SHORT mới không được cấp quyền đặt lệnh thật.
+- Dữ liệu dùng trước entry: snapshot Binance Futures hiện tại được xếp theo quote volume 24h, chỉ lấy top 150 có quote volume tối thiểu `$2M`, rồi mới
+  lọc `change24hPct <= -5%`. Detector chỉ đọc tối đa 220 nến 5m đã đóng để tính EMA13/25/99, RSI14, OHLC, low 12 nến và volume nền 20 nến;
+  không dùng nến 5m đang chạy, future candle, outcome hay dữ liệu sau entry.
+- Điều kiện phân loại `EMA_FAN_SHORT_READY`: 12 nến trước breakdown có median độ rộng ba EMA `<=1%` và ít nhất `8/12` nến có độ rộng
+  `<=1.5%`; tại nến WATCH độ rộng `<=0.8%`, close dưới toàn band EMA và low 12 nến, thân giảm `>=0.4%`, volume `>=2.5x`, EMA13/25
+  đều dốc xuống so với 3 nến trước, RSI14 `22..50`, khoảng cách dưới EMA13 `<=2.5%`. Trong tối đa 4 nến đóng phải có
+  `EMA13 < EMA25 < EMA99`, cả hai gap cùng nới rộng, RSI14 `>=15` và giá cách EMA13 `<=4%`. Nhãn là secondary label để không che primary label.
+- Thống kê tham chiếu causal trong ngày 2026-08-13, entry open nến 5m kế tiếp, 5x, TP `+10% ROE`, SL `-25% ROE`, timeout 12h:
+  toàn bộ reverse-fan top 150 có 60 tín hiệu với settled WR 66%, AvgROE `+0.25%`, PF `1.05`; cohort `change24h <= -5%` còn 11 tín hiệu,
+  8 TP, 1 SL, 2 OPEN, settled WR `88.9%`, AvgROE `+6.11%`, PF `3.20`. Vì mẫu còn nhỏ và universe theo snapshot trong ngày, rule chỉ chạy paper walk-forward.
+- Card/whitelist: thêm exact key `heatmap-v2:EMA_FAN_SHORT_READY`; UI và runtime matcher dùng cùng key, mặc định tắt. Checkbox chỉ hiện khi riêng nhãn
+  có paper CLOSED `AvgROE > 4%`; OPEN/PENDING không tham gia AvgROE. Bật checkbox chỉ lưu whitelist thống kê, không thay đổi quyền Binance.
+- Ảnh hưởng Binance/entry/size/SL/TP: transition READY mới tạo paper MARKET theo mark lúc scan với margin `$10`, leverage `5x`, TP `+10% ROE`,
+  SL `-25% ROE`, timeout 12h. Không thêm nhãn này vào `LIQUID_FLOW_V2_AUTO_REAL_LABELS`; auto profile trả `eligible=false`, claim Binance bị từ chối,
+  nên không ảnh hưởng entry/size/SL/TP Binance thật. First observation chỉ seed khi nến READY đóng sau session start và còn mới tối đa 15 phút.
+- Tương thích JSON cũ: chỉ thêm label và snapshot optional `emaFanShort5m`; không thêm field bắt buộc, không migrate/rewrite store/trade cũ và không tính lại
+  outcome lịch sử. Signal key vẫn là symbol + exact label + closeTime nến READY, nên restart/reconnect không tạo trùng.
+
+## 2026-08-13 - Discord riêng cho EMA FAN LONG/SHORT
+
+- Version: `LIQUID_FLOW_V2_EMA_FAN_DISCORD_V1_20260813`. Dữ liệu trước entry, điều kiện phân loại và version classifier/paper giữ nguyên;
+  notifier chỉ đọc transition READY vừa được classifier tạo cùng snapshot causal `emaFanLong5m` hoặc `emaFanShort5m`.
+- Phạm vi: gửi riêng hai exact label `EMA_FAN_LONG_READY` và `EMA_FAN_SHORT_READY` qua `LIQ_FLOW_V2_EMA_FAN_WEBHOOK_URL`.
+  Payload gồm symbol/side, rank universe, 24h/1h, mark, EMA13/25/99, gap, compression, volume, RSI, khoảng cách EMA13 và paper plan.
+- Dedupe dùng `symbol + exact label + ready candle closeTime`, giữ trong bộ nhớ mặc định 24h; chỉ gửi khi `readyLabelKeys` xác nhận transition mới.
+  Nhãn EMA FAN là secondary label vẫn được gửi đúng, không phụ thuộc primary label và không replay tín hiệu cũ khi restart.
+- Thống kê/whitelist không đổi: hai card giữ key `heatmap-v2:EMA_FAN_LONG_READY` và `heatmap-v2:EMA_FAN_SHORT_READY`, checkbox mặc định tắt và
+  chỉ hiện khi CLOSED AvgROE riêng nhãn `>4%`. Discord không phải gate và không cấp whitelist/order.
+- Ảnh hưởng Binance/entry/size/SL/TP: không đổi. LONG giữ policy Binance hiện hành; SHORT vẫn paper-only và auto profile `eligible=false`.
+  Webhook chỉ thông báo, không tạo paper bổ sung, không đặt/hủy/sửa entry, size, TP hoặc SL.
+- Tương thích JSON cũ: không đổi schema/store, không migrate/rewrite trade; cấu hình webhook chỉ nằm trong env local, `.env.example` để trống secret.
+
+## 2026-08-14 - Tách EMA FAN LONG theo MARKET và paper LIMIT-fill
+
+- Version đang chạy: classifier `LIQUID_HEATMAP_FLOW_V2_EMA_FAN_ENTRY_ROUTING_V14_20260814`, paper
+  `LIQUID_FLOW_V2_PAPER_V23_EMA_FAN_ENTRY_ROUTING_20260814`, Binance policy
+  `LIVE_CARD_AND_LIQ_FLOW_READY_V11_EMA_FAN_ROUTING_20260814`, Discord
+  `LIQUID_FLOW_V2_EMA_FAN_DISCORD_V2_ENTRY_ROUTING_20260814`.
+- Dữ liệu trước entry: chỉ dùng snapshot mover/liquidity rank, change/quote-volume hiện tại và tối đa 220 nến 5m đã đóng để tính
+  EMA13/25/99, compression 12 nến, body, volume nền, RSI và khoảng cách EMA13. Không dùng nến tương lai, outcome hay giá sau entry.
+- Phân loại giữ toàn bộ điều kiện EMA FAN WATCH/READY hiện hành. Nhãn mới `EMA_FAN_LONG_IMPULSE_RUNNER` cần thêm:
+  gainer rank `1..100`, volume `>=5x`, thân nến `>=1%` và close READY cách EMA13 `<=3%`.
+  `EMA_FAN_LONG_READY` thường chỉ còn rank `1..50` và không thuộc impulse. Deep scan được mở đến rank 100 cho EMA FAN;
+  tier panic cũ vẫn chỉ rank `21..60`, còn rank `61..100` dùng tier riêng `EMA_FAN_LONG_EXTENDED_61_100`.
+- Thống kê/whitelist: thêm exact key `heatmap-v2:EMA_FAN_LONG_IMPULSE_RUNNER`; UI và runtime matcher dùng cùng key,
+  mặc định tắt. Checkbox chỉ hiện khi riêng nhãn có paper CLOSED `AvgROE > 4%`; OPEN/PENDING không được tính vào AvgROE.
+  Nhãn thường giữ key `heatmap-v2:EMA_FAN_LONG_READY` và thống kê cohort riêng, không gộp với impulse.
+- Ảnh hưởng Binance/entry/size: impulse tạo paper MARKET `$10 × 5x` và đặt Binance MARKET margin `$5 × 5x` ngay ở transition READY.
+  Nhãn thường tạo paper `PENDING_ENTRY` tại `EMA13 tín hiệu × 1.01`, hết hạn sau 15 phút; trước khi paper fill tuyệt đối không claim/order Binance.
+  Khi mark chạm limit, paper chuyển OPEN rồi mới đặt Binance MARKET margin `$1 × 5x`. Hết hạn/invalidated thì không có lệnh thật.
+  Cả hai luồng vẫn qua existing-position guard, one-shot claim, clientOrderId/dedupe và max-position policy.
+- SL/TP không đổi trong lượt này: paper và protection Binance tiếp tục TP `+10% ROE`, SL `-25% ROE`, max hold 12h,
+  neo protection theo exact Binance fill. `EMA_FAN_SHORT_READY` vẫn paper MARKET `$10 × 5x`, `eligible=false`, không đặt Binance.
+- Tương thích JSON cũ: các settings limit/timeout/impulse-margin và snapshot đều optional, có runtime default. Store/trade cũ không migrate,
+  rewrite hoặc tính lại outcome; trade `EMA_FAN_LONG_READY` cũ giữ entry lịch sử. Signal key vẫn là symbol + exact label + closeTime READY,
+  nên nhãn mới tách dedupe rõ ràng và restart/reconnect không replay tín hiệu cũ.
+
+## 2026-08-14 - DCA giữ nguyên protection của vị thế gốc
+
+- Version: `BINANCE_DCA_KEEP_EXISTING_TP_SL_V1_20260814`; manual Liquid Flow V2
+  `LIQUID_FLOW_V2_MANUAL_BINANCE_UI_V6_DCA_KEEP_PROTECTION_20260814`.
+- Dữ liệu dùng trước/sau fill chỉ gồm snapshot position Binance ngay trước submit và event full-fill từ user-data socket:
+  symbol, side/positionSide, `positionAmt`, `filledQty` và `cumulativeFilledQty`. Không dùng candle tương lai, outcome hay dữ liệu sau exit.
+- Phân loại DCA cùng chiều ở preflight khi symbol đã có position đúng hướng order. Lớp socket xác nhận lại là DCA khi hướng fill trùng
+  hướng position sau fill và `abs(positionAmount) > cumulativeFilledQty` (có tolerance cho precision). Position mới có amount bằng qty order
+  không bị phân loại DCA; position ngược chiều trên nút Liquid Flow V2 vẫn bị chặn như cũ.
+- Ảnh hưởng TP/SL: DCA vẫn submit entry MARKET/LIMIT, margin/leverage/quantity không đổi, nhưng không tạo hoặc ghi đè protection plan,
+  không đặt TP/SL mới, không chạy fallback TP/SL và không reset profit-lock. TP/SL đang tồn tại của toàn vị thế được giữ nguyên.
+  Nếu người dùng đã chủ động xóa protection trước DCA thì rule không tự dựng lại. Position mới hoàn toàn vẫn đặt TP/SL lần đầu theo plan hiện hành.
+- Thống kê/whitelist: không thêm hoặc đổi signal, label, tier, card, matcher hay key. Checkbox hiện hữu vẫn mặc định tắt và chỉ hiện khi
+  paper CLOSED AvgROE riêng nhãn `>4%`; DCA protection policy không cấp quyền Binance mới.
+- Tương thích JSON cũ: không cần migration/rewrite. Chỉ ghi thêm các field audit optional
+  `binanceDcaProtectionSuppressed` và `binanceDcaProtectionPolicyVersion` cho order/trade mới; record cũ không có field vẫn đọc bình thường.
+
+## 2026-08-14 - Thống kê Binance thật riêng cho Liquid Flow V2
+
+- Version: `LIQUID_FLOW_V2_BINANCE_STATS_V1_20260814`. Màn riêng `/liquid-flow-v2-binance-stats` có bộ lọc `fromDay/toDay` theo
+  `Asia/Bangkok`, lọc exact `labelKey`, KPI FILLED/OPEN/CLOSED/W-L/WR/PF/AvgROE/realized/unrealized/NET, bảng theo nhãn và bảng chi tiết có phân trang.
+- `/liquid-flow-v2` chỉ giữ link điều hướng sang trang thống kê và không import JS, không gọi API Binance Income của màn này; socket/render scanner
+  vì vậy không còn bị chờ đối soát lịch sử.
+- Dữ liệu dùng và ánh xạ: cohort chỉ gồm trade `source=liquid-flow-v2` đã có `binanceEntryFilledAt` cùng trạng thái/order status `FILLED`.
+  Entry được nối bằng exact paper trade id + Binance order id đã lưu; PnL lệnh đóng chỉ lấy `REALIZED_PNL + COMMISSION + FUNDING_FEE`
+  của Binance trong cửa sổ exact symbol/lifecycle từ fill đến close. Lệnh mở lấy unrealized PnL từ position Binance đúng symbol/side.
+  Paper PnL/outcome chỉ hiển thị đối chiếu nguyên nhân và tuyệt đối không được cộng thay khi Binance PnL thiếu.
+- Phân loại nguyên nhân: exact signal type là `labelKey`; outcome snapshot được chuẩn hóa thành `TAKE_PROFIT`, `STOP_LOSS`, `TIME_EXIT`,
+  `OTHER_CLOSE` hoặc `OPEN`. Bảng còn hiển thị chênh lệch bất lợi giữa signal entry và Binance fill để tìm lỗi thắng/thua do entry.
+- Cách thống kê: WR/PF/realized chỉ dùng lệnh CLOSED có Binance Income đã đối soát; AvgROE dùng các dòng có PnL thật và margin Binance;
+  NET bằng realized đã biết cộng unrealized vị thế đang mở. Số `pnlMissing` luôn hiện riêng để tránh biến missing thành hòa vốn.
+- Ảnh hưởng giao dịch: màn/API chỉ đọc và thống kê, không thay đổi classifier, gate, entry, size, leverage, SL, TP hoặc quyền Binance.
+  Không thêm label/card/whitelist mới; các checkbox hiện hữu vẫn mặc định tắt và chỉ hiện khi paper CLOSED AvgROE riêng nhãn `>4%`.
+- Tương thích JSON cũ: không migrate/rewrite store. Các trade cũ có đủ `binanceEntryFilledAt` vẫn được đọc; record thiếu fill hoặc PnL Income
+  được giữ ngoài cohort/đánh dấu missing, không ghép gần đúng và không thay bằng paper result.

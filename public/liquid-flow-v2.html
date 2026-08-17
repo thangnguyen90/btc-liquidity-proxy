@@ -17,6 +17,7 @@
         </div>
         <nav class="flow-v2-nav" aria-label="Điều hướng">
           <a class="active" href="/liquid-flow-v2" aria-current="page">Liquid Flow V2</a>
+          <a href="/liquid-flow-v2-binance-stats">V2 Binance Stats</a>
           <a href="/liquid-scan">Liquid Scan V1</a>
           <a href="/highvol">High Vol</a>
           <a href="/lsratio">L/S Ratio</a>
@@ -105,6 +106,17 @@
           </div>
           <p id="paperUpdatedAt">Chưa có paper trade.</p>
         </div>
+        <form id="paperStatsFilters" class="flow-v2-paper-filters">
+          <label>TỪ NGÀY<input id="paperFromDay" type="date"></label>
+          <label>ĐẾN NGÀY<input id="paperToDay" type="date"></label>
+          <label>NHÃN
+            <select id="paperLabelFilter"><option value="ALL">Tất cả nhãn</option></select>
+          </label>
+          <button type="submit">ÁP DỤNG</button>
+          <button id="paperFilterToday" type="button">HÔM NAY</button>
+          <button id="paperFilterAll" type="button">TẤT CẢ</button>
+          <small id="paperFilterNote">Ngày vào paper · Asia/Bangkok</small>
+        </form>
         <div class="flow-v2-paper-summary">
           <article><span>OPEN / PENDING</span><strong id="paperOpenCount">0 / 0</strong></article>
           <article><span>CLOSED</span><strong id="paperClosedCount">0</strong></article>
@@ -112,6 +124,15 @@
           <article><span>WIN RATE</span><strong id="paperWinRate">--</strong></article>
           <article><span>NET PNL</span><strong id="paperNetPnl">$0.000</strong></article>
           <article><span>AVG ROE</span><strong id="paperAvgRoe">--</strong></article>
+        </div>
+        <div class="flow-v2-paper-label-stats">
+          <h3>Thống kê theo nhãn</h3>
+          <div class="flow-v2-table-wrap">
+            <table class="flow-v2-paper-label-table">
+              <thead><tr><th>NHÃN</th><th>OPEN / PENDING</th><th>CLOSED</th><th>W / L</th><th>WR</th><th>PF</th><th>NET PNL</th><th>AVG ROE</th></tr></thead>
+              <tbody id="paperLabelBreakdown"><tr><td colspan="8">Đang tải thống kê...</td></tr></tbody>
+            </table>
+          </div>
         </div>
         <div class="flow-v2-paper-columns">
           <div>
@@ -134,20 +155,24 @@
         <h2>Cách đọc</h2>
         <div class="flow-v2-method-grid">
           <article><b>UP SQUEEZE ACTIVE</b><span>Coin đang bơm/kill SHORT. Không SHORT chỉ vì nằm top tăng.</span></article>
-          <article><b>UP SWEEP · SHORT READY</b><span>Đã chạm vùng trên, nến đóng reject và tối thiểu một flow xác nhận suy yếu.</span></article>
+          <article><b>UP SWEEP · SHORT WATCH / READY</b><span>Nến quét/reject vùng trên chỉ tạo WATCH. READY sau khi nến 5m kế tiếp đóng retest-fail dưới EMA13, taker nến đóng không dương, OI giảm và short-liquidation đã kết thúc; tối đa một paper mỗi symbol/ngày.</span></article>
           <article><b>DOWN SQUEEZE ACTIVE</b><span>Coin đang dump/kill LONG. Không LONG chỉ vì RSI thấp hoặc giảm sâu.</span></article>
-          <article><b>DOWN SWEEP · LONG READY</b><span>Đã chạm vùng dưới, nến đóng reclaim và tối thiểu một flow xác nhận hấp thụ.</span></article>
+          <article><b>DOWN SWEEP · LONG WATCH / READY</b><span>Quét/reclaim đáy generic chỉ là WATCH. READY chỉ cho pullback 1h trong ngày còn tăng 0–10%, khi nến 5m kế tiếp tạo higher-low, taker mua và đóng trên EMA13/25; downtrend mạnh phải dùng nhãn exhaustion/HTF riêng.</span></article>
+          <article><b>KILL LONG EXHAUSTION · LONG READY</b><span>Không bắt đáy chỉ vì giảm sâu: chỉ READY khi force SELL 5m suy giảm, OI đã washout rồi ổn định, taker mua quay lại và nến 5m đóng reclaim EMA13/25 với higher-low. Paper $10 × 5x; không Binance thật.</span></article>
           <article><b>UP BASE SWEEP · LONG READY</b><span>Top tăng quét đáy base, giữ reclaim rồi đóng breakout với volume và taker mua; không chấp nhận nến reject đỉnh.</span></article>
           <article><b>DOWN BASE SWEEP · SHORT READY</b><span>Top giảm quét đỉnh base, giữ reject rồi đóng breakdown với volume và taker bán; không chấp nhận nến reclaim đáy.</span></article>
-          <article><b>PRE UP BASE · LONG</b><span>Râu nến 5m live chạm EMA99 rồi bật/reclaim, EMA13/25/99 còn xếp tăng và không đuổi quá +1,2%; tạo paper và thử Binance MARKET $5 × 5x ở transition mới.</span></article>
-          <article><b>PRE DOWN BASE · SHORT</b><span>Râu nến 5m live chạm EMA99 rồi reject xuống, EMA13/25/99 còn xếp giảm và không đuổi quá -1,2%; tạo paper và thử Binance MARKET $5 × 5x ở transition mới.</span></article>
+        <article><b>PRE UP BASE · LONG</b><span>Râu nến 5m live chạm EMA99, bật ít nhất 0,6% và mark chỉ được cách EMA99 +0,1…+0,5%; tạo paper và thử Binance MARKET $5 × 5x ở transition mới.</span></article>
+        <article><b>PRE DOWN BASE · SHORT</b><span>Râu nến 5m live chạm EMA99 rồi reject, mark chỉ được cách EMA99 -0,5…-0,1%; tạo paper và thử Binance MARKET $5 × 5x ở transition mới.</span></article>
           <article><b>HTF BEAR · 5M/15M EMA99 PUMP REJECT</b><span>Ít nhất một khung 1h/4h giảm, pump 5m hoặc 15m quét EMA99 rồi nến đóng reject xuống với volume/taker guard. Khi nhãn READY mới phát: Auto Paper và Binance MARKET margin $5, mặc định 5x.</span></article>
           <article><b>HTF BULL · 5M/15M EMA99 DUMP RECLAIM</b><span>Ít nhất một khung 1h/4h tăng, dump 5m hoặc 15m quét EMA99 rồi nến đóng reclaim lên với volume/taker guard. Khi nhãn READY mới phát: Auto Paper và Binance MARKET margin $5, mặc định 5x.</span></article>
           <article><b>PUMP DISTRIBUTION · WATCH</b><span>Nhìn lại tối đa 48 giờ nến 15m và chu kỳ 1h: pump mạnh đã chuyển sang co hẹp, đỉnh thấp dần, râu trên và volume/taker suy yếu. Đây là nhãn theo dõi độc lập, chưa vào paper.</span></article>
           <article><b>PUMP DISTRIBUTION · SHORT READY</b><span>Đã thủng support và có retest thất bại hoặc hai nến đóng giữ dưới support. Tạo Auto Paper SHORT để đánh giá; không cấp lệnh Binance thật và không đuổi khi đã xả quá sâu.</span></article>
+          <article><b>EMA FAN · LONG READY</b><span>Nhóm fan thường trong top 50: chạm EMA13 +1% trong 15 phút chỉ arm retest. Phải chờ nến 5m đóng bullish reclaim EMA13, tạo higher-low, taker buy dương và fan không co/đảo; sau đó paper mới OPEN và Binance MARKET margin $1 × 5x.</span></article>
+          <article><b>EMA FAN · LONG IMPULSE RUNNER</b><span>Nhóm mạnh top 100 với volume ≥5x, thân nến ≥1% và cách EMA13 ≤3%: tạo paper và vào Binance MARKET ngay, margin $5 × 5x.</span></article>
+          <article><b>EMA FAN · SHORT READY</b><span>Top 150 theo thanh khoản và ngày đang giảm ít nhất 5%: EMA13/25/99 nén rồi breakdown, xếp bearish và cùng mở rộng trên nến 5m đóng. Tạo paper $10 × 5x, TP +10% / SL -25% ROE, tối đa 12h; không cấp lệnh Binance thật.</span></article>
         </div>
       </section>
     </main>
-    <script type="module" src="/liquid-flow-v2.js?v=20260811-v22"></script>
+    <script type="module" src="/liquid-flow-v2.js?v=20260816-v29"></script>
   </body>
 </html>

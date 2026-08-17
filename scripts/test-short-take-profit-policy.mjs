@@ -153,7 +153,9 @@ assert.match(serverSource, /resolveOrdersManualTakeProfit/);
 assert.match(serverSource, /source: BINANCE_MANUAL_SOCKET_SOURCE/);
 assert.match(positionMonitorSource, /positionEntryPrice: Number\(current\.entry\)/);
 assert.doesNotMatch(serverSource, /!fixedShortTpPolicy\.applied/);
-assert.match(serverSource, /if \(!takeProfitUserOrV2Managed && roeInfo\.ready/);
-assert.match(serverSource, /\[NegTp\].*user\/Liquid Flow V2 keeps its own TP plan/);
+assert.doesNotMatch(serverSource, /if \(!takeProfitUserOrV2Managed && roeInfo\.ready/);
+assert.doesNotMatch(serverSource, /\[NegTp\].*user\/Liquid Flow V2 keeps its own TP plan/);
+assert.match(serverSource, /shouldMoveNegativeTpToEntry/);
+assert.match(serverSource, /BINANCE_NEGATIVE_TP_TO_ENTRY_VERSION/);
 
 console.log('short take-profit policy tests passed');

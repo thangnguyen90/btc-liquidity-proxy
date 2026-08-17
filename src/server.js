@@ -66,8 +66,15 @@ import {
   classifyLiveCardSignalSource,
   filterLiveCardExecutionsByDateRange,
   normalizeLiveCardDateRange,
+  reconcileLiveCardClosedPnl,
   safeBotClosePlan,
 } from './liveCardBinanceLifecycle.js';
+import {
+  LIQUID_FLOW_V2_BINANCE_STATS_VERSION,
+  buildLiquidFlowV2BinanceStats,
+  liquidFlowV2RealTrades,
+  liquidFlowV2SyntheticExecutions,
+} from './liquidFlowV2BinanceStats.js';
 import {
   appendEdgePaperEntryJournal,
   readLatestEdgePaperJournalRecords,
@@ -75,6 +82,7 @@ import {
 } from './edgePaperEntryJournal.js';
 import {
   AUTO_BINANCE_ENTRY_POLICY_VERSION,
+  LIQUID_FLOW_V2_BINANCE_LEVERAGE,
   authorizeLiquidFlowV2AutoOrder,
   authorizeLiveCardAutoOrder,
   evaluateAutoBinanceEntryPolicy,
@@ -117,9 +125,17 @@ import {
   resolveOrdersManualTakeProfit,
 } from './shortTakeProfitPolicy.js';
 import {
+  BINANCE_NEGATIVE_TP_TO_ENTRY_DEFAULT_ROE,
+  BINANCE_NEGATIVE_TP_TO_ENTRY_VERSION,
+  normalizeNegativeTpRoe,
+  shouldMoveNegativeTpToEntry,
+} from './negativeTakeProfitPolicy.js';
+import {
+  BINANCE_DCA_KEEP_PROTECTION_VERSION,
   LIQUID_FLOW_V2_MANUAL_ORDER_VERSION,
   buildLiquidFlowV2ManualOrderPayload,
   inspectLiquidFlowV2DcaPositions,
+  isBinanceSameSideDcaFill,
 } from './liquidFlowV2ManualOrder.js';
 import {
   LIVE_CARD_FILL_ANCHORED_PROTECTION_VERSION,
@@ -136,6 +152,12 @@ import {
 } from './liveCardShortTimeStop.js';
 import {
   LIVE_CARD_DAY_BEAR_CONTINUE_KEY,
+  LIVE_CARD_LIQUID_KZ_TEST_MARGIN_USDT,
+  LIVE_CARD_LIQUID_KZ_TEST_MAX_MARKET_SLIPPAGE_PCT,
+  LIVE_CARD_LIQUID_KZ_TEST_PROFILE_VERSION,
+  LIVE_CARD_LIQUID_KZ_TEST_RETEST_TIMEOUT_MS,
+  LIVE_CARD_LIQUID_KZ_TEST_TAKE_PROFIT_ROE_PCT,
+  LIVE_CARD_LIQUID_KZ_YEU_UPMID_FLAT_RESET_KEY,
   LIVE_CARD_SHORT_DEFAULT_MAX_ADVERSE_SLIPPAGE_PCT,
   LIVE_CARD_SHORT_DUMP_UP_WEAK_MAX_ADVERSE_SLIPPAGE_PCT,
   LIVE_CARD_SHORT_EARLY_DOWN_MID_MAX_ADVERSE_SLIPPAGE_PCT,
@@ -170,9 +192,12 @@ import {
   resolveOrdersExcludedBinanceProfitLockRoe,
 } from './binanceProfitLock.js';
 import {
+  BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION,
   BINANCE_TWELVE_HOUR_TAKE_PROFIT_VERSION,
+  DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
   DEFAULT_BINANCE_TP_MAX_AGE_MS,
   DEFAULT_BINANCE_TP_TARGET_ROE_PCT,
+  evaluateBinanceEightHourNegativeTakeProfit,
   evaluateBinanceTwelveHourTakeProfit,
   isBinanceTwelveHourTpPriceMatch,
   parseBinancePositionOpenedAt,
@@ -404,7 +429,9 @@ import {
   liquidHeatmapFlowV2ExtendedPrefilter,
   liquidHeatmapFlowV2Stats,
   selectLiquidHeatmapFlowV2Candidates,
+  selectLiquidHeatmapFlowV2EmaFanShortCandidates,
   selectLiquidHeatmapFlowV2ExtendedCandidates,
+  selectLiquidHeatmapFlowV2PostPumpCandidates,
 } from './liquidHeatmapFlowV2.js';
 import { LiquidationFlowCollector } from './liquidationFlowCollector.js';
 import { LiquidFlowV2PaperManager, liquidFlowV2AutoBinanceProfile } from './liquidFlowV2Paper.js';
@@ -417,6 +444,16 @@ import {
   buildLiquidFlowV2ExtendedDiscordPayload,
   liquidFlowV2ExtendedDiscordDedupeKey,
 } from './liquidFlowV2ExtendedDiscord.js';
+import {
+  LIQUID_FLOW_V2_EMA_FAN_DISCORD_LABELS,
+  buildLiquidFlowV2EmaFanDiscordPayload,
+  liquidFlowV2EmaFanDiscordDedupeKey,
+} from './liquidFlowV2EmaFanDiscord.js';
+import {
+  LIQUID_FLOW_V2_KILL_LONG_DISCORD_LABELS,
+  buildLiquidFlowV2KillLongDiscordPayload,
+  liquidFlowV2KillLongDiscordDedupeKey,
+} from './liquidFlowV2KillLongDiscord.js';
 import WebSocket from 'ws';
 
 loadEnv();
@@ -732,6 +769,7 @@ const shakeoutReclaimScanCache = { data: null, expiresAt: 0 };
 const topReversalScanCache = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 const liquidFlowV2Cache = { data: null, expiresAt: 0, inflight: null };
+let liquidFlowV2PostPumpSeedPromise = null;
 const liquidMarketDirectionCache = { data: null, expiresAt: 0, inflight: null };
 const shortWaveStatsCache = { data: null, expiresAt: 0 };
 let liquidMarketDirectionState = null;
@@ -744,6 +782,8 @@ const liquidFlowV2Session = {
 };
 const liquidFlowV2HtfDiscordSent = new Map();
 const liquidFlowV2ExtendedDiscordSent = new Map();
+const liquidFlowV2EmaFanDiscordSent = new Map();
+const liquidFlowV2KillLongDiscordSent = new Map();
 
 async function notifyLiquidFlowV2HtfDiscord(rows = [], readyTransitions = new Set(), generatedAt = Date.now()) {
   const webhookUrl = process.env.LIQ_FLOW_V2_HTF_WEBHOOK_URL
@@ -818,6 +858,94 @@ async function notifyLiquidFlowV2ExtendedDiscord(rows = [], readyTransitions = n
     }
   }
 }
+
+async function notifyLiquidFlowV2EmaFanDiscord(rows = [], readyLabelKeys = new Set(), generatedAt = Date.now()) {
+  const webhookUrl = process.env.LIQ_FLOW_V2_EMA_FAN_WEBHOOK_URL;
+  if (!webhookUrl) return;
+  const now = Date.now();
+  const retentionMs = Math.max(60 * 60_000, Number(process.env.LIQ_FLOW_V2_EMA_FAN_DISCORD_DEDUPE_MS ?? 24 * 60 * 60_000));
+  for (const [key, sentAt] of liquidFlowV2EmaFanDiscordSent) {
+    if (now - sentAt > retentionMs) liquidFlowV2EmaFanDiscordSent.delete(key);
+  }
+  for (const row of rows) {
+    const symbol = String(row?.symbol ?? '').toUpperCase();
+    const classifications = [
+      row?.classification,
+      ...(Array.isArray(row?.classification?.secondaryLabels) ? row.classification.secondaryLabels : []),
+    ];
+    for (const classification of classifications) {
+      const labelKey = String(classification?.labelKey ?? '');
+      if (!LIQUID_FLOW_V2_EMA_FAN_DISCORD_LABELS.has(labelKey)
+        || !readyLabelKeys.has(`${symbol}|${labelKey}`)) continue;
+      const dedupeKey = liquidFlowV2EmaFanDiscordDedupeKey(row, classification);
+      if (!dedupeKey || liquidFlowV2EmaFanDiscordSent.has(dedupeKey)) continue;
+      const payload = buildLiquidFlowV2EmaFanDiscordPayload(row, classification, generatedAt);
+      if (!payload) continue;
+      liquidFlowV2EmaFanDiscordSent.set(dedupeKey, now);
+      try {
+        const response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          liquidFlowV2EmaFanDiscordSent.delete(dedupeKey);
+          console.warn(`[LiquidFlowV2EmaFan] Discord ${symbol} ${labelKey} failed: ${response.status}`);
+        } else {
+          console.log(`[LiquidFlowV2EmaFan] Discord sent: ${symbol} ${labelKey}`);
+        }
+      } catch (error) {
+        liquidFlowV2EmaFanDiscordSent.delete(dedupeKey);
+        console.warn(`[LiquidFlowV2EmaFan] Discord ${symbol} ${labelKey}: ${error.message}`);
+      }
+    }
+  }
+}
+
+async function notifyLiquidFlowV2KillLongDiscord(rows = [], readyLabelKeys = new Set(), generatedAt = Date.now()) {
+  const webhookUrl = process.env.LIQ_FLOW_V2_KILL_LONG_RECLAIM_WEBHOOK_URL;
+  if (!webhookUrl) return;
+  const now = Date.now();
+  const retentionMs = Math.max(60 * 60_000, Number(
+    process.env.LIQ_FLOW_V2_KILL_LONG_RECLAIM_DISCORD_DEDUPE_MS ?? 24 * 60 * 60_000,
+  ));
+  for (const [key, sentAt] of liquidFlowV2KillLongDiscordSent) {
+    if (now - sentAt > retentionMs) liquidFlowV2KillLongDiscordSent.delete(key);
+  }
+  for (const row of rows) {
+    const symbol = String(row?.symbol ?? '').toUpperCase();
+    const classifications = [
+      row?.classification,
+      ...(Array.isArray(row?.classification?.secondaryLabels) ? row.classification.secondaryLabels : []),
+    ];
+    for (const classification of classifications) {
+      const labelKey = String(classification?.labelKey ?? '');
+      if (!LIQUID_FLOW_V2_KILL_LONG_DISCORD_LABELS.has(labelKey)
+        || !readyLabelKeys.has(`${symbol}|${labelKey}`)) continue;
+      const dedupeKey = liquidFlowV2KillLongDiscordDedupeKey(row, classification);
+      if (!dedupeKey || liquidFlowV2KillLongDiscordSent.has(dedupeKey)) continue;
+      const payload = buildLiquidFlowV2KillLongDiscordPayload(row, classification, generatedAt);
+      if (!payload) continue;
+      liquidFlowV2KillLongDiscordSent.set(dedupeKey, now);
+      try {
+        const response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          liquidFlowV2KillLongDiscordSent.delete(dedupeKey);
+          console.warn(`[LiquidFlowV2KillLong] Discord ${symbol} ${labelKey} failed: ${response.status}`);
+        } else {
+          console.log(`[LiquidFlowV2KillLong] Discord sent: ${symbol} ${labelKey}`);
+        }
+      } catch (error) {
+        liquidFlowV2KillLongDiscordSent.delete(dedupeKey);
+        console.warn(`[LiquidFlowV2KillLong] Discord ${symbol} ${labelKey}: ${error.message}`);
+      }
+    }
+  }
+}
 const liquidFlowV2Collector = new LiquidationFlowCollector({
   url: process.env.BINANCE_FORCE_ORDER_WS_URL || undefined,
 });
@@ -827,20 +955,39 @@ const liquidFlowV2Paper = new LiquidFlowV2PaperManager({
   settings: {
     autoEnabled: process.env.LIQ_FLOW_V2_AUTO_PAPER_ENABLED !== 'false',
     marginUsdt: Number(process.env.LIQ_FLOW_V2_PAPER_MARGIN_USDT ?? 10),
-    leverage: Number(process.env.LIQ_FLOW_V2_PAPER_LEVERAGE ?? 5),
-    baseSweepLeverage: Number(process.env.LIQ_FLOW_V2_BASE_SWEEP_LEVERAGE ?? 5),
+    leverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+    baseSweepLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
     baseSweepMaxRiskRoe: Number(process.env.LIQ_FLOW_V2_BASE_SWEEP_MAX_RISK_ROE ?? 25),
     hardStopRoe: Number(process.env.LIQ_FLOW_V2_HARD_STOP_ROE ?? 20),
     minTakeProfitRoe: Number(process.env.LIQ_FLOW_V2_MIN_TAKE_PROFIT_ROE ?? 10),
     baseBinanceEnabled: process.env.LIQ_FLOW_V2_BASE_BINANCE_ENABLED !== 'false',
     baseBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_BASE_BINANCE_MARGIN_USDT ?? 2),
     baseLongBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_BASE_LONG_BINANCE_MARGIN_USDT ?? 2),
-    baseBinanceLeverage: Number(process.env.LIQ_FLOW_V2_BASE_BINANCE_LEVERAGE ?? 5),
+    baseBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
     preBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_PRE_BINANCE_MARGIN_USDT ?? 5),
-    preBinanceLeverage: Number(process.env.LIQ_FLOW_V2_PRE_BINANCE_LEVERAGE ?? 5),
+    preBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
     htfBinanceEnabled: process.env.LIQ_FLOW_V2_HTF_BINANCE_ENABLED !== 'false',
     htfBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_HTF_BINANCE_MARGIN_USDT ?? 5),
-    htfBinanceLeverage: Number(process.env.LIQ_FLOW_V2_HTF_BINANCE_LEVERAGE ?? 5),
+    htfBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+    emaFanPaperMarginUsdt: Number(process.env.LIQ_FLOW_V2_EMA_FAN_PAPER_MARGIN_USDT ?? 10),
+    emaFanBinanceEnabled: process.env.LIQ_FLOW_V2_EMA_FAN_BINANCE_ENABLED !== 'false',
+    emaFanBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_EMA_FAN_BINANCE_MARGIN_USDT ?? 1),
+    emaFanImpulseBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_EMA_FAN_IMPULSE_BINANCE_MARGIN_USDT ?? 5),
+    emaFanBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+    emaFanRegularLimitBufferPct: Number(process.env.LIQ_FLOW_V2_EMA_FAN_REGULAR_LIMIT_BUFFER_PCT ?? 1),
+    emaFanRegularEntryTimeoutMs: Number(process.env.LIQ_FLOW_V2_EMA_FAN_REGULAR_ENTRY_TIMEOUT_MS ?? 15 * 60_000),
+    emaFanHardStopRoe: Number(process.env.LIQ_FLOW_V2_EMA_FAN_HARD_STOP_ROE ?? 25),
+    emaFanTakeProfitRoe: Number(process.env.LIQ_FLOW_V2_EMA_FAN_TAKE_PROFIT_ROE ?? 10),
+    emaFanMaxHoldMs: Number(process.env.LIQ_FLOW_V2_EMA_FAN_MAX_HOLD_MS ?? 12 * 60 * 60_000),
+    pumpFlushBinanceEnabled: process.env.LIQ_FLOW_V2_PUMP_FLUSH_BINANCE_ENABLED !== 'false',
+    pumpFlushBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_PUMP_FLUSH_BINANCE_MARGIN_USDT ?? 1.5),
+    pumpFlushBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+    primaryPanicBinanceEnabled: process.env.LIQ_FLOW_V2_PRIMARY_PANIC_BINANCE_ENABLED !== 'false',
+    primaryPanicBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_PRIMARY_PANIC_BINANCE_MARGIN_USDT ?? 2),
+    primaryPanicBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+    postPumpReadyBinanceEnabled: process.env.LIQ_FLOW_V2_POST_PUMP_READY_BINANCE_ENABLED !== 'false',
+    postPumpReadyBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_POST_PUMP_READY_BINANCE_MARGIN_USDT ?? 2),
+    postPumpReadyBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
     baseSweepRetestBufferPct: Number(process.env.LIQ_FLOW_V2_BASE_SWEEP_RETEST_BUFFER_PCT ?? 0.6),
     baseSweepEntryTimeoutMs: Number(process.env.LIQ_FLOW_V2_BASE_SWEEP_ENTRY_TIMEOUT_MS ?? 30 * 60_000),
     cooldownMs: Number(process.env.LIQ_FLOW_V2_PAPER_COOLDOWN_MS ?? 30 * 60_000),
@@ -872,6 +1019,11 @@ const LIQUID_FLOW_V2_AUTO_REAL_LABELS = new Set([
   'PRE_DOWN_BASE_SHORT',
   'HTF_BEAR_15M_EMA99_PUMP_REJECT',
   'HTF_BULL_15M_EMA99_DUMP_RECLAIM',
+  'EMA_FAN_LONG_READY',
+  'EMA_FAN_LONG_IMPULSE_RUNNER',
+  'PUMP_FLUSH_RECLAIM_LONG_READY',
+  'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY',
+  'POST_PUMP_SHORT_SQUEEZE_LONG_READY',
 ]);
 
 async function notifyLiquidFlowV2Binance(trade, state, detail, profile) {
@@ -883,7 +1035,15 @@ async function notifyLiquidFlowV2Binance(trade, state, detail, profile) {
     ? 'PRE EMA99'
     : profile?.cohort === 'HTF_EMA99'
       ? 'HTF EMA99'
-      : 'BASE';
+      : String(profile?.cohort ?? '').startsWith('EMA_FAN')
+        ? profile?.cohort === 'EMA_FAN_IMPULSE' ? 'EMA FAN IMPULSE' : 'EMA FAN LIMIT FILL'
+        : profile?.cohort === 'PUMP_FLUSH_RECLAIM'
+          ? 'PUMP FLUSH RECLAIM'
+        : profile?.cohort === 'PRIMARY_EMA99_PANIC_RECLAIM'
+          ? 'PRIMARY EMA99 PANIC RECLAIM'
+        : profile?.cohort === 'POST_PUMP_SQUEEZE_READY'
+          ? 'POST PUMP SQUEEZE READY'
+        : 'BASE';
   const margin = Number(profile?.marginUsdt ?? trade.binanceMarginUsdt ?? 0);
   const leverage = Number(profile?.leverage ?? trade.binanceLeverage ?? 0);
   const content = ok
@@ -903,7 +1063,12 @@ async function handleLiquidFlowV2BinanceEvents(events = []) {
     if (event?.status !== 'OPEN' || !LIQUID_FLOW_V2_AUTO_REAL_LABELS.has(event.labelKey)) continue;
     const profile = liquidFlowV2AutoBinanceProfile({ labelKey: event.labelKey }, liquidFlowV2Paper.state.settings);
     if (!profile.eligible) continue;
-    if (profile.cohort !== 'HTF_EMA99' && !liquidFlowV2Paper.state.settings.baseBinanceEnabled) continue;
+    const independentlyEnabled = profile.cohort === 'HTF_EMA99'
+      || profile.cohort === 'PUMP_FLUSH_RECLAIM'
+      || profile.cohort === 'PRIMARY_EMA99_PANIC_RECLAIM'
+      || profile.cohort === 'POST_PUMP_SQUEEZE_READY'
+      || String(profile.cohort ?? '').startsWith('EMA_FAN');
+    if (!independentlyEnabled && !liquidFlowV2Paper.state.settings.baseBinanceEnabled) continue;
     if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
       console.warn(`[LiquidFlowV2Real] ${profile.cohort} skip ${event.symbol}: Binance order disabled/dry-run`);
       continue;
@@ -947,7 +1112,7 @@ async function handleLiquidFlowV2BinanceEvents(events = []) {
         side: trade.side === 'LONG' ? 'BUY' : 'SELL',
         orderType: 'MARKET',
         notionalUsdt: marginUsdt * leverage,
-        allowMinNotionalCeil: profile.cohort === 'PRE_EMA99',
+        allowMinNotionalCeil: profile.cohort === 'PRE_EMA99' || String(profile.cohort ?? '').startsWith('EMA_FAN'),
         leverage,
         takeProfitPrice: trade.takeProfit,
         stopLossPrice: trade.stopLoss,
@@ -8976,6 +9141,56 @@ function openOrdersPositionPnlStream(request, response) {
 // Binance profit-lock: a manually opened position can share a symbol with one
 // of these observation signals and still needs its live SL protected.
 const tslExcludedSymbols = new Set();
+const ORDERS_CAP_TSL_STATE_VERSION = 'ORDERS_CAP_TSL_STATE_V1_DURABLE_20260815';
+const ORDERS_CAP_TSL_FILE = join(rootDir, 'data', 'orders-cap-tsl.json');
+const ordersCapTslSymbols = new Set();
+let ordersCapTslWriteLock = Promise.resolve();
+
+async function loadOrdersCapTslSymbols() {
+  try {
+    const parsed = JSON.parse(await readFile(ORDERS_CAP_TSL_FILE, 'utf8'));
+    const rows = Array.isArray(parsed) ? parsed : parsed?.symbols;
+    ordersCapTslSymbols.clear();
+    for (const value of Array.isArray(rows) ? rows : []) {
+      const symbol = String(value ?? '').toUpperCase().trim();
+      if (symbol) ordersCapTslSymbols.add(symbol);
+    }
+    console.log(`[CapTSL] loaded ${ordersCapTslSymbols.size} symbol(s); ${ORDERS_CAP_TSL_STATE_VERSION}`);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.warn(`[CapTSL] state load failed: ${error.message}`);
+    ordersCapTslSymbols.clear();
+  }
+}
+
+async function saveOrdersCapTslSymbols() {
+  const payload = {
+    version: ORDERS_CAP_TSL_STATE_VERSION,
+    updatedAt: new Date().toISOString(),
+    symbols: [...ordersCapTslSymbols].sort(),
+  };
+  ordersCapTslWriteLock = ordersCapTslWriteLock
+    .catch(() => {})
+    .then(async () => {
+      await mkdir(join(rootDir, 'data'), { recursive: true });
+      const tmp = `${ORDERS_CAP_TSL_FILE}.tmp`;
+      await writeFile(tmp, JSON.stringify(payload, null, 2), 'utf8');
+      await rename(tmp, ORDERS_CAP_TSL_FILE);
+    });
+  await ordersCapTslWriteLock;
+  return payload;
+}
+
+function isCapTslSymbol(symbol) {
+  return ordersCapTslSymbols.has(String(symbol ?? '').toUpperCase().trim());
+}
+
+function shouldMoveSymbolNegativeTpToEntry(symbol, roe, thresholdRoe = negativeTpRoeThreshold()) {
+  return shouldMoveNegativeTpToEntry({
+    roe,
+    thresholdRoe,
+    capTsl: isCapTslSymbol(symbol),
+  });
+}
 
 const orderFillDiscordSent = new Map();
 const liveCardOrderFailureDiscordSent = new Map();
@@ -9160,6 +9375,10 @@ function startPositionSocketMonitor() {
     onFullFillObserved: async (_symbol, fill) => {
       await rememberHandledProtectionFill(fill);
     },
+    onUserDataReconnect: async ({ reason, reconnected }) => {
+      if (!reconnected) return;
+      await runMissedFillProtectionRecovery(`USER_DATA_RECONNECT:${reason}`);
+    },
     onOrderFill: async (symbol, {
       side,
       filledQty,
@@ -9176,18 +9395,31 @@ function startPositionSocketMonitor() {
       positionLeverage = null,
       positionAmount = null,
     }) => {
-      const socketFullFill = ['ORDER_TRADE_UPDATE', 'TRADE_LITE_VERIFIED', 'MISSED_FILL_RECOVERY'].includes(source)
+      const socketFullFill = [
+        'ORDER_TRADE_UPDATE',
+        'TRADE_LITE_VERIFIED',
+        'MISSED_FILL_RECOVERY',
+        'MISSED_FILL_RECONNECT_RECOVERY',
+      ].includes(source)
         && orderStatus === 'FILLED';
       if (!socketFullFill) {
         console.warn(`[Protection] ${symbol} ignored source=${source} status=${orderStatus ?? '-'}; ${POSITION_PROTECTION_TRIGGER_VERSION}`);
         return;
       }
-      // A full opening/DCA fill starts a new position snapshot. Never let a
-      // prior lifecycle's in-memory lock suppress protection for this fill.
-      resetBinanceProfitLockRuntime(symbol, 'SOCKET_FULL_FILL');
+      const sameSideDcaFill = isBinanceSameSideDcaFill({
+        side,
+        positionSide,
+        filledQty,
+        cumulativeFilledQty,
+        positionAmount,
+      });
+      // A genuinely new position starts a new protection lifecycle. A DCA fill
+      // must retain the original position's TP/SL and profit-lock state.
+      if (!sameSideDcaFill) resetBinanceProfitLockRuntime(symbol, 'SOCKET_FULL_FILL');
       const recoveredMissedFill = source === 'MISSED_FILL_RECOVERY';
+      const reconnectRecoveredFill = source === 'MISSED_FILL_RECONNECT_RECOVERY';
       console.log(`[SlGuard] onOrderFill ${symbol} source=${source} fillTime=${fillTime} createdAt=${slTracking.createdAt}`);
-      const lifecycleExecution = socketFullFill && !recoveredMissedFill
+      const lifecycleExecution = socketFullFill && (!recoveredMissedFill || reconnectRecoveredFill)
         ? await liveCardBinanceLifecycle.recordFill({
           symbol,
           side,
@@ -9205,7 +9437,80 @@ function startPositionSocketMonitor() {
           return null;
         })
         : null;
-      let protectionPlan = socketFullFill && !recoveredMissedFill ? signalProtectionPlans.get(symbol) : null;
+      if (sameSideDcaFill) {
+        const pendingPlan = signalProtectionPlans.get(symbol);
+        const pendingPlanMatchesDcaOrder = pendingPlan && (
+          (pendingPlan.orderId != null && orderId != null && String(pendingPlan.orderId) === String(orderId))
+          || (pendingPlan.entryClientOrderId && clientOrderId && pendingPlan.entryClientOrderId === clientOrderId)
+        );
+        if (pendingPlanMatchesDcaOrder) signalProtectionPlans.delete(symbol);
+        const manualFlowTrade = liquidFlowV2Paper.state.trades.find((row) => {
+          if (normalizeSymbol(row.symbol) !== normalizeSymbol(symbol)) return false;
+          if (!String(row.binanceEntryMode ?? '').startsWith('MANUAL_')) return false;
+          if (!['OPEN', 'PENDING_ENTRY'].includes(String(row.status))) return false;
+          return (row.binanceOrderId != null && orderId != null && String(row.binanceOrderId) === String(orderId))
+            || (row.binanceClientOrderId && clientOrderId && row.binanceClientOrderId === clientOrderId);
+        });
+        if (manualFlowTrade) {
+          liquidFlowV2Paper.recordBinanceEntryResult(manualFlowTrade.id, {
+            binanceEntryState: 'FILLED',
+            binanceEntryFilledAt: Number(fillTime) || Date.now(),
+            binanceEntryPrice: Number(avgPrice) || manualFlowTrade.binanceEntryPrice,
+            binanceOrderStatus: orderStatus ?? 'FILLED',
+            binanceDcaProtectionSuppressed: true,
+            binanceDcaProtectionPolicyVersion: BINANCE_DCA_KEEP_PROTECTION_VERSION,
+          }).catch(() => {});
+        }
+        if (lifecycleExecution?.lifecycleId) {
+          await liveCardBinanceLifecycle.upsert({
+            lifecycleId: lifecycleExecution.lifecycleId,
+            dcaProtectionSuppressed: true,
+            dcaProtectionPolicyVersion: BINANCE_DCA_KEEP_PROTECTION_VERSION,
+          }, 'DCA_KEEP_EXISTING_PROTECTION', {
+            symbol,
+            orderId,
+            clientOrderId,
+            positionAmount,
+            cumulativeFilledQty,
+          }).catch(() => {});
+        }
+        console.log(
+          `[DcaProtection] ${symbol} full fill orderId=${orderId ?? '-'} position=${positionAmount}`
+          + ` orderQty=${cumulativeFilledQty ?? filledQty}; giữ nguyên TP/SL vị thế cũ;`
+          + ` ${BINANCE_DCA_KEEP_PROTECTION_VERSION}`,
+        );
+        sendOrderFillDiscord({
+          symbol,
+          side,
+          filledQty,
+          cumulativeFilledQty,
+          avgPrice,
+          positionSide,
+          fillTime,
+          source,
+          orderStatus,
+          orderId,
+          clientOrderId,
+          signalSource: lifecycleExecution?.signalSource ?? 'dca-keep-existing-protection',
+          executionPage: lifecycleExecution?.executionPage ?? null,
+          lifecycleId: lifecycleExecution?.lifecycleId ?? null,
+          matchedKeys: lifecycleExecution?.matchedKeys ?? [],
+          signalCombo: lifecycleExecution?.signalCombo ?? null,
+          signalLabel: lifecycleExecution?.signalLabel ?? null,
+          marginUsdt: lifecycleExecution?.marginUsdt ?? null,
+          leverage: lifecycleExecution?.leverage ?? null,
+        });
+        appendFillLog({ symbol, side, filledQty, avgPrice, positionSide, fillTime }).catch(() => {});
+        invalidateOpenOrdersCache();
+        return {
+          protectionComplete: true,
+          protectionSuppressedForDca: true,
+          dcaProtectionPolicyVersion: BINANCE_DCA_KEEP_PROTECTION_VERSION,
+        };
+      }
+      let protectionPlan = socketFullFill && (!recoveredMissedFill || reconnectRecoveredFill)
+        ? signalProtectionPlans.get(symbol)
+        : null;
       const matchesPlan = protectionPlan && (
         (protectionPlan.orderId != null && orderId != null && String(protectionPlan.orderId) === String(orderId))
         || (protectionPlan.entryClientOrderId && clientOrderId && protectionPlan.entryClientOrderId === clientOrderId)
@@ -9275,7 +9580,7 @@ function startPositionSocketMonitor() {
           console.log(`[LiquidFlowV2Manual] ${symbol} recovered protection plan from paper trade ${manualFlowTrade.id}`);
         }
       }
-      if (recoveredMissedFill) {
+      if (recoveredMissedFill && !reconnectRecoveredFill) {
         protectionPlan = null;
       }
       if (!protectionPlan) {
@@ -9461,20 +9766,19 @@ function startPositionSocketMonitor() {
       if (roe <= tpGuardRoe) {
         handleTpEntryGuard(symbol, pos, markPrice, roe).catch(() => {});
       }
+      if (shouldMoveSymbolNegativeTpToEntry(symbol, roe)) {
+        handleNegativeTimeoutTp(symbol, pos).catch(() => {});
+      }
       const avgDownRoe = Number(process.env.AVG_DOWN_ROE ?? -60);
       if (roe <= avgDownRoe) {
         handleAvgDown(symbol, pos, roe).catch(() => {});
       }
       handleSlTrailByProfit(symbol, pos, roe, markPrice).catch(() => {});
       handlePositionTimeout(symbol, pos, markPrice, roe).catch(() => {});
+      handleEightHourNegativeTakeProfit(symbol, pos, roe).catch(() => {});
       handleTwelveHourTakeProfit(symbol, pos, markPrice, roe).catch(() => {});
       if (roe < 0) {
         if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
-        const negMs = Date.now() - negativeSince.get(symbol);
-        const timeoutMs = Number(process.env.NEG_TP_TIMEOUT_MS ?? 4 * 3600 * 1000);
-        if (negMs >= timeoutMs) {
-          handleNegativeTimeoutTp(symbol, pos).catch(() => {});
-        }
       } else {
         negativeSince.delete(symbol);
       }
@@ -10675,6 +10979,22 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/liquid-flow-v2-paper-stats' && request.method === 'GET') {
+      try {
+        await liquidFlowV2Paper.init();
+        await sendJson(response, liquidFlowV2Paper.labelDateStats({
+          fromDay: requestUrl.searchParams.get('fromDay') || '',
+          toDay: requestUrl.searchParams.get('toDay') || '',
+          labelKey: requestUrl.searchParams.get('labelKey') || 'ALL',
+          page: requestUrl.searchParams.get('page') || 1,
+          pageSize: requestUrl.searchParams.get('pageSize') || 10,
+        }));
+      } catch (error) {
+        await sendJson(response, { error: error.message }, 400);
+      }
+      return;
+    }
+
     if (requestUrl.pathname === '/api/liquid-flow-v2-paper-settings' && request.method === 'POST') {
       const body = await readJsonBody(request);
       if (typeof body.autoEnabled !== 'boolean') {
@@ -10683,6 +11003,28 @@ const server = createServer(async (request, response) => {
       }
       const paper = await liquidFlowV2Paper.updateSettings({ autoEnabled: body.autoEnabled });
       await sendJson(response, paper);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/liquid-flow-v2-binance-stats' && request.method === 'GET') {
+      const token = request.headers['x-orders-token'] ?? null;
+      if (!token || !ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Chưa đăng nhập Binance. Vào /orders và đăng nhập trước.' }, 401);
+        return;
+      }
+      try {
+        await sendJson(response, await getLiquidFlowV2BinanceStats({
+          token,
+          fromDay: requestUrl.searchParams.get('fromDay') || '',
+          toDay: requestUrl.searchParams.get('toDay') || '',
+          labelKey: requestUrl.searchParams.get('labelKey') || '',
+        }));
+      } catch (error) {
+        await sendJson(response, {
+          error: String(error?.message ?? error),
+          version: LIQUID_FLOW_V2_BINANCE_STATS_VERSION,
+        }, 400);
+      }
       return;
     }
 
@@ -10761,6 +11103,8 @@ const server = createServer(async (request, response) => {
           binanceProtectionSignalStopLossPrice: payload.protectionSignalStopLossPrice,
           binanceTakeProfitDistanceFraction: payload.takeProfitDistanceFraction,
           binanceStopLossDistanceFraction: payload.stopLossDistanceFraction,
+          binanceDcaProtectionSuppressed: result.protectionSuppressedForDca === true,
+          binanceDcaProtectionPolicyVersion: result.dcaProtectionPolicyVersion ?? null,
         });
         await sendJson(response, {
           ok: true,
@@ -10774,6 +11118,8 @@ const server = createServer(async (request, response) => {
           entryPrice: Number(orderResult.avgPrice) || payload.limitPrice || result?.order?.markPrice,
           marginUsdt: payload.marginUsdt,
           leverage: payload.leverage,
+          protectionSuppressedForDca: result.protectionSuppressedForDca === true,
+          dcaProtectionPolicyVersion: result.dcaProtectionPolicyVersion ?? null,
         });
       } catch (error) {
         console.error(`[LiquidFlowV2Manual] ${trade.symbol}:`, error.message);
@@ -12641,7 +12987,10 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (request.method === 'GET') {
-        await sendJson(response, { excluded: [...tslExcludedSymbols] });
+        await sendJson(response, {
+          version: ORDERS_CAP_TSL_STATE_VERSION,
+          excluded: [...ordersCapTslSymbols],
+        });
         return;
       }
       if (request.method === 'POST') {
@@ -12649,13 +12998,17 @@ const server = createServer(async (request, response) => {
         const sym = String(body.symbol ?? '').toUpperCase().trim();
         if (!sym) { await sendJson(response, { error: 'symbol required' }, 400); return; }
         if (body.excluded) {
-          tslExcludedSymbols.add(sym);
-          console.log(`[TSL-Exclude] ⛔ ${sym} excluded from position management`);
+          ordersCapTslSymbols.add(sym);
+          console.log(`[CapTSL] ⛔ ${sym} capped; negative TP-to-entry disabled`);
         } else {
-          tslExcludedSymbols.delete(sym);
-          console.log(`[TSL-Exclude] ✅ ${sym} re-enabled`);
+          ordersCapTslSymbols.delete(sym);
+          console.log(`[CapTSL] ✅ ${sym} uncapped; normal position management enabled`);
         }
-        await sendJson(response, { excluded: [...tslExcludedSymbols] });
+        await saveOrdersCapTslSymbols();
+        await sendJson(response, {
+          version: ORDERS_CAP_TSL_STATE_VERSION,
+          excluded: [...ordersCapTslSymbols],
+        });
         return;
       }
     }
@@ -12690,6 +13043,7 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, '127.0.0.1', async () => {
   console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
+  await loadOrdersCapTslSymbols();
   loadDynamicBlacklist();
   await loadSlTracking();
   await loadProtectionFillWatermark();
@@ -13636,6 +13990,8 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     entryPrice: executionPrice,
     leverage,
     requestedTakeProfitPrice: takeProfitPrice,
+    shortRoePct: Number(payload.takeProfitRoePct) > 0 ? Number(payload.takeProfitRoePct) : undefined,
+    longRoePct: Number(payload.takeProfitRoePct) > 0 ? Number(payload.takeProfitRoePct) : undefined,
   });
   const effectiveTakeProfitPrice = takeProfitPolicy.takeProfitPrice;
   const roundedTakeProfitPrice = effectiveTakeProfitPrice
@@ -13646,9 +14002,11 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     : null;
   // Every attached TP/SL waits for Binance's full-fill user-data event. This
   // prevents protection from being submitted against an unfilled LIMIT entry.
-  const protectionOnFill = payload.protectionOnFill === true
+  const requestedProtectionOnFill = payload.protectionOnFill === true
     || roundedTakeProfitPrice != null
     || roundedStopLossPrice != null;
+  let protectionOnFill = requestedProtectionOnFill;
+  let protectionSuppressedForDca = false;
   const plannedOrder = {
     enabled: runtimeSettings.orderEnabled,
     dryRun,
@@ -13664,6 +14022,8 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     takeProfitPrice: roundedTakeProfitPrice,
     stopLossPrice: roundedStopLossPrice,
     takeProfitPolicyVersion: takeProfitPolicy.version,
+    protectionOnFill: requestedProtectionOnFill,
+    protectionSuppressedForDca: false,
   };
 
   if (dryRun || !runtimeSettings.orderEnabled) {
@@ -13681,7 +14041,7 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
   let positionsForOrder = Array.isArray(executionContext?.positions)
     ? executionContext.positions
     : null;
-  if (maxOpenPositions > 0) {
+  if ((maxOpenPositions > 0 || requestedProtectionOnFill) && !positionsForOrder) {
     positionsForOrder ??= await client.getPositions({
       apiKey,
       apiSecret,
@@ -13694,10 +14054,27 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
           }
         : {}),
     });
-    const openCount = positionsForOrder.filter((p) => Number(p.positionAmt) !== 0).length;
+  }
+  if (maxOpenPositions > 0) {
+    const openCount = (positionsForOrder ?? []).filter((p) => Number(p.positionAmt) !== 0).length;
     if (openCount >= maxOpenPositions) {
       throw new Error(`Max open positions (${maxOpenPositions}) reached. Currently ${openCount} open.`);
     }
+  }
+  const dcaPositionState = inspectLiquidFlowV2DcaPositions({
+    positions: positionsForOrder ?? [],
+    symbol,
+    side: side === 'BUY' ? 'LONG' : 'SHORT',
+  });
+  if (requestedProtectionOnFill && dcaPositionState.hasExistingSameSide) {
+    protectionOnFill = false;
+    protectionSuppressedForDca = true;
+    plannedOrder.protectionOnFill = false;
+    plannedOrder.protectionSuppressedForDca = true;
+    console.log(
+      `[DcaProtection] ${symbol} ${side}: keep existing TP/SL; no new protection plan/order;`
+      + ` ${BINANCE_DCA_KEEP_PROTECTION_VERSION}`,
+    );
   }
 
   const orderParams = {
@@ -13803,20 +14180,23 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     delete marketParams.timeInForce;
     orderResult = await client.placeFuturesOrder({ params: marketParams, apiKey, apiSecret });
   }
-  if (!protectionOnFill && takeProfitPolicy.applied && takeProfitParams && Number(orderResult?.avgPrice) > 0) {
+  if (!protectionSuppressedForDca && !protectionOnFill
+    && takeProfitPolicy.applied && takeProfitParams && Number(orderResult?.avgPrice) > 0) {
     const fillAnchoredTakeProfit = resolveNonLiquidFlowV2TakeProfit({
       side,
       source: protectionSource,
       entryPrice: Number(orderResult.avgPrice),
       leverage,
       requestedTakeProfitPrice: takeProfitParams.triggerPrice,
+      shortRoePct: Number(payload.takeProfitRoePct) > 0 ? Number(payload.takeProfitRoePct) : undefined,
+      longRoePct: Number(payload.takeProfitRoePct) > 0 ? Number(payload.takeProfitRoePct) : undefined,
     });
     takeProfitParams.triggerPrice = String(priceFromTick(symbolInfo, fillAnchoredTakeProfit.takeProfitPrice));
   }
-  const takeProfitResult = !protectionOnFill && takeProfitParams
+  const takeProfitResult = !protectionSuppressedForDca && !protectionOnFill && takeProfitParams
     ? await client.placeAlgoOrder({ params: takeProfitParams, apiKey, apiSecret })
     : null;
-  const stopLossResult = !protectionOnFill && stopLossParams
+  const stopLossResult = !protectionSuppressedForDca && !protectionOnFill && stopLossParams
     ? await client.placeAlgoOrder({ params: stopLossParams, apiKey, apiSecret })
     : null;
 
@@ -13849,6 +14229,8 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     orderResult,
     takeProfitResult,
     stopLossResult,
+    protectionSuppressedForDca,
+    dcaProtectionPolicyVersion: protectionSuppressedForDca ? BINANCE_DCA_KEEP_PROTECTION_VERSION : null,
   };
 }
 
@@ -14347,11 +14729,46 @@ function noteLiquidFlowV2Transitions(rows = []) {
     for (const classification of classifications) {
       const labelKey = String(classification.labelKey);
       if (previous.has(labelKey)) continue;
+      const signalCandleClosedAt = Number(
+        classification.signalCandleClosedAt
+        ?? classification.pumpFlushReadyAt
+        ?? classification.emaFanReadyAt
+        ?? classification.postPumpReadyAt
+        ?? row?.features?.emaFanLong5m?.readyAt
+        ?? row?.features?.emaFanShort5m?.readyAt
+        ?? row?.features?.postPumpShortSqueeze5m?.readyAt
+        ?? row?.features?.pumpFlushReclaim5m?.readyAt
+        ?? 0,
+      );
+      const freshEmaFanFirstObservation = [
+        'EMA_FAN_LONG_READY',
+        'EMA_FAN_LONG_IMPULSE_RUNNER',
+        'EMA_FAN_SHORT_READY',
+      ].includes(labelKey)
+        && signalCandleClosedAt > liquidFlowV2Session.startedAt
+        && Date.now() - signalCandleClosedAt <= 15 * 60_000;
+      const freshPostPumpFirstObservation = [
+        'POST_PUMP_SHORT_SQUEEZE_LONG_READY',
+        'POST_PUMP_SHORT_SQUEEZE_PRIME',
+      ].includes(labelKey)
+        && signalCandleClosedAt > 0
+        && Date.now() - signalCandleClosedAt <= 15 * 60_000;
+      const freshKillLongFirstObservation = labelKey === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY'
+        && signalCandleClosedAt > 0
+        && Date.now() - signalCandleClosedAt <= 15 * 60_000;
+      const freshPumpFlushFirstObservation = labelKey === 'PUMP_FLUSH_RECLAIM_LONG_READY'
+        && signalCandleClosedAt > 0
+        && Date.now() - signalCandleClosedAt <= 15 * 60_000;
       const seedFirstObservation = labelKey === 'PUMP_DISTRIBUTION_WATCH'
         || labelKey === 'PUMP_DISTRIBUTION_SHORT_READY'
         || labelKey === 'EXTENDED_EMA99_PANIC_RECLAIM_LONG'
         || labelKey === 'PRIMARY_EMA99_PANIC_FLUSH_ACTIVE'
-        || labelKey === 'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY';
+        || labelKey === 'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY'
+        || labelKey === 'POST_PUMP_BASE_ABSORPTION_WATCH'
+        || freshEmaFanFirstObservation
+        || freshPostPumpFirstObservation
+        || freshKillLongFirstObservation
+        || freshPumpFlushFirstObservation;
       // Existing primary labels retain the old no-fire-on-process-start policy.
       // Distribution labels may be long-lived, so seed their first causal
       // observation; signalKey dedupe in paper keeps restarts idempotent.
@@ -14404,11 +14821,20 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
     const primarySymbols = new Set(candidates.map((row) => row.symbol));
     const extendedCandidates = selectLiquidHeatmapFlowV2ExtendedCandidates(snapshot, {
       fromRank: Math.max(21, Number(process.env.LIQ_FLOW_V2_EXTENDED_FROM_RANK ?? 21)),
-      toRank: Math.max(21, Math.min(60, Number(process.env.LIQ_FLOW_V2_EXTENDED_TO_RANK ?? 60))),
-      maxSymbols: Math.max(0, Math.min(40, Number(process.env.LIQ_FLOW_V2_EXTENDED_PREFILTER_SYMBOLS ?? 40))),
-      minQuoteVolume: Math.max(0, Number(process.env.LIQ_FLOW_V2_EXTENDED_MIN_QUOTE_VOLUME ?? 3_000_000)),
-      minChange24hPct: Math.max(0, Number(process.env.LIQ_FLOW_V2_EXTENDED_MIN_CHANGE_24H_PCT ?? 3)),
+      toRank: Math.max(21, Math.min(100, Number(process.env.LIQ_FLOW_V2_EXTENDED_TO_RANK ?? 100))),
+      maxSymbols: Math.max(0, Math.min(80, Number(process.env.LIQ_FLOW_V2_EXTENDED_PREFILTER_SYMBOLS ?? 80))),
+      minQuoteVolume: Math.max(0, Number(process.env.LIQ_FLOW_V2_EXTENDED_MIN_QUOTE_VOLUME ?? 2_000_000)),
+      minChange24hPct: Math.max(0, Number(process.env.LIQ_FLOW_V2_EXTENDED_MIN_CHANGE_24H_PCT ?? 0)),
     }).filter((row) => !primarySymbols.has(row.symbol));
+    const emaFanShortCandidates = selectLiquidHeatmapFlowV2EmaFanShortCandidates(snapshot, {
+      topLiquidity: Math.max(1, Math.min(200, Number(process.env.LIQ_FLOW_V2_EMA_FAN_SHORT_TOP_LIQUIDITY ?? 150))),
+      minQuoteVolume: Math.max(0, Number(process.env.LIQ_FLOW_V2_EMA_FAN_SHORT_MIN_QUOTE_VOLUME ?? 2_000_000)),
+      maxChange24hPct: Math.min(-5, Number(process.env.LIQ_FLOW_V2_EMA_FAN_SHORT_MAX_CHANGE_24H_PCT ?? -5)),
+    });
+    const postPumpCandidates = selectLiquidHeatmapFlowV2PostPumpCandidates(snapshot, {
+      topLiquidity: Math.max(20, Math.min(200, Number(process.env.LIQ_FLOW_V2_POST_PUMP_TOP_LIQUIDITY ?? 150))),
+      minQuoteVolume: Math.max(0, Number(process.env.LIQ_FLOW_V2_POST_PUMP_MIN_QUOTE_VOLUME ?? 2_000_000)),
+    });
     const extendedSymbols = extendedCandidates.map((row) => row.symbol);
     const minBars = 180;
     klineCache.subscribe(extendedSymbols, '5m');
@@ -14416,22 +14842,120 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
     if (extendedMissing5m.length && !isBinanceRestCongested()) {
       await klineCache.seed(extendedMissing5m, '5m', 220, { batchSize: 4, batchDelayMs: 350 });
     }
+    const postPumpSymbols = postPumpCandidates.map((row) => row.symbol);
+    klineCache.subscribe(postPumpSymbols, '5m');
+    const postPumpMissing5m = klineCache.missingReady(postPumpSymbols, '5m', 40);
+    if (postPumpMissing5m.length && !isBinanceRestCongested() && !liquidFlowV2PostPumpSeedPromise) {
+      liquidFlowV2PostPumpSeedPromise = klineCache
+        .seed(postPumpMissing5m, '5m', 220, { batchSize: 4, batchDelayMs: 350 })
+        .catch((error) => {
+          console.warn(`[LiquidFlowV2] top-liquidity 5m background seed failed: ${error.message}`);
+        })
+        .finally(() => {
+          liquidFlowV2PostPumpSeedPromise = null;
+          scheduleLiquidHeatmapFlowV2FastScan();
+        });
+    }
+    const postPumpQualified = postPumpCandidates
+      .map((market) => {
+        const klines = klineCache.getIfCached(market.symbol, '5m', 340) ?? [];
+        const features = buildLiquidHeatmapFlowV2Features({ market, klines });
+        const setup = features.postPumpShortSqueeze5m ?? {};
+        const pumpFlush = features.pumpFlushReclaim5m ?? {};
+        return setup.watchReady === true || setup.longReady === true
+          || pumpFlush.watchReady === true || pumpFlush.longReady === true ? market : null;
+      })
+      .filter(Boolean)
+      .slice(0, Math.max(1, Math.min(60, Number(process.env.LIQ_FLOW_V2_POST_PUMP_MAX_QUALIFIED ?? 60))));
     const extendedQualified = extendedCandidates
       .map((market) => {
         const klines = klineCache.getIfCached(market.symbol, '5m', 220) ?? [];
         const features = buildLiquidHeatmapFlowV2Features({ market, klines });
-        return liquidHeatmapFlowV2ExtendedPrefilter(features) ? market : null;
+        return liquidHeatmapFlowV2ExtendedPrefilter(features)
+          ? { market, emaFanActive: features.emaFanLong5m?.watchActive === true }
+          : null;
       })
       .filter(Boolean)
-      .slice(0, Math.max(1, Math.min(20, Number(process.env.LIQ_FLOW_V2_EXTENDED_MAX_QUALIFIED ?? 20))));
-    const allCandidates = [...candidates, ...extendedQualified];
+      .sort((a, b) => Number(b.emaFanActive) - Number(a.emaFanActive)
+        || Number(a.market.moverRank ?? Infinity) - Number(b.market.moverRank ?? Infinity))
+      .slice(0, Math.max(1, Math.min(30, Number(process.env.LIQ_FLOW_V2_EXTENDED_MAX_QUALIFIED ?? 30))))
+      .map((row) => row.market);
+    const emaFanShortBySymbol = new Map(emaFanShortCandidates.map((row) => [row.symbol, row]));
+    const postPumpBySymbol = new Map(postPumpQualified.map((row) => [row.symbol, row]));
+    const existingCandidateSymbols = new Set();
+    const allCandidates = [...candidates, ...extendedQualified].map((market) => {
+      existingCandidateSymbols.add(market.symbol);
+      const shortMarket = emaFanShortBySymbol.get(market.symbol);
+      const postPumpMarket = postPumpBySymbol.get(market.symbol);
+      return shortMarket || postPumpMarket ? {
+        ...market,
+        liquidityRank: shortMarket?.liquidityRank ?? postPumpMarket?.liquidityRank ?? market.liquidityRank,
+        emaFanShortUniverse: shortMarket != null,
+        postPumpUniverse: postPumpMarket != null,
+      } : market;
+    });
+    for (const market of emaFanShortCandidates) {
+      if (existingCandidateSymbols.has(market.symbol)) continue;
+      existingCandidateSymbols.add(market.symbol);
+      const postPumpMarket = postPumpBySymbol.get(market.symbol);
+      allCandidates.push(postPumpMarket ? { ...market, postPumpUniverse: true } : market);
+    }
+    for (const market of postPumpQualified) {
+      if (existingCandidateSymbols.has(market.symbol)) continue;
+      existingCandidateSymbols.add(market.symbol);
+      allCandidates.push(market);
+    }
+    const snapshotBySymbol = new Map((Array.isArray(snapshot) ? snapshot : [])
+      .map((market) => [normalizeSymbol(market?.symbol), market])
+      .filter(([symbol]) => symbol));
+    const priorRowBySymbol = new Map((liquidFlowV2Cache.data?.rows ?? [])
+      .map((row) => [normalizeSymbol(row?.symbol), row])
+      .filter(([symbol]) => symbol));
+    for (const symbol of liquidFlowV2Paper.pendingConfirmationSymbols()) {
+      if (existingCandidateSymbols.has(symbol)) continue;
+      const market = snapshotBySymbol.get(symbol);
+      if (!market || !(Number(market.markPrice) > 0)) continue;
+      const priorRow = priorRowBySymbol.get(symbol);
+      existingCandidateSymbols.add(symbol);
+      allCandidates.push({
+        ...market,
+        symbol,
+        moverSide: priorRow?.moverSide ?? (Number(market.change24hPct) >= 0 ? 'UP' : 'DOWN'),
+        moverRank: priorRow?.moverRank ?? null,
+        liquidityRank: priorRow?.liquidityRank ?? null,
+        universeTier: priorRow?.features?.universeTier ?? 'EMA_FAN_PENDING_CONFIRMATION',
+      });
+    }
     const extendedQualifiedSymbols = new Set(extendedQualified.map((row) => row.symbol));
     for (const market of extendedCandidates) {
       if (extendedQualifiedSymbols.has(market.symbol)) continue;
       const previous = liquidFlowV2Session.lastLabelBySymbol.get(market.symbol);
-      if (!(previous instanceof Set) || !previous.has('EXTENDED_EMA99_PANIC_RECLAIM_LONG')) continue;
+      if (!(previous instanceof Set)) continue;
       const next = new Set(previous);
       next.delete('EXTENDED_EMA99_PANIC_RECLAIM_LONG');
+      next.delete('EMA_FAN_LONG_READY');
+      next.delete('EMA_FAN_LONG_IMPULSE_RUNNER');
+      if (next.size) liquidFlowV2Session.lastLabelBySymbol.set(market.symbol, next);
+      else liquidFlowV2Session.lastLabelBySymbol.delete(market.symbol);
+    }
+    const emaFanShortSymbols = new Set(emaFanShortCandidates.map((row) => row.symbol));
+    for (const [symbol, previous] of liquidFlowV2Session.lastLabelBySymbol.entries()) {
+      if (emaFanShortSymbols.has(symbol) || !(previous instanceof Set) || !previous.has('EMA_FAN_SHORT_READY')) continue;
+      const next = new Set(previous);
+      next.delete('EMA_FAN_SHORT_READY');
+      if (next.size) liquidFlowV2Session.lastLabelBySymbol.set(symbol, next);
+      else liquidFlowV2Session.lastLabelBySymbol.delete(symbol);
+    }
+    const postPumpQualifiedSymbols = new Set(postPumpQualified.map((row) => row.symbol));
+    for (const market of postPumpCandidates) {
+      if (postPumpQualifiedSymbols.has(market.symbol)) continue;
+      const previous = liquidFlowV2Session.lastLabelBySymbol.get(market.symbol);
+      if (!(previous instanceof Set)) continue;
+      const next = new Set(previous);
+      next.delete('POST_PUMP_BASE_ABSORPTION_WATCH');
+      next.delete('POST_PUMP_SHORT_SQUEEZE_LONG_READY');
+      next.delete('POST_PUMP_SHORT_SQUEEZE_PRIME');
+      next.delete('PUMP_FLUSH_RECLAIM_LONG_READY');
       if (next.size) liquidFlowV2Session.lastLabelBySymbol.set(market.symbol, next);
       else liquidFlowV2Session.lastLabelBySymbol.delete(market.symbol);
     }
@@ -14469,7 +14993,7 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
         // Keep the prior OI sample. The classifier exposes OI warmup explicitly.
       }
 
-      const klines = klineCache.getIfCached(market.symbol, '5m', 220) ?? [];
+      const klines = klineCache.getIfCached(market.symbol, '5m', 340) ?? [];
       const klines15m = klineCache.getIfCached(market.symbol, '15m', 220) ?? [];
       const klines1h = klineCache.getIfCached(market.symbol, '1h', 160) ?? [];
       const klines4h = klineCache.getIfCached(market.symbol, '4h', 160) ?? [];
@@ -14502,6 +15026,8 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
         symbol: market.symbol,
         moverSide: market.moverSide,
         moverRank: market.moverRank,
+        liquidityRank: market.liquidityRank,
+        emaFanShortUniverse: market.emaFanShortUniverse === true,
         features,
         classification,
       };
@@ -14509,12 +15035,22 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
 
     sortLiquidFlowV2Rows(rows);
     const generatedAt = Date.now();
+    const confirmedPaperTrades = await liquidFlowV2Paper.evaluatePendingEntryConfirmations(rows, generatedAt);
+    handleLiquidFlowV2BinanceEvents(confirmedPaperTrades).catch((error) => {
+      console.warn(`[LiquidFlowV2Real] confirmation-event failed: ${error.message}`);
+    });
     const transitions = noteLiquidFlowV2Transitions(rows);
     notifyLiquidFlowV2HtfDiscord(rows, transitions.primaryReadySymbols, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2HTF] notify failed: ${error.message}`);
     });
     notifyLiquidFlowV2ExtendedDiscord(rows, transitions.primaryReadySymbols, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2Extended] notify failed: ${error.message}`);
+    });
+    notifyLiquidFlowV2EmaFanDiscord(rows, transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2EmaFan] notify failed: ${error.message}`);
+    });
+    notifyLiquidFlowV2KillLongDiscord(rows, transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2KillLong] notify failed: ${error.message}`);
     });
     const createdPaperTrades = await liquidFlowV2Paper.createFromReadyTransitions(
       rows,
@@ -14534,7 +15070,7 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
       version: LIQUID_HEATMAP_FLOW_V2_VERSION,
       generatedAt,
       observationOnly: false,
-      labelsObservationOnly: true,
+      labelsObservationOnly: false,
       affectsOrders: true,
       affectsBinance: true,
       affectsEntry: true,
@@ -14544,6 +15080,9 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
       primaryCandidateCount: candidates.length,
       extendedUniverseCount: extendedCandidates.length,
       extendedQualifiedCount: extendedQualified.length,
+      emaFanShortCandidateCount: emaFanShortCandidates.length,
+      postPumpCandidateCount: postPumpCandidates.length,
+      postPumpQualifiedCount: postPumpQualified.length,
       readyCount: liquidFlowV2ReadyCount(rows),
       activeCount: rows.filter((row) => row.classification.labelKey.endsWith('SQUEEZE_ACTIVE')
         || row.classification.labelKey.endsWith('FLUSH_ACTIVE')).length,
@@ -14583,7 +15122,7 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
   if (priorIndex < 0) return;
 
   const priorRow = prior.rows[priorIndex];
-  const klines = klineCache.getIfCached(symbol, '5m', 220) ?? [];
+  const klines = klineCache.getIfCached(symbol, '5m', 340) ?? [];
   const klines15m = klineCache.getIfCached(symbol, '15m', 220) ?? [];
   const klines1h = klineCache.getIfCached(symbol, '1h', 160) ?? [];
   const klines4h = klineCache.getIfCached(symbol, '4h', 160) ?? [];
@@ -14609,6 +15148,9 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
       fundingRate: priorRow.features?.fundingRate,
       moverSide: priorRow.moverSide,
       moverRank: priorRow.moverRank,
+      liquidityRank: priorRow.features?.liquidityRank,
+      emaFanShortUniverse: priorRow.features?.emaFanShortUniverse === true,
+      postPumpUniverse: priorRow.features?.postPumpUniverse === true,
       universeTier: priorRow.features?.universeTier,
     },
     klines,
@@ -14623,6 +15165,7 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
     symbol,
     moverSide: priorRow.moverSide,
     moverRank: priorRow.moverRank,
+    liquidityRank: priorRow.features?.liquidityRank,
     features,
     classification: classifyLiquidHeatmapFlowV2(features),
   };
@@ -14631,12 +15174,22 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
   sortLiquidFlowV2Rows(rows);
 
   const generatedAt = Date.now();
+  const confirmedPaperTrades = await liquidFlowV2Paper.evaluatePendingEntryConfirmations([row], generatedAt);
+  handleLiquidFlowV2BinanceEvents(confirmedPaperTrades).catch((error) => {
+    console.warn(`[LiquidFlowV2Real] fast confirmation-event failed: ${error.message}`);
+  });
   const transitions = noteLiquidFlowV2Transitions([row]);
     notifyLiquidFlowV2HtfDiscord([row], transitions.primaryReadySymbols, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2HTF] fast notify failed: ${error.message}`);
     });
     notifyLiquidFlowV2ExtendedDiscord([row], transitions.primaryReadySymbols, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2Extended] fast notify failed: ${error.message}`);
+    });
+    notifyLiquidFlowV2EmaFanDiscord([row], transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2EmaFan] fast notify failed: ${error.message}`);
+    });
+    notifyLiquidFlowV2KillLongDiscord([row], transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2KillLong] fast notify failed: ${error.message}`);
     });
   const createdPaperTrades = await liquidFlowV2Paper.createFromReadyTransitions(
     [row],
@@ -15226,6 +15779,17 @@ async function liquidLiveCardWhitelistStatus() {
       )),
       orderType: 'MARKET',
       retestEnabled: false,
+      liquidKillZoneTestProfile: {
+        version: LIVE_CARD_LIQUID_KZ_TEST_PROFILE_VERSION,
+        key: LIVE_CARD_LIQUID_KZ_YEU_UPMID_FLAT_RESET_KEY,
+        marginUsdt: LIVE_CARD_LIQUID_KZ_TEST_MARGIN_USDT,
+        takeProfitRoePct: LIVE_CARD_LIQUID_KZ_TEST_TAKE_PROFIT_ROE_PCT,
+        marketMaxAdverseSlippagePct: LIVE_CARD_LIQUID_KZ_TEST_MAX_MARKET_SLIPPAGE_PCT,
+        adverseOrderType: 'LIMIT',
+        limitAt: 'PAPER_ENTRY',
+        retestTimeoutMs: LIVE_CARD_LIQUID_KZ_TEST_RETEST_TIMEOUT_MS,
+        marketFallback: false,
+      },
     },
     shortFitEntryPolicy: {
       version: LIVE_CARD_SHORT_FIT_ENTRY_POLICY_VERSION,
@@ -16321,6 +16885,11 @@ function liveCardAuditPatch(result = {}) {
     liveCardShortEntryCurrentPrice: result.shortEntryCurrentPrice ?? null,
     liveCardShortEntryAdverseSlippagePct: result.shortEntryAdverseSlippagePct ?? null,
     liveCardShortEntryMaxAdverseSlippagePct: result.shortEntryMaxAdverseSlippagePct ?? null,
+    liveCardShortEntryOrderType: result.shortEntryOrderType ?? null,
+    liveCardShortEntryLimitPrice: result.shortEntryLimitPrice ?? null,
+    liveCardShortEntryRetestExpiresAt: result.shortEntryRetestExpiresAt ?? null,
+    liveCardTestProfileVersion: result.testProfileVersion ?? null,
+    liveCardTestTakeProfitRoePct: result.testTakeProfitRoePct ?? null,
     liveCardShortFitEntryPolicyVersion: result.shortFitEntryPolicyVersion ?? null,
     liveCardShortFitEntryDecision: result.shortFitEntryDecision ?? null,
     liveCardShortFitEntryReason: result.shortFitEntryReason ?? null,
@@ -16376,6 +16945,11 @@ function liveCardShortEntryResultPatch(policy = {}) {
     shortEntryCurrentPrice: policy.applies ? policy.currentPrice : null,
     shortEntryAdverseSlippagePct: policy.applies ? policy.adverseSlippagePct : null,
     shortEntryMaxAdverseSlippagePct: policy.applies ? policy.maxAdverseSlippagePct : null,
+    shortEntryOrderType: policy.applies ? policy.orderType : null,
+    shortEntryLimitPrice: policy.applies ? policy.limitPrice : null,
+    shortEntryRetestTimeoutMs: policy.applies ? policy.retestTimeoutMs : null,
+    testProfileVersion: policy.testProfileApplies ? policy.testProfileVersion : null,
+    testTakeProfitRoePct: policy.testProfileApplies ? policy.takeProfitRoePct : null,
     shortFitEntryPolicyVersion: shortFit ? policy.legacyShortFitVersion : null,
     shortFitEntryDecision: shortFit ? policy.decision : null,
     shortFitEntryReason: shortFit ? policy.reason : null,
@@ -16550,7 +17124,9 @@ async function maybePlaceSourceLiveCardOrder(
   const defaultMarginUsdt = Math.max(0.01, Number(
     process.env.LIVE_CARD_REAL_MARGIN_USDT ?? process.env.LIQUID_SCAN_REAL_MARGIN_USDT ?? 1,
   ));
-  const marginUsdt = shortEntryPolicy.shortFitApplies && shortEntryPolicy.allowed
+  const marginUsdt = shortEntryPolicy.testProfileApplies && shortEntryPolicy.allowed
+    ? shortEntryPolicy.marginUsdt
+    : shortEntryPolicy.shortFitApplies && shortEntryPolicy.allowed
     ? shortEntryPolicy.marginUsdt
     : defaultMarginUsdt;
   const leverage = Math.max(1, Math.min(125, Number(
@@ -16571,8 +17147,25 @@ async function maybePlaceSourceLiveCardOrder(
       ?? trade.entryPlan?.entryPrice
       ?? trade.signalMarkPrice,
   ) || null;
-  const signalTakeProfitPrice = Number(trade.takeProfitPrice ?? trade.tp) || null;
+  const testTakeProfitRoePct = shortEntryPolicy.testProfileApplies
+    ? Number(shortEntryPolicy.takeProfitRoePct)
+    : null;
+  const signalTakeProfitPrice = testTakeProfitRoePct > 0 && signalEntryPrice > 0
+    ? side === 'SHORT'
+      ? signalEntryPrice * (1 - testTakeProfitRoePct / 100 / leverage)
+      : signalEntryPrice * (1 + testTakeProfitRoePct / 100 / leverage)
+    : Number(trade.takeProfitPrice ?? trade.tp) || null;
   const signalStopLossPrice = Number(trade.stopLossPrice ?? trade.sl) || null;
+  const entryOrderType = shortEntryPolicy.orderType === 'LIMIT' ? 'LIMIT' : 'MARKET';
+  const entryLimitPrice = entryOrderType === 'LIMIT'
+    ? Number(shortEntryPolicy.limitPrice ?? signalEntryPrice)
+    : null;
+  const entryRetestTimeoutMs = entryOrderType === 'LIMIT'
+    ? Math.max(5_000, Number(shortEntryPolicy.retestTimeoutMs ?? 60_000))
+    : null;
+  const entryRetestExpiresAt = entryRetestTimeoutMs != null
+    ? new Date(Date.parse(attemptedAt) + entryRetestTimeoutMs).toISOString()
+    : null;
   const fillAnchorSpec = buildFillAnchoredProtectionSpec({
     side,
     signalEntryPrice,
@@ -16609,7 +17202,9 @@ async function maybePlaceSourceLiveCardOrder(
         ?? trade.pumpCombo
         ?? '',
     ).slice(0, 180) || null,
-    entryOrderType: 'MARKET',
+    entryOrderType,
+    entryLimitPrice,
+    entryRetestExpiresAt,
     entryClientOrderId,
     marginUsdt,
     leverage,
@@ -16634,12 +17229,14 @@ async function maybePlaceSourceLiveCardOrder(
     result = await placeOrder(authorizeLiveCardAutoOrder({
       symbol,
       side: side === 'LONG' ? 'BUY' : 'SELL',
-      orderType: 'MARKET',
+      orderType: entryOrderType,
+      limitPrice: entryLimitPrice,
       clientOrderId: entryClientOrderId,
       notionalUsdt: marginUsdt * leverage,
       leverage,
-      takeProfitPrice: trade.takeProfitPrice ?? trade.tp,
-      stopLossPrice: trade.stopLossPrice ?? trade.sl,
+      takeProfitPrice: signalTakeProfitPrice,
+      takeProfitRoePct: testTakeProfitRoePct,
+      stopLossPrice: signalStopLossPrice,
       protectionSignalEntryPrice: signalEntryPrice,
       protectionSignalTakeProfitPrice: signalTakeProfitPrice,
       protectionSignalStopLossPrice: signalStopLossPrice,
@@ -16667,7 +17264,7 @@ async function maybePlaceSourceLiveCardOrder(
       trade,
       matchedKeys: match.matchedKeys,
       error,
-      stage: 'BINANCE_MARKET_SUBMIT',
+      stage: 'BINANCE_ENTRY_SUBMIT',
     });
     if (error && typeof error === 'object') {
       error.liveCardMatchedKeys = match.matchedKeys;
@@ -16714,7 +17311,16 @@ async function maybePlaceSourceLiveCardOrder(
     entryFastPathVersion: LIVE_CARD_ENTRY_FAST_PATH_VERSION,
     sourceType: sourceMeta.sourceType,
     signalSource: sourceMeta.signalSource,
-    entryOrderType: 'MARKET',
+    entryOrderType,
+    shortEntryOrderType: entryOrderType,
+    shortEntryLimitPrice: entryLimitPrice,
+    shortEntryRetestExpiresAt: entryRetestExpiresAt,
+    testProfileVersion: shortEntryPolicy.testProfileApplies
+      ? shortEntryPolicy.testProfileVersion
+      : null,
+    testTakeProfitRoePct: shortEntryPolicy.testProfileApplies
+      ? shortEntryPolicy.takeProfitRoePct
+      : null,
     comboEntryMatchVersion: LIVE_CARD_COMBO_ENTRY_MATCH_VERSION,
     marginUsdt,
     leverage,
@@ -16735,6 +17341,106 @@ async function maybePlaceLiquidLiveCardOrder(trade, existingTrades = []) {
     { autoEligible: true },
   );
 }
+
+const LIVE_CARD_LIMIT_RETEST_EXPIRY_VERSION = 'LIVE_CARD_LIMIT_RETEST_EXPIRY_V1_20260816';
+const LIVE_CARD_LIMIT_RETEST_OPEN_STATUSES = new Set(['NEW', 'PARTIALLY_FILLED']);
+let liveCardLimitRetestExpiryRunning = false;
+
+function clearMatchingLiveCardRetestProtection(execution = {}) {
+  const symbol = normalizeSymbol(execution.symbol ?? '');
+  const plan = signalProtectionPlans.get(symbol);
+  if (!plan) return;
+  const matches = (plan.orderId != null && execution.entryOrderId != null
+      && String(plan.orderId) === String(execution.entryOrderId))
+    || (plan.entryClientOrderId && execution.entryClientOrderId
+      && plan.entryClientOrderId === execution.entryClientOrderId);
+  if (matches) signalProtectionPlans.delete(symbol);
+}
+
+async function expireLiveCardLimitRetestEntries() {
+  if (liveCardLimitRetestExpiryRunning) return;
+  liveCardLimitRetestExpiryRunning = true;
+  try {
+    const now = Date.now();
+    const lifecycle = await liveCardBinanceLifecycle.status();
+    const candidates = lifecycle.executions.filter((row) => (
+      row.entryOrderType === 'LIMIT'
+      && ['ENTRY_PREPARING', 'ENTRY_SUBMITTED', 'ENTRY_PARTIALLY_FILLED'].includes(row.status)
+      && Number.isFinite(Date.parse(row.entryRetestExpiresAt ?? ''))
+      && Date.parse(row.entryRetestExpiresAt) <= now
+      && row.entryOrderId != null
+    ));
+    if (!candidates.length) return;
+    const credentials = getApiCredentials(null);
+    for (const execution of candidates) {
+      const symbol = normalizeSymbol(execution.symbol ?? '');
+      try {
+        const queried = await client.getOrder({
+          symbol,
+          orderId: execution.entryOrderId,
+          apiKey: credentials.apiKey,
+          apiSecret: credentials.apiSecret,
+        });
+        const queriedStatus = String(queried?.status ?? '').toUpperCase();
+        if (queriedStatus === 'FILLED') continue;
+
+        let finalOrder = queried;
+        if (LIVE_CARD_LIMIT_RETEST_OPEN_STATUSES.has(queriedStatus)) {
+          finalOrder = await client.cancelOrder({
+            symbol,
+            orderId: execution.entryOrderId,
+            apiKey: credentials.apiKey,
+            apiSecret: credentials.apiSecret,
+            recvWindow: Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000),
+          });
+        }
+        const executedQty = Number(finalOrder?.executedQty ?? queried?.executedQty ?? 0);
+        const expiredAt = new Date().toISOString();
+        if (executedQty > 0) {
+          const partial = await liveCardBinanceLifecycle.upsert({
+            lifecycleId: execution.lifecycleId,
+            status: 'ENTRY_PARTIALLY_FILLED',
+            filledQty: executedQty,
+            fillPrice: Number(finalOrder?.avgPrice ?? queried?.avgPrice) || execution.fillPrice || null,
+            entryFilledAt: expiredAt,
+            lastFillAt: expiredAt,
+            entryRetestExpiresAt: null,
+            entryRetestExpiryState: 'PARTIAL_CANCELLED_AND_CLOSING',
+            entryRetestExpiryVersion: LIVE_CARD_LIMIT_RETEST_EXPIRY_VERSION,
+          }, 'ENTRY_RETEST_PARTIAL_EXPIRED', { symbol, executedQty });
+          await maybeCloseLiveCardPositionForTrade('liquid', {
+            liveCardLifecycleId: partial?.lifecycleId ?? execution.lifecycleId,
+          }, {
+            outcome: 'ENTRY_RETEST_PARTIAL_ABORT',
+            reason: LIVE_CARD_LIMIT_RETEST_EXPIRY_VERSION,
+          });
+          continue;
+        }
+        clearMatchingLiveCardRetestProtection(execution);
+        await liveCardBinanceLifecycle.upsert({
+          lifecycleId: execution.lifecycleId,
+          status: 'ENTRY_EXPIRED',
+          entryRetestExpiredAt: expiredAt,
+          entryRetestExpiresAt: null,
+          entryRetestExpiryState: 'CANCELLED_NO_FILL',
+          entryRetestExpiryVersion: LIVE_CARD_LIMIT_RETEST_EXPIRY_VERSION,
+          entryOrderStatus: String(finalOrder?.status || queriedStatus || 'CANCELED').toUpperCase(),
+        }, 'ENTRY_RETEST_EXPIRED', { symbol, orderId: execution.entryOrderId });
+      } catch (error) {
+        console.warn(`[LiveCardRetest] expire ${symbol} orderId=${execution.entryOrderId}: ${error.message}`);
+      }
+    }
+  } finally {
+    liveCardLimitRetestExpiryRunning = false;
+  }
+}
+
+const liveCardLimitRetestExpiryTimer = setInterval(() => {
+  expireLiveCardLimitRetestEntries().catch((error) => {
+    console.warn(`[LiveCardRetest] expiry scan failed: ${error.message}`);
+  });
+}, 5_000);
+liveCardLimitRetestExpiryTimer.unref?.();
 
 function liveCardLifecycleIdOfTrade(trade = {}) {
   return String(
@@ -31527,6 +32233,59 @@ async function fetchLiveCardIncomeRange({ startTime, endTime, apiKey, apiSecret,
   return [...left, ...right];
 }
 
+let liquidFlowV2BinanceStatsIncomeCache = null;
+const LIQUID_FLOW_V2_BINANCE_STATS_CACHE_MS = 60_000;
+
+async function getLiquidFlowV2BinanceStats({ token, fromDay = '', toDay = '', labelKey = '' } = {}) {
+  const trades = liquidFlowV2Paper.state.trades;
+  const selected = liquidFlowV2RealTrades(trades, { fromDay, toDay, labelKey });
+  const executions = liquidFlowV2SyntheticExecutions(selected);
+  const closed = executions.filter((row) => row.status === 'POSITION_CLOSED');
+  let reconciliationWarning = null;
+  const positionsPromise = getPositions(token).catch((error) => {
+    console.warn(`[LiquidFlowV2BinanceStats] positions: ${error.message}`);
+    return [];
+  });
+  let incomeRowsPromise = Promise.resolve([]);
+  if (closed.length) {
+    const startTime = Math.min(...closed.map((row) => Date.parse(row.entryFilledAt))) - 60_000;
+    const endTime = Math.min(Date.now(), Math.max(...closed.map((row) => Date.parse(row.positionClosedAt))) + 60_000);
+    const cached = liquidFlowV2BinanceStatsIncomeCache;
+    if (cached && Date.now() - cached.at < LIQUID_FLOW_V2_BINANCE_STATS_CACHE_MS
+      && cached.startTime <= startTime && cached.endTime >= endTime) {
+      incomeRowsPromise = Promise.resolve(cached.rows);
+    } else {
+      const credentials = getApiCredentials(token);
+      incomeRowsPromise = fetchLiveCardIncomeRange({ startTime, endTime, ...credentials })
+        .then((rawRows) => {
+          const rows = [...new Map((Array.isArray(rawRows) ? rawRows : []).map((row) => [[
+            row?.tranId ?? '', row?.tradeId ?? '', row?.symbol ?? '', row?.incomeType ?? '', row?.time ?? '', row?.income ?? '',
+          ].join(':'), row])).values()];
+          liquidFlowV2BinanceStatsIncomeCache = { at: Date.now(), startTime, endTime, rows };
+          return rows;
+        })
+        .catch((error) => {
+          reconciliationWarning = String(error?.message ?? error).slice(0, 300);
+          console.warn(`[LiquidFlowV2BinanceStats] income: ${reconciliationWarning}`);
+          return cached?.rows ?? [];
+        });
+    }
+  }
+  const [positions, incomeRows] = await Promise.all([positionsPromise, incomeRowsPromise]);
+  const reconciled = reconcileLiveCardClosedPnl(executions, incomeRows);
+  return {
+    ...buildLiquidFlowV2BinanceStats({
+      trades,
+      reconciled,
+      positions,
+      fromDay,
+      toDay,
+      labelKey,
+    }),
+    reconciliationWarning,
+  };
+}
+
 async function syncLiveCardClosedPnl(token, executions = []) {
   const pending = (Array.isArray(executions) ? executions : []).filter((row) => (
     row?.status === 'POSITION_CLOSED'
@@ -32337,7 +33096,7 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
   if (Date.now() - lastRun < SL_TRAIL_COOLDOWN_MS) return;
 
   const usesRoe10Lock1 = isManualPosition || isLiquidFlowV2Position;
-  const isOrdersExcluded = tslExcludedSymbols.has(symbol);
+  const isOrdersExcluded = isCapTslSymbol(symbol);
   const observedTargetLockRoe = isOrdersExcluded
     ? resolveOrdersExcludedBinanceProfitLockRoe(roe)
     : usesRoe10Lock1
@@ -33370,6 +34129,12 @@ const positionTimeoutFired = new Set(); // symbol — prevent double-fire per po
 
 const tpMovedToEntry = new Map(); // symbol → entryPrice when TP was moved to entry
 
+function negativeTpRoeThreshold() {
+  return normalizeNegativeTpRoe(
+    process.env.NEG_TP_ROE ?? BINANCE_NEGATIVE_TP_TO_ENTRY_DEFAULT_ROE,
+  );
+}
+
 const twelveHourTpMoved = new Map(); // symbol -> entry price handled for the current lifecycle
 const twelveHourTpLastRun = new Map();
 const twelveHourTpRunning = new Set();
@@ -33419,17 +34184,51 @@ function positionOpenedAtForTwelveHourTp(symbol) {
 }
 
 function negativeEntryGuardHasPriority(symbol, pos, roe) {
-  if (isTakeProfitUserOrLiquidFlowV2ManagedPosition(symbol, pos)) return false;
+  if (isCapTslSymbol(symbol)) return false;
   const entry = Number(pos?.entry ?? pos?.entryPrice);
   const movedEntry = Number(tpMovedToEntry.get(symbol));
   if (Number.isFinite(movedEntry) && Number.isFinite(entry) && entry > 0
     && Math.abs(movedEntry - entry) / entry < 0.005) return true;
-  const negTpRoe = Number(process.env.NEG_TP_ROE ?? -30);
+  const negTpRoe = negativeTpRoeThreshold();
   const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
-  if (Number.isFinite(Number(roe)) && (Number(roe) <= negTpRoe || Number(roe) <= tpGuardRoe)) return true;
-  const negativeAt = negativeSince.get(symbol);
-  const timeoutMs = Number(process.env.NEG_TP_TIMEOUT_MS ?? 4 * 3600 * 1000);
-  return Number.isFinite(negativeAt) && Date.now() - negativeAt >= timeoutMs;
+  if (shouldMoveSymbolNegativeTpToEntry(symbol, roe, negTpRoe) || Number(roe) <= tpGuardRoe) return true;
+  return evaluateBinanceEightHourNegativeTakeProfit({
+    enabled: process.env.BINANCE_NEGATIVE_TP_AFTER_8H_ENABLED !== 'false',
+    openedAt: positionOpenedAtForTwelveHourTp(symbol),
+    entryPrice: entry,
+    positionAmount: Number(pos?.amt ?? pos?.positionAmt),
+    currentRoe: roe,
+    capTsl: false,
+    maxAgeMs: Number(
+      process.env.BINANCE_NEGATIVE_TP_AFTER_8H_MS ?? DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+    ),
+  }).eligible;
+}
+
+async function handleEightHourNegativeTakeProfit(symbol, pos, roe) {
+  const entry = Number(pos?.entry ?? pos?.entryPrice);
+  const amt = Number(pos?.amt ?? pos?.positionAmt);
+  const decision = evaluateBinanceEightHourNegativeTakeProfit({
+    enabled: process.env.BINANCE_NEGATIVE_TP_AFTER_8H_ENABLED !== 'false',
+    openedAt: positionOpenedAtForTwelveHourTp(symbol),
+    entryPrice: entry,
+    positionAmount: amt,
+    currentRoe: roe,
+    capTsl: isCapTslSymbol(symbol),
+    maxAgeMs: Number(
+      process.env.BINANCE_NEGATIVE_TP_AFTER_8H_MS ?? DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+    ),
+  });
+  if (!decision.eligible) return;
+  await handleNegativeTimeoutTp(symbol, {
+    ...pos,
+    entry,
+    amt,
+  }, {
+    triggerVersion: BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION,
+    triggerAgeMs: decision.ageMs,
+    triggerRoe: decision.currentRoe,
+  });
 }
 
 async function rememberTwelveHourTakeProfit(symbol, entry, targetPrice, targetRoePct, ageMs, action) {
@@ -33684,10 +34483,12 @@ async function handlePositionTimeout(symbol, pos, markPrice, roe) {
 
 function startNegTpScanner() {
   const intervalMs = Number(process.env.NEG_TP_SCAN_INTERVAL_MS ?? 30000);
-  const negTpRoe = Number(process.env.NEG_TP_ROE ?? -30);
+  const negTpRoe = negativeTpRoeThreshold();
   const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
-  const timeoutMs = Number(process.env.NEG_TP_TIMEOUT_MS ?? 4 * 3600 * 1000);
-  console.log(`[NegTp] Scanner started. ROE threshold=${negTpRoe}% timeout=${timeoutMs / 3_600_000}h interval=${intervalMs / 1000}s`);
+  const ageMs = Number(
+    process.env.BINANCE_NEGATIVE_TP_AFTER_8H_MS ?? DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+  );
+  console.log(`[NegTp] Scanner started. deep=${BINANCE_NEGATIVE_TP_TO_ENTRY_VERSION} ROE threshold=${negTpRoe}% age=${BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION} ${ageMs / 3_600_000}h interval=${intervalMs / 1000}s`);
 
   const run = async () => {
     try {
@@ -33699,6 +34500,10 @@ function startNegTpScanner() {
       }
       for (const p of active) {
         const symbol = p.symbol;
+        if (isCapTslSymbol(symbol)) {
+          negativeSince.delete(symbol);
+          continue;
+        }
         const amt = Number(p.positionAmt);
         const entry = Number(p.entryPrice);
         const lev = Number(p.leverage) || 1;
@@ -33713,13 +34518,12 @@ function startNegTpScanner() {
         if (margin <= 0) continue;
         const roe = (upnl / margin) * 100;
         const pos = { amt, entry, leverage: lev, positionSide: p.positionSide ?? 'BOTH' };
-        if (roe <= negTpRoe || roe <= tpGuardRoe) {
+        if (shouldMoveSymbolNegativeTpToEntry(symbol, roe, negTpRoe) || roe <= tpGuardRoe) {
           handleNegativeTimeoutTp(symbol, pos).catch(() => {});
         }
+        handleEightHourNegativeTakeProfit(symbol, pos, roe).catch(() => {});
         if (roe < 0) {
           if (!negativeSince.has(symbol)) negativeSince.set(symbol, Date.now());
-          const negMs = Date.now() - negativeSince.get(symbol);
-          if (negMs >= timeoutMs) handleNegativeTimeoutTp(symbol, pos).catch(() => {});
         } else {
           negativeSince.delete(symbol);
           tpMovedToEntry.delete(symbol);
@@ -33744,6 +34548,7 @@ function tpConfirmedClear(symbol) {
 let startupTakeProfitRecoveryScheduled = false;
 let startupTakeProfitRecoveryRunning = null;
 let missedFillProtectionRecoveryScheduled = false;
+let missedFillProtectionRecoveryRunning = null;
 
 function startupRecoveryTimestamp(row = {}) {
   const raw = row.binanceEntryFilledAt ?? row.fillTime ?? row.filledAt ?? row.updatedAt ?? row.createdAt ?? 0;
@@ -33947,6 +34752,28 @@ function startStartupTakeProfitRecovery() {
   }, delayMs).unref?.();
 }
 
+function runMissedFillProtectionRecovery(reason = 'SCHEDULED') {
+  if (missedFillProtectionRecoveryRunning) return missedFillProtectionRecoveryRunning;
+  missedFillProtectionRecoveryRunning = (async () => {
+    if (!posMonitor?.recoverMissedFullFills) throw new Error('position monitor not ready');
+    const summary = await posMonitor.recoverMissedFullFills({
+      since: Number(protectionFillWatermark.lastHandledFillAt) || 0,
+      handledOrderIds: protectionFillWatermark.handledOrderIds,
+      recoverySource: String(reason).startsWith('USER_DATA_RECONNECT:')
+        ? 'MISSED_FILL_RECONNECT_RECOVERY'
+        : 'MISSED_FILL_RECOVERY',
+    });
+    console.log(
+      `[ProtectionRecovery] complete reason=${reason} ${JSON.stringify(summary)}`
+      + ` watermark=${new Date(Number(protectionFillWatermark.lastHandledFillAt) || 0).toISOString()}`,
+    );
+    return summary;
+  })().finally(() => {
+    missedFillProtectionRecoveryRunning = null;
+  });
+  return missedFillProtectionRecoveryRunning;
+}
+
 function startMissedFillProtectionRecovery() {
   if (missedFillProtectionRecoveryScheduled || process.env.BINANCE_MISSED_FILL_RECOVERY_ENABLED === 'false') return;
   missedFillProtectionRecoveryScheduled = true;
@@ -33957,15 +34784,7 @@ function startMissedFillProtectionRecovery() {
   );
   setTimeout(async () => {
     try {
-      if (!posMonitor?.recoverMissedFullFills) throw new Error('position monitor not ready');
-      const summary = await posMonitor.recoverMissedFullFills({
-        since: Number(protectionFillWatermark.lastHandledFillAt) || 0,
-        handledOrderIds: protectionFillWatermark.handledOrderIds,
-      });
-      console.log(
-        `[ProtectionRecovery] one-shot complete ${JSON.stringify(summary)}`
-        + ` watermark=${new Date(Number(protectionFillWatermark.lastHandledFillAt) || 0).toISOString()}`,
-      );
+      await runMissedFillProtectionRecovery('STARTUP_ONE_SHOT');
     } catch (error) {
       console.warn(`[ProtectionRecovery] one-shot failed: ${error.message}`);
     }
@@ -34145,9 +34964,10 @@ async function ensureTakeProfitForPositionUnlocked(pos, symbols, apiKey, apiSecr
   const expectedWorkingType = preserveSignalProtection ? 'CONTRACT_PRICE' : 'MARK_PRICE';
   const takeProfitUserOrV2Managed = isTakeProfitUserOrLiquidFlowV2ManagedPosition(symbol, pos);
   const roeInfo = await getPositionRoeForTpGuard(pos, { fetchMark: options.force });
-  const negTpRoe = Number(process.env.NEG_TP_ROE ?? -30);
+  const negTpRoe = negativeTpRoeThreshold();
   const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
-  if (!takeProfitUserOrV2Managed && roeInfo.ready && (roeInfo.roe <= negTpRoe || roeInfo.roe <= tpGuardRoe)) {
+  if (roeInfo.ready && !isCapTslSymbol(symbol)
+    && (shouldMoveSymbolNegativeTpToEntry(symbol, roeInfo.roe, negTpRoe) || roeInfo.roe <= tpGuardRoe)) {
     console.log(`[AutoTP] ${symbol} ROE=${roeInfo.roe.toFixed(2)}% <= guard (${Math.max(negTpRoe, tpGuardRoe)}%) -> move TP to entry`);
     await handleNegativeTimeoutTp(symbol, {
       amt,
@@ -34447,13 +35267,18 @@ async function clearSymbolOrders(symbol, apiKey, apiSecret, recvWindow = 5000) {
   invalidateOpenOrdersCache();
 }
 
-async function handleNegativeTimeoutTp(symbol, pos) {
-  const entry = pos.entry;
-  if (isTakeProfitUserOrLiquidFlowV2ManagedPosition(symbol, pos)) {
-    console.log(`[NegTp] ${symbol} skipped: user/Liquid Flow V2 keeps its own TP plan`);
+async function handleNegativeTimeoutTp(symbol, pos, {
+  triggerVersion = BINANCE_NEGATIVE_TP_TO_ENTRY_VERSION,
+  triggerAgeMs = null,
+  triggerRoe = null,
+} = {}) {
+  // Orders "Cap TSL" is an explicit opt-out from every negative TP-to-entry
+  // path (socket, REST scanner, deep guard and eight-hour age fallback).
+  if (isCapTslSymbol(symbol)) {
+    negativeSince.delete(symbol);
     return;
   }
-
+  const entry = pos.entry;
   // Dedup: already set TP to entry for this position
   const prevEntry = tpMovedToEntry.get(symbol);
   if (prevEntry !== undefined && Math.abs(prevEntry - entry) / entry < 0.005) return;
@@ -34463,7 +35288,7 @@ async function handleNegativeTimeoutTp(symbol, pos) {
   if (Date.now() - lastRun < NEG_TP_COOLDOWN_MS) return;
   negTpLastRun.set(symbol, Date.now());
 
-  console.log(`[NegTp] ${symbol} checking — entry=${entry} amt=${pos.amt}`);
+  console.log(`[NegTp] ${symbol} checking — entry=${entry} amt=${pos.amt} trigger=${triggerVersion}`);
 
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
@@ -34583,9 +35408,14 @@ async function handleNegativeTimeoutTp(symbol, pos) {
     await client.placeFuturesOrder({ params: tpParams, apiKey, apiSecret });
     tpMovedToEntry.set(symbol, entry);
 
-    const negMs = Date.now() - (negativeSince.get(symbol) ?? Date.now());
-    const hours = (negMs / 3_600_000).toFixed(1);
-    console.log(`[NegTp] ✅ ${symbol} âm ${hours}h → LIMIT close đặt tại entry ${newTpPrice}`);
+    const durationMs = triggerAgeMs != null && Number.isFinite(Number(triggerAgeMs))
+      ? Number(triggerAgeMs)
+      : Date.now() - (negativeSince.get(symbol) ?? Date.now());
+    const hours = (durationMs / 3_600_000).toFixed(1);
+    const roeText = triggerRoe != null && Number.isFinite(Number(triggerRoe))
+      ? ` ROE=${Number(triggerRoe).toFixed(2)}%`
+      : '';
+    console.log(`[NegTp] ✅ ${symbol}${roeText} age=${hours}h → LIMIT close đặt tại entry ${newTpPrice} (${triggerVersion})`);
   } catch (err) {
     console.error(`[NegTp] ❌ ${symbol}:`, err.message);
   }
@@ -34730,6 +35560,8 @@ async function sendStatic(pathname, response) {
                   ? '/liquid-scan.html'
                 : pathname === '/liquid-flow-v2'
                   ? '/liquid-flow-v2.html'
+                : pathname === '/liquid-flow-v2-binance-stats'
+                  ? '/liquid-flow-v2-binance-stats.html'
               : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);

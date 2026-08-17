@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Liquid Flow V2 · Binance Stats</title>
+    <link rel="stylesheet" href="/styles.css?v=20260809-flow-v2">
+    <link rel="stylesheet" href="/liquid-flow-v2.css?v=20260814-stats-v2">
+  </head>
+  <body>
+    <main class="flow-v2-shell">
+      <header class="flow-v2-topbar">
+        <div>
+          <p class="flow-v2-eyebrow">BINANCE THẬT · LIQUID FLOW V2</p>
+          <h1>V2 Binance Signal Stats</h1>
+          <p class="flow-v2-lead">Màn đối soát riêng, không dùng socket/render của scanner. PnL đóng lấy từ Binance Income; lệnh mở lấy từ vị thế Binance.</p>
+        </div>
+        <nav class="flow-v2-nav" aria-label="Điều hướng">
+          <a href="/liquid-flow-v2">Liquid Flow V2</a>
+          <a class="active" href="/liquid-flow-v2-binance-stats" aria-current="page">V2 Binance Stats</a>
+          <a href="/orders">Orders</a>
+        </nav>
+      </header>
+
+      <section class="flow-v2-binance-stats">
+        <div class="flow-v2-section-head">
+          <div>
+            <p class="flow-v2-eyebrow">THỐNG KÊ THẮNG / THUA</p>
+            <h2>Lệnh Binance thật theo tín hiệu</h2>
+          </div>
+          <p id="binanceStatsStatus">Chỉ tải khi mở trang này hoặc bấm áp dụng.</p>
+        </div>
+        <form id="binanceStatsFilters" class="flow-v2-binance-filters">
+          <label>TỪ NGÀY<input id="binanceStatsFromDay" type="date"></label>
+          <label>ĐẾN NGÀY<input id="binanceStatsToDay" type="date"></label>
+          <label>LOẠI TÍN HIỆU<select id="binanceStatsLabel"><option value="">Tất cả tín hiệu</option></select></label>
+          <button type="submit">ÁP DỤNG</button>
+          <button id="binanceStatsToday" type="button">HÔM NAY</button>
+          <button id="binanceStatsAll" type="button">TẤT CẢ</button>
+        </form>
+        <div id="binanceStatsSummary" class="flow-v2-binance-summary"></div>
+        <div class="flow-v2-binance-layout">
+          <div>
+            <h3>Theo loại tín hiệu</h3>
+            <div class="flow-v2-table-wrap"><table class="flow-v2-binance-table">
+              <thead><tr><th>TÍN HIỆU</th><th>FILLED</th><th>W/L</th><th>WR</th><th>PF</th><th>AVG ROE</th><th>NET PNL</th></tr></thead>
+              <tbody id="binanceStatsGroups"><tr><td colspan="7">Đang tải…</td></tr></tbody>
+            </table></div>
+          </div>
+          <div>
+            <h3>Chi tiết nguyên nhân thắng/thua</h3>
+            <div class="flow-v2-table-wrap"><table class="flow-v2-binance-table is-detail">
+              <thead><tr><th>FILLED</th><th>SYMBOL</th><th>TÍN HIỆU</th><th>ENTRY PAPER / BINANCE</th><th>SLIPPAGE</th><th>KẾT QUẢ</th><th>NET PNL / ROE</th><th>NGUỒN PNL</th></tr></thead>
+              <tbody id="binanceStatsRows"><tr><td colspan="8">Đang tải…</td></tr></tbody>
+            </table></div>
+            <nav class="flow-v2-pagination">
+              <button id="binanceStatsPrev" type="button">‹ Trước</button>
+              <span id="binanceStatsPageInfo">Trang 1 / 1 · 0 lệnh</span>
+              <button id="binanceStatsNext" type="button">Sau ›</button>
+            </nav>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/liquid-flow-v2-binance-stats.js?v=20260814-v2"></script>
+  </body>
+</html>

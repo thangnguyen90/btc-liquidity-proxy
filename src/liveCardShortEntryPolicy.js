@@ -4,8 +4,14 @@ import {
   LIVE_CARD_SHORT_FIT_KEY,
 } from './liveCardShortFitEntryPolicy.js';
 
-export const LIVE_CARD_SHORT_ENTRY_POLICY_VERSION = 'LIVE_CARD_SHORT_ENTRY_GUARD_V1_20260812';
+export const LIVE_CARD_SHORT_ENTRY_POLICY_VERSION = 'LIVE_CARD_SHORT_ENTRY_GUARD_V2_LIQUID_KZ_LIMIT_RETEST_20260816';
 export const LIVE_CARD_DAY_BEAR_CONTINUE_KEY = 'edge:best-risk-phase:DAY_BEAR_CONTINUE';
+export const LIVE_CARD_LIQUID_KZ_YEU_UPMID_FLAT_RESET_KEY = 'cycle-stable:LIQUID_KILL_ZONE | SHORT | 15m | BTC_CORR_YEU | BTC_UP_MID | THEO_YEU | GATE_TEST_LIQUID_SHORT_BTC_COUNTER || CYCLE DAY_FLAT | RSI4_RESET';
+export const LIVE_CARD_LIQUID_KZ_TEST_PROFILE_VERSION = 'LIQUID_KZ_SHORT_YEU_UPMID_FLAT_RESET_TEST_V1_20260816';
+export const LIVE_CARD_LIQUID_KZ_TEST_MARGIN_USDT = 1;
+export const LIVE_CARD_LIQUID_KZ_TEST_TAKE_PROFIT_ROE_PCT = 5;
+export const LIVE_CARD_LIQUID_KZ_TEST_MAX_MARKET_SLIPPAGE_PCT = 0.05;
+export const LIVE_CARD_LIQUID_KZ_TEST_RETEST_TIMEOUT_MS = 60_000;
 export const LIVE_CARD_SHORT_DEFAULT_MAX_ADVERSE_SLIPPAGE_PCT = 1;
 export const LIVE_CARD_SHORT_EARLY_DOWN_MID_MAX_ADVERSE_SLIPPAGE_PCT = 0.6;
 export const LIVE_CARD_SHORT_EARLY_DOWN_WEAK_MAX_ADVERSE_SLIPPAGE_PCT = 1;
@@ -64,6 +70,19 @@ function positive(value, fallback) {
 function shortRule({ trade, matchedKeys, thresholds }) {
   const setup = setupOf(trade);
   const combo = comboOf(trade);
+  if (matchedKeys.includes(LIVE_CARD_LIQUID_KZ_YEU_UPMID_FLAT_RESET_KEY)) {
+    return {
+      code: 'LIQUID_KZ_SHORT_YEU_UPMID_FLAT_RESET_TEST',
+      maxAdverseSlippagePct: LIVE_CARD_LIQUID_KZ_TEST_MAX_MARKET_SLIPPAGE_PCT,
+      shortFitApplies: false,
+      testProfileApplies: true,
+      testProfileVersion: LIVE_CARD_LIQUID_KZ_TEST_PROFILE_VERSION,
+      marginUsdt: LIVE_CARD_LIQUID_KZ_TEST_MARGIN_USDT,
+      takeProfitRoePct: LIVE_CARD_LIQUID_KZ_TEST_TAKE_PROFIT_ROE_PCT,
+      retestEnabled: true,
+      retestTimeoutMs: LIVE_CARD_LIQUID_KZ_TEST_RETEST_TIMEOUT_MS,
+    };
+  }
   if (matchedKeys.includes(LIVE_CARD_SHORT_FIT_KEY) && setup === 'BC_UTAD') {
     return {
       code: 'SHORT_FIT_BC_UTAD',
@@ -144,6 +163,9 @@ export function evaluateLiveCardShortEntry({
     adverseSlippagePct: null,
     maxAdverseSlippagePct: null,
     shortFitApplies: false,
+    testProfileApplies: false,
+    testProfileVersion: null,
+    takeProfitRoePct: null,
     marginUsdt: positive(shortFitMarginUsdt, LIVE_CARD_SHORT_FIT_DEFAULT_MARGIN_USDT),
     orderType: 'MARKET',
     retestEnabled: false,
@@ -189,7 +211,13 @@ export function evaluateLiveCardShortEntry({
     ...base,
     rule: rule.code,
     shortFitApplies: rule.shortFitApplies,
+    testProfileApplies: rule.testProfileApplies === true,
+    testProfileVersion: rule.testProfileVersion ?? null,
     maxAdverseSlippagePct: rule.maxAdverseSlippagePct,
+    marginUsdt: positive(rule.marginUsdt, base.marginUsdt),
+    takeProfitRoePct: positive(rule.takeProfitRoePct, null),
+    retestEnabled: rule.retestEnabled === true,
+    retestTimeoutMs: positive(rule.retestTimeoutMs, null),
   };
   if (!(ruleBase.signalEntryPrice > 0)) {
     return {
@@ -221,6 +249,17 @@ export function evaluateLiveCardShortEntry({
     ((ruleBase.signalEntryPrice - ruleBase.currentPrice) / ruleBase.signalEntryPrice) * 100,
   );
   if (adverseSlippagePct > rule.maxAdverseSlippagePct + 1e-12) {
+    if (rule.retestEnabled === true) {
+      return {
+        ...ruleBase,
+        allowed: true,
+        adverseSlippagePct,
+        orderType: 'LIMIT',
+        limitPrice: ruleBase.signalEntryPrice,
+        decision: 'SHORT_ENTRY_LIMIT_RETEST',
+        reason: `${rule.code} adverse SHORT entry slippage ${adverseSlippagePct.toFixed(4)}% > ${rule.maxAdverseSlippagePct.toFixed(4)}%; place LIMIT at paper entry without MARKET chase`,
+      };
+    }
     return {
       ...ruleBase,
       allowed: false,
@@ -233,6 +272,7 @@ export function evaluateLiveCardShortEntry({
     ...ruleBase,
     allowed: true,
     adverseSlippagePct,
+    orderType: 'MARKET',
     decision: 'SHORT_ENTRY_ALLOWED',
     reason: `${rule.code} adverse SHORT entry slippage ${adverseSlippagePct.toFixed(4)}% <= ${rule.maxAdverseSlippagePct.toFixed(4)}%; MARKET now`,
   };

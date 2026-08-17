@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   AUTO_BINANCE_ENTRY_POLICY_VERSION,
+  LIQUID_FLOW_V2_BINANCE_LEVERAGE,
   authorizeLiquidFlowV2AutoOrder,
   authorizeLiveCardAutoOrder,
   evaluateAutoBinanceEntryPolicy,
@@ -10,7 +11,8 @@ import {
 import { ceilQuantityAtMinimumNotional } from '../src/orderQuantityPolicy.js';
 
 const exclusiveEnv = {};
-assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'LIVE_CARD_AND_LIQ_FLOW_READY_V7_HTF5_20260813');
+assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'LIVE_CARD_AND_LIQ_FLOW_READY_V14_PRIMARY_POST_PUMP_2USDT_20260816');
+assert.equal(LIQUID_FLOW_V2_BINANCE_LEVERAGE, 5);
 assert.equal(liveCardOnlyAutoBinanceEnabled(exclusiveEnv), true);
 assert.equal(liveCardOnlyAutoBinanceEnabled({ LIVE_CARD_WHITELIST_ONLY_AUTO_BINANCE: 'false' }), false);
 assert.equal(ceilQuantityAtMinimumNotional({
@@ -113,7 +115,7 @@ assert.match(serverSource, /placeOrder\(authorizeLiquidFlowV2AutoOrder\(\{/);
 assert.match(serverSource, /'PRE_UP_BASE_LONG'/);
 assert.match(serverSource, /'PRE_DOWN_BASE_SHORT'/);
 assert.match(serverSource, /LIQ_FLOW_V2_PRE_BINANCE_MARGIN_USDT \?\? 5/);
-assert.match(serverSource, /LIQ_FLOW_V2_PRE_BINANCE_LEVERAGE \?\? 5/);
+assert.doesNotMatch(serverSource, /LIQ_FLOW_V2_PRE_BINANCE_LEVERAGE/);
 assert.match(serverSource, /LIQ_FLOW_V2_BASE_LONG_BINANCE_MARGIN_USDT \?\? 2/);
 assert.match(serverSource, /allowMinNotionalCeil: profile\.cohort === 'PRE_EMA99'/);
 assert.match(serverSource, /ceilQuantityAtMinimumNotional\(\{/);
@@ -123,14 +125,37 @@ assert.match(serverSource, /klineCache\.on\('candleClose', scheduleLiquidHeatmap
 assert.match(serverSource, /klineCache\.subscribe\(symbols, '15m'\)/);
 assert.match(serverSource, /klineCache\.subscribe\(symbols, '1h'\)/);
 assert.match(serverSource, /klineCache\.subscribe\(symbols, '4h'\)/);
+assert.match(serverSource, /evaluatePendingEntryConfirmations\(rows, generatedAt\)/);
+assert.match(serverSource, /evaluatePendingEntryConfirmations\(\[row\], generatedAt\)/);
+assert.match(serverSource, /liquidFlowV2Paper\.pendingConfirmationSymbols\(\)/);
 const v2RealLabelsSource = serverSource.slice(
   serverSource.indexOf('const LIQUID_FLOW_V2_AUTO_REAL_LABELS'),
   serverSource.indexOf('async function notifyLiquidFlowV2Binance'),
 );
 assert.match(v2RealLabelsSource, /HTF_BEAR_15M_EMA99_PUMP_REJECT/);
 assert.match(v2RealLabelsSource, /HTF_BULL_15M_EMA99_DUMP_RECLAIM/);
+assert.match(v2RealLabelsSource, /EMA_FAN_LONG_READY/);
+assert.match(v2RealLabelsSource, /EMA_FAN_LONG_IMPULSE_RUNNER/);
+assert.match(v2RealLabelsSource, /PUMP_FLUSH_RECLAIM_LONG_READY/);
+assert.match(v2RealLabelsSource, /PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY/);
+assert.match(v2RealLabelsSource, /POST_PUMP_SHORT_SQUEEZE_LONG_READY/);
+assert.doesNotMatch(v2RealLabelsSource, /POST_PUMP_SHORT_SQUEEZE_PRIME/);
+assert.doesNotMatch(v2RealLabelsSource, /EMA_FAN_SHORT_READY/);
 assert.ok(serverSource.includes('LIQ_FLOW_V2_HTF_BINANCE_MARGIN_USDT ?? 5'));
-assert.ok(serverSource.includes('LIQ_FLOW_V2_HTF_BINANCE_LEVERAGE ?? 5'));
+assert.ok(serverSource.includes('LIQ_FLOW_V2_PUMP_FLUSH_BINANCE_MARGIN_USDT ?? 1.5'));
+assert.ok(serverSource.includes('LIQ_FLOW_V2_PRIMARY_PANIC_BINANCE_MARGIN_USDT ?? 2'));
+assert.ok(serverSource.includes('LIQ_FLOW_V2_POST_PUMP_READY_BINANCE_MARGIN_USDT ?? 2'));
+assert.match(serverSource, /profile\.cohort === 'PUMP_FLUSH_RECLAIM'/);
+assert.match(serverSource, /profile\.cohort === 'PRIMARY_EMA99_PANIC_RECLAIM'/);
+assert.match(serverSource, /profile\.cohort === 'POST_PUMP_SQUEEZE_READY'/);
+assert.ok(serverSource.includes('LIQ_FLOW_V2_EMA_FAN_BINANCE_MARGIN_USDT ?? 1'));
+assert.ok(serverSource.includes('LIQ_FLOW_V2_EMA_FAN_IMPULSE_BINANCE_MARGIN_USDT ?? 5'));
+assert.ok(serverSource.includes('LIQ_FLOW_V2_EMA_FAN_REGULAR_LIMIT_BUFFER_PCT ?? 1'));
+assert.match(serverSource, /LIQ_FLOW_V2_EMA_FAN_REGULAR_ENTRY_TIMEOUT_MS \?\? 15 \* 60_000/);
+assert.doesNotMatch(serverSource, /LIQ_FLOW_V2_HTF_BINANCE_LEVERAGE/);
+assert.match(serverSource, /preBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE/);
+assert.match(serverSource, /htfBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE/);
+assert.match(serverSource, /emaFanBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE/);
 assert.doesNotMatch(v2RealLabelsSource, /PUMP_DISTRIBUTION_WATCH/);
 assert.doesNotMatch(v2RealLabelsSource, /PUMP_DISTRIBUTION_SHORT_READY/);
 const v2RefreshTimerSource = serverSource.slice(

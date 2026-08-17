@@ -1130,7 +1130,7 @@ function _buildPositionRows(rows) {
           <button class="dca-toggle-btn" data-sym="${sym}">DCA</button>
         </td>
         <td style="text-align:center">
-          <input type="checkbox" class="tsl-exclude-cb" data-sym="${sym}" title="Chỉ giữ ROE ≥10% → SL +1%; không nâng tiếp ở 15%/20%+"
+          <input type="checkbox" class="tsl-exclude-cb" data-sym="${sym}" title="Chỉ giữ ROE ≥10% → SL +1%; không nâng tiếp ở 15%/20%+; không dời TP về entry khi ROE ≤ -20%"
             ${tslExcluded.has(sym) ? 'checked' : ''}
             style="width:16px;height:16px;cursor:pointer;accent-color:var(--red)">
         </td>
@@ -1434,7 +1434,7 @@ async function loadTsl() {
   try {
     const data = await apiFetch('/api/trailing-stop/status');
     tslStatus.textContent = data.enabled
-      ? `ProfitLock · Manual/V2: 10→1, 15→5, 20→10 · Cap TSL checked: 10→1 tối đa · TSL cũ OFF`
+      ? `ProfitLock · Manual/V2: 10→1, 15→5, 20→10 · Cap TSL checked: 10→1 tối đa, không TP→entry khi âm ≤20% · TSL cũ OFF`
       : 'ProfitLock disabled (AUTO_SL_ENABLED=false)';
 
     const entries = Object.entries(data.protected ?? {});

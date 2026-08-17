@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  LIVE_CARD_BINANCE_LIFECYCLE_VERSION,
   LiveCardBinanceLifecycleStore,
   aggregateLiveCardBinanceStats,
   aggregateLiveCardHistoryOverview,
@@ -17,6 +18,8 @@ import {
   reconcileLiveCardClosedPnl,
   safeBotClosePlan,
 } from '../src/liveCardBinanceLifecycle.js';
+
+assert.equal(LIVE_CARD_BINANCE_LIFECYCLE_VERSION, 'LIVE_CARD_BINANCE_LIFECYCLE_V3_LIMIT_RETEST_20260816');
 
 const source = classifyLiveCardSignalSource('recommended', {
   sourcePage: 'edge',

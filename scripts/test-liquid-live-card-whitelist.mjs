@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   LIQUID_LIVE_CARD_WHITELIST_VERSION,
   LIVE_CARD_COMBO_ENTRY_MATCH_VERSION,
@@ -14,7 +15,7 @@ import {
 
 assert.equal(
   LIQUID_LIVE_CARD_WHITELIST_VERSION,
-  'LIVE_CARD_WHITELIST_V9_LIQ_SPRING_REVERSAL_20260811',
+  'LIVE_CARD_WHITELIST_V14_SWEEP_WATCH_CONFIRM_20260816',
 );
 
 const trade = {
@@ -103,6 +104,18 @@ assert.equal(
   normalizeLiquidLiveCardKey('heatmap-v2:PUMP_DISTRIBUTION_SHORT_READY'),
   'heatmap-v2:PUMP_DISTRIBUTION_SHORT_READY',
 );
+for (const key of [
+  'heatmap-v2:UP_SWEEP_SHORT_WATCH',
+  'heatmap-v2:DOWN_SWEEP_LONG_WATCH',
+  'heatmap-v2:POST_PUMP_BASE_ABSORPTION_WATCH',
+  'heatmap-v2:POST_PUMP_SHORT_SQUEEZE_LONG_READY',
+  'heatmap-v2:POST_PUMP_SHORT_SQUEEZE_PRIME',
+  'heatmap-v2:PUMP_FLUSH_RECLAIM_LONG_READY',
+]) {
+  assert.equal(normalizeLiquidLiveCardKey(key), key);
+  assert.equal(matchLiveCardWhitelistKeys([key], []).allowed, false);
+  assert.equal(matchLiveCardWhitelistKeys([key], [key]).allowed, true);
+}
 assert.deepEqual(
   liveCardKeysFromRows('ema', 'combo', [
     { key: 'GOOD', total: 2 },
@@ -119,6 +132,21 @@ assert.deepEqual(
   [edgeKey],
 );
 assert.equal(matchLiveCardWhitelistKeys([emaKey], [recommendedKey]).allowed, false);
+
+const liquidKzTestKey = 'cycle-stable:LIQUID_KILL_ZONE | SHORT | 15m | BTC_CORR_YEU | BTC_UP_MID | THEO_YEU | GATE_TEST_LIQUID_SHORT_BTC_COUNTER || CYCLE DAY_FLAT | RSI4_RESET';
+const liquidKzTestTrade = {
+  side: 'SHORT',
+  marginUsdt: 10,
+  liquidCombo: 'LIQUID_KILL_ZONE | SHORT | 15m | BTC_CORR_YEU | BTC_UP_MID | THEO_YEU | GATE_TEST_LIQUID_SHORT_BTC_COUNTER',
+  btcHealth: { pct24h: 0, rsi4h: 45 },
+};
+assert(liquidLiveCardKeysOfTrade(liquidKzTestTrade).includes(liquidKzTestKey));
+const [whitelistState, realEnabledState] = await Promise.all([
+  readFile(new URL('../data/liquid-live-card-whitelist.json', import.meta.url), 'utf8').then(JSON.parse),
+  readFile(new URL('../data/live-card-real-enabled.json', import.meta.url), 'utf8').then(JSON.parse),
+]);
+assert(whitelistState.enabledKeys.includes(liquidKzTestKey));
+assert(realEnabledState.enabledKeys.includes(liquidKzTestKey));
 
 const openEdgeCombo = 'DUMP | SHORT | 15M | BTC_CORR_YEU | BTC_UP_WEAK | THEO_YEU | GATE_-';
 const openEdgeComboKey = liveCardComboKeyAtEntry('edge', openEdgeCombo);

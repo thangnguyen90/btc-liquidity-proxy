@@ -14,9 +14,19 @@
 import WebSocket from 'ws';
 
 export const POSITION_MONITOR_MARK_STREAM_VERSION = 'POSITION_MONITOR_PER_SYMBOL_MARK_STREAM_V4_20260812';
-export const POSITION_PROTECTION_TRIGGER_VERSION = 'POSITION_PROTECTION_SOCKET_FILL_V3_DURABLE_WATERMARK_20260812';
+export const POSITION_PROTECTION_TRIGGER_VERSION = 'POSITION_PROTECTION_SOCKET_FILL_V4_LISTEN_KEY_RECONNECT_20260816';
+export const POSITION_USER_DATA_STREAM_VERSION = 'POSITION_USER_DATA_STREAM_V2_LISTEN_KEY_RECOVERY_20260816';
 export const POSITION_MONITOR_MARK_STREAM_URL = 'wss://fstream.binance.com/market/stream';
 export const POSITION_MONITOR_MARK_STREAM_STALE_MS = 15_000;
+
+export function isBinanceListenKeyExpiredEvent(message = {}) {
+  return String(message?.e ?? '').trim().toLowerCase() === 'listenkeyexpired';
+}
+
+export function isBinanceListenKeyInvalidError(error) {
+  const message = String(error?.message ?? error ?? '');
+  return /(?:listen\s*key|listenkey).*(?:does not exist|expired|invalid)|-1125/i.test(message);
+}
 
 export function isBinanceSocketFullEntryFill(order = {}) {
   const reduceOnly = order?.R === true || String(order?.R).toLowerCase() === 'true';
@@ -77,6 +87,7 @@ export function startPositionMonitor({
   onOrderFill = null,
   onPositionClose = null,
   onFullFillObserved = null,
+  onUserDataReconnect = null,
   getCredentials = null,
 }) {
   // symbol → { amt, entry, leverage, isolatedMargin, initialMargin }
@@ -97,6 +108,13 @@ export function startPositionMonitor({
     lastTradeLiteAt: null,
     lastTradeLiteVerifiedAt: null,
     lastDetectedOpenAt: null,
+    userDataReady: false,
+    userDataConnectCount: 0,
+    userDataReconnectCount: 0,
+    userDataListenKeyExpiredCount: 0,
+    userDataKeepAliveFailureCount: 0,
+    lastUserDataReconnectAt: null,
+    lastUserDataReconnectReason: null,
   };
 
   // ── Helpers ────────────────────────────────────────────────────────────────
@@ -168,6 +186,10 @@ export function startPositionMonitor({
   // ── User Data Stream ───────────────────────────────────────────────────────
   let listenKey = null;
   let keepAliveTimer = null;
+  let userWs = null;
+  let userStreamGeneration = 0;
+  let userReconnectTimer = null;
+  let userStreamStarting = false;
   const userDataEventLogAt = new Map();
   const fullFillDeliveryRunning = new Map();
   const deliveredFullFills = new Map();
@@ -229,7 +251,11 @@ export function startPositionMonitor({
     return delivery;
   }
 
-  async function recoverMissedFullFills({ since = 0, handledOrderIds = [] } = {}) {
+  async function recoverMissedFullFills({
+    since = 0,
+    handledOrderIds = [],
+    recoverySource = 'MISSED_FILL_RECOVERY',
+  } = {}) {
     if (!onOrderFill) return { checkedSymbols: 0, candidates: 0, recovered: 0, failed: 0 };
     await syncPositions();
     const handled = new Set((Array.isArray(handledOrderIds) ? handledOrderIds : []).map(String));
@@ -290,7 +316,7 @@ export function startPositionMonitor({
             clientOrderId: order.clientOrderId ?? null,
             orderType: order.type ?? order.origType ?? null,
             reduceOnly: false,
-            source: 'MISSED_FILL_RECOVERY',
+            source: recoverySource,
             // Recovery uses one account-wide watermark. Persist it only after
             // every active symbol has completed successfully (see below).
             deferWatermark: true,
@@ -385,28 +411,98 @@ export function startPositionMonitor({
     return { apiKey, apiSecret };
   }
 
-  async function startUserDataStream() {
+  function clearUserDataKeepAlive() {
+    if (!keepAliveTimer) return;
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
+
+  function scheduleUserDataReconnect(delayMs = 0, reason = 'socket-closed') {
+    if (userReconnectTimer) return;
+    // Invalidate callbacks from the stale socket before terminating it. Its
+    // close event must not schedule another connection over the replacement.
+    userStreamGeneration += 1;
+    const staleSocket = userWs;
+    userWs = null;
+    listenKey = null;
+    stats.userDataReady = false;
+    stats.lastUserDataReconnectReason = reason;
+    clearUserDataKeepAlive();
+    if (staleSocket) staleSocket.terminate();
+    const delay = Math.max(0, Number(delayMs) || 0);
+    userReconnectTimer = setTimeout(() => {
+      userReconnectTimer = null;
+      startUserDataStream(reason).catch((error) => {
+        console.error(`[PosMonitor] user-data reconnect failed reason=${reason}: ${error.message}`);
+        scheduleUserDataReconnect(5_000, 'reconnect-failed');
+      });
+    }, delay);
+    userReconnectTimer.unref?.();
+    console.warn(
+      `[PosMonitor] User data reconnect scheduled reason=${reason} delay=${delay}ms`
+      + ` version=${POSITION_USER_DATA_STREAM_VERSION}`,
+    );
+  }
+
+  async function startUserDataStream(reason = 'startup') {
+    if (userStreamStarting || userWs) return;
+    userStreamStarting = true;
+    const generation = ++userStreamGeneration;
     let apiKey;
     try {
       ({ apiKey } = resolveCredentials());
     } catch (err) {
       if (!err.message?.includes('Missing Binance API')) console.error('[PosMonitor] credentials failed:', err.message);
-      setTimeout(startUserDataStream, 60_000);
+      userStreamStarting = false;
+      scheduleUserDataReconnect(60_000, 'credentials-unavailable');
       return;
     }
 
     try {
       const res = await client.createListenKey({ apiKey });
+      if (generation !== userStreamGeneration) {
+        userStreamStarting = false;
+        return;
+      }
       listenKey = res.listenKey;
     } catch (err) {
       console.error('[PosMonitor] createListenKey failed:', err.message);
-      setTimeout(startUserDataStream, 30_000);
+      userStreamStarting = false;
+      scheduleUserDataReconnect(30_000, 'create-listen-key-failed');
       return;
     }
 
     const ws = new WebSocket(`${USER_WS_BASE}/${listenKey}`);
+    userWs = ws;
+    userStreamStarting = false;
+
+    ws.addEventListener('open', () => {
+      if (generation !== userStreamGeneration) return;
+      const reconnected = stats.userDataConnectCount > 0;
+      stats.userDataReady = true;
+      stats.userDataConnectCount += 1;
+      if (reconnected) stats.userDataReconnectCount += 1;
+      stats.lastUserDataConnectedAt = Date.now();
+      stats.lastUserDataReconnectAt = reconnected ? Date.now() : null;
+      stats.lastUserDataReconnectReason = reason;
+      console.log(
+        `[PosMonitor] User data stream connected reason=${reason} reconnect=${reconnected}`
+        + ` version=${POSITION_USER_DATA_STREAM_VERSION}`,
+      );
+      if (onUserDataReconnect) {
+        Promise.resolve(onUserDataReconnect({
+          reason,
+          reconnected,
+          connectedAt: stats.lastUserDataConnectedAt,
+          version: POSITION_USER_DATA_STREAM_VERSION,
+        })).catch((error) => {
+          console.warn(`[PosMonitor] reconnect recovery callback failed: ${error.message}`);
+        });
+      }
+    });
 
     ws.addEventListener('message', async ({ data }) => {
+      if (generation !== userStreamGeneration) return;
       let msg;
       try { msg = JSON.parse(data); } catch { return; }
       if (msg?.e) {
@@ -415,6 +511,12 @@ export function startPositionMonitor({
           userDataEventLogAt.set(msg.e, Date.now());
           console.log(`[PosMonitor] user-data event ${msg.e}`);
         }
+      }
+
+      if (isBinanceListenKeyExpiredEvent(msg)) {
+        stats.userDataListenKeyExpiredCount += 1;
+        scheduleUserDataReconnect(0, 'listen-key-expired');
+        return;
       }
 
       if (msg.e === 'ALGO_UPDATE') {
@@ -487,8 +589,8 @@ export function startPositionMonitor({
             });
           } catch (error) {
             // Keep the user-data socket alive. TRADE_LITE verification and the
-            // next startup recovery can retry because the fill is not marked
-            // delivered until both protection orders are verified on Binance.
+            // next reconnect recovery can retry because the fill is not marked
+            // delivered until protection is verified on Binance.
             console.error(`[PosMonitor] SOCKET_FULL_FILL_PROTECTION_FAILED ${o.s} orderId=${o.i}: ${error.message}`);
           }
         } else if (o && o.x === 'TRADE' && !reduceOnly && Number(o.l) > 0) {
@@ -498,22 +600,32 @@ export function startPositionMonitor({
     });
 
     ws.addEventListener('close', () => {
-      console.warn('[PosMonitor] User data WS closed — reconnecting in 5s');
-      clearInterval(keepAliveTimer);
-      setTimeout(startUserDataStream, 5_000);
+      if (generation !== userStreamGeneration) return;
+      userWs = null;
+      stats.userDataReady = false;
+      scheduleUserDataReconnect(5_000, 'socket-closed');
     });
 
     ws.addEventListener('error', (e) => {
+      if (generation !== userStreamGeneration) return;
       console.error('[PosMonitor] User data WS error:', e.message ?? e.type);
+      scheduleUserDataReconnect(5_000, 'socket-error');
     });
 
+    clearUserDataKeepAlive();
     keepAliveTimer = setInterval(async () => {
-      try { await client.keepAliveListenKey({ listenKey, apiKey }); }
-      catch (err) { console.error('[PosMonitor] keepAlive failed:', err.message); }
+      if (generation !== userStreamGeneration || !listenKey) return;
+      try {
+        await client.keepAliveListenKey({ listenKey, apiKey });
+      } catch (err) {
+        stats.userDataKeepAliveFailureCount += 1;
+        console.error('[PosMonitor] keepAlive failed:', err.message);
+        if (isBinanceListenKeyInvalidError(err)) {
+          scheduleUserDataReconnect(0, 'keepalive-listen-key-invalid');
+        }
+      }
     }, 30 * 60_000);
-
-    console.log('[PosMonitor] User data stream connected.');
-    stats.lastUserDataConnectedAt = Date.now();
+    keepAliveTimer.unref?.();
   }
 
   // ── Mark price combined stream ─────────────────────────────────────────────
@@ -677,7 +789,10 @@ export function startPositionMonitor({
   // ── Init ───────────────────────────────────────────────────────────────────
   syncPositions().then(() => {
     startMarkPriceStream();
-    startUserDataStream();
+    startUserDataStream('startup').catch((error) => {
+      console.error(`[PosMonitor] initial user-data stream failed: ${error.message}`);
+      scheduleUserDataReconnect(5_000, 'startup-failed');
+    });
     // Periodic REST sync: catch positions opened/closed outside ACCOUNT_UPDATE
     setInterval(syncPositions, 60_000);
   });
@@ -721,6 +836,7 @@ export function startPositionMonitor({
     getStatus() {
       return {
         ...stats,
+        userDataStreamVersion: POSITION_USER_DATA_STREAM_VERSION,
         markStreamUrl: MARKET_WS_BASE,
         wsReady,
         cachedSymbols: [...posCache.keys()].sort(),

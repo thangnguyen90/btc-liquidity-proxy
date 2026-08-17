@@ -25,6 +25,14 @@ const els = {
   paperClosedPrev: document.getElementById('paperClosedPrev'),
   paperClosedNext: document.getElementById('paperClosedNext'),
   paperClosedPageInfo: document.getElementById('paperClosedPageInfo'),
+  paperStatsFilters: document.getElementById('paperStatsFilters'),
+  paperFromDay: document.getElementById('paperFromDay'),
+  paperToDay: document.getElementById('paperToDay'),
+  paperLabelFilter: document.getElementById('paperLabelFilter'),
+  paperFilterToday: document.getElementById('paperFilterToday'),
+  paperFilterAll: document.getElementById('paperFilterAll'),
+  paperFilterNote: document.getElementById('paperFilterNote'),
+  paperLabelBreakdown: document.getElementById('paperLabelBreakdown'),
 };
 
 let board = null;
@@ -33,11 +41,18 @@ let enabledWhitelistKeys = new Set();
 let stream = null;
 let reconnectTimer = null;
 let closedPaperPage = 1;
+let paperStatsView = null;
+let paperStatsRequestSequence = 0;
+let paperStatsReloadTimer = null;
+let lastPaperStatsUpdatedAt = null;
 const CLOSED_PAPER_PAGE_SIZE = 10;
 const binanceEntryDrafts = new Map();
 const binanceMarginDrafts = new Map();
-const binanceLeverageDrafts = new Map();
 const binanceOrderUiStates = new Map();
+
+function currentPaperView() {
+  return paperStatsView ?? board?.paper ?? {};
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -109,7 +124,13 @@ async function jsonApi(url, options = {}) {
 
 async function recoverOrdersToken() {
   const rawCredentials = localStorage.getItem('orders_creds');
-  if (!rawCredentials) return '';
+  if (!rawCredentials) {
+    const envResponse = await fetch('/api/auth/env', { method: 'POST', cache: 'no-store' });
+    const envData = await envResponse.json();
+    if (!envResponse.ok || !envData.token) return '';
+    localStorage.setItem('orders_token', envData.token);
+    return envData.token;
+  }
   let credentials;
   try {
     credentials = JSON.parse(rawCredentials);
@@ -187,8 +208,22 @@ function zoneRow(label, zone, kind) {
 
 function evidenceHtml(rows = []) {
   const labels = {
+    'post-pump-30': 'Pump truoc do >=30%',
+    'post-pump-drawdown': 'Da xa 25-75% tu dinh',
+    'post-pump-base-range': 'Base 5m co hep <=6%',
+    'post-pump-base-flat': 'Base di ngang',
+    'post-pump-lows-hold': 'Nua sau khong tao day sau',
+    'base-sell-absorption': 'Sell-flow trong base duoc hap thu',
+    'post-pump-breakout': 'Dong breakout dinh base',
+    'breakout-taker': 'Taker mua xac nhan',
+    'bullish-close': 'Nen tang dong gan dinh',
     zone: 'Vùng đã quét',
     candle: 'Nến xác nhận',
+    'closed-5m-confirmation': 'Nến 5m kế tiếp xác nhận',
+    'closed-taker': 'Taker của nến xác nhận',
+    'liquidation-ended': 'Liquidation đã kết thúc',
+    'force-socket-open': 'Force-order socket đang mở',
+    'positive-day-pullback': 'Pullback trong ngày còn tăng',
     taker: 'Taker đảo',
     oi: 'OI giảm',
     liquidation: 'Liq burst',
@@ -222,20 +257,36 @@ function evidenceHtml(rows = []) {
     'failed-retest': 'Retest thất bại',
     'sell-flow': 'Sell-flow xác nhận',
     volume: 'Volume xác nhận',
+    'top-liquidity-rank': 'Top 150 thanh khoản',
+    'day-loss': 'Ngày giảm ít nhất 5%',
+    'prior-ema-compression': 'EMA nén trước tín hiệu',
+    'compression-density': 'Mật độ EMA nén',
+    'breakdown-volume': 'Breakdown kèm volume',
+    'bearish-body': 'Thân nến giảm',
+    'ema-fan-order': 'EMA fan bearish',
+    'ema-fan-widening': 'Khoảng EMA mở rộng',
+    'rsi-guard': 'RSI không quá bán sâu',
+    'entry-distance-cap': 'Không đuổi xa EMA13',
   };
   return rows.map((row) => `<span class="${row.matched ? 'is-hit' : ''}">${labels[row.name] ?? row.name}</span>`).join('');
 }
 
 function secondaryLabelsHtml(classification = {}, features = {}) {
   const distribution = features.pumpDistribution15m ?? {};
+  const postPump = features.postPumpShortSqueeze5m ?? {};
   return (classification.secondaryLabels ?? []).map((secondary) => `
     <section class="flow-v2-secondary-label ${secondary.side === 'SHORT' ? 'is-short' : 'is-long'}">
       <div class="flow-v2-secondary-head">
         <b>${escapeHtml(secondary.label)} · ${Number(secondary.confidence ?? 0)}%</b>
-        <span>${escapeHtml(distribution.stage ?? secondary.phase ?? 'WATCH')}</span>
+        <span>${escapeHtml(secondary.labelKey?.startsWith('POST_PUMP')
+          ? postPump.stage ?? secondary.phase ?? 'WATCH'
+          : distribution.stage ?? secondary.phase ?? 'WATCH')}</span>
       </div>
       <p>${escapeHtml(secondary.reason)}</p>
-      <small>Pump ${number(distribution.pumpPct, 1, '%')} · drawdown ${number(distribution.drawdownFromPeakPct, 1, '%')} · ${escapeHtml(distribution.unwindTier ?? '--')} · peak ${number(distribution.barsSincePeak, 0, ' nến 15m trước')}</small>
+      ${secondary.labelKey?.startsWith('POST_PUMP')
+        ? `<small>Pump ${number(postPump.pumpPct, 1, '%')} Â· drawdown ${number(postPump.drawdownFromPeakPct, 1, '%')} Â· base ${number(postPump.baseRangePct, 1, '%')} Â· volume fade ${number(postPump.volumeFadeRatio, 2, 'x')}</small>`
+        : ''}
+      ${secondary.labelKey?.startsWith('POST_PUMP') ? '' : `<small>Pump ${number(distribution.pumpPct, 1, '%')} · drawdown ${number(distribution.drawdownFromPeakPct, 1, '%')} · ${escapeHtml(distribution.unwindTier ?? '--')} · peak ${number(distribution.barsSincePeak, 0, ' nến 15m trước')}</small>`}
       <div class="flow-v2-evidence">${evidenceHtml(secondary.evidence)}</div>
     </section>
   `).join('');
@@ -334,14 +385,18 @@ function paperRow(trade) {
       : normalizedOutcome.includes('SL') || (Number.isFinite(netPnl) && netPnl < 0)
         ? 'is-loss'
         : 'is-flat';
+  const emaFanWaitingConfirmation = trade.status === 'PENDING_ENTRY'
+    && trade.labelKey === 'EMA_FAN_LONG_READY'
+    && trade.entryConfirmationState !== 'WAIT_RETEST_TOUCH';
   const status = trade.status === 'PENDING_ENTRY'
-    ? `CHỜ RETEST · ${number(trade.leverage, 0, 'x')}`
+    ? `${emaFanWaitingConfirmation ? 'CHỜ NẾN 5M XÁC NHẬN' : 'CHỜ RETEST'} · ${number(trade.leverage, 0, 'x')}`
     : trade.status === 'OPEN'
     ? `${number(trade.netRoe, 1, '%')} · ${number(trade.netPnl, 4, ' USDT')}`
     : trade.status === 'CANCELLED'
     ? `${escapeHtml(trade.outcome)} · KHÔNG FILL`
     : `${escapeHtml(trade.outcome)} · ${number(trade.netRoe, 1, '%')}`;
-  const canOrder = ['OPEN', 'PENDING_ENTRY'].includes(trade.status);
+  const canOrder = trade.status === 'OPEN'
+    || (trade.status === 'PENDING_ENTRY' && trade.labelKey !== 'EMA_FAN_LONG_READY');
   const serverOrderState = String(trade.binanceEntryState ?? '');
   const uiState = binanceOrderUiStates.get(String(trade.id)) ?? null;
   const lockedByServer = serverOrderState === 'SUBMITTING';
@@ -353,7 +408,7 @@ function paperRow(trade) {
     ? settings.baseLongBinanceMarginUsdt ?? 2
     : settings.baseBinanceMarginUsdt ?? 2;
   const marginDraft = binanceMarginDrafts.get(tradeId) ?? defaultMargin;
-  const leverageDraft = binanceLeverageDrafts.get(tradeId) ?? settings.baseBinanceLeverage ?? 5;
+  const leverageDraft = 5;
   const serverEntryPrice = Number(trade.binanceEntryPrice);
   const serverOrderMessage = serverOrderState === 'FILLED' && serverEntryPrice > 0
     ? `ĐÃ VÀO LỆNH GIÁ ${price(serverEntryPrice)}`
@@ -368,7 +423,7 @@ function paperRow(trade) {
       <div class="flow-v2-real-inputs">
         <label>ENTRY<input data-flow-entry type="number" min="0" step="any" value="${escapeHtml(entryDraft)}" ${controlsLocked ? 'disabled' : ''}></label>
         <label>MARGIN<input data-flow-margin type="number" min="0.01" max="10000" step="0.5" value="${escapeHtml(marginDraft)}" ${controlsLocked ? 'disabled' : ''}></label>
-        <label>LEV<input data-flow-leverage type="number" min="1" max="125" step="1" value="${escapeHtml(leverageDraft)}" ${controlsLocked ? 'disabled' : ''}></label>
+        <label>LEV<input data-flow-leverage type="number" min="5" max="5" step="1" value="${escapeHtml(leverageDraft)}" readonly ${controlsLocked ? 'disabled' : ''}></label>
       </div>
       <div class="flow-v2-real-buttons"><button type="button" data-flow-order-type="LIMIT" ${controlsLocked ? 'disabled' : ''}>LIMIT THẬT</button><button type="button" class="is-market" data-flow-order-type="MARKET" ${controlsLocked ? 'disabled' : ''}>MARKET THẬT</button></div>
       <small class="${uiState?.error ? 'is-error' : uiState?.success ? 'is-success' : ''}">${escapeHtml(orderStatusText)}</small>
@@ -386,25 +441,24 @@ function paperRow(trade) {
 }
 
 async function placeLiquidFlowV2BinanceOrder(tradeId, orderType) {
-  const trade = (board?.paper?.trades ?? []).find((row) => String(row.id) === String(tradeId));
+  const visibleTrades = [
+    ...(paperStatsView?.openTrades ?? []),
+    ...(board?.paper?.trades ?? []),
+  ];
+  const trade = visibleTrades.find((row) => String(row.id) === String(tradeId));
   if (!trade) return;
   const container = els.paperOpenList.querySelector(`[data-flow-trade-id="${CSS.escape(String(tradeId))}"]`);
   const entryPrice = Number(container?.querySelector('[data-flow-entry]')?.value);
   const marginUsdt = Number(container?.querySelector('[data-flow-margin]')?.value);
-  const leverage = Number(container?.querySelector('[data-flow-leverage]')?.value);
+  const leverage = 5;
   if (orderType === 'LIMIT' && !(entryPrice > 0)) {
     binanceOrderUiStates.set(String(tradeId), { error: true, message: 'Entry LIMIT không hợp lệ' });
-    renderPaper(board?.paper ?? {});
+    renderPaper(currentPaperView());
     return;
   }
   if (!(marginUsdt > 0) || marginUsdt > 10_000) {
     binanceOrderUiStates.set(String(tradeId), { error: true, message: 'Margin phải trong khoảng 0-10,000 USDT' });
-    renderPaper(board?.paper ?? {});
-    return;
-  }
-  if (!Number.isInteger(leverage) || leverage < 1 || leverage > 125) {
-    binanceOrderUiStates.set(String(tradeId), { error: true, message: 'Leverage phải là số nguyên 1-125x' });
-    renderPaper(board?.paper ?? {});
+    renderPaper(currentPaperView());
     return;
   }
   let token = localStorage.getItem('orders_token') ?? '';
@@ -413,7 +467,7 @@ async function placeLiquidFlowV2BinanceOrder(tradeId, orderType) {
       token = await recoverOrdersToken();
     } catch (error) {
       binanceOrderUiStates.set(String(tradeId), { error: true, message: error.message });
-      renderPaper(board?.paper ?? {});
+      renderPaper(currentPaperView());
       return;
     }
   }
@@ -422,14 +476,18 @@ async function placeLiquidFlowV2BinanceOrder(tradeId, orderType) {
       error: true,
       message: `Mở /orders trên đúng ${location.host} rồi đăng nhập`,
     });
-    renderPaper(board?.paper ?? {});
+    renderPaper(currentPaperView());
     return;
   }
   const detail = `${trade.symbol} ${trade.side} · ${orderType}${orderType === 'LIMIT' ? ` @ ${price(entryPrice)}` : ''} · $${number(marginUsdt, 2)} × ${number(leverage, 0, 'x')}`;
-  if (!confirm(`Đặt LỆNH THẬT Binance?\n\n${detail}\n\nTP/SL sẽ lấy theo plan Liquid Flow V2 và neo theo giá fill.`)) return;
+  if (!confirm(
+    `Đặt LỆNH THẬT Binance?\n\n${detail}`
+    + '\n\nVị thế mới: TP/SL lấy theo plan và neo theo fill.'
+    + '\nDCA cùng chiều: chỉ thêm khối lượng, giữ nguyên TP/SL đang có.',
+  )) return;
 
   binanceOrderUiStates.set(String(tradeId), { pending: true, message: `ĐANG ĐẶT ${orderType}...` });
-  renderPaper(board?.paper ?? {});
+  renderPaper(currentPaperView());
   try {
     const requestBody = { tradeId, orderType, entryPrice, marginUsdt, leverage };
     let result;
@@ -442,16 +500,17 @@ async function placeLiquidFlowV2BinanceOrder(tradeId, orderType) {
       if (!token) throw new Error(`Phiên /orders của ${location.host} đã hết hạn; hãy đăng nhập lại.`);
       result = await submitLiquidFlowV2BinanceOrder(requestBody, token);
     }
+    const protectionNote = result.protectionSuppressedForDca ? ' · DCA GIỮ TP/SL CŨ' : '';
     binanceOrderUiStates.set(String(tradeId), {
       success: true,
       message: result.orderType === 'MARKET'
-        ? `ĐÃ VÀO LỆNH GIÁ ${price(result.entryPrice)}`
-        : `ĐÃ ĐẶT LIMIT GIÁ ${price(result.entryPrice ?? entryPrice)}`,
+        ? `ĐÃ VÀO LỆNH GIÁ ${price(result.entryPrice)}${protectionNote}`
+        : `ĐÃ ĐẶT LIMIT GIÁ ${price(result.entryPrice ?? entryPrice)}${protectionNote}`,
     });
   } catch (error) {
     binanceOrderUiStates.set(String(tradeId), { error: true, message: error.message });
   }
-  renderPaper(board?.paper ?? {});
+  renderPaper(currentPaperView());
 }
 
 function paperTradeTimestamp(trade) {
@@ -477,6 +536,17 @@ function paperExternalLinks(symbol) {
 }
 
 function renderClosedPaperPage(paper = {}) {
+  if (Array.isArray(paper.closedTrades) && paper.pagination) {
+    const pagination = paper.pagination;
+    closedPaperPage = Number(pagination.page) || 1;
+    els.paperClosedList.innerHTML = paper.closedTrades.map(paperRow).join('')
+      || '<div class="flow-v2-empty">Chưa có lệnh đóng.</div>';
+    els.paperClosedPageInfo.textContent = `Trang ${closedPaperPage} / ${pagination.totalPages ?? 1} · ${pagination.totalRecords ?? 0} lệnh`;
+    els.paperClosedPrev.disabled = closedPaperPage <= 1;
+    els.paperClosedNext.disabled = closedPaperPage >= Number(pagination.totalPages ?? 1);
+    els.paperClosedPagination.classList.toggle('is-empty', Number(pagination.totalRecords ?? 0) === 0);
+    return;
+  }
   const closed = (paper.trades ?? [])
     .filter((trade) => ['CLOSED', 'CANCELLED'].includes(trade.status))
     .sort((a, b) => paperTradeTimestamp(b) - paperTradeTimestamp(a));
@@ -491,6 +561,30 @@ function renderClosedPaperPage(paper = {}) {
   els.paperClosedPrev.disabled = closedPaperPage <= 1;
   els.paperClosedNext.disabled = closedPaperPage >= totalPages;
   els.paperClosedPagination.classList.toggle('is-empty', closed.length === 0);
+}
+
+function renderPaperLabelBreakdown(paper = {}) {
+  const rows = paper.labelStats ?? [];
+  els.paperLabelBreakdown.innerHTML = rows.map((stat) => `
+    <tr>
+      <td><strong>${escapeHtml(stat.label)}</strong><small>${escapeHtml(stat.key)}</small></td>
+      <td>${stat.open ?? 0} / ${stat.pending ?? 0}</td>
+      <td>${stat.closed ?? 0}${stat.cancelled ? ` <small>· hủy ${stat.cancelled}</small>` : ''}</td>
+      <td>${stat.wins ?? 0} / ${stat.losses ?? 0}</td>
+      <td>${stat.closed ? number(stat.winRate, 1, '%') : '--'}</td>
+      <td>${stat.profitFactor == null ? ((stat.netPnl ?? 0) > 0 ? '∞' : '--') : number(stat.profitFactor, 2)}</td>
+      <td class="${signedClass(stat.netPnl)}">${number(stat.netPnl, 4, ' USDT')}</td>
+      <td class="${signedClass(stat.avgRoe)}">${stat.closed ? number(stat.avgRoe, 1, '%') : '--'}</td>
+    </tr>`).join('') || '<tr><td colspan="8">Không có giao dịch trong bộ lọc.</td></tr>';
+}
+
+function syncPaperLabelOptions(paper = {}) {
+  const selected = paper.filters?.labelKey ?? els.paperLabelFilter.value ?? 'ALL';
+  els.paperLabelFilter.innerHTML = [
+    '<option value="ALL">Tất cả nhãn</option>',
+    ...(paper.labels ?? []).map((item) => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.label)}</option>`),
+  ].join('');
+  els.paperLabelFilter.value = [...els.paperLabelFilter.options].some((option) => option.value === selected) ? selected : 'ALL';
 }
 
 function renderPaper(paper = {}) {
@@ -508,9 +602,20 @@ function renderPaper(paper = {}) {
   els.paperAvgRoe.textContent = paper.closed ? number(paper.avgRoe, 1, '%') : '--';
   els.paperAvgRoe.className = signedClass(paper.avgRoe);
   const trades = paper.trades ?? [];
-  const open = trades.filter((trade) => ['OPEN', 'PENDING_ENTRY'].includes(trade.status));
+  const open = paper.openTrades ?? trades.filter((trade) => ['OPEN', 'PENDING_ENTRY'].includes(trade.status));
   els.paperOpenList.innerHTML = open.map(paperRow).join('') || '<div class="flow-v2-empty">Chưa có lệnh mở; hệ thống đang chờ nhãn READY.</div>';
+  if (Array.isArray(paper.labelStats)) {
+    syncPaperLabelOptions(paper);
+    renderPaperLabelBreakdown(paper);
+    const filters = paper.filters ?? {};
+    const range = filters.fromDay || filters.toDay
+      ? `${filters.fromDay || 'đầu lịch sử'} → ${filters.toDay || 'hiện tại'}`
+      : 'toàn bộ lịch sử';
+    const selectedLabel = els.paperLabelFilter.selectedOptions[0]?.textContent ?? 'Tất cả nhãn';
+    els.paperFilterNote.textContent = `Ngày vào paper · Asia/Bangkok · ${range} · ${selectedLabel}`;
+  }
   renderClosedPaperPage(paper);
+  els.autoPaperRuleNote.textContent += ` EMA FAN thường: chạm EMA13 +${number(settings.emaFanRegularLimitBufferPct, 1, '%')} trong ${number((settings.emaFanRegularEntryTimeoutMs ?? 0) / 60_000, 0, 'm')} chỉ arm retest; phải có nến 5m đóng reclaim EMA13 + higher-low + taker mua và fan chưa co/đảo, rồi paper mới OPEN và Binance MARKET $${number(settings.emaFanBinanceMarginUsdt, 0)}. EMA FAN IMPULSE: MARKET Binance $${number(settings.emaFanImpulseBinanceMarginUsdt, 0)} ngay. Tất cả ${number(settings.emaFanBinanceLeverage, 0, 'x')}; SHORT vẫn PAPER ONLY; TP +${number(settings.emaFanTakeProfitRoe, 0, '%')} / SL -${number(settings.emaFanHardStopRoe, 0, '%')}.`;
 }
 
 function filteredRows() {
@@ -535,8 +640,15 @@ function render(data) {
   board = data;
   renderHeader(data);
   renderLabelStats(data.stats);
-  renderPaper(data.paper);
+  renderPaper(paperStatsView ?? data.paper);
   renderSignals();
+  const incomingPaperUpdatedAt = data.paper?.updatedAt ?? null;
+  if (paperStatsView && incomingPaperUpdatedAt !== lastPaperStatsUpdatedAt && !paperStatsReloadTimer) {
+    paperStatsReloadTimer = setTimeout(() => {
+      paperStatsReloadTimer = null;
+      loadPaperStats();
+    }, 750);
+  }
 }
 
 async function updateAutoPaper(enabled) {
@@ -548,8 +660,10 @@ async function updateAutoPaper(enabled) {
       body: JSON.stringify({ autoEnabled: enabled }),
     });
     board = { ...(board ?? {}), paper };
-    renderPaper(paper);
+    if (paperStatsView) paperStatsView = { ...paperStatsView, settings: paper.settings, updatedAt: paper.updatedAt };
+    renderPaper(currentPaperView());
     renderSignals();
+    await loadPaperStats();
   } catch (error) {
     els.autoPaperEnabled.checked = !enabled;
     els.autoPaperState.textContent = 'LỖI';
@@ -563,6 +677,44 @@ async function loadWhitelist() {
   const data = await jsonApi('/api/live-card-whitelist');
   enabledWhitelistKeys = new Set(data.enabledKeys ?? []);
   if (board) renderLabelStats(board.stats);
+}
+
+function bangkokToday() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+async function loadPaperStats({ resetPage = false } = {}) {
+  if (resetPage) closedPaperPage = 1;
+  const requestSequence = ++paperStatsRequestSequence;
+  const params = new URLSearchParams({
+    labelKey: els.paperLabelFilter.value || 'ALL',
+    page: String(closedPaperPage),
+    pageSize: String(CLOSED_PAPER_PAGE_SIZE),
+  });
+  if (els.paperFromDay.value) params.set('fromDay', els.paperFromDay.value);
+  if (els.paperToDay.value) params.set('toDay', els.paperToDay.value);
+  const buttons = els.paperStatsFilters.querySelectorAll('button');
+  buttons.forEach((button) => { button.disabled = true; });
+  els.paperFilterNote.textContent = 'Đang tổng hợp toàn bộ lịch sử paper...';
+  try {
+    const paper = await jsonApi(`/api/liquid-flow-v2-paper-stats?${params}`);
+    if (requestSequence !== paperStatsRequestSequence) return;
+    paperStatsView = paper;
+    closedPaperPage = paper.pagination?.page ?? closedPaperPage;
+    lastPaperStatsUpdatedAt = paper.updatedAt ?? null;
+    renderPaper(paper);
+  } catch (error) {
+    if (requestSequence !== paperStatsRequestSequence) return;
+    els.paperFilterNote.textContent = `Không tải được thống kê: ${error.message}`;
+  } finally {
+    if (requestSequence === paperStatsRequestSequence) {
+      buttons.forEach((button) => { button.disabled = false; });
+    }
+  }
 }
 
 async function toggleWhitelist(input) {
@@ -634,13 +786,12 @@ els.labelStats.addEventListener('change', (event) => {
   if (input) toggleWhitelist(input);
 });
 els.paperOpenList.addEventListener('input', (event) => {
-  const input = event.target.closest('[data-flow-entry], [data-flow-margin], [data-flow-leverage]');
+  const input = event.target.closest('[data-flow-entry], [data-flow-margin]');
   const container = input?.closest('[data-flow-trade-id]');
   if (!input || !container) return;
   const tradeId = container.dataset.flowTradeId;
   if (input.matches('[data-flow-entry]')) binanceEntryDrafts.set(tradeId, input.value);
   if (input.matches('[data-flow-margin]')) binanceMarginDrafts.set(tradeId, input.value);
-  if (input.matches('[data-flow-leverage]')) binanceLeverageDrafts.set(tradeId, input.value);
 });
 els.paperOpenList.addEventListener('click', (event) => {
   const button = event.target.closest('[data-flow-order-type]');
@@ -651,11 +802,28 @@ els.refreshButton.addEventListener('click', loadBoard);
 els.autoPaperEnabled.addEventListener('change', () => updateAutoPaper(els.autoPaperEnabled.checked));
 els.paperClosedPrev.addEventListener('click', () => {
   closedPaperPage = Math.max(1, closedPaperPage - 1);
-  renderClosedPaperPage(board?.paper ?? {});
+  if (paperStatsView) loadPaperStats();
+  else renderClosedPaperPage(board?.paper ?? {});
 });
 els.paperClosedNext.addEventListener('click', () => {
   closedPaperPage += 1;
-  renderClosedPaperPage(board?.paper ?? {});
+  if (paperStatsView) loadPaperStats();
+  else renderClosedPaperPage(board?.paper ?? {});
 });
-
-Promise.allSettled([loadWhitelist(), loadBoard()]).finally(connectStream);
+els.paperStatsFilters.addEventListener('submit', (event) => {
+  event.preventDefault();
+  loadPaperStats({ resetPage: true });
+});
+els.paperFilterToday.addEventListener('click', () => {
+  const today = bangkokToday();
+  els.paperFromDay.value = today;
+  els.paperToDay.value = today;
+  loadPaperStats({ resetPage: true });
+});
+els.paperFilterAll.addEventListener('click', () => {
+  els.paperFromDay.value = '';
+  els.paperToDay.value = '';
+  els.paperLabelFilter.value = 'ALL';
+  loadPaperStats({ resetPage: true });
+});
+Promise.allSettled([loadWhitelist(), loadBoard(), loadPaperStats()]).finally(connectStream);
