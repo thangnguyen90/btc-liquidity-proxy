@@ -190,7 +190,9 @@ function render(data) {
   const longCount = rows.filter((row) => row.proposal?.action === 'WAIT_LONG_CONFIRMATION').length;
   const shortCount = rows.filter((row) => row.proposal?.action === 'WAIT_SHORT_CONFIRMATION').length;
   const waitCount = rows.length - longCount - shortCount;
-  const excludedCount = Number(data.source?.binanceLiquidityExcluded || 0) + Number(data.source?.heatmapLiquidityExcluded || 0);
+  const excludedCount = Number(data.source?.binanceLiquidityExcluded || 0)
+    + Number(data.source?.heatmapLiquidityExcluded || 0)
+    + Number(data.source?.viewLiquidityExcluded || 0);
 
   elements.refresh.disabled = Boolean(data.running || data.loginRunning) || data.config?.enabled === false;
   elements.login.disabled = Boolean(data.running || data.loginRunning);

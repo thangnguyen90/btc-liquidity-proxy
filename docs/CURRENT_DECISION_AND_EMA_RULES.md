@@ -3403,5 +3403,6 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
 - Whitelist: không thêm nhãn/card thống kê giao dịch nên không thêm checkbox/matcher. Policy hiện hữu vẫn mặc định tắt và chỉ hiện khi paper
   CLOSED AvgROE `>4%`; đề xuất CoinGlass không thể mở khóa whitelist hoặc Binance.
 - Tương thích JSON cũ: `auth`, `binanceLiquidity`, `heatmapLiquidity`, `proposal` và `exclusions` đều optional. Snapshot V1 thiếu các field này
-  vẫn đọc được và UI xếp thành `NO_DATA`; không migrate/rewrite paper/signal/settings hoặc backfill outcome. Store/profile tiếp tục git-ignore;
+  vẫn đọc được; API lọc row V1 thiếu liquidity khỏi view và báo số loại bằng `viewLiquidityExcluded`, row BTC cũ được dựng proposal lúc đọc.
+  Không migrate/rewrite paper/signal/settings hoặc backfill outcome. Store/profile tiếp tục git-ignore;
   file snapshot/auth thiếu hoặc lỗi không làm gián đoạn server hay luồng trading.

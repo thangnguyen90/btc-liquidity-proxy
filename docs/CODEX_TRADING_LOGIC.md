@@ -2306,4 +2306,5 @@ Before major edits:
 - Không thêm signal/label/tier/gate/card giao dịch hay whitelist checkbox. Mọi policy whitelist cũ giữ mặc định tắt và điều kiện CLOSED
   AvgROE `>4%`. Không ảnh hưởng Binance/entry/size/leverage/SL/TP, paper, scanner hoặc protection.
 - JSON V1 tương thích forward: field auth/liquidity/proposal/exclusions mới là optional; row cũ thiếu proposal hiển thị `NO_DATA`.
+  API loại row V1 không đạt liquidity khỏi view, báo `viewLiquidityExcluded` và dựng proposal đọc-time cho BTC cũ; không rewrite file.
   Không migrate/rewrite/backfill bất kỳ trade/signal/settings cũ; store/profile browser vẫn nằm trong thư mục git-ignore.

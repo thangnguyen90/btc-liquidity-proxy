@@ -412,7 +412,8 @@ export class CoinGlassWebTop20Manager {
       this.running ? readJson(this.progressFile, null) : Promise.resolve(null),
       readJson(this.authFile, null),
     ]);
-    const rows = (Array.isArray(saved?.rows) ? saved.rows : [])
+    const savedRows = Array.isArray(saved?.rows) ? saved.rows : [];
+    const rows = savedRows
       .map((row) => {
         const heatmapLiquidity = row?.heatmapLiquidity ?? assessCoinglassLiquidity(row?.heatmap, row);
         return {
@@ -438,7 +439,7 @@ export class CoinGlassWebTop20Manager {
       auth,
       progress,
       updatedAt: saved?.updatedAt ?? null,
-      source: saved?.source ?? null,
+      source: saved?.source ? { ...saved.source, viewLiquidityExcluded: Math.max(0, savedRows.length - rows.length) } : null,
       rows,
       failures: Array.isArray(saved?.failures) ? saved.failures : [],
       exclusions: saved?.exclusions ?? { binance: [], coinglass: [] },

@@ -121,6 +121,7 @@ assert.match(serverSource, /coinGlassWebTop20\.startRefresh\('manual'\)/);
 assert.match(serverSource, /coinGlassWebTop20\.startLogin\(\)/);
 const collectorSource = await readFile(new URL('../src/coinglassWebTop20.js', import.meta.url), 'utf8');
 assert.doesNotMatch(collectorSource, /placeFuturesOrder|LiquidFlowV2PaperManager|BinanceClient/);
+assert.match(collectorSource, /viewLiquidityExcluded/);
 const crawlSource = await readFile(new URL('./crawl-coinglass-web-top20.mjs', import.meta.url), 'utf8');
 assert.match(crawlSource, /launchPersistentContext/);
 assert.match(crawlSource, /assessCoinglassLiquidity/);
