@@ -3376,8 +3376,8 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
 
 ## 2026-08-17 - CoinGlass Model 3 scheduler 3 phút, 40 movers và Discord observe-only
 
-- Version collector/universe: `COINGLASS_WEB_SCHEDULED_MOVERS_PARALLEL_V6_20260817`; proposal:
-  `COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817`; notifier: `COINGLASS_WEB_DISCORD_V1_20260817`. Mode cố định `OBSERVE_ONLY`.
+- Version collector/universe: `COINGLASS_WEB_SCHEDULED_TRADE_PLAN_V7_20260817`; proposal:
+  `COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817`; notifier: `COINGLASS_WEB_DISCORD_TRADE_PLAN_V2_20260817`. Mode cố định `OBSERVE_ONLY`.
   Scheduler server chạy mặc định mỗi `180000ms`; overlap bị chặn bởi `running/loginRunning`. Collector dùng tối đa bốn page trong cùng
   persistent browser context (`COINGLASS_WEB_BROWSER_CONCURRENCY=4`) để hoàn tất cohort 40 coin trước tick kế tiếp; mỗi page chỉ xử lý
   tuần tự một symbol nên không trộn response/canvas. Nút refresh thủ công vẫn giữ nhưng không bắt buộc.
@@ -3387,11 +3387,15 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
   kể cả coin không đủ điều kiện Discord.
 - Điều kiện `qualified`: phải là altcoin có fresh status `OK`; Binance volume 24h `>= $50M`, trades `>=20K`, OI notional `>= $5M`,
   spread `<=15bps`; CoinGlass có `>=100` cells, `>=2` peak trong `±20%`, ít nhất một peak bền `>=3` bars; proposal phải là
-  `WAIT_LONG_CONFIRMATION` hoặc `WAIT_SHORT_CONFIRMATION`. BTC, stale/fetch-failed, liquidity yếu, cluster yếu và `WAIT_BALANCED/NO_DATA`
+  `WAIT_LONG_CONFIRMATION` hoặc `WAIT_SHORT_CONFIRMATION`. V7 còn yêu cầu observed trade plan đầy đủ: entry tham chiếu là giá snapshot,
+  TP1 là cụm thanh lý mục tiêu chính, TP2 là cụm kế tiếp xa hơn nếu có, SL/invalidation là cụm mạnh phía đối diện; TP và SL phải đúng phía
+  LONG/SHORT và reward:risk phải `>=1`. BTC, stale/fetch-failed, liquidity yếu, cluster yếu, plan thiếu/R:R thấp và `WAIT_BALANCED/NO_DATA`
   vẫn hiện card cùng reason nhưng `qualified=false` và không gửi Discord. Top-book chỉ audit, không phải hard gate.
 - Proposal chấm `strength × exp(-|distance|/8) × persistence boost`, cộng ba vùng mạnh nhất mỗi phía. Một phía cần mạnh `>=1.25x`
   và target cách giá `<=15%`; LONG vẫn phải đợi reclaim/retest, SHORT phải đợi sweep-reject/breakdown-retest. Đây không phải entry signal/gate thật.
-- Discord chỉ gửi row `qualified`, dedupe theo `symbol + action`, cooldown mặc định 30 phút, retry một lần khi 429 và throttle giữa message.
+- Discord chỉ gửi row `qualified` có plan hoàn chỉnh, dedupe V2 theo `symbol + action`, cooldown mặc định 30 phút, retry một lần khi 429 và throttle giữa message.
+  Embed LONG màu xanh, SHORT màu đỏ; hiển thị Entry sau xác nhận, TP1/TP2, SL, R:R, điều kiện kích hoạt/vô hiệu, cells, lực hai phía,
+  volume/OI/spread và mover rank. Các mức này là observed setup, không phải order instruction tự động.
   Webhook ưu tiên `COINGLASS_WEB_DISCORD_WEBHOOK_URL`, sau đó fallback webhook liquid/default đang cấu hình; API chỉ công khai boolean configured.
   Nếu auth file chưa có quyền altcoin hoặc crawler nhận login/permission error, scheduler gửi `AUTH_REQUIRED` kèm link đăng nhập, cooldown 60 phút.
 - Cách thống kê/UI: snapshot/card lưu mover side/rank, qualification reasons, target/risk zone, strength/persistence, volume/OI/top-book/spread;
@@ -3401,6 +3405,6 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
   `affectsLiquidFlowV2/signals/paper/Binance/entry/size/SlTp=false`; scheduler/notifier không gọi order client, paper manager hay protection.
 - Whitelist: không thêm label/card giao dịch nên không thêm checkbox/matcher. Policy hiện hữu vẫn mặc định tắt và chỉ hiện khi paper CLOSED
   AvgROE `>4%`; Discord CoinGlass không cấp quyền Binance.
-- Tương thích JSON cũ: field scheduler/notifications/qualification/mover/liquidity/proposal/browserConcurrency đều optional. Snapshot trước exact V6 chỉ giữ BTC
+- Tương thích JSON cũ: field scheduler/notifications/qualification/mover/liquidity/proposal/tradePlan/browserConcurrency đều optional. Snapshot trước exact V7 chỉ giữ BTC
   fail-closed; alt cũ không được gọi là mover. `notifications.json` mới lưu dedupe/cooldown và recent events trong store git-ignore.
   Không migrate/rewrite paper, signal, settings hoặc outcome cũ; lỗi collector/notifier không chặn server/trading.

@@ -10,8 +10,8 @@ import {
   coinglassWebDiscordDedupeKey,
 } from './coinglassWebDiscord.js';
 
-export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_SCHEDULED_MOVERS_PARALLEL_V6_20260817';
-export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817';
+export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_SCHEDULED_TRADE_PLAN_V7_20260817';
+export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817';
 export const COINGLASS_WEB_TOP20_MODE = 'OBSERVE_ONLY';
 export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
   observationOnly: true,
@@ -312,6 +312,82 @@ export function assessCoinglassLiquidity(heatmap = {}, market = {}, thresholds =
   };
 }
 
+export function buildCoinglassObservedTradePlan({
+  action,
+  referencePrice,
+  targetZone,
+  riskZone,
+  zones = [],
+} = {}) {
+  const side = action === 'WAIT_LONG_CONFIRMATION'
+    ? 'LONG'
+    : action === 'WAIT_SHORT_CONFIRMATION'
+      ? 'SHORT'
+      : null;
+  const entryPrice = finiteNumber(referencePrice);
+  const takeProfitPrice = finiteNumber(targetZone?.price);
+  const stopLossPrice = finiteNumber(riskZone?.price);
+  const correctDirection = side === 'LONG'
+    ? takeProfitPrice > entryPrice && stopLossPrice < entryPrice
+    : side === 'SHORT'
+      ? takeProfitPrice < entryPrice && stopLossPrice > entryPrice
+      : false;
+  const rewardPct = correctDirection ? (Math.abs(takeProfitPrice - entryPrice) / entryPrice) * 100 : null;
+  const riskPct = correctDirection ? (Math.abs(entryPrice - stopLossPrice) / entryPrice) * 100 : null;
+  const rewardRiskRatio = rewardPct > 0 && riskPct > 0 ? rewardPct / riskPct : null;
+  const extension = correctDirection
+    ? zones
+      .filter((zone) => {
+        const price = finiteNumber(zone?.price);
+        return side === 'LONG' ? price > takeProfitPrice : price < takeProfitPrice;
+      })
+      .sort((left, right) => (
+        side === 'LONG'
+          ? finiteNumber(left.price, Infinity) - finiteNumber(right.price, Infinity)
+          : finiteNumber(right.price, -Infinity) - finiteNumber(left.price, -Infinity)
+      ))[0] ?? null
+    : null;
+  const complete = Boolean(correctDirection && rewardRiskRatio >= 1);
+  return {
+    version: 'COINGLASS_OBSERVED_TRADE_PLAN_V1_20260817',
+    mode: COINGLASS_WEB_TOP20_MODE,
+    complete,
+    side,
+    entry: entryPrice > 0 ? {
+      type: 'CONFIRMATION_REFERENCE',
+      price: entryPrice,
+      instruction: side === 'LONG'
+        ? 'Chỉ kích hoạt sau reclaim/giữ hỗ trợ hoặc breakout-retest.'
+        : side === 'SHORT'
+          ? 'Chỉ kích hoạt sau sweep-reject hoặc breakdown-retest.'
+          : 'Chưa có hướng giao dịch.',
+    } : null,
+    takeProfit: correctDirection ? {
+      price: takeProfitPrice,
+      distancePct: Number(rewardPct.toFixed(2)),
+      source: 'PRIMARY_LIQUIDATION_TARGET',
+    } : null,
+    takeProfit2: extension ? {
+      price: finiteNumber(extension.price),
+      distancePct: Number((Math.abs(finiteNumber(extension.price) - entryPrice) / entryPrice * 100).toFixed(2)),
+      source: 'NEXT_LIQUIDATION_ZONE',
+    } : null,
+    stopLoss: correctDirection ? {
+      price: stopLossPrice,
+      distancePct: Number(riskPct.toFixed(2)),
+      source: 'OPPOSITE_LIQUIDATION_INVALIDATION',
+    } : null,
+    rewardPct: rewardPct == null ? null : Number(rewardPct.toFixed(2)),
+    riskPct: riskPct == null ? null : Number(riskPct.toFixed(2)),
+    rewardRiskRatio: rewardRiskRatio == null ? null : Number(rewardRiskRatio.toFixed(2)),
+    minimumRewardRiskRatio: 1,
+    reason: complete
+      ? 'Đủ Entry tham chiếu, TP, SL đúng phía và R:R >= 1.'
+      : 'Thiếu vùng TP/SL đúng phía hoặc R:R < 1; không gửi Discord.',
+    affectedTrading: false,
+  };
+}
+
 export function buildCoinglassZoneProposal(heatmap = {}, market = {}) {
   const referencePrice = finiteNumber(market?.lastPrice, finiteNumber(heatmap?.currentPrice));
   const rawZones = Array.isArray(heatmap?.zones) ? heatmap.zones : [];
@@ -355,30 +431,39 @@ export function buildCoinglassZoneProposal(heatmap = {}, market = {}) {
       label: 'CHƯA ĐỦ VÙNG THANH LÝ',
       targetZone: null,
       riskZone: null,
+      tradePlan: buildCoinglassObservedTradePlan({ action: 'NO_DATA', referencePrice }),
       rationale: 'Chưa có dữ liệu structured đủ gần giá để đưa ra thiên hướng.',
       confirmation: 'Đăng nhập collector và cào lại dữ liệu Model 3.',
       invalidation: null,
     };
   }
   if (above[0] && aboveScore >= belowScore * 1.25 && above[0].distancePct <= 15) {
+    const action = 'WAIT_LONG_CONFIRMATION';
+    const targetZone = above[0];
+    const riskZone = below[0] ?? null;
     return {
       ...common,
-      action: 'WAIT_LONG_CONFIRMATION',
+      action,
       label: 'ƯU TIÊN CANH LONG',
-      targetZone: above[0],
-      riskZone: below[0] ?? null,
+      targetZone,
+      riskZone,
+      tradePlan: buildCoinglassObservedTradePlan({ action, referencePrice, targetZone, riskZone, zones: scored }),
       rationale: `Lực hút thanh lý phía trên mạnh hơn ${Math.abs(dominancePct).toFixed(0)}% theo điểm cân bằng hai phía.`,
       confirmation: 'Chỉ xem xét LONG sau reclaim/giữ hỗ trợ hoặc breakout-retest; không đuổi market.',
       invalidation: below[0] ? `Mất cấu trúc hoặc đóng dưới vùng ${below[0].price}.` : 'Mất cấu trúc tăng gần nhất.',
     };
   }
   if (below[0] && belowScore >= aboveScore * 1.25 && Math.abs(below[0].distancePct) <= 15) {
+    const action = 'WAIT_SHORT_CONFIRMATION';
+    const targetZone = below[0];
+    const riskZone = above[0] ?? null;
     return {
       ...common,
-      action: 'WAIT_SHORT_CONFIRMATION',
+      action,
       label: 'ƯU TIÊN CANH SHORT',
-      targetZone: below[0],
-      riskZone: above[0] ?? null,
+      targetZone,
+      riskZone,
+      tradePlan: buildCoinglassObservedTradePlan({ action, referencePrice, targetZone, riskZone, zones: scored }),
       rationale: `Lực hút thanh lý phía dưới mạnh hơn ${Math.abs(dominancePct).toFixed(0)}% theo điểm cân bằng hai phía.`,
       confirmation: 'Chỉ xem xét SHORT sau sweep-reject hoặc breakdown-retest; không đuổi market.',
       invalidation: above[0] ? `Mất cấu trúc hoặc đóng trên vùng ${above[0].price}.` : 'Mất cấu trúc giảm gần nhất.',
@@ -391,6 +476,7 @@ export function buildCoinglassZoneProposal(heatmap = {}, market = {}) {
     label: 'CHỜ XÁC NHẬN — HAI PHÍA CÂN BẰNG',
     targetZone: strongest,
     riskZone: strongest?.side === 'ABOVE' ? below[0] ?? null : above[0] ?? null,
+    tradePlan: buildCoinglassObservedTradePlan({ action: 'WAIT_BALANCED', referencePrice }),
     rationale: 'Hai phía chưa chênh đủ 25%, không có lợi thế định hướng rõ.',
     confirmation: 'Chờ giá sweep một vùng rồi reclaim/reject trước khi đánh giá lại.',
     invalidation: 'Không áp dụng vì đây chỉ là quan sát, chưa phải setup vào lệnh.',
@@ -408,6 +494,7 @@ export function qualifyCoinglassOpportunity(row = {}) {
   if (!['WAIT_LONG_CONFIRMATION', 'WAIT_SHORT_CONFIRMATION'].includes(row.proposal?.action)) {
     reasons.push('NO_DIRECTIONAL_EDGE');
   }
+  if (!row.proposal?.tradePlan?.complete) reasons.push('INCOMPLETE_TRADE_PLAN');
   return {
     qualified: reasons.length === 0,
     reasons,
@@ -519,7 +606,9 @@ export class CoinGlassWebTop20Manager {
         return {
           ...row,
           heatmapLiquidity,
-          proposal: row?.proposal ?? buildCoinglassZoneProposal(row?.heatmap, row),
+          proposal: row?.proposal?.version === COINGLASS_WEB_ZONE_PROPOSAL_VERSION
+            ? row.proposal
+            : buildCoinglassZoneProposal(row?.heatmap, row),
         };
       })
       .map((row) => ({ ...row, qualification: row?.qualification ?? qualifyCoinglassOpportunity(row) }))

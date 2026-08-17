@@ -1,4 +1,4 @@
-export const COINGLASS_WEB_DISCORD_VERSION = 'COINGLASS_WEB_DISCORD_V1_20260817';
+export const COINGLASS_WEB_DISCORD_VERSION = 'COINGLASS_WEB_DISCORD_TRADE_PLAN_V2_20260817';
 
 function number(value, digits = 2) {
   const parsed = Number(value);
@@ -22,7 +22,7 @@ function sideTitle(row = {}) {
 export function coinglassWebDiscordDedupeKey(row = {}) {
   const symbol = String(row.symbol ?? '').toUpperCase();
   const action = String(row.proposal?.action ?? 'NO_DATA');
-  return symbol && row.qualified ? `${symbol}:${action}` : '';
+  return symbol && row.qualified ? `V2:${symbol}:${action}` : '';
 }
 
 export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now()) {
@@ -30,23 +30,72 @@ export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now
   const isLong = proposal.action === 'WAIT_LONG_CONFIRMATION';
   const target = proposal.targetZone;
   const risk = proposal.riskZone;
+  const plan = proposal.tradePlan ?? {};
+  const entry = plan.entry;
+  const takeProfit = plan.takeProfit;
+  const takeProfit2 = plan.takeProfit2;
+  const stopLoss = plan.stopLoss;
+  const direction = isLong ? 'LONG' : 'SHORT';
+  const directionIcon = isLong ? '🟢' : '🔴';
   return {
-    username: 'CoinGlass Movers Observer',
+    username: 'CoinGlass Qualified Setups',
     embeds: [{
-      title: `${row.symbol} · ${sideTitle(row)} · ${isLong ? 'CANH LONG' : 'CANH SHORT'}`,
+      title: `${directionIcon} ${direction} · ${row.symbol} · ${sideTitle(row)}`,
       description: [
+        `**ĐỦ ĐIỀU KIỆN COINGLASS · ${direction} SETUP**`,
         proposal.rationale,
-        `**Xác nhận bắt buộc:** ${proposal.confirmation}`,
-        '**OBSERVE ONLY — chưa phải lệnh Binance.**',
+        '**OBSERVE ONLY — các mức dưới đây chỉ có hiệu lực sau xác nhận, bot không tự vào Binance.**',
       ].filter(Boolean).join('\n'),
-      color: isLong ? 0x35f3b0 : 0xff6e87,
+      color: isLong ? 0x22c55e : 0xef4444,
       fields: [
-        { name: 'Giá tham chiếu', value: number(proposal.referencePrice ?? row.lastPrice, 8), inline: true },
-        { name: 'Vùng hút', value: target ? `${number(target.price, 8)} (${number(target.distancePct)}%)` : '—', inline: true },
-        { name: 'Vùng rủi ro', value: risk ? `${number(risk.price, 8)} (${number(risk.distancePct)}%)` : '—', inline: true },
-        { name: 'Lực trên / dưới', value: `${number(proposal.aboveScore)} / ${number(proposal.belowScore)}`, inline: true },
-        { name: 'Volume / OI', value: `${compactUsd(row.quoteVolume24h)} / ${compactUsd(row.binanceLiquidity?.openInterestNotional)}`, inline: true },
-        { name: 'CoinGlass cells', value: number(row.heatmap?.liquidationCellCount, 0), inline: true },
+        {
+          name: '📍 ENTRY THAM CHIẾU',
+          value: entry
+            ? `**${number(entry.price, 8)}**\n${entry.instruction}`
+            : '—',
+          inline: false,
+        },
+        {
+          name: '🎯 TAKE PROFIT',
+          value: takeProfit
+            ? `TP1 **${number(takeProfit.price, 8)}** · ${number(takeProfit.distancePct)}%${takeProfit2 ? `\nTP2 **${number(takeProfit2.price, 8)}** · ${number(takeProfit2.distancePct)}%` : ''}`
+            : target ? number(target.price, 8) : '—',
+          inline: true,
+        },
+        {
+          name: '🛡️ STOP LOSS / INVALIDATION',
+          value: stopLoss
+            ? `SL **${number(stopLoss.price, 8)}** · ${number(stopLoss.distancePct)}%`
+            : risk ? number(risk.price, 8) : '—',
+          inline: true,
+        },
+        {
+          name: '⚖️ RISK : REWARD',
+          value: plan.complete
+            ? `**1 : ${number(plan.rewardRiskRatio)}**\nRisk ${number(plan.riskPct)}% · Reward ${number(plan.rewardPct)}%`
+            : 'Không đầy đủ — không nên được gửi',
+          inline: true,
+        },
+        {
+          name: '✅ XÁC NHẬN BẮT BUỘC',
+          value: `${proposal.confirmation || '—'}\n**Vô hiệu:** ${proposal.invalidation || '—'}`,
+          inline: false,
+        },
+        {
+          name: '🧲 COINGLASS',
+          value: `Cells **${number(row.heatmap?.liquidationCellCount, 0)}**\nLực trên/dưới **${number(proposal.aboveScore)} / ${number(proposal.belowScore)}**`,
+          inline: true,
+        },
+        {
+          name: '📊 BINANCE LIQUIDITY',
+          value: `Vol **${compactUsd(row.quoteVolume24h)}**\nOI **${compactUsd(row.binanceLiquidity?.openInterestNotional)}**\nSpread **${number(row.binanceLiquidity?.spreadBps)} bps**`,
+          inline: true,
+        },
+        {
+          name: '🏷️ PHÂN LOẠI',
+          value: `${sideTitle(row)}\n24h **${number(row.priceChangePercent24h)}%**`,
+          inline: true,
+        },
       ],
       timestamp: new Date(generatedAt).toISOString(),
       footer: { text: COINGLASS_WEB_DISCORD_VERSION },

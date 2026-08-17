@@ -108,6 +108,7 @@ function qualificationReason(reason) {
     BINANCE_LIQUIDITY_NOT_ELIGIBLE: 'Không đạt volume/OI/spread Binance',
     COINGLASS_CLUSTERS_NOT_ELIGIBLE: 'Cụm thanh lý CoinGlass chưa đủ',
     NO_DIRECTIONAL_EDGE: 'Hai phía chưa có lợi thế định hướng',
+    INCOMPLETE_TRADE_PLAN: 'Thiếu Entry/TP/SL đúng phía hoặc R:R dưới 1',
   })[reason] || reason;
 }
 
@@ -178,11 +179,12 @@ function card(row) {
   proposalTop.append(label, mode);
   const proposalValues = document.createElement('div');
   proposalValues.className = 'proposal-values';
+  const plan = proposal.tradePlan || {};
   proposalValues.append(
-    valueBlock('Giá tham chiếu', number(proposal.referencePrice ?? row.lastPrice, 8)),
-    valueBlock('Vùng hút mục tiêu', proposal.targetZone ? `${number(proposal.targetZone.price, 8)} (${percent(proposal.targetZone.distancePct)})` : '—', 'target'),
-    valueBlock('Vùng rủi ro đối diện', proposal.riskZone ? `${number(proposal.riskZone.price, 8)} (${percent(proposal.riskZone.distancePct)})` : '—', 'risk'),
-    valueBlock('Lệch trên / dưới', `${number(proposal.aboveScore)} / ${number(proposal.belowScore)}`),
+    valueBlock('Entry sau xác nhận', number(plan.entry?.price ?? proposal.referencePrice ?? row.lastPrice, 8)),
+    valueBlock('TP1 / TP2', plan.takeProfit ? `${number(plan.takeProfit.price, 8)}${plan.takeProfit2 ? ` / ${number(plan.takeProfit2.price, 8)}` : ''}` : '—', 'target'),
+    valueBlock('SL / vô hiệu', plan.stopLoss ? `${number(plan.stopLoss.price, 8)} (${number(plan.riskPct)}%)` : '—', 'risk'),
+    valueBlock('R:R / lực trên-dưới', `${plan.rewardRiskRatio ? `1:${number(plan.rewardRiskRatio)} · ` : ''}${number(proposal.aboveScore)} / ${number(proposal.belowScore)}`),
   );
   const rationale = document.createElement('p');
   rationale.className = 'rationale';

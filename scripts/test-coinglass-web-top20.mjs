@@ -6,6 +6,7 @@ import {
   applyBinanceLiquidityFilter,
   assessCoinglassLiquidity,
   buildCoinglassZoneProposal,
+  buildCoinglassObservedTradePlan,
   COINGLASS_WEB_TOP20_ISOLATION,
   COINGLASS_WEB_TOP20_MODE,
   CoinGlassWebTop20Manager,
@@ -125,6 +126,11 @@ assert.equal(assessCoinglassLiquidity({ liquidationCellCount: 0, zones: [] }, { 
 const longProposal = buildCoinglassZoneProposal(richHeatmap, { symbol: 'GOODUSDT', lastPrice: 100 });
 assert.equal(longProposal.action, 'WAIT_LONG_CONFIRMATION');
 assert.equal(longProposal.targetZone.price, 105);
+assert.equal(longProposal.tradePlan.complete, true);
+assert.equal(longProposal.tradePlan.entry.price, 100);
+assert.equal(longProposal.tradePlan.takeProfit.price, 105);
+assert.equal(longProposal.tradePlan.stopLoss.price, 95);
+assert.equal(longProposal.tradePlan.rewardRiskRatio, 1);
 const shortProposal = buildCoinglassZoneProposal({
   zones: [
     { price: 95, strength: 100, persistenceBars: 10 },
@@ -141,6 +147,12 @@ const balancedProposal = buildCoinglassZoneProposal({
 }, { symbol: 'GOODUSDT', lastPrice: 100 });
 assert.equal(balancedProposal.action, 'WAIT_BALANCED');
 assert.equal(buildCoinglassZoneProposal({}, {}).action, 'NO_DATA');
+assert.equal(buildCoinglassObservedTradePlan({
+  action: 'WAIT_LONG_CONFIRMATION',
+  referencePrice: 100,
+  targetZone: { price: 104 },
+  riskZone: { price: 90 },
+}).complete, false);
 const qualifiedRow = {
   symbol: 'GOODUSDT',
   moverSide: 'UP',
@@ -155,8 +167,21 @@ const qualifiedRow = {
 assert.equal(qualifyCoinglassOpportunity(qualifiedRow).qualified, true);
 assert.equal(qualifyCoinglassOpportunity({ ...qualifiedRow, stale: true }).qualified, false);
 assert.equal(qualifyCoinglassOpportunity({ ...qualifiedRow, proposal: balancedProposal }).qualified, false);
-assert.equal(coinglassWebDiscordDedupeKey({ ...qualifiedRow, qualified: true }), 'GOODUSDT:WAIT_LONG_CONFIRMATION');
-assert.match(buildCoinglassWebDiscordPayload({ ...qualifiedRow, qualified: true }).embeds[0].title, /TOP TĂNG #1/);
+assert.equal(coinglassWebDiscordDedupeKey({ ...qualifiedRow, qualified: true }), 'V2:GOODUSDT:WAIT_LONG_CONFIRMATION');
+const qualifiedDiscordPayload = buildCoinglassWebDiscordPayload({ ...qualifiedRow, qualified: true });
+assert.equal(qualifiedDiscordPayload.embeds[0].color, 0x22c55e);
+assert.match(qualifiedDiscordPayload.embeds[0].title, /LONG.*TOP TĂNG #1/);
+assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('ENTRY')).value, /100/);
+assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('TAKE PROFIT')).value, /105/);
+assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('STOP LOSS')).value, /95/);
+const shortDiscordPayload = buildCoinglassWebDiscordPayload({
+  ...qualifiedRow,
+  moverSide: 'DOWN',
+  proposal: shortProposal,
+  qualified: true,
+});
+assert.equal(shortDiscordPayload.embeds[0].color, 0xef4444);
+assert.match(shortDiscordPayload.embeds[0].title, /SHORT.*TOP GIẢM #1/);
 assert.match(buildCoinglassWebAuthAlertPayload({ pageUrl: 'http://localhost/test' }).embeds[0].description, /Đăng nhập cho collector/);
 
 const legacyDataDir = await mkdtemp(join(tmpdir(), 'coinglass-movers-v3-'));
