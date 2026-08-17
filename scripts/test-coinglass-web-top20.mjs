@@ -228,6 +228,8 @@ assert.doesNotMatch(collectorSource, /placeFuturesOrder|LiquidFlowV2PaperManager
 assert.match(collectorSource, /viewLiquidityExcluded/);
 const crawlSource = await readFile(new URL('./crawl-coinglass-web-top20.mjs', import.meta.url), 'utf8');
 assert.match(crawlSource, /launchPersistentContext/);
+assert.match(crawlSource, /COINGLASS_WEB_BROWSER_CONCURRENCY/);
+assert.match(crawlSource, /Promise\.all\(pages\.map/);
 assert.match(crawlSource, /assessCoinglassLiquidity/);
 assert.match(crawlSource, /qualifyCoinglassOpportunity/);
 

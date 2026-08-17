@@ -239,40 +239,73 @@ try {
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
-  const page = context.pages()[0] ?? await context.newPage();
-
   const rows = [];
   const failures = [];
   let authRequired = false;
-  for (const [index, market] of markets.entries()) {
-    await writeJsonAtomic(progressFile, {
+  const browserConcurrency = Math.max(1, Math.min(
+    4,
+    markets.length,
+    Math.trunc(Number(process.env.COINGLASS_WEB_BROWSER_CONCURRENCY) || 4),
+  ));
+  const pages = [context.pages()[0] ?? await context.newPage()];
+  while (pages.length < browserConcurrency) pages.push(await context.newPage());
+
+  let nextMarketIndex = 0;
+  let progressWrite = Promise.resolve();
+  const activeSymbols = new Set();
+  const updateProgress = () => {
+    const payload = {
       version: COINGLASS_WEB_TOP20_VERSION,
       running: true,
       startedAt,
       total: markets.length,
       completed: rows.length + failures.length,
-      currentSymbol: market.symbol,
+      currentSymbol: [...activeSymbols][0] ?? null,
+      currentSymbols: [...activeSymbols],
       successful: rows.length,
       failed: failures.length,
-    });
-    try {
-      rows.push(await crawlSymbol(page, market, { imageDir, range, initial: index === 0 }));
-    } catch (error) {
-      const errorMessage = String(error?.message ?? error);
-      failures.push({
-        rank: market.rank,
-        symbol: market.symbol,
-        error: errorMessage,
-        failedAt: new Date().toISOString(),
-      });
-      if (/login|log in|unlock full data|permission|response code 40000/i.test(errorMessage)) {
-        authRequired = true;
-        break;
+      browserConcurrency,
+    };
+    progressWrite = progressWrite
+      .catch(() => {})
+      .then(() => writeJsonAtomic(progressFile, payload));
+    return progressWrite;
+  };
+
+  async function crawlWorker(page) {
+    let initial = true;
+    while (!authRequired) {
+      const index = nextMarketIndex;
+      nextMarketIndex += 1;
+      if (index >= markets.length) return;
+      const market = markets[index];
+      activeSymbols.add(market.symbol);
+      await updateProgress();
+      try {
+        rows.push(await crawlSymbol(page, market, { imageDir, range, initial }));
+      } catch (error) {
+        const errorMessage = String(error?.message ?? error);
+        failures.push({
+          rank: market.rank,
+          symbol: market.symbol,
+          error: errorMessage,
+          failedAt: new Date().toISOString(),
+        });
+        if (/login|log in|unlock full data|permission|response code 40000/i.test(errorMessage)) {
+          authRequired = true;
+        }
+      } finally {
+        initial = false;
+        activeSymbols.delete(market.symbol);
+        await updateProgress();
       }
+      if (authRequired) return;
+      const delayMs = index === 0 ? 3_000 : 750;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
     }
-    const delayMs = index === 0 ? 8_000 : 2_000;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
   }
+  await Promise.all(pages.map((page) => crawlWorker(page)));
+  await progressWrite;
 
   const previousSnapshot = await readJson(snapshotFile, null);
   const mergedRows = mergeLastGoodHeatmapRows({
@@ -315,6 +348,7 @@ try {
       heatmap: 'https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3',
       exchange: 'Binance',
       range,
+      browserConcurrency,
       requested: markets.length,
       moverCandidates: moverCandidates.length,
       binanceLiquidityAssessed: markets.length,
@@ -345,6 +379,7 @@ try {
     completed: markets.length,
     successful: rows.length,
     failed: failures.length,
+    browserConcurrency,
   });
   process.stdout.write(JSON.stringify({ ok: true, updatedAt: snapshot.updatedAt, rows: rows.length, failures: failures.length }));
 } catch (error) {

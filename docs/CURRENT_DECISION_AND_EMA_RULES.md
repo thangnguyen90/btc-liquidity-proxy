@@ -3376,9 +3376,11 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
 
 ## 2026-08-17 - CoinGlass Model 3 scheduler 3 phút, 40 movers và Discord observe-only
 
-- Version collector/universe: `COINGLASS_WEB_SCHEDULED_MOVERS_V5_20260817`; proposal:
+- Version collector/universe: `COINGLASS_WEB_SCHEDULED_MOVERS_PARALLEL_V6_20260817`; proposal:
   `COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817`; notifier: `COINGLASS_WEB_DISCORD_V1_20260817`. Mode cố định `OBSERVE_ONLY`.
-  Scheduler server chạy mặc định mỗi `180000ms`; overlap bị chặn bởi `running/loginRunning`. Nút refresh thủ công vẫn giữ nhưng không bắt buộc.
+  Scheduler server chạy mặc định mỗi `180000ms`; overlap bị chặn bởi `running/loginRunning`. Collector dùng tối đa bốn page trong cùng
+  persistent browser context (`COINGLASS_WEB_BROWSER_CONCURRENCY=4`) để hoàn tất cohort 40 coin trước tick kế tiếp; mỗi page chỉ xử lý
+  tuần tự một symbol nên không trộn response/canvas. Nút refresh thủ công vẫn giữ nhưng không bắt buộc.
 - Dữ liệu dùng trước phân loại: Binance Futures public `exchangeInfo`, ticker 24h, bulk best bid/ask và OI hiện tại; CoinGlass exact
   Model 3 48h `instrumentId/prices/y/liq/range/updateTime`. BTC là `REFERENCE`; tối đa 39 alt được lấy từ exact selector Liquid Flow V2,
   xen kẽ `UP change24h DESC` và `DOWN change24h ASC`, volume chỉ tie-break. Toàn bộ cohort khoảng 40 coin được crawl và hiển thị,
@@ -3399,6 +3401,6 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
   `affectsLiquidFlowV2/signals/paper/Binance/entry/size/SlTp=false`; scheduler/notifier không gọi order client, paper manager hay protection.
 - Whitelist: không thêm label/card giao dịch nên không thêm checkbox/matcher. Policy hiện hữu vẫn mặc định tắt và chỉ hiện khi paper CLOSED
   AvgROE `>4%`; Discord CoinGlass không cấp quyền Binance.
-- Tương thích JSON cũ: field scheduler/notifications/qualification/mover/liquidity/proposal đều optional. Snapshot trước exact V5 chỉ giữ BTC
+- Tương thích JSON cũ: field scheduler/notifications/qualification/mover/liquidity/proposal/browserConcurrency đều optional. Snapshot trước exact V6 chỉ giữ BTC
   fail-closed; alt cũ không được gọi là mover. `notifications.json` mới lưu dedupe/cooldown và recent events trong store git-ignore.
   Không migrate/rewrite paper, signal, settings hoặc outcome cũ; lỗi collector/notifier không chặn server/trading.
