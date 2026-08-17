@@ -10,7 +10,7 @@ import {
   coinglassWebDiscordDedupeKey,
 } from './coinglassWebDiscord.js';
 
-export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_SCHEDULED_60_MOVERS_V8_20260817';
+export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_SCHEDULED_40_MOVERS_V9_20260817';
 export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817';
 export const COINGLASS_WEB_TOP20_MODE = 'OBSERVE_ONLY';
 export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
@@ -77,7 +77,7 @@ export function selectTopBinanceUsdtPerpetuals(exchangeInfo = {}, tickers = [], 
 
 export function selectBinanceAppMoverCandidates(exchangeInfo = {}, tickers = [], {
   topPerSide = 20,
-  maxSymbols = 60,
+  maxSymbols = 40,
   minQuoteVolume = 2_000_000,
 } = {}) {
   const allMarkets = selectTopBinanceUsdtPerpetuals(exchangeInfo, tickers, 1_000);
@@ -89,7 +89,7 @@ export function selectBinanceAppMoverCandidates(exchangeInfo = {}, tickers = [],
     quoteVolume: row.quoteVolume24h,
   })), {
     topPerSide: Math.max(1, Math.trunc(finiteNumber(topPerSide, 20))),
-    maxSymbols: Math.max(2, Math.trunc(finiteNumber(maxSymbols, 60))),
+    maxSymbols: Math.max(2, Math.trunc(finiteNumber(maxSymbols, 40))),
     minQuoteVolume: Math.max(0, finiteNumber(minQuoteVolume, 2_000_000)),
   });
   const up = movers.filter((row) => row.moverSide === 'UP');
@@ -108,7 +108,7 @@ export function selectBinanceAppMoverCandidates(exchangeInfo = {}, tickers = [],
 }
 
 export function applyBinanceLiquidityFilter(markets = [], metricsBySymbol = {}, limit = 20, thresholds = {}) {
-  const required = Math.max(1, Math.min(60, Math.trunc(finiteNumber(limit, 20))));
+  const required = Math.max(1, Math.min(50, Math.trunc(finiteNumber(limit, 20))));
   const minimums = {
     quoteVolume24h: Math.max(0, finiteNumber(thresholds.quoteVolume24h, 50_000_000)),
     tradeCount24h: Math.max(0, finiteNumber(thresholds.tradeCount24h, 20_000)),
@@ -564,12 +564,12 @@ export class CoinGlassWebTop20Manager {
     const configuredLimit = finiteNumber(
       process.env.COINGLASS_WEB_SCAN_LIMIT
       ?? process.env.COINGLASS_WEB_TOP20_LIMIT
-      ?? 60,
-      60,
+      ?? 40,
+      40,
     );
     return {
       enabled: process.env.COINGLASS_WEB_TOP20_ENABLED !== 'false',
-      limit: Math.max(1, Math.min(60, configuredLimit)),
+      limit: Math.max(1, Math.min(40, configuredLimit)),
       range: '48h',
       browserMode: process.env.COINGLASS_WEB_BROWSER_MODE ?? 'headed',
       timeoutMs: Math.max(120_000, Number(process.env.COINGLASS_WEB_TOP20_TIMEOUT_MS ?? 12 * 60_000)),

@@ -3374,16 +3374,17 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
 - Tương thích JSON cũ: không migrate/rewrite store. Các trade cũ có đủ `binanceEntryFilledAt` vẫn được đọc; record thiếu fill hoặc PnL Income
   được giữ ngoài cohort/đánh dấu missing, không ghép gần đúng và không thay bằng paper result.
 
-## 2026-08-17 - CoinGlass Model 3 scheduler 3 phút, 60 movers và Discord observe-only
+## 2026-08-17 - CoinGlass Model 3 scheduler tối đa 3 phút, 40 movers và Discord observe-only
 
-- Version collector/universe: `COINGLASS_WEB_SCHEDULED_60_MOVERS_V8_20260817`; proposal:
+- Version collector/universe: `COINGLASS_WEB_SCHEDULED_40_MOVERS_V9_20260817`; proposal:
   `COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817`; notifier: `COINGLASS_WEB_DISCORD_LINKS_V3_20260817`. Mode cố định `OBSERVE_ONLY`.
-  Scheduler server chạy mặc định mỗi `180000ms`; overlap bị chặn bởi `running/loginRunning`. Collector dùng tối đa tám page trong cùng
-  persistent browser context (`COINGLASS_WEB_BROWSER_CONCURRENCY=8`) để cân bằng tốc độ và timeout cho cohort 60 coin; mỗi page chỉ xử lý
+  Scheduler server chạy mặc định mỗi `180000ms`; overlap bị chặn bởi `running/loginRunning`. Collector dùng bốn page trong cùng
+  persistent browser context (`COINGLASS_WEB_BROWSER_CONCURRENCY=4`) cho cohort tối đa 40 coin; live audit hoàn tất `40/40` trong `2m50s`.
+  Mỗi page chỉ xử lý
   tuần tự một symbol nên không trộn response/canvas. Nút refresh thủ công vẫn giữ nhưng không bắt buộc.
 - Dữ liệu dùng trước phân loại: Binance Futures public `exchangeInfo`, ticker 24h, bulk best bid/ask và OI hiện tại; CoinGlass exact
   Model 3 48h `instrumentId/prices/y/liq/range/updateTime`. BTC là `REFERENCE`; tối đa 39 alt được lấy từ exact selector Liquid Flow V2,
-  xen kẽ `UP change24h DESC` và `DOWN change24h ASC`, volume chỉ tie-break. Toàn bộ cohort khoảng 60 coin được crawl và hiển thị,
+  xen kẽ `UP change24h DESC` và `DOWN change24h ASC`, volume chỉ tie-break. Toàn bộ cohort tối đa 40 coin được crawl và hiển thị,
   kể cả coin không đủ điều kiện Discord.
 - Điều kiện `qualified`: phải là altcoin có fresh status `OK`; Binance volume 24h `>= $50M`, trades `>=20K`, OI notional `>= $5M`,
   spread `<=15bps`; CoinGlass có `>=100` cells, `>=2` peak trong `±20%`, ít nhất một peak bền `>=3` bars; proposal phải là
@@ -3407,6 +3408,6 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
   `affectsLiquidFlowV2/signals/paper/Binance/entry/size/SlTp=false`; scheduler/notifier không gọi order client, paper manager hay protection.
 - Whitelist: không thêm label/card giao dịch nên không thêm checkbox/matcher. Policy hiện hữu vẫn mặc định tắt và chỉ hiện khi paper CLOSED
   AvgROE `>4%`; Discord CoinGlass không cấp quyền Binance.
-- Tương thích JSON cũ: field scheduler/notifications/qualification/mover/liquidity/proposal/tradePlan/browserConcurrency đều optional. Snapshot trước exact V8 chỉ giữ BTC
+- Tương thích JSON cũ: field scheduler/notifications/qualification/mover/liquidity/proposal/tradePlan/browserConcurrency đều optional. Snapshot trước exact V9 chỉ giữ BTC
   fail-closed; alt cũ không được gọi là mover. `notifications.json` mới lưu dedupe/cooldown và recent events trong store git-ignore.
   Không migrate/rewrite paper, signal, settings hoặc outcome cũ; lỗi collector/notifier không chặn server/trading.

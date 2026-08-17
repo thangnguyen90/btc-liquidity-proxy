@@ -234,7 +234,7 @@ function render(data) {
       : data.error
         ? `Lần đọc gần nhất lỗi: ${data.error}`
         : rows.length
-          ? `Đã quét ${rows.length}/${data.config?.limit || 60} coin · ${qualified.length} coin đủ điều kiện Discord · structured ${structured}`
+          ? `Đã quét ${rows.length}/${data.config?.limit || 40} coin · ${qualified.length} coin đủ điều kiện Discord · structured ${structured}`
           : 'Chưa có dữ liệu vùng thanh lý hợp lệ.';
   elements.updated.textContent = data.updatedAt
     ? `Snapshot ${time(data.updatedAt)} · CoinGlass ${data.source?.range || '48h'} · BTC + thị trường đạt chuẩn liquidity`
@@ -258,7 +258,7 @@ function render(data) {
   }
 
   elements.summary.replaceChildren(
-    metric('Đã quét / mục tiêu', `${rows.length} / ${data.config?.limit || 60}`),
+    metric('Đã quét / mục tiêu', `${rows.length} / ${data.config?.limit || 40}`),
     metric('Đủ điều kiện Discord', `${qualified.length}`),
     metric('Top tăng / giảm', `${upCount} / ${downCount}`),
     metric('Canh long / short', `${longCount} / ${shortCount}`),

@@ -2326,16 +2326,15 @@ Before major edits:
   scanner hay protection. Snapshot trước V4 chỉ giữ BTC reference; altcoin fail-closed khỏi view cho đến snapshot exact V4,
   tránh gọi nhầm top-volume legacy là mover. Không migrate hoặc rewrite JSON cũ.
 
-### 2026-08-17 - Tự quét 60 CoinGlass movers mỗi 3 phút và gửi Discord
+### 2026-08-17 - Chốt tối đa 40 CoinGlass movers để giữ vòng quét dưới 3 phút
 
-- Nâng collector lên `COINGLASS_WEB_SCHEDULED_60_MOVERS_V8_20260817`, proposal `COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817`
-  và notifier `COINGLASS_WEB_DISCORD_LINKS_V3_20260817`; mode `OBSERVE_ONLY` giữ nguyên. Scheduler mặc định `180000ms`, scan limit 60,
+- Chốt collector `COINGLASS_WEB_SCHEDULED_40_MOVERS_V9_20260817`, proposal `COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817`
+  và notifier `COINGLASS_WEB_DISCORD_LINKS_V3_20260817`; mode `OBSERVE_ONLY` giữ nguyên. Scheduler mặc định `180000ms`, scan limit 40,
   không chạy chồng khi lượt trước/login còn active.
 - Mỗi lượt dùng snapshot Binance + CoinGlass causal hiện tại, crawl BTC và khoảng 39 top tăng/giảm xen kẽ. Khác V4, toàn bộ cohort được publish
-  lên màn hình; row lỗi/stale/không đạt vẫn có card và reason, không bị ẩn. Audit lượt V5 tuần tự cho thấy cohort lớn có thể vượt ba phút;
-  Audit live đầu tiên với sáu page mất `4m28s` vì năm symbol timeout React `30s`, khiến tick ba phút bị skip. Thử mười page làm CoinGlass/UI
-  quá tải: sau `50s` chỉ đạt `16/60` và đã có sáu timeout. V8 chốt tám page trong cùng persistent profile cho 60 coin; mỗi page vẫn tuần tự riêng,
-  delay `750ms`, progress ghi cả `currentSymbols/browserConcurrency`
+  lên màn hình; row lỗi/stale/không đạt vẫn có card và reason, không bị ẩn. Audit 60 coin cho thấy sáu page mất `4m28s`/năm timeout,
+  tám page mất khoảng `4m21s`/bảy timeout, còn mười page làm CoinGlass/UI quá tải. Theo ưu tiên mới của người dùng, V9 rollback về 40 coin
+  và bốn page đã đo `40/40`, `0` lỗi trong `2m50s`; mỗi page vẫn tuần tự riêng, delay `750ms`, progress ghi cả `currentSymbols/browserConcurrency`
   và vẫn dùng một browser/login. Overlap scheduler tiếp tục fail-safe skip, không khởi chạy collector thứ hai.
 - `qualified` chỉ true khi fresh `OK`, pass volume/trades/OI/spread, pass cell/peak/persistence, proposal directional LONG/SHORT và có plan đầy đủ.
   Entry là giá snapshot nhưng bắt buộc chờ reclaim/retest hoặc sweep-reject/breakdown-retest; TP1 lấy target zone, TP2 lấy zone xa hơn nếu có,
@@ -2346,5 +2345,5 @@ Before major edits:
   kèm link trang login, cooldown 60 phút. Notification state/dedupe lưu optional ở `data/coinglass-web-top20/notifications.json`.
 - Không thêm label/tier/gate/card giao dịch/whitelist checkbox; thống kê chỉ scanned/qualified/top up-down/long-short cùng thời lượng/concurrency audit.
   Không ảnh hưởng Binance, entry, size, leverage, SL/TP, paper, scanner hoặc protection. Entry/TP/SL ở Discord chỉ là mức quan sát causal;
-  không gọi order/protection API. Field V8/tradePlan đều optional; JSON trước V8 chỉ giữ BTC
+  không gọi order/protection API. Field V9/tradePlan đều optional; JSON trước V9 chỉ giữ BTC
   fail-closed, không migrate/rewrite paper/signal/settings/outcome.
