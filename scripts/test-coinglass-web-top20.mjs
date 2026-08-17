@@ -259,6 +259,7 @@ const crawlSource = await readFile(new URL('./crawl-coinglass-web-top20.mjs', im
 assert.match(crawlSource, /launchPersistentContext/);
 assert.match(crawlSource, /COINGLASS_WEB_BROWSER_CONCURRENCY/);
 assert.match(crawlSource, /Promise\.all\(pages\.map/);
+assert.match(crawlSource, /Math\.min\(60/);
 assert.match(crawlSource, /assessCoinglassLiquidity/);
 assert.match(crawlSource, /qualifyCoinglassOpportunity/);
 

@@ -2326,14 +2326,14 @@ Before major edits:
   scanner hay protection. Snapshot trước V4 chỉ giữ BTC reference; altcoin fail-closed khỏi view cho đến snapshot exact V4,
   tránh gọi nhầm top-volume legacy là mover. Không migrate hoặc rewrite JSON cũ.
 
-### 2026-08-17 - Tự quét 40 CoinGlass movers mỗi 3 phút và gửi Discord
+### 2026-08-17 - Tự quét 60 CoinGlass movers mỗi 3 phút và gửi Discord
 
-- Nâng collector lên `COINGLASS_WEB_SCHEDULED_TRADE_PLAN_V7_20260817`, proposal `COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817`
-  và notifier `COINGLASS_WEB_DISCORD_LINKS_V3_20260817`; mode `OBSERVE_ONLY` giữ nguyên. Scheduler mặc định `180000ms`, scan limit 40,
+- Nâng collector lên `COINGLASS_WEB_SCHEDULED_60_MOVERS_V8_20260817`, proposal `COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817`
+  và notifier `COINGLASS_WEB_DISCORD_LINKS_V3_20260817`; mode `OBSERVE_ONLY` giữ nguyên. Scheduler mặc định `180000ms`, scan limit 60,
   không chạy chồng khi lượt trước/login còn active.
 - Mỗi lượt dùng snapshot Binance + CoinGlass causal hiện tại, crawl BTC và khoảng 39 top tăng/giảm xen kẽ. Khác V4, toàn bộ cohort được publish
-  lên màn hình; row lỗi/stale/không đạt vẫn có card và reason, không bị ẩn. Audit lượt V5 tuần tự cho thấy 40 coin có thể vượt ba phút;
-  V6 dùng bốn page trong cùng persistent profile, mỗi page tuần tự riêng, delay `750ms`, progress ghi cả `currentSymbols/browserConcurrency`
+  lên màn hình; row lỗi/stale/không đạt vẫn có card và reason, không bị ẩn. Audit lượt V5 tuần tự cho thấy cohort lớn có thể vượt ba phút;
+  V8 dùng sáu page trong cùng persistent profile cho 60 coin, mỗi page tuần tự riêng, delay `750ms`, progress ghi cả `currentSymbols/browserConcurrency`
   và vẫn dùng một browser/login. Overlap scheduler tiếp tục fail-safe skip, không khởi chạy collector thứ hai.
 - `qualified` chỉ true khi fresh `OK`, pass volume/trades/OI/spread, pass cell/peak/persistence, proposal directional LONG/SHORT và có plan đầy đủ.
   Entry là giá snapshot nhưng bắt buộc chờ reclaim/retest hoặc sweep-reject/breakdown-retest; TP1 lấy target zone, TP2 lấy zone xa hơn nếu có,
@@ -2344,5 +2344,5 @@ Before major edits:
   kèm link trang login, cooldown 60 phút. Notification state/dedupe lưu optional ở `data/coinglass-web-top20/notifications.json`.
 - Không thêm label/tier/gate/card giao dịch/whitelist checkbox; thống kê chỉ scanned/qualified/top up-down/long-short cùng thời lượng/concurrency audit.
   Không ảnh hưởng Binance, entry, size, leverage, SL/TP, paper, scanner hoặc protection. Entry/TP/SL ở Discord chỉ là mức quan sát causal;
-  không gọi order/protection API. Field V7/tradePlan đều optional; JSON trước V7 chỉ giữ BTC
+  không gọi order/protection API. Field V8/tradePlan đều optional; JSON trước V8 chỉ giữ BTC
   fail-closed, không migrate/rewrite paper/signal/settings/outcome.

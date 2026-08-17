@@ -174,7 +174,7 @@ async function crawlSymbol(page, market, { imageDir, range, initial = false }) {
 }
 
 const rootDir = process.cwd();
-const limit = Math.max(1, Math.min(40, Number(argument('--limit', '40')) || 40));
+const limit = Math.max(1, Math.min(60, Number(argument('--limit', '60')) || 60));
 const range = '48h';
 const reason = argument('--reason', 'manual');
 const dataDir = resolve(argument('--data-dir', join(rootDir, 'data', 'coinglass-web-top20')));
@@ -243,9 +243,9 @@ try {
   const failures = [];
   let authRequired = false;
   const browserConcurrency = Math.max(1, Math.min(
-    4,
+    6,
     markets.length,
-    Math.trunc(Number(process.env.COINGLASS_WEB_BROWSER_CONCURRENCY) || 4),
+    Math.trunc(Number(process.env.COINGLASS_WEB_BROWSER_CONCURRENCY) || 6),
   ));
   const pages = [context.pages()[0] ?? await context.newPage()];
   while (pages.length < browserConcurrency) pages.push(await context.newPage());

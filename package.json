@@ -19,7 +19,7 @@
     "shakeout-learn": "python3 scripts/shakeout_self_learning.py --paper-file data/shakeout-paper-trades.json --pretty",
     "recommended-learn": "python3 scripts/recommended_signal_learning.py --paper-file data/recommended-paper-trades.json --pretty",
     "archive:pump-paper": "node --max-old-space-size=12288 scripts/archive-pump-paper-store.mjs 100000",
-    "crawl:coinglass-web-top20": "node scripts/crawl-coinglass-web-top20.mjs --limit 40 --range 48h",
+    "crawl:coinglass-web-top20": "node scripts/crawl-coinglass-web-top20.mjs --limit 60 --range 48h",
     "login:coinglass-web": "node scripts/open-coinglass-web-login.mjs",
     "setup:coinglass-web-browser": "playwright install chromium",
     "test:coinglass-web-top20": "node scripts/test-coinglass-web-top20.mjs",
