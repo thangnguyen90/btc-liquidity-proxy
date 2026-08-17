@@ -1,6 +1,8 @@
 node_modules/
+.playwright-libs/
 .env
 *.log
+data/coinglass-web-top20/
 data/liquid-flow-v2-paper.json
 data/liquid-flow-v2-paper.json.tmp-*
 # Runtime append-only stores and interrupted atomic-write files are local data,

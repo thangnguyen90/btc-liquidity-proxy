@@ -19,6 +19,9 @@
     "shakeout-learn": "python3 scripts/shakeout_self_learning.py --paper-file data/shakeout-paper-trades.json --pretty",
     "recommended-learn": "python3 scripts/recommended_signal_learning.py --paper-file data/recommended-paper-trades.json --pretty",
     "archive:pump-paper": "node --max-old-space-size=12288 scripts/archive-pump-paper-store.mjs 100000",
+    "crawl:coinglass-web-top20": "node scripts/crawl-coinglass-web-top20.mjs --limit 20 --range 48h",
+    "setup:coinglass-web-browser": "playwright install chromium",
+    "test:coinglass-web-top20": "node scripts/test-coinglass-web-top20.mjs",
     "test:br-like-rule": "node scripts/test-br-like-eval-rule.mjs",
     "analyze:pump": "node --max-old-space-size=2048 scripts/analyze-pump-performance.js",
     "analyze:pump-candle": "node --max-old-space-size=2048 scripts/analyze-pump-candle-context.mjs",
@@ -93,6 +96,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "playwright": "1.57.0",
     "ws": "^8.20.1"
   }
 }

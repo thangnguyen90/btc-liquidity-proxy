@@ -1,6 +1,6 @@
 # Logic hiện tại: Decision Paper, Recommended Paper và EMA Paper
 
-> Cập nhật: 2026-08-16 (Asia/Bangkok, UTC+7)
+> Cập nhật: 2026-08-17 (Asia/Bangkok, UTC+7)
 >
 > Đây là tài liệu đọc nhanh về **logic đang chạy hiện tại**. Khi tài liệu cũ mâu thuẫn với file này, kiểm tra lại code tại `src/intradayDecisionPaper.js`, `src/recommendedSignals.js` và `src/server.js`; code vẫn là nguồn chuẩn cuối cùng.
 
@@ -3373,3 +3373,26 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
   Không thêm label/card/whitelist mới; các checkbox hiện hữu vẫn mặc định tắt và chỉ hiện khi paper CLOSED AvgROE riêng nhãn `>4%`.
 - Tương thích JSON cũ: không migrate/rewrite store. Các trade cũ có đủ `binanceEntryFilledAt` vẫn được đọc; record thiếu fill hoặc PnL Income
   được giữ ngoài cohort/đánh dấu missing, không ghép gần đúng và không thay bằng paper result.
+
+## 2026-08-17 - CoinGlass Model 3 Top 20 web lab độc lập
+
+- Version: `COINGLASS_WEB_MODEL3_TOP20_V1_20260817`; mode cố định `OBSERVE_ONLY`. Collector chạy trong child process Playwright riêng,
+  chỉ khi người dùng bấm refresh ở `/coinglass-web-top20`; không chạy theo scheduler và không được truyền snapshot vào Liquid Flow V2/scanner.
+- Dữ liệu dùng trước mỗi snapshot: `exchangeInfo` + `ticker/24hr` public của Binance Futures để lọc contract `TRADING/PERPETUAL/USDT`
+  và xếp hạng top 20 theo `quoteVolume`; sau đó mở trang CoinGlass Model 3 theo từng base asset, lấy state đã được chính trang giải mã để vẽ
+  canvas 48h (`prices`, `y`, `liq`, range/updateTime). Đây là dữ liệu quan sát lúc crawl, không phải dữ liệu causal cấp quyền entry.
+- Điều kiện phân loại: không tạo signal/label/tier/gate. Mỗi coin chỉ có trạng thái kỹ thuật `OK` hoặc failure; các hàng `liq[x,y,intensity]`
+  được cộng theo mức giá, chọn local peak cách nhau tối thiểu ba price bins và chuẩn hóa strength so với peak mạnh nhất của riêng coin.
+- Cách thống kê: snapshot lưu rank/volume 24h, ảnh heatmap, số candle/price-level/liquidation-cell và tối đa 12 vùng mạnh; trang chỉ hiển thị
+  count thành công/thất bại và vùng trên/dưới current close. Không đưa các con số này vào paper W/L, WR, PF, AvgROE, NET hoặc whitelist stats.
+  Initial top-20 được chụp từ in-app browser thật: BTC mang `SCREEN_ONLY`; 19 altcoin hiện bị CoinGlass che canvas bằng
+  `Log in to unlock full data` nên mang `LOGIN_REQUIRED`. Cả hai loại để cell/zone null/rỗng; chỉ lượt collector nào giải mã được đúng exact
+  `instrumentId` mới được ghi cell/zone `OK`. Heading đổi symbol không được coi là heatmap thành công nếu màn hình còn login overlay.
+  Nếu CoinGlass anti-bot chặn lượt mới, snapshot giữ ảnh last-good theo exact symbol và gắn `STALE_LAST_GOOD` + lỗi gần nhất, không giả là fresh.
+- Ảnh hưởng Binance/entry/size/SL/TP: **không**. Isolation contract đặt `affectsLiquidFlowV2/signals/paper/Binance/entry/size/SlTp=false`;
+  API chỉ GET snapshot/image và POST chạy collector, không gọi order client, paper manager hoặc protection lifecycle.
+- Whitelist: không thêm nhãn/card thống kê giao dịch nên không thêm checkbox/matcher. Policy card giao dịch hiện hữu vẫn mặc định tắt và chỉ hiện khi
+  paper CLOSED AvgROE `>4%`; dữ liệu CoinGlass web không thể mở khóa whitelist.
+- Tương thích JSON cũ: snapshot nằm ở store mới `data/coinglass-web-top20/` đã git-ignore. Không có file cũ thì API trả `rows=[]`; schema paper,
+  signal và settings hiện hữu không đổi, không migrate/rewrite/backfill. File snapshot mới lỗi/thiếu không làm gián đoạn server hoặc luồng giao dịch.
+  Host mới cần chạy `npm run setup:coinglass-web-browser`; runtime hiện tại đã có Chromium và thư viện Linux local đã git-ignore.

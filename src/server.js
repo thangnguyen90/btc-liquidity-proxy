@@ -207,6 +207,7 @@ import { sharedLastTicker } from './sharedLastTicker.js';
 import { getEtfProxy } from './etfProxy.js';
 import { fetchMarketNews, loadMarketNews, marketNewsConfig, saveMarketNews } from './marketNews.js';
 import { coinFlowConfig, fetchCoinFlowBoard, loadCoinFlow, saveCoinFlow } from './coinFlow.js';
+import { CoinGlassWebTop20Manager } from './coinglassWebTop20.js';
 import { fetchTokenUnlocksBoard, getUnlockSummaryForSymbol, loadTokenUnlocks, saveTokenUnlocks, tokenUnlocksConfig } from './tokenUnlocks.js';
 import { applyRecommendedDefaultSlLiveClose, getRecommendedPaper, getRecommendedPaperActiveSymbols, getRecommendedSignals, paperSupportEntryStats, processRecommendedPaperSocketPrice, processRecommendedSourceOpenEvent, recommendedLiveCardKeysOfTrade } from './recommendedSignals.js';
 import { buildRecommendedSupportEntryStatRows, decorateRecommendedSupportEntrySnapshots } from './recommendedSupportEntry.js';
@@ -461,6 +462,7 @@ loadEnv();
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const publicDir = join(rootDir, 'public');
 const execFileAsync = promisify(execFile);
+const coinGlassWebTop20 = new CoinGlassWebTop20Manager({ rootDir });
 // Python learning is analysis-only and can be expensive on large paper stores.
 // Keep every sidecar opt-in so a missing environment variable can never start
 // training jobs or block a paper page request.
@@ -10921,6 +10923,41 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/coin-flow/refresh' && request.method === 'POST') {
       await sendJson(response, await refreshCoinFlow('manual'));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coinglass-web-top20' && request.method === 'GET') {
+      await sendJson(response, await coinGlassWebTop20.snapshot());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coinglass-web-top20/refresh' && request.method === 'POST') {
+      const result = await coinGlassWebTop20.startRefresh('manual');
+      await sendJson(response, result, result.accepted ? 202 : 200);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coinglass-web-top20/image' && request.method === 'GET') {
+      const imageFile = coinGlassWebTop20.imageFile(requestUrl.searchParams.get('symbol'));
+      if (!imageFile) {
+        await sendJson(response, { error: 'Invalid Binance USDT symbol.' }, 400);
+        return;
+      }
+      const imageStat = await stat(imageFile).catch(() => null);
+      if (!imageStat?.isFile()) {
+        await sendJson(response, { error: 'CoinGlass image is not available yet.' }, 404);
+        return;
+      }
+      const imageMagic = await readFile(imageFile).then((buffer) => buffer.subarray(0, 8)).catch(() => null);
+      const imageContentType = imageMagic?.[0] === 0xff && imageMagic?.[1] === 0xd8
+        ? 'image/jpeg'
+        : 'image/png';
+      response.writeHead(200, {
+        'content-type': imageContentType,
+        'content-length': imageStat.size,
+        'cache-control': 'no-store',
+      });
+      createReadStream(imageFile).pipe(response);
       return;
     }
 
@@ -35562,6 +35599,8 @@ async function sendStatic(pathname, response) {
                   ? '/liquid-flow-v2.html'
                 : pathname === '/liquid-flow-v2-binance-stats'
                   ? '/liquid-flow-v2-binance-stats.html'
+                : pathname === '/coinglass-web-top20'
+                  ? '/coinglass-web-top20.html'
               : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);
@@ -35632,6 +35671,7 @@ function contentTypeFor(filePath) {
     '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
+    '.png': 'image/png',
   };
 
   return types[extname(filePath)] ?? 'application/octet-stream';

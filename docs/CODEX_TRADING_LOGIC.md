@@ -2,7 +2,7 @@
 
 > **Đọc trước:** [CURRENT_DECISION_AND_EMA_RULES.md](CURRENT_DECISION_AND_EMA_RULES.md) là bản tóm tắt logic Decision/Recommended/EMA đang chạy, cập nhật ngày 2026-07-20. File hiện tại giữ lịch sử và bối cảnh chi tiết; nếu nội dung cũ mâu thuẫn, ưu tiên bản current và kiểm tra code.
 
-Last updated: 2026-08-16
+Last updated: 2026-08-17
 
 Use this file as the first read before changing or evaluating trading logic. It summarizes the current intent, naming, pages, paper stores, and rule decisions from prior work so Codex does not need to rediscover everything from `src/server.js` and old chat history.
 
@@ -2271,3 +2271,20 @@ Before major edits:
   OPEN PnL lấy position Binance đúng symbol/side. Paper outcome/PnL chỉ để so sánh, không fallback vào thống kê thật; missing được đếm riêng.
 - Nguyên nhân đóng hiển thị TAKE_PROFIT/STOP_LOSS/TIME_EXIT/OTHER_CLOSE/OPEN và chênh signal entry so với fill Binance để truy lỗi entry.
   Không đổi dữ liệu trước entry, classifier, gate, entry/size/leverage/SL/TP, không thêm label/card/whitelist. JSON cũ không migrate/rewrite.
+
+### 2026-08-17 - Thử cào CoinGlass Model 3 cho top 20 Binance volume
+
+- Thêm web lab `COINGLASS_WEB_MODEL3_TOP20_V1_20260817` tại `/coinglass-web-top20`, cố định `OBSERVE_ONLY`; child process Playwright chỉ chạy
+  thủ công, tách khỏi scheduler/scanner hiện hành. Universe lấy public Binance Futures `exchangeInfo` + ticker 24h, giữ contract USDT perpetual
+  đang trading và xếp top 20 theo quote volume trước khi mở CoinGlass Model 3 48h từng coin.
+- State causal của trang CoinGlass gồm `prices/y/liq/range/updateTime`; collector tổng hợp intensity theo price bin, chọn peak cách nhau ít nhất ba bin,
+  lưu tối đa 12 vùng cùng ảnh canvas và chỉ đếm success/failure/cell trên trang riêng. Không tạo label/tier/gate, không tham gia paper W/L/WR/PF/AvgROE/NET.
+  Seed top-20 từ in-app browser cho thấy BTC ở `SCREEN_ONLY`, còn 19 altcoin bị overlay `Log in to unlock full data` nên gắn
+  `LOGIN_REQUIRED`; ảnh giữ làm bằng chứng nhưng cell/zone để null/rỗng. Chỉ exact state `instrumentId` được collector giải mã thành công mới
+  mang `OK` và có zone summary; không coi heading đổi coin là thành công và không suy diễn zone bằng OCR từ ảnh.
+  Lượt web bị anti-bot chặn sẽ giữ exact-symbol image cuối cùng dưới trạng thái `STALE_LAST_GOOD` và công khai lỗi/fresh count, không ghi đè ảnh tốt bằng canvas lỗi.
+- Không thêm card/checkbox whitelist. Matcher giao dịch và policy mặc định OFF + chỉ hiện khi CLOSED AvgROE `>4%` giữ nguyên; snapshot này không thể
+  cấp quyền order. Contract isolation xác nhận không ảnh hưởng Binance/entry/size/SL/TP, không gọi paper manager/order/protection.
+- Store mới `data/coinglass-web-top20/` được git-ignore; JSON cũ không có store sẽ đọc thành danh sách rỗng. Không migrate/rewrite paper/signal/settings,
+  và lỗi crawler không chặn server hay bất kỳ luồng trading hiện tại.
+  Host mới cài browser bundle bằng `npm run setup:coinglass-web-browser`; browser binaries/runtime local không commit vào Git.

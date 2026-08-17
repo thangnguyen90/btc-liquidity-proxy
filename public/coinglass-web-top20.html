@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CoinGlass Web · Top 20 Binance Volume</title>
+  <link rel="stylesheet" href="/coinglass-web-top20.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">WEB COLLECTOR LAB · MODEL 3</p>
+        <h1>CoinGlass Heatmap · Top 20 Binance</h1>
+        <p class="subtitle">Xếp hạng theo volume futures USDT 24h của Binance, sau đó chụp heatmap Model 3 và tóm tắt vùng thanh khoản mạnh.</p>
+      </div>
+      <nav>
+        <a href="/liquid-flow-v2">Liquid Flow V2</a>
+        <a href="https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3" target="_blank" rel="noreferrer">Mở CoinGlass</a>
+      </nav>
+    </header>
+
+    <section class="isolation" aria-label="Phạm vi sử dụng">
+      <span>OBSERVE ONLY</span>
+      <strong>Trang độc lập</strong>
+      <p>Không nối scanner, paper, Binance, entry, size, SL hoặc TP. Dữ liệu chỉ được cập nhật khi bấm “Cào lại top 20”.</p>
+    </section>
+
+    <section class="toolbar">
+      <div>
+        <p id="statusText" class="status">Đang đọc snapshot…</p>
+        <p id="updatedText" class="muted"></p>
+      </div>
+      <button id="refreshButton" type="button">Cào lại top 20</button>
+    </section>
+
+    <section id="progressPanel" class="progress-panel" hidden>
+      <div class="progress-copy">
+        <strong id="progressSymbol">Đang khởi tạo trình duyệt…</strong>
+        <span id="progressCount">0 / 20</span>
+      </div>
+      <div class="progress-track"><i id="progressBar"></i></div>
+    </section>
+
+    <section id="summary" class="summary"></section>
+    <section id="failures" class="failures" hidden></section>
+    <section id="grid" class="grid" aria-live="polite"></section>
+  </main>
+  <script type="module" src="/coinglass-web-top20.js"></script>
+</body>
+</html>
