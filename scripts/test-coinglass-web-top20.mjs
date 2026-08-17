@@ -20,6 +20,7 @@ import {
 import {
   buildCoinglassWebAuthAlertPayload,
   buildCoinglassWebDiscordPayload,
+  buildCoinglassWebExternalLinks,
   coinglassWebDiscordDedupeKey,
 } from '../src/coinglassWebDiscord.js';
 
@@ -167,13 +168,16 @@ const qualifiedRow = {
 assert.equal(qualifyCoinglassOpportunity(qualifiedRow).qualified, true);
 assert.equal(qualifyCoinglassOpportunity({ ...qualifiedRow, stale: true }).qualified, false);
 assert.equal(qualifyCoinglassOpportunity({ ...qualifiedRow, proposal: balancedProposal }).qualified, false);
-assert.equal(coinglassWebDiscordDedupeKey({ ...qualifiedRow, qualified: true }), 'V2:GOODUSDT:WAIT_LONG_CONFIRMATION');
+assert.equal(coinglassWebDiscordDedupeKey({ ...qualifiedRow, qualified: true }), 'V3:GOODUSDT:WAIT_LONG_CONFIRMATION');
 const qualifiedDiscordPayload = buildCoinglassWebDiscordPayload({ ...qualifiedRow, qualified: true });
 assert.equal(qualifiedDiscordPayload.embeds[0].color, 0x22c55e);
 assert.match(qualifiedDiscordPayload.embeds[0].title, /LONG.*TOP TĂNG #1/);
 assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('ENTRY')).value, /100/);
 assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('TAKE PROFIT')).value, /105/);
 assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('STOP LOSS')).value, /95/);
+assert.equal(qualifiedDiscordPayload.embeds[0].url, 'https://www.binance.com/en/futures/GOODUSDT');
+assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('MỞ BIỂU ĐỒ')).value, /coinglass\.com.*coin=GOOD.*binance\.com\/en\/futures\/GOODUSDT/);
+assert.deepEqual(buildCoinglassWebExternalLinks({ symbol: '../../etc', baseAsset: 'BAD' }), { binance: null, coinglass: null });
 const shortDiscordPayload = buildCoinglassWebDiscordPayload({
   ...qualifiedRow,
   moverSide: 'DOWN',

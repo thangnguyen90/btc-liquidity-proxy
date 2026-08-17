@@ -2329,7 +2329,7 @@ Before major edits:
 ### 2026-08-17 - Tự quét 40 CoinGlass movers mỗi 3 phút và gửi Discord
 
 - Nâng collector lên `COINGLASS_WEB_SCHEDULED_TRADE_PLAN_V7_20260817`, proposal `COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817`
-  và notifier `COINGLASS_WEB_DISCORD_TRADE_PLAN_V2_20260817`; mode `OBSERVE_ONLY` giữ nguyên. Scheduler mặc định `180000ms`, scan limit 40,
+  và notifier `COINGLASS_WEB_DISCORD_LINKS_V3_20260817`; mode `OBSERVE_ONLY` giữ nguyên. Scheduler mặc định `180000ms`, scan limit 40,
   không chạy chồng khi lượt trước/login còn active.
 - Mỗi lượt dùng snapshot Binance + CoinGlass causal hiện tại, crawl BTC và khoảng 39 top tăng/giảm xen kẽ. Khác V4, toàn bộ cohort được publish
   lên màn hình; row lỗi/stale/không đạt vẫn có card và reason, không bị ẩn. Audit lượt V5 tuần tự cho thấy 40 coin có thể vượt ba phút;
@@ -2338,7 +2338,8 @@ Before major edits:
 - `qualified` chỉ true khi fresh `OK`, pass volume/trades/OI/spread, pass cell/peak/persistence, proposal directional LONG/SHORT và có plan đầy đủ.
   Entry là giá snapshot nhưng bắt buộc chờ reclaim/retest hoặc sweep-reject/breakdown-retest; TP1 lấy target zone, TP2 lấy zone xa hơn nếu có,
   SL lấy opposite invalidation zone. Chỉ gửi khi TP/SL đúng phía và R:R `>=1`. Discord V2 dùng embed xanh LONG/đỏ SHORT, hiển thị đầy đủ
-  Entry/TP/SL/R:R/xác nhận/vô hiệu/liquidity; dedupe `V2:symbol:action` 30 phút, throttle/retry 429; balance/no-data/plan thiếu không gửi.
+  Entry/TP/SL/R:R/xác nhận/vô hiệu/liquidity. Discord V3 thêm link exact-symbol tới CoinGlass Model 3 và Binance Futures, title mở Binance;
+  URL chỉ dựng sau allowlist symbol/base. Dedupe `V3:symbol:action` 30 phút, throttle/retry 429; balance/no-data/plan thiếu không gửi.
 - Nếu persistent profile chưa login/không có quyền altcoin hoặc crawl trả login/permission error, gửi cảnh báo Discord `AUTH_REQUIRED`
   kèm link trang login, cooldown 60 phút. Notification state/dedupe lưu optional ở `data/coinglass-web-top20/notifications.json`.
 - Không thêm label/tier/gate/card giao dịch/whitelist checkbox; thống kê chỉ scanned/qualified/top up-down/long-short cùng thời lượng/concurrency audit.

@@ -1,4 +1,4 @@
-export const COINGLASS_WEB_DISCORD_VERSION = 'COINGLASS_WEB_DISCORD_TRADE_PLAN_V2_20260817';
+export const COINGLASS_WEB_DISCORD_VERSION = 'COINGLASS_WEB_DISCORD_LINKS_V3_20260817';
 
 function number(value, digits = 2) {
   const parsed = Number(value);
@@ -22,7 +22,18 @@ function sideTitle(row = {}) {
 export function coinglassWebDiscordDedupeKey(row = {}) {
   const symbol = String(row.symbol ?? '').toUpperCase();
   const action = String(row.proposal?.action ?? 'NO_DATA');
-  return symbol && row.qualified ? `V2:${symbol}:${action}` : '';
+  return symbol && row.qualified ? `V3:${symbol}:${action}` : '';
+}
+
+export function buildCoinglassWebExternalLinks(row = {}) {
+  const symbol = String(row.symbol ?? '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,24}USDT$/.test(symbol)) return { binance: null, coinglass: null };
+  const baseAsset = String(row.baseAsset ?? symbol.replace(/USDT$/, '')).trim().toUpperCase();
+  if (!/^[A-Z0-9]{1,20}$/.test(baseAsset)) return { binance: null, coinglass: null };
+  return {
+    binance: `https://www.binance.com/en/futures/${encodeURIComponent(symbol)}`,
+    coinglass: `https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3?coin=${encodeURIComponent(baseAsset)}&type=pair`,
+  };
 }
 
 export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now()) {
@@ -37,10 +48,12 @@ export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now
   const stopLoss = plan.stopLoss;
   const direction = isLong ? 'LONG' : 'SHORT';
   const directionIcon = isLong ? '🟢' : '🔴';
+  const links = buildCoinglassWebExternalLinks(row);
   return {
     username: 'CoinGlass Qualified Setups',
     embeds: [{
       title: `${directionIcon} ${direction} · ${row.symbol} · ${sideTitle(row)}`,
+      url: links.binance ?? undefined,
       description: [
         `**ĐỦ ĐIỀU KIỆN COINGLASS · ${direction} SETUP**`,
         proposal.rationale,
@@ -95,6 +108,14 @@ export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now
           name: '🏷️ PHÂN LOẠI',
           value: `${sideTitle(row)}\n24h **${number(row.priceChangePercent24h)}%**`,
           inline: true,
+        },
+        {
+          name: '🔗 MỞ BIỂU ĐỒ',
+          value: [
+            links.coinglass ? `[🔥 CoinGlass Model 3](${links.coinglass})` : null,
+            links.binance ? `[📈 Binance Futures](${links.binance})` : null,
+          ].filter(Boolean).join('  ·  ') || '—',
+          inline: false,
         },
       ],
       timestamp: new Date(generatedAt).toISOString(),
