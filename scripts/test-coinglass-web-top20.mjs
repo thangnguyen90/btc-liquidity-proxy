@@ -261,6 +261,8 @@ assert.match(crawlSource, /COINGLASS_WEB_BROWSER_CONCURRENCY/);
 assert.match(crawlSource, /Promise\.all\(pages\.map/);
 assert.match(crawlSource, /Math\.min\(40/);
 assert.match(crawlSource, /Math\.min\(\s*4,/);
+assert.match(crawlSource, /SCAN_BUDGET_EXHAUSTED/);
+assert.match(crawlSource, /scanBudgetMs/);
 assert.match(crawlSource, /assessCoinglassLiquidity/);
 assert.match(crawlSource, /qualifyCoinglassOpportunity/);
 

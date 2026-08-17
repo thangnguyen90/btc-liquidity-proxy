@@ -10,7 +10,7 @@ import {
   coinglassWebDiscordDedupeKey,
 } from './coinglassWebDiscord.js';
 
-export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_SCHEDULED_40_MOVERS_V9_20260817';
+export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_HARD_3M_BUDGET_V10_20260817';
 export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817';
 export const COINGLASS_WEB_TOP20_MODE = 'OBSERVE_ONLY';
 export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
@@ -576,6 +576,7 @@ export class CoinGlassWebTop20Manager {
       loginTimeoutMs: Math.max(120_000, Number(process.env.COINGLASS_WEB_LOGIN_TIMEOUT_MS ?? 10 * 60_000)),
       schedulerEnabled: process.env.COINGLASS_WEB_SCHEDULER_ENABLED !== 'false',
       schedulerIntervalMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_SCAN_INTERVAL_MS, 180_000)),
+      scanBudgetMs: Math.max(60_000, Math.min(150_000, finiteNumber(process.env.COINGLASS_WEB_SCAN_BUDGET_MS, 150_000))),
       discordConfigured: Boolean(this.discordWebhookUrl()),
       discordSignalCooldownMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_DISCORD_SIGNAL_COOLDOWN_MS, 30 * 60_000)),
       discordAuthCooldownMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_DISCORD_AUTH_COOLDOWN_MS, 60 * 60_000)),

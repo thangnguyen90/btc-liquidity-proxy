@@ -36,6 +36,20 @@ async function readJson(path, fallback = null) {
   }
 }
 
+async function withinDeadline(promise, remainingMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('SCAN_BUDGET_EXHAUSTED')), Math.max(1, remainingMs));
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchJson(url, timeoutMs = 20_000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -105,7 +119,7 @@ async function extractReactHeatmap(page, expectedInstrumentId) {
     }
     return null;
   };
-  await page.waitForFunction(readState, expectedInstrumentId, { timeout: 30_000, polling: 500 });
+  await page.waitForFunction(readState, expectedInstrumentId, { timeout: 12_000, polling: 500 });
   return page.evaluate(readState, expectedInstrumentId);
 }
 
@@ -183,6 +197,11 @@ const snapshotFile = join(dataDir, 'snapshot.json');
 const progressFile = join(dataDir, 'progress.json');
 const profileDir = join(dataDir, 'browser-profile');
 const startedAt = new Date().toISOString();
+const scanBudgetMs = Math.max(60_000, Math.min(
+  150_000,
+  Number(process.env.COINGLASS_WEB_SCAN_BUDGET_MS) || 150_000,
+));
+const scanDeadlineAt = Date.parse(startedAt) + scanBudgetMs;
 const binanceBase = String(process.env.BINANCE_FUTURES_BASE_URL ?? 'https://fapi.binance.com').replace(/\/$/, '');
 
 await mkdir(imageDir, { recursive: true });
@@ -253,6 +272,7 @@ try {
   let nextMarketIndex = 0;
   let progressWrite = Promise.resolve();
   const activeSymbols = new Set();
+  const attemptedSymbols = new Set();
   const updateProgress = () => {
     const payload = {
       version: COINGLASS_WEB_TOP20_VERSION,
@@ -265,6 +285,8 @@ try {
       successful: rows.length,
       failed: failures.length,
       browserConcurrency,
+      scanBudgetMs,
+      scanDeadlineAt: new Date(scanDeadlineAt).toISOString(),
     };
     progressWrite = progressWrite
       .catch(() => {})
@@ -275,14 +297,19 @@ try {
   async function crawlWorker(page) {
     let initial = true;
     while (!authRequired) {
+      if (Date.now() >= scanDeadlineAt) return;
       const index = nextMarketIndex;
       nextMarketIndex += 1;
       if (index >= markets.length) return;
       const market = markets[index];
+      attemptedSymbols.add(market.symbol);
       activeSymbols.add(market.symbol);
       await updateProgress();
       try {
-        rows.push(await crawlSymbol(page, market, { imageDir, range, initial }));
+        rows.push(await withinDeadline(
+          crawlSymbol(page, market, { imageDir, range, initial }),
+          scanDeadlineAt - Date.now(),
+        ));
       } catch (error) {
         const errorMessage = String(error?.message ?? error);
         failures.push({
@@ -306,6 +333,15 @@ try {
   }
   await Promise.all(pages.map((page) => crawlWorker(page)));
   await progressWrite;
+  const unattemptedMarkets = markets.filter((market) => !attemptedSymbols.has(market.symbol));
+  for (const market of unattemptedMarkets) {
+    failures.push({
+      rank: market.rank,
+      symbol: market.symbol,
+      error: 'SCAN_BUDGET_EXHAUSTED',
+      failedAt: new Date().toISOString(),
+    });
+  }
 
   const previousSnapshot = await readJson(snapshotFile, null);
   const mergedRows = mergeLastGoodHeatmapRows({
@@ -349,6 +385,9 @@ try {
       exchange: 'Binance',
       range,
       browserConcurrency,
+      scanBudgetMs,
+      deadlineExceeded: Date.now() >= scanDeadlineAt,
+      unattempted: unattemptedMarkets.length,
       requested: markets.length,
       moverCandidates: moverCandidates.length,
       binanceLiquidityAssessed: markets.length,
@@ -380,6 +419,7 @@ try {
     successful: rows.length,
     failed: failures.length,
     browserConcurrency,
+    scanBudgetMs,
   });
   process.stdout.write(JSON.stringify({ ok: true, updatedAt: snapshot.updatedAt, rows: rows.length, failures: failures.length }));
 } catch (error) {
