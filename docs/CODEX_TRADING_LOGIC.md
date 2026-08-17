@@ -2333,7 +2333,8 @@ Before major edits:
   không chạy chồng khi lượt trước/login còn active.
 - Mỗi lượt dùng snapshot Binance + CoinGlass causal hiện tại, crawl BTC và khoảng 39 top tăng/giảm xen kẽ. Khác V4, toàn bộ cohort được publish
   lên màn hình; row lỗi/stale/không đạt vẫn có card và reason, không bị ẩn. Audit lượt V5 tuần tự cho thấy cohort lớn có thể vượt ba phút;
-  V8 dùng sáu page trong cùng persistent profile cho 60 coin, mỗi page tuần tự riêng, delay `750ms`, progress ghi cả `currentSymbols/browserConcurrency`
+  Audit live đầu tiên với sáu page mất `4m28s` vì năm symbol timeout React `30s`, khiến tick ba phút bị skip. V8 được tune lên mười page
+  trong cùng persistent profile cho 60 coin; mỗi page vẫn tuần tự riêng, delay `750ms`, progress ghi cả `currentSymbols/browserConcurrency`
   và vẫn dùng một browser/login. Overlap scheduler tiếp tục fail-safe skip, không khởi chạy collector thứ hai.
 - `qualified` chỉ true khi fresh `OK`, pass volume/trades/OI/spread, pass cell/peak/persistence, proposal directional LONG/SHORT và có plan đầy đủ.
   Entry là giá snapshot nhưng bắt buộc chờ reclaim/retest hoặc sweep-reject/breakdown-retest; TP1 lấy target zone, TP2 lấy zone xa hơn nếu có,

@@ -3378,8 +3378,8 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
 
 - Version collector/universe: `COINGLASS_WEB_SCHEDULED_60_MOVERS_V8_20260817`; proposal:
   `COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817`; notifier: `COINGLASS_WEB_DISCORD_LINKS_V3_20260817`. Mode cố định `OBSERVE_ONLY`.
-  Scheduler server chạy mặc định mỗi `180000ms`; overlap bị chặn bởi `running/loginRunning`. Collector dùng tối đa sáu page trong cùng
-  persistent browser context (`COINGLASS_WEB_BROWSER_CONCURRENCY=6`) để hoàn tất cohort 60 coin trước tick kế tiếp; mỗi page chỉ xử lý
+  Scheduler server chạy mặc định mỗi `180000ms`; overlap bị chặn bởi `running/loginRunning`. Collector dùng tối đa mười page trong cùng
+  persistent browser context (`COINGLASS_WEB_BROWSER_CONCURRENCY=10`) để hoàn tất cohort 60 coin trước tick kế tiếp; mỗi page chỉ xử lý
   tuần tự một symbol nên không trộn response/canvas. Nút refresh thủ công vẫn giữ nhưng không bắt buộc.
 - Dữ liệu dùng trước phân loại: Binance Futures public `exchangeInfo`, ticker 24h, bulk best bid/ask và OI hiện tại; CoinGlass exact
   Model 3 48h `instrumentId/prices/y/liq/range/updateTime`. BTC là `REFERENCE`; tối đa 39 alt được lấy từ exact selector Liquid Flow V2,
