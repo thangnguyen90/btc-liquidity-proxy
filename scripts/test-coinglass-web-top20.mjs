@@ -59,7 +59,7 @@ const liquidSelection = applyBinanceLiquidityFilter([
 ], {
   BTCUSDT: {},
   GOODUSDT: { spreadBps: 2, bidDepthUsd: 200_000, askDepthUsd: 180_000, openInterestNotional: 20_000_000 },
-  LINKUSDT: { spreadBps: 2, bidDepthUsd: 5_000, askDepthUsd: 4_000, openInterestNotional: 20_000_000 },
+  LINKUSDT: { spreadBps: 20, bidDepthUsd: 5_000, askDepthUsd: 4_000, openInterestNotional: 20_000_000 },
 }, 3);
 assert.deepEqual(liquidSelection.rows.map((row) => row.symbol), ['BTCUSDT', 'GOODUSDT']);
 assert.equal(liquidSelection.rows[0].binanceLiquidity.forcedBtc, true);
@@ -138,7 +138,7 @@ assert.equal(buildCoinglassZoneProposal({}, {}).action, 'NO_DATA');
 
 const legacyDataDir = await mkdtemp(join(tmpdir(), 'coinglass-movers-v3-'));
 await writeFile(join(legacyDataDir, 'snapshot.json'), JSON.stringify({
-  version: 'COINGLASS_WEB_MODEL3_LIQUID_MARKETS_V2_20260817',
+  version: 'COINGLASS_WEB_BINANCE_MOVERS_V3_20260817',
   source: { ranking: 'legacy-volume' },
   rows: [
     { symbol: 'BTCUSDT', heatmap: richHeatmap, lastPrice: 100 },

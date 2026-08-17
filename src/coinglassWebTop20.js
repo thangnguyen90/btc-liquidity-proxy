@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { selectLiquidHeatmapFlowV2Candidates } from './liquidHeatmapFlowV2.js';
 
-export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_BINANCE_MOVERS_V3_20260817';
+export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_BINANCE_MOVERS_LIQUIDITY_V4_20260817';
 export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817';
 export const COINGLASS_WEB_TOP20_MODE = 'OBSERVE_ONLY';
 export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
@@ -101,7 +101,7 @@ export function applyBinanceLiquidityFilter(markets = [], metricsBySymbol = {}, 
     quoteVolume24h: Math.max(0, finiteNumber(thresholds.quoteVolume24h, 50_000_000)),
     tradeCount24h: Math.max(0, finiteNumber(thresholds.tradeCount24h, 20_000)),
     openInterestNotional: Math.max(0, finiteNumber(thresholds.openInterestNotional, 5_000_000)),
-    bookDepthUsd: Math.max(0, finiteNumber(thresholds.bookDepthUsd, 5_000)),
+    bookDepthUsd: Math.max(0, finiteNumber(thresholds.bookDepthUsd, 0)),
     maxSpreadBps: Math.max(0, finiteNumber(thresholds.maxSpreadBps, 15)),
   };
   const assessed = markets.map((market) => {

@@ -2311,15 +2311,17 @@ Before major edits:
 
 ### 2026-08-17 - Sửa universe CoinGlass theo Binance Top tăng / Top giảm
 
-- Nâng collector/universe lên `COINGLASS_WEB_BINANCE_MOVERS_V3_20260817`; proposal giữ
+- Nâng collector/universe lên `COINGLASS_WEB_BINANCE_MOVERS_LIQUIDITY_V4_20260817`; proposal giữ
   `COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817` và `OBSERVE_ONLY`. Root cause V2 là lấy top `quoteVolume`, khiến các market lớn như
   SOL/PEPE xuất hiện dù không nằm trong nhóm biến động mà người dùng cần.
 - Dữ liệu trước phân loại vẫn chỉ là Binance public snapshot hiện tại. V3 tái sử dụng exact selector Liquid Flow V2:
   `UP` sort `change24hPct DESC`, `DOWN` sort `change24hPct ASC`, volume chỉ tie-break; BTC thêm riêng làm reference và hai phía xen kẽ theo rank.
-  Bộ lọc volume `>= $50M`, trades `>=20K`, OI `>= $5M`, min best-book `>= $5K`, spread `<=15 bps` chỉ loại market mỏng,
+  Bộ lọc volume `>= $50M`, trades `>=20K`, OI `>= $5M`, spread `<=15 bps` chỉ loại market mỏng,
   tuyệt đối không sắp lại thứ hạng movers. CoinGlass cluster filter sau đó cũng giữ nguyên thứ tự này.
+- Audit live V3 cho thấy hard gate min best bid/ask `$5K` loại oan PORTAL/HEMI/GPS dù volume/OI cao, vì best level chỉ là một tick.
+  V4 giữ top-book notional để hiển thị/audit nhưng bỏ khỏi điều kiện pass; cluster CoinGlass mới là xác nhận thanh lý cuối.
 - Thống kê/card thêm `moverSide/moverRank` và tổng số top tăng/top giảm. Logic vùng, target/risk và yêu cầu xác nhận LONG/SHORT không đổi;
   không tính paper W/L, WR, PF, AvgROE, NET.
 - Không thêm signal/label/tier/gate/card giao dịch hoặc whitelist checkbox. Không ảnh hưởng Binance, entry, size, leverage, SL/TP, paper,
-  scanner hay protection. Snapshot V1/V2 thiếu mover fields chỉ giữ BTC reference; altcoin fail-closed khỏi view cho đến snapshot exact V3,
+  scanner hay protection. Snapshot trước V4 chỉ giữ BTC reference; altcoin fail-closed khỏi view cho đến snapshot exact V4,
   tránh gọi nhầm top-volume legacy là mover. Không migrate hoặc rewrite JSON cũ.

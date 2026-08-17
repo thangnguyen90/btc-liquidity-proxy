@@ -3376,16 +3376,17 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
 
 ## 2026-08-17 - CoinGlass Model 3: BTC + coin có liquidity và đề xuất vùng giá
 
-- Version collector/universe: `COINGLASS_WEB_BINANCE_MOVERS_V3_20260817`; version đề xuất:
+- Version collector/universe: `COINGLASS_WEB_BINANCE_MOVERS_LIQUIDITY_V4_20260817`; version đề xuất:
   `COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817`; mode cố định `OBSERVE_ONLY`. Collector chỉ chạy thủ công tại
   `/coinglass-web-top20`, trong child process Playwright riêng và không truyền snapshot vào Liquid Flow V2/scanner.
 - Dữ liệu dùng trước snapshot/phân loại: từ Binance Futures public lấy `exchangeInfo`, ticker 24h, bulk best bid/ask và open interest hiện tại.
   BTC luôn được giữ làm `REFERENCE`. Altcoin lấy đúng universe movers của Liquid Flow V2/Binance app style: nhánh `UP` xếp
   `priceChangePercent` 24h giảm dần, nhánh `DOWN` xếp phần trăm âm sâu dần, volume chỉ tie-break; hai nhánh được xen kẽ theo `moverRank`.
-  Sau đó altcoin phải đồng thời có quote volume 24h `>= $50M`, ít nhất `20,000` trade/24h, OI notional `>= $5M`, notional
-  nhỏ hơn của best bid/best ask đạt `>= $5K`, spread `<=15 bps`; rồi mới đọc CoinGlass Model 3 48h gồm exact
+  Sau đó altcoin phải đồng thời có quote volume 24h `>= $50M`, ít nhất `20,000` trade/24h, OI notional `>= $5M` và spread
+  `<=15 bps`; rồi mới đọc CoinGlass Model 3 48h gồm exact
   `instrumentId`, `prices`, `y`, `liq`, range/updateTime. Đây là snapshot quan sát tại thời điểm crawl, không phải dữ liệu cấp quyền entry.
-- Phân loại liquidity hai tầng: tầng Binance tính điểm log volume/OI/top-book/trade để audit nhưng không được sắp lại mover rank; tầng CoinGlass chỉ giữ altcoin có
+- Phân loại liquidity hai tầng: tầng Binance tính điểm log volume/OI/top-book/trade để audit nhưng không được sắp lại mover rank. Best bid/ask
+  notional chỉ hiển thị audit, không còn là hard gate vì một price tick không đại diện độ sâu toàn book; tầng CoinGlass chỉ giữ altcoin có
   ít nhất `100` liquidation cells, tối thiểu hai local peak trong `±20%` giá và ít nhất một peak tồn tại `>=3` bars. BTC được giữ để làm
   thị trường tham chiếu kể cả lúc CoinGlass thiếu cell. Vì vậy coin volume lớn nhưng order book/OI hoặc cụm thanh lý rỗng (ví dụ case LINK được
   báo) bị đưa vào `exclusions`, không chiếm slot top 20. Peak được tách tối đa sáu vùng mỗi phía thay vì để một phía chiếm toàn bộ danh sách.
@@ -3406,7 +3407,7 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
 - Whitelist: không thêm nhãn/card thống kê giao dịch nên không thêm checkbox/matcher. Policy hiện hữu vẫn mặc định tắt và chỉ hiện khi paper
   CLOSED AvgROE `>4%`; đề xuất CoinGlass không thể mở khóa whitelist hoặc Binance.
 - Tương thích JSON cũ: `auth`, `moverSide/moverRank`, `binanceLiquidity`, `heatmapLiquidity`, `proposal` và `exclusions` đều optional. Snapshot V1/V2 thiếu mover fields
-  vẫn parse được nhưng fail-closed cho altcoin: API chỉ giữ BTC, lọc mọi alt V1/V2 khỏi view và báo bằng `viewLiquidityExcluded`; chỉ snapshot exact V3
+  vẫn parse được nhưng fail-closed cho altcoin: API chỉ giữ BTC, lọc mọi alt version cũ khỏi view và báo bằng `viewLiquidityExcluded`; chỉ snapshot exact V4
   mới được công nhận `UP/DOWN + moverRank`. Row BTC cũ được dựng proposal lúc đọc.
   Không migrate/rewrite paper/signal/settings hoặc backfill outcome. Store/profile tiếp tục git-ignore;
   file snapshot/auth thiếu hoặc lỗi không làm gián đoạn server hay luồng trading.
