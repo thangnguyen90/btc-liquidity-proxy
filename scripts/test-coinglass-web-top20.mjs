@@ -260,7 +260,7 @@ assert.match(crawlSource, /launchPersistentContext/);
 assert.match(crawlSource, /COINGLASS_WEB_BROWSER_CONCURRENCY/);
 assert.match(crawlSource, /Promise\.all\(pages\.map/);
 assert.match(crawlSource, /Math\.min\(60/);
-assert.match(crawlSource, /Math\.min\(\s*10,/);
+assert.match(crawlSource, /Math\.min\(\s*8,/);
 assert.match(crawlSource, /assessCoinglassLiquidity/);
 assert.match(crawlSource, /qualifyCoinglassOpportunity/);
 

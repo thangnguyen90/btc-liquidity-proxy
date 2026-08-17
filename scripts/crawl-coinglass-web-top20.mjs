@@ -243,9 +243,9 @@ try {
   const failures = [];
   let authRequired = false;
   const browserConcurrency = Math.max(1, Math.min(
-    10,
+    8,
     markets.length,
-    Math.trunc(Number(process.env.COINGLASS_WEB_BROWSER_CONCURRENCY) || 10),
+    Math.trunc(Number(process.env.COINGLASS_WEB_BROWSER_CONCURRENCY) || 8),
   ));
   const pages = [context.pages()[0] ?? await context.newPage()];
   while (pages.length < browserConcurrency) pages.push(await context.newPage());
