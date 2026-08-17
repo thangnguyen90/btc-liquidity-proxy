@@ -1,6 +1,8 @@
 const elements = {
   status: document.querySelector('#statusText'),
   updated: document.querySelector('#updatedText'),
+  auth: document.querySelector('#authText'),
+  login: document.querySelector('#loginButton'),
   refresh: document.querySelector('#refreshButton'),
   progressPanel: document.querySelector('#progressPanel'),
   progressSymbol: document.querySelector('#progressSymbol'),
@@ -23,11 +25,13 @@ function compactUsd(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return '—';
   return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 2,
+    notation: 'compact', style: 'currency', currency: 'USD', maximumFractionDigits: 2,
   }).format(parsed);
+}
+
+function percent(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? `${parsed >= 0 ? '+' : ''}${number(parsed)}%` : '—';
 }
 
 function time(value) {
@@ -47,6 +51,17 @@ function metric(label, value) {
   return item;
 }
 
+function valueBlock(label, value, tone = '') {
+  const block = document.createElement('div');
+  block.className = `proposal-value ${tone}`.trim();
+  const name = document.createElement('span');
+  name.textContent = label;
+  const content = document.createElement('strong');
+  content.textContent = value;
+  block.append(name, content);
+  return block;
+}
+
 function zoneGroup(title, zones) {
   const group = document.createElement('div');
   group.className = 'zone-group';
@@ -56,20 +71,30 @@ function zoneGroup(title, zones) {
   if (!zones.length) {
     const empty = document.createElement('span');
     empty.className = 'muted';
-    empty.textContent = 'Chưa có cụm rõ';
+    empty.textContent = 'Không có cụm đủ gần giá';
     group.append(empty);
     return group;
   }
-  for (const zone of zones.slice(0, 4)) {
+  const header = document.createElement('div');
+  header.className = 'zone zone-header';
+  for (const text of ['Giá', 'Cách giá', 'Lực', 'Bền']) {
+    const cell = document.createElement('span');
+    cell.textContent = text;
+    header.append(cell);
+  }
+  group.append(header);
+  for (const zone of zones.slice(0, 5)) {
     const row = document.createElement('div');
     row.className = 'zone';
     const price = document.createElement('b');
     price.textContent = number(zone.price, 8);
     const distance = document.createElement('span');
-    distance.textContent = `${Number(zone.distancePct) >= 0 ? '+' : ''}${number(zone.distancePct)}%`;
+    distance.textContent = percent(zone.distancePct);
     const strength = document.createElement('span');
-    strength.textContent = `S${number(zone.strength, 0)}`;
-    row.append(price, distance, strength);
+    strength.textContent = `${number(zone.strength, 0)}/100`;
+    const persistence = document.createElement('span');
+    persistence.textContent = `${number(zone.persistenceBars, 0)} nến`;
+    row.append(price, distance, strength, persistence);
     group.append(row);
   }
   return group;
@@ -77,7 +102,16 @@ function zoneGroup(title, zones) {
 
 function card(row) {
   const item = document.createElement('article');
-  item.className = 'card';
+  const proposal = row.proposal || { action: 'NO_DATA', label: 'CHƯA ĐỦ VÙNG THANH LÝ' };
+  const actionTone = proposal.action === 'WAIT_LONG_CONFIRMATION'
+    ? 'long'
+    : proposal.action === 'WAIT_SHORT_CONFIRMATION'
+      ? 'short'
+      : proposal.action === 'WAIT_BALANCED'
+        ? 'balanced'
+        : 'no-data';
+  item.className = `card ${actionTone}`;
+
   const head = document.createElement('div');
   head.className = 'card-head';
   const copy = document.createElement('div');
@@ -89,86 +123,118 @@ function card(row) {
   title.append(rank, document.createTextNode(` ${row.symbol}`));
   const stats = document.createElement('div');
   stats.className = 'market-stats';
-  const volume = document.createElement('span');
-  volume.textContent = `Vol 24h ${compactUsd(row.quoteVolume24h)}`;
-  const price = document.createElement('span');
-  price.textContent = `Giá ${number(row.lastPrice, 8)}`;
+  const values = [
+    `Vol ${compactUsd(row.quoteVolume24h)}`,
+    `OI ${compactUsd(row.binanceLiquidity?.openInterestNotional)}`,
+    `Top book ${compactUsd(row.binanceLiquidity?.bookDepthUsd)}`,
+    `Spread ${number(row.binanceLiquidity?.spreadBps)} bps`,
+  ];
+  for (const text of values) {
+    const span = document.createElement('span');
+    span.textContent = text;
+    stats.append(span);
+  }
   const change = document.createElement('span');
   change.className = Number(row.priceChangePercent24h) >= 0 ? 'positive' : 'negative';
-  change.textContent = `${Number(row.priceChangePercent24h) >= 0 ? '+' : ''}${number(row.priceChangePercent24h)}%`;
-  stats.append(volume, price, change);
+  change.textContent = percent(row.priceChangePercent24h);
+  stats.append(change);
   copy.append(title, stats);
   const badge = document.createElement('span');
   badge.className = 'badge';
-  badge.textContent = `${row.status || 'OK'} · ${row.range} · ${number(row.heatmap?.liquidationCellCount, 0)} CELLS`;
+  badge.textContent = `${row.status || 'OK'} · ${number(row.heatmap?.liquidationCellCount, 0)} CELLS`;
   head.append(copy, badge);
 
-  const lockedNotice = document.createElement('div');
-  lockedNotice.className = 'locked-note';
-  lockedNotice.textContent = 'CoinGlass yêu cầu đăng nhập để mở dữ liệu altcoin; ảnh giữ lại trạng thái khóa để audit.';
-
-  const image = document.createElement('img');
-  image.className = 'heatmap';
-  image.src = `${row.imageUrl}&t=${encodeURIComponent(row.scrapedAt || '')}`;
-  image.alt = `CoinGlass Model 3 heatmap ${row.symbol}`;
-  image.loading = 'lazy';
+  const proposalPanel = document.createElement('section');
+  proposalPanel.className = 'proposal';
+  const proposalTop = document.createElement('div');
+  proposalTop.className = 'proposal-top';
+  const label = document.createElement('strong');
+  label.className = 'proposal-label';
+  label.textContent = proposal.label;
+  const mode = document.createElement('span');
+  mode.textContent = 'OBSERVE ONLY';
+  proposalTop.append(label, mode);
+  const proposalValues = document.createElement('div');
+  proposalValues.className = 'proposal-values';
+  proposalValues.append(
+    valueBlock('Giá tham chiếu', number(proposal.referencePrice ?? row.lastPrice, 8)),
+    valueBlock('Vùng hút mục tiêu', proposal.targetZone ? `${number(proposal.targetZone.price, 8)} (${percent(proposal.targetZone.distancePct)})` : '—', 'target'),
+    valueBlock('Vùng rủi ro đối diện', proposal.riskZone ? `${number(proposal.riskZone.price, 8)} (${percent(proposal.riskZone.distancePct)})` : '—', 'risk'),
+    valueBlock('Lệch trên / dưới', `${number(proposal.aboveScore)} / ${number(proposal.belowScore)}`),
+  );
+  const rationale = document.createElement('p');
+  rationale.className = 'rationale';
+  rationale.textContent = proposal.rationale || 'Chưa có dữ liệu structured; ảnh crop không được dùng để kết luận.';
+  const confirmation = document.createElement('p');
+  confirmation.className = 'confirmation';
+  confirmation.textContent = proposal.confirmation || 'Đăng nhập phiên collector rồi cào lại.';
+  proposalPanel.append(proposalTop, proposalValues, rationale, confirmation);
 
   const zones = Array.isArray(row.heatmap?.zones) ? row.heatmap.zones : [];
   const zonePanel = document.createElement('div');
   zonePanel.className = 'zones';
   zonePanel.append(
-    zoneGroup('Thanh khoản phía trên', zones.filter((zone) => zone.side === 'ABOVE')),
-    zoneGroup('Thanh khoản phía dưới', zones.filter((zone) => zone.side === 'BELOW')),
+    zoneGroup('Cụm thanh lý phía trên', zones.filter((zone) => zone.side === 'ABOVE')),
+    zoneGroup('Cụm thanh lý phía dưới', zones.filter((zone) => zone.side === 'BELOW')),
   );
-  item.append(head);
-  if (row.accessLocked) item.append(lockedNotice);
-  item.append(image, zonePanel);
+  item.append(head, proposalPanel, zonePanel);
   return item;
 }
 
 function render(data) {
   const rows = Array.isArray(data.rows) ? data.rows : [];
   const failures = Array.isArray(data.failures) ? data.failures : [];
-  const lockedCount = rows.filter((row) => row.accessLocked || row.status === 'LOGIN_REQUIRED').length;
-  const availableCount = rows.length - lockedCount;
   const progress = data.progress || {};
-  elements.refresh.disabled = Boolean(data.running) || data.config?.enabled === false;
-  elements.status.textContent = data.running
-    ? `Đang cào ${progress.currentSymbol || 'CoinGlass Model 3'}…`
-    : data.error
-      ? `Lần cào gần nhất lỗi: ${data.error}`
-      : rows.length
-        ? `${availableCount} heatmap mở được · ${lockedCount} coin CoinGlass yêu cầu đăng nhập${data.source?.retainedStale ? ` · ${data.source.retainedStale} ảnh last-good` : ''}`
-        : 'Chưa có snapshot — bấm “Cào lại top 20” để chạy thử.';
+  const auth = data.auth || {};
+  const structured = rows.filter((row) => Number(row.heatmap?.liquidationCellCount) > 0).length;
+  const longCount = rows.filter((row) => row.proposal?.action === 'WAIT_LONG_CONFIRMATION').length;
+  const shortCount = rows.filter((row) => row.proposal?.action === 'WAIT_SHORT_CONFIRMATION').length;
+  const waitCount = rows.length - longCount - shortCount;
+  const excludedCount = Number(data.source?.binanceLiquidityExcluded || 0) + Number(data.source?.heatmapLiquidityExcluded || 0);
+
+  elements.refresh.disabled = Boolean(data.running || data.loginRunning) || data.config?.enabled === false;
+  elements.login.disabled = Boolean(data.running || data.loginRunning);
+  elements.login.textContent = data.loginRunning ? 'Đang chờ đăng nhập…' : 'Đăng nhập cho collector';
+  elements.status.textContent = data.loginRunning
+    ? 'Cửa sổ CoinGlass riêng đã mở — hãy hoàn tất đăng nhập trên cửa sổ đó.'
+    : data.running
+      ? `Đang đọc ${progress.currentSymbol || 'CoinGlass Model 3'}…`
+      : data.error
+        ? `Lần đọc gần nhất lỗi: ${data.error}`
+        : rows.length
+          ? `${structured}/${rows.length} coin có dữ liệu vùng thanh lý · đã loại ${excludedCount} coin thiếu thanh khoản`
+          : 'Chưa có dữ liệu vùng thanh lý hợp lệ.';
   elements.updated.textContent = data.updatedAt
-    ? `Snapshot ${time(data.updatedAt)} · CoinGlass ${data.source?.range || '48h'} · xếp hạng theo Binance quote volume 24h`
+    ? `Snapshot ${time(data.updatedAt)} · CoinGlass ${data.source?.range || '48h'} · BTC + thị trường đạt chuẩn liquidity`
     : `Version ${data.version || '—'}`;
+  elements.auth.className = auth.altcoinAccess ? 'auth-text ok' : 'auth-text warn';
+  elements.auth.textContent = auth.altcoinAccess
+    ? `Collector đã đăng nhập và có quyền altcoin · kiểm tra ${time(auth.checkedAt)}`
+    : auth.message || 'Chrome cá nhân và collector là hai profile khác nhau; hãy đăng nhập một lần cho collector.';
 
   elements.progressPanel.hidden = !data.running;
   if (data.running) {
     const total = Number(progress.total) || 20;
     const completed = Number(progress.completed) || 0;
-    elements.progressSymbol.textContent = progress.currentSymbol
-      ? `Đang xử lý ${progress.currentSymbol}`
-      : 'Đang khởi tạo trình duyệt…';
+    elements.progressSymbol.textContent = progress.currentSymbol ? `Đang xử lý ${progress.currentSymbol}` : 'Đang khởi tạo trình duyệt…';
     elements.progressCount.textContent = `${completed} / ${total}`;
     elements.progressBar.style.width = `${Math.min(100, (completed / total) * 100)}%`;
   }
 
   elements.summary.replaceChildren(
-    metric('Heatmap mở được', `${availableCount}`),
-    metric('CoinGlass khóa login', `${lockedCount}`),
-    metric('Lỗi kỹ thuật', `${failures.length}`),
-    metric('Chế độ', data.mode || 'OBSERVE_ONLY'),
+    metric('Có vùng structured', `${structured}`),
+    metric('Ưu tiên canh long', `${longCount}`),
+    metric('Ưu tiên canh short', `${shortCount}`),
+    metric('Chờ / chưa đủ data', `${waitCount}`),
   );
 
   elements.failures.hidden = failures.length === 0;
   elements.failures.replaceChildren();
   if (failures.length) {
     const heading = document.createElement('strong');
-    heading.textContent = `${failures.length} coin chưa lấy được:`;
+    heading.textContent = `${failures.length} coin chưa đọc được structured data:`;
     elements.failures.append(heading);
-    for (const failure of failures) {
+    for (const failure of failures.slice(0, 12)) {
       const line = document.createElement('p');
       line.textContent = `${failure.symbol}: ${failure.error}`;
       elements.failures.append(line);
@@ -179,7 +245,9 @@ function render(data) {
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'empty';
-    empty.textContent = data.running ? 'Heatmap đầu tiên sẽ xuất hiện sau khi lượt cào hoàn tất.' : 'Chưa có dữ liệu.';
+    empty.textContent = data.running
+      ? 'Các vùng giá sẽ xuất hiện sau khi lượt đọc hoàn tất.'
+      : 'Bấm “Đăng nhập cho collector”, hoàn tất login, rồi bấm “Đọc lại coin thanh khoản”.';
     elements.grid.append(empty);
   } else {
     elements.grid.append(...rows.map(card));
@@ -193,26 +261,40 @@ async function load() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     render(data);
-    timer = setTimeout(load, data.running ? 3000 : 30000);
+    timer = setTimeout(load, data.running || data.loginRunning ? 3000 : 30000);
   } catch (error) {
     elements.status.textContent = `Không đọc được snapshot: ${error.message}`;
     timer = setTimeout(load, 10000);
   }
 }
 
+async function post(path, pendingMessage) {
+  elements.status.textContent = pendingMessage;
+  const response = await fetch(path, { method: 'POST' });
+  const data = await response.json();
+  if (!response.ok || (!data.accepted && !['already_running', 'login_running', 'refresh_running'].includes(data.reason))) {
+    throw new Error(data.error || data.reason || `HTTP ${response.status}`);
+  }
+  await load();
+}
+
 elements.refresh.addEventListener('click', async () => {
   elements.refresh.disabled = true;
-  elements.status.textContent = 'Đang khởi động collector riêng…';
   try {
-    const response = await fetch('/api/coinglass-web-top20/refresh', { method: 'POST' });
-    const data = await response.json();
-    if (!response.ok || (!data.accepted && data.reason !== 'already_running')) {
-      throw new Error(data.error || data.reason || `HTTP ${response.status}`);
-    }
-    await load();
+    await post('/api/coinglass-web-top20/refresh', 'Đang khởi động bộ đọc vùng thanh lý…');
   } catch (error) {
     elements.status.textContent = `Không thể chạy collector: ${error.message}`;
     elements.refresh.disabled = false;
+  }
+});
+
+elements.login.addEventListener('click', async () => {
+  elements.login.disabled = true;
+  try {
+    await post('/api/coinglass-web-top20/login', 'Đang mở cửa sổ đăng nhập riêng của collector…');
+  } catch (error) {
+    elements.status.textContent = `Không thể mở đăng nhập: ${error.message}`;
+    elements.login.disabled = false;
   }
 });
 

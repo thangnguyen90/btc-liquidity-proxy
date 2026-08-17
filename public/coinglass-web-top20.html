@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CoinGlass Web · Top 20 Binance Volume</title>
+  <title>CoinGlass · Vùng thanh lý coin có liquidity</title>
   <link rel="stylesheet" href="/coinglass-web-top20.css">
 </head>
 <body>
@@ -11,8 +11,8 @@
     <header class="hero">
       <div>
         <p class="eyebrow">WEB COLLECTOR LAB · MODEL 3</p>
-        <h1>CoinGlass Heatmap · Top 20 Binance</h1>
-        <p class="subtitle">Xếp hạng theo volume futures USDT 24h của Binance, sau đó chụp heatmap Model 3 và tóm tắt vùng thanh khoản mạnh.</p>
+        <h1>Vùng thanh lý · Coin có liquidity</h1>
+        <p class="subtitle">Luôn giữ BTC; altcoin phải đạt volume, open interest, depth, spread và có cụm thanh lý Model 3 đủ rõ. Trang hiển thị vùng giá và đề xuất chờ xác nhận, không dùng ảnh crop để kết luận.</p>
       </div>
       <nav>
         <a href="/liquid-flow-v2">Liquid Flow V2</a>
@@ -23,15 +23,19 @@
     <section class="isolation" aria-label="Phạm vi sử dụng">
       <span>OBSERVE ONLY</span>
       <strong>Trang độc lập</strong>
-      <p>Không nối scanner, paper, Binance, entry, size, SL hoặc TP. Dữ liệu chỉ được cập nhật khi bấm “Cào lại top 20”.</p>
+      <p>Không nối scanner, paper, Binance, entry, size, SL hoặc TP. “Ưu tiên” ở đây chỉ là lực hút vùng thanh lý, chưa phải lệnh giao dịch.</p>
     </section>
 
     <section class="toolbar">
       <div>
         <p id="statusText" class="status">Đang đọc snapshot…</p>
         <p id="updatedText" class="muted"></p>
+        <p id="authText" class="auth-text"></p>
       </div>
-      <button id="refreshButton" type="button">Cào lại top 20</button>
+      <div class="toolbar-actions">
+        <button id="loginButton" class="secondary" type="button">Đăng nhập cho collector</button>
+        <button id="refreshButton" type="button">Đọc lại coin thanh khoản</button>
+      </div>
     </section>
 
     <section id="progressPanel" class="progress-panel" hidden>

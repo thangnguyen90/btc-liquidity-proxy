@@ -2288,3 +2288,22 @@ Before major edits:
 - Store mới `data/coinglass-web-top20/` được git-ignore; JSON cũ không có store sẽ đọc thành danh sách rỗng. Không migrate/rewrite paper/signal/settings,
   và lỗi crawler không chặn server hay bất kỳ luồng trading hiện tại.
   Host mới cài browser bundle bằng `npm run setup:coinglass-web-browser`; browser binaries/runtime local không commit vào Git.
+
+### 2026-08-17 - Đổi CoinGlass lab sang BTC + coin có liquidity và vùng giá đề xuất
+
+- Nâng collector lên `COINGLASS_WEB_MODEL3_LIQUID_MARKETS_V2_20260817`, proposal lên
+  `COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817`, vẫn tuyệt đối `OBSERVE_ONLY`. Dữ liệu trước quyết định gồm Binance public
+  `exchangeInfo/ticker/bookTicker/openInterest` và exact React state CoinGlass Model 3 48h; không dùng outcome/future candle.
+- BTC luôn có mặt. Altcoin qua tầng Binance khi volume `>= $50M`, trades `>=20K`, OI notional `>= $5M`, min best bid/ask notional
+  `>= $5K`, spread `<=15 bps`; sau đó qua tầng CoinGlass khi có `>=100` liquidation cells, `>=2` peak trong `±20%` và ít nhất một peak
+  bền `>=3` bars. Coin chỉ lớn về volume nhưng không có thanh khoản/cụm thanh lý bị ghi vào exclusions và không chiếm top 20.
+- Vùng thanh lý chọn local peak cách ít nhất ba bins, dành tối đa sáu vùng cho mỗi phía. Điểm hút dùng relative strength, khoảng cách và
+  persistence; chênh ít nhất `1.25x` cùng target trong `15%` mới gợi ý `CANH LONG/SHORT`, còn lại `CHỜ`. Long phải đợi reclaim/retest,
+  short phải đợi sweep-reject/breakdown-retest. Thống kê chỉ đếm structured/long/short/wait, không tính W/L, WR, PF, AvgROE hay NET.
+- Bỏ ảnh crop khỏi UI chính; card hiển thị target/risk zone, distance, strength, persistence và Binance volume/OI/top-book/spread.
+  Thêm persistent profile riêng và nút mở login visible; người dùng tự đăng nhập, collector verify exact ETH altcoin access. Không chạm profile
+  hoặc cookie Chrome cá nhân, nên login trên Chrome thường không được coi là login của collector.
+- Không thêm signal/label/tier/gate/card giao dịch hay whitelist checkbox. Mọi policy whitelist cũ giữ mặc định tắt và điều kiện CLOSED
+  AvgROE `>4%`. Không ảnh hưởng Binance/entry/size/leverage/SL/TP, paper, scanner hoặc protection.
+- JSON V1 tương thích forward: field auth/liquidity/proposal/exclusions mới là optional; row cũ thiếu proposal hiển thị `NO_DATA`.
+  Không migrate/rewrite/backfill bất kỳ trade/signal/settings cũ; store/profile browser vẫn nằm trong thư mục git-ignore.

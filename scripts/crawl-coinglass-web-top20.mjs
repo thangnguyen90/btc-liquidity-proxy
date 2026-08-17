@@ -5,6 +5,9 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import {
+  applyBinanceLiquidityFilter,
+  assessCoinglassLiquidity,
+  buildCoinglassZoneProposal,
   COINGLASS_WEB_TOP20_ISOLATION,
   COINGLASS_WEB_TOP20_MODE,
   COINGLASS_WEB_TOP20_VERSION,
@@ -45,6 +48,43 @@ async function fetchJson(url, timeoutMs = 20_000) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}
+
+async function loadBinanceLiquidityMetrics(binanceBase, markets, bookTickers = []) {
+  const books = new Map((Array.isArray(bookTickers) ? bookTickers : []).map((row) => [row?.symbol, row]));
+  const rows = await mapWithConcurrency(markets, 3, async (market) => {
+    try {
+      const symbol = encodeURIComponent(market.symbol);
+      const openInterest = await fetchJson(`${binanceBase}/fapi/v1/openInterest?symbol=${symbol}`);
+      const book = books.get(market.symbol) ?? {};
+      const bestBid = Number(book.bidPrice);
+      const bestAsk = Number(book.askPrice);
+      const mid = bestBid > 0 && bestAsk > 0 ? (bestBid + bestAsk) / 2 : Number(market.lastPrice);
+      return [market.symbol, {
+        spreadBps: mid > 0 ? ((bestAsk - bestBid) / mid) * 10_000 : null,
+        bidDepthUsd: Math.max(0, bestBid) * Math.max(0, Number(book.bidQty) || 0),
+        askDepthUsd: Math.max(0, bestAsk) * Math.max(0, Number(book.askQty) || 0),
+        openInterestNotional: Math.max(0, Number(openInterest?.openInterest) || 0) * Math.max(0, Number(market.lastPrice) || 0),
+      }];
+    } catch (error) {
+      return [market.symbol, { error: String(error?.message ?? error) }];
+    }
+  });
+  return Object.fromEntries(rows);
 }
 
 async function extractReactHeatmap(page, expectedInstrumentId) {
@@ -127,6 +167,8 @@ async function crawlSymbol(page, market, { imageDir, range, initial = false }) {
     scrapedAt: new Date().toISOString(),
     imageUrl: `/api/coinglass-web-top20/image?symbol=${encodeURIComponent(market.symbol)}`,
     heatmap: summary,
+    heatmapLiquidity: assessCoinglassLiquidity(summary, market),
+    proposal: buildCoinglassZoneProposal(summary, market),
   };
 }
 
@@ -138,19 +180,30 @@ const dataDir = resolve(argument('--data-dir', join(rootDir, 'data', 'coinglass-
 const imageDir = join(dataDir, 'images');
 const snapshotFile = join(dataDir, 'snapshot.json');
 const progressFile = join(dataDir, 'progress.json');
+const profileDir = join(dataDir, 'browser-profile');
 const startedAt = new Date().toISOString();
 const binanceBase = String(process.env.BINANCE_FUTURES_BASE_URL ?? 'https://fapi.binance.com').replace(/\/$/, '');
 
 await mkdir(imageDir, { recursive: true });
 
-let browser;
+let context;
 try {
-  const [exchangeInfo, tickers] = await Promise.all([
+  const [exchangeInfo, tickers, bookTickers] = await Promise.all([
     fetchJson(`${binanceBase}/fapi/v1/exchangeInfo`),
     fetchJson(`${binanceBase}/fapi/v1/ticker/24hr`),
+    fetchJson(`${binanceBase}/fapi/v1/ticker/bookTicker`),
   ]);
-  const markets = selectTopBinanceUsdtPerpetuals(exchangeInfo, tickers, limit);
-  if (!markets.length) throw new Error('Binance returned no eligible USDT perpetual contracts');
+  const candidateLimit = Math.min(50, Math.max(30, limit * 2));
+  const volumeCandidates = selectTopBinanceUsdtPerpetuals(exchangeInfo, tickers, candidateLimit);
+  if (!volumeCandidates.length) throw new Error('Binance returned no eligible USDT perpetual contracts');
+  const liquidityMetrics = await loadBinanceLiquidityMetrics(binanceBase, volumeCandidates, bookTickers);
+  const binanceSelection = applyBinanceLiquidityFilter(
+    volumeCandidates,
+    liquidityMetrics,
+    Math.min(candidateLimit, limit + 12),
+  );
+  const markets = binanceSelection.rows;
+  if (!markets.length) throw new Error('No Binance market passed the liquidity filter');
 
   const localLibraryPath = join(rootDir, '.playwright-libs', 'root', 'usr', 'lib', 'x86_64-linux-gnu');
   const libraryPath = [
@@ -159,7 +212,8 @@ try {
   ].filter(Boolean).join(':');
   const headed = process.env.COINGLASS_WEB_BROWSER_MODE !== 'headless'
     && Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
-  browser = await chromium.launch({
+  await mkdir(profileDir, { recursive: true });
+  context = await chromium.launchPersistentContext(profileDir, {
     headless: !headed,
     args: [
       '--disable-dev-shm-usage',
@@ -168,8 +222,6 @@ try {
       ...(headed ? ['--window-position=-10000,-10000', '--window-size=1280,900'] : []),
     ],
     env: { ...process.env, ...(libraryPath ? { LD_LIBRARY_PATH: libraryPath } : {}) },
-  });
-  const context = await browser.newContext({
     locale: 'en-US',
     timezoneId: 'Asia/Bangkok',
     viewport: { width: 1280, height: 900 },
@@ -181,7 +233,7 @@ try {
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
-  const page = await context.newPage();
+  const page = context.pages()[0] ?? await context.newPage();
 
   const rows = [];
   const failures = [];
@@ -211,12 +263,38 @@ try {
   }
 
   const previousSnapshot = await readJson(snapshotFile, null);
-  const publishedRows = mergeLastGoodHeatmapRows({
+  const mergedRows = mergeLastGoodHeatmapRows({
     markets,
     freshRows: rows,
     failures,
     previousRows: Array.isArray(previousSnapshot?.rows) ? previousSnapshot.rows : [],
   });
+  const assessedRows = mergedRows.map((row) => {
+    const heatmapLiquidity = assessCoinglassLiquidity(row.heatmap, row);
+    return {
+      ...row,
+      heatmapLiquidity,
+      proposal: buildCoinglassZoneProposal(row.heatmap, row),
+    };
+  });
+  const publishedRows = assessedRows
+    .filter((row) => row.heatmapLiquidity.eligible)
+    .sort((left, right) => {
+      if (left.symbol === 'BTCUSDT') return -1;
+      if (right.symbol === 'BTCUSDT') return 1;
+      const leftScore = Number(left.heatmapLiquidity.score) + Number(left.binanceLiquidity?.score ?? 0) / 10;
+      const rightScore = Number(right.heatmapLiquidity.score) + Number(right.binanceLiquidity?.score ?? 0) / 10;
+      return rightScore - leftScore;
+    })
+    .slice(0, limit)
+    .map((row, index) => ({ ...row, rank: index + 1 }));
+  const rejectedHeatmaps = assessedRows
+    .filter((row) => !row.heatmapLiquidity.eligible)
+    .map((row) => ({
+      symbol: row.symbol,
+      reason: 'INSUFFICIENT_LIQUIDATION_CLUSTERS',
+      heatmapLiquidity: row.heatmapLiquidity,
+    }));
   const retainedStale = publishedRows.filter((row) => row.stale).length;
   const snapshot = {
     version: COINGLASS_WEB_TOP20_VERSION,
@@ -225,12 +303,16 @@ try {
     updatedAt: new Date().toISOString(),
     reason,
     source: {
-      ranking: `${binanceBase}/fapi/v1/ticker/24hr quoteVolume`,
+      ranking: 'BTC always + Binance quote volume/trades/open interest/order-book depth/spread + CoinGlass liquidation cluster quality',
       contracts: `${binanceBase}/fapi/v1/exchangeInfo`,
       heatmap: 'https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3',
       exchange: 'Binance',
       range,
       requested: markets.length,
+      volumeCandidates: volumeCandidates.length,
+      binanceLiquidityEligible: markets.length,
+      binanceLiquidityExcluded: binanceSelection.excluded.length,
+      heatmapLiquidityExcluded: rejectedHeatmaps.length,
       successful: rows.length,
       failed: failures.length,
       published: publishedRows.length,
@@ -238,6 +320,10 @@ try {
     },
     rows: publishedRows,
     failures,
+    exclusions: {
+      binance: binanceSelection.excluded,
+      coinglass: rejectedHeatmaps,
+    },
   };
   await writeJsonAtomic(snapshotFile, snapshot);
   await writeJsonAtomic(progressFile, {
@@ -263,5 +349,5 @@ try {
   process.stdout.write(JSON.stringify({ ok: false, error: message }));
   process.exitCode = 1;
 } finally {
-  await browser?.close().catch(() => {});
+  await context?.close().catch(() => {});
 }

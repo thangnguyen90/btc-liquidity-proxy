@@ -10937,6 +10937,12 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/coinglass-web-top20/login' && request.method === 'POST') {
+      const result = await coinGlassWebTop20.startLogin();
+      await sendJson(response, result, result.accepted ? 202 : 200);
+      return;
+    }
+
     if (requestUrl.pathname === '/api/coinglass-web-top20/image' && request.method === 'GET') {
       const imageFile = coinGlassWebTop20.imageFile(requestUrl.searchParams.get('symbol'));
       if (!imageFile) {
