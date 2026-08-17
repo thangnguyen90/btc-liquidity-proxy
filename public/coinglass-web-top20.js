@@ -117,10 +117,15 @@ function card(row) {
   const copy = document.createElement('div');
   const title = document.createElement('h2');
   title.className = 'symbol';
-  const rank = document.createElement('span');
-  rank.className = 'rank';
-  rank.textContent = `#${row.rank}`;
-  title.append(rank, document.createTextNode(` ${row.symbol}`));
+  title.append(document.createTextNode(row.symbol));
+  const mover = document.createElement('span');
+  mover.className = `mover ${String(row.moverSide || 'REFERENCE').toLowerCase()}`;
+  mover.textContent = row.moverSide === 'UP'
+    ? `↑ TOP TĂNG #${row.moverRank}`
+    : row.moverSide === 'DOWN'
+      ? `↓ TOP GIẢM #${row.moverRank}`
+      : 'BTC THAM CHIẾU';
+  title.append(mover);
   const stats = document.createElement('div');
   stats.className = 'market-stats';
   const values = [
@@ -190,10 +195,8 @@ function render(data) {
   const longCount = rows.filter((row) => row.proposal?.action === 'WAIT_LONG_CONFIRMATION').length;
   const shortCount = rows.filter((row) => row.proposal?.action === 'WAIT_SHORT_CONFIRMATION').length;
   const waitCount = rows.length - longCount - shortCount;
-  const excludedCount = Number(data.source?.binanceLiquidityExcluded || 0)
-    + Number(data.source?.heatmapLiquidityExcluded || 0)
-    + Number(data.source?.viewLiquidityExcluded || 0);
-
+  const upCount = rows.filter((row) => row.moverSide === 'UP').length;
+  const downCount = rows.filter((row) => row.moverSide === 'DOWN').length;
   elements.refresh.disabled = Boolean(data.running || data.loginRunning) || data.config?.enabled === false;
   elements.login.disabled = Boolean(data.running || data.loginRunning);
   elements.login.textContent = data.loginRunning ? 'Đang chờ đăng nhập…' : 'Đăng nhập cho collector';
@@ -204,7 +207,7 @@ function render(data) {
       : data.error
         ? `Lần đọc gần nhất lỗi: ${data.error}`
         : rows.length
-          ? `${structured}/${rows.length} coin có dữ liệu vùng thanh lý · đã loại ${excludedCount} coin thiếu thanh khoản`
+          ? `${structured}/${rows.length} coin có vùng thanh lý · top tăng ${upCount}, top giảm ${downCount} · chờ ${waitCount}`
           : 'Chưa có dữ liệu vùng thanh lý hợp lệ.';
   elements.updated.textContent = data.updatedAt
     ? `Snapshot ${time(data.updatedAt)} · CoinGlass ${data.source?.range || '48h'} · BTC + thị trường đạt chuẩn liquidity`
@@ -225,9 +228,9 @@ function render(data) {
 
   elements.summary.replaceChildren(
     metric('Có vùng structured', `${structured}`),
-    metric('Ưu tiên canh long', `${longCount}`),
-    metric('Ưu tiên canh short', `${shortCount}`),
-    metric('Chờ / chưa đủ data', `${waitCount}`),
+    metric('Binance top tăng', `${upCount}`),
+    metric('Binance top giảm', `${downCount}`),
+    metric('Canh long / short', `${longCount} / ${shortCount}`),
   );
 
   elements.failures.hidden = failures.length === 0;

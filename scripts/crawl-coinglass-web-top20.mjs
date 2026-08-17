@@ -12,7 +12,7 @@ import {
   COINGLASS_WEB_TOP20_MODE,
   COINGLASS_WEB_TOP20_VERSION,
   mergeLastGoodHeatmapRows,
-  selectTopBinanceUsdtPerpetuals,
+  selectBinanceAppMoverCandidates,
   summarizeCoinglassHeatmap,
 } from '../src/coinglassWebTop20.js';
 
@@ -193,14 +193,19 @@ try {
     fetchJson(`${binanceBase}/fapi/v1/ticker/24hr`),
     fetchJson(`${binanceBase}/fapi/v1/ticker/bookTicker`),
   ]);
-  const candidateLimit = Math.min(50, Math.max(30, limit * 2));
-  const volumeCandidates = selectTopBinanceUsdtPerpetuals(exchangeInfo, tickers, candidateLimit);
-  if (!volumeCandidates.length) throw new Error('Binance returned no eligible USDT perpetual contracts');
-  const liquidityMetrics = await loadBinanceLiquidityMetrics(binanceBase, volumeCandidates, bookTickers);
+  const topPerSide = Math.max(20, limit);
+  const moverCandidates = selectBinanceAppMoverCandidates(exchangeInfo, tickers, {
+    topPerSide,
+    maxSymbols: topPerSide * 2,
+    minQuoteVolume: 2_000_000,
+  });
+  if (!moverCandidates.length) throw new Error('Binance returned no eligible top gainer/loser contracts');
+  const liquidityMetrics = await loadBinanceLiquidityMetrics(binanceBase, moverCandidates, bookTickers);
   const binanceSelection = applyBinanceLiquidityFilter(
-    volumeCandidates,
+    moverCandidates,
     liquidityMetrics,
-    Math.min(candidateLimit, limit + 12),
+    Math.min(moverCandidates.length, limit + 16),
+    { preserveOrder: true },
   );
   const markets = binanceSelection.rows;
   if (!markets.length) throw new Error('No Binance market passed the liquidity filter');
@@ -279,13 +284,6 @@ try {
   });
   const publishedRows = assessedRows
     .filter((row) => row.heatmapLiquidity.eligible)
-    .sort((left, right) => {
-      if (left.symbol === 'BTCUSDT') return -1;
-      if (right.symbol === 'BTCUSDT') return 1;
-      const leftScore = Number(left.heatmapLiquidity.score) + Number(left.binanceLiquidity?.score ?? 0) / 10;
-      const rightScore = Number(right.heatmapLiquidity.score) + Number(right.binanceLiquidity?.score ?? 0) / 10;
-      return rightScore - leftScore;
-    })
     .slice(0, limit)
     .map((row, index) => ({ ...row, rank: index + 1 }));
   const rejectedHeatmaps = assessedRows
@@ -303,13 +301,13 @@ try {
     updatedAt: new Date().toISOString(),
     reason,
     source: {
-      ranking: 'BTC always + Binance quote volume/trades/open interest/order-book depth/spread + CoinGlass liquidation cluster quality',
+      ranking: 'BTC reference + Binance app-style top gainers/losers by 24h change; volume/trades/OI/top-book/spread are eligibility only; CoinGlass cluster quality is the final filter',
       contracts: `${binanceBase}/fapi/v1/exchangeInfo`,
       heatmap: 'https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3',
       exchange: 'Binance',
       range,
       requested: markets.length,
-      volumeCandidates: volumeCandidates.length,
+      moverCandidates: moverCandidates.length,
       binanceLiquidityEligible: markets.length,
       binanceLiquidityExcluded: binanceSelection.excluded.length,
       heatmapLiquidityExcluded: rejectedHeatmaps.length,

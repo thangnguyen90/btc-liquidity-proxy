@@ -2,8 +2,9 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { selectLiquidHeatmapFlowV2Candidates } from './liquidHeatmapFlowV2.js';
 
-export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_MODEL3_LIQUID_MARKETS_V2_20260817';
+export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_BINANCE_MOVERS_V3_20260817';
 export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817';
 export const COINGLASS_WEB_TOP20_MODE = 'OBSERVE_ONLY';
 export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
@@ -58,7 +59,39 @@ export function selectTopBinanceUsdtPerpetuals(exchangeInfo = {}, tickers = [], 
     })
     .filter(Boolean)
     .sort((left, right) => right.quoteVolume24h - left.quoteVolume24h)
-    .slice(0, Math.max(1, Math.min(50, Math.trunc(finiteNumber(limit, 20)))))
+    .slice(0, Math.max(1, Math.min(1_000, Math.trunc(finiteNumber(limit, 20)))))
+    .map((row, index) => ({ ...row, rank: index + 1 }));
+}
+
+export function selectBinanceAppMoverCandidates(exchangeInfo = {}, tickers = [], {
+  topPerSide = 20,
+  maxSymbols = 40,
+  minQuoteVolume = 2_000_000,
+} = {}) {
+  const allMarkets = selectTopBinanceUsdtPerpetuals(exchangeInfo, tickers, 1_000);
+  const btc = allMarkets.find((row) => row.symbol === 'BTCUSDT') ?? null;
+  const movers = selectLiquidHeatmapFlowV2Candidates(allMarkets.map((row) => ({
+    ...row,
+    markPrice: row.lastPrice,
+    change24hPct: row.priceChangePercent24h,
+    quoteVolume: row.quoteVolume24h,
+  })), {
+    topPerSide: Math.max(1, Math.trunc(finiteNumber(topPerSide, 20))),
+    maxSymbols: Math.max(2, Math.trunc(finiteNumber(maxSymbols, 40))),
+    minQuoteVolume: Math.max(0, finiteNumber(minQuoteVolume, 2_000_000)),
+  });
+  const up = movers.filter((row) => row.moverSide === 'UP');
+  const down = movers.filter((row) => row.moverSide === 'DOWN');
+  const interleaved = [];
+  const sideLength = Math.max(up.length, down.length);
+  for (let index = 0; index < sideLength; index += 1) {
+    if (up[index]) interleaved.push(up[index]);
+    if (down[index]) interleaved.push(down[index]);
+  }
+  return [
+    ...(btc ? [{ ...btc, moverSide: 'REFERENCE', moverRank: 0 }] : []),
+    ...interleaved,
+  ].slice(0, Math.max(1, maxSymbols + (btc ? 1 : 0)))
     .map((row, index) => ({ ...row, rank: index + 1 }));
 }
 
@@ -110,13 +143,14 @@ export function applyBinanceLiquidityFilter(markets = [], metricsBySymbol = {}, 
       },
     };
   });
-  const eligible = assessed
-    .filter((market) => market.binanceLiquidity.eligible)
-    .sort((left, right) => {
+  const eligiblePool = assessed.filter((market) => market.binanceLiquidity.eligible);
+  const eligible = (thresholds.preserveOrder === true
+    ? eligiblePool
+    : eligiblePool.sort((left, right) => {
       if (left.symbol === 'BTCUSDT') return -1;
       if (right.symbol === 'BTCUSDT') return 1;
       return right.binanceLiquidity.score - left.binanceLiquidity.score;
-    })
+    }))
     .slice(0, required)
     .map((market, index) => ({ ...market, rank: index + 1 }));
   const selectedSymbols = new Set(eligible.map((market) => market.symbol));
@@ -413,6 +447,7 @@ export class CoinGlassWebTop20Manager {
       readJson(this.authFile, null),
     ]);
     const savedRows = Array.isArray(saved?.rows) ? saved.rows : [];
+    const moverUniverseCompatible = saved?.version === COINGLASS_WEB_TOP20_VERSION;
     const rows = savedRows
       .map((row) => {
         const heatmapLiquidity = row?.heatmapLiquidity ?? assessCoinglassLiquidity(row?.heatmap, row);
@@ -422,7 +457,14 @@ export class CoinGlassWebTop20Manager {
           proposal: row?.proposal ?? buildCoinglassZoneProposal(row?.heatmap, row),
         };
       })
-      .filter((row) => row.heatmapLiquidity.eligible)
+      .filter((row) => (
+        row.heatmapLiquidity.eligible
+        && (row.symbol === 'BTCUSDT' || (
+          moverUniverseCompatible
+          && ['UP', 'DOWN'].includes(row.moverSide)
+          && Number(row.moverRank) >= 1
+        ))
+      ))
       .slice(0, this.config().limit)
       .map((row, index) => ({ ...row, rank: index + 1 }));
     return {

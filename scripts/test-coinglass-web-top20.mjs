@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   applyBinanceLiquidityFilter,
   assessCoinglassLiquidity,
   buildCoinglassZoneProposal,
   COINGLASS_WEB_TOP20_ISOLATION,
   COINGLASS_WEB_TOP20_MODE,
+  CoinGlassWebTop20Manager,
   mergeLastGoodHeatmapRows,
   safeCoinglassSymbol,
+  selectBinanceAppMoverCandidates,
   selectTopBinanceUsdtPerpetuals,
   summarizeCoinglassHeatmap,
 } from '../src/coinglassWebTop20.js';
@@ -30,6 +34,24 @@ assert.deepEqual(ranked.map((row) => row.symbol), ['BBBUSDT', 'AAAUSDT']);
 assert.deepEqual(ranked.map((row) => row.rank), [1, 2]);
 assert.equal(ranked[0].quoteVolume24h, 900);
 
+const moverExchangeInfo = {
+  symbols: ['BTC', 'AAA', 'BBB', 'CCC', 'SOL', 'PEPE'].map((baseAsset) => ({
+    symbol: `${baseAsset}USDT`, baseAsset, quoteAsset: 'USDT', status: 'TRADING', contractType: 'PERPETUAL',
+  })),
+};
+const moverRows = selectBinanceAppMoverCandidates(moverExchangeInfo, [
+  { symbol: 'BTCUSDT', quoteVolume: '999000000', lastPrice: '60000', priceChangePercent: '0.2', count: 900000 },
+  { symbol: 'SOLUSDT', quoteVolume: '800000000', lastPrice: '150', priceChangePercent: '-0.5', count: 800000 },
+  { symbol: 'PEPEUSDT', quoteVolume: '700000000', lastPrice: '0.1', priceChangePercent: '1', count: 700000 },
+  { symbol: 'AAAUSDT', quoteVolume: '100000000', lastPrice: '2', priceChangePercent: '50', count: 100000 },
+  { symbol: 'BBBUSDT', quoteVolume: '80000000', lastPrice: '4', priceChangePercent: '-30', count: 80000 },
+  { symbol: 'CCCUSDT', quoteVolume: '50000000', lastPrice: '3', priceChangePercent: '20', count: 50000 },
+], { topPerSide: 3, maxSymbols: 6, minQuoteVolume: 2_000_000 });
+assert.deepEqual(moverRows.map((row) => row.symbol), ['BTCUSDT', 'AAAUSDT', 'BBBUSDT', 'CCCUSDT', 'SOLUSDT', 'PEPEUSDT']);
+assert.deepEqual(moverRows.map((row) => row.moverSide), ['REFERENCE', 'UP', 'DOWN', 'UP', 'DOWN', 'UP']);
+assert.equal(moverRows.find((row) => row.symbol === 'AAAUSDT').moverRank, 1);
+assert.equal(moverRows.find((row) => row.symbol === 'PEPEUSDT').moverRank, 3);
+
 const liquidSelection = applyBinanceLiquidityFilter([
   { symbol: 'BTCUSDT', quoteVolume24h: 1, tradeCount24h: 1 },
   { symbol: 'GOODUSDT', quoteVolume24h: 100_000_000, tradeCount24h: 100_000 },
@@ -42,6 +64,21 @@ const liquidSelection = applyBinanceLiquidityFilter([
 assert.deepEqual(liquidSelection.rows.map((row) => row.symbol), ['BTCUSDT', 'GOODUSDT']);
 assert.equal(liquidSelection.rows[0].binanceLiquidity.forcedBtc, true);
 assert.equal(liquidSelection.excluded.some((row) => row.symbol === 'LINKUSDT'), true);
+const preservedMoverOrder = applyBinanceLiquidityFilter([
+  { symbol: 'FIRSTUSDT', quoteVolume24h: 100, tradeCount24h: 100 },
+  { symbol: 'SECONDUSDT', quoteVolume24h: 1_000, tradeCount24h: 1_000 },
+], {
+  FIRSTUSDT: { spreadBps: 1, bidDepthUsd: 100, askDepthUsd: 100, openInterestNotional: 100 },
+  SECONDUSDT: { spreadBps: 1, bidDepthUsd: 1_000, askDepthUsd: 1_000, openInterestNotional: 1_000 },
+}, 2, {
+  preserveOrder: true,
+  quoteVolume24h: 0,
+  tradeCount24h: 0,
+  openInterestNotional: 0,
+  bookDepthUsd: 0,
+  maxSpreadBps: 15,
+});
+assert.deepEqual(preservedMoverOrder.rows.map((row) => row.symbol), ['FIRSTUSDT', 'SECONDUSDT']);
 
 assert.equal(safeCoinglassSymbol('btcusdt'), 'BTCUSDT');
 assert.equal(safeCoinglassSymbol('../../etc/passwd'), '');
@@ -98,6 +135,23 @@ const balancedProposal = buildCoinglassZoneProposal({
 }, { symbol: 'GOODUSDT', lastPrice: 100 });
 assert.equal(balancedProposal.action, 'WAIT_BALANCED');
 assert.equal(buildCoinglassZoneProposal({}, {}).action, 'NO_DATA');
+
+const legacyDataDir = await mkdtemp(join(tmpdir(), 'coinglass-movers-v3-'));
+await writeFile(join(legacyDataDir, 'snapshot.json'), JSON.stringify({
+  version: 'COINGLASS_WEB_MODEL3_LIQUID_MARKETS_V2_20260817',
+  source: { ranking: 'legacy-volume' },
+  rows: [
+    { symbol: 'BTCUSDT', heatmap: richHeatmap, lastPrice: 100 },
+    { symbol: 'SOLUSDT', heatmap: richHeatmap, lastPrice: 100 },
+  ],
+}), 'utf8');
+const legacyView = await new CoinGlassWebTop20Manager({
+  rootDir: new URL('..', import.meta.url).pathname,
+  dataDir: legacyDataDir,
+}).snapshot();
+assert.deepEqual(legacyView.rows.map((row) => row.symbol), ['BTCUSDT']);
+assert.equal(legacyView.source.viewLiquidityExcluded, 1);
+await rm(legacyDataDir, { recursive: true, force: true });
 
 const retained = mergeLastGoodHeatmapRows({
   markets: [{ symbol: 'AAAUSDT', rank: 1 }, { symbol: 'BBBUSDT', rank: 2 }],

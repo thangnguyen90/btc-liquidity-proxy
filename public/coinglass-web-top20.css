@@ -62,8 +62,10 @@ button:disabled { cursor: wait; opacity: .5; }
 .card.balanced { border-top-color: var(--warn); }
 .card.no-data { border-top-color: #536a63; }
 .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 14px 16px 12px; }
-.rank { color: var(--muted); margin-right: 5px; }
 .symbol { margin: 0; font-size: 20px; }
+.mover { display: inline-block; margin-left: 9px; border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; color: var(--muted); font-size: 9px; vertical-align: 3px; }
+.mover.up { border-color: rgba(53, 243, 176, .45); color: var(--mint); }
+.mover.down { border-color: rgba(255, 110, 135, .45); color: var(--bad); }
 .market-stats { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 5px; color: var(--muted); font-size: 12px; }
 .positive { color: var(--mint); }
 .negative { color: var(--bad); }
