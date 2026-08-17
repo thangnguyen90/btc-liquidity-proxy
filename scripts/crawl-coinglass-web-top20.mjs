@@ -12,6 +12,7 @@ import {
   COINGLASS_WEB_TOP20_MODE,
   COINGLASS_WEB_TOP20_VERSION,
   mergeLastGoodHeatmapRows,
+  qualifyCoinglassOpportunity,
   selectBinanceAppMoverCandidates,
   summarizeCoinglassHeatmap,
 } from '../src/coinglassWebTop20.js';
@@ -173,7 +174,7 @@ async function crawlSymbol(page, market, { imageDir, range, initial = false }) {
 }
 
 const rootDir = process.cwd();
-const limit = Math.max(1, Math.min(20, Number(argument('--limit', '20')) || 20));
+const limit = Math.max(1, Math.min(40, Number(argument('--limit', '40')) || 40));
 const range = '48h';
 const reason = argument('--reason', 'manual');
 const dataDir = resolve(argument('--data-dir', join(rootDir, 'data', 'coinglass-web-top20')));
@@ -193,10 +194,10 @@ try {
     fetchJson(`${binanceBase}/fapi/v1/ticker/24hr`),
     fetchJson(`${binanceBase}/fapi/v1/ticker/bookTicker`),
   ]);
-  const topPerSide = Math.max(20, limit);
+  const topPerSide = Math.max(20, Math.ceil((limit - 1) / 2));
   const moverCandidates = selectBinanceAppMoverCandidates(exchangeInfo, tickers, {
     topPerSide,
-    maxSymbols: topPerSide * 2,
+    maxSymbols: Math.max(2, limit - 1),
     minQuoteVolume: 2_000_000,
   });
   if (!moverCandidates.length) throw new Error('Binance returned no eligible top gainer/loser contracts');
@@ -207,7 +208,7 @@ try {
     Math.min(moverCandidates.length, limit + 16),
     { preserveOrder: true },
   );
-  const markets = binanceSelection.rows;
+  const markets = binanceSelection.assessed.slice(0, limit);
   if (!markets.length) throw new Error('No Binance market passed the liquidity filter');
 
   const localLibraryPath = join(rootDir, '.playwright-libs', 'root', 'usr', 'lib', 'x86_64-linux-gnu');
@@ -242,6 +243,7 @@ try {
 
   const rows = [];
   const failures = [];
+  let authRequired = false;
   for (const [index, market] of markets.entries()) {
     await writeJsonAtomic(progressFile, {
       version: COINGLASS_WEB_TOP20_VERSION,
@@ -256,14 +258,19 @@ try {
     try {
       rows.push(await crawlSymbol(page, market, { imageDir, range, initial: index === 0 }));
     } catch (error) {
+      const errorMessage = String(error?.message ?? error);
       failures.push({
         rank: market.rank,
         symbol: market.symbol,
-        error: String(error?.message ?? error),
+        error: errorMessage,
         failedAt: new Date().toISOString(),
       });
+      if (/login|log in|unlock full data|permission|response code 40000/i.test(errorMessage)) {
+        authRequired = true;
+        break;
+      }
     }
-    const delayMs = index === 0 ? 20_000 : 5_000;
+    const delayMs = index === 0 ? 8_000 : 2_000;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
   }
 
@@ -276,14 +283,16 @@ try {
   });
   const assessedRows = mergedRows.map((row) => {
     const heatmapLiquidity = assessCoinglassLiquidity(row.heatmap, row);
-    return {
+    const proposal = buildCoinglassZoneProposal(row.heatmap, row);
+    const enriched = {
       ...row,
       heatmapLiquidity,
-      proposal: buildCoinglassZoneProposal(row.heatmap, row),
+      proposal,
     };
+    const qualification = qualifyCoinglassOpportunity(enriched);
+    return { ...enriched, qualification, qualified: qualification.qualified };
   });
   const publishedRows = assessedRows
-    .filter((row) => row.heatmapLiquidity.eligible)
     .slice(0, limit)
     .map((row, index) => ({ ...row, rank: index + 1 }));
   const rejectedHeatmaps = assessedRows
@@ -308,9 +317,12 @@ try {
       range,
       requested: markets.length,
       moverCandidates: moverCandidates.length,
-      binanceLiquidityEligible: markets.length,
+      binanceLiquidityAssessed: markets.length,
+      binanceLiquidityEligible: markets.filter((row) => row.binanceLiquidity?.eligible).length,
       binanceLiquidityExcluded: binanceSelection.excluded.length,
       heatmapLiquidityExcluded: rejectedHeatmaps.length,
+      qualified: publishedRows.filter((row) => row.qualified).length,
+      authRequired,
       successful: rows.length,
       failed: failures.length,
       published: publishedRows.length,

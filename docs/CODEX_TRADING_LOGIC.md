@@ -2325,3 +2325,16 @@ Before major edits:
 - Không thêm signal/label/tier/gate/card giao dịch hoặc whitelist checkbox. Không ảnh hưởng Binance, entry, size, leverage, SL/TP, paper,
   scanner hay protection. Snapshot trước V4 chỉ giữ BTC reference; altcoin fail-closed khỏi view cho đến snapshot exact V4,
   tránh gọi nhầm top-volume legacy là mover. Không migrate hoặc rewrite JSON cũ.
+
+### 2026-08-17 - Tự quét 40 CoinGlass movers mỗi 3 phút và gửi Discord
+
+- Nâng collector lên `COINGLASS_WEB_SCHEDULED_MOVERS_V5_20260817`, thêm notifier `COINGLASS_WEB_DISCORD_V1_20260817`;
+  proposal V1 và mode `OBSERVE_ONLY` giữ nguyên. Scheduler mặc định `180000ms`, scan limit 40, không chạy chồng khi lượt trước/login còn active.
+- Mỗi lượt dùng snapshot Binance + CoinGlass causal hiện tại, crawl BTC và khoảng 39 top tăng/giảm xen kẽ. Khác V4, toàn bộ cohort được publish
+  lên màn hình; row lỗi/stale/không đạt vẫn có card và reason, không bị ẩn. Delay giữa symbol giảm để một vòng 40 coin nằm trong chu kỳ 3 phút.
+- `qualified` chỉ true khi fresh `OK`, pass volume/trades/OI/spread, pass cell/peak/persistence và proposal directional LONG/SHORT.
+  Discord gửi riêng các row này, dedupe `symbol+action` 30 phút, throttle/retry 429; balance/no-data không gửi.
+- Nếu persistent profile chưa login/không có quyền altcoin hoặc crawl trả login/permission error, gửi cảnh báo Discord `AUTH_REQUIRED`
+  kèm link trang login, cooldown 60 phút. Notification state/dedupe lưu optional ở `data/coinglass-web-top20/notifications.json`.
+- Không thêm label/tier/gate/card giao dịch/whitelist checkbox; thống kê chỉ scanned/qualified/top up-down/long-short. Không ảnh hưởng
+  Binance, entry, size, leverage, SL/TP, paper, scanner hoặc protection. JSON trước V5 chỉ giữ BTC fail-closed, không migrate/rewrite.

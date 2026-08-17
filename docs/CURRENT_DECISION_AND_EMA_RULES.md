@@ -3374,40 +3374,31 @@ Versions đang chạy: `LIQUID_COMBO_BTC_BREADTH_V1_20260808` và
 - Tương thích JSON cũ: không migrate/rewrite store. Các trade cũ có đủ `binanceEntryFilledAt` vẫn được đọc; record thiếu fill hoặc PnL Income
   được giữ ngoài cohort/đánh dấu missing, không ghép gần đúng và không thay bằng paper result.
 
-## 2026-08-17 - CoinGlass Model 3: BTC + coin có liquidity và đề xuất vùng giá
+## 2026-08-17 - CoinGlass Model 3 scheduler 3 phút, 40 movers và Discord observe-only
 
-- Version collector/universe: `COINGLASS_WEB_BINANCE_MOVERS_LIQUIDITY_V4_20260817`; version đề xuất:
-  `COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817`; mode cố định `OBSERVE_ONLY`. Collector chỉ chạy thủ công tại
-  `/coinglass-web-top20`, trong child process Playwright riêng và không truyền snapshot vào Liquid Flow V2/scanner.
-- Dữ liệu dùng trước snapshot/phân loại: từ Binance Futures public lấy `exchangeInfo`, ticker 24h, bulk best bid/ask và open interest hiện tại.
-  BTC luôn được giữ làm `REFERENCE`. Altcoin lấy đúng universe movers của Liquid Flow V2/Binance app style: nhánh `UP` xếp
-  `priceChangePercent` 24h giảm dần, nhánh `DOWN` xếp phần trăm âm sâu dần, volume chỉ tie-break; hai nhánh được xen kẽ theo `moverRank`.
-  Sau đó altcoin phải đồng thời có quote volume 24h `>= $50M`, ít nhất `20,000` trade/24h, OI notional `>= $5M` và spread
-  `<=15 bps`; rồi mới đọc CoinGlass Model 3 48h gồm exact
-  `instrumentId`, `prices`, `y`, `liq`, range/updateTime. Đây là snapshot quan sát tại thời điểm crawl, không phải dữ liệu cấp quyền entry.
-- Phân loại liquidity hai tầng: tầng Binance tính điểm log volume/OI/top-book/trade để audit nhưng không được sắp lại mover rank. Best bid/ask
-  notional chỉ hiển thị audit, không còn là hard gate vì một price tick không đại diện độ sâu toàn book; tầng CoinGlass chỉ giữ altcoin có
-  ít nhất `100` liquidation cells, tối thiểu hai local peak trong `±20%` giá và ít nhất một peak tồn tại `>=3` bars. BTC được giữ để làm
-  thị trường tham chiếu kể cả lúc CoinGlass thiếu cell. Vì vậy coin volume lớn nhưng order book/OI hoặc cụm thanh lý rỗng (ví dụ case LINK được
-  báo) bị đưa vào `exclusions`, không chiếm slot top 20. Peak được tách tối đa sáu vùng mỗi phía thay vì để một phía chiếm toàn bộ danh sách.
-- Phân loại đề xuất: mỗi vùng được chấm `strength × exp(-|distance|/8) × persistence boost`, cộng ba vùng mạnh nhất trên/dưới.
-  Nếu một phía mạnh hơn ít nhất `1.25x` và vùng hút đầu tiên cách giá không quá `15%`, UI hiển thị `ƯU TIÊN CANH LONG` hoặc
-  `ƯU TIÊN CANH SHORT`; còn lại là `CHỜ XÁC NHẬN — HAI PHÍA CÂN BẰNG`; thiếu structured zones là `CHƯA ĐỦ VÙNG THANH LÝ`.
-  Đây không phải signal/gate giao dịch: LONG vẫn yêu cầu reclaim/giữ support hoặc breakout-retest; SHORT yêu cầu sweep-reject hoặc
-  breakdown-retest; tuyệt đối không market-chase chỉ vì có vùng hút.
-- Cách thống kê: trang đếm structured zones, số Binance top tăng/top giảm và trạng thái observe-only long/short/wait; mỗi card ghi exact
-  `moverSide/moverRank` cùng giá tham chiếu,
-  target/risk zone, distance, relative strength, persistence, volume/OI/top-book/spread. Ảnh canvas vẫn có thể lưu làm audit nội bộ nhưng không còn
-  render/crop trên trang và không được OCR/suy diễn. Các số này không tham gia paper W/L, WR, PF, AvgROE, NET hoặc whitelist stats.
-- Phiên đăng nhập: crawler và luồng login dùng chung persistent profile riêng trong `data/coinglass-web-top20/browser-profile`. Nút
-  `Đăng nhập cho collector` mở cửa sổ visible để người dùng tự đăng nhập một lần và kiểm tra quyền bằng exact ETH Model 3 response; không đọc,
-  sao chép hoặc dùng profile/cookie Chrome cá nhân. Vì vậy login ở Chrome thường không đồng nghĩa collector đã login.
-- Ảnh hưởng Binance/entry/size/SL/TP: **không**. Isolation contract tiếp tục đặt
-  `affectsLiquidFlowV2/signals/paper/Binance/entry/size/SlTp=false`; API login/refresh không gọi order client, paper manager hay protection.
-- Whitelist: không thêm nhãn/card thống kê giao dịch nên không thêm checkbox/matcher. Policy hiện hữu vẫn mặc định tắt và chỉ hiện khi paper
-  CLOSED AvgROE `>4%`; đề xuất CoinGlass không thể mở khóa whitelist hoặc Binance.
-- Tương thích JSON cũ: `auth`, `moverSide/moverRank`, `binanceLiquidity`, `heatmapLiquidity`, `proposal` và `exclusions` đều optional. Snapshot V1/V2 thiếu mover fields
-  vẫn parse được nhưng fail-closed cho altcoin: API chỉ giữ BTC, lọc mọi alt version cũ khỏi view và báo bằng `viewLiquidityExcluded`; chỉ snapshot exact V4
-  mới được công nhận `UP/DOWN + moverRank`. Row BTC cũ được dựng proposal lúc đọc.
-  Không migrate/rewrite paper/signal/settings hoặc backfill outcome. Store/profile tiếp tục git-ignore;
-  file snapshot/auth thiếu hoặc lỗi không làm gián đoạn server hay luồng trading.
+- Version collector/universe: `COINGLASS_WEB_SCHEDULED_MOVERS_V5_20260817`; proposal:
+  `COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817`; notifier: `COINGLASS_WEB_DISCORD_V1_20260817`. Mode cố định `OBSERVE_ONLY`.
+  Scheduler server chạy mặc định mỗi `180000ms`; overlap bị chặn bởi `running/loginRunning`. Nút refresh thủ công vẫn giữ nhưng không bắt buộc.
+- Dữ liệu dùng trước phân loại: Binance Futures public `exchangeInfo`, ticker 24h, bulk best bid/ask và OI hiện tại; CoinGlass exact
+  Model 3 48h `instrumentId/prices/y/liq/range/updateTime`. BTC là `REFERENCE`; tối đa 39 alt được lấy từ exact selector Liquid Flow V2,
+  xen kẽ `UP change24h DESC` và `DOWN change24h ASC`, volume chỉ tie-break. Toàn bộ cohort khoảng 40 coin được crawl và hiển thị,
+  kể cả coin không đủ điều kiện Discord.
+- Điều kiện `qualified`: phải là altcoin có fresh status `OK`; Binance volume 24h `>= $50M`, trades `>=20K`, OI notional `>= $5M`,
+  spread `<=15bps`; CoinGlass có `>=100` cells, `>=2` peak trong `±20%`, ít nhất một peak bền `>=3` bars; proposal phải là
+  `WAIT_LONG_CONFIRMATION` hoặc `WAIT_SHORT_CONFIRMATION`. BTC, stale/fetch-failed, liquidity yếu, cluster yếu và `WAIT_BALANCED/NO_DATA`
+  vẫn hiện card cùng reason nhưng `qualified=false` và không gửi Discord. Top-book chỉ audit, không phải hard gate.
+- Proposal chấm `strength × exp(-|distance|/8) × persistence boost`, cộng ba vùng mạnh nhất mỗi phía. Một phía cần mạnh `>=1.25x`
+  và target cách giá `<=15%`; LONG vẫn phải đợi reclaim/retest, SHORT phải đợi sweep-reject/breakdown-retest. Đây không phải entry signal/gate thật.
+- Discord chỉ gửi row `qualified`, dedupe theo `symbol + action`, cooldown mặc định 30 phút, retry một lần khi 429 và throttle giữa message.
+  Webhook ưu tiên `COINGLASS_WEB_DISCORD_WEBHOOK_URL`, sau đó fallback webhook liquid/default đang cấu hình; API chỉ công khai boolean configured.
+  Nếu auth file chưa có quyền altcoin hoặc crawler nhận login/permission error, scheduler gửi `AUTH_REQUIRED` kèm link đăng nhập, cooldown 60 phút.
+- Cách thống kê/UI: snapshot/card lưu mover side/rank, qualification reasons, target/risk zone, strength/persistence, volume/OI/top-book/spread;
+  KPI hiển thị scanned/target, qualified Discord, top tăng/giảm và canh long/short. Ảnh canvas chỉ audit nội bộ, không render/OCR.
+  Các số này không tham gia paper W/L, WR, PF, AvgROE, NET hoặc whitelist stats.
+- Ảnh hưởng Binance/entry/size/SL/TP: **không**. Isolation contract giữ
+  `affectsLiquidFlowV2/signals/paper/Binance/entry/size/SlTp=false`; scheduler/notifier không gọi order client, paper manager hay protection.
+- Whitelist: không thêm label/card giao dịch nên không thêm checkbox/matcher. Policy hiện hữu vẫn mặc định tắt và chỉ hiện khi paper CLOSED
+  AvgROE `>4%`; Discord CoinGlass không cấp quyền Binance.
+- Tương thích JSON cũ: field scheduler/notifications/qualification/mover/liquidity/proposal đều optional. Snapshot trước exact V5 chỉ giữ BTC
+  fail-closed; alt cũ không được gọi là mover. `notifications.json` mới lưu dedupe/cooldown và recent events trong store git-ignore.
+  Không migrate/rewrite paper, signal, settings hoặc outcome cũ; lỗi collector/notifier không chặn server/trading.

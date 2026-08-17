@@ -1,10 +1,16 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { selectLiquidHeatmapFlowV2Candidates } from './liquidHeatmapFlowV2.js';
+import {
+  COINGLASS_WEB_DISCORD_VERSION,
+  buildCoinglassWebAuthAlertPayload,
+  buildCoinglassWebDiscordPayload,
+  coinglassWebDiscordDedupeKey,
+} from './coinglassWebDiscord.js';
 
-export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_BINANCE_MOVERS_LIQUIDITY_V4_20260817';
+export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_SCHEDULED_MOVERS_V5_20260817';
 export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V1_20260817';
 export const COINGLASS_WEB_TOP20_MODE = 'OBSERVE_ONLY';
 export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
@@ -19,6 +25,12 @@ export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
 });
 
 const execFileAsync = promisify(execFile);
+
+async function writeJsonAtomic(path, payload) {
+  const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(temporaryPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await rename(temporaryPath, path);
+}
 
 function finiteNumber(value, fallback = null) {
   const number = Number(value);
@@ -155,6 +167,7 @@ export function applyBinanceLiquidityFilter(markets = [], metricsBySymbol = {}, 
     .map((market, index) => ({ ...market, rank: index + 1 }));
   const selectedSymbols = new Set(eligible.map((market) => market.symbol));
   return {
+    assessed,
     rows: eligible,
     excluded: assessed
       .filter((market) => !selectedSymbols.has(market.symbol))
@@ -384,6 +397,25 @@ export function buildCoinglassZoneProposal(heatmap = {}, market = {}) {
   };
 }
 
+export function qualifyCoinglassOpportunity(row = {}) {
+  const reasons = [];
+  if (row.symbol === 'BTCUSDT' || row.moverSide === 'REFERENCE') reasons.push('BTC_REFERENCE_ONLY');
+  if (row.status !== 'OK' || row.stale) reasons.push('STALE_OR_FETCH_FAILED');
+  if (!row.binanceLiquidity?.eligible) reasons.push('BINANCE_LIQUIDITY_NOT_ELIGIBLE');
+  if (!row.heatmapLiquidity?.eligible || Number(row.heatmap?.liquidationCellCount ?? 0) <= 0) {
+    reasons.push('COINGLASS_CLUSTERS_NOT_ELIGIBLE');
+  }
+  if (!['WAIT_LONG_CONFIRMATION', 'WAIT_SHORT_CONFIRMATION'].includes(row.proposal?.action)) {
+    reasons.push('NO_DIRECTIONAL_EDGE');
+  }
+  return {
+    qualified: reasons.length === 0,
+    reasons,
+    observeOnly: true,
+    discordEligible: reasons.length === 0,
+  };
+}
+
 export function mergeLastGoodHeatmapRows({ markets = [], freshRows = [], failures = [], previousRows = [] } = {}) {
   const freshBySymbol = new Map(freshRows.map((row) => [row.symbol, row]));
   const failureBySymbol = new Map(failures.map((row) => [row.symbol, row]));
@@ -392,7 +424,14 @@ export function mergeLastGoodHeatmapRows({ markets = [], freshRows = [], failure
     const fresh = freshBySymbol.get(market.symbol);
     if (fresh) return [fresh];
     const previous = previousBySymbol.get(market.symbol);
-    if (!previous) return [];
+    if (!previous) return [{
+      ...market,
+      status: 'FETCH_FAILED',
+      stale: false,
+      lastError: failureBySymbol.get(market.symbol)?.error ?? 'Fresh capture unavailable',
+      heatmap: null,
+      proposal: null,
+    }];
     return [{
       ...previous,
       ...market,
@@ -419,6 +458,7 @@ export class CoinGlassWebTop20Manager {
     this.snapshotFile = join(dataDir, 'snapshot.json');
     this.progressFile = join(dataDir, 'progress.json');
     this.authFile = join(dataDir, 'auth.json');
+    this.notificationFile = join(dataDir, 'notifications.json');
     this.running = false;
     this.startedAt = null;
     this.lastError = null;
@@ -427,24 +467,49 @@ export class CoinGlassWebTop20Manager {
     this.loginStartedAt = null;
     this.loginError = null;
     this.loginInflight = null;
+    this.schedulerTimer = null;
+    this.schedulerStartedAt = null;
+    this.schedulerNextRunAt = null;
+    this.schedulerLastTickAt = null;
   }
 
   config() {
+    const configuredLimit = finiteNumber(
+      process.env.COINGLASS_WEB_SCAN_LIMIT
+      ?? process.env.COINGLASS_WEB_TOP20_LIMIT
+      ?? 40,
+      40,
+    );
     return {
       enabled: process.env.COINGLASS_WEB_TOP20_ENABLED !== 'false',
-      limit: Math.max(1, Math.min(20, Number(process.env.COINGLASS_WEB_TOP20_LIMIT ?? 20))),
+      limit: Math.max(1, Math.min(40, configuredLimit)),
       range: '48h',
       browserMode: process.env.COINGLASS_WEB_BROWSER_MODE ?? 'headed',
       timeoutMs: Math.max(120_000, Number(process.env.COINGLASS_WEB_TOP20_TIMEOUT_MS ?? 12 * 60_000)),
       loginTimeoutMs: Math.max(120_000, Number(process.env.COINGLASS_WEB_LOGIN_TIMEOUT_MS ?? 10 * 60_000)),
+      schedulerEnabled: process.env.COINGLASS_WEB_SCHEDULER_ENABLED !== 'false',
+      schedulerIntervalMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_SCAN_INTERVAL_MS, 180_000)),
+      discordConfigured: Boolean(this.discordWebhookUrl()),
+      discordSignalCooldownMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_DISCORD_SIGNAL_COOLDOWN_MS, 30 * 60_000)),
+      discordAuthCooldownMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_DISCORD_AUTH_COOLDOWN_MS, 60 * 60_000)),
     };
   }
 
+  discordWebhookUrl() {
+    return String(
+      process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL
+      || process.env.LIQ_SCAN_WEBHOOK_URL
+      || process.env.DISCORD_WEBHOOK_URL
+      || '',
+    ).trim();
+  }
+
   async snapshot() {
-    const [saved, progress, auth] = await Promise.all([
+    const [saved, progress, auth, notifications] = await Promise.all([
       readJson(this.snapshotFile, null),
       this.running ? readJson(this.progressFile, null) : Promise.resolve(null),
       readJson(this.authFile, null),
+      readJson(this.notificationFile, null),
     ]);
     const savedRows = Array.isArray(saved?.rows) ? saved.rows : [];
     const moverUniverseCompatible = saved?.version === COINGLASS_WEB_TOP20_VERSION;
@@ -457,13 +522,14 @@ export class CoinGlassWebTop20Manager {
           proposal: row?.proposal ?? buildCoinglassZoneProposal(row?.heatmap, row),
         };
       })
+      .map((row) => ({ ...row, qualification: row?.qualification ?? qualifyCoinglassOpportunity(row) }))
+      .map((row) => ({ ...row, qualified: row.qualification.qualified }))
       .filter((row) => (
-        row.heatmapLiquidity.eligible
-        && (row.symbol === 'BTCUSDT' || (
+        row.symbol === 'BTCUSDT' || (
           moverUniverseCompatible
           && ['UP', 'DOWN'].includes(row.moverSide)
           && Number(row.moverRank) >= 1
-        ))
+        )
       ))
       .slice(0, this.config().limit)
       .map((row, index) => ({ ...row, rank: index + 1 }));
@@ -479,6 +545,22 @@ export class CoinGlassWebTop20Manager {
       loginStartedAt: this.loginStartedAt,
       loginError: this.loginError,
       auth,
+      scheduler: {
+        enabled: this.config().schedulerEnabled,
+        intervalMs: this.config().schedulerIntervalMs,
+        active: Boolean(this.schedulerTimer),
+        startedAt: this.schedulerStartedAt,
+        nextRunAt: this.schedulerNextRunAt,
+        lastTickAt: this.schedulerLastTickAt,
+      },
+      notifications: {
+        version: COINGLASS_WEB_DISCORD_VERSION,
+        configured: this.config().discordConfigured,
+        lastAuthAlertAt: notifications?.lastAuthAlertAt ?? null,
+        lastSignalAt: notifications?.lastSignalAt ?? null,
+        sentSignals: Object.keys(notifications?.signalSent ?? {}).length,
+        recent: Array.isArray(notifications?.recent) ? notifications.recent.slice(0, 20) : [],
+      },
       progress,
       updatedAt: saved?.updatedAt ?? null,
       source: saved?.source ? { ...saved.source, viewLiquidityExcluded: Math.max(0, savedRows.length - rows.length) } : null,
@@ -499,11 +581,21 @@ export class CoinGlassWebTop20Manager {
     if (this.loginRunning) {
       return { accepted: false, reason: 'login_running', snapshot: await this.snapshot() };
     }
+    if (reason === 'scheduled') {
+      const auth = await readJson(this.authFile, null);
+      if (!auth?.altcoinAccess) {
+        this.notifyAuthRequired(auth?.message || 'Phiên collector chưa có quyền CoinGlass Model 3 altcoin.')
+          .catch((error) => console.warn(`[CoinGlassWebTop20] auth alert failed: ${error.message}`));
+        return { accepted: false, reason: 'auth_required', snapshot: await this.snapshot() };
+      }
+    }
     await mkdir(this.dataDir, { recursive: true });
     this.running = true;
     this.startedAt = new Date().toISOString();
     this.lastError = null;
     this.inflight = this.runCollector({ ...config, reason })
+      .then(() => this.handleCompletedRefresh()
+        .catch((error) => console.warn(`[CoinGlassWebTop20] post-refresh notify failed: ${error.message}`)))
       .catch((error) => {
         this.lastError = String(error?.message ?? error);
         console.warn(`[CoinGlassWebTop20] refresh failed: ${this.lastError}`);
@@ -513,6 +605,43 @@ export class CoinGlassWebTop20Manager {
         this.inflight = null;
       });
     return { accepted: true, reason, snapshot: await this.snapshot() };
+  }
+
+  startScheduler({ initialDelayMs } = {}) {
+    const config = this.config();
+    if (!config.schedulerEnabled || this.schedulerTimer) return false;
+    const delayMs = Math.max(5_000, Number(initialDelayMs ?? config.schedulerIntervalMs));
+    this.schedulerStartedAt = new Date().toISOString();
+    this.schedulerNextRunAt = new Date(Date.now() + delayMs).toISOString();
+    const tick = async () => {
+      this.schedulerLastTickAt = new Date().toISOString();
+      this.schedulerNextRunAt = new Date(Date.now() + config.schedulerIntervalMs).toISOString();
+      const result = await this.startRefresh('scheduled').catch((error) => ({
+        accepted: false,
+        reason: String(error?.message ?? error),
+      }));
+      if (!result?.accepted && !['already_running', 'login_running', 'auth_required'].includes(result?.reason)) {
+        console.warn(`[CoinGlassWebTop20] scheduled refresh skipped: ${result?.reason ?? 'unknown'}`);
+      }
+    };
+    const timeout = setTimeout(() => {
+      tick().catch(() => {});
+      this.schedulerTimer = setInterval(() => tick().catch(() => {}), config.schedulerIntervalMs);
+      this.schedulerTimer.unref?.();
+    }, delayMs);
+    timeout.unref?.();
+    this.schedulerTimer = timeout;
+    console.log(`[CoinGlassWebTop20] scheduler enabled interval=${config.schedulerIntervalMs}ms limit=${config.limit}`);
+    return true;
+  }
+
+  stopScheduler() {
+    if (!this.schedulerTimer) return false;
+    clearTimeout(this.schedulerTimer);
+    clearInterval(this.schedulerTimer);
+    this.schedulerTimer = null;
+    this.schedulerNextRunAt = null;
+    return true;
   }
 
   async runCollector({ limit, range, reason, timeoutMs }) {
@@ -533,6 +662,111 @@ export class CoinGlassWebTop20Manager {
     const result = JSON.parse(String(stdout).trim() || '{}');
     if (!result.ok) throw new Error(result.error || 'CoinGlass collector did not complete');
     return result;
+  }
+
+  async postDiscord(payload) {
+    const webhookUrl = this.discordWebhookUrl();
+    if (!webhookUrl) return { sent: false, reason: 'not_configured' };
+    const send = () => fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    let response = await send();
+    if (response.status === 429) {
+      const rateLimit = await response.json().catch(() => ({}));
+      const retryMs = Math.max(500, Math.min(5_000, Number(rateLimit?.retry_after ?? 1) * 1_000));
+      await new Promise((resolve) => setTimeout(resolve, retryMs));
+      response = await send();
+    }
+    if (!response.ok) throw new Error(`Discord webhook HTTP ${response.status}`);
+    return { sent: true };
+  }
+
+  async notificationState() {
+    return await readJson(this.notificationFile, null) ?? {
+      version: COINGLASS_WEB_DISCORD_VERSION,
+      signalSent: {},
+      recent: [],
+      lastAuthAlertAt: null,
+      lastSignalAt: null,
+    };
+  }
+
+  async saveNotificationState(state) {
+    await mkdir(this.dataDir, { recursive: true });
+    const cutoff = Date.now() - 24 * 60 * 60_000;
+    const signalSent = Object.fromEntries(Object.entries(state.signalSent ?? {})
+      .filter(([, sentAt]) => Number(sentAt) >= cutoff));
+    await writeJsonAtomic(this.notificationFile, {
+      ...state,
+      version: COINGLASS_WEB_DISCORD_VERSION,
+      signalSent,
+      recent: (Array.isArray(state.recent) ? state.recent : []).slice(0, 100),
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  async notifyAuthRequired(message) {
+    const config = this.config();
+    if (!config.discordConfigured) return { sent: false, reason: 'not_configured' };
+    const state = await this.notificationState();
+    const now = Date.now();
+    if (now - Number(state.lastAuthAlertAt ?? 0) < config.discordAuthCooldownMs) {
+      return { sent: false, reason: 'cooldown' };
+    }
+    await this.postDiscord(buildCoinglassWebAuthAlertPayload({
+      message,
+      pageUrl: process.env.COINGLASS_WEB_PUBLIC_URL || `http://127.0.0.1:${process.env.PORT ?? 19082}/coinglass-web-top20`,
+      generatedAt: now,
+    }));
+    state.lastAuthAlertAt = now;
+    state.recent = [{ type: 'AUTH_REQUIRED', sentAt: now, message }, ...(state.recent ?? [])];
+    await this.saveNotificationState(state);
+    console.warn('[CoinGlassWebTop20] Discord auth-required alert sent');
+    return { sent: true };
+  }
+
+  async notifyQualifiedRows(rows = []) {
+    const config = this.config();
+    if (!config.discordConfigured) return { sent: 0, reason: 'not_configured' };
+    const state = await this.notificationState();
+    const now = Date.now();
+    let sent = 0;
+    for (const row of rows.filter((item) => item.qualified)) {
+      const dedupeKey = coinglassWebDiscordDedupeKey(row);
+      if (!dedupeKey || now - Number(state.signalSent?.[dedupeKey] ?? 0) < config.discordSignalCooldownMs) continue;
+      try {
+        await this.postDiscord(buildCoinglassWebDiscordPayload(row, now));
+        state.signalSent = { ...(state.signalSent ?? {}), [dedupeKey]: now };
+        state.lastSignalAt = now;
+        state.recent = [{
+          type: 'SIGNAL',
+          symbol: row.symbol,
+          action: row.proposal?.action,
+          moverSide: row.moverSide,
+          moverRank: row.moverRank,
+          sentAt: now,
+        }, ...(state.recent ?? [])];
+        sent += 1;
+        await new Promise((resolve) => setTimeout(resolve, 750));
+      } catch (error) {
+        console.warn(`[CoinGlassWebTop20] Discord ${row.symbol} failed: ${error.message}`);
+      }
+    }
+    await this.saveNotificationState(state);
+    if (sent) console.log(`[CoinGlassWebTop20] Discord sent ${sent} qualified mover(s)`);
+    return { sent };
+  }
+
+  async handleCompletedRefresh() {
+    const saved = await readJson(this.snapshotFile, null);
+    if (saved?.source?.authRequired) {
+      await this.notifyAuthRequired('CoinGlass từ chối dữ liệu altcoin trong lượt quét; cần đăng nhập hoặc kiểm tra quyền Model 3.');
+      return;
+    }
+    const view = await this.snapshot();
+    await this.notifyQualifiedRows(view.rows);
   }
 
   async startLogin() {

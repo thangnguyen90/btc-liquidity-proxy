@@ -13095,6 +13095,7 @@ server.listen(port, '127.0.0.1', async () => {
   startBinanceRestAlertMonitor();
   initMarketNewsBatch().catch((err) => console.warn('[MarketNews] Init failed:', err.message));
   initCoinFlowBatch().catch((err) => console.warn('[CoinFlow] Init failed:', err.message));
+  coinGlassWebTop20.startScheduler();
   // BTC mark price WebSocket — funding rate + mark price liên tục, không tốn REST
   initTokenUnlocksBatch().catch((err) => console.warn('[TokenUnlocks] Init failed:', err.message));
   startBtcMarkPriceWs();

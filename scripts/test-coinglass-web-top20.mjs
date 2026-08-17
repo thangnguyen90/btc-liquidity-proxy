@@ -10,11 +10,17 @@ import {
   COINGLASS_WEB_TOP20_MODE,
   CoinGlassWebTop20Manager,
   mergeLastGoodHeatmapRows,
+  qualifyCoinglassOpportunity,
   safeCoinglassSymbol,
   selectBinanceAppMoverCandidates,
   selectTopBinanceUsdtPerpetuals,
   summarizeCoinglassHeatmap,
 } from '../src/coinglassWebTop20.js';
+import {
+  buildCoinglassWebAuthAlertPayload,
+  buildCoinglassWebDiscordPayload,
+  coinglassWebDiscordDedupeKey,
+} from '../src/coinglassWebDiscord.js';
 
 const exchangeInfo = {
   symbols: [
@@ -135,6 +141,23 @@ const balancedProposal = buildCoinglassZoneProposal({
 }, { symbol: 'GOODUSDT', lastPrice: 100 });
 assert.equal(balancedProposal.action, 'WAIT_BALANCED');
 assert.equal(buildCoinglassZoneProposal({}, {}).action, 'NO_DATA');
+const qualifiedRow = {
+  symbol: 'GOODUSDT',
+  moverSide: 'UP',
+  moverRank: 1,
+  status: 'OK',
+  quoteVolume24h: 100_000_000,
+  binanceLiquidity: { eligible: true, openInterestNotional: 20_000_000 },
+  heatmap: richHeatmap,
+  heatmapLiquidity: { eligible: true },
+  proposal: longProposal,
+};
+assert.equal(qualifyCoinglassOpportunity(qualifiedRow).qualified, true);
+assert.equal(qualifyCoinglassOpportunity({ ...qualifiedRow, stale: true }).qualified, false);
+assert.equal(qualifyCoinglassOpportunity({ ...qualifiedRow, proposal: balancedProposal }).qualified, false);
+assert.equal(coinglassWebDiscordDedupeKey({ ...qualifiedRow, qualified: true }), 'GOODUSDT:WAIT_LONG_CONFIRMATION');
+assert.match(buildCoinglassWebDiscordPayload({ ...qualifiedRow, qualified: true }).embeds[0].title, /TOP TĂNG #1/);
+assert.match(buildCoinglassWebAuthAlertPayload({ pageUrl: 'http://localhost/test' }).embeds[0].description, /Đăng nhập cho collector/);
 
 const legacyDataDir = await mkdtemp(join(tmpdir(), 'coinglass-movers-v3-'));
 await writeFile(join(legacyDataDir, 'snapshot.json'), JSON.stringify({
@@ -153,6 +176,26 @@ assert.deepEqual(legacyView.rows.map((row) => row.symbol), ['BTCUSDT']);
 assert.equal(legacyView.source.viewLiquidityExcluded, 1);
 await rm(legacyDataDir, { recursive: true, force: true });
 
+const notifyDataDir = await mkdtemp(join(tmpdir(), 'coinglass-discord-v5-'));
+const notifyManager = new CoinGlassWebTop20Manager({
+  rootDir: new URL('..', import.meta.url).pathname,
+  dataDir: notifyDataDir,
+});
+const originalWebhook = process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL;
+process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL = 'https://unit.test/webhook';
+const sentPayloads = [];
+notifyManager.postDiscord = async (payload) => {
+  sentPayloads.push(payload);
+  return { sent: true };
+};
+assert.equal((await notifyManager.notifyQualifiedRows([{ ...qualifiedRow, qualified: true }])).sent, 1);
+assert.equal((await notifyManager.notifyQualifiedRows([{ ...qualifiedRow, qualified: true }])).sent, 0);
+assert.equal((await notifyManager.notifyAuthRequired('test auth')).sent, true);
+assert.equal(sentPayloads.length, 2);
+if (originalWebhook == null) delete process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL;
+else process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL = originalWebhook;
+await rm(notifyDataDir, { recursive: true, force: true });
+
 const retained = mergeLastGoodHeatmapRows({
   markets: [{ symbol: 'AAAUSDT', rank: 1 }, { symbol: 'BBBUSDT', rank: 2 }],
   freshRows: [{ symbol: 'AAAUSDT', rank: 1, status: 'OK' }],
@@ -165,6 +208,12 @@ assert.equal(retained[1].status, 'STALE_LAST_GOOD');
 assert.equal(retained[1].rank, 2);
 assert.equal(retained[1].imageUrl, '/old.png');
 assert.equal(retained[1].lastError, 'CoinGlass 40000');
+const failedPlaceholder = mergeLastGoodHeatmapRows({
+  markets: [{ symbol: 'FAILUSDT', rank: 1 }],
+  failures: [{ symbol: 'FAILUSDT', error: 'login required' }],
+});
+assert.equal(failedPlaceholder[0].status, 'FETCH_FAILED');
+assert.equal(failedPlaceholder[0].lastError, 'login required');
 
 assert.equal(COINGLASS_WEB_TOP20_MODE, 'OBSERVE_ONLY');
 assert.equal(Object.values(COINGLASS_WEB_TOP20_ISOLATION).every((value, index) => index === 0 ? value === true : value === false), true);
@@ -173,11 +222,13 @@ const serverSource = await readFile(new URL('../src/server.js', import.meta.url)
 assert.match(serverSource, /\/api\/coinglass-web-top20/);
 assert.match(serverSource, /coinGlassWebTop20\.startRefresh\('manual'\)/);
 assert.match(serverSource, /coinGlassWebTop20\.startLogin\(\)/);
+assert.match(serverSource, /coinGlassWebTop20\.startScheduler\(\)/);
 const collectorSource = await readFile(new URL('../src/coinglassWebTop20.js', import.meta.url), 'utf8');
 assert.doesNotMatch(collectorSource, /placeFuturesOrder|LiquidFlowV2PaperManager|BinanceClient/);
 assert.match(collectorSource, /viewLiquidityExcluded/);
 const crawlSource = await readFile(new URL('./crawl-coinglass-web-top20.mjs', import.meta.url), 'utf8');
 assert.match(crawlSource, /launchPersistentContext/);
 assert.match(crawlSource, /assessCoinglassLiquidity/);
+assert.match(crawlSource, /qualifyCoinglassOpportunity/);
 
 console.log('CoinGlass web top20 tests passed.');

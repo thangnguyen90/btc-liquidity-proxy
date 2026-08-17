@@ -2,6 +2,7 @@ const elements = {
   status: document.querySelector('#statusText'),
   updated: document.querySelector('#updatedText'),
   auth: document.querySelector('#authText'),
+  schedule: document.querySelector('#scheduleText'),
   login: document.querySelector('#loginButton'),
   refresh: document.querySelector('#refreshButton'),
   progressPanel: document.querySelector('#progressPanel'),
@@ -100,6 +101,16 @@ function zoneGroup(title, zones) {
   return group;
 }
 
+function qualificationReason(reason) {
+  return ({
+    BTC_REFERENCE_ONLY: 'BTC chỉ dùng tham chiếu',
+    STALE_OR_FETCH_FAILED: 'Dữ liệu chưa fresh',
+    BINANCE_LIQUIDITY_NOT_ELIGIBLE: 'Không đạt volume/OI/spread Binance',
+    COINGLASS_CLUSTERS_NOT_ELIGIBLE: 'Cụm thanh lý CoinGlass chưa đủ',
+    NO_DIRECTIONAL_EDGE: 'Hai phía chưa có lợi thế định hướng',
+  })[reason] || reason;
+}
+
 function card(row) {
   const item = document.createElement('article');
   const proposal = row.proposal || { action: 'NO_DATA', label: 'CHƯA ĐỦ VÙNG THANH LÝ' };
@@ -110,7 +121,7 @@ function card(row) {
       : proposal.action === 'WAIT_BALANCED'
         ? 'balanced'
         : 'no-data';
-  item.className = `card ${actionTone}`;
+  item.className = `card ${actionTone} ${row.qualified ? 'qualified' : 'rejected'}`;
 
   const head = document.createElement('div');
   head.className = 'card-head';
@@ -144,10 +155,16 @@ function card(row) {
   change.textContent = percent(row.priceChangePercent24h);
   stats.append(change);
   copy.append(title, stats);
+  const badges = document.createElement('div');
+  badges.className = 'badges';
+  const qualityBadge = document.createElement('span');
+  qualityBadge.className = `quality-badge ${row.qualified ? 'pass' : 'fail'}`;
+  qualityBadge.textContent = row.qualified ? 'ĐỦ ĐIỀU KIỆN DISCORD' : 'CHƯA ĐỦ ĐIỀU KIỆN';
   const badge = document.createElement('span');
   badge.className = 'badge';
   badge.textContent = `${row.status || 'OK'} · ${number(row.heatmap?.liquidationCellCount, 0)} CELLS`;
-  head.append(copy, badge);
+  badges.append(qualityBadge, badge);
+  head.append(copy, badges);
 
   const proposalPanel = document.createElement('section');
   proposalPanel.className = 'proposal';
@@ -174,6 +191,12 @@ function card(row) {
   confirmation.className = 'confirmation';
   confirmation.textContent = proposal.confirmation || 'Đăng nhập phiên collector rồi cào lại.';
   proposalPanel.append(proposalTop, proposalValues, rationale, confirmation);
+  if (!row.qualified) {
+    const rejected = document.createElement('p');
+    rejected.className = 'qualification-note';
+    rejected.textContent = `Chưa gửi Discord: ${(row.qualification?.reasons || []).map(qualificationReason).join(' · ') || 'chưa đạt rule'}`;
+    proposalPanel.append(rejected);
+  }
 
   const zones = Array.isArray(row.heatmap?.zones) ? row.heatmap.zones : [];
   const zonePanel = document.createElement('div');
@@ -191,10 +214,12 @@ function render(data) {
   const failures = Array.isArray(data.failures) ? data.failures : [];
   const progress = data.progress || {};
   const auth = data.auth || {};
+  const scheduler = data.scheduler || {};
+  const notifications = data.notifications || {};
   const structured = rows.filter((row) => Number(row.heatmap?.liquidationCellCount) > 0).length;
-  const longCount = rows.filter((row) => row.proposal?.action === 'WAIT_LONG_CONFIRMATION').length;
-  const shortCount = rows.filter((row) => row.proposal?.action === 'WAIT_SHORT_CONFIRMATION').length;
-  const waitCount = rows.length - longCount - shortCount;
+  const qualified = rows.filter((row) => row.qualified);
+  const longCount = qualified.filter((row) => row.proposal?.action === 'WAIT_LONG_CONFIRMATION').length;
+  const shortCount = qualified.filter((row) => row.proposal?.action === 'WAIT_SHORT_CONFIRMATION').length;
   const upCount = rows.filter((row) => row.moverSide === 'UP').length;
   const downCount = rows.filter((row) => row.moverSide === 'DOWN').length;
   elements.refresh.disabled = Boolean(data.running || data.loginRunning) || data.config?.enabled === false;
@@ -207,7 +232,7 @@ function render(data) {
       : data.error
         ? `Lần đọc gần nhất lỗi: ${data.error}`
         : rows.length
-          ? `${structured}/${rows.length} coin có vùng thanh lý · top tăng ${upCount}, top giảm ${downCount} · chờ ${waitCount}`
+          ? `Đã quét ${rows.length}/${data.config?.limit || 40} coin · ${qualified.length} coin đủ điều kiện Discord · structured ${structured}`
           : 'Chưa có dữ liệu vùng thanh lý hợp lệ.';
   elements.updated.textContent = data.updatedAt
     ? `Snapshot ${time(data.updatedAt)} · CoinGlass ${data.source?.range || '48h'} · BTC + thị trường đạt chuẩn liquidity`
@@ -216,6 +241,10 @@ function render(data) {
   elements.auth.textContent = auth.altcoinAccess
     ? `Collector đã đăng nhập và có quyền altcoin · kiểm tra ${time(auth.checkedAt)}`
     : auth.message || 'Chrome cá nhân và collector là hai profile khác nhau; hãy đăng nhập một lần cho collector.';
+  elements.schedule.className = scheduler.enabled ? 'schedule-text ok' : 'schedule-text warn';
+  elements.schedule.textContent = scheduler.enabled
+    ? `Tự quét mỗi ${number(Number(scheduler.intervalMs) / 60_000, 0)} phút · lượt kế ${time(scheduler.nextRunAt)} · Discord ${notifications.configured ? 'đã cấu hình' : 'chưa cấu hình'}`
+    : 'Scheduler đang tắt.';
 
   elements.progressPanel.hidden = !data.running;
   if (data.running) {
@@ -227,9 +256,9 @@ function render(data) {
   }
 
   elements.summary.replaceChildren(
-    metric('Có vùng structured', `${structured}`),
-    metric('Binance top tăng', `${upCount}`),
-    metric('Binance top giảm', `${downCount}`),
+    metric('Đã quét / mục tiêu', `${rows.length} / ${data.config?.limit || 40}`),
+    metric('Đủ điều kiện Discord', `${qualified.length}`),
+    metric('Top tăng / giảm', `${upCount} / ${downCount}`),
     metric('Canh long / short', `${longCount} / ${shortCount}`),
   );
 
@@ -266,7 +295,7 @@ async function load() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     render(data);
-    timer = setTimeout(load, data.running || data.loginRunning ? 3000 : 30000);
+    timer = setTimeout(load, data.running || data.loginRunning ? 3000 : 10000);
   } catch (error) {
     elements.status.textContent = `Không đọc được snapshot: ${error.message}`;
     timer = setTimeout(load, 10000);
