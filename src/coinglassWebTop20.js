@@ -14,7 +14,7 @@ import {
   coinglassWebBinanceDedupeKey,
 } from './coinglassWebBinance.js';
 
-export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_QUALIFIED_BINANCE_V11_20260820';
+export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_QUALIFIED_BINANCE_V12_LOW_RENDER_20260822';
 export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817';
 export const COINGLASS_WEB_TOP20_MODE = 'QUALIFIED_BINANCE_AUTO';
 export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
@@ -586,7 +586,11 @@ export class CoinGlassWebTop20Manager {
       enabled: process.env.COINGLASS_WEB_TOP20_ENABLED !== 'false',
       limit: Math.max(1, Math.min(40, configuredLimit)),
       range: '48h',
-      browserMode: process.env.COINGLASS_WEB_BROWSER_MODE ?? 'headed',
+      browserMode: process.env.COINGLASS_WEB_BROWSER_MODE ?? 'headless',
+      captureImages: process.env.COINGLASS_WEB_CAPTURE_IMAGES === 'true',
+      disableGpu: process.env.COINGLASS_WEB_DISABLE_GPU !== 'false',
+      viewportWidth: Math.max(480, Math.min(1280, finiteNumber(process.env.COINGLASS_WEB_VIEWPORT_WIDTH, 1280))),
+      viewportHeight: Math.max(360, Math.min(900, finiteNumber(process.env.COINGLASS_WEB_VIEWPORT_HEIGHT, 900))),
       timeoutMs: Math.max(120_000, Number(process.env.COINGLASS_WEB_TOP20_TIMEOUT_MS ?? 12 * 60_000)),
       loginTimeoutMs: Math.max(120_000, Number(process.env.COINGLASS_WEB_LOGIN_TIMEOUT_MS ?? 10 * 60_000)),
       schedulerEnabled: process.env.COINGLASS_WEB_SCHEDULER_ENABLED !== 'false',

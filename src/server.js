@@ -9,6 +9,11 @@ import { extname, join, normalize } from 'node:path';
 import { finished } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import {
+  PUMP_PAPER_WAL_STREAM_VERSION,
+  compactPumpPaperTradeForStorage,
+  replayPumpPaperWalFile,
+} from './pumpPaperWal.js';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
 import { BINANCE_SCIENTIFIC_STEP_PRECISION_VERSION, decimalsFromStep } from './binancePrecision.js';
 import { BinanceRateGate, binanceRateGate } from './binanceRateGate.js';
@@ -1883,6 +1888,7 @@ const intradayDecisionPaperSseClients = new Set();
 const liquidFlowV2SseClients = new Set();
 
 function pushSse(clients, data) {
+  if (!clients || clients.size === 0) return;
   const payload = `data: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) {
     try { res.write(payload); } catch { clients.delete(res); }
@@ -6067,7 +6073,7 @@ function getBtcLocalTurnRiskLogForShakeout(side) {
 async function getBrLikeOpenClusterStats(side) {
   const tradeSide = String(side ?? '').toUpperCase();
   const store = await readPumpPaperStore();
-  const trades = (store?.trades ?? []).filter((t) =>
+  const trades = getPumpPaperActiveIndex(store).ema.filter((t) =>
     t.status === 'OPEN'
     && t.side === tradeSide
     && isEmaSqueezeBrRulesMarketSourceForSide(t.source, tradeSide, t.note));
@@ -6146,7 +6152,7 @@ async function getEmaSqueezeRunnerOpenClusterStats(side) {
 async function getEmaSqueezeBreakoutOpenClusterStats(side) {
   const tradeSide = String(side ?? '').toUpperCase();
   const store = await readPumpPaperStore();
-  const trades = (store?.trades ?? []).filter((t) =>
+  const trades = getPumpPaperActiveIndex(store).ema.filter((t) =>
     isEmaSqueezeBreakoutPaperTrade(t)
     && String(t.side ?? '').toUpperCase() === tradeSide);
   let pnl = 0;
@@ -6651,7 +6657,7 @@ async function cutBrLikeBySideOnBreadth(side, reason) {
   const snapshotMarks = new Map((_snapshotCache ?? [])
     .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
     .filter(([, p]) => Number.isFinite(p) && p > 0));
-  const targets = store.trades.filter((t) =>
+  const targets = getPumpPaperActiveIndex(store).ema.filter((t) =>
 		    t.status === 'OPEN' && t.side === side && isEmaSqueezeBrRulesMarketSourceForSide(t.source, side, t.note));
   const lossCutPolicy = getBrLikeBreadthLossCutPolicy(side);
   const lossCutRoe = lossCutPolicy.threshold;
@@ -6761,7 +6767,7 @@ async function cutEmaSqueezeBreakoutBySideOnBreadth(side, reason) {
   const snapshotMarks = new Map((_snapshotCache ?? [])
     .map((r) => [r.symbol, Number(r.markPrice ?? r.lastPrice ?? r.price)])
     .filter(([, p]) => Number.isFinite(p) && p > 0));
-  const targets = store.trades.filter((t) =>
+  const targets = getPumpPaperActiveIndex(store).ema.filter((t) =>
     isEmaSqueezeBreakoutPaperTrade(t) && String(t.side ?? '').toUpperCase() === side);
   const lossCutPolicy = getEmaSqueezeBreakoutBreadthLossCutPolicy(side);
   const lossCutRoe = lossCutPolicy.threshold;
@@ -10147,7 +10153,7 @@ const PUMP_PAPER_WAL_FILE = join(rootDir, 'data', 'pump-paper-trades.wal.ndjson'
 const PUMP_PAPER_ARCHIVE_FILE = join(rootDir, 'data', 'archive', 'pump-paper-trades.ndjson');
 const PUMP_PAPER_MAX_ACTIVE_ROWS = Math.max(
   5_000,
-  Number(process.env.PUMP_PAPER_MAX_ACTIVE_ROWS ?? 100_000),
+  Number(process.env.PUMP_PAPER_MAX_ACTIVE_ROWS ?? 25_000),
 );
 const BR_LIKE_LIMIT_EVAL_FILE = join(rootDir, 'data', 'br-like-limit-eval.json');
 const BR_LIKE_LIMIT_PAPER_FILE = join(rootDir, 'data', 'br-like-limit-paper-trades.json');
@@ -20110,71 +20116,42 @@ function startPiPaperTicker() {
 // ── Pump paper trade system ───────────────────────────────────────────────────
 
 async function replayPumpPaperWal(store) {
-  let raw = '';
-  try {
-    raw = await readFile(PUMP_PAPER_WAL_FILE, 'utf8');
-  } catch (error) {
-    if (error?.code === 'ENOENT') return { applied: 0, skipped: 0 };
-    throw error;
-  }
-  if (!raw.trim()) return { applied: 0, skipped: 0 };
+  return replayPumpPaperWalFile(store, PUMP_PAPER_WAL_FILE, {
+    maxRows: PUMP_PAPER_MAX_ACTIVE_ROWS,
+  });
+}
 
-  // Preserve every legacy row, including duplicate ids. Existing mutations use
-  // findIndex (first match), while delete uses filter (all matches); replay must
-  // mirror that behaviour instead of silently deduplicating historical data.
-  const baseRows = Array.isArray(store?.trades) ? [...store.trades] : [];
-  const firstIndexById = new Map();
-  for (let index = 0; index < baseRows.length; index += 1) {
-    const id = String(baseRows[index]?.id ?? '');
-    if (id && !firstIndexById.has(id)) firstIndexById.set(id, index);
+async function checkpointPumpPaperStore(store, walResult, preArchived = 0) {
+  const trades = Array.isArray(store?.trades) ? store.trades : [];
+  const overflow = trades.length > PUMP_PAPER_MAX_ACTIVE_ROWS
+    ? trades.splice(PUMP_PAPER_MAX_ACTIVE_ROWS)
+    : [];
+  const shouldCheckpoint = overflow.length > 0
+    || preArchived > 0
+    || Number(walResult?.applied ?? 0) > 0
+    || Number(walResult?.skipped ?? 0) > 0;
+  if (!shouldCheckpoint) return { checkpointed: false, archived: 0, walArchiveFile: null };
+
+  // Archive first, then atomically publish the merged hot snapshot. Clearing the
+  // WAL last makes a crash replay-safe: an old WAL can re-apply UPSERTs by id,
+  // while no acknowledged mutation is lost.
+  if (overflow.length > 0) await queuePumpPaperArchive(overflow);
+  const tmp = `${PUMP_PAPER_FILE}.${process.pid}.checkpoint.tmp`;
+  await writePumpPaperSnapshot(tmp, store);
+  await rename(tmp, PUMP_PAPER_FILE);
+  let walArchiveFile = null;
+  if (Number(walResult?.walBytes ?? 0) > 0) {
+    await mkdir(join(rootDir, 'data', 'archive'), { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    walArchiveFile = join(rootDir, 'data', 'archive', `pump-paper-trades-wal-${stamp}.ndjson`);
+    await rename(PUMP_PAPER_WAL_FILE, walArchiveFile);
   }
-  const deletedBaseIds = new Set();
-  const newById = new Map();
-  const newOrder = [];
-  const newOrderSet = new Set();
-  let applied = 0;
-  let skipped = 0;
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const event = JSON.parse(line);
-      const id = String(event?.id ?? event?.trade?.id ?? '');
-      if (!id) {
-        skipped += 1;
-        continue;
-      }
-      if (event.op === 'DELETE') {
-        deletedBaseIds.add(id);
-        newById.delete(id);
-        applied += 1;
-        continue;
-      }
-      if (event.op !== 'UPSERT' || !event.trade || typeof event.trade !== 'object') {
-        skipped += 1;
-        continue;
-      }
-      const baseIndex = firstIndexById.get(id);
-      if (baseIndex != null && !deletedBaseIds.has(id)) {
-        baseRows[baseIndex] = event.trade;
-      } else {
-        if (!newOrderSet.has(id)) {
-          newOrder.push(id);
-          newOrderSet.add(id);
-        }
-        newById.set(id, event.trade);
-      }
-      applied += 1;
-    } catch {
-      // A crash may truncate only the last append. The base JSON and all older
-      // valid WAL lines remain usable.
-      skipped += 1;
-    }
-  }
-  store.trades = [
-    ...newOrder.slice().reverse().filter((id) => newById.has(id)).map((id) => newById.get(id)),
-    ...baseRows.filter((trade) => !deletedBaseIds.has(String(trade?.id ?? ''))),
-  ];
-  return { applied, skipped };
+  await writeFile(PUMP_PAPER_WAL_FILE, '', 'utf8');
+  return {
+    checkpointed: true,
+    archived: preArchived + overflow.length,
+    walArchiveFile,
+  };
 }
 
 async function readPumpPaperStore() {
@@ -20185,10 +20162,17 @@ async function readPumpPaperStore() {
       const raw = await readFile(PUMP_PAPER_FILE, 'utf8');
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+      let preArchived = 0;
+      if (parsed.trades.length > PUMP_PAPER_MAX_ACTIVE_ROWS) {
+        const overflow = parsed.trades.splice(PUMP_PAPER_MAX_ACTIVE_ROWS);
+        preArchived = overflow.length;
+        await queuePumpPaperArchive(overflow);
+      }
       const walResult = await replayPumpPaperWal(parsed);
+      const checkpoint = await checkpointPumpPaperStore(parsed, walResult, preArchived);
       _pumpPaperStoreCache = parsed;
       invalidatePumpPaperDerivedCache();
-      console.log(`[PumpPaper] Store cached in memory (${parsed.trades.length} trades; WAL ${walResult.applied} applied, ${walResult.skipped} skipped).`);
+      console.log(`[PumpPaper] Store cached in memory (${parsed.trades.length} trades; WAL ${walResult.applied} applied, ${walResult.skipped} skipped, ${walResult.evicted} bounded-evicted, ${(walResult.walBytes / 1024 / 1024).toFixed(1)} MiB; checkpoint=${checkpoint.checkpointed}; archive=${checkpoint.archived}; walArchive=${checkpoint.walArchiveFile ?? '-'}; ${PUMP_PAPER_WAL_STREAM_VERSION}).`);
     } catch (e) {
       console.warn('[PumpPaper] Store read error, starting fresh:', e.message);
       _pumpPaperStoreCache = { trades: [] };
@@ -20368,7 +20352,7 @@ async function writePumpPaperSnapshot(filePath, store) {
     for (let index = 0; index < trades.length; index += batchSize) {
       const chunk = trades
         .slice(index, index + batchSize)
-        .map((trade) => JSON.stringify(trade))
+        .map((trade) => JSON.stringify(compactPumpPaperTradeForStorage(trade)))
         .join(',');
       await write(`${index > 0 ? ',' : ''}${chunk}`);
     }
@@ -20387,6 +20371,7 @@ function appendPumpPaperWal(events) {
     v: 1,
     at: new Date().toISOString(),
     ...event,
+    ...(event.trade ? { trade: compactPumpPaperTradeForStorage(event.trade) } : {}),
   })).join('\n')}\n`;
   _pumpPaperWalWrite = _pumpPaperWalWrite
     .catch(() => {})
@@ -20396,10 +20381,41 @@ function appendPumpPaperWal(events) {
 
 function queuePumpPaperArchive(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return _pumpPaperArchiveWrite;
-  const payload = `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`;
   _pumpPaperArchiveWrite = _pumpPaperArchiveWrite.then(async () => {
     await mkdir(join(rootDir, 'data', 'archive'), { recursive: true });
-    await appendFile(PUMP_PAPER_ARCHIVE_FILE, payload, 'utf8');
+    const output = createWriteStream(PUMP_PAPER_ARCHIVE_FILE, { encoding: 'utf8', flags: 'a' });
+    try {
+      const batchSize = 100;
+      for (let index = 0; index < rows.length; index += batchSize) {
+        const chunk = `${rows
+          .slice(index, index + batchSize)
+          .map((row) => JSON.stringify(compactPumpPaperTradeForStorage(row)))
+          .join('\n')}\n`;
+        if (!output.write(chunk)) {
+          await new Promise((resolve, reject) => {
+            const cleanup = () => {
+              output.off('drain', onDrain);
+              output.off('error', onError);
+            };
+            const onDrain = () => {
+              cleanup();
+              resolve();
+            };
+            const onError = (error) => {
+              cleanup();
+              reject(error);
+            };
+            output.once('drain', onDrain);
+            output.once('error', onError);
+          });
+        }
+      }
+      output.end();
+      await finished(output);
+    } catch (error) {
+      output.destroy(error);
+      throw error;
+    }
     console.log(`[PumpPaper] Archived ${rows.length} overflow trade(s); active store capped at ${PUMP_PAPER_MAX_ACTIVE_ROWS}.`);
   }).catch((error) => {
     console.warn('[PumpPaper] Archive write failed:', error.message);
@@ -24060,18 +24076,31 @@ async function getBrLikeLimitEvalCache() {
   }
 }
 
+const BR_LIKE_LIMIT_STORE_CACHE_VERSION = 'BR_LIKE_LIMIT_STORE_CACHE_V1_20260822';
+let _brLikeLimitPaperStoreCache = null;
+let _brLikeLimitPaperStoreLoadPromise = null;
 async function readBrLikeLimitPaperStore() {
-  try {
-    const raw = await readFile(BR_LIKE_LIMIT_PAPER_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    return { trades: Array.isArray(parsed?.trades) ? parsed.trades : [] };
-  } catch {
-    return { trades: [] };
-  }
+  if (_brLikeLimitPaperStoreCache) return _brLikeLimitPaperStoreCache;
+  if (_brLikeLimitPaperStoreLoadPromise) return _brLikeLimitPaperStoreLoadPromise;
+  _brLikeLimitPaperStoreLoadPromise = (async () => {
+    try {
+      const raw = await readFile(BR_LIKE_LIMIT_PAPER_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      _brLikeLimitPaperStoreCache = { trades: Array.isArray(parsed?.trades) ? parsed.trades : [] };
+      console.log(`[BrLikeLimitPaper] Store cached in memory (${_brLikeLimitPaperStoreCache.trades.length} trades; ${BR_LIKE_LIMIT_STORE_CACHE_VERSION}).`);
+    } catch {
+      _brLikeLimitPaperStoreCache = { trades: [] };
+    } finally {
+      _brLikeLimitPaperStoreLoadPromise = null;
+    }
+    return _brLikeLimitPaperStoreCache;
+  })();
+  return _brLikeLimitPaperStoreLoadPromise;
 }
 
 let _brLikeLimitPaperWriteLock = Promise.resolve();
 function writeBrLikeLimitPaperStore(store) {
+  _brLikeLimitPaperStoreCache = store;
   _brLikeLimitPaperWriteLock = _brLikeLimitPaperWriteLock
     .then(() => atomicWriteJson(BR_LIKE_LIMIT_PAPER_FILE, store));
   return _brLikeLimitPaperWriteLock;
@@ -24554,7 +24583,7 @@ async function enforceBrLikeBtcTurnPositiveCuts() {
       let limitCancelled = 0;
 
       const pumpStore = await readPumpPaperStore();
-      const marketTargets = pumpStore.trades.filter((t) =>
+      const marketTargets = getPumpPaperActiveIndex(pumpStore).ema.filter((t) =>
         t.status === 'OPEN'
         && t.side === side
         && isBrLikePaperSourceForSide(t.source, side));
@@ -24694,7 +24723,7 @@ async function enforceBreakoutBtcTurnPositiveCuts() {
       let marketCut = 0;
 
       const pumpStore = await readPumpPaperStore();
-      const marketTargets = pumpStore.trades.filter((t) =>
+      const marketTargets = getPumpPaperActiveIndex(pumpStore).ema.filter((t) =>
         isEmaSqueezeBreakoutPaperTrade(t)
         && String(t.side ?? '').toUpperCase() === side);
       for (const row of marketTargets) {
@@ -26134,16 +26163,28 @@ async function exitEuphoriaBrLikeOnBtcReversal() {
 // ── End pump paper trade system ───────────────────────────────────────────────
 
 // Edge paper trade system (private to /edge-short)
+const EDGE_PAPER_STORE_CACHE_VERSION = 'EDGE_PAPER_STORE_CACHE_V1_20260822';
+let _edgePaperStoreCache = null;
+let _edgePaperStoreLoadPromise = null;
 async function readEdgePaperStore() {
-  try {
-    const raw = await readFile(EDGE_PAPER_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
-    return parsed;
-  } catch (e) {
-    console.warn('[EdgePaper] Store read error, starting fresh:', e.message);
-    return { trades: [] };
-  }
+  if (_edgePaperStoreCache) return _edgePaperStoreCache;
+  if (_edgePaperStoreLoadPromise) return _edgePaperStoreLoadPromise;
+  _edgePaperStoreLoadPromise = (async () => {
+    try {
+      const raw = await readFile(EDGE_PAPER_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+      _edgePaperStoreCache = parsed;
+      console.log(`[EdgePaper] Store cached in memory (${parsed.trades.length} trades; ${EDGE_PAPER_STORE_CACHE_VERSION}).`);
+    } catch (e) {
+      console.warn('[EdgePaper] Store read error, starting fresh:', e.message);
+      _edgePaperStoreCache = { trades: [] };
+    } finally {
+      _edgePaperStoreLoadPromise = null;
+    }
+    return _edgePaperStoreCache;
+  })();
+  return _edgePaperStoreLoadPromise;
 }
 
 let _edgePaperWriteLock = Promise.resolve();
@@ -26151,6 +26192,7 @@ let _edgePaperMutationLock = Promise.resolve();
 let edgeShortLabelDecorationCache = null;
 async function writeEdgePaperStore(store) {
   edgeShortLabelDecorationCache = null;
+  _edgePaperStoreCache = store;
   _edgePaperWriteLock = _edgePaperWriteLock
     .catch((error) => console.warn(`[EdgePaper] previous write failed; queue continues: ${error.message}`))
     .then(() => atomicWriteJson(EDGE_PAPER_FILE, store));
@@ -27418,20 +27460,33 @@ function startPpksPaperTicker() {
 
 // Shakeout Reclaim Paper Trades
 
+const SHAKEOUT_PAPER_STORE_CACHE_VERSION = 'SHAKEOUT_PAPER_STORE_CACHE_V1_20260822';
+let _shakeoutPaperStoreCache = null;
+let _shakeoutPaperStoreLoadPromise = null;
 async function readShakeoutPaperStore() {
-  try {
-    const raw = await readFile(SHAKEOUT_PAPER_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
-    return parsed;
-  } catch (e) {
-    if (e.code !== 'ENOENT') console.warn('[ShakeoutPaper] Store read error, starting fresh:', e.message);
-    return { trades: [] };
-  }
+  if (_shakeoutPaperStoreCache) return _shakeoutPaperStoreCache;
+  if (_shakeoutPaperStoreLoadPromise) return _shakeoutPaperStoreLoadPromise;
+  _shakeoutPaperStoreLoadPromise = (async () => {
+    try {
+      const raw = await readFile(SHAKEOUT_PAPER_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+      _shakeoutPaperStoreCache = parsed;
+      console.log(`[ShakeoutPaper] Store cached in memory (${parsed.trades.length} trades; ${SHAKEOUT_PAPER_STORE_CACHE_VERSION}).`);
+    } catch (e) {
+      if (e.code !== 'ENOENT') console.warn('[ShakeoutPaper] Store read error, starting fresh:', e.message);
+      _shakeoutPaperStoreCache = { trades: [] };
+    } finally {
+      _shakeoutPaperStoreLoadPromise = null;
+    }
+    return _shakeoutPaperStoreCache;
+  })();
+  return _shakeoutPaperStoreLoadPromise;
 }
 
 let _shakeoutPaperWriteLock = Promise.resolve();
 async function writeShakeoutPaperStore(store) {
+  _shakeoutPaperStoreCache = store;
   _shakeoutPaperWriteLock = _shakeoutPaperWriteLock.then(() => atomicWriteJson(SHAKEOUT_PAPER_FILE, store));
   return _shakeoutPaperWriteLock;
 }

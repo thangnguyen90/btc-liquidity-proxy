@@ -104,6 +104,27 @@ async function loadBinanceLiquidityMetrics(binanceBase, markets, bookTickers = [
 
 async function extractReactHeatmap(page, expectedInstrumentId) {
   const readState = (instrumentId) => {
+    const readFiber = (fiber) => {
+      const seen = new Set();
+      const queue = [fiber, fiber?.alternate].filter(Boolean);
+      while (queue.length) {
+        const current = queue.shift();
+        if (!current || seen.has(current)) continue;
+        seen.add(current);
+        const state = current.stateNode?.state;
+        if (state?.data?.liq
+          && Array.isArray(state.data.liq)
+          && (!instrumentId || state.data.instrument?.instrumentId === instrumentId)) return state.data;
+        if (current.return) queue.push(current.return);
+        if (current.alternate) queue.push(current.alternate);
+      }
+      return null;
+    };
+    const cached = window.__coinglassHeatmapFiberLocator;
+    if (cached?.element?.isConnected && cached.fiberKey) {
+      const cachedState = readFiber(cached.element[cached.fiberKey]);
+      if (cachedState) return cachedState;
+    }
     const seen = new Set();
     for (const element of document.querySelectorAll('body *')) {
       const fiberKey = Object.keys(element).find((key) => key.startsWith('__reactFiber$'));
@@ -113,7 +134,10 @@ async function extractReactHeatmap(page, expectedInstrumentId) {
         const state = fiber.stateNode?.state;
         if (state?.data?.liq
           && Array.isArray(state.data.liq)
-          && (!instrumentId || state.data.instrument?.instrumentId === instrumentId)) return state.data;
+          && (!instrumentId || state.data.instrument?.instrumentId === instrumentId)) {
+          window.__coinglassHeatmapFiberLocator = { element, fiberKey };
+          return state.data;
+        }
         fiber = fiber.return;
       }
     }
@@ -123,15 +147,24 @@ async function extractReactHeatmap(page, expectedInstrumentId) {
   return page.evaluate(readState, expectedInstrumentId);
 }
 
-async function crawlSymbol(page, market, { imageDir, range, initial = false }) {
+async function crawlSymbol(page, market, {
+  imageDir, range, initial = false, captureImages = false,
+}) {
   const expectedSymbol = `Binance_${market.symbol}`;
   const coin = market.baseAsset;
-  const waitForHeatmapResponse = () => page.waitForResponse((response) => {
-    const url = response.url();
-    return url.includes('/api/index/v6/liqHeatMap')
-      && url.includes(`symbol=${expectedSymbol}`)
-      && url.includes(`range=${range}`);
-  }, { timeout: 45_000 });
+  const waitForHeatmapResponse = () => {
+    const pending = page.waitForResponse((response) => {
+      const url = response.url();
+      return url.includes('/api/index/v6/liqHeatMap')
+        && url.includes(`symbol=${expectedSymbol}`)
+        && url.includes(`range=${range}`);
+    }, { timeout: 45_000 });
+    // The option click can itself wait while this listener times out. Mark the
+    // response promise handled immediately so Node does not terminate the whole
+    // collector before crawlWorker records the symbol-level failure.
+    pending.catch(() => {});
+    return pending;
+  };
   let response;
   if (initial && coin === 'BTC') {
     const defaultHeatmapResponse = waitForHeatmapResponse();
@@ -166,21 +199,34 @@ async function crawlSymbol(page, market, { imageDir, range, initial = false }) {
   if (String(envelope?.code ?? '') !== '0') {
     throw new Error(`CoinGlass heatmap response code ${envelope?.code ?? 'unknown'}: ${envelope?.msg ?? envelope?.message ?? 'unknown error'}`);
   }
-  const canvas = page.locator('canvas:visible').first();
-  await canvas.waitFor({ state: 'visible', timeout: 30_000 });
   const heatmap = await extractReactHeatmap(page, market.symbol);
   const summary = summarizeCoinglassHeatmap(heatmap);
   if (summary.instrument.instrumentId !== market.symbol) {
     throw new Error(`CoinGlass returned ${summary.instrument.instrumentId || 'unknown'} instead of ${market.symbol}`);
   }
-  const imageFile = join(imageDir, `${market.symbol}.png`);
-  await canvas.screenshot({ path: imageFile });
+  let imageUrl = null;
+  if (captureImages) {
+    const canvas = page.locator('canvas:visible').first();
+    await canvas.waitFor({ state: 'visible', timeout: 30_000 });
+    const imageFile = join(imageDir, `${market.symbol}.png`);
+    await canvas.screenshot({ path: imageFile });
+    imageUrl = `/api/coinglass-web-top20/image?symbol=${encodeURIComponent(market.symbol)}`;
+  }
+  // The proposal and qualification use the structured React state above, not
+  // canvas pixels. Keeping four large WebGL heatmaps visible makes Chromium's
+  // SwiftShader consume ~10 CPU cores under WSL, so stop compositing the chart
+  // as soon as its causal data has been extracted.
+  await page.evaluate(() => {
+    for (const canvas of document.querySelectorAll('canvas')) {
+      canvas.style.visibility = 'hidden';
+    }
+  }).catch(() => {});
   return {
     ...market,
     status: 'OK',
     range,
     scrapedAt: new Date().toISOString(),
-    imageUrl: `/api/coinglass-web-top20/image?symbol=${encodeURIComponent(market.symbol)}`,
+    ...(imageUrl ? { imageUrl } : {}),
     heatmap: summary,
     heatmapLiquidity: assessCoinglassLiquidity(summary, market),
     proposal: buildCoinglassZoneProposal(summary, market),
@@ -203,6 +249,10 @@ const scanBudgetMs = Math.max(60_000, Math.min(
 ));
 const scanDeadlineAt = Date.parse(startedAt) + scanBudgetMs;
 const binanceBase = String(process.env.BINANCE_FUTURES_BASE_URL ?? 'https://fapi.binance.com').replace(/\/$/, '');
+const captureImages = process.env.COINGLASS_WEB_CAPTURE_IMAGES === 'true';
+const viewportWidth = Math.max(480, Math.min(1280, Number(process.env.COINGLASS_WEB_VIEWPORT_WIDTH) || 1280));
+const viewportHeight = Math.max(360, Math.min(900, Number(process.env.COINGLASS_WEB_VIEWPORT_HEIGHT) || 900));
+const disableGpu = process.env.COINGLASS_WEB_DISABLE_GPU !== 'false';
 
 await mkdir(imageDir, { recursive: true });
 
@@ -235,7 +285,7 @@ try {
     existsSync(localLibraryPath) ? localLibraryPath : '',
     process.env.LD_LIBRARY_PATH ?? '',
   ].filter(Boolean).join(':');
-  const headed = process.env.COINGLASS_WEB_BROWSER_MODE !== 'headless'
+  const headed = process.env.COINGLASS_WEB_BROWSER_MODE === 'headed'
     && Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
   await mkdir(profileDir, { recursive: true });
   context = await chromium.launchPersistentContext(profileDir, {
@@ -244,12 +294,15 @@ try {
       '--disable-dev-shm-usage',
       '--no-sandbox',
       '--disable-blink-features=AutomationControlled',
+      '--disk-cache-size=52428800',
+      '--media-cache-size=10485760',
+      ...(disableGpu ? ['--disable-gpu', '--disable-software-rasterizer'] : []),
       ...(headed ? ['--window-position=-10000,-10000', '--window-size=1280,900'] : []),
     ],
     env: { ...process.env, ...(libraryPath ? { LD_LIBRARY_PATH: libraryPath } : {}) },
     locale: 'en-US',
     timezoneId: 'Asia/Bangkok',
-    viewport: { width: 1280, height: 900 },
+    viewport: { width: viewportWidth, height: viewportHeight },
     userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
     extraHTTPHeaders: {
       'accept-language': 'en-US,en;q=0.9',
@@ -257,6 +310,11 @@ try {
   });
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+  await context.route('**/*', async (route) => {
+    const resourceType = route.request().resourceType();
+    if (['image', 'media', 'font'].includes(resourceType)) await route.abort();
+    else await route.continue();
   });
   const rows = [];
   const failures = [];
@@ -268,6 +326,7 @@ try {
   ));
   const pages = [context.pages()[0] ?? await context.newPage()];
   while (pages.length < browserConcurrency) pages.push(await context.newPage());
+  await Promise.all(pages.map((page) => page.emulateMedia({ reducedMotion: 'reduce' })));
 
   let nextMarketIndex = 0;
   let progressWrite = Promise.resolve();
@@ -307,7 +366,9 @@ try {
       await updateProgress();
       try {
         rows.push(await withinDeadline(
-          crawlSymbol(page, market, { imageDir, range, initial }),
+          crawlSymbol(page, market, {
+            imageDir, range, initial, captureImages,
+          }),
           scanDeadlineAt - Date.now(),
         ));
       } catch (error) {
@@ -385,6 +446,10 @@ try {
       exchange: 'Binance',
       range,
       browserConcurrency,
+      browserMode: headed ? 'headed' : 'headless',
+      captureImages,
+      disableGpu,
+      viewport: { width: viewportWidth, height: viewportHeight },
       scanBudgetMs,
       deadlineExceeded: Date.now() >= scanDeadlineAt,
       unattempted: unattemptedMarkets.length,

@@ -8,6 +8,28 @@ Use this file as the first read before changing or evaluating trading logic. It 
 
 ## Operating Principles
 
+### 2026-08-22 - Hot paper cache, bỏ read/parse file lớn lặp lại
+
+- Versions `EDGE_PAPER_STORE_CACHE_V1_20260822`, `BR_LIKE_LIMIT_STORE_CACHE_V1_20260822`, `SHAKEOUT_PAPER_STORE_CACHE_V1_20260822`. Causal input/classification trước entry, label/tier/gate và paper lifecycle giữ nguyên. Runtime load các store khoảng `240/11/48 MB` một lần qua shared promise/cache thay vì ticker/hot path đọc + parse lại file.
+- Stats dùng đúng cùng rows/công thức cũ; mutation exact id cập nhật đúng cache rồi atomic-write theo lock. Không thêm label/card/WHITELIST, không đổi Binance/entry/size/SL/TP, không biến cache thành gate.
+- SSE helper return trước `JSON.stringify` nếu client set rỗng; client đang kết nối vẫn nhận cùng payload/realtime flow như cũ.
+- BR-like và EMA breakout cluster/breadth/positive-cut tái sử dụng active EMA index thay vì filter toàn hot pump store; exact OPEN/source/side predicate và cut rules giữ nguyên.
+- JSON compatibility nguyên trạng: file `trades[]` không đổi schema, không migrate/rewrite lịch sử. Restart vẫn đọc file; entry journal/recovery giữ nguyên.
+
+### 2026-08-22 - Pump paper WAL streaming + hot-store checkpoint
+
+- Version `PUMP_PAPER_WAL_COMPACT_STREAM_V3_20260822`. Dữ liệu causal trước entry và cách phân loại signal không đổi. Bottleneck được đo trước sửa: `pump-paper-trades.json` khoảng `458 MB`, WAL khoảng `1,4 GB`; nạp WAL nguyên khối gây `Invalid string length`, Node heap gần `9 GB` và event-loop p95 trên `2 giây`; sample trade có 325 top-level field nhưng đa số null. Runtime mới dùng stream/readline, giới hạn map ID mới ngay trong replay, bỏ nullish field khi persist và giữ semantics UPSERT/DELETE/duplicate legacy cũ.
+- Sau replay, snapshot được ghi stream qua temp + atomic rename; WAL chỉ xoay sau khi snapshot đã publish. Hot store giữ tối đa `PUMP_PAPER_MAX_ACTIVE_ROWS=25.000` dòng mới nhất, overflow ghi batch vào archive NDJSON trước checkpoint. Dòng WAL cuối corrupt/truncated vẫn skip như trước; archive là audit/offline, không nạp vào live stats.
+- Stats/WHITELIST: live W/L, WR, PF, Net PnL, AvgROE chỉ chạy trên hot store để giới hạn heap; không thêm label/card/key/checkbox, default-off và policy CLOSED AvgROE `>4%` giữ nguyên. Binance/entry/size/SL/TP không đổi; không sửa quyền lệnh thật, position, protection hay dedupe.
+- JSON compatibility: giữ schema snapshot `trades[]`, WAL NDJSON V1 và value của object trade cũ; chỉ top-level field optional `null`/`undefined` không còn được ghi ra đĩa và reader vốn đã dùng fallback khi thiếu field. Overflow snapshot được archive theo trade, còn WAL nguyên bản được atomic-rename thành `pump-paper-trades-wal-*.ndjson` trước khi tạo journal rỗng. Crash giữa archive/snapshot/WAL-rotate có thể tạo archive duplicate nhưng không mất mutation và replay UPSERT theo id không nhân đôi hot record mới.
+
+### 2026-08-22 - CoinGlass low-render giữ 40 coin / 3 phút
+
+- Collector/runtime lên `COINGLASS_WEB_QUALIFIED_BINANCE_V12_LOW_RENDER_20260822`; proposal/executor/Discord không đổi. Causal input trước entry vẫn là Binance app-style mover + liquidity metrics và exact CoinGlass Model 3 48h structured React cells/zones; ảnh/canvas không tham gia classifier.
+- Classification giữ toàn bộ qualified/action/Entry/TP/proposal SL/R:R/fresh/auth/liquidity gates. Runtime chuyển collector sang headless, giữ viewport tương thích `1280x900`, tắt GPU/SwiftShader, bỏ tải image/media/font, mặc định không screenshot, ẩn canvas sau khi lấy structured state, giới hạn disk/media cache `50/10 MB` và cache React fiber locator theo page. Response listener được mark handled ngay để timeout symbol được worker ghi failure thay vì tạo unhandled rejection làm chết collector. Vẫn concurrency 4, 40 coin, budget 150 giây và lịch 180 giây; cửa sổ login riêng vẫn headed.
+- Stats/WHITELIST không đổi: CoinGlass LONG/SHORT tiếp tục đối soát fill/Position/Income; W/L/WR/PF/Net/AvgROE và policy whitelist default-off/closed AvgROE `>4%` giữ nguyên. Không thêm label/card/key.
+- Không ảnh hưởng Binance entry, margin `$2 x5` mặc định/per-label override, SL `-20% ROE`, TP proposal, reversal, dedupe hoặc profit-lock. JSON cũ không migrate/rewrite/replay; V11 fail-closed đến fresh V12, `imageUrl` optional và PNG cũ không được dùng làm tín hiệu.
+
 ### 2026-08-22 - Bảng chi tiết V2 Binance chuyển sang realtime socket
 
 - Version `LIQUID_FLOW_V2_BINANCE_STATS_V3_REALTIME_20260822`. Không đổi causal data/classifier trước entry: chỉ các execution Liquid V2/CoinGlass đã xác nhận Binance fill mới vào report; stats realtime không tham gia gate hoặc tạo signal.

@@ -297,6 +297,11 @@ const executionManager = new CoinGlassWebTop20Manager({
   },
 });
 assert.equal(executionManager.config().binanceMarginUsdt, 2);
+assert.equal(executionManager.config().browserMode, process.env.COINGLASS_WEB_BROWSER_MODE ?? 'headless');
+assert.equal(executionManager.config().captureImages, process.env.COINGLASS_WEB_CAPTURE_IMAGES === 'true');
+assert.equal(executionManager.config().disableGpu, process.env.COINGLASS_WEB_DISABLE_GPU !== 'false');
+assert.equal(executionManager.config().viewportWidth, Number(process.env.COINGLASS_WEB_VIEWPORT_WIDTH) || 1280);
+assert.equal(executionManager.config().viewportHeight, Number(process.env.COINGLASS_WEB_VIEWPORT_HEIGHT) || 900);
 assert.equal((await executionManager.executeQualifiedRows([qualifiedLongRow])).submitted, 1);
 assert.equal((await executionManager.executeQualifiedRows([qualifiedLongRow])).submitted, 0);
 assert.equal(executionCalls, 1, 'durable dedupe must prevent repeated entry each 3-minute scan');
@@ -381,6 +386,15 @@ assert.match(crawlSource, /Math\.min\(40/);
 assert.match(crawlSource, /Math\.min\(\s*4,/);
 assert.match(crawlSource, /SCAN_BUDGET_EXHAUSTED/);
 assert.match(crawlSource, /scanBudgetMs/);
+assert.match(crawlSource, /COINGLASS_WEB_CAPTURE_IMAGES/);
+assert.match(crawlSource, /--disable-software-rasterizer/);
+assert.match(crawlSource, /--disk-cache-size=52428800/);
+assert.match(crawlSource, /--media-cache-size=10485760/);
+assert.match(crawlSource, /pending\.catch\(\(\) => \{\}\)/);
+assert.match(crawlSource, /__coinglassHeatmapFiberLocator/);
+assert.match(crawlSource, /\['image', 'media', 'font'\]/);
+assert.match(crawlSource, /canvas\.style\.visibility = 'hidden'/);
+assert.match(crawlSource, /COINGLASS_WEB_BROWSER_MODE === 'headed'/);
 assert.match(crawlSource, /assessCoinglassLiquidity/);
 assert.match(crawlSource, /qualifyCoinglassOpportunity/);
 
