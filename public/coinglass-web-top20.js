@@ -35,6 +35,18 @@ function percent(value) {
   return Number.isFinite(parsed) ? `${parsed >= 0 ? '+' : ''}${number(parsed)}%` : '—';
 }
 
+function fixedStopLossPrice({ side, entryPrice, leverage, stopLossRoePct }) {
+  const entry = Number(entryPrice);
+  const lev = Number(leverage);
+  const roePct = Number(stopLossRoePct);
+  if (!(entry > 0) || !(lev > 0) || !(roePct > 0)) return null;
+  const distance = roePct / 100 / lev;
+  if (!(distance > 0 && distance < 1)) return null;
+  if (side === 'LONG') return entry * (1 - distance);
+  if (side === 'SHORT') return entry * (1 + distance);
+  return null;
+}
+
 function time(value) {
   if (!value) return '—';
   const date = new Date(Number(value) || value);
@@ -112,7 +124,7 @@ function qualificationReason(reason) {
   })[reason] || reason;
 }
 
-function card(row) {
+function card(row, config = {}) {
   const item = document.createElement('article');
   const proposal = row.proposal || { action: 'NO_DATA', label: 'CHƯA ĐỦ VÙNG THANH LÝ' };
   const actionTone = proposal.action === 'WAIT_LONG_CONFIRMATION'
@@ -160,7 +172,7 @@ function card(row) {
   badges.className = 'badges';
   const qualityBadge = document.createElement('span');
   qualityBadge.className = `quality-badge ${row.qualified ? 'pass' : 'fail'}`;
-  qualityBadge.textContent = row.qualified ? 'ĐỦ ĐIỀU KIỆN DISCORD' : 'CHƯA ĐỦ ĐIỀU KIỆN';
+  qualityBadge.textContent = row.qualified ? 'ĐỦ ĐIỀU KIỆN DISCORD + BINANCE' : 'CHƯA ĐỦ ĐIỀU KIỆN';
   const badge = document.createElement('span');
   badge.className = 'badge';
   badge.textContent = `${row.status || 'OK'} · ${number(row.heatmap?.liquidationCellCount, 0)} CELLS`;
@@ -175,16 +187,36 @@ function card(row) {
   label.className = 'proposal-label';
   label.textContent = proposal.label;
   const mode = document.createElement('span');
-  mode.textContent = 'OBSERVE ONLY';
+  mode.textContent = row.qualified ? 'MARKET KHI GIÁ > ENTRY' : 'OBSERVE ONLY';
   proposalTop.append(label, mode);
   const proposalValues = document.createElement('div');
   proposalValues.className = 'proposal-values';
   const plan = proposal.tradePlan || {};
+  const binanceSide = proposal.action === 'WAIT_LONG_CONFIRMATION'
+    ? 'LONG'
+    : proposal.action === 'WAIT_SHORT_CONFIRMATION'
+      ? 'SHORT'
+      : null;
+  const leverage = Number(config.binanceLeverage) || 5;
+  const stopLossRoePct = Number(config.binanceStopLossRoePct) || 20;
+  const stopLossPricePct = stopLossRoePct / leverage;
+  const binanceStopLoss = fixedStopLossPrice({
+    side: binanceSide,
+    entryPrice: plan.entry?.price,
+    leverage,
+    stopLossRoePct,
+  });
   proposalValues.append(
-    valueBlock('Entry sau xác nhận', number(plan.entry?.price ?? proposal.referencePrice ?? row.lastPrice, 8)),
+    valueBlock('Entry đề xuất / trigger', `${number(plan.entry?.price ?? proposal.referencePrice ?? row.lastPrice, 8)} / Mark > Entry`),
     valueBlock('TP1 / TP2', plan.takeProfit ? `${number(plan.takeProfit.price, 8)}${plan.takeProfit2 ? ` / ${number(plan.takeProfit2.price, 8)}` : ''}` : '—', 'target'),
-    valueBlock('SL / vô hiệu', plan.stopLoss ? `${number(plan.stopLoss.price, 8)} (${number(plan.riskPct)}%)` : '—', 'risk'),
-    valueBlock('R:R / lực trên-dưới', `${plan.rewardRiskRatio ? `1:${number(plan.rewardRiskRatio)} · ` : ''}${number(proposal.aboveScore)} / ${number(proposal.belowScore)}`),
+    valueBlock(
+      row.qualified ? 'SL Binance mặc định' : 'SL proposal / vô hiệu',
+      row.qualified && binanceStopLoss
+        ? `${number(binanceStopLoss, 8)} · -${number(stopLossRoePct)}% ROE · ${number(stopLossPricePct)}% giá @${number(leverage, 0)}x`
+        : plan.stopLoss ? `${number(plan.stopLoss.price, 8)} (${number(plan.riskPct)}%)` : '—',
+      'risk',
+    ),
+    valueBlock('R:R CoinGlass / lực trên-dưới', `${plan.rewardRiskRatio ? `1:${number(plan.rewardRiskRatio)} · ` : ''}${number(proposal.aboveScore)} / ${number(proposal.belowScore)}`),
   );
   const rationale = document.createElement('p');
   rationale.className = 'rationale';
@@ -218,6 +250,7 @@ function render(data) {
   const auth = data.auth || {};
   const scheduler = data.scheduler || {};
   const notifications = data.notifications || {};
+  const binanceExecutions = data.binanceExecutions || {};
   const structured = rows.filter((row) => Number(row.heatmap?.liquidationCellCount) > 0).length;
   const qualified = rows.filter((row) => row.qualified);
   const longCount = qualified.filter((row) => row.proposal?.action === 'WAIT_LONG_CONFIRMATION').length;
@@ -234,7 +267,7 @@ function render(data) {
       : data.error
         ? `Lần đọc gần nhất lỗi: ${data.error}`
         : rows.length
-          ? `Đã quét ${rows.length}/${data.config?.limit || 40} coin · ${qualified.length} coin đủ điều kiện Discord · structured ${structured}`
+          ? `Đã quét ${rows.length}/${data.config?.limit || 40} coin · ${qualified.length} setup qualified · structured ${structured}`
           : 'Chưa có dữ liệu vùng thanh lý hợp lệ.';
   elements.updated.textContent = data.updatedAt
     ? `Snapshot ${time(data.updatedAt)} · CoinGlass ${data.source?.range || '48h'} · BTC + thị trường đạt chuẩn liquidity`
@@ -245,7 +278,7 @@ function render(data) {
     : auth.message || 'Chrome cá nhân và collector là hai profile khác nhau; hãy đăng nhập một lần cho collector.';
   elements.schedule.className = scheduler.enabled ? 'schedule-text ok' : 'schedule-text warn';
   elements.schedule.textContent = scheduler.enabled
-    ? `Tự quét mỗi ${number(Number(scheduler.intervalMs) / 60_000, 0)} phút · lượt kế ${time(scheduler.nextRunAt)} · Discord ${notifications.configured ? 'đã cấu hình' : 'chưa cấu hình'}`
+    ? `Tự quét mỗi ${number(Number(scheduler.intervalMs) / 60_000, 0)} phút · lượt kế ${time(scheduler.nextRunAt)} · Discord ${notifications.configured ? 'đã cấu hình' : 'chưa cấu hình'} · Binance ${binanceExecutions.enabled ? '$5 x5 bật' : 'tắt'}`
     : 'Scheduler đang tắt.';
 
   elements.progressPanel.hidden = !data.running;
@@ -259,9 +292,10 @@ function render(data) {
 
   elements.summary.replaceChildren(
     metric('Đã quét / mục tiêu', `${rows.length} / ${data.config?.limit || 40}`),
-    metric('Đủ điều kiện Discord', `${qualified.length}`),
+    metric('Qualified Discord/Binance', `${qualified.length}`),
     metric('Top tăng / giảm', `${upCount} / ${downCount}`),
     metric('Canh long / short', `${longCount} / ${shortCount}`),
+    metric('Binance đã submit', `${binanceExecutions.submitted || 0}`),
   );
 
   elements.failures.hidden = failures.length === 0;
@@ -286,7 +320,7 @@ function render(data) {
       : 'Bấm “Đăng nhập cho collector”, hoàn tất login, rồi bấm “Đọc lại coin thanh khoản”.';
     elements.grid.append(empty);
   } else {
-    elements.grid.append(...rows.map(card));
+    elements.grid.append(...rows.map((row) => card(row, data.config)));
   }
 }
 

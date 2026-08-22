@@ -9,6 +9,7 @@ import {
   ORDERS_EXCLUDED_PROFIT_LOCK_TRIGGER_ROE,
   binanceProfitLockLifecycleKey,
   binanceProfitLockStopPrice,
+  hasBinanceProfitLockStopAtTarget,
   isBinanceProfitLockImmediateTriggerError,
   isBinanceProfitLockTargetBreached,
   isManualBinanceProfitLockSource,
@@ -20,7 +21,7 @@ import {
   resolveOrdersExcludedBinanceProfitLockRoe,
 } from '../src/binanceProfitLock.js';
 
-assert.equal(BINANCE_PROFIT_LOCK_VERSION, 'BINANCE_PROFIT_LOCK_V12_LIFECYCLE_FAST_FAILSAFE_20260812');
+assert.equal(BINANCE_PROFIT_LOCK_VERSION, 'BINANCE_PROFIT_LOCK_V13_GTE_REPLACE_ROLLBACK_20260820');
 assert.equal(LEGACY_TRAILING_STOP_DISABLED_VERSION, 'LEGACY_TSL_DISABLED_V1_20260809');
 assert.equal(MANUAL_BINANCE_PROFIT_LOCK_TRIGGER_ROE, 10);
 assert.equal(MANUAL_BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE, 1);
@@ -109,6 +110,14 @@ assert.equal(isBinanceProfitLockTargetBreached({ side: 'LONG', markPrice: 100, s
 assert.equal(isBinanceProfitLockTargetBreached({ side: 'LONG', markPrice: 100.2, stopPrice: 100.1 }), false);
 assert.equal(isBinanceProfitLockTargetBreached({ side: 'SHORT', markPrice: 100, stopPrice: 99.9 }), true);
 assert.equal(isBinanceProfitLockTargetBreached({ side: 'SHORT', markPrice: 99.8, stopPrice: 99.9 }), false);
+assert.equal(hasBinanceProfitLockStopAtTarget({
+  orders: [{ symbol: 'ABCUSDT', side: 'SELL', orderType: 'STOP_MARKET', triggerPrice: '100.1' }],
+  symbol: 'ABCUSDT', closeSide: 'SELL', stopPrice: 100.1,
+}), true);
+assert.equal(hasBinanceProfitLockStopAtTarget({
+  orders: [{ symbol: 'ABCUSDT', side: 'SELL', orderType: 'TAKE_PROFIT_MARKET', triggerPrice: '100.1' }],
+  symbol: 'ABCUSDT', closeSide: 'SELL', stopPrice: 100.1,
+}), false);
 
 const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
 assert.doesNotMatch(serverSource, /startTrailingStopScanner\s*\(/);
@@ -121,15 +130,18 @@ assert.match(serverSource, /LIQUID_V2_ROE10_LOCK1/);
 const liquidFlowMatcherBody = serverSource.match(/function isLiquidFlowV2ManagedPosition[\s\S]*?\n}/)?.[0] ?? '';
 assert.doesNotMatch(liquidFlowMatcherBody, /isUserOrLiquidFlowV2ManagedSource/);
 assert.match(serverSource, /function isTakeProfitUserOrLiquidFlowV2ManagedPosition/);
-assert.match(serverSource, /if \(isTakeProfitUserOrLiquidFlowV2ManagedPosition\(symbol, pos\)\)/);
+assert.match(serverSource, /const takeProfitUserOrV2Managed = isTakeProfitUserOrLiquidFlowV2ManagedPosition\(symbol, pos\)/);
 assert.doesNotMatch(serverSource, /const skipTsl = tslExcludedSymbols\.has\(symbol\)/);
 assert.doesNotMatch(serverSource, /if \(tslExcludedSymbols\.has\(p\.symbol\)\) continue;/);
-assert.match(serverSource, /const isOrdersExcluded = tslExcludedSymbols\.has\(symbol\)/);
+assert.match(serverSource, /const isOrdersExcluded = isCapTslSymbol\(symbol\)/);
 assert.match(serverSource, /isOrdersExcluded[\s\S]*resolveOrdersExcludedBinanceProfitLockRoe\(roe\)/);
 assert.match(serverSource, /handleSlTrailByProfit\(symbol, pos, roe, markPrice\)\.catch/);
 assert.match(serverSource, /resetBinanceProfitLockRuntime\(symbol, 'SOCKET_FULL_FILL'\)/);
 assert.match(serverSource, /resetBinanceProfitLockRuntime\(symbol, 'POSITION_CLOSED'\)/);
 assert.match(serverSource, /closeBinancePositionAtBreachedProfitLock/);
+assert.match(serverSource, /profitLock:verifyReplacementAfterError/);
+assert.match(serverSource, /restored old SL/);
+assert.doesNotMatch(serverSource, /Place new SL FIRST/);
 assert.match(serverSource, /profitLockArmedLifecycleKey/);
 assert.doesNotMatch(serverSource, /startSlTrailSafetyScanner\(\);/);
 assert.doesNotMatch(serverSource, /startMissingTpScanner\(\);/);

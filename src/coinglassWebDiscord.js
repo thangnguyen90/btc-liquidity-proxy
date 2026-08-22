@@ -1,4 +1,10 @@
-export const COINGLASS_WEB_DISCORD_VERSION = 'COINGLASS_WEB_DISCORD_LINKS_V3_20260817';
+import {
+  COINGLASS_WEB_BINANCE_LEVERAGE,
+  COINGLASS_WEB_BINANCE_STOP_LOSS_ROE_PCT,
+  coinglassWebDefaultStopLossPrice,
+} from './coinglassWebBinance.js';
+
+export const COINGLASS_WEB_DISCORD_VERSION = 'COINGLASS_WEB_DISCORD_BINANCE_V7_RUNTIME_CONTROL_20260821';
 
 function number(value, digits = 2) {
   const parsed = Number(value);
@@ -22,7 +28,7 @@ function sideTitle(row = {}) {
 export function coinglassWebDiscordDedupeKey(row = {}) {
   const symbol = String(row.symbol ?? '').toUpperCase();
   const action = String(row.proposal?.action ?? 'NO_DATA');
-  return symbol && row.qualified ? `V3:${symbol}:${action}` : '';
+  return symbol && row.qualified ? `V5:${symbol}:${action}` : '';
 }
 
 export function buildCoinglassWebExternalLinks(row = {}) {
@@ -36,7 +42,7 @@ export function buildCoinglassWebExternalLinks(row = {}) {
   };
 }
 
-export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now()) {
+export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now(), binanceSettings = {}) {
   const proposal = row.proposal ?? {};
   const isLong = proposal.action === 'WAIT_LONG_CONFIRMATION';
   const target = proposal.targetZone;
@@ -45,8 +51,24 @@ export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now
   const entry = plan.entry;
   const takeProfit = plan.takeProfit;
   const takeProfit2 = plan.takeProfit2;
-  const stopLoss = plan.stopLoss;
   const direction = isLong ? 'LONG' : 'SHORT';
+  const leverage = Math.max(1, Number(
+    binanceSettings.leverage
+    ?? process.env.COINGLASS_WEB_BINANCE_LEVERAGE
+    ?? COINGLASS_WEB_BINANCE_LEVERAGE,
+  ));
+  const marginUsdt = Math.max(0.01, Number(binanceSettings.marginUsdt ?? 2));
+  const binanceEnabled = binanceSettings.binanceEnabled !== false;
+  const stopLossRoePct = Math.max(1, Number(
+    process.env.COINGLASS_WEB_BINANCE_STOP_LOSS_ROE_PCT ?? COINGLASS_WEB_BINANCE_STOP_LOSS_ROE_PCT,
+  ));
+  const stopLoss = coinglassWebDefaultStopLossPrice({
+    side: direction,
+    entryPrice: entry?.price,
+    leverage,
+    stopLossRoePct,
+  });
+  const stopLossPricePct = stopLossRoePct / leverage;
   const directionIcon = isLong ? '🟢' : '🔴';
   const links = buildCoinglassWebExternalLinks(row);
   return {
@@ -57,14 +79,18 @@ export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now
       description: [
         `**ĐỦ ĐIỀU KIỆN COINGLASS · ${direction} SETUP**`,
         proposal.rationale,
-        '**OBSERVE ONLY — các mức dưới đây chỉ có hiệu lực sau xác nhận, bot không tự vào Binance.**',
+        binanceEnabled
+          ? `**BINANCE AUTO:** BẬT · MARKET \`$${number(marginUsdt)} x${number(leverage, 0)}\` khi Mark Binance **cao hơn entry đề xuất**.`
+          : '**BINANCE AUTO:** TẮT cho CoinGlass Qualified; chỉ gửi cảnh báo, không vào lệnh thật.',
+        `**SL Binance:** cố định **-${number(stopLossRoePct)}% ROE** (${number(stopLossPricePct)}% giá @${number(leverage, 0)}x), neo theo average fill.`,
+        '**Đảo chiều:** chỉ đóng vị thế ngược chiều khi uPnL đang dương; uPnL ≤ 0 thì bỏ lệnh mới.',
       ].filter(Boolean).join('\n'),
       color: isLong ? 0x22c55e : 0xef4444,
       fields: [
         {
           name: '📍 ENTRY THAM CHIẾU',
           value: entry
-            ? `**${number(entry.price, 8)}**\n${entry.instruction}`
+            ? `**${number(entry.price, 8)}**\nTrigger MARKET: Mark Binance > entry\n${entry.instruction}`
             : '—',
           inline: false,
         },
@@ -78,7 +104,7 @@ export function buildCoinglassWebDiscordPayload(row = {}, generatedAt = Date.now
         {
           name: '🛡️ STOP LOSS / INVALIDATION',
           value: stopLoss
-            ? `SL **${number(stopLoss.price, 8)}** · ${number(stopLoss.distancePct)}%`
+            ? `SL **${number(stopLoss, 8)}** · -${number(stopLossRoePct)}% ROE · ${number(stopLossPricePct)}% giá @${number(leverage, 0)}x`
             : risk ? number(risk.price, 8) : '—',
           inline: true,
         },

@@ -15,6 +15,10 @@ export function isLiquidFlowV2Source(source) {
   return String(source ?? '').trim().toLowerCase().includes('liquid-flow-v2');
 }
 
+export function isCoinglassWebQualifiedSource(source) {
+  return String(source ?? '').trim().toLowerCase() === 'coinglass-web-qualified';
+}
+
 export function isKnownBotSource(source) {
   const normalized = String(source ?? '').trim().toLowerCase();
   if (!normalized) return false;
@@ -149,7 +153,8 @@ export function resolveNonLiquidFlowV2TakeProfit({
     : direction === 'SHORT'
       ? NON_LIQUID_FLOW_V2_SHORT_TP_VERSION
       : null;
-  if (!direction || !isKnownBotSource(source) || isLiquidFlowV2Source(source) || !(entry > 0) || !(lev > 0) || !(roe > 0)) {
+  if (!direction || !isKnownBotSource(source) || isLiquidFlowV2Source(source)
+    || isCoinglassWebQualifiedSource(source) || !(entry > 0) || !(lev > 0) || !(roe > 0)) {
     return {
       applied: false,
       direction,

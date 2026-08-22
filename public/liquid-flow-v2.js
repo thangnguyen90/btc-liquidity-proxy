@@ -158,7 +158,7 @@ async function submitLiquidFlowV2BinanceOrder(requestBody, token) {
   });
 }
 
-function renderHeader(data) {
+function renderHeaderLegacy(data) {
   els.candidateCount.textContent = data.candidateCount ?? 0;
   els.readyCount.textContent = data.readyCount ?? 0;
   els.activeCount.textContent = data.activeCount ?? 0;
@@ -170,6 +170,31 @@ function renderHeader(data) {
   els.socketStatus.textContent = socketText;
   els.socketDot.className = `flow-v2-socket-dot ${telemetry.socketState === 'OPEN' ? 'is-open' : 'is-connecting'}`;
   els.generatedAt.textContent = `Snapshot ${new Date(data.generatedAt).toLocaleTimeString('vi-VN')} · ${escapeHtml(data.version)}`;
+}
+
+function renderHeader(data) {
+  els.candidateCount.textContent = data.candidateCount ?? 0;
+  els.readyCount.textContent = data.readyCount ?? 0;
+  els.activeCount.textContent = data.activeCount ?? 0;
+  els.warmupCount.textContent = data.warmupCount ?? 0;
+  const telemetry = data.telemetry ?? {};
+  const staleDataCount = Number(data.staleDataCount ?? 0);
+  const klineSocketStale = data.klineTelemetry?.m5?.isStale === true;
+  const fadingLiveTotal = Number(data.fadingWaveLiveCoverage?.total ?? 0);
+  const fadingLiveCount = Number(data.fadingWaveLiveCoverage?.live ?? 0);
+  const fadingLiveMissing = fadingLiveTotal > 0 && fadingLiveCount < fadingLiveTotal;
+  const socketText = staleDataCount > 0
+    ? `KLINE STALE ${staleDataCount}/${data.candidateCount ?? 0} coin - fail-closed, no paper/Discord/Binance entry`
+    : fadingLiveMissing
+      ? `FADING LIVE 5M ${fadingLiveCount}/${fadingLiveTotal} coin - coin thiếu nến live tự fail-closed`
+    : klineSocketStale
+      ? `Kline WS stale - REST fallback dang giu nen fresh - Force-order ${telemetry.socketState ?? 'WARMING_UP'}`
+      : telemetry.socketState === 'OPEN'
+        ? `Kline live ${fadingLiveCount}/${fadingLiveTotal} + force-order socket OK - ${telemetry.symbols ?? 0} symbol co event`
+        : `Force-order ${telemetry.socketState ?? 'WARMING_UP'} - READY dang fail-safe`;
+  els.socketStatus.textContent = socketText;
+  els.socketDot.className = `flow-v2-socket-dot ${staleDataCount > 0 ? 'is-error' : fadingLiveMissing || klineSocketStale ? 'is-connecting' : telemetry.socketState === 'OPEN' ? 'is-open' : 'is-connecting'}`;
+  els.generatedAt.textContent = `Snapshot ${new Date(data.generatedAt).toLocaleTimeString('vi-VN')} - stale ${staleDataCount} - live5m ${fadingLiveCount}/${fadingLiveTotal} - ${escapeHtml(data.version)}`;
 }
 
 function renderLabelStats(stats = []) {
@@ -258,6 +283,24 @@ function evidenceHtml(rows = []) {
     'sell-flow': 'Sell-flow xác nhận',
     volume: 'Volume xác nhận',
     'top-liquidity-rank': 'Top 150 thanh khoản',
+    'day-already-up': 'Ngày đã tăng ít nhất 5%',
+    'prior-pump-leg': 'Đã có nhịp pump trước',
+    'post-pump-pullback': 'Đã pullback sau pump',
+    'flagpole-breakout': 'Cột cờ breakout đủ mạnh',
+    'flagpole-volume-taker': 'Volume/taker xác nhận cột cờ',
+    'wick-pullback-reclaim': 'Nến kế tiếp rút râu/reclaim',
+    'force-buy-short-kill': 'Force BUY đang kill short',
+    'short-liquidation-burst': 'Kill short tăng đột biến',
+    'oi-not-expanding': 'OI không mở rộng',
+    'day-not-strong-positive': 'Ngày không tăng quá mạnh',
+    'fading-wave-downtrend': 'Sóng tàn đang downtrend',
+    'wave-peak-aged': 'Đỉnh sóng đã qua đủ lâu',
+    'wave-drawdown': 'Đã rơi khỏi đỉnh sóng',
+    'live-pump-high': 'Nến live đang dựng đứng',
+    'live-range-atr': 'Range live lớn so với ATR',
+    'live-volume-taker': 'Volume/taker mua bùng lên',
+    'live-giveback-wick': 'Đã rút khỏi đỉnh trong nến',
+    'live-ema99-sweep': 'Nến live quét lên EMA99',
     'day-loss': 'Ngày giảm ít nhất 5%',
     'prior-ema-compression': 'EMA nén trước tín hiệu',
     'compression-density': 'Mật độ EMA nén',
@@ -274,22 +317,32 @@ function evidenceHtml(rows = []) {
 function secondaryLabelsHtml(classification = {}, features = {}) {
   const distribution = features.pumpDistribution15m ?? {};
   const postPump = features.postPumpShortSqueeze5m ?? {};
-  return (classification.secondaryLabels ?? []).map((secondary) => `
+  const flagpole = features.flagpoleShortKill5m ?? {};
+  return (classification.secondaryLabels ?? []).map((secondary) => {
+    const flagpoleShortKill = secondary.labelKey === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY';
+    const postPumpLabel = secondary.labelKey?.startsWith('POST_PUMP') && !flagpoleShortKill;
+    const stage = flagpoleShortKill
+      ? flagpole.stage ?? secondary.phase ?? 'WATCH'
+      : postPumpLabel
+        ? postPump.stage ?? secondary.phase ?? 'WATCH'
+        : distribution.stage ?? secondary.phase ?? 'WATCH';
+    return `
     <section class="flow-v2-secondary-label ${secondary.side === 'SHORT' ? 'is-short' : 'is-long'}">
       <div class="flow-v2-secondary-head">
         <b>${escapeHtml(secondary.label)} · ${Number(secondary.confidence ?? 0)}%</b>
-        <span>${escapeHtml(secondary.labelKey?.startsWith('POST_PUMP')
-          ? postPump.stage ?? secondary.phase ?? 'WATCH'
-          : distribution.stage ?? secondary.phase ?? 'WATCH')}</span>
+        <span>${escapeHtml(stage)}</span>
       </div>
       <p>${escapeHtml(secondary.reason)}</p>
-      ${secondary.labelKey?.startsWith('POST_PUMP')
-        ? `<small>Pump ${number(postPump.pumpPct, 1, '%')} Â· drawdown ${number(postPump.drawdownFromPeakPct, 1, '%')} Â· base ${number(postPump.baseRangePct, 1, '%')} Â· volume fade ${number(postPump.volumeFadeRatio, 2, 'x')}</small>`
+      ${flagpoleShortKill
+        ? `<small>Pump trước ${number(flagpole.priorPumpPct, 1, '%')} · pullback ${number(flagpole.pullbackPct, 1, '%')} · flagpole ${number(flagpole.flagpoleBodyPct, 1, '%')} · volume ${number(flagpole.flagpoleVolumeX, 2, 'x')} · râu dưới ${number(Number(flagpole.confirmationLowerWickShare) * 100, 1, '%')}</small>`
+        : postPumpLabel
+        ? `<small>Pump ${number(postPump.pumpPct, 1, '%')} · drawdown ${number(postPump.drawdownFromPeakPct, 1, '%')} · base ${number(postPump.baseRangePct, 1, '%')} · volume fade ${number(postPump.volumeFadeRatio, 2, 'x')}</small>`
         : ''}
-      ${secondary.labelKey?.startsWith('POST_PUMP') ? '' : `<small>Pump ${number(distribution.pumpPct, 1, '%')} · drawdown ${number(distribution.drawdownFromPeakPct, 1, '%')} · ${escapeHtml(distribution.unwindTier ?? '--')} · peak ${number(distribution.barsSincePeak, 0, ' nến 15m trước')}</small>`}
+      ${flagpoleShortKill || postPumpLabel ? '' : `<small>Pump ${number(distribution.pumpPct, 1, '%')} · drawdown ${number(distribution.drawdownFromPeakPct, 1, '%')} · ${escapeHtml(distribution.unwindTier ?? '--')} · peak ${number(distribution.barsSincePeak, 0, ' nến 15m trước')}</small>`}
       <div class="flow-v2-evidence">${evidenceHtml(secondary.evidence)}</div>
     </section>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function paperForSignal(row) {
@@ -328,6 +381,30 @@ function entryStateHtml(row) {
 function signalCard(row) {
   const f = row.features ?? {};
   const c = row.classification ?? {};
+  const flagpole = f.flagpoleShortKill5m ?? {};
+  const flagpoleDetails = c.labelKey === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY' ? `
+    <div class="flow-v2-metrics">
+      <div><span>PUMP TRƯỚC</span><b>${number(flagpole.priorPumpPct, 1, '%')}</b></div>
+      <div><span>PULLBACK</span><b>${number(flagpole.pullbackPct, 1, '%')}</b></div>
+      <div><span>FLAGPOLE BODY</span><b>${number(flagpole.flagpoleBodyPct, 1, '%')}</b></div>
+      <div><span>RANGE / ATR</span><b>${number(flagpole.flagpoleRangeAtr, 2, 'x')}</b></div>
+      <div><span>FLAG VOL</span><b>${number(flagpole.flagpoleVolumeX, 2, 'x')}</b></div>
+      <div><span>RÂU DƯỚI</span><b>${number(Number(flagpole.confirmationLowerWickShare) * 100, 1, '%')}</b></div>
+      <div><span>FORCE BUY BURST</span><b>${number(f.shortLiquidationBurst, 2, 'x')}</b></div>
+      <div><span>FORCE BUY 5M</span><b>${compactUsd(f.shortLiquidationUsd)}</b></div>
+    </div>` : '';
+  const fadingWave = f.fadingWaveLivePump5m ?? {};
+  const fadingWaveDetails = c.labelKey === 'FADING_WAVE_LIVE_PUMP_SHORT_READY' ? `
+    <div class="flow-v2-metrics">
+      <div><span>EMA99 SLOPE</span><b>${number(fadingWave.ema99Slope12Pct, 2, '%')}</b></div>
+      <div><span>12 NẾN</span><b>${number(fadingWave.downReturn12Pct, 2, '%')}</b></div>
+      <div><span>WAVE DRAWDOWN</span><b>${number(fadingWave.waveDrawdownPct, 1, '%')}</b></div>
+      <div><span>LIVE HIGH/OPEN</span><b>${number(fadingWave.livePumpHighPct, 1, '%')}</b></div>
+      <div><span>LIVE MARK/OPEN</span><b>${number(fadingWave.liveMarkPumpPct, 1, '%')}</b></div>
+      <div><span>RANGE / ATR</span><b>${number(fadingWave.liveRangeAtr, 2, 'x')}</b></div>
+      <div><span>LIVE VOL</span><b>${number(fadingWave.liveVolumeX, 2, 'x')}</b></div>
+      <div><span>GIVEBACK</span><b>${number(fadingWave.liveGivebackPct, 1, '%')}</b></div>
+    </div>` : '';
   const htfRetestTimeframe = c.ema99RetestTimeframe === '5m' ? '5M' : '15M';
   const htfRetest = htfRetestTimeframe === '5M' ? f.ema99Retest5m : f.ema99Retest15m;
   const sideClass = c.side === 'SHORT' ? 'is-short' : c.side === 'LONG' ? 'is-long' : 'is-wait';
@@ -363,6 +440,8 @@ function signalCard(row) {
           ${zoneRow('Vùng dưới', f.lowerZone, 'lower')}
         </div>
         <p class="flow-v2-reason">${escapeHtml(c.reason)}</p>
+        ${flagpoleDetails}
+        ${fadingWaveDetails}
         <div class="flow-v2-evidence">${evidenceHtml(c.evidence)}</div>
         ${secondaryLabelsHtml(c, f)}
         ${entryStateHtml(row)}

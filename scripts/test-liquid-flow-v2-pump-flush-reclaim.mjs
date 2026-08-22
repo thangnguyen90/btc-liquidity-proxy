@@ -139,7 +139,7 @@ assert.match(serverSource, /LIQ_FLOW_V2_PUMP_FLUSH_BINANCE_ENABLED/);
 assert.match(serverSource, /LIQ_FLOW_V2_PUMP_FLUSH_BINANCE_MARGIN_USDT \?\? 1\.5/);
 assert.match(serverSource, /profile\.cohort === 'PUMP_FLUSH_RECLAIM'/);
 assert.match(serverSource, /notionalUsdt: marginUsdt \* leverage/);
-assert.match(serverSource, /klineCache\.missingReady\(postPumpSymbols, '5m', 40\)/);
+assert.match(serverSource, /klineCache\.needsRefresh\([\s\S]*postPumpSymbols,[\s\S]*'5m',[\s\S]*40,[\s\S]*liquidFlowV2KlineMaxAgeMs\['5m'\]/);
 assert.match(serverSource, /pumpFlush\.watchReady === true \|\| pumpFlush\.longReady === true/);
 
 console.log('liquid flow v2 pump-flush-reclaim tests passed');

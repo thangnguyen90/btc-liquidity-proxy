@@ -1,4 +1,7 @@
-export const LIQUID_HEATMAP_FLOW_V2_VERSION = 'LIQUID_HEATMAP_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V20_20260816';
+import { buildFlagpoleShortKillSnapshot } from './liquidFlowV2FlagpoleShortKill.js';
+import { buildFadingWaveLivePumpSnapshot } from './liquidFlowV2FadingWaveLivePump.js';
+
+export const LIQUID_HEATMAP_FLOW_V2_VERSION = 'LIQUID_HEATMAP_FLOW_V2_FADING_WAVE_LIVE_RECOVERY_V24_20260819';
 export const PUMP_FLUSH_RECLAIM_VERSION = 'PUMP_FLUSH_RECLAIM_5M_V1_20260816';
 
 export const LIQUID_HEATMAP_FLOW_V2_LABELS = Object.freeze({
@@ -175,6 +178,32 @@ export const LIQUID_HEATMAP_FLOW_V2_LABELS = Object.freeze({
     observationOnly: false,
     affectsOrders: true,
     affectsBinance: false,
+    affectsEntry: true,
+    affectsSize: true,
+    affectsSlTp: true,
+  }),
+  POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY: Object.freeze({
+    key: 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY',
+    title: 'POST PUMP FLAGPOLE · SHORT KILL LONG READY',
+    side: 'LONG',
+    phase: 'READY',
+    description: 'Đã có pump trước + pullback, sau đó flagpole 5m breakout và nến kế tiếp rút râu/reclaim trong lúc force BUY kill SHORT bùng lên. PAPER $10 × 5x ONLY.',
+    observationOnly: false,
+    affectsOrders: true,
+    affectsBinance: false,
+    affectsEntry: true,
+    affectsSize: true,
+    affectsSlTp: true,
+  }),
+  FADING_WAVE_LIVE_PUMP_SHORT_READY: Object.freeze({
+    key: 'FADING_WAVE_LIVE_PUMP_SHORT_READY',
+    title: 'FADING WAVE · LIVE PUMP SHORT READY',
+    side: 'SHORT',
+    phase: 'READY',
+    description: 'Coin sóng tàn đang downtrend dựng nến 5m live trên volume/taker rồi bắt đầu rút khỏi đỉnh. Binance MARKET $1 × 5x ngay trong nến.',
+    observationOnly: false,
+    affectsOrders: true,
+    affectsBinance: true,
     affectsEntry: true,
     affectsSize: true,
     affectsSlTp: true,
@@ -1510,6 +1539,7 @@ export function selectLiquidHeatmapFlowV2PostPumpCandidates(snapshot = [], {
       moverSide: row.change24hPct >= 0 ? 'UP' : 'DOWN',
       liquidityRank: index + 1,
       postPumpUniverse: true,
+      fadingWaveUniverse: true,
       universeTier: 'POST_PUMP_TOP_150_LIQUIDITY',
     }));
 }
@@ -1716,6 +1746,8 @@ export function buildLiquidHeatmapFlowV2Features({
     { klines1h },
   );
   const postPumpShortSqueeze5m = buildPostPumpShortSqueezeSnapshot(klines, now);
+  const flagpoleShortKill5m = buildFlagpoleShortKillSnapshot(klines, now);
+  const fadingWaveLivePump5m = buildFadingWaveLivePumpSnapshot(klines, now);
   const pumpFlushReclaim5m = buildPumpFlushReclaimSnapshot(klines, now);
   const emaFanLong5m = buildEmaFanLongSnapshot(klines, now);
   const emaFanShort5m = buildEmaFanShortSnapshot(klines, now);
@@ -1728,6 +1760,7 @@ export function buildLiquidHeatmapFlowV2Features({
     liquidityRank: finite(market.liquidityRank, null),
     emaFanShortUniverse: market.emaFanShortUniverse === true,
     postPumpUniverse: market.postPumpUniverse === true,
+    fadingWaveUniverse: market.fadingWaveUniverse === true,
     universeTier: String(market.universeTier ?? 'PRIMARY_1_20'),
     markPrice,
     change24hPct: finite(market.change24hPct, 0),
@@ -1800,6 +1833,8 @@ export function buildLiquidHeatmapFlowV2Features({
     ema99Retest15m,
     pumpDistribution15m,
     postPumpShortSqueeze5m,
+    flagpoleShortKill5m,
+    fadingWaveLivePump5m,
     pumpFlushReclaim5m,
     emaFanLong5m,
     emaFanShort5m,
@@ -1814,10 +1849,15 @@ export function buildLiquidHeatmapFlowV2Features({
     longLiquidationUsd: finite(liquidation?.longLiquidationUsd, 0),
     shortLiquidationBurst: finite(liquidation?.shortBurstRatio, null),
     longLiquidationBurst: finite(liquidation?.longBurstRatio, null),
+    prior5mShortLiquidationUsd: finite(liquidation?.prior5mShortLiquidationUsd, 0),
     prior5mLongLiquidationUsd: finite(liquidation?.prior5mLongLiquidationUsd, 0),
+    older5mShortLiquidationUsd: finite(liquidation?.older5mShortLiquidationUsd, 0),
     older5mLongLiquidationUsd: finite(liquidation?.older5mLongLiquidationUsd, 0),
+    shortLiquidationDecayRatio: finite(liquidation?.shortLiquidationDecayRatio, null),
     longLiquidationDecayRatio: finite(liquidation?.longLiquidationDecayRatio, null),
+    shortLiquidationDecaying: liquidation?.shortLiquidationDecaying === true,
     longLiquidationDecaying: liquidation?.longLiquidationDecaying === true,
+    shortLiquidationPeakUsd: finite(liquidation?.shortLiquidationPeakUsd, 0),
     longLiquidationPeakUsd: finite(liquidation?.longLiquidationPeakUsd, 0),
     liquidationEvents: finite(liquidation?.events, 0),
     liquidationSocketState: String(liquidation?.socketState ?? 'WARMING_UP'),
@@ -2032,6 +2072,118 @@ export function classifyLiquidHeatmapFlowV2(features = {}) {
     evidence: pumpFlushEvidence,
     signalCandleClosedAt: finite(pumpFlush.readyAt, finite(pumpFlush.candleClosedAt, null)),
     pumpFlushReadyAt: finite(pumpFlush.readyAt, null),
+    observationOnly: false,
+    affectsOrders: true,
+    affectsBinance: true,
+    affectsEntry: true,
+    affectsSize: true,
+    affectsSlTp: true,
+  } : null;
+
+  const flagpoleShortKill = features.flagpoleShortKill5m ?? {};
+  const flagpoleUniverseReady = features.postPumpUniverse === true
+    && finite(features.liquidityRank, null) != null
+    && finite(features.liquidityRank, Infinity) <= 150;
+  const minimumShortKillUsd = Math.max(10_000, finite(features.quoteVolume, 0) * 0.0001);
+  const flagpoleShortKillReady = flagpoleUniverseReady
+    && change24h >= 5
+    && flagpoleShortKill.longReady === true
+    && String(features.liquidationSocketState) === 'OPEN'
+    && finite(features.shortLiquidationUsd, 0) >= minimumShortKillUsd
+    && shortBurst != null && shortBurst >= 1.5;
+  const flagpoleShortKillEvidence = [
+    evidence('top-liquidity-rank', flagpoleUniverseReady, features.liquidityRank),
+    evidence('day-already-up', change24h >= 5, change24h),
+    evidence('prior-pump-leg', finite(flagpoleShortKill.priorPumpPct, 0) >= 8,
+      flagpoleShortKill.priorPumpPct),
+    evidence('post-pump-pullback', finite(flagpoleShortKill.pullbackPct, 0) >= 2.5
+      && finite(flagpoleShortKill.barsAfterPriorPeak, 0) >= 4,
+    `${flagpoleShortKill.pullbackPct}/${flagpoleShortKill.barsAfterPriorPeak}`),
+    evidence('flagpole-breakout', finite(flagpoleShortKill.flagpoleBodyPct, 0) >= 1.5
+      && finite(flagpoleShortKill.flagpoleRangeAtr, 0) >= 2.2,
+    `${flagpoleShortKill.flagpoleBodyPct}/${flagpoleShortKill.flagpoleRangeAtr}`),
+    evidence('flagpole-volume-taker', finite(flagpoleShortKill.flagpoleVolumeX, 0) >= 2.5
+      && finite(flagpoleShortKill.flagpoleTakerDeltaPct, -Infinity) >= 8,
+    `${flagpoleShortKill.flagpoleVolumeX}/${flagpoleShortKill.flagpoleTakerDeltaPct}`),
+    evidence('wick-pullback-reclaim', finite(flagpoleShortKill.confirmationLowerWickShare, 0) >= 0.2
+      && finite(flagpoleShortKill.confirmationClosePosition, 0) >= 0.6,
+    `${flagpoleShortKill.confirmationLowerWickShare}/${flagpoleShortKill.confirmationClosePosition}`),
+    evidence('force-buy-short-kill', finite(features.shortLiquidationUsd, 0) >= minimumShortKillUsd,
+      `${features.shortLiquidationUsd}/${minimumShortKillUsd}`),
+    evidence('short-liquidation-burst', shortBurst != null && shortBurst >= 1.5, shortBurst),
+    evidence('force-socket-open', String(features.liquidationSocketState) === 'OPEN',
+      features.liquidationSocketState),
+    evidence('oi-not-expanding', oiDelta != null && oiDelta <= 0, oiDelta),
+  ];
+  const flagpoleMatched = flagpoleShortKillEvidence.filter((row) => row.matched).length;
+  const flagpoleShortKillClassification = flagpoleShortKillReady ? {
+    labelKey: LIQUID_HEATMAP_FLOW_V2_LABELS.POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY.key,
+    label: LIQUID_HEATMAP_FLOW_V2_LABELS.POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY.title,
+    side: LIQUID_HEATMAP_FLOW_V2_LABELS.POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY.side,
+    phase: LIQUID_HEATMAP_FLOW_V2_LABELS.POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY.phase,
+    confidence: clamp(Math.round(58 + flagpoleMatched * 3
+      + Math.min(finite(shortBurst, 1.5), 5) * 2), 0, 96),
+    reason: 'Đây không phải nhịp bơm đầu tiên: coin đã có pump + pullback, rồi flagpole 5m breakout và nến kế tiếp rút râu/reclaim trong lúc force BUY kill SHORT bùng lên. PAPER ONLY, không cấp Binance.',
+    evidence: flagpoleShortKillEvidence,
+    signalCandleClosedAt: finite(flagpoleShortKill.readyAt, finite(flagpoleShortKill.candleClosedAt, null)),
+    flagpoleShortKillReadyAt: finite(flagpoleShortKill.readyAt, null),
+    observationOnly: false,
+    affectsOrders: true,
+    affectsBinance: false,
+    affectsEntry: true,
+    affectsSize: true,
+    affectsSlTp: true,
+  } : null;
+
+  const fadingWaveLivePump = features.fadingWaveLivePump5m ?? {};
+  const fadingWaveUniverseReady = features.fadingWaveUniverse === true
+    && finite(features.liquidityRank, null) != null
+    && finite(features.liquidityRank, Infinity) <= 150
+    && finite(features.quoteVolume, 0) >= 2_000_000;
+  const fadingWaveLivePumpShortReady = fadingWaveUniverseReady
+    && change24h <= 5
+    && fadingWaveLivePump.shortReady === true;
+  const fadingWaveLivePumpEvidence = [
+    evidence('top-liquidity-rank', fadingWaveUniverseReady, features.liquidityRank),
+    evidence('day-not-strong-positive', change24h <= 5, change24h),
+    evidence('fading-wave-downtrend', finite(fadingWaveLivePump.ema99Slope12Pct, Infinity) <= -0.15
+      && finite(fadingWaveLivePump.downReturn12Pct, Infinity) <= -1.5
+      && finite(fadingWaveLivePump.belowEma99Bars, 0) >= 8,
+    `${fadingWaveLivePump.ema99Slope12Pct}/${fadingWaveLivePump.downReturn12Pct}/${fadingWaveLivePump.belowEma99Bars}`),
+    evidence('wave-peak-aged', finite(fadingWaveLivePump.barsSinceWavePeak, 0) >= 6,
+      fadingWaveLivePump.barsSinceWavePeak),
+    evidence('wave-drawdown', finite(fadingWaveLivePump.waveDrawdownPct, 0) >= 3,
+      fadingWaveLivePump.waveDrawdownPct),
+    evidence('live-pump-high', finite(fadingWaveLivePump.livePumpHighPct, 0) >= 4
+      && finite(fadingWaveLivePump.liveMarkPumpPct, 0) >= 2,
+    `${fadingWaveLivePump.livePumpHighPct}/${fadingWaveLivePump.liveMarkPumpPct}`),
+    evidence('live-range-atr', finite(fadingWaveLivePump.liveRangeAtr, 0) >= 2.5,
+      fadingWaveLivePump.liveRangeAtr),
+    evidence('live-volume-taker', finite(fadingWaveLivePump.liveVolumeX, 0) >= 1.8
+      && finite(fadingWaveLivePump.liveTakerDeltaPct, -Infinity) >= 8,
+    `${fadingWaveLivePump.liveVolumeX}/${fadingWaveLivePump.liveTakerDeltaPct}`),
+    evidence('live-giveback-wick', finite(fadingWaveLivePump.liveGivebackPct, 0) >= 0.6
+      && finite(fadingWaveLivePump.liveGivebackPct, Infinity) <= 6
+      && finite(fadingWaveLivePump.liveUpperWickShare, 0) >= 0.08,
+    `${fadingWaveLivePump.liveGivebackPct}/${fadingWaveLivePump.liveUpperWickShare}`),
+    evidence('live-ema99-sweep', finite(fadingWaveLivePump.liveHigh, 0)
+      >= finite(fadingWaveLivePump.ema99, Infinity) * 1.005
+      && finite(fadingWaveLivePump.liveClose, 0) >= finite(fadingWaveLivePump.ema99, Infinity),
+    `${fadingWaveLivePump.liveHigh}/${fadingWaveLivePump.liveClose}/${fadingWaveLivePump.ema99}`),
+  ];
+  const fadingWaveMatched = fadingWaveLivePumpEvidence.filter((row) => row.matched).length;
+  const fadingWaveLivePumpClassification = fadingWaveLivePumpShortReady ? {
+    labelKey: LIQUID_HEATMAP_FLOW_V2_LABELS.FADING_WAVE_LIVE_PUMP_SHORT_READY.key,
+    label: LIQUID_HEATMAP_FLOW_V2_LABELS.FADING_WAVE_LIVE_PUMP_SHORT_READY.title,
+    side: LIQUID_HEATMAP_FLOW_V2_LABELS.FADING_WAVE_LIVE_PUMP_SHORT_READY.side,
+    phase: LIQUID_HEATMAP_FLOW_V2_LABELS.FADING_WAVE_LIVE_PUMP_SHORT_READY.phase,
+    confidence: clamp(Math.round(58 + fadingWaveMatched * 3.5
+      + Math.min(finite(fadingWaveLivePump.liveVolumeX, 1.8), 10)), 0, 96),
+    reason: 'Coin sóng tàn đang downtrend dựng một nến 5m live pump mạnh, quét lên EMA99 rồi bắt đầu rút khỏi đỉnh trong cùng nến. SHORT MARKET ngay; Binance $1 margin × 5x.',
+    evidence: fadingWaveLivePumpEvidence,
+    signalCandleClosedAt: finite(fadingWaveLivePump.liveCandleOpenAt, null),
+    signalLiveCandleOpenAt: finite(fadingWaveLivePump.liveCandleOpenAt, null),
+    signalObservedAt: finite(fadingWaveLivePump.detectedAt, null),
     observationOnly: false,
     affectsOrders: true,
     affectsBinance: true,
@@ -2428,11 +2580,21 @@ export function classifyLiquidHeatmapFlowV2(features = {}) {
   let reason = 'Chua du pha squeeze/sweep de gan nhan.';
   let ema99RetestTimeframe = null;
   let ema99RetestCandleClosedAt = null;
-  if (killLongExhaustionReady) {
+  if (fadingWaveLivePumpShortReady) {
+    label = LIQUID_HEATMAP_FLOW_V2_LABELS.FADING_WAVE_LIVE_PUMP_SHORT_READY;
+    confidence = fadingWaveLivePumpClassification.confidence;
+    evidenceRows = fadingWaveLivePumpEvidence;
+    reason = fadingWaveLivePumpClassification.reason;
+  } else if (killLongExhaustionReady) {
     label = LIQUID_HEATMAP_FLOW_V2_LABELS.KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY;
     confidence = clamp(Math.round(58 + killLongScore * 0.36), 0, 96);
     evidenceRows = killLongEvidence;
     reason = 'Cascade kill LONG da suy kiet: force SELL 5m giam, OI da washout roi on dinh, taker mua quay lai va nen 5m dong reclaim EMA13/25 voi higher-low. PAPER ONLY, khong cap Binance.';
+  } else if (flagpoleShortKillReady) {
+    label = LIQUID_HEATMAP_FLOW_V2_LABELS.POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY;
+    confidence = flagpoleShortKillClassification.confidence;
+    evidenceRows = flagpoleShortKillEvidence;
+    reason = flagpoleShortKillClassification.reason;
   } else if (pumpFlushLongReady) {
     label = LIQUID_HEATMAP_FLOW_V2_LABELS.PUMP_FLUSH_RECLAIM_LONG_READY;
     confidence = pumpFlushClassification.confidence;
@@ -2567,12 +2729,15 @@ export function classifyLiquidHeatmapFlowV2(features = {}) {
     || label?.key === 'POST_PUMP_BASE_ABSORPTION_WATCH'
     || label?.key === 'POST_PUMP_SHORT_SQUEEZE_LONG_READY'
     || label?.key === 'POST_PUMP_SHORT_SQUEEZE_PRIME'
+    || label?.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY'
+    || label?.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY'
     || label?.key === 'PUMP_FLUSH_RECLAIM_LONG_READY';
   const sweepWatch = label?.key === 'UP_SWEEP_SHORT_WATCH'
     || label?.key === 'DOWN_SWEEP_LONG_WATCH';
   const secondaryLabels = [
     distributionClassification,
     postPumpClassification,
+    flagpoleShortKillClassification,
     pumpFlushClassification,
     emaFanClassification,
     emaFanShortClassification,
@@ -2583,11 +2748,14 @@ export function classifyLiquidHeatmapFlowV2(features = {}) {
   const selectedPostPumpPrime = label?.key === 'POST_PUMP_SHORT_SQUEEZE_PRIME';
   const selectedPrimaryPanicReady = label?.key === 'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY';
   const selectedKillLongExhaustion = label?.key === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY';
+  const selectedFlagpoleShortKill = label?.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY';
+  const selectedFadingWaveLivePump = label?.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY';
   const selectedPumpFlush = label?.key === 'PUMP_FLUSH_RECLAIM_LONG_READY';
   const selectedSweepReady = label?.key === 'UP_SWEEP_SHORT_READY'
     || label?.key === 'DOWN_SWEEP_LONG_READY';
-  const selectedPaperOnly = selectedPostPumpPrime || selectedKillLongExhaustion;
-  const selectedBinanceReady = selectedPostPumpReady || selectedPrimaryPanicReady || selectedPumpFlush;
+  const selectedPaperOnly = selectedPostPumpPrime || selectedKillLongExhaustion || selectedFlagpoleShortKill;
+  const selectedBinanceReady = selectedPostPumpReady || selectedPrimaryPanicReady
+    || selectedPumpFlush || selectedFadingWaveLivePump;
   const selectedExecutable = selectedPaperOnly || selectedBinanceReady;
 
   return {
@@ -2599,7 +2767,11 @@ export function classifyLiquidHeatmapFlowV2(features = {}) {
     confidence,
     reason,
     evidence: evidenceRows,
-    signalCandleClosedAt: selectedPumpFlush
+    signalCandleClosedAt: selectedFadingWaveLivePump
+      ? finite(features.fadingWaveLivePump5m?.liveCandleOpenAt, null)
+      : selectedFlagpoleShortKill
+      ? finite(features.flagpoleShortKill5m?.readyAt, null)
+      : selectedPumpFlush
       ? finite(features.pumpFlushReclaim5m?.readyAt, null)
       : selectedPostPumpReady || selectedPostPumpPrime
         ? finite(features.postPumpShortSqueeze5m?.readyAt, finite(features.candleClosedAt, null))

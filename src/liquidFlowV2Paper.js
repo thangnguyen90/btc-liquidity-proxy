@@ -3,11 +3,13 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { LIQUID_FLOW_V2_BINANCE_LEVERAGE } from './autoBinancePolicy.js';
 
-export const LIQUID_FLOW_V2_PAPER_VERSION = 'LIQUID_FLOW_V2_PAPER_V29_PRIMARY_POST_PUMP_BINANCE_2USDT_20260816';
+export const LIQUID_FLOW_V2_PAPER_VERSION = 'LIQUID_FLOW_V2_PAPER_V31_FADING_WAVE_LIVE_PUMP_BINANCE_20260818';
 export const EMA_FAN_LONG_ENTRY_CONFIRMATION_VERSION = 'EMA_FAN_LONG_RETEST_CONFIRM_V1_20260816';
 export const LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_VERSION = 'LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_V1_20260816';
 export const LIQUID_FLOW_V2_SWEEP_ENTRY_POLICY_VERSION = 'LIQUID_FLOW_V2_SWEEP_ENTRY_GUARD_V1_20260816';
 export const LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_VERSION = 'LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V1_2USDT_20260816';
+export const LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION =
+  'LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_V1_1USDT_20260818';
 
 function finite(value, fallback = null) {
   if (value == null || value === '') return fallback;
@@ -61,6 +63,9 @@ function normalizeSettings(settings = {}) {
     postPumpReadyBinanceEnabled: settings.postPumpReadyBinanceEnabled !== false,
     postPumpReadyBinanceMarginUsdt: clamp(finite(settings.postPumpReadyBinanceMarginUsdt, 2), 1, 20),
     postPumpReadyBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+    fadingWaveLivePumpBinanceEnabled: settings.fadingWaveLivePumpBinanceEnabled !== false,
+    fadingWaveLivePumpBinanceMarginUsdt: clamp(finite(settings.fadingWaveLivePumpBinanceMarginUsdt, 1), 1, 20),
+    fadingWaveLivePumpBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
     baseSweepRetestBufferPct: clamp(finite(settings.baseSweepRetestBufferPct, 0.6), 0.1, 2),
     baseSweepEntryTimeoutMs: clamp(finite(settings.baseSweepEntryTimeoutMs, 30 * 60_000), 5 * 60_000, 2 * 60 * 60_000),
     cooldownMs: clamp(finite(settings.cooldownMs, 30 * 60_000), 5 * 60_000, 24 * 60 * 60_000),
@@ -87,6 +92,8 @@ function paperSideOfClassification(classification = {}) {
   if (classification.labelKey === 'POST_PUMP_SHORT_SQUEEZE_LONG_READY') return 'LONG';
   if (classification.labelKey === 'POST_PUMP_SHORT_SQUEEZE_PRIME') return 'LONG';
   if (classification.labelKey === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY') return 'LONG';
+  if (classification.labelKey === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY') return 'LONG';
+  if (classification.labelKey === 'FADING_WAVE_LIVE_PUMP_SHORT_READY') return 'SHORT';
   if (classification.labelKey === 'PUMP_FLUSH_RECLAIM_LONG_READY') return 'LONG';
   return null;
 }
@@ -114,6 +121,14 @@ function isPostPumpSqueezeClassification(classification = {}) {
 
 function isKillLongExhaustionClassification(classification = {}) {
   return classification.labelKey === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY';
+}
+
+function isFlagpoleShortKillClassification(classification = {}) {
+  return classification.labelKey === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY';
+}
+
+function isFadingWaveLivePumpClassification(classification = {}) {
+  return classification.labelKey === 'FADING_WAVE_LIVE_PUMP_SHORT_READY';
 }
 
 function isPumpFlushReclaimClassification(classification = {}) {
@@ -149,6 +164,15 @@ export function liquidFlowV2AutoBinanceProfile(classification = {}, settingsInpu
       source: 'liquid-flow-v2-pump-flush-reclaim',
     };
   }
+  if (isFadingWaveLivePumpClassification(classification)) {
+    return {
+      eligible: settings.fadingWaveLivePumpBinanceEnabled,
+      cohort: 'FADING_WAVE_LIVE_PUMP_SHORT',
+      marginUsdt: settings.fadingWaveLivePumpBinanceMarginUsdt,
+      leverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+      source: 'liquid-flow-v2-fading-wave-live-pump-short',
+    };
+  }
   if (isPostPumpSqueezeClassification(classification)) {
     return {
       eligible: false,
@@ -162,6 +186,15 @@ export function liquidFlowV2AutoBinanceProfile(classification = {}, settingsInpu
     return {
       eligible: false,
       cohort: 'KILL_LONG_EXHAUSTION_PAPER',
+      marginUsdt: null,
+      leverage: null,
+      source: null,
+    };
+  }
+  if (isFlagpoleShortKillClassification(classification)) {
+    return {
+      eligible: false,
+      cohort: 'FLAGPOLE_SHORT_KILL_PAPER',
       marginUsdt: null,
       leverage: null,
       source: null,
@@ -232,6 +265,8 @@ export function buildLiquidFlowV2PaperPlan(row = {}, settingsInput = {}) {
   const emaFan = isEmaFanClassification(row.classification);
   const postPumpSqueeze = isPostPumpSqueezeClassification(row.classification);
   const killLongExhaustion = isKillLongExhaustionClassification(row.classification);
+  const flagpoleShortKill = isFlagpoleShortKillClassification(row.classification);
+  const fadingWaveLivePump = isFadingWaveLivePumpClassification(row.classification);
   const pumpFlushReclaim = isPumpFlushReclaimClassification(row.classification);
   const emaFanRegularLimit = row.classification?.labelKey === 'EMA_FAN_LONG_READY';
   const baseStructure = side === 'SHORT' ? features.baseSweepShort : features.baseSweepLong;
@@ -263,7 +298,8 @@ export function buildLiquidFlowV2PaperPlan(row = {}, settingsInput = {}) {
       ? (entryPrice - targetZonePrice) / entryPrice * 100
       : (targetZonePrice - entryPrice) / entryPrice * 100
     : null;
-  const rewardPct = emaFan || postPumpSqueeze || killLongExhaustion ? rewardFloorPct : clamp(
+  const rewardPct = emaFan || postPumpSqueeze || killLongExhaustion
+    || flagpoleShortKill || fadingWaveLivePump ? rewardFloorPct : clamp(
     zoneRewardPct != null && zoneRewardPct > 0 ? zoneRewardPct : riskPct * 1.5,
     rewardFloorPct,
     4,
@@ -284,6 +320,8 @@ export function buildLiquidFlowV2PaperPlan(row = {}, settingsInput = {}) {
       : continuationNeedsRetest ? 'BASE_BREAKOUT_RETEST_LIMIT'
         : postPumpSqueeze ? 'POST_PUMP_5M_CLOSED_BREAKOUT_MARK'
           : killLongExhaustion ? 'KILL_LONG_EXHAUSTION_5M_CLOSED_RECLAIM_MARK'
+            : flagpoleShortKill ? 'FLAGPOLE_SHORT_KILL_5M_CLOSED_RECLAIM_MARK'
+              : fadingWaveLivePump ? 'FADING_WAVE_LIVE_5M_PUMP_MARKET_MARK'
             : pumpFlushReclaim ? 'PUMP_FLUSH_RECLAIM_5M_CLOSED_MARK' : 'LIVE_MARK_AT_READY_SCAN',
     entryMode: needsRetest ? 'PULLBACK_LIMIT' : 'IMMEDIATE_MARK',
     entryTimeoutMs: emaFanRegularLimit
@@ -304,6 +342,10 @@ export function buildLiquidFlowV2PaperPlan(row = {}, settingsInput = {}) {
       ? `POST_PUMP_FIXED_${round(takeProfitRoe, 2)}_ROE`
       : killLongExhaustion
         ? `KILL_LONG_EXHAUSTION_FIXED_${round(takeProfitRoe, 2)}_ROE`
+      : flagpoleShortKill
+        ? `FLAGPOLE_SHORT_KILL_FIXED_${round(takeProfitRoe, 2)}_ROE`
+      : fadingWaveLivePump
+        ? `FADING_WAVE_LIVE_PUMP_FIXED_${round(takeProfitRoe, 2)}_ROE`
       : emaFan
       ? `EMA_FAN_FIXED_${round(takeProfitRoe, 2)}_ROE`
       : zoneRewardPct != null && zoneRewardPct > 0
@@ -661,6 +703,9 @@ export class LiquidFlowV2PaperManager {
             postPumpReadyBinanceEnabled: runtimePolicy.postPumpReadyBinanceEnabled,
             postPumpReadyBinanceMarginUsdt: runtimePolicy.postPumpReadyBinanceMarginUsdt,
             postPumpReadyBinanceLeverage: runtimePolicy.postPumpReadyBinanceLeverage,
+            fadingWaveLivePumpBinanceEnabled: runtimePolicy.fadingWaveLivePumpBinanceEnabled,
+            fadingWaveLivePumpBinanceMarginUsdt: runtimePolicy.fadingWaveLivePumpBinanceMarginUsdt,
+            fadingWaveLivePumpBinanceLeverage: runtimePolicy.fadingWaveLivePumpBinanceLeverage,
             baseLongBinanceMarginUsdt: runtimePolicy.baseLongBinanceMarginUsdt,
             baseBinanceLeverage: runtimePolicy.baseBinanceLeverage,
             preBinanceMarginUsdt: runtimePolicy.preBinanceMarginUsdt,
@@ -717,8 +762,20 @@ export class LiquidFlowV2PaperManager {
         const distributionLabel = classification.labelKey === 'PUMP_DISTRIBUTION_SHORT_READY';
         const emaFanLabel = isEmaFanClassification(classification);
         const postPumpLabel = isPostPumpSqueezeClassification(classification);
+        const flagpoleShortKillLabel = isFlagpoleShortKillClassification(classification);
+        const fadingWaveLivePumpLabel = isFadingWaveLivePumpClassification(classification);
         const pumpFlushLabel = isPumpFlushReclaimClassification(classification);
-        const signalCandleClosedAt = pumpFlushLabel
+        const signalCandleClosedAt = fadingWaveLivePumpLabel
+          ? classification.signalLiveCandleOpenAt
+            ?? classification.signalCandleClosedAt
+            ?? row.features?.fadingWaveLivePump5m?.liveCandleOpenAt
+            ?? row.features?.candleClosedAt
+          : flagpoleShortKillLabel
+          ? classification.flagpoleShortKillReadyAt
+            ?? classification.signalCandleClosedAt
+            ?? row.features?.flagpoleShortKill5m?.readyAt
+            ?? row.features?.candleClosedAt
+          : pumpFlushLabel
           ? classification.pumpFlushReadyAt
             ?? classification.signalCandleClosedAt
             ?? row.features?.pumpFlushReclaim5m?.readyAt
@@ -822,6 +879,11 @@ export class LiquidFlowV2PaperManager {
             openInterestDelta5mPct: row.features?.openInterestDelta5mPct ?? null,
             openInterestStabilizing: row.features?.openInterestStabilizing === true,
             shortLiquidationUsd: row.features?.shortLiquidationUsd ?? null,
+            prior5mShortLiquidationUsd: row.features?.prior5mShortLiquidationUsd ?? null,
+            shortLiquidationBurst: row.features?.shortLiquidationBurst ?? null,
+            shortLiquidationDecayRatio: row.features?.shortLiquidationDecayRatio ?? null,
+            shortLiquidationDecaying: row.features?.shortLiquidationDecaying === true,
+            shortLiquidationPeakUsd: row.features?.shortLiquidationPeakUsd ?? null,
             longLiquidationUsd: row.features?.longLiquidationUsd ?? null,
             prior5mLongLiquidationUsd: row.features?.prior5mLongLiquidationUsd ?? null,
             longLiquidationDecayRatio: row.features?.longLiquidationDecayRatio ?? null,
@@ -841,6 +903,8 @@ export class LiquidFlowV2PaperManager {
             ema99Retest15m: row.features?.ema99Retest15m ?? null,
             pumpDistribution15m: row.features?.pumpDistribution15m ?? null,
             postPumpShortSqueeze5m: row.features?.postPumpShortSqueeze5m ?? null,
+            flagpoleShortKill5m: row.features?.flagpoleShortKill5m ?? null,
+            fadingWaveLivePump5m: row.features?.fadingWaveLivePump5m ?? null,
             pumpFlushReclaim5m: row.features?.pumpFlushReclaim5m ?? null,
             emaFanLong5m: row.features?.emaFanLong5m ?? null,
             emaFanShort5m: row.features?.emaFanShort5m ?? null,
@@ -1015,12 +1079,15 @@ export class LiquidFlowV2PaperManager {
     if (trade.binanceEntryState) return null;
     const selectivePolicy = trade.labelKey === 'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY'
       || trade.labelKey === 'POST_PUMP_SHORT_SQUEEZE_LONG_READY';
+    const binanceEntryPolicyVersion = trade.labelKey === 'FADING_WAVE_LIVE_PUMP_SHORT_READY'
+      ? LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION
+      : selectivePolicy ? LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_VERSION : null;
     Object.assign(trade, {
       binanceEntryState: 'SUBMITTING',
       binanceEntryClaimedAt: claimedAt,
       binanceEntryCohort: profile.cohort,
-      ...(selectivePolicy ? {
-        binanceEntryPolicyVersion: LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_VERSION,
+      ...(binanceEntryPolicyVersion ? {
+        binanceEntryPolicyVersion,
       } : {}),
     });
     await this._save('binance-entry-claim');
@@ -1045,14 +1112,16 @@ export class LiquidFlowV2PaperManager {
         && !this.state.settings.emaFanBinanceEnabled
         && !this.state.settings.pumpFlushBinanceEnabled
         && !this.state.settings.primaryPanicBinanceEnabled
-        && !this.state.settings.postPumpReadyBinanceEnabled,
+        && !this.state.settings.postPumpReadyBinanceEnabled
+        && !this.state.settings.fadingWaveLivePumpBinanceEnabled,
       labelsObservationOnly: false,
       affectsBinance: this.state.settings.baseBinanceEnabled
         || this.state.settings.htfBinanceEnabled
         || this.state.settings.emaFanBinanceEnabled
         || this.state.settings.pumpFlushBinanceEnabled
         || this.state.settings.primaryPanicBinanceEnabled
-        || this.state.settings.postPumpReadyBinanceEnabled,
+        || this.state.settings.postPumpReadyBinanceEnabled
+        || this.state.settings.fadingWaveLivePumpBinanceEnabled,
       settings: { ...this.state.settings },
       updatedAt: this.state.updatedAt,
       ...summary,

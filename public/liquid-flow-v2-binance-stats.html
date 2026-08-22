@@ -5,15 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Liquid Flow V2 · Binance Stats</title>
     <link rel="stylesheet" href="/styles.css?v=20260809-flow-v2">
-    <link rel="stylesheet" href="/liquid-flow-v2.css?v=20260814-stats-v2">
+    <link rel="stylesheet" href="/liquid-flow-v2.css?v=20260822-realtime-v3">
   </head>
   <body>
     <main class="flow-v2-shell">
       <header class="flow-v2-topbar">
         <div>
-          <p class="flow-v2-eyebrow">BINANCE THẬT · LIQUID FLOW V2</p>
+            <p class="flow-v2-eyebrow">BINANCE THẬT · LIQUID FLOW V2 + COINGLASS</p>
           <h1>V2 Binance Signal Stats</h1>
-          <p class="flow-v2-lead">Màn đối soát riêng, không dùng socket/render của scanner. PnL đóng lấy từ Binance Income; lệnh mở lấy từ vị thế Binance.</p>
+          <p class="flow-v2-lead">Màn đối soát Liquid Flow V2 và CoinGlass Qualified. PnL đóng lấy từ Binance Income; lệnh mở lấy từ vị thế Binance.</p>
         </div>
         <nav class="flow-v2-nav" aria-label="Điều hướng">
           <a href="/liquid-flow-v2">Liquid Flow V2</a>
@@ -43,12 +43,12 @@
           <div>
             <h3>Theo loại tín hiệu</h3>
             <div class="flow-v2-table-wrap"><table class="flow-v2-binance-table">
-              <thead><tr><th>TÍN HIỆU</th><th>FILLED</th><th>W/L</th><th>WR</th><th>PF</th><th>AVG ROE</th><th>NET PNL</th></tr></thead>
-              <tbody id="binanceStatsGroups"><tr><td colspan="7">Đang tải…</td></tr></tbody>
+              <thead><tr><th>TÍN HIỆU</th><th>BINANCE THẬT / MARGIN USD</th><th>FILLED</th><th>W/L</th><th>WR</th><th>PF</th><th>AVG ROE</th><th>NET PNL</th></tr></thead>
+              <tbody id="binanceStatsGroups"><tr><td colspan="8">Đang tải…</td></tr></tbody>
             </table></div>
           </div>
           <div>
-            <h3>Chi tiết nguyên nhân thắng/thua</h3>
+            <h3>Chi tiết nguyên nhân thắng/thua <span class="flow-v2-realtime-badge is-live">REALTIME</span></h3>
             <div class="flow-v2-table-wrap"><table class="flow-v2-binance-table is-detail">
               <thead><tr><th>FILLED</th><th>SYMBOL</th><th>TÍN HIỆU</th><th>ENTRY PAPER / BINANCE</th><th>SLIPPAGE</th><th>KẾT QUẢ</th><th>NET PNL / ROE</th><th>NGUỒN PNL</th></tr></thead>
               <tbody id="binanceStatsRows"><tr><td colspan="8">Đang tải…</td></tr></tbody>
@@ -62,6 +62,6 @@
         </div>
       </section>
     </main>
-    <script type="module" src="/liquid-flow-v2-binance-stats.js?v=20260814-v2"></script>
+    <script type="module" src="/liquid-flow-v2-binance-stats.js?v=20260822-v6-realtime"></script>
   </body>
 </html>

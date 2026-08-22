@@ -16,7 +16,7 @@ import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
 import { computeHeatmapData } from './liquidityProxy.js';
 import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked, summarizeTopTraderTrend, formatTopTraderTrend } from './discordNotifier.js';
-import { KlineCache } from './klineCache.js';
+import { KLINE_CACHE_MANAGED_LIVE_GROUP_VERSION, KlineCache } from './klineCache.js';
 import { resolveEmaWarmupReadyTarget, warmupRetryDelayMs } from './klineWarmupPolicy.js';
 import { runPumpScan } from './pumpDetector.js';
 import { runCapScan }  from './capDetector.js';
@@ -72,9 +72,15 @@ import {
 import {
   LIQUID_FLOW_V2_BINANCE_STATS_VERSION,
   buildLiquidFlowV2BinanceStats,
+  coinglassQualifiedBinanceAudits,
+  coinglassQualifiedBinanceTrades,
   liquidFlowV2RealTrades,
   liquidFlowV2SyntheticExecutions,
 } from './liquidFlowV2BinanceStats.js';
+import {
+  LIQUID_FLOW_V2_BINANCE_SIGNAL_SETTINGS_VERSION,
+  LiquidFlowV2BinanceSignalSettings,
+} from './liquidFlowV2BinanceSignalSettings.js';
 import {
   appendEdgePaperEntryJournal,
   readLatestEdgePaperJournalRecords,
@@ -83,11 +89,19 @@ import {
 import {
   AUTO_BINANCE_ENTRY_POLICY_VERSION,
   LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+  authorizeCoinglassWebAutoOrder,
   authorizeLiquidFlowV2AutoOrder,
   authorizeLiveCardAutoOrder,
   evaluateAutoBinanceEntryPolicy,
   liveCardOnlyAutoBinanceEnabled,
 } from './autoBinancePolicy.js';
+import {
+  COINGLASS_WEB_BINANCE_LEVERAGE,
+  COINGLASS_WEB_BINANCE_MARGIN_USDT,
+  COINGLASS_WEB_BINANCE_STOP_LOSS_ROE_PCT,
+  COINGLASS_WEB_BINANCE_VERSION,
+  evaluateCoinglassWebBinanceEntry,
+} from './coinglassWebBinance.js';
 import { hasOpenProtectionOrder } from './protectionOrderGuard.js';
 import {
   BINANCE_CLOSE_POSITION_PROTECTION_VERSION,
@@ -181,6 +195,7 @@ import {
   ORDERS_EXCLUDED_PROFIT_LOCK_TRIGGER_ROE,
   binanceProfitLockLifecycleKey,
   binanceProfitLockStopPrice,
+  hasBinanceProfitLockStopAtTarget,
   isBinanceProfitLockImmediateTriggerError,
   isBinanceProfitLockTargetBreached,
   isManualBinanceProfitLockSource,
@@ -434,6 +449,13 @@ import {
   selectLiquidHeatmapFlowV2ExtendedCandidates,
   selectLiquidHeatmapFlowV2PostPumpCandidates,
 } from './liquidHeatmapFlowV2.js';
+import {
+  LIQUID_FLOW_V2_KLINE_FRESHNESS_VERSION,
+  LIQUID_FLOW_V2_KLINE_MAX_AGE_MS,
+  evaluateLiquidFlowV2KlineFreshness,
+  liquidFlowV2StaleWaitClassification,
+  suppressLiquidFlowV2RecoveredSignal,
+} from './liquidFlowV2Freshness.js';
 import { LiquidationFlowCollector } from './liquidationFlowCollector.js';
 import { LiquidFlowV2PaperManager, liquidFlowV2AutoBinanceProfile } from './liquidFlowV2Paper.js';
 import {
@@ -455,6 +477,16 @@ import {
   buildLiquidFlowV2KillLongDiscordPayload,
   liquidFlowV2KillLongDiscordDedupeKey,
 } from './liquidFlowV2KillLongDiscord.js';
+import {
+  LIQUID_FLOW_V2_FLAGPOLE_SHORT_KILL_DISCORD_LABELS,
+  buildLiquidFlowV2FlagpoleShortKillDiscordPayload,
+  liquidFlowV2FlagpoleShortKillDiscordDedupeKey,
+} from './liquidFlowV2FlagpoleShortKillDiscord.js';
+import {
+  LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_DISCORD_LABELS,
+  buildLiquidFlowV2FadingWaveLivePumpDiscordPayload,
+  liquidFlowV2FadingWaveLivePumpDiscordDedupeKey,
+} from './liquidFlowV2FadingWaveLivePumpDiscord.js';
 import WebSocket from 'ws';
 
 loadEnv();
@@ -462,7 +494,14 @@ loadEnv();
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const publicDir = join(rootDir, 'public');
 const execFileAsync = promisify(execFile);
-const coinGlassWebTop20 = new CoinGlassWebTop20Manager({ rootDir });
+const liquidFlowV2BinanceSignalSettings = new LiquidFlowV2BinanceSignalSettings({
+  file: join(rootDir, 'data', 'liquid-flow-v2-binance-signal-settings.json'),
+});
+const coinGlassWebTop20 = new CoinGlassWebTop20Manager({
+  rootDir,
+  onQualifiedRow: executeCoinGlassQualifiedBinanceRow,
+  resolveBinanceSettings: resolveCoinGlassQualifiedSignalSetting,
+});
 // Python learning is analysis-only and can be expensive on large paper stores.
 // Keep every sidecar opt-in so a missing environment variable can never start
 // training jobs or block a paper page request.
@@ -772,6 +811,26 @@ const topReversalScanCache = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 const liquidFlowV2Cache = { data: null, expiresAt: 0, inflight: null };
 let liquidFlowV2PostPumpSeedPromise = null;
+let liquidFlowV2PostPumpSymbols = [];
+const liquidFlowV2KlineMaxAgeMs = Object.freeze({
+  '5m': Math.max(6 * 60_000, Number(process.env.LIQ_FLOW_V2_KLINE_MAX_AGE_5M_MS ?? LIQUID_FLOW_V2_KLINE_MAX_AGE_MS['5m'])),
+  '15m': Math.max(18 * 60_000, Number(process.env.LIQ_FLOW_V2_KLINE_MAX_AGE_15M_MS ?? LIQUID_FLOW_V2_KLINE_MAX_AGE_MS['15m'])),
+  '1h': Math.max(65 * 60_000, Number(process.env.LIQ_FLOW_V2_KLINE_MAX_AGE_1H_MS ?? LIQUID_FLOW_V2_KLINE_MAX_AGE_MS['1h'])),
+  '4h': Math.max(245 * 60_000, Number(process.env.LIQ_FLOW_V2_KLINE_MAX_AGE_4H_MS ?? LIQUID_FLOW_V2_KLINE_MAX_AGE_MS['4h'])),
+});
+
+function liquidFlowV2KlineFreshness({ klines, klines15m, klines1h, klines4h, now = Date.now() } = {}) {
+  return evaluateLiquidFlowV2KlineFreshness({
+    now,
+    maxAgeByInterval: liquidFlowV2KlineMaxAgeMs,
+    klinesByInterval: {
+      '5m': klines,
+      '15m': klines15m,
+      '1h': klines1h,
+      '4h': klines4h,
+    },
+  });
+}
 const liquidMarketDirectionCache = { data: null, expiresAt: 0, inflight: null };
 const shortWaveStatsCache = { data: null, expiresAt: 0 };
 let liquidMarketDirectionState = null;
@@ -781,11 +840,14 @@ const liquidFlowV2Session = {
   startedAt: Date.now(),
   lastLabelBySymbol: new Map(),
   transitionsByLabel: new Map(),
+  staleSymbols: new Set(),
 };
 const liquidFlowV2HtfDiscordSent = new Map();
 const liquidFlowV2ExtendedDiscordSent = new Map();
 const liquidFlowV2EmaFanDiscordSent = new Map();
 const liquidFlowV2KillLongDiscordSent = new Map();
+const liquidFlowV2FlagpoleShortKillDiscordSent = new Map();
+const liquidFlowV2FadingWaveLivePumpDiscordSent = new Map();
 
 async function notifyLiquidFlowV2HtfDiscord(rows = [], readyTransitions = new Set(), generatedAt = Date.now()) {
   const webhookUrl = process.env.LIQ_FLOW_V2_HTF_WEBHOOK_URL
@@ -948,6 +1010,112 @@ async function notifyLiquidFlowV2KillLongDiscord(rows = [], readyLabelKeys = new
     }
   }
 }
+
+async function notifyLiquidFlowV2FlagpoleShortKillDiscord(
+  rows = [],
+  readyLabelKeys = new Set(),
+  generatedAt = Date.now(),
+) {
+  const webhookUrl = process.env.LIQ_FLOW_V2_FLAGPOLE_SHORT_KILL_WEBHOOK_URL
+    || process.env.LIQ_SCAN_WEBHOOK_URL
+    || process.env.DISCORD_WEBHOOK_URL;
+  if (!webhookUrl) return;
+  const now = Date.now();
+  const retentionMs = Math.max(60 * 60_000, Number(
+    process.env.LIQ_FLOW_V2_FLAGPOLE_SHORT_KILL_DISCORD_DEDUPE_MS ?? 24 * 60 * 60_000,
+  ));
+  for (const [key, sentAt] of liquidFlowV2FlagpoleShortKillDiscordSent) {
+    if (now - sentAt > retentionMs) liquidFlowV2FlagpoleShortKillDiscordSent.delete(key);
+  }
+  for (const row of rows) {
+    const symbol = String(row?.symbol ?? '').toUpperCase();
+    const classifications = [
+      row?.classification,
+      ...(Array.isArray(row?.classification?.secondaryLabels) ? row.classification.secondaryLabels : []),
+    ];
+    for (const classification of classifications) {
+      const labelKey = String(classification?.labelKey ?? '');
+      if (!LIQUID_FLOW_V2_FLAGPOLE_SHORT_KILL_DISCORD_LABELS.has(labelKey)
+        || !readyLabelKeys.has(`${symbol}|${labelKey}`)) continue;
+      const dedupeKey = liquidFlowV2FlagpoleShortKillDiscordDedupeKey(row, classification);
+      if (!dedupeKey || liquidFlowV2FlagpoleShortKillDiscordSent.has(dedupeKey)) continue;
+      const payload = buildLiquidFlowV2FlagpoleShortKillDiscordPayload(row, classification, generatedAt);
+      if (!payload) continue;
+      liquidFlowV2FlagpoleShortKillDiscordSent.set(dedupeKey, now);
+      try {
+        const response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          liquidFlowV2FlagpoleShortKillDiscordSent.delete(dedupeKey);
+          console.warn(`[LiquidFlowV2FlagpoleShortKill] Discord ${symbol} ${labelKey} failed: ${response.status}`);
+        } else {
+          console.log(`[LiquidFlowV2FlagpoleShortKill] Discord sent: ${symbol} ${labelKey}`);
+        }
+      } catch (error) {
+        liquidFlowV2FlagpoleShortKillDiscordSent.delete(dedupeKey);
+        console.warn(`[LiquidFlowV2FlagpoleShortKill] Discord ${symbol} ${labelKey}: ${error.message}`);
+      }
+    }
+  }
+}
+
+async function notifyLiquidFlowV2FadingWaveLivePumpDiscord(
+  rows = [],
+  readyLabelKeys = new Set(),
+  generatedAt = Date.now(),
+) {
+  const webhookUrl = process.env.LIQ_FLOW_V2_FADING_WAVE_LIVE_PUMP_WEBHOOK_URL
+    || process.env.LIQ_SCAN_WEBHOOK_URL
+    || process.env.DISCORD_WEBHOOK_URL;
+  if (!webhookUrl) return;
+  const now = Date.now();
+  const retentionMs = Math.max(60 * 60_000, Number(
+    process.env.LIQ_FLOW_V2_FADING_WAVE_LIVE_PUMP_DISCORD_DEDUPE_MS ?? 24 * 60 * 60_000,
+  ));
+  for (const [key, sentAt] of liquidFlowV2FadingWaveLivePumpDiscordSent) {
+    if (now - sentAt > retentionMs) liquidFlowV2FadingWaveLivePumpDiscordSent.delete(key);
+  }
+  for (const row of rows) {
+    const symbol = String(row?.symbol ?? '').toUpperCase();
+    const classifications = [
+      row?.classification,
+      ...(Array.isArray(row?.classification?.secondaryLabels) ? row.classification.secondaryLabels : []),
+    ];
+    for (const classification of classifications) {
+      const labelKey = String(classification?.labelKey ?? '');
+      if (!LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_DISCORD_LABELS.has(labelKey)
+        || !readyLabelKeys.has(`${symbol}|${labelKey}`)) continue;
+      const dedupeKey = liquidFlowV2FadingWaveLivePumpDiscordDedupeKey(row, classification);
+      if (!dedupeKey || liquidFlowV2FadingWaveLivePumpDiscordSent.has(dedupeKey)) continue;
+      const payload = buildLiquidFlowV2FadingWaveLivePumpDiscordPayload(
+        row,
+        classification,
+        generatedAt,
+      );
+      if (!payload) continue;
+      liquidFlowV2FadingWaveLivePumpDiscordSent.set(dedupeKey, now);
+      try {
+        const response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          liquidFlowV2FadingWaveLivePumpDiscordSent.delete(dedupeKey);
+          console.warn(`[LiquidFlowV2FadingWaveLivePump] Discord ${symbol} ${labelKey} failed: ${response.status}`);
+        } else {
+          console.log(`[LiquidFlowV2FadingWaveLivePump] Discord sent: ${symbol} ${labelKey}`);
+        }
+      } catch (error) {
+        liquidFlowV2FadingWaveLivePumpDiscordSent.delete(dedupeKey);
+        console.warn(`[LiquidFlowV2FadingWaveLivePump] Discord ${symbol} ${labelKey}: ${error.message}`);
+      }
+    }
+  }
+}
 const liquidFlowV2Collector = new LiquidationFlowCollector({
   url: process.env.BINANCE_FORCE_ORDER_WS_URL || undefined,
 });
@@ -990,6 +1158,9 @@ const liquidFlowV2Paper = new LiquidFlowV2PaperManager({
     postPumpReadyBinanceEnabled: process.env.LIQ_FLOW_V2_POST_PUMP_READY_BINANCE_ENABLED !== 'false',
     postPumpReadyBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_POST_PUMP_READY_BINANCE_MARGIN_USDT ?? 2),
     postPumpReadyBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+    fadingWaveLivePumpBinanceEnabled: process.env.LIQ_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_ENABLED !== 'false',
+    fadingWaveLivePumpBinanceMarginUsdt: Number(process.env.LIQ_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_MARGIN_USDT ?? 1),
+    fadingWaveLivePumpBinanceLeverage: LIQUID_FLOW_V2_BINANCE_LEVERAGE,
     baseSweepRetestBufferPct: Number(process.env.LIQ_FLOW_V2_BASE_SWEEP_RETEST_BUFFER_PCT ?? 0.6),
     baseSweepEntryTimeoutMs: Number(process.env.LIQ_FLOW_V2_BASE_SWEEP_ENTRY_TIMEOUT_MS ?? 30 * 60_000),
     cooldownMs: Number(process.env.LIQ_FLOW_V2_PAPER_COOLDOWN_MS ?? 30 * 60_000),
@@ -1026,7 +1197,102 @@ const LIQUID_FLOW_V2_AUTO_REAL_LABELS = new Set([
   'PUMP_FLUSH_RECLAIM_LONG_READY',
   'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY',
   'POST_PUMP_SHORT_SQUEEZE_LONG_READY',
+  'FADING_WAVE_LIVE_PUMP_SHORT_READY',
 ]);
+const COINGLASS_QUALIFIED_BINANCE_LABELS = new Set([
+  'COINGLASS_QUALIFIED_LONG',
+  'COINGLASS_QUALIFIED_SHORT',
+]);
+const LIQUID_FLOW_V2_BINANCE_SIGNAL_LABELS = new Set([
+  ...LIQUID_FLOW_V2_AUTO_REAL_LABELS,
+  ...COINGLASS_QUALIFIED_BINANCE_LABELS,
+]);
+const LIQUID_FLOW_V2_INDEPENDENT_BINANCE_COHORTS = new Set([
+  'HTF_EMA99',
+  'PUMP_FLUSH_RECLAIM',
+  'PRIMARY_EMA99_PANIC_RECLAIM',
+  'POST_PUMP_SQUEEZE_READY',
+  'FADING_WAVE_LIVE_PUMP_SHORT',
+  'EMA_FAN_RETEST_CONFIRM',
+  'EMA_FAN_IMPULSE',
+]);
+
+function coinGlassQualifiedStatsLabel(row = {}) {
+  return row?.proposal?.action === 'WAIT_LONG_CONFIRMATION'
+    ? 'COINGLASS_QUALIFIED_LONG'
+    : row?.proposal?.action === 'WAIT_SHORT_CONFIRMATION'
+      ? 'COINGLASS_QUALIFIED_SHORT'
+      : '';
+}
+
+function defaultLiquidFlowV2BinanceSignalSetting(labelKey) {
+  const key = String(labelKey ?? '').trim().toUpperCase();
+  if (!LIQUID_FLOW_V2_BINANCE_SIGNAL_LABELS.has(key)) {
+    return { labelKey: key, supported: false, enabled: false, marginUsdt: null, leverage: null };
+  }
+  if (COINGLASS_QUALIFIED_BINANCE_LABELS.has(key)) {
+    const enabled = process.env.COINGLASS_WEB_BINANCE_ENABLED !== 'false';
+    const margin = Number(process.env.COINGLASS_WEB_BINANCE_MARGIN_USDT ?? COINGLASS_WEB_BINANCE_MARGIN_USDT);
+    return {
+      labelKey: key,
+      supported: true,
+      enabled,
+      marginUsdt: Number.isFinite(margin) && margin > 0 ? margin : COINGLASS_WEB_BINANCE_MARGIN_USDT,
+      leverage: COINGLASS_WEB_BINANCE_LEVERAGE,
+    };
+  }
+  const profile = liquidFlowV2AutoBinanceProfile({ labelKey: key }, liquidFlowV2Paper.state.settings);
+  const independentlyEnabled = LIQUID_FLOW_V2_INDEPENDENT_BINANCE_COHORTS.has(profile.cohort);
+  const enabled = Boolean(profile.eligible) && (
+    independentlyEnabled || liquidFlowV2Paper.state.settings.baseBinanceEnabled
+  );
+  return {
+    labelKey: key,
+    supported: Boolean(profile.cohort && profile.source),
+    enabled,
+    marginUsdt: Number(profile.marginUsdt) > 0 ? Number(profile.marginUsdt) : 2,
+    leverage: Number(profile.leverage) > 0 ? Number(profile.leverage) : LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+    cohort: profile.cohort,
+    sourceName: profile.source,
+  };
+}
+
+async function resolveLiquidFlowV2BinanceSignalSetting(labelKey) {
+  await liquidFlowV2BinanceSignalSettings.init();
+  const defaults = defaultLiquidFlowV2BinanceSignalSetting(labelKey);
+  const override = liquidFlowV2BinanceSignalSettings.override(defaults.labelKey);
+  if (!defaults.supported || !override) return { ...defaults, source: 'DEFAULT' };
+  return {
+    ...defaults,
+    enabled: override.enabled,
+    marginUsdt: override.marginUsdt,
+    source: 'PERSISTED',
+    updatedAt: override.updatedAt,
+  };
+}
+
+async function resolveCoinGlassQualifiedSignalSetting(row = {}) {
+  const setting = await resolveLiquidFlowV2BinanceSignalSetting(coinGlassQualifiedStatsLabel(row));
+  return {
+    binanceEnabled: setting.enabled,
+    marginUsdt: setting.marginUsdt,
+    leverage: setting.leverage,
+  };
+}
+
+async function liquidFlowV2BinanceSignalSettingsPayload() {
+  await liquidFlowV2BinanceSignalSettings.init();
+  const signals = {};
+  for (const labelKey of LIQUID_FLOW_V2_BINANCE_SIGNAL_LABELS) {
+    signals[labelKey] = await resolveLiquidFlowV2BinanceSignalSetting(labelKey);
+  }
+  return {
+    version: LIQUID_FLOW_V2_BINANCE_SIGNAL_SETTINGS_VERSION,
+    signals,
+    globalOrderEnabled: runtimeSettings.orderEnabled,
+    dryRun: runtimeSettings.dryRun,
+  };
+}
 
 async function notifyLiquidFlowV2Binance(trade, state, detail, profile) {
   const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
@@ -1045,6 +1311,8 @@ async function notifyLiquidFlowV2Binance(trade, state, detail, profile) {
           ? 'PRIMARY EMA99 PANIC RECLAIM'
         : profile?.cohort === 'POST_PUMP_SQUEEZE_READY'
           ? 'POST PUMP SQUEEZE READY'
+        : profile?.cohort === 'FADING_WAVE_LIVE_PUMP_SHORT'
+          ? 'FADING WAVE LIVE PUMP SHORT'
         : 'BASE';
   const margin = Number(profile?.marginUsdt ?? trade.binanceMarginUsdt ?? 0);
   const leverage = Number(profile?.leverage ?? trade.binanceLeverage ?? 0);
@@ -1063,14 +1331,15 @@ async function notifyLiquidFlowV2Binance(trade, state, detail, profile) {
 async function handleLiquidFlowV2BinanceEvents(events = []) {
   for (const event of Array.isArray(events) ? events : []) {
     if (event?.status !== 'OPEN' || !LIQUID_FLOW_V2_AUTO_REAL_LABELS.has(event.labelKey)) continue;
-    const profile = liquidFlowV2AutoBinanceProfile({ labelKey: event.labelKey }, liquidFlowV2Paper.state.settings);
-    if (!profile.eligible) continue;
-    const independentlyEnabled = profile.cohort === 'HTF_EMA99'
-      || profile.cohort === 'PUMP_FLUSH_RECLAIM'
-      || profile.cohort === 'PRIMARY_EMA99_PANIC_RECLAIM'
-      || profile.cohort === 'POST_PUMP_SQUEEZE_READY'
-      || String(profile.cohort ?? '').startsWith('EMA_FAN');
-    if (!independentlyEnabled && !liquidFlowV2Paper.state.settings.baseBinanceEnabled) continue;
+    const baseProfile = liquidFlowV2AutoBinanceProfile({ labelKey: event.labelKey }, liquidFlowV2Paper.state.settings);
+    const signalSetting = await resolveLiquidFlowV2BinanceSignalSetting(event.labelKey);
+    if (!signalSetting.supported || !signalSetting.enabled) continue;
+    const profile = {
+      ...baseProfile,
+      eligible: true,
+      marginUsdt: signalSetting.marginUsdt,
+      leverage: signalSetting.leverage,
+    };
     if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
       console.warn(`[LiquidFlowV2Real] ${profile.cohort} skip ${event.symbol}: Binance order disabled/dry-run`);
       continue;
@@ -1114,7 +1383,9 @@ async function handleLiquidFlowV2BinanceEvents(events = []) {
         side: trade.side === 'LONG' ? 'BUY' : 'SELL',
         orderType: 'MARKET',
         notionalUsdt: marginUsdt * leverage,
-        allowMinNotionalCeil: profile.cohort === 'PRE_EMA99' || String(profile.cohort ?? '').startsWith('EMA_FAN'),
+        allowMinNotionalCeil: profile.cohort === 'PRE_EMA99'
+          || profile.cohort === 'FADING_WAVE_LIVE_PUMP_SHORT'
+          || String(profile.cohort ?? '').startsWith('EMA_FAN'),
         leverage,
         takeProfitPrice: trade.takeProfit,
         stopLossPrice: trade.stopLoss,
@@ -8941,17 +9212,27 @@ setInterval(async () => {
   scheduleCapScan();
   scheduleKillShortScan();
   // Re-seed nếu WebSocket stale (không có tick trong 3 phút)
-  if (process.env.KLINE_AUTO_RESEED_ENABLED !== 'true') return;
+  if (process.env.KLINE_AUTO_RESEED_ENABLED === 'false') return;
   const stats = klineCache.stats('15m');
   if (stats.isStale && !_staleReseedLock) {
     _staleReseedLock = true;
     try {
       const snapshot = await getSharedSnapshot();
       const topSymbols = [...snapshot].sort((a, b) => b.quoteVolume - a.quoteVolume).slice(0, 50).map((r) => r.symbol);
-      await klineCache.seed(topSymbols, '15m', 500, { batchSize: 1, batchDelayMs: 2000 });
+      const stale15m = klineCache.needsRefresh(topSymbols, '15m', 40, 25 * 60_000);
+      await klineCache.seed(stale15m, '15m', 220, {
+        batchSize: 2,
+        batchDelayMs: 900,
+        maxAgeMs: 25 * 60_000,
+      });
       const ma60Max5m = Number(process.env.MA60_5M_WARMUP_MAX_SYMBOLS ?? 20);
       if (ma60Max5m > 0 && !binanceRateGate.isBlocked?.()) {
-        await klineCache.seed(topSymbols.slice(0, ma60Max5m), '5m', 220, { batchSize: 1, batchDelayMs: 3000 });
+        const stale5m = klineCache.needsRefresh(topSymbols.slice(0, ma60Max5m), '5m', 40, 12 * 60_000);
+        await klineCache.seed(stale5m, '5m', 220, {
+          batchSize: 2,
+          batchDelayMs: 900,
+          maxAgeMs: 12 * 60_000,
+        });
       }
       console.log('[KlineCache] Small re-seed triggered (WebSocket stale, top 50 only)');
       schedulePumpScan();
@@ -8995,7 +9276,10 @@ const runtimeSettings = {
   positionTimeoutMinRoe: Number(process.env.POSITION_TIMEOUT_MIN_ROE ?? 1),
 };
 if (liveCardOnlyAutoBinanceEnabled()) {
-  console.log(`[AutoBinancePolicy] ${AUTO_BINANCE_ENTRY_POLICY_VERSION} active: only checked Orders cards may open automatic Binance entries.`);
+  console.log(
+    `[AutoBinancePolicy] ${AUTO_BINANCE_ENTRY_POLICY_VERSION} active:`
+    + ' checked Orders cards, Liquid Flow V2 READY routes and CoinGlass qualified setups may auto-enter.',
+  );
 }
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
 const ordersSessionSnapshots = new Map(); // token → Binance-verified balance/positions
@@ -10928,6 +11212,54 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/coinglass-web-top20' && request.method === 'GET') {
       await sendJson(response, await coinGlassWebTop20.snapshot());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/liquid-flow-v2-binance-signal-settings') {
+      const token = request.headers['x-orders-token'] ?? null;
+      if (!token || !ordersTokens.has(token)) {
+        await sendJson(response, { error: 'Chua dang nhap Binance. Vao /orders va dang nhap truoc.' }, 401);
+        return;
+      }
+      if (request.method === 'GET') {
+        await sendJson(response, await liquidFlowV2BinanceSignalSettingsPayload());
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const labelKey = String(body.labelKey ?? '').trim().toUpperCase();
+        if (!LIQUID_FLOW_V2_BINANCE_SIGNAL_LABELS.has(labelKey)) {
+          await sendJson(response, { error: 'Signal khong co Binance auto route duoc ho tro.' }, 400);
+          return;
+        }
+        if (typeof body.enabled !== 'boolean') {
+          await sendJson(response, { error: 'enabled boolean is required.' }, 400);
+          return;
+        }
+        const marginUsdt = Number(body.marginUsdt);
+        if (!Number.isFinite(marginUsdt) || marginUsdt < 0.01 || marginUsdt > 10_000) {
+          await sendJson(response, { error: 'marginUsdt must be between 0.01 and 10000 USDT.' }, 400);
+          return;
+        }
+        await liquidFlowV2BinanceSignalSettings.update({
+          labelKey,
+          enabled: body.enabled,
+          marginUsdt,
+        });
+        const setting = await resolveLiquidFlowV2BinanceSignalSetting(labelKey);
+        console.log(
+          `[LiquidFlowV2BinanceSignalSettings] ${labelKey} ${setting.enabled ? 'ENABLED' : 'DISABLED'}`
+          + ` margin=$${setting.marginUsdt} x${setting.leverage}`,
+        );
+        await sendJson(response, {
+          version: LIQUID_FLOW_V2_BINANCE_SIGNAL_SETTINGS_VERSION,
+          setting,
+          globalOrderEnabled: runtimeSettings.orderEnabled,
+          dryRun: runtimeSettings.dryRun,
+        });
+        return;
+      }
+      await sendJson(response, { error: 'Method not allowed.' }, 405);
       return;
     }
 
@@ -13095,6 +13427,7 @@ server.listen(port, '127.0.0.1', async () => {
   startBinanceRestAlertMonitor();
   initMarketNewsBatch().catch((err) => console.warn('[MarketNews] Init failed:', err.message));
   initCoinFlowBatch().catch((err) => console.warn('[CoinFlow] Init failed:', err.message));
+  await liquidFlowV2BinanceSignalSettings.init();
   coinGlassWebTop20.startScheduler();
   // BTC mark price WebSocket — funding rate + mark price liên tục, không tốn REST
   initTokenUnlocksBatch().catch((err) => console.warn('[TokenUnlocks] Init failed:', err.message));
@@ -13937,6 +14270,190 @@ async function applySignalProtectionOnFill(symbol, attempt = 1) {
   }
 }
 
+async function waitForCoinGlassOppositeClose(symbol, targetSide, credentials) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const positions = await client.getPositions({
+      ...credentials,
+      priority: 0,
+      dropOnCongestion: false,
+      source: 'coinglassQualified:confirmOppositeClosed',
+    });
+    const opposite = positions.filter((position) => {
+      if (normalizeSymbol(position?.symbol) !== symbol || Number(position?.positionAmt) === 0) return false;
+      const positionSide = String(position?.positionSide ?? 'BOTH').toUpperCase();
+      const side = positionSide === 'LONG' || positionSide === 'SHORT'
+        ? positionSide
+        : Number(position.positionAmt) > 0 ? 'LONG' : 'SHORT';
+      return side !== targetSide;
+    });
+    if (!opposite.length) return positions;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  throw new Error(`Opposite ${symbol} position was not confirmed closed.`);
+}
+
+async function executeCoinGlassQualifiedBinanceRow(row = {}) {
+  const symbol = normalizeSymbol(row?.symbol ?? '');
+  if (!runtimeSettings.orderEnabled) return { decision: 'BLOCKED_ORDER_DISABLED' };
+  if (runtimeSettings.dryRun) return { decision: 'BLOCKED_DRY_RUN' };
+  const config = coinGlassWebTop20.config();
+  if (!config.binanceEnabled) return { decision: 'BLOCKED_COINGLASS_BINANCE_DISABLED' };
+  const signalSetting = await resolveLiquidFlowV2BinanceSignalSetting(coinGlassQualifiedStatsLabel(row));
+  if (!signalSetting.supported || !signalSetting.enabled) {
+    return { decision: 'BLOCKED_SIGNAL_BINANCE_DISABLED' };
+  }
+  const marginUsdt = Math.max(0.01, Number(signalSetting.marginUsdt ?? COINGLASS_WEB_BINANCE_MARGIN_USDT));
+  const leverage = Math.max(1, Math.min(125, Number(signalSetting.leverage ?? COINGLASS_WEB_BINANCE_LEVERAGE)));
+  const stopLossRoePct = Math.max(1, Number(
+    config.binanceStopLossRoePct ?? COINGLASS_WEB_BINANCE_STOP_LOSS_ROE_PCT,
+  ));
+  const credentials = getApiCredentials(null);
+  const [symbols, premiumIndex, positions, openOrders] = await Promise.all([
+    getSymbols(),
+    client.getPremiumIndex(symbol, {
+      priority: 0,
+      dropOnCongestion: false,
+      source: 'coinglassQualified:premiumIndex',
+    }),
+    client.getPositions({
+      ...credentials,
+      priority: 0,
+      dropOnCongestion: false,
+      source: 'coinglassQualified:positions',
+    }),
+    client.getOpenOrders({
+      ...credentials,
+      symbol,
+      priority: 0,
+      dropOnCongestion: false,
+      source: 'coinglassQualified:openOrders',
+    }),
+  ]);
+  const symbolInfo = symbols.find((item) => item.symbol === symbol);
+  if (!symbolInfo) return { decision: 'BLOCKED_INVALID_SYMBOL' };
+  let decision = evaluateCoinglassWebBinanceEntry({
+    row,
+    currentPrice: Number(premiumIndex?.markPrice),
+    positions,
+    leverage,
+    stopLossRoePct,
+  });
+  if (!decision.allowed) return decision;
+
+  const entryOrders = openOrders.filter((order) => (
+    order?.reduceOnly !== true
+    && order?.reduceOnly !== 'true'
+    && order?.closePosition !== true
+    && order?.closePosition !== 'true'
+  ));
+  if (entryOrders.length) {
+    return { ...decision, allowed: false, decision: 'BLOCKED_EXISTING_ENTRY_ORDER' };
+  }
+
+  const reversedOrderIds = [];
+  let positionsForEntry = positions;
+  if (decision.opposite?.length) {
+    for (const position of decision.opposite) {
+      const amount = Number(position.positionAmt ?? position.amt);
+      const positionSide = String(position.positionSide ?? 'BOTH').toUpperCase();
+      const quantity = quantityFromNotional(
+        symbolInfo,
+        Math.abs(amount) * Number(premiumIndex.markPrice),
+        Number(premiumIndex.markPrice),
+        true,
+      );
+      if (!(Number(quantity) > 0)) throw new Error(`Invalid reversal quantity for ${symbol}.`);
+      const closeParams = {
+        symbol,
+        side: amount > 0 ? 'SELL' : 'BUY',
+        type: 'MARKET',
+        quantity,
+        recvWindow: Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000),
+        newClientOrderId: `cg_rev_${Date.now().toString(36)}`.slice(0, 36),
+      };
+      if (positionSide === 'LONG' || positionSide === 'SHORT') closeParams.positionSide = positionSide;
+      else closeParams.reduceOnly = 'true';
+      const closeResult = await client.placeFuturesOrder({ params: closeParams, ...credentials });
+      reversedOrderIds.push(closeResult?.orderId ?? null);
+    }
+    positionsForEntry = await waitForCoinGlassOppositeClose(symbol, decision.side, credentials);
+    await handleConfirmedPositionClose(symbol);
+  }
+
+  const latestPremium = await client.getPremiumIndex(symbol, {
+    priority: 0,
+    dropOnCongestion: false,
+    source: 'coinglassQualified:finalPrice',
+  });
+  decision = evaluateCoinglassWebBinanceEntry({
+    row,
+    currentPrice: Number(latestPremium?.markPrice),
+    positions: positionsForEntry,
+    leverage,
+    stopLossRoePct,
+  });
+  if (!decision.allowed) {
+    return { ...decision, reversedOrderId: reversedOrderIds.filter(Boolean).join(',') || null };
+  }
+
+  const plan = row.proposal.tradePlan;
+  const fillAnchorSpec = buildFillAnchoredProtectionSpec({
+    side: decision.side,
+    signalEntryPrice: decision.proposedEntry,
+    takeProfitPrice: decision.takeProfit,
+    stopLossPrice: decision.stopLoss,
+  });
+  const protectionPolicy = resolveSignalProtectionWorkingTypes({
+    source: 'coinglass-web-qualified',
+    preserveSignalProtection: true,
+  });
+  const orderResult = await placeOrder(authorizeCoinglassWebAutoOrder({
+    symbol,
+    side: decision.side === 'LONG' ? 'BUY' : 'SELL',
+    orderType: 'MARKET',
+    notionalUsdt: marginUsdt * leverage,
+    leverage,
+    takeProfitPrice: Number(plan.takeProfit.price),
+    stopLossPrice: decision.stopLoss,
+    protectionSignalEntryPrice: decision.proposedEntry,
+    protectionSignalTakeProfitPrice: Number(plan.takeProfit.price),
+    protectionSignalStopLossPrice: decision.stopLoss,
+    ...fillAnchorSpec,
+    protectionOnFill: true,
+    ...protectionPolicy,
+    allowMinNotionalCeil: true,
+    dryRun: false,
+    maxOpenPositions: Math.max(0, Number(process.env.COINGLASS_WEB_BINANCE_MAX_POSITIONS ?? 30)),
+    source: 'coinglass-web-qualified',
+    clientOrderId: `cg_${Date.now().toString(36)}_${symbol.slice(0, 8)}`.slice(0, 36),
+  }), null, credentials, {
+    liveCard: true,
+    positions: positionsForEntry,
+    openOrders: [],
+  });
+  const submitted = orderResult?.status === 'submitted';
+  console.log(
+    `[CoinGlassBinance] ${submitted ? 'SUBMITTED' : 'NOT_SUBMITTED'} ${symbol} ${decision.side}`
+    + ` mark=${decision.currentPrice} proposed=${decision.proposedEntry} margin=$${marginUsdt} x${leverage}`
+    + ` sl=-${stopLossRoePct}%ROE@${decision.stopLoss}`
+    + ` reversed=${reversedOrderIds.filter(Boolean).join(',') || '-'}`
+    + ` version=${COINGLASS_WEB_BINANCE_VERSION}`,
+  );
+  return {
+    ...decision,
+    decision: submitted ? 'SUBMITTED' : 'NOT_SUBMITTED',
+    orderId: orderResult?.orderResult?.orderId ?? null,
+    binanceEntryPrice: Number(orderResult?.orderResult?.avgPrice) > 0
+      ? Number(orderResult.orderResult.avgPrice)
+      : decision.currentPrice,
+    filledAt: Number(orderResult?.orderResult?.updateTime ?? orderResult?.orderResult?.transactTime) || null,
+    reversedOrderId: reversedOrderIds.filter(Boolean).join(',') || null,
+    marginUsdt,
+    leverage,
+    stopLossRoePct,
+  };
+}
+
 async function placeOrder(payload, token = null, credentialsOverride = null, executionContext = null) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   const side = String(payload.side ?? '').toUpperCase();
@@ -14753,12 +15270,38 @@ async function runLiquidScan({ interval = '15m', limit = 200, minVolumeUsdt = 0 
   };
 }
 
+function liquidFlowV2SignalCandleClosedAt(row = {}, classification = {}) {
+  return Number(
+    classification.signalCandleClosedAt
+    ?? classification.signalLiveCandleOpenAt
+    ?? classification.pumpFlushReadyAt
+    ?? classification.flagpoleShortKillReadyAt
+    ?? classification.emaFanReadyAt
+    ?? classification.postPumpReadyAt
+    ?? classification.ema99RetestCandleClosedAt
+    ?? row?.features?.emaFanLong5m?.readyAt
+    ?? row?.features?.emaFanShort5m?.readyAt
+    ?? row?.features?.postPumpShortSqueeze5m?.readyAt
+    ?? row?.features?.flagpoleShortKill5m?.readyAt
+    ?? row?.features?.fadingWaveLivePump5m?.liveCandleOpenAt
+    ?? row?.features?.pumpFlushReclaim5m?.readyAt
+    ?? row?.features?.pumpDistribution15m?.readyAt
+    ?? row?.features?.ema99Retest5m?.candleClosedAt
+    ?? row?.features?.ema99Retest15m?.candleClosedAt
+    ?? row?.features?.candleClosedAt
+    ?? 0
+  );
+}
+
 function noteLiquidFlowV2Transitions(rows = []) {
   const primaryReadySymbols = new Set();
   const readyLabelKeys = new Set();
   for (const row of rows) {
     const symbol = String(row?.symbol ?? '').toUpperCase();
     if (!symbol) continue;
+    const recoveringFromStale = liquidFlowV2Session.staleSymbols.has(symbol);
+    if (row?.dataFreshness?.stale === true) liquidFlowV2Session.staleSymbols.add(symbol);
+    else liquidFlowV2Session.staleSymbols.delete(symbol);
     const classifications = [
       row?.classification,
       ...(Array.isArray(row?.classification?.secondaryLabels) ? row.classification.secondaryLabels : []),
@@ -14773,17 +15316,11 @@ function noteLiquidFlowV2Transitions(rows = []) {
     for (const classification of classifications) {
       const labelKey = String(classification.labelKey);
       if (previous.has(labelKey)) continue;
-      const signalCandleClosedAt = Number(
-        classification.signalCandleClosedAt
-        ?? classification.pumpFlushReadyAt
-        ?? classification.emaFanReadyAt
-        ?? classification.postPumpReadyAt
-        ?? row?.features?.emaFanLong5m?.readyAt
-        ?? row?.features?.emaFanShort5m?.readyAt
-        ?? row?.features?.postPumpShortSqueeze5m?.readyAt
-        ?? row?.features?.pumpFlushReclaim5m?.readyAt
-        ?? 0,
-      );
+      const signalCandleClosedAt = liquidFlowV2SignalCandleClosedAt(row, classification);
+      if (suppressLiquidFlowV2RecoveredSignal({
+        recoveringFromStale,
+        signalCandleClosedAt,
+      })) continue;
       const freshEmaFanFirstObservation = [
         'EMA_FAN_LONG_READY',
         'EMA_FAN_LONG_IMPULSE_RUNNER',
@@ -14803,6 +15340,12 @@ function noteLiquidFlowV2Transitions(rows = []) {
       const freshPumpFlushFirstObservation = labelKey === 'PUMP_FLUSH_RECLAIM_LONG_READY'
         && signalCandleClosedAt > 0
         && Date.now() - signalCandleClosedAt <= 15 * 60_000;
+      const freshFlagpoleShortKillFirstObservation = labelKey === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY'
+        && signalCandleClosedAt > 0
+        && Date.now() - signalCandleClosedAt <= 15 * 60_000;
+      const freshFadingWaveLivePumpFirstObservation = labelKey === 'FADING_WAVE_LIVE_PUMP_SHORT_READY'
+        && signalCandleClosedAt > 0
+        && Date.now() - signalCandleClosedAt <= 6 * 60_000;
       const seedFirstObservation = labelKey === 'PUMP_DISTRIBUTION_WATCH'
         || labelKey === 'PUMP_DISTRIBUTION_SHORT_READY'
         || labelKey === 'EXTENDED_EMA99_PANIC_RECLAIM_LONG'
@@ -14812,7 +15355,9 @@ function noteLiquidFlowV2Transitions(rows = []) {
         || freshEmaFanFirstObservation
         || freshPostPumpFirstObservation
         || freshKillLongFirstObservation
-        || freshPumpFlushFirstObservation;
+        || freshPumpFlushFirstObservation
+        || freshFlagpoleShortKillFirstObservation
+        || freshFadingWaveLivePumpFirstObservation;
       // Existing primary labels retain the old no-fire-on-process-start policy.
       // Distribution labels may be long-lived, so seed their first causal
       // observation; signalKey dedupe in paper keeps restarts idempotent.
@@ -14882,16 +15427,40 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
     const extendedSymbols = extendedCandidates.map((row) => row.symbol);
     const minBars = 180;
     klineCache.subscribe(extendedSymbols, '5m');
-    const extendedMissing5m = klineCache.missingReady(extendedSymbols, '5m', minBars);
+    const extendedMissing5m = klineCache.needsRefresh(
+      extendedSymbols,
+      '5m',
+      minBars,
+      liquidFlowV2KlineMaxAgeMs['5m'],
+    );
     if (extendedMissing5m.length && !isBinanceRestCongested()) {
-      await klineCache.seed(extendedMissing5m, '5m', 220, { batchSize: 4, batchDelayMs: 350 });
+      await klineCache.seed(extendedMissing5m, '5m', 220, {
+        batchSize: 4,
+        batchDelayMs: 350,
+        maxAgeMs: liquidFlowV2KlineMaxAgeMs['5m'],
+      });
     }
     const postPumpSymbols = postPumpCandidates.map((row) => row.symbol);
-    klineCache.subscribe(postPumpSymbols, '5m');
-    const postPumpMissing5m = klineCache.missingReady(postPumpSymbols, '5m', 40);
+    liquidFlowV2PostPumpSymbols = postPumpSymbols;
+    const fadingWaveLiveGroup = klineCache.subscribeGroup(
+      'liquid-flow-v2-top-liquidity',
+      postPumpSymbols,
+      '5m',
+    );
+    const postPumpMissing5m = klineCache.needsRefresh(
+      postPumpSymbols,
+      '5m',
+      40,
+      liquidFlowV2KlineMaxAgeMs['5m'],
+    );
     if (postPumpMissing5m.length && !isBinanceRestCongested() && !liquidFlowV2PostPumpSeedPromise) {
       liquidFlowV2PostPumpSeedPromise = klineCache
-        .seed(postPumpMissing5m, '5m', 220, { batchSize: 4, batchDelayMs: 350 })
+        .seed(postPumpMissing5m, '5m', 220, {
+          batchSize: 4,
+          batchDelayMs: 350,
+          maxAgeMs: liquidFlowV2KlineMaxAgeMs['5m'],
+          subscribe: false,
+        })
         .catch((error) => {
           console.warn(`[LiquidFlowV2] top-liquidity 5m background seed failed: ${error.message}`);
         })
@@ -14906,11 +15475,22 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
         const features = buildLiquidHeatmapFlowV2Features({ market, klines });
         const setup = features.postPumpShortSqueeze5m ?? {};
         const pumpFlush = features.pumpFlushReclaim5m ?? {};
-        return setup.watchReady === true || setup.longReady === true
-          || pumpFlush.watchReady === true || pumpFlush.longReady === true ? market : null;
+        const flagpoleShortKill = features.flagpoleShortKill5m ?? {};
+        const fadingWaveLivePump = features.fadingWaveLivePump5m ?? {};
+        const qualified = setup.watchReady === true || setup.longReady === true
+          || pumpFlush.watchReady === true || pumpFlush.longReady === true
+          || flagpoleShortKill.watchReady === true || flagpoleShortKill.longReady === true
+          || fadingWaveLivePump.shortReady === true;
+        return qualified ? {
+          market,
+          fadingWaveLivePumpActive: fadingWaveLivePump.shortReady === true,
+        } : null;
       })
       .filter(Boolean)
-      .slice(0, Math.max(1, Math.min(60, Number(process.env.LIQ_FLOW_V2_POST_PUMP_MAX_QUALIFIED ?? 60))));
+      .sort((a, b) => Number(b.fadingWaveLivePumpActive) - Number(a.fadingWaveLivePumpActive)
+        || Number(a.market.liquidityRank ?? Infinity) - Number(b.market.liquidityRank ?? Infinity))
+      .slice(0, Math.max(1, Math.min(60, Number(process.env.LIQ_FLOW_V2_POST_PUMP_MAX_QUALIFIED ?? 60))))
+      .map((row) => row.market);
     const extendedQualified = extendedCandidates
       .map((market) => {
         const klines = klineCache.getIfCached(market.symbol, '5m', 220) ?? [];
@@ -14936,13 +15516,18 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
         liquidityRank: shortMarket?.liquidityRank ?? postPumpMarket?.liquidityRank ?? market.liquidityRank,
         emaFanShortUniverse: shortMarket != null,
         postPumpUniverse: postPumpMarket != null,
+        fadingWaveUniverse: postPumpMarket?.fadingWaveUniverse === true,
       } : market;
     });
     for (const market of emaFanShortCandidates) {
       if (existingCandidateSymbols.has(market.symbol)) continue;
       existingCandidateSymbols.add(market.symbol);
       const postPumpMarket = postPumpBySymbol.get(market.symbol);
-      allCandidates.push(postPumpMarket ? { ...market, postPumpUniverse: true } : market);
+      allCandidates.push(postPumpMarket ? {
+        ...market,
+        postPumpUniverse: true,
+        fadingWaveUniverse: postPumpMarket.fadingWaveUniverse === true,
+      } : market);
     }
     for (const market of postPumpQualified) {
       if (existingCandidateSymbols.has(market.symbol)) continue;
@@ -14999,6 +15584,8 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
       next.delete('POST_PUMP_BASE_ABSORPTION_WATCH');
       next.delete('POST_PUMP_SHORT_SQUEEZE_LONG_READY');
       next.delete('POST_PUMP_SHORT_SQUEEZE_PRIME');
+      next.delete('POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY');
+      next.delete('FADING_WAVE_LIVE_PUMP_SHORT_READY');
       next.delete('PUMP_FLUSH_RECLAIM_LONG_READY');
       if (next.size) liquidFlowV2Session.lastLabelBySymbol.set(market.symbol, next);
       else liquidFlowV2Session.lastLabelBySymbol.delete(market.symbol);
@@ -15008,16 +15595,34 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
     klineCache.subscribe(symbols, '15m');
     klineCache.subscribe(symbols, '1h');
     klineCache.subscribe(symbols, '4h');
-    const missing = klineCache.missingReady(symbols, '5m', minBars);
+    const missing = klineCache.needsRefresh(
+      symbols,
+      '5m',
+      minBars,
+      liquidFlowV2KlineMaxAgeMs['5m'],
+    );
     if (missing.length && !isBinanceRestCongested()) {
-      await klineCache.seed(missing, '5m', 220, { batchSize: 4, batchDelayMs: 350 });
+      await klineCache.seed(missing, '5m', 220, {
+        batchSize: 4,
+        batchDelayMs: 350,
+        maxAgeMs: liquidFlowV2KlineMaxAgeMs['5m'],
+      });
     }
     for (const interval of ['15m', '1h', '4h']) {
       const requiredBars = interval === '15m' ? 180 : 105;
       const seedBars = interval === '15m' ? 220 : 120;
-      const htfMissing = klineCache.missingReady(symbols, interval, requiredBars);
+      const htfMissing = klineCache.needsRefresh(
+        symbols,
+        interval,
+        requiredBars,
+        liquidFlowV2KlineMaxAgeMs[interval],
+      );
       if (htfMissing.length && !isBinanceRestCongested()) {
-        await klineCache.seed(htfMissing, interval, seedBars, { batchSize: 4, batchDelayMs: 350 });
+        await klineCache.seed(htfMissing, interval, seedBars, {
+          batchSize: 4,
+          batchDelayMs: 350,
+          maxAgeMs: liquidFlowV2KlineMaxAgeMs[interval],
+        });
       }
     }
 
@@ -15065,7 +15670,15 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
         openInterest,
         liquidation,
       });
-      const classification = classifyLiquidHeatmapFlowV2(features);
+      const dataFreshness = liquidFlowV2KlineFreshness({
+        klines,
+        klines15m,
+        klines1h,
+        klines4h,
+      });
+      const classification = dataFreshness.fresh
+        ? classifyLiquidHeatmapFlowV2(features)
+        : liquidFlowV2StaleWaitClassification(dataFreshness);
       return {
         symbol: market.symbol,
         moverSide: market.moverSide,
@@ -15073,6 +15686,7 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
         liquidityRank: market.liquidityRank,
         emaFanShortUniverse: market.emaFanShortUniverse === true,
         features,
+        dataFreshness,
         classification,
       };
     });
@@ -15096,6 +15710,12 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
     notifyLiquidFlowV2KillLongDiscord(rows, transitions.readyLabelKeys, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2KillLong] notify failed: ${error.message}`);
     });
+    notifyLiquidFlowV2FlagpoleShortKillDiscord(rows, transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2FlagpoleShortKill] notify failed: ${error.message}`);
+    });
+    notifyLiquidFlowV2FadingWaveLivePumpDiscord(rows, transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2FadingWaveLivePump] notify failed: ${error.message}`);
+    });
     const createdPaperTrades = await liquidFlowV2Paper.createFromReadyTransitions(
       rows,
       transitions.primaryReadySymbols,
@@ -15110,6 +15730,7 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
       ...row,
       transitions: liquidFlowV2Session.transitionsByLabel.get(row.key) ?? 0,
     }));
+    const fadingWaveLiveCoverage = klineCache.liveCoverage(postPumpSymbols, '5m', generatedAt);
     const result = {
       version: LIQUID_HEATMAP_FLOW_V2_VERSION,
       generatedAt,
@@ -15131,6 +15752,17 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
       activeCount: rows.filter((row) => row.classification.labelKey.endsWith('SQUEEZE_ACTIVE')
         || row.classification.labelKey.endsWith('FLUSH_ACTIVE')).length,
       warmupCount: rows.filter((row) => row.classification.warmingUp).length,
+      staleDataCount: rows.filter((row) => row.dataFreshness?.stale === true).length,
+      dataFreshnessVersion: LIQUID_FLOW_V2_KLINE_FRESHNESS_VERSION,
+      fadingWaveLiveVersion: KLINE_CACHE_MANAGED_LIVE_GROUP_VERSION,
+      fadingWaveLiveGroup,
+      fadingWaveLiveCoverage,
+      klineTelemetry: {
+        m5: klineCache.stats('5m'),
+        m15: klineCache.stats('15m'),
+        h1: klineCache.stats('1h'),
+        h4: klineCache.stats('4h'),
+      },
       sessionStartedAt: liquidFlowV2Session.startedAt,
       telemetry: liquidFlowV2Collector.health(),
       paper: paperSnapshot,
@@ -15195,6 +15827,7 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
       liquidityRank: priorRow.features?.liquidityRank,
       emaFanShortUniverse: priorRow.features?.emaFanShortUniverse === true,
       postPumpUniverse: priorRow.features?.postPumpUniverse === true,
+      fadingWaveUniverse: priorRow.features?.fadingWaveUniverse === true,
       universeTier: priorRow.features?.universeTier,
     },
     klines,
@@ -15205,13 +15838,22 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
     openInterest: liquidFlowV2Collector.openInterestSummary(symbol),
     liquidation: liquidFlowV2Collector.summary(symbol),
   });
+  const dataFreshness = liquidFlowV2KlineFreshness({
+    klines,
+    klines15m,
+    klines1h,
+    klines4h,
+  });
   const row = {
     symbol,
     moverSide: priorRow.moverSide,
     moverRank: priorRow.moverRank,
     liquidityRank: priorRow.features?.liquidityRank,
     features,
-    classification: classifyLiquidHeatmapFlowV2(features),
+    dataFreshness,
+    classification: dataFreshness.fresh
+      ? classifyLiquidHeatmapFlowV2(features)
+      : liquidFlowV2StaleWaitClassification(dataFreshness),
   };
   const rows = [...prior.rows];
   rows[priorIndex] = row;
@@ -15235,6 +15877,12 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
     notifyLiquidFlowV2KillLongDiscord([row], transitions.readyLabelKeys, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2KillLong] fast notify failed: ${error.message}`);
     });
+    notifyLiquidFlowV2FlagpoleShortKillDiscord([row], transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2FlagpoleShortKill] fast notify failed: ${error.message}`);
+    });
+    notifyLiquidFlowV2FadingWaveLivePumpDiscord([row], transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2FadingWaveLivePump] fast notify failed: ${error.message}`);
+    });
   const createdPaperTrades = await liquidFlowV2Paper.createFromReadyTransitions(
     [row],
     transitions.primaryReadySymbols,
@@ -15249,6 +15897,11 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
     ...stat,
     transitions: liquidFlowV2Session.transitionsByLabel.get(stat.key) ?? 0,
   }));
+  const fadingWaveLiveCoverage = klineCache.liveCoverage(
+    liquidFlowV2PostPumpSymbols,
+    '5m',
+    generatedAt,
+  );
   const result = {
     ...prior,
     version: LIQUID_HEATMAP_FLOW_V2_VERSION,
@@ -15256,6 +15909,16 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
     readyCount: liquidFlowV2ReadyCount(rows),
     activeCount: rows.filter((candidate) => candidate.classification.labelKey.endsWith('SQUEEZE_ACTIVE')).length,
     warmupCount: rows.filter((candidate) => candidate.classification.warmingUp).length,
+    staleDataCount: rows.filter((candidate) => candidate.dataFreshness?.stale === true).length,
+    dataFreshnessVersion: LIQUID_FLOW_V2_KLINE_FRESHNESS_VERSION,
+    fadingWaveLiveVersion: KLINE_CACHE_MANAGED_LIVE_GROUP_VERSION,
+    fadingWaveLiveCoverage,
+    klineTelemetry: {
+      m5: klineCache.stats('5m'),
+      m15: klineCache.stats('15m'),
+      h1: klineCache.stats('1h'),
+      h4: klineCache.stats('4h'),
+    },
     telemetry: liquidFlowV2Collector.health(),
     paper: paperSnapshot,
     stats,
@@ -32281,15 +32944,46 @@ let liquidFlowV2BinanceStatsIncomeCache = null;
 const LIQUID_FLOW_V2_BINANCE_STATS_CACHE_MS = 60_000;
 
 async function getLiquidFlowV2BinanceStats({ token, fromDay = '', toDay = '', labelKey = '' } = {}) {
-  const trades = liquidFlowV2Paper.state.trades;
-  const selected = liquidFlowV2RealTrades(trades, { fromDay, toDay, labelKey });
-  const executions = liquidFlowV2SyntheticExecutions(selected);
-  const closed = executions.filter((row) => row.status === 'POSITION_CLOSED');
-  let reconciliationWarning = null;
-  const positionsPromise = getPositions(token).catch((error) => {
+  const paperTrades = liquidFlowV2Paper.state.trades;
+  const coinglassExecutionState = await coinGlassWebTop20.binanceExecutionState();
+  const coinglassAudits = coinglassQualifiedBinanceAudits(coinglassExecutionState, {
+    fromDay,
+    toDay,
+    labelKey,
+  });
+  const credentials = getApiCredentials(token);
+  const orderWarnings = [];
+  // The process-wide position monitor is fed by Binance user-data + mark-price
+  // sockets. Prefer it here so a just-filled/just-closed position is visible to
+  // the stats page immediately instead of waiting for the per-session REST TTL.
+  const positionsPromise = getPositions().catch((error) => {
     console.warn(`[LiquidFlowV2BinanceStats] positions: ${error.message}`);
     return [];
   });
+  const orderSnapshotsPromise = Promise.all(coinglassAudits.map((audit) => client.getOrder({
+    symbol: audit.symbol,
+    orderId: audit.orderId,
+    ...credentials,
+  }).catch((error) => {
+    orderWarnings.push(`${audit.symbol}#${audit.orderId}: ${error.message}`);
+    return null;
+  })));
+  const [positions, orderSnapshots] = await Promise.all([positionsPromise, orderSnapshotsPromise]);
+  const coinglassTrades = coinglassQualifiedBinanceTrades({
+    audits: coinglassAudits,
+    orderSnapshots,
+    positions,
+    trackingPositions: slTracking.positions,
+    defaultMarginUsdt: coinGlassWebTop20.config().binanceMarginUsdt,
+    defaultLeverage: coinGlassWebTop20.config().binanceLeverage,
+  });
+  const trades = [...paperTrades, ...coinglassTrades];
+  const selected = liquidFlowV2RealTrades(trades, { fromDay, toDay, labelKey });
+  const executions = liquidFlowV2SyntheticExecutions(selected);
+  const closed = executions.filter((row) => row.status === 'POSITION_CLOSED');
+  let reconciliationWarning = orderWarnings.length
+    ? `CoinGlass order verify: ${orderWarnings.slice(0, 5).join(' | ')}`
+    : null;
   let incomeRowsPromise = Promise.resolve([]);
   if (closed.length) {
     const startTime = Math.min(...closed.map((row) => Date.parse(row.entryFilledAt))) - 60_000;
@@ -32299,7 +32993,6 @@ async function getLiquidFlowV2BinanceStats({ token, fromDay = '', toDay = '', la
       && cached.startTime <= startTime && cached.endTime >= endTime) {
       incomeRowsPromise = Promise.resolve(cached.rows);
     } else {
-      const credentials = getApiCredentials(token);
       incomeRowsPromise = fetchLiveCardIncomeRange({ startTime, endTime, ...credentials })
         .then((rawRows) => {
           const rows = [...new Map((Array.isArray(rawRows) ? rawRows : []).map((row) => [[
@@ -32309,13 +33002,14 @@ async function getLiquidFlowV2BinanceStats({ token, fromDay = '', toDay = '', la
           return rows;
         })
         .catch((error) => {
-          reconciliationWarning = String(error?.message ?? error).slice(0, 300);
+          reconciliationWarning = [reconciliationWarning, String(error?.message ?? error).slice(0, 300)]
+            .filter(Boolean).join(' | ');
           console.warn(`[LiquidFlowV2BinanceStats] income: ${reconciliationWarning}`);
           return cached?.rows ?? [];
         });
     }
   }
-  const [positions, incomeRows] = await Promise.all([positionsPromise, incomeRowsPromise]);
+  const incomeRows = await incomeRowsPromise;
   const reconciled = reconcileLiveCardClosedPnl(executions, incomeRows);
   return {
     ...buildLiquidFlowV2BinanceStats({
@@ -33291,18 +33985,66 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
       clientAlgoId: `lp_slt_${Date.now()}`.slice(0, 36),
     });
 
-    // Place new SL FIRST — cancel old one only after placement succeeds.
-    // If cancel-first and placement fails (e.g. "max stop order limit"),
-    // the position ends up with NO SL at all.
-    await client.placeAlgoOrder({ params: slParams, apiKey, apiSecret });
-
-    // New SL confirmed placed → safe to remove old one now
+    // Binance GTE_GTC closePosition rejects a second STOP in the same direction.
+    // Cancel the exact old SL first, then place the tighter SL. If placement
+    // fails, restore the old SL so the position is not left unprotected.
+    const oldSlPrice = Number(slOrder?.triggerPrice ?? slOrder?.stopPrice ?? 0);
+    const oldSlWorkingType = String(slOrder?.workingType ?? 'MARK_PRICE').toUpperCase();
+    let oldSlCancelled = false;
     if (algoSl) {
-      await client.cancelAlgoOrder({ algoId: algoSl.algoId, apiKey, apiSecret, recvWindow })
-        .catch((e) => console.warn(`[SlTrail] ⚠ ${symbol} cancel old algo SL (non-critical):`, e.message));
+      await client.cancelAlgoOrder({ algoId: algoSl.algoId, apiKey, apiSecret, recvWindow });
+      oldSlCancelled = true;
     } else if (regularSl) {
-      await client.cancelOrder({ symbol, orderId: regularSl.orderId, apiKey, apiSecret, recvWindow })
-        .catch((e) => console.warn(`[SlTrail] ⚠ ${symbol} cancel old regular SL (non-critical):`, e.message));
+      await client.cancelOrder({ symbol, orderId: regularSl.orderId, apiKey, apiSecret, recvWindow });
+      oldSlCancelled = true;
+    }
+
+    try {
+      await client.placeAlgoOrder({ params: slParams, apiKey, apiSecret });
+    } catch (placementError) {
+      let targetConfirmed = false;
+      try {
+        const verification = await client.getOpenAlgoOrders({
+          symbol,
+          apiKey,
+          apiSecret,
+          priority: 0,
+          dropOnCongestion: false,
+          source: 'profitLock:verifyReplacementAfterError',
+        });
+        const verificationOrders = Array.isArray(verification?.orders)
+          ? verification.orders
+          : Array.isArray(verification) ? verification : [];
+        targetConfirmed = hasBinanceProfitLockStopAtTarget({
+          orders: verificationOrders,
+          symbol,
+          closeSide: isLong ? 'SELL' : 'BUY',
+          stopPrice: Number(newSlPrice),
+        });
+      } catch (verificationError) {
+        console.warn(`[SlTrail] ${symbol} replacement verification failed: ${verificationError.message}`);
+      }
+
+      if (!targetConfirmed && oldSlCancelled && oldSlPrice > 0) {
+        const restoreParams = buildClosePositionProtectionParams({
+          symbol,
+          closeSide: isLong ? 'SELL' : 'BUY',
+          type: 'STOP_MARKET',
+          triggerPrice: String(oldSlPrice),
+          positionSide: isHedge ? positionSide : 'BOTH',
+          workingType: oldSlWorkingType === 'CONTRACT_PRICE' ? 'CONTRACT_PRICE' : 'MARK_PRICE',
+          recvWindow,
+          clientAlgoId: `lp_slr_${Date.now()}`.slice(0, 36),
+        });
+        try {
+          await client.placeAlgoOrder({ params: restoreParams, apiKey, apiSecret });
+          console.warn(`[SlTrail] ${symbol} replacement failed; restored old SL @ ${oldSlPrice}`);
+        } catch (restoreError) {
+          console.error(`[SlTrailCritical] ${symbol} failed to restore old SL @ ${oldSlPrice}: ${restoreError.message}`);
+        }
+      }
+      if (!targetConfirmed) throw placementError;
+      console.warn(`[SlTrail] ${symbol} replacement response failed but target SL was confirmed on Binance`);
     }
 
     slTrailLockRoe.set(symbol, { lockRoe: targetLockRoe, lifecycleKey });

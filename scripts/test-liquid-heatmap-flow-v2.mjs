@@ -16,6 +16,14 @@ import {
   selectLiquidHeatmapFlowV2PostPumpCandidates,
 } from '../src/liquidHeatmapFlowV2.js';
 import { LiquidationFlowCollector } from '../src/liquidationFlowCollector.js';
+import {
+  LIQUID_FLOW_V2_FLAGPOLE_SHORT_KILL_VERSION,
+  buildFlagpoleShortKillSnapshot,
+} from '../src/liquidFlowV2FlagpoleShortKill.js';
+import {
+  LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_VERSION,
+  buildFadingWaveLivePumpSnapshot,
+} from '../src/liquidFlowV2FadingWaveLivePump.js';
 import { normalizeLiquidLiveCardKey } from '../src/liquidLiveCardWhitelist.js';
 
 const base = {
@@ -40,7 +48,12 @@ const base = {
   shortLiquidationBurst: null,
   longLiquidationBurst: null,
   prior5mLongLiquidationUsd: 0,
+  prior5mShortLiquidationUsd: 0,
   older5mLongLiquidationUsd: 0,
+  older5mShortLiquidationUsd: 0,
+  shortLiquidationDecayRatio: null,
+  shortLiquidationDecaying: false,
+  shortLiquidationPeakUsd: 0,
   longLiquidationDecayRatio: null,
   longLiquidationDecaying: false,
   longLiquidationPeakUsd: 0,
@@ -48,7 +61,203 @@ const base = {
   liquidationSocketState: 'OPEN',
 };
 
-assert.equal(LIQUID_HEATMAP_FLOW_V2_VERSION, 'LIQUID_HEATMAP_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V20_20260816');
+assert.equal(LIQUID_HEATMAP_FLOW_V2_VERSION, 'LIQUID_HEATMAP_FLOW_V2_FADING_WAVE_LIVE_RECOVERY_V24_20260819');
+assert.equal(LIQUID_FLOW_V2_FLAGPOLE_SHORT_KILL_VERSION,
+  'LIQUID_FLOW_V2_FLAGPOLE_SHORT_KILL_V1_20260818');
+assert.equal(LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_VERSION,
+  'LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_V1_20260818');
+
+const flagpoleBars = Array.from({ length: 80 }, (_, index) => {
+  let open = 100 + Math.sin(index * 0.4) * 0.08;
+  let close = 100 + Math.sin((index + 1) * 0.4) * 0.08;
+  let high = Math.max(open, close) + 0.18;
+  let low = Math.min(open, close) - 0.18;
+  let quoteVolume = 1_000;
+  let takerBuyQuoteVolume = 520;
+  if (index === 45) {
+    open = 108;
+    close = 111;
+    high = 112;
+    low = 107.5;
+    quoteVolume = 4_000;
+    takerBuyQuoteVolume = 3_000;
+  } else if (index > 45 && index < 78) {
+    const drift = Math.min(index - 46, 8) * 0.15;
+    open = 110 - drift;
+    close = 109.8 - drift;
+    high = Math.max(open, close) + 0.2;
+    low = index === 54 ? 104 : Math.min(open, close) - 0.2;
+  } else if (index === 78) {
+    open = 107;
+    high = 116;
+    low = 106;
+    close = 115.5;
+    quoteVolume = 5_000;
+    takerBuyQuoteVolume = 4_000;
+  } else if (index === 79) {
+    open = 115.5;
+    high = 117;
+    low = 113;
+    close = 116.5;
+    quoteVolume = 2_000;
+    takerBuyQuoteVolume = 1_300;
+  }
+  return {
+    open,
+    high,
+    low,
+    close,
+    quoteVolume,
+    takerBuyQuoteVolume,
+    openTime: index * 300_000,
+    closeTime: (index + 1) * 300_000 - 1,
+  };
+});
+const flagpoleSnapshot = buildFlagpoleShortKillSnapshot(flagpoleBars, 80 * 300_000);
+assert.equal(flagpoleSnapshot.longReady, true);
+assert.equal(flagpoleSnapshot.stage, 'LONG_READY');
+assert(flagpoleSnapshot.priorPumpPct >= 8);
+assert(flagpoleSnapshot.pullbackPct >= 2.5);
+assert(flagpoleSnapshot.barsAfterPriorPeak >= 4);
+assert(flagpoleSnapshot.flagpoleVolumeX >= 2.5);
+assert(flagpoleSnapshot.confirmationLowerWickShare >= 0.2);
+
+const firstPumpBars = flagpoleBars.map((bar, index) => index < 78 ? {
+  ...bar,
+  open: 100,
+  high: 100.2,
+  low: 99.8,
+  close: 100,
+  quoteVolume: 1_000,
+  takerBuyQuoteVolume: 520,
+} : bar);
+assert.equal(buildFlagpoleShortKillSnapshot(firstPumpBars, 80 * 300_000).longReady, false);
+
+const flagpoleShortKillReady = classifyLiquidHeatmapFlowV2({
+  ...base,
+  change24hPct: 12,
+  quoteVolume: 50_000_000,
+  liquidityRank: 12,
+  postPumpUniverse: true,
+  flagpoleShortKill5m: flagpoleSnapshot,
+  shortLiquidationUsd: 50_000,
+  prior5mShortLiquidationUsd: 18_000,
+  shortLiquidationBurst: 2,
+  liquidationEvents: 3,
+});
+assert.equal(flagpoleShortKillReady.labelKey, 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY');
+assert.equal(flagpoleShortKillReady.side, 'LONG');
+assert.equal(flagpoleShortKillReady.phase, 'READY');
+assert.equal(flagpoleShortKillReady.affectsOrders, true);
+assert.equal(flagpoleShortKillReady.affectsBinance, false);
+assert.equal(flagpoleShortKillReady.signalCandleClosedAt, flagpoleSnapshot.readyAt);
+assert.notEqual(classifyLiquidHeatmapFlowV2({
+  ...base,
+  change24hPct: 12,
+  quoteVolume: 50_000_000,
+  liquidityRank: 12,
+  postPumpUniverse: true,
+  flagpoleShortKill5m: flagpoleSnapshot,
+  shortLiquidationUsd: 0,
+  shortLiquidationBurst: 0,
+}).labelKey, 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY');
+
+const fadingWaveNow = 130 * 300_000 + 120_000;
+const fadingWaveBars = Array.from({ length: 130 }, (_, index) => {
+  const close = 130 - index * 0.2;
+  const open = close + 0.08;
+  return {
+    open,
+    high: open + 0.15,
+    low: close - 0.15,
+    close,
+    quoteVolume: 1_000,
+    takerBuyQuoteVolume: 520,
+    openTime: index * 300_000,
+    closeTime: (index + 1) * 300_000 - 1,
+  };
+});
+fadingWaveBars.push({
+  open: 104,
+  high: 117,
+  low: 103.8,
+  close: 115,
+  quoteVolume: 5_000,
+  takerBuyQuoteVolume: 3_500,
+  openTime: 130 * 300_000,
+  closeTime: 131 * 300_000 - 1,
+});
+const fadingWaveSnapshot = buildFadingWaveLivePumpSnapshot(fadingWaveBars, fadingWaveNow);
+assert.equal(fadingWaveSnapshot.shortReady, true);
+assert.equal(fadingWaveSnapshot.stage, 'LIVE_PUMP_SHORT_READY');
+assert.equal(fadingWaveSnapshot.readyAt, 130 * 300_000);
+assert(fadingWaveSnapshot.ema13 < fadingWaveSnapshot.ema25);
+assert(fadingWaveSnapshot.ema25 < fadingWaveSnapshot.ema99);
+assert(fadingWaveSnapshot.ema99Slope12Pct <= -0.15);
+assert(fadingWaveSnapshot.downReturn12Pct <= -1.5);
+assert(fadingWaveSnapshot.waveDrawdownPct >= 3);
+assert(fadingWaveSnapshot.livePumpHighPct >= 4);
+assert(fadingWaveSnapshot.liveGivebackPct >= 0.6);
+assert(fadingWaveSnapshot.liveVolumeX >= 1.8);
+assert(fadingWaveSnapshot.liveTakerDeltaPct >= 8);
+const builtFadingWave = buildLiquidHeatmapFlowV2Features({
+  market: {
+    markPrice: 115,
+    change24hPct: -1.3,
+    quoteVolume: 6_000_000,
+    liquidityRank: 100,
+    fadingWaveUniverse: true,
+  },
+  klines: fadingWaveBars,
+  now: fadingWaveNow,
+});
+assert.equal(builtFadingWave.fadingWaveUniverse, true);
+assert.equal(builtFadingWave.fadingWaveLivePump5m.shortReady, true);
+assert.equal(classifyLiquidHeatmapFlowV2(builtFadingWave).labelKey,
+  'FADING_WAVE_LIVE_PUMP_SHORT_READY');
+
+const noLiveGivebackBars = fadingWaveBars.map((bar, index) => index === fadingWaveBars.length - 1
+  ? { ...bar, close: bar.high }
+  : bar);
+assert.equal(buildFadingWaveLivePumpSnapshot(noLiveGivebackBars, fadingWaveNow).shortReady, false);
+const nonDowntrendBars = fadingWaveBars.map((bar, index) => index < 130 ? {
+  ...bar,
+  open: 100 + index * 0.1,
+  high: 100.2 + index * 0.1,
+  low: 99.9 + index * 0.1,
+  close: 100.1 + index * 0.1,
+} : {
+  ...bar,
+  open: 113,
+  high: 120,
+  low: 112.8,
+  close: 118,
+});
+assert.equal(buildFadingWaveLivePumpSnapshot(nonDowntrendBars, fadingWaveNow).shortReady, false);
+
+const fadingWaveLivePumpReady = classifyLiquidHeatmapFlowV2({
+  ...base,
+  change24hPct: -1.3,
+  quoteVolume: 6_000_000,
+  liquidityRank: 100,
+  fadingWaveUniverse: true,
+  fadingWaveLivePump5m: fadingWaveSnapshot,
+});
+assert.equal(fadingWaveLivePumpReady.labelKey, 'FADING_WAVE_LIVE_PUMP_SHORT_READY');
+assert.equal(fadingWaveLivePumpReady.side, 'SHORT');
+assert.equal(fadingWaveLivePumpReady.phase, 'READY');
+assert.equal(fadingWaveLivePumpReady.observationOnly, false);
+assert.equal(fadingWaveLivePumpReady.affectsOrders, true);
+assert.equal(fadingWaveLivePumpReady.affectsBinance, true);
+assert.equal(fadingWaveLivePumpReady.signalCandleClosedAt, fadingWaveSnapshot.liveCandleOpenAt);
+assert.notEqual(classifyLiquidHeatmapFlowV2({
+  ...base,
+  change24hPct: -1.3,
+  quoteVolume: 6_000_000,
+  liquidityRank: 151,
+  fadingWaveUniverse: true,
+  fadingWaveLivePump5m: fadingWaveSnapshot,
+}).labelKey, 'FADING_WAVE_LIVE_PUMP_SHORT_READY');
 
 const upActive = classifyLiquidHeatmapFlowV2({
   ...base,
@@ -1106,6 +1315,7 @@ assert.equal(postPumpCandidates.length, 150);
 assert.equal(postPumpCandidates[0].symbol, 'SHORTLIQ1USDT');
 assert.equal(postPumpCandidates[0].liquidityRank, 1);
 assert.equal(postPumpCandidates[0].postPumpUniverse, true);
+assert.equal(postPumpCandidates[0].fadingWaveUniverse, true);
 assert.equal(postPumpCandidates[0].universeTier, 'POST_PUMP_TOP_150_LIQUIDITY');
 assert.equal(postPumpCandidates.some((row) => row.symbol === 'SHORTLIQ151USDT'), false);
 
@@ -1363,6 +1573,8 @@ const stats = liquidHeatmapFlowV2Stats([
   { symbol: 'UPWATCHUSDT', classification: shortSweepWatch },
   { symbol: 'DOWNWATCHUSDT', classification: longSweepWatch },
   { symbol: 'KILLLONGUSDT', classification: killLongExhaustionReady },
+  { symbol: 'FLAGPOLEUSDT', classification: flagpoleShortKillReady },
+  { symbol: 'FADINGWAVEUSDT', classification: fadingWaveLivePumpReady },
   { symbol: 'MASKEDUSDT', classification: distributionNotMaskedByPrimary },
   { symbol: 'EXTENDEDUSDT', classification: extendedPanic },
   {
@@ -1394,6 +1606,8 @@ const stats = liquidHeatmapFlowV2Stats([
   { status: 'CLOSED', labelKey: 'POST_PUMP_SHORT_SQUEEZE_LONG_READY', netRoe: 5.2 },
   { status: 'CLOSED', labelKey: 'POST_PUMP_SHORT_SQUEEZE_PRIME', netRoe: 9.6 },
   { status: 'CLOSED', labelKey: 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY', netRoe: 6.5 },
+  { status: 'CLOSED', labelKey: 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY', netRoe: 5.6 },
+  { status: 'CLOSED', labelKey: 'FADING_WAVE_LIVE_PUMP_SHORT_READY', netRoe: 5.7 },
 ]);
 assert.equal(stats.length, Object.keys(LIQUID_HEATMAP_FLOW_V2_LABELS).length);
 assert.equal(stats.find((row) => row.key === 'UP_SWEEP_SHORT_READY').active, 1);
@@ -1431,6 +1645,20 @@ assert.equal(stats.find((row) => row.key === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_
   'heatmap-v2:KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY');
 assert.equal(stats.find((row) => row.key === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY').paperAvgRoe, 6.5);
 assert.equal(stats.find((row) => row.key === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY').whitelistEligible, true);
+assert.equal(stats.find((row) => row.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY').active, 1);
+assert.equal(stats.find((row) => row.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY').whitelistKey,
+  'heatmap-v2:POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY');
+assert.equal(stats.find((row) => row.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY').paperAvgRoe, 5.6);
+assert.equal(stats.find((row) => row.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY').whitelistEligible, true);
+assert.equal(liquidHeatmapFlowV2Stats([], [])
+  .find((row) => row.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY').whitelistEligible, false);
+assert.equal(stats.find((row) => row.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY').active, 1);
+assert.equal(stats.find((row) => row.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY').whitelistKey,
+  'heatmap-v2:FADING_WAVE_LIVE_PUMP_SHORT_READY');
+assert.equal(stats.find((row) => row.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY').paperAvgRoe, 5.7);
+assert.equal(stats.find((row) => row.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY').whitelistEligible, true);
+assert.equal(liquidHeatmapFlowV2Stats([], [])
+  .find((row) => row.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY').whitelistEligible, false);
 assert.equal(stats.find((row) => row.key === 'EXTENDED_EMA99_PANIC_RECLAIM_LONG').whitelistKey, 'heatmap-v2:EXTENDED_EMA99_PANIC_RECLAIM_LONG');
 assert.equal(stats.find((row) => row.key === 'EXTENDED_EMA99_PANIC_RECLAIM_LONG').active, 1);
 assert.equal(stats.find((row) => row.key === 'EXTENDED_EMA99_PANIC_RECLAIM_LONG').whitelistEligible, true);
@@ -1456,6 +1684,7 @@ for (const stat of stats) {
   if (stat.key === 'EMA_FAN_LONG_READY'
     || stat.key === 'EMA_FAN_LONG_IMPULSE_RUNNER'
     || stat.key === 'PUMP_FLUSH_RECLAIM_LONG_READY'
+    || stat.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY'
     || stat.key === 'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY'
     || stat.key === 'POST_PUMP_SHORT_SQUEEZE_LONG_READY') {
     assert.equal(stat.observationOnly, false);
@@ -1466,7 +1695,8 @@ for (const stat of stats) {
     assert.equal(stat.affectsOrders, false);
     assert.equal(stat.affectsBinance, false);
   } else if (stat.key === 'POST_PUMP_SHORT_SQUEEZE_PRIME'
-    || stat.key === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY') {
+    || stat.key === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY'
+    || stat.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY') {
     assert.equal(stat.observationOnly, false);
     assert.equal(stat.affectsOrders, true);
     assert.equal(stat.affectsBinance, false);

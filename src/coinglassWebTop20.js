@@ -9,19 +9,23 @@ import {
   buildCoinglassWebDiscordPayload,
   coinglassWebDiscordDedupeKey,
 } from './coinglassWebDiscord.js';
+import {
+  COINGLASS_WEB_BINANCE_VERSION,
+  coinglassWebBinanceDedupeKey,
+} from './coinglassWebBinance.js';
 
-export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_HARD_3M_BUDGET_V10_20260817';
+export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_QUALIFIED_BINANCE_V11_20260820';
 export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817';
-export const COINGLASS_WEB_TOP20_MODE = 'OBSERVE_ONLY';
+export const COINGLASS_WEB_TOP20_MODE = 'QUALIFIED_BINANCE_AUTO';
 export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
-  observationOnly: true,
+  observationOnly: false,
   affectsLiquidFlowV2: false,
   affectsSignals: false,
   affectsPaper: false,
-  affectsBinance: false,
-  affectsEntry: false,
-  affectsSize: false,
-  affectsSlTp: false,
+  affectsBinance: true,
+  affectsEntry: true,
+  affectsSize: true,
+  affectsSlTp: true,
 });
 
 const execFileAsync = promisify(execFile);
@@ -498,8 +502,9 @@ export function qualifyCoinglassOpportunity(row = {}) {
   return {
     qualified: reasons.length === 0,
     reasons,
-    observeOnly: true,
+    observeOnly: false,
     discordEligible: reasons.length === 0,
+    binanceEligible: reasons.length === 0,
   };
 }
 
@@ -538,7 +543,12 @@ async function readJson(path, fallback = null) {
 }
 
 export class CoinGlassWebTop20Manager {
-  constructor({ rootDir, dataDir = join(rootDir, 'data', 'coinglass-web-top20') } = {}) {
+  constructor({
+    rootDir,
+    dataDir = join(rootDir, 'data', 'coinglass-web-top20'),
+    onQualifiedRow = null,
+    resolveBinanceSettings = null,
+  } = {}) {
     if (!rootDir) throw new Error('rootDir is required');
     this.rootDir = rootDir;
     this.dataDir = dataDir;
@@ -546,6 +556,11 @@ export class CoinGlassWebTop20Manager {
     this.progressFile = join(dataDir, 'progress.json');
     this.authFile = join(dataDir, 'auth.json');
     this.notificationFile = join(dataDir, 'notifications.json');
+    this.executionFile = join(dataDir, 'binance-executions.json');
+    this.onQualifiedRow = typeof onQualifiedRow === 'function' ? onQualifiedRow : null;
+    this.resolveBinanceSettings = typeof resolveBinanceSettings === 'function'
+      ? resolveBinanceSettings
+      : null;
     this.running = false;
     this.startedAt = null;
     this.lastError = null;
@@ -580,6 +595,11 @@ export class CoinGlassWebTop20Manager {
       discordConfigured: Boolean(this.discordWebhookUrl()),
       discordSignalCooldownMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_DISCORD_SIGNAL_COOLDOWN_MS, 30 * 60_000)),
       discordAuthCooldownMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_DISCORD_AUTH_COOLDOWN_MS, 60 * 60_000)),
+      binanceEnabled: process.env.COINGLASS_WEB_BINANCE_ENABLED !== 'false',
+      binanceMarginUsdt: Math.max(0.01, finiteNumber(process.env.COINGLASS_WEB_BINANCE_MARGIN_USDT, 2)),
+      binanceLeverage: Math.max(1, Math.min(125, finiteNumber(process.env.COINGLASS_WEB_BINANCE_LEVERAGE, 5))),
+      binanceStopLossRoePct: Math.max(1, finiteNumber(process.env.COINGLASS_WEB_BINANCE_STOP_LOSS_ROE_PCT, 20)),
+      binanceDedupeMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_BINANCE_DEDUPE_MS, 4 * 60 * 60_000)),
     };
   }
 
@@ -592,12 +612,21 @@ export class CoinGlassWebTop20Manager {
     ).trim();
   }
 
+  async binanceExecutionState() {
+    return readJson(this.executionFile, {
+      version: COINGLASS_WEB_BINANCE_VERSION,
+      submitted: {},
+      recent: [],
+    });
+  }
+
   async snapshot() {
-    const [saved, progress, auth, notifications] = await Promise.all([
+    const [saved, progress, auth, notifications, executions] = await Promise.all([
       readJson(this.snapshotFile, null),
       this.running ? readJson(this.progressFile, null) : Promise.resolve(null),
       readJson(this.authFile, null),
       readJson(this.notificationFile, null),
+      readJson(this.executionFile, null),
     ]);
     const savedRows = Array.isArray(saved?.rows) ? saved.rows : [];
     const moverUniverseCompatible = saved?.version === COINGLASS_WEB_TOP20_VERSION;
@@ -612,7 +641,7 @@ export class CoinGlassWebTop20Manager {
             : buildCoinglassZoneProposal(row?.heatmap, row),
         };
       })
-      .map((row) => ({ ...row, qualification: row?.qualification ?? qualifyCoinglassOpportunity(row) }))
+      .map((row) => ({ ...row, qualification: qualifyCoinglassOpportunity(row) }))
       .map((row) => ({ ...row, qualified: row.qualification.qualified }))
       .filter((row) => (
         row.symbol === 'BTCUSDT' || (
@@ -650,6 +679,12 @@ export class CoinGlassWebTop20Manager {
         lastSignalAt: notifications?.lastSignalAt ?? null,
         sentSignals: Object.keys(notifications?.signalSent ?? {}).length,
         recent: Array.isArray(notifications?.recent) ? notifications.recent.slice(0, 20) : [],
+      },
+      binanceExecutions: {
+        version: COINGLASS_WEB_BINANCE_VERSION,
+        enabled: this.config().binanceEnabled,
+        submitted: Object.keys(executions?.submitted ?? {}).length,
+        recent: Array.isArray(executions?.recent) ? executions.recent.slice(0, 20) : [],
       },
       progress,
       updatedAt: saved?.updatedAt ?? null,
@@ -827,7 +862,14 @@ export class CoinGlassWebTop20Manager {
       const dedupeKey = coinglassWebDiscordDedupeKey(row);
       if (!dedupeKey || now - Number(state.signalSent?.[dedupeKey] ?? 0) < config.discordSignalCooldownMs) continue;
       try {
-        await this.postDiscord(buildCoinglassWebDiscordPayload(row, now));
+        const rowBinanceSettings = this.resolveBinanceSettings
+          ? await this.resolveBinanceSettings(row)
+          : null;
+        await this.postDiscord(buildCoinglassWebDiscordPayload(row, now, {
+          binanceEnabled: rowBinanceSettings?.binanceEnabled ?? config.binanceEnabled,
+          marginUsdt: rowBinanceSettings?.marginUsdt ?? config.binanceMarginUsdt,
+          leverage: rowBinanceSettings?.leverage ?? config.binanceLeverage,
+        }));
         state.signalSent = { ...(state.signalSent ?? {}), [dedupeKey]: now };
         state.lastSignalAt = now;
         state.recent = [{
@@ -849,6 +891,75 @@ export class CoinGlassWebTop20Manager {
     return { sent };
   }
 
+  async executeQualifiedRows(rows = []) {
+    const config = this.config();
+    if (!config.binanceEnabled || !this.onQualifiedRow) {
+      return { submitted: 0, reason: config.binanceEnabled ? 'executor_not_configured' : 'disabled' };
+    }
+    const now = Date.now();
+    const state = await readJson(this.executionFile, null) ?? {
+      version: COINGLASS_WEB_BINANCE_VERSION,
+      submitted: {},
+      recent: [],
+    };
+    let submitted = 0;
+    for (const row of rows.filter((item) => item?.qualified === true)) {
+      const dedupeKey = coinglassWebBinanceDedupeKey(row);
+      const symbol = String(row?.symbol ?? '').toUpperCase();
+      const action = String(row?.proposal?.action ?? '');
+      const legacySubmittedAt = Object.values(state.submitted ?? {}).reduce((latest, record) => {
+        if (String(record?.symbol ?? '').toUpperCase() !== symbol || String(record?.action ?? '') !== action) {
+          return latest;
+        }
+        return Math.max(latest, Number(record?.submittedAt ?? record?.executedAt ?? 0));
+      }, 0);
+      const previousAt = Math.max(
+        Number(state.submitted?.[dedupeKey]?.submittedAt ?? 0),
+        legacySubmittedAt,
+      );
+      if (dedupeKey && previousAt > 0 && now - previousAt < config.binanceDedupeMs) continue;
+      let result;
+      try {
+        result = await this.onQualifiedRow(row);
+      } catch (error) {
+        result = { decision: 'BINANCE_EXECUTION_ERROR', error: String(error?.message ?? error).slice(0, 500) };
+      }
+      const executedAt = Date.now();
+      const audit = {
+        version: COINGLASS_WEB_BINANCE_VERSION,
+        symbol: row.symbol,
+        action: row.proposal?.action ?? null,
+        decision: result?.decision ?? 'UNKNOWN',
+        proposedEntry: Number(row.proposal?.tradePlan?.entry?.price) || null,
+        proposalStopLoss: Number(row.proposal?.tradePlan?.stopLoss?.price) || null,
+        currentPrice: Number(result?.currentPrice) || null,
+        stopLoss: Number(result?.stopLoss) || null,
+        stopLossRoePct: Number(result?.stopLossRoePct) || null,
+        marginUsdt: Number(result?.marginUsdt) || null,
+        leverage: Number(result?.leverage) || null,
+        binanceEntryPrice: Number(result?.binanceEntryPrice) || null,
+        filledAt: Number(result?.filledAt) || null,
+        orderId: result?.orderId ?? null,
+        reversedOrderId: result?.reversedOrderId ?? null,
+        executedAt,
+        error: result?.error ?? null,
+      };
+      if (result?.decision === 'SUBMITTED') {
+        state.submitted = { ...(state.submitted ?? {}), [dedupeKey]: { ...audit, submittedAt: executedAt } };
+        submitted += 1;
+      }
+      state.recent = [audit, ...(state.recent ?? [])].slice(0, 100);
+    }
+    await mkdir(this.dataDir, { recursive: true });
+    await writeJsonAtomic(this.executionFile, {
+      ...state,
+      version: COINGLASS_WEB_BINANCE_VERSION,
+      updatedAt: new Date().toISOString(),
+    });
+    if (submitted) console.log(`[CoinGlassWebTop20] Binance submitted ${submitted} qualified setup(s)`);
+    return { submitted };
+  }
+
   async handleCompletedRefresh() {
     const saved = await readJson(this.snapshotFile, null);
     if (saved?.source?.authRequired) {
@@ -857,6 +968,7 @@ export class CoinGlassWebTop20Manager {
     }
     const view = await this.snapshot();
     await this.notifyQualifiedRows(view.rows);
+    await this.executeQualifiedRows(view.rows);
   }
 
   async startLogin() {

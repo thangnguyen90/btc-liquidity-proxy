@@ -23,6 +23,14 @@ import {
   buildCoinglassWebExternalLinks,
   coinglassWebDiscordDedupeKey,
 } from '../src/coinglassWebDiscord.js';
+import {
+  COINGLASS_WEB_BINANCE_MARGIN_USDT,
+  COINGLASS_WEB_BINANCE_STOP_LOSS_ROE_PCT,
+  COINGLASS_WEB_BINANCE_VERSION,
+  coinglassWebBinanceDedupeKey,
+  coinglassWebDefaultStopLossPrice,
+  evaluateCoinglassWebBinanceEntry,
+} from '../src/coinglassWebBinance.js';
 
 const exchangeInfo = {
   symbols: [
@@ -168,13 +176,15 @@ const qualifiedRow = {
 assert.equal(qualifyCoinglassOpportunity(qualifiedRow).qualified, true);
 assert.equal(qualifyCoinglassOpportunity({ ...qualifiedRow, stale: true }).qualified, false);
 assert.equal(qualifyCoinglassOpportunity({ ...qualifiedRow, proposal: balancedProposal }).qualified, false);
-assert.equal(coinglassWebDiscordDedupeKey({ ...qualifiedRow, qualified: true }), 'V3:GOODUSDT:WAIT_LONG_CONFIRMATION');
+assert.equal(coinglassWebDiscordDedupeKey({ ...qualifiedRow, qualified: true }), 'V5:GOODUSDT:WAIT_LONG_CONFIRMATION');
 const qualifiedDiscordPayload = buildCoinglassWebDiscordPayload({ ...qualifiedRow, qualified: true });
 assert.equal(qualifiedDiscordPayload.embeds[0].color, 0x22c55e);
 assert.match(qualifiedDiscordPayload.embeds[0].title, /LONG.*TOP TĂNG #1/);
 assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('ENTRY')).value, /100/);
 assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('TAKE PROFIT')).value, /105/);
-assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('STOP LOSS')).value, /95/);
+assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('STOP LOSS')).value, /96/);
+assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('STOP LOSS')).value, /20% ROE/);
+assert.match(qualifiedDiscordPayload.embeds[0].description, /BINANCE AUTO.*BẬT.*\$2 x5/s);
 assert.equal(qualifiedDiscordPayload.embeds[0].url, 'https://www.binance.com/en/futures/GOODUSDT');
 assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('MỞ BIỂU ĐỒ')).value, /coinglass\.com.*coin=GOOD.*binance\.com\/en\/futures\/GOODUSDT/);
 assert.deepEqual(buildCoinglassWebExternalLinks({ symbol: '../../etc', baseAsset: 'BAD' }), { binance: null, coinglass: null });
@@ -187,6 +197,57 @@ const shortDiscordPayload = buildCoinglassWebDiscordPayload({
 assert.equal(shortDiscordPayload.embeds[0].color, 0xef4444);
 assert.match(shortDiscordPayload.embeds[0].title, /SHORT.*TOP GIẢM #1/);
 assert.match(buildCoinglassWebAuthAlertPayload({ pageUrl: 'http://localhost/test' }).embeds[0].description, /Đăng nhập cho collector/);
+
+const qualifiedLongRow = { ...qualifiedRow, qualified: true, status: 'OK', stale: false };
+assert.equal(COINGLASS_WEB_BINANCE_MARGIN_USDT, 2);
+assert.equal(COINGLASS_WEB_BINANCE_STOP_LOSS_ROE_PCT, 20);
+assert.equal(coinglassWebDefaultStopLossPrice({ side: 'LONG', entryPrice: 100, leverage: 5 }), 96);
+assert.equal(coinglassWebDefaultStopLossPrice({ side: 'SHORT', entryPrice: 100, leverage: 5 }), 104);
+assert.equal(coinglassWebBinanceDedupeKey(qualifiedLongRow), 'COINGLASS_QUALIFIED:GOODUSDT:LONG');
+const allowedLongDecision = evaluateCoinglassWebBinanceEntry({
+  row: qualifiedLongRow,
+  currentPrice: 101,
+  positions: [],
+});
+assert.equal(allowedLongDecision.decision, 'ENTER_MARKET');
+assert.equal(allowedLongDecision.stopLoss, 96);
+assert.equal(allowedLongDecision.proposalStopLoss, 95);
+assert.equal(allowedLongDecision.stopLossRoePct, 20);
+assert.equal(evaluateCoinglassWebBinanceEntry({
+  row: qualifiedLongRow,
+  currentPrice: 100,
+  positions: [],
+}).decision, 'WAIT_PRICE_ABOVE_PROPOSED_ENTRY');
+assert.equal(evaluateCoinglassWebBinanceEntry({
+  row: qualifiedLongRow,
+  currentPrice: 106,
+  positions: [],
+}).decision, 'BLOCKED_PRICE_OUTSIDE_TP_SL');
+assert.equal(evaluateCoinglassWebBinanceEntry({
+  row: qualifiedLongRow,
+  currentPrice: 101,
+  positions: [{ symbol: 'GOODUSDT', positionAmt: '2', unRealizedProfit: '1' }],
+}).decision, 'BLOCKED_SAME_SIDE_POSITION');
+assert.equal(evaluateCoinglassWebBinanceEntry({
+  row: qualifiedLongRow,
+  currentPrice: 101,
+  positions: [{ symbol: 'GOODUSDT', positionAmt: '-2', unRealizedProfit: '1' }],
+}).decision, 'CLOSE_PROFITABLE_OPPOSITE_THEN_ENTER');
+assert.equal(evaluateCoinglassWebBinanceEntry({
+  row: qualifiedLongRow,
+  currentPrice: 101,
+  positions: [{ symbol: 'GOODUSDT', positionAmt: '-2', unRealizedProfit: '0' }],
+}).decision, 'BLOCKED_OPPOSITE_PNL_NOT_POSITIVE');
+assert.equal(evaluateCoinglassWebBinanceEntry({
+  row: { ...qualifiedLongRow, proposal: shortProposal },
+  currentPrice: 101,
+  positions: [],
+}).decision, 'ENTER_MARKET');
+assert.equal(evaluateCoinglassWebBinanceEntry({
+  row: { ...qualifiedLongRow, proposal: shortProposal },
+  currentPrice: 101,
+  positions: [],
+}).stopLoss, 104);
 
 const legacyDataDir = await mkdtemp(join(tmpdir(), 'coinglass-movers-v3-'));
 await writeFile(join(legacyDataDir, 'snapshot.json'), JSON.stringify({
@@ -225,6 +286,50 @@ if (originalWebhook == null) delete process.env.COINGLASS_WEB_DISCORD_WEBHOOK_UR
 else process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL = originalWebhook;
 await rm(notifyDataDir, { recursive: true, force: true });
 
+const executionDataDir = await mkdtemp(join(tmpdir(), 'coinglass-binance-v1-'));
+let executionCalls = 0;
+const executionManager = new CoinGlassWebTop20Manager({
+  rootDir: new URL('..', import.meta.url).pathname,
+  dataDir: executionDataDir,
+  onQualifiedRow: async () => {
+    executionCalls += 1;
+    return { decision: 'SUBMITTED', currentPrice: 101, orderId: 123 };
+  },
+});
+assert.equal(executionManager.config().binanceMarginUsdt, 2);
+assert.equal((await executionManager.executeQualifiedRows([qualifiedLongRow])).submitted, 1);
+assert.equal((await executionManager.executeQualifiedRows([qualifiedLongRow])).submitted, 0);
+assert.equal(executionCalls, 1, 'durable dedupe must prevent repeated entry each 3-minute scan');
+const executionState = JSON.parse(await readFile(join(executionDataDir, 'binance-executions.json'), 'utf8'));
+assert.equal(executionState.version, COINGLASS_WEB_BINANCE_VERSION);
+assert.equal(Object.keys(executionState.submitted).length, 1);
+await rm(executionDataDir, { recursive: true, force: true });
+
+const legacyExecutionDataDir = await mkdtemp(join(tmpdir(), 'coinglass-binance-legacy-dedupe-'));
+await writeFile(join(legacyExecutionDataDir, 'binance-executions.json'), JSON.stringify({
+  version: 'COINGLASS_WEB_BINANCE_MARKET_V1_5USDT_PROFITABLE_REVERSAL_20260820',
+  submitted: {
+    'COINGLASS_WEB_BINANCE_MARKET_V1_5USDT_PROFITABLE_REVERSAL_20260820:GOODUSDT:LONG': {
+      symbol: 'GOODUSDT',
+      action: 'WAIT_LONG_CONFIRMATION',
+      submittedAt: Date.now(),
+    },
+  },
+  recent: [],
+}), 'utf8');
+let legacyExecutionCalls = 0;
+const legacyExecutionManager = new CoinGlassWebTop20Manager({
+  rootDir: new URL('..', import.meta.url).pathname,
+  dataDir: legacyExecutionDataDir,
+  onQualifiedRow: async () => {
+    legacyExecutionCalls += 1;
+    return { decision: 'SUBMITTED' };
+  },
+});
+assert.equal((await legacyExecutionManager.executeQualifiedRows([qualifiedLongRow])).submitted, 0);
+assert.equal(legacyExecutionCalls, 0, 'V1 submitted record must still dedupe after the V2 key migration');
+await rm(legacyExecutionDataDir, { recursive: true, force: true });
+
 const retained = mergeLastGoodHeatmapRows({
   markets: [{ symbol: 'AAAUSDT', rank: 1 }, { symbol: 'BBBUSDT', rank: 2 }],
   freshRows: [{ symbol: 'AAAUSDT', rank: 1, status: 'OK' }],
@@ -244,16 +349,29 @@ const failedPlaceholder = mergeLastGoodHeatmapRows({
 assert.equal(failedPlaceholder[0].status, 'FETCH_FAILED');
 assert.equal(failedPlaceholder[0].lastError, 'login required');
 
-assert.equal(COINGLASS_WEB_TOP20_MODE, 'OBSERVE_ONLY');
-assert.equal(Object.values(COINGLASS_WEB_TOP20_ISOLATION).every((value, index) => index === 0 ? value === true : value === false), true);
+assert.equal(COINGLASS_WEB_TOP20_MODE, 'QUALIFIED_BINANCE_AUTO');
+assert.equal(COINGLASS_WEB_TOP20_ISOLATION.observationOnly, false);
+assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsLiquidFlowV2, false);
+assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsSignals, false);
+assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsPaper, false);
+assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsBinance, true);
+assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsEntry, true);
+assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsSize, true);
+assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsSlTp, true);
 
 const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
 assert.match(serverSource, /\/api\/coinglass-web-top20/);
+assert.match(serverSource, /\/api\/liquid-flow-v2-binance-signal-settings/);
+assert.match(serverSource, /BLOCKED_COINGLASS_BINANCE_DISABLED/);
+assert.match(serverSource, /BLOCKED_SIGNAL_BINANCE_DISABLED/);
 assert.match(serverSource, /coinGlassWebTop20\.startRefresh\('manual'\)/);
 assert.match(serverSource, /coinGlassWebTop20\.startLogin\(\)/);
 assert.match(serverSource, /coinGlassWebTop20\.startScheduler\(\)/);
 const collectorSource = await readFile(new URL('../src/coinglassWebTop20.js', import.meta.url), 'utf8');
 assert.doesNotMatch(collectorSource, /placeFuturesOrder|LiquidFlowV2PaperManager|BinanceClient/);
+assert.match(collectorSource, /onQualifiedRow/);
+assert.match(serverSource, /executeCoinGlassQualifiedBinanceRow/);
+assert.match(serverSource, /authorizeCoinglassWebAutoOrder/);
 assert.match(collectorSource, /viewLiquidityExcluded/);
 const crawlSource = await readFile(new URL('./crawl-coinglass-web-top20.mjs', import.meta.url), 'utf8');
 assert.match(crawlSource, /launchPersistentContext/);

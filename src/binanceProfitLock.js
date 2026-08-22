@@ -1,4 +1,4 @@
-export const BINANCE_PROFIT_LOCK_VERSION = 'BINANCE_PROFIT_LOCK_V12_LIFECYCLE_FAST_FAILSAFE_20260812';
+export const BINANCE_PROFIT_LOCK_VERSION = 'BINANCE_PROFIT_LOCK_V13_GTE_REPLACE_ROLLBACK_20260820';
 export const LEGACY_TRAILING_STOP_DISABLED_VERSION = 'LEGACY_TSL_DISABLED_V1_20260809';
 export const MANUAL_BINANCE_PROFIT_LOCK_TRIGGER_ROE = 10;
 export const MANUAL_BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE = 1;
@@ -150,4 +150,28 @@ export function isBinanceProfitLockTargetBreached({
   const stop = finite(stopPrice);
   if (!['LONG', 'SHORT'].includes(normalizedSide) || !(mark > 0) || !(stop > 0)) return false;
   return normalizedSide === 'LONG' ? mark <= stop : mark >= stop;
+}
+
+export function hasBinanceProfitLockStopAtTarget({
+  orders = [],
+  symbol,
+  closeSide,
+  stopPrice,
+  toleranceFraction = 1e-8,
+} = {}) {
+  const normalizedSymbol = String(symbol ?? '').trim().toUpperCase();
+  const normalizedCloseSide = String(closeSide ?? '').trim().toUpperCase();
+  const target = finite(stopPrice);
+  const tolerance = finite(toleranceFraction);
+  if (!normalizedSymbol || !['BUY', 'SELL'].includes(normalizedCloseSide) || !(target > 0)) return false;
+  return (Array.isArray(orders) ? orders : []).some((order) => {
+    if (String(order?.symbol ?? '').trim().toUpperCase() !== normalizedSymbol) return false;
+    if (String(order?.side ?? '').trim().toUpperCase() !== normalizedCloseSide) return false;
+    const type = String(order?.orderType ?? order?.origType ?? order?.type ?? '').trim().toUpperCase();
+    if (!['STOP', 'STOP_MARKET'].includes(type)) return false;
+    const trigger = finite(order?.triggerPrice ?? order?.stopPrice);
+    if (!(trigger > 0)) return false;
+    const allowedDelta = Math.max(1e-12, Math.abs(target) * Math.max(0, tolerance ?? 0));
+    return Math.abs(trigger - target) <= allowedDelta;
+  });
 }

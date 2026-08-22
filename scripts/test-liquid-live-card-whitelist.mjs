@@ -15,7 +15,7 @@ import {
 
 assert.equal(
   LIQUID_LIVE_CARD_WHITELIST_VERSION,
-  'LIVE_CARD_WHITELIST_V14_SWEEP_WATCH_CONFIRM_20260816',
+  'LIVE_CARD_WHITELIST_V16_FADING_WAVE_LIVE_PUMP_20260818',
 );
 
 const trade = {
@@ -110,6 +110,8 @@ for (const key of [
   'heatmap-v2:POST_PUMP_BASE_ABSORPTION_WATCH',
   'heatmap-v2:POST_PUMP_SHORT_SQUEEZE_LONG_READY',
   'heatmap-v2:POST_PUMP_SHORT_SQUEEZE_PRIME',
+  'heatmap-v2:POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY',
+  'heatmap-v2:FADING_WAVE_LIVE_PUMP_SHORT_READY',
   'heatmap-v2:PUMP_FLUSH_RECLAIM_LONG_READY',
 ]) {
   assert.equal(normalizeLiquidLiveCardKey(key), key);

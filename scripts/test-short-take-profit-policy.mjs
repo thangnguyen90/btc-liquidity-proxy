@@ -7,6 +7,7 @@ import {
   NON_LIQUID_FLOW_V2_SHORT_TP_ROE,
   ORDERS_MANUAL_TP_ROE,
   ORDERS_MANUAL_TP_VERSION,
+  isCoinglassWebQualifiedSource,
   isUserOrLiquidFlowV2ManagedSource,
   resolveManualSocketProtection,
   resolveNonLiquidFlowV2TakeProfit,
@@ -59,6 +60,12 @@ const longV2 = resolveNonLiquidFlowV2TakeProfit({
 });
 assert.equal(longV2.applied, false);
 assert.equal(longV2.takeProfitPrice, 104);
+const coinglassProposalTp = resolveNonLiquidFlowV2TakeProfit({
+  side: 'SHORT', source: 'coinglass-web-qualified', entryPrice: 100, leverage: 5, requestedTakeProfitPrice: 94,
+});
+assert.equal(isCoinglassWebQualifiedSource('coinglass-web-qualified'), true);
+assert.equal(coinglassProposalTp.applied, false);
+assert.equal(coinglassProposalTp.takeProfitPrice, 94, 'CoinGlass proposal TP must not be replaced by generic bot ROE TP');
 assert.equal(isUserOrLiquidFlowV2ManagedSource('liquid-flow-v2-manual'), true);
 assert.equal(isUserOrLiquidFlowV2ManagedSource('orders-manual'), true);
 assert.equal(isUserOrLiquidFlowV2ManagedSource(null, ''), true);

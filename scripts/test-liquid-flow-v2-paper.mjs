@@ -6,6 +6,7 @@ import {
   EMA_FAN_LONG_ENTRY_CONFIRMATION_VERSION,
   LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_VERSION,
   LIQUID_FLOW_V2_PAPER_VERSION,
+  LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION,
   LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_VERSION,
   LIQUID_FLOW_V2_SWEEP_ENTRY_POLICY_VERSION,
   LiquidFlowV2PaperManager,
@@ -44,12 +45,16 @@ const settings = {
   primaryPanicBinanceMarginUsdt: 2,
   postPumpReadyBinanceEnabled: true,
   postPumpReadyBinanceMarginUsdt: 2,
+  fadingWaveLivePumpBinanceEnabled: true,
+  fadingWaveLivePumpBinanceMarginUsdt: 1,
   maxHoldMs: 4 * 60 * 60_000,
   roundTripFeeRate: 0.0008,
 };
 
-assert.equal(LIQUID_FLOW_V2_PAPER_VERSION, 'LIQUID_FLOW_V2_PAPER_V29_PRIMARY_POST_PUMP_BINANCE_2USDT_20260816');
+assert.equal(LIQUID_FLOW_V2_PAPER_VERSION, 'LIQUID_FLOW_V2_PAPER_V31_FADING_WAVE_LIVE_PUMP_BINANCE_20260818');
 assert.equal(LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_VERSION, 'LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V1_2USDT_20260816');
+assert.equal(LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION,
+  'LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_V1_1USDT_20260818');
 assert.equal(EMA_FAN_LONG_ENTRY_CONFIRMATION_VERSION, 'EMA_FAN_LONG_RETEST_CONFIRM_V1_20260816');
 assert.equal(LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_VERSION, 'LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_V1_20260816');
 assert.equal(LIQUID_FLOW_V2_SWEEP_ENTRY_POLICY_VERSION, 'LIQUID_FLOW_V2_SWEEP_ENTRY_GUARD_V1_20260816');
@@ -383,6 +388,63 @@ assert.deepEqual(
   liquidFlowV2AutoBinanceProfile({ labelKey: 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY' }, settings),
   { eligible: false, cohort: 'KILL_LONG_EXHAUSTION_PAPER', marginUsdt: null, leverage: null, source: null },
 );
+const flagpoleShortKillPlan = buildLiquidFlowV2PaperPlan({
+  symbol: 'FLAGUSDT',
+  classification: { phase: 'READY', labelKey: 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY' },
+  features: {
+    markPrice: 1,
+    lastClosedCandle: { close: 1 },
+    upperZone: { price: 1.2 },
+    flagpoleShortKill5m: { longReady: true, readyAt: 12_000_000 },
+  },
+}, settings);
+assert.equal(flagpoleShortKillPlan.side, 'LONG');
+assert.equal(flagpoleShortKillPlan.entryMode, 'IMMEDIATE_MARK');
+assert.equal(flagpoleShortKillPlan.entryPrice, 1);
+assert.equal(flagpoleShortKillPlan.entryBasis, 'FLAGPOLE_SHORT_KILL_5M_CLOSED_RECLAIM_MARK');
+assert.equal(flagpoleShortKillPlan.takeProfit, 1.02);
+assert.equal(flagpoleShortKillPlan.stopLoss, 0.96);
+assert.equal(flagpoleShortKillPlan.estimatedRewardRoe, 10);
+assert.equal(flagpoleShortKillPlan.estimatedRiskRoe, 20);
+assert.equal(flagpoleShortKillPlan.targetBasis, 'FLAGPOLE_SHORT_KILL_FIXED_10_ROE');
+assert.equal(flagpoleShortKillPlan.invalidationBasis, 'FIXED_20_ROE_AT_5X');
+assert.deepEqual(
+  liquidFlowV2AutoBinanceProfile({ labelKey: 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY' }, settings),
+  { eligible: false, cohort: 'FLAGPOLE_SHORT_KILL_PAPER', marginUsdt: null, leverage: null, source: null },
+);
+const fadingWaveLivePumpPlan = buildLiquidFlowV2PaperPlan({
+  symbol: 'DOLOUSDT',
+  classification: { phase: 'READY', labelKey: 'FADING_WAVE_LIVE_PUMP_SHORT_READY' },
+  features: {
+    markPrice: 1,
+    lastClosedCandle: { close: 0.96 },
+    lowerZone: { price: 0.85 },
+    fadingWaveLivePump5m: { shortReady: true, liveCandleOpenAt: 30_000_000 },
+  },
+}, settings);
+assert.equal(fadingWaveLivePumpPlan.side, 'SHORT');
+assert.equal(fadingWaveLivePumpPlan.entryMode, 'IMMEDIATE_MARK');
+assert.equal(fadingWaveLivePumpPlan.entryPrice, 1);
+assert.equal(fadingWaveLivePumpPlan.entryBasis, 'FADING_WAVE_LIVE_5M_PUMP_MARKET_MARK');
+assert.equal(fadingWaveLivePumpPlan.takeProfit, 0.98);
+assert.equal(fadingWaveLivePumpPlan.stopLoss, 1.04);
+assert.equal(fadingWaveLivePumpPlan.estimatedRewardRoe, 10);
+assert.equal(fadingWaveLivePumpPlan.estimatedRiskRoe, 20);
+assert.equal(fadingWaveLivePumpPlan.targetBasis, 'FADING_WAVE_LIVE_PUMP_FIXED_10_ROE');
+assert.deepEqual(
+  liquidFlowV2AutoBinanceProfile({ labelKey: 'FADING_WAVE_LIVE_PUMP_SHORT_READY' }, settings),
+  {
+    eligible: true,
+    cohort: 'FADING_WAVE_LIVE_PUMP_SHORT',
+    marginUsdt: 1,
+    leverage: 5,
+    source: 'liquid-flow-v2-fading-wave-live-pump-short',
+  },
+);
+assert.equal(liquidFlowV2AutoBinanceProfile(
+  { labelKey: 'FADING_WAVE_LIVE_PUMP_SHORT_READY' },
+  { ...settings, fadingWaveLivePumpBinanceEnabled: false },
+).eligible, false);
 const htfLongPlan = buildLiquidFlowV2PaperPlan({
   symbol: 'HTFLONGUSDT',
   classification: { phase: 'READY', labelKey: 'HTF_BULL_15M_EMA99_DUMP_RECLAIM' },
@@ -491,6 +553,83 @@ try {
     settings,
     now: () => 2_000_000,
   });
+  const flagpoleManager = new LiquidFlowV2PaperManager({
+    file: join(tempRoot, 'flagpole-paper.json'),
+    settings,
+    now: () => 24_500_000,
+  });
+  const createdFlagpole = await flagpoleManager.createFromReadyTransitions([{
+    symbol: 'FLAGUSDT',
+    classification: {
+      phase: 'READY',
+      labelKey: 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY',
+      label: 'POST PUMP FLAGPOLE · SHORT KILL LONG READY',
+      confidence: 92,
+      signalCandleClosedAt: 24_000_000,
+      flagpoleShortKillReadyAt: 24_000_000,
+      evidence: [],
+    },
+    features: {
+      markPrice: 1,
+      candleClosedAt: 24_000_000,
+      lastClosedCandle: { close: 1 },
+      upperZone: { price: 1.2 },
+      flagpoleShortKill5m: { longReady: true, readyAt: 24_000_000 },
+      shortLiquidationUsd: 50_000,
+      prior5mShortLiquidationUsd: 18_000,
+      shortLiquidationBurst: 2.8,
+    },
+  }], new Set(['FLAGUSDT']), 24_500_000);
+  assert.equal(createdFlagpole.length, 1);
+  assert.equal(createdFlagpole[0].status, 'OPEN');
+  assert.equal(createdFlagpole[0].marginUsdt, 10);
+  assert.equal(createdFlagpole[0].leverage, 5);
+  assert.equal(createdFlagpole[0].maxHoldMs, 4 * 60 * 60_000);
+  assert.equal(createdFlagpole[0].signalCandleClosedAt, 24_000_000);
+  assert.equal(createdFlagpole[0].snapshot.flagpoleShortKill5m.readyAt, 24_000_000);
+  const fadingWaveManager = new LiquidFlowV2PaperManager({
+    file: join(tempRoot, 'fading-wave-paper.json'),
+    settings,
+    now: () => 30_120_000,
+  });
+  const createdFadingWave = await fadingWaveManager.createFromReadyTransitions([{
+    symbol: 'DOLOUSDT',
+    classification: {
+      phase: 'READY',
+      side: 'SHORT',
+      labelKey: 'FADING_WAVE_LIVE_PUMP_SHORT_READY',
+      label: 'FADING WAVE · LIVE PUMP SHORT READY',
+      confidence: 91,
+      signalCandleClosedAt: 30_000_000,
+      signalLiveCandleOpenAt: 30_000_000,
+      signalObservedAt: 30_120_000,
+      evidence: [],
+    },
+    features: {
+      markPrice: 1,
+      candleClosedAt: 29_999_999,
+      lastClosedCandle: { close: 0.96 },
+      lowerZone: { price: 0.85 },
+      fadingWaveLivePump5m: {
+        shortReady: true,
+        liveCandleOpenAt: 30_000_000,
+        detectedAt: 30_120_000,
+      },
+    },
+  }], new Set(['DOLOUSDT']), 30_120_000);
+  assert.equal(createdFadingWave.length, 1);
+  assert.equal(createdFadingWave[0].status, 'OPEN');
+  assert.equal(createdFadingWave[0].side, 'SHORT');
+  assert.equal(createdFadingWave[0].marginUsdt, 10);
+  assert.equal(createdFadingWave[0].leverage, 5);
+  assert.equal(createdFadingWave[0].maxHoldMs, 4 * 60 * 60_000);
+  assert.equal(createdFadingWave[0].signalCandleClosedAt, 30_000_000);
+  assert.equal(createdFadingWave[0].snapshot.fadingWaveLivePump5m.liveCandleOpenAt, 30_000_000);
+  const fadingWaveClaim = await fadingWaveManager.claimBinanceEntry(createdFadingWave[0].id, 30_121_000);
+  assert.equal(fadingWaveClaim.binanceEntryState, 'SUBMITTING');
+  assert.equal(fadingWaveClaim.binanceEntryCohort, 'FADING_WAVE_LIVE_PUMP_SHORT');
+  assert.equal(fadingWaveClaim.binanceEntryPolicyVersion,
+    LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION);
   const sweepManager = new LiquidFlowV2PaperManager({
     file: join(tempRoot, 'sweep-paper.json'),
     settings,
@@ -1006,6 +1145,8 @@ try {
   assert.equal(migrated.snapshot().settings.primaryPanicBinanceMarginUsdt, 2);
   assert.equal(migrated.snapshot().settings.postPumpReadyBinanceEnabled, true);
   assert.equal(migrated.snapshot().settings.postPumpReadyBinanceMarginUsdt, 2);
+  assert.equal(migrated.snapshot().settings.fadingWaveLivePumpBinanceEnabled, true);
+  assert.equal(migrated.snapshot().settings.fadingWaveLivePumpBinanceMarginUsdt, 1);
   const legacyTouch = await migrated.handlePrice({
     symbol: 'LEGACYFANUSDT',
     markPrice: 0.999,

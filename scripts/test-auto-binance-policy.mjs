@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import {
   AUTO_BINANCE_ENTRY_POLICY_VERSION,
   LIQUID_FLOW_V2_BINANCE_LEVERAGE,
+  authorizeCoinglassWebAutoOrder,
   authorizeLiquidFlowV2AutoOrder,
   authorizeLiveCardAutoOrder,
   evaluateAutoBinanceEntryPolicy,
@@ -11,7 +12,7 @@ import {
 import { ceilQuantityAtMinimumNotional } from '../src/orderQuantityPolicy.js';
 
 const exclusiveEnv = {};
-assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'LIVE_CARD_AND_LIQ_FLOW_READY_V14_PRIMARY_POST_PUMP_2USDT_20260816');
+assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'LIVE_CARD_LIQ_FLOW_COINGLASS_V16_20260820');
 assert.equal(LIQUID_FLOW_V2_BINANCE_LEVERAGE, 5);
 assert.equal(liveCardOnlyAutoBinanceEnabled(exclusiveEnv), true);
 assert.equal(liveCardOnlyAutoBinanceEnabled({ LIVE_CARD_WHITELIST_ONLY_AUTO_BINANCE: 'false' }), false);
@@ -72,6 +73,17 @@ assert.equal(evaluateAutoBinanceEntryPolicy({
   env: exclusiveEnv,
 }).reason, 'LIQUID_FLOW_V2_READY_FILL');
 
+const coinglassPayload = authorizeCoinglassWebAutoOrder({
+  symbol: 'GOODUSDT',
+  side: 'SELL',
+  dryRun: false,
+});
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: coinglassPayload,
+  orderEnabled: true,
+  env: exclusiveEnv,
+}).reason, 'COINGLASS_QUALIFIED_SETUP');
+
 assert.equal(evaluateAutoBinanceEntryPolicy({
   payload: realLegacyPayload,
   tokenIsAuthorized: true,
@@ -112,6 +124,7 @@ for (const functionName of [
 assert.match(serverSource, /evaluateAutoBinanceEntryPolicy\(\{/);
 assert.match(serverSource, /placeOrder\(authorizeLiveCardAutoOrder\(\{/);
 assert.match(serverSource, /placeOrder\(authorizeLiquidFlowV2AutoOrder\(\{/);
+assert.match(serverSource, /placeOrder\(authorizeCoinglassWebAutoOrder\(\{/);
 assert.match(serverSource, /'PRE_UP_BASE_LONG'/);
 assert.match(serverSource, /'PRE_DOWN_BASE_SHORT'/);
 assert.match(serverSource, /LIQ_FLOW_V2_PRE_BINANCE_MARGIN_USDT \?\? 5/);
