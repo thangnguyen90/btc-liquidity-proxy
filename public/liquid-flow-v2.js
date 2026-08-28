@@ -33,7 +33,13 @@ const els = {
   paperFilterAll: document.getElementById('paperFilterAll'),
   paperFilterNote: document.getElementById('paperFilterNote'),
   paperLabelBreakdown: document.getElementById('paperLabelBreakdown'),
+  paperBinanceSettingsSyncState: document.getElementById('paperBinanceSettingsSyncState'),
 };
+
+const LIQUID_FLOW_V2_PAPER_BINANCE_CONTROL_UI_VERSION = 'LIQUID_FLOW_V2_PAPER_BINANCE_CONTROL_UI_V1_SHARED_SYNC_20260823';
+const BINANCE_SIGNAL_SETTINGS_SYNC_CHANNEL = 'liquid-flow-v2-binance-signal-settings-sync';
+const BINANCE_SIGNAL_SETTINGS_SYNC_STORAGE_KEY = 'liquid_flow_v2_binance_signal_settings_sync';
+const BINANCE_SIGNAL_SETTINGS_SYNC_MS = 10_000;
 
 let board = null;
 let activeFilter = 'ALL';
@@ -49,6 +55,13 @@ const CLOSED_PAPER_PAGE_SIZE = 10;
 const binanceEntryDrafts = new Map();
 const binanceMarginDrafts = new Map();
 const binanceOrderUiStates = new Map();
+const binanceSignalSettingDrafts = new Map();
+let binanceSignalSettingsData = { loaded: false, signals: {}, globalOrderEnabled: false, dryRun: true, error: '' };
+let binanceSignalSettingsFingerprint = '';
+let binanceSignalSettingsSyncTimer = null;
+const binanceSignalSettingsChannel = typeof BroadcastChannel === 'function'
+  ? new BroadcastChannel(BINANCE_SIGNAL_SETTINGS_SYNC_CHANNEL)
+  : null;
 
 function currentPaperView() {
   return paperStatsView ?? board?.paper ?? {};
@@ -148,6 +161,104 @@ async function recoverOrdersToken() {
   if (!response.ok || !data.token) throw new Error(data.error ?? 'Không thể khôi phục phiên /orders.');
   localStorage.setItem('orders_token', data.token);
   return data.token;
+}
+
+async function ordersJsonApi(url, options = {}) {
+  let token = localStorage.getItem('orders_token') ?? '';
+  if (!token) token = await recoverOrdersToken();
+  if (!token) {
+    const error = new Error('Chưa đăng nhập Binance/Orders.');
+    error.status = 401;
+    throw error;
+  }
+  const request = () => jsonApi(url, {
+    ...options,
+    headers: { 'x-orders-token': token, ...(options.headers ?? {}) },
+  });
+  try {
+    return await request();
+  } catch (error) {
+    if (error.status !== 401) throw error;
+    localStorage.removeItem('orders_token');
+    token = await recoverOrdersToken();
+    if (!token) throw error;
+    return request();
+  }
+}
+
+function signalSettingsFingerprint(data = {}) {
+  return JSON.stringify({
+    version: data.version ?? '',
+    globalOrderEnabled: data.globalOrderEnabled === true,
+    dryRun: data.dryRun === true,
+    signals: data.signals ?? {},
+  });
+}
+
+function signalControlHtml(labelKey) {
+  if (!binanceSignalSettingsData.loaded) {
+    return `<span class="flow-v2-route-unsupported">${binanceSignalSettingsData.error ? 'CẦN LOGIN ORDERS' : 'ĐANG SYNC BINANCE…'}</span>`;
+  }
+  const setting = binanceSignalSettingsData.signals?.[labelKey];
+  if (!setting?.supported) {
+    return '<span class="flow-v2-route-unsupported">KHÔNG CÓ AUTO ROUTE</span>';
+  }
+  const draft = binanceSignalSettingDrafts.get(labelKey);
+  const enabled = draft?.enabled ?? setting.enabled;
+  const configuredMargin = Number(draft?.marginUsdt ?? setting.marginUsdt);
+  const margin = Number.isFinite(configuredMargin) ? configuredMargin : '';
+  const leverage = Number(setting.leverage) || 5;
+  const effective = enabled && binanceSignalSettingsData.globalOrderEnabled && !binanceSignalSettingsData.dryRun;
+  const gateNote = enabled && !effective
+    ? binanceSignalSettingsData.dryRun ? ' · dry-run tổng' : ' · Orders tổng đang tắt'
+    : '';
+  const stateNote = draft ? 'chưa lưu' : setting.source === 'PERSISTED' ? 'đã lưu' : 'mặc định';
+  return `<div class="flow-v2-signal-order-control" data-label-key="${escapeHtml(labelKey)}">
+    <label class="flow-v2-row-switch">
+      <input class="js-signal-binance-enabled" type="checkbox" ${enabled ? 'checked' : ''}>
+      <span>${enabled ? 'BẬT' : 'TẮT'}</span>
+    </label>
+    <div class="flow-v2-row-margin">
+      <input class="js-signal-binance-margin" type="number" min="0.01" max="10000" step="0.01" value="${escapeHtml(margin)}" aria-label="Margin USD ${escapeHtml(labelKey)}">
+      <button class="js-signal-binance-save" type="button">LƯU</button>
+    </div>
+    <small class="js-signal-binance-status ${effective ? 'is-positive' : enabled ? 'is-negative' : ''}">${stateNote} · $${escapeHtml(margin)} x${leverage}${gateNote}</small>
+  </div>`;
+}
+
+function updateBinanceSettingsSyncState(ok, note = '') {
+  if (!els.paperBinanceSettingsSyncState) return;
+  els.paperBinanceSettingsSyncState.classList.toggle('is-live', ok);
+  els.paperBinanceSettingsSyncState.textContent = ok ? `BINANCE SYNC${note ? ` · ${note}` : ''}` : 'BINANCE CHƯA SYNC';
+}
+
+async function loadBinanceSignalSettings({ quiet = false } = {}) {
+  try {
+    const data = await ordersJsonApi('/api/liquid-flow-v2-binance-signal-settings');
+    const nextFingerprint = signalSettingsFingerprint(data);
+    const changed = nextFingerprint !== binanceSignalSettingsFingerprint;
+    binanceSignalSettingsData = { ...data, loaded: true, error: '' };
+    binanceSignalSettingsFingerprint = nextFingerprint;
+    updateBinanceSettingsSyncState(true);
+    if (changed && Array.isArray(currentPaperView()?.labelStats)) {
+      renderPaperLabelBreakdown(currentPaperView());
+    }
+    return data;
+  } catch (error) {
+    if (!binanceSignalSettingsData.loaded) {
+      binanceSignalSettingsData = { ...binanceSignalSettingsData, error: error.message };
+      if (Array.isArray(currentPaperView()?.labelStats)) renderPaperLabelBreakdown(currentPaperView());
+    }
+    updateBinanceSettingsSyncState(false);
+    if (!quiet) console.warn('[LiquidFlowV2] Binance signal settings:', error.message);
+    return null;
+  }
+}
+
+function announceBinanceSignalSettingsChange(labelKey) {
+  const message = { version: LIQUID_FLOW_V2_PAPER_BINANCE_CONTROL_UI_VERSION, labelKey, updatedAt: Date.now() };
+  binanceSignalSettingsChannel?.postMessage(message);
+  try { localStorage.setItem(BINANCE_SIGNAL_SETTINGS_SYNC_STORAGE_KEY, JSON.stringify(message)); } catch {}
 }
 
 async function submitLiquidFlowV2BinanceOrder(requestBody, token) {
@@ -647,6 +758,7 @@ function renderPaperLabelBreakdown(paper = {}) {
   els.paperLabelBreakdown.innerHTML = rows.map((stat) => `
     <tr>
       <td><strong>${escapeHtml(stat.label)}</strong><small>${escapeHtml(stat.key)}</small></td>
+      <td>${signalControlHtml(stat.key)}</td>
       <td>${stat.open ?? 0} / ${stat.pending ?? 0}</td>
       <td>${stat.closed ?? 0}${stat.cancelled ? ` <small>· hủy ${stat.cancelled}</small>` : ''}</td>
       <td>${stat.wins ?? 0} / ${stat.losses ?? 0}</td>
@@ -654,7 +766,7 @@ function renderPaperLabelBreakdown(paper = {}) {
       <td>${stat.profitFactor == null ? ((stat.netPnl ?? 0) > 0 ? '∞' : '--') : number(stat.profitFactor, 2)}</td>
       <td class="${signedClass(stat.netPnl)}">${number(stat.netPnl, 4, ' USDT')}</td>
       <td class="${signedClass(stat.avgRoe)}">${stat.closed ? number(stat.avgRoe, 1, '%') : '--'}</td>
-    </tr>`).join('') || '<tr><td colspan="8">Không có giao dịch trong bộ lọc.</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="9">Không có giao dịch trong bộ lọc.</td></tr>';
 }
 
 function syncPaperLabelOptions(paper = {}) {
@@ -796,6 +908,57 @@ async function loadPaperStats({ resetPage = false } = {}) {
   }
 }
 
+function captureBinanceSignalSettingDraft(control) {
+  const labelKey = control?.dataset?.labelKey ?? '';
+  const enabledInput = control?.querySelector('.js-signal-binance-enabled');
+  const marginInput = control?.querySelector('.js-signal-binance-margin');
+  if (!labelKey || !enabledInput || !marginInput) return;
+  binanceSignalSettingDrafts.set(labelKey, { enabled: enabledInput.checked, marginUsdt: marginInput.value });
+  const switchText = control.querySelector('.flow-v2-row-switch span');
+  const status = control.querySelector('.js-signal-binance-status');
+  if (switchText) switchText.textContent = enabledInput.checked ? 'BẬT' : 'TẮT';
+  if (status) {
+    status.textContent = 'chưa lưu';
+    status.className = 'js-signal-binance-status';
+  }
+}
+
+async function saveBinanceSignalSetting(button) {
+  const control = button.closest('.flow-v2-signal-order-control');
+  const labelKey = control?.dataset?.labelKey ?? '';
+  const enabledInput = control?.querySelector('.js-signal-binance-enabled');
+  const marginInput = control?.querySelector('.js-signal-binance-margin');
+  const status = control?.querySelector('.js-signal-binance-status');
+  const marginUsdt = Number(marginInput?.value);
+  if (!Number.isFinite(marginUsdt) || marginUsdt < 0.01 || marginUsdt > 10_000) {
+    status.textContent = 'Margin phải trong khoảng 0.01..10000 USDT.';
+    status.className = 'js-signal-binance-status is-negative';
+    return;
+  }
+  button.disabled = true;
+  status.textContent = 'Đang lưu…';
+  status.className = 'js-signal-binance-status';
+  try {
+    const response = await ordersJsonApi('/api/liquid-flow-v2-binance-signal-settings', {
+      method: 'POST',
+      body: JSON.stringify({ labelKey, enabled: enabledInput.checked, marginUsdt }),
+    });
+    binanceSignalSettingsData.signals[labelKey] = response.setting;
+    binanceSignalSettingsData.globalOrderEnabled = response.globalOrderEnabled;
+    binanceSignalSettingsData.dryRun = response.dryRun;
+    binanceSignalSettingsFingerprint = signalSettingsFingerprint(binanceSignalSettingsData);
+    binanceSignalSettingDrafts.delete(labelKey);
+    updateBinanceSettingsSyncState(true, 'ĐÃ LƯU');
+    renderPaperLabelBreakdown(currentPaperView());
+    announceBinanceSignalSettingsChange(labelKey);
+  } catch (error) {
+    status.textContent = `Không lưu được: ${error.message}`;
+    status.className = 'js-signal-binance-status is-negative';
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function toggleWhitelist(input) {
   const key = input.dataset.whitelistKey;
   const enabled = input.checked;
@@ -864,6 +1027,18 @@ els.labelStats.addEventListener('change', (event) => {
   const input = event.target.closest('[data-whitelist-key]');
   if (input) toggleWhitelist(input);
 });
+els.paperLabelBreakdown.addEventListener('input', (event) => {
+  const input = event.target.closest('.js-signal-binance-margin');
+  if (input) captureBinanceSignalSettingDraft(input.closest('.flow-v2-signal-order-control'));
+});
+els.paperLabelBreakdown.addEventListener('change', (event) => {
+  const input = event.target.closest('.js-signal-binance-enabled');
+  if (input) captureBinanceSignalSettingDraft(input.closest('.flow-v2-signal-order-control'));
+});
+els.paperLabelBreakdown.addEventListener('click', (event) => {
+  const button = event.target.closest('.js-signal-binance-save');
+  if (button) saveBinanceSignalSetting(button);
+});
 els.paperOpenList.addEventListener('input', (event) => {
   const input = event.target.closest('[data-flow-entry], [data-flow-margin]');
   const container = input?.closest('[data-flow-trade-id]');
@@ -905,4 +1080,18 @@ els.paperFilterAll.addEventListener('click', () => {
   els.paperLabelFilter.value = 'ALL';
   loadPaperStats({ resetPage: true });
 });
-Promise.allSettled([loadWhitelist(), loadBoard(), loadPaperStats()]).finally(connectStream);
+binanceSignalSettingsChannel?.addEventListener('message', () => loadBinanceSignalSettings({ quiet: true }));
+window.addEventListener('storage', (event) => {
+  if (event.key === BINANCE_SIGNAL_SETTINGS_SYNC_STORAGE_KEY) loadBinanceSignalSettings({ quiet: true });
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') loadBinanceSignalSettings({ quiet: true });
+});
+binanceSignalSettingsSyncTimer = setInterval(() => {
+  if (document.visibilityState === 'visible') loadBinanceSignalSettings({ quiet: true });
+}, BINANCE_SIGNAL_SETTINGS_SYNC_MS);
+window.addEventListener('beforeunload', () => {
+  clearInterval(binanceSignalSettingsSyncTimer);
+  binanceSignalSettingsChannel?.close();
+});
+Promise.allSettled([loadWhitelist(), loadBoard(), loadPaperStats(), loadBinanceSignalSettings()]).finally(connectStream);

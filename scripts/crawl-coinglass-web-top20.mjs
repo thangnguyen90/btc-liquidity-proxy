@@ -8,6 +8,7 @@ import {
   applyBinanceLiquidityFilter,
   assessCoinglassLiquidity,
   buildCoinglassZoneProposal,
+  COINGLASS_WEB_QUALIFIED_TIMEFRAMES_VERSION,
   COINGLASS_WEB_TOP20_ISOLATION,
   COINGLASS_WEB_TOP20_MODE,
   COINGLASS_WEB_TOP20_VERSION,
@@ -102,8 +103,33 @@ async function loadBinanceLiquidityMetrics(binanceBase, markets, bookTickers = [
   return Object.fromEntries(rows);
 }
 
-async function extractReactHeatmap(page, expectedInstrumentId) {
-  const readState = (instrumentId) => {
+function summarizedHeatmapSignature(summary = {}) {
+  return [
+    summary.updateTime,
+    summary.candleCount,
+    summary.priceLevelCount,
+    summary.liquidationCellCount,
+    summary.rangeLow,
+    summary.rangeHigh,
+  ].join('|');
+}
+
+async function extractReactHeatmap(page, expectedInstrumentId, previousSignature = '') {
+  const readState = ({ instrumentId, rejectedSignature }) => {
+    const signature = (data) => [
+      data?.updateTime,
+      data?.prices?.length,
+      data?.y?.length,
+      data?.liq?.length,
+      data?.rangeLow,
+      data?.rangeHigh,
+    ].join('|');
+    const accepted = (data) => (
+      data?.liq
+      && Array.isArray(data.liq)
+      && (!instrumentId || data.instrument?.instrumentId === instrumentId)
+      && (!rejectedSignature || signature(data) !== rejectedSignature)
+    );
     const readFiber = (fiber) => {
       const seen = new Set();
       const queue = [fiber, fiber?.alternate].filter(Boolean);
@@ -112,9 +138,7 @@ async function extractReactHeatmap(page, expectedInstrumentId) {
         if (!current || seen.has(current)) continue;
         seen.add(current);
         const state = current.stateNode?.state;
-        if (state?.data?.liq
-          && Array.isArray(state.data.liq)
-          && (!instrumentId || state.data.instrument?.instrumentId === instrumentId)) return state.data;
+        if (accepted(state?.data)) return state.data;
         if (current.return) queue.push(current.return);
         if (current.alternate) queue.push(current.alternate);
       }
@@ -132,9 +156,7 @@ async function extractReactHeatmap(page, expectedInstrumentId) {
       while (fiber && !seen.has(fiber)) {
         seen.add(fiber);
         const state = fiber.stateNode?.state;
-        if (state?.data?.liq
-          && Array.isArray(state.data.liq)
-          && (!instrumentId || state.data.instrument?.instrumentId === instrumentId)) {
+        if (accepted(state?.data)) {
           window.__coinglassHeatmapFiberLocator = { element, fiberKey };
           return state.data;
         }
@@ -143,8 +165,60 @@ async function extractReactHeatmap(page, expectedInstrumentId) {
     }
     return null;
   };
-  await page.waitForFunction(readState, expectedInstrumentId, { timeout: 12_000, polling: 500 });
-  return page.evaluate(readState, expectedInstrumentId);
+  const query = { instrumentId: expectedInstrumentId, rejectedSignature: previousSignature };
+  await page.waitForFunction(readState, query, { timeout: 12_000, polling: 250 });
+  return page.evaluate(readState, query);
+}
+
+function heatmapRangeLabel(range) {
+  if (range === '12h') return '12 hour';
+  if (range === '24h') return '24 hour';
+  if (range === '48h') return '48 hour';
+  throw new Error(`Unsupported CoinGlass heatmap range: ${range}`);
+}
+
+async function setHeatmapRange(page, range, expectedInstrumentId = '') {
+  const label = heatmapRangeLabel(range);
+  const button = page.getByRole('combobox').filter({ hasText: /hour/i }).first();
+  await button.waitFor({ state: 'visible', timeout: 30_000 });
+  const current = String(await button.textContent() ?? '').trim();
+  if (current === label) return null;
+  const expectedSymbol = expectedInstrumentId ? `symbol=Binance_${expectedInstrumentId}` : '';
+  const pending = page.waitForResponse((response) => {
+    const url = response.url();
+    return url.includes('/api/index/v6/liqHeatMap')
+      && url.includes(`range=${range}`)
+      && (!expectedSymbol || url.includes(expectedSymbol));
+  }, { timeout: 30_000 });
+  pending.catch(() => {});
+  await button.click();
+  await page.getByRole('option', { name: label, exact: true }).click();
+  const response = await pending;
+  if (!response.ok()) throw new Error(`CoinGlass ${range} heatmap HTTP ${response.status()}`);
+  const envelope = await response.json().catch(() => null);
+  if (String(envelope?.code ?? '') !== '0') {
+    throw new Error(`CoinGlass ${range} response code ${envelope?.code ?? 'unknown'}: ${envelope?.msg ?? envelope?.message ?? 'unknown error'}`);
+  }
+  return response;
+}
+
+async function captureQualifiedTimeframe(page, market, range, previousSummary) {
+  await setHeatmapRange(page, range, market.symbol);
+  const heatmap = await extractReactHeatmap(
+    page,
+    market.symbol,
+    summarizedHeatmapSignature(previousSummary),
+  );
+  const summary = summarizeCoinglassHeatmap(heatmap);
+  if (summary.instrument.instrumentId !== market.symbol) {
+    throw new Error(`CoinGlass ${range} returned ${summary.instrument.instrumentId || 'unknown'} instead of ${market.symbol}`);
+  }
+  return {
+    version: COINGLASS_WEB_QUALIFIED_TIMEFRAMES_VERSION,
+    range,
+    scrapedAt: new Date().toISOString(),
+    heatmap: summary,
+  };
 }
 
 async function crawlSymbol(page, market, {
@@ -411,7 +485,7 @@ try {
     failures,
     previousRows: Array.isArray(previousSnapshot?.rows) ? previousSnapshot.rows : [],
   });
-  const assessedRows = mergedRows.map((row) => {
+  let assessedRows = mergedRows.map((row) => {
     const heatmapLiquidity = assessCoinglassLiquidity(row.heatmap, row);
     const proposal = buildCoinglassZoneProposal(row.heatmap, row);
     const enriched = {
@@ -421,6 +495,59 @@ try {
     };
     const qualification = qualifyCoinglassOpportunity(enriched);
     return { ...enriched, qualification, qualified: qualification.qualified };
+  });
+  const qualifiedFreshRows = assessedRows.filter((row) => (
+    row.qualified === true && row.status === 'OK' && row.stale !== true
+  ));
+  const qualifiedTimeframesBySymbol = new Map();
+  const qualifiedTimeframeFailures = [];
+  let nextQualifiedIndex = 0;
+  async function qualifiedTimeframeWorker(page) {
+    while (nextQualifiedIndex < qualifiedFreshRows.length && Date.now() < scanDeadlineAt - 10_000) {
+      const index = nextQualifiedIndex;
+      nextQualifiedIndex += 1;
+      const row = qualifiedFreshRows[index];
+      try {
+        const frames = await withinDeadline((async () => {
+          // Primary crawl is always 48h. Re-open the exact qualified symbol at
+          // 48h, then switch only this symbol to 12h and 24h. These extra
+          // frames are Discord context and never reclassify the row.
+          await setHeatmapRange(page, '48h');
+          const base = await crawlSymbol(page, row, {
+            imageDir,
+            range: '48h',
+            initial: false,
+            captureImages: false,
+          });
+          const twelveHour = await captureQualifiedTimeframe(page, row, '12h', base.heatmap);
+          const twentyFourHour = await captureQualifiedTimeframe(page, row, '24h', twelveHour.heatmap);
+          return {
+            version: COINGLASS_WEB_QUALIFIED_TIMEFRAMES_VERSION,
+            '12h': twelveHour,
+            '24h': twentyFourHour,
+          };
+        })(), scanDeadlineAt - Date.now());
+        qualifiedTimeframesBySymbol.set(row.symbol, frames);
+      } catch (error) {
+        qualifiedTimeframeFailures.push({
+          symbol: row.symbol,
+          error: String(error?.message ?? error),
+          failedAt: new Date().toISOString(),
+        });
+      }
+    }
+  }
+  if (qualifiedFreshRows.length && Date.now() < scanDeadlineAt - 10_000) {
+    await Promise.all(pages.map((page) => qualifiedTimeframeWorker(page)));
+  }
+  assessedRows = assessedRows.map((row) => {
+    const qualifiedTimeframes = qualifiedTimeframesBySymbol.get(row.symbol);
+    const timeframeFailure = qualifiedTimeframeFailures.find((failure) => failure.symbol === row.symbol);
+    return {
+      ...row,
+      ...(qualifiedTimeframes ? { qualifiedTimeframes } : {}),
+      ...(timeframeFailure ? { qualifiedTimeframeError: timeframeFailure.error } : {}),
+    };
   });
   const publishedRows = assessedRows
     .slice(0, limit)
@@ -460,6 +587,9 @@ try {
       binanceLiquidityExcluded: binanceSelection.excluded.length,
       heatmapLiquidityExcluded: rejectedHeatmaps.length,
       qualified: publishedRows.filter((row) => row.qualified).length,
+      qualifiedTimeframesRequested: qualifiedFreshRows.length,
+      qualifiedTimeframesComplete: qualifiedTimeframesBySymbol.size,
+      qualifiedTimeframesFailed: qualifiedTimeframeFailures.length,
       authRequired,
       successful: rows.length,
       failed: failures.length,
@@ -468,6 +598,7 @@ try {
     },
     rows: publishedRows,
     failures,
+    qualifiedTimeframeFailures,
     exclusions: {
       binance: binanceSelection.excluded,
       coinglass: rejectedHeatmaps,

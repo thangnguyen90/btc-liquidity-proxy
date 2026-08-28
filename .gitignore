@@ -5,6 +5,7 @@ node_modules/
 data/coinglass-web-top20/
 data/liquid-flow-v2-paper.json
 data/liquid-flow-v2-paper.json.tmp-*
+data/liquid-market-direction-discord-state.json
 # Runtime append-only stores and interrupted atomic-write files are local data,
 # not source. Keeping them out of Codex/Git checkpoints prevents 700MB+ loose
 # blobs from being recreated on every turn.

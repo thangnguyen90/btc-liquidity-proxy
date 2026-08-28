@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   buildMarketDirectionSnapshot,
   buildLiquidMarketDirectionSignalLogRecord,
@@ -6,6 +7,11 @@ import {
   evaluateLiquidMarketDirectionHealth,
   stabilizeLiquidMarketDirectionLabel,
 } from '../src/liquidMarketDirectionHealth.js';
+import {
+  LIQUID_MARKET_DIRECTION_DISCORD_VERSION,
+  buildMarketDirectionDiscordPayload,
+  evaluateMarketDirectionDiscordTransition,
+} from '../src/liquidMarketDirectionDiscord.js';
 
 const NOW = Date.UTC(2026, 6, 28, 12, 0, 0);
 
@@ -240,5 +246,46 @@ assert.equal(parsedPumpOrEdgeTrade.marketDirectionAtSignal.affectsOrders, false)
 assert.equal(parsedPumpOrEdgeTrade.marketDirectionAtSignal.observationOnly, true);
 assert.equal(parsedPumpOrEdgeTrade.marketDirectionAtSignal.scoreDynamics.shortWaveState, 'BTC_CRASH_RECLAIM');
 assert.equal(parsedPumpOrEdgeTrade.marketDirectionAtSignal.scoreDynamics.affectsOrders, false);
+
+assert.deepEqual(
+  evaluateMarketDirectionDiscordTransition('', { label: 'SHORT_FAVORED' }),
+  { action: 'ARM_BASELINE', previousLabel: null, currentLabel: 'SHORT_FAVORED' },
+);
+assert.equal(
+  evaluateMarketDirectionDiscordTransition('SHORT_FAVORED', { label: 'SHORT_FAVORED', pendingLabel: 'LONG_FAVORED' }).action,
+  'NO_CHANGE',
+  'pending/raw change must not notify before committed label changes',
+);
+assert.equal(
+  evaluateMarketDirectionDiscordTransition('SHORT_FAVORED', { label: 'NO_DATA' }).action,
+  'IGNORE_NO_DATA',
+);
+const directionDiscordPayload = buildMarketDirectionDiscordPayload({
+  previousLabel: 'SHORT_FAVORED',
+  market: {
+    label: 'LONG_FAVORED',
+    evaluatedAt: NOW,
+    sampleKey: 'closed-5m',
+    scores: { long: 68, short: 18, confidence: 91 },
+    breadth: { up1hPct: 72, down1hPct: 12, up3hPct: 66, down3hPct: 18, up6hPct: 59, down6hPct: 22 },
+    btc: { ret15m: 0.3, ret1h: 0.8, ret6h: 1.9, trend: 'UP' },
+    sampleSize: 120,
+    universeSize: 120,
+    hysteresisSamples: 2,
+    reasons: ['72% alt tăng trong 1h', 'BTC đồng thuận đi lên'],
+  },
+});
+assert.ok(directionDiscordPayload);
+assert.equal(directionDiscordPayload.embeds[0].color, 0x32eeb8);
+assert.match(directionDiscordPayload.embeds[0].title, /SHORT FAVORED → LONG FAVORED/);
+assert.match(directionDiscordPayload.embeds[0].description, /OBSERVE ONLY/);
+assert.match(directionDiscordPayload.embeds[0].footer.text, new RegExp(LIQUID_MARKET_DIRECTION_DISCORD_VERSION));
+assert.equal(buildMarketDirectionDiscordPayload({ previousLabel: 'SHORT_FAVORED', market: { label: 'SHORT_FAVORED' } }), null);
+const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+const envExampleSource = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+assert.match(serverSource, /queueLiquidMarketDirectionDiscord\(data\)/);
+assert.match(serverSource, /LIQUID_MARKET_DIRECTION_DISCORD_STATE_FILE/);
+assert.match(serverSource, /AbortSignal\.timeout\(12_000\)/);
+assert.match(envExampleSource, /^LIQUID_MARKET_DIRECTION_DISCORD_WEBHOOK_URL=$/m);
 
 console.log('liquid market direction health tests: OK');

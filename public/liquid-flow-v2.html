@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kill Long / Kill Short Flow V2</title>
     <link rel="stylesheet" href="/styles.css?v=20260809-flow-v2">
-    <link rel="stylesheet" href="/liquid-flow-v2.css?v=20260810-v6">
+    <link rel="stylesheet" href="/liquid-flow-v2.css?v=20260823-paper-binance-sync-v7">
   </head>
   <body>
     <main class="flow-v2-shell">
@@ -126,11 +126,11 @@
           <article><span>AVG ROE</span><strong id="paperAvgRoe">--</strong></article>
         </div>
         <div class="flow-v2-paper-label-stats">
-          <h3>Thống kê theo nhãn</h3>
+          <h3>Thống kê theo nhãn <span id="paperBinanceSettingsSyncState" class="flow-v2-realtime-badge">ĐANG SYNC BINANCE</span></h3>
           <div class="flow-v2-table-wrap">
             <table class="flow-v2-paper-label-table">
-              <thead><tr><th>NHÃN</th><th>OPEN / PENDING</th><th>CLOSED</th><th>W / L</th><th>WR</th><th>PF</th><th>NET PNL</th><th>AVG ROE</th></tr></thead>
-              <tbody id="paperLabelBreakdown"><tr><td colspan="8">Đang tải thống kê...</td></tr></tbody>
+              <thead><tr><th>NHÃN</th><th>BINANCE THẬT / MARGIN USD</th><th>OPEN / PENDING</th><th>CLOSED</th><th>W / L</th><th>WR</th><th>PF</th><th>NET PNL</th><th>AVG ROE</th></tr></thead>
+              <tbody id="paperLabelBreakdown"><tr><td colspan="9">Đang tải thống kê...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -173,6 +173,6 @@
         </div>
       </section>
     </main>
-    <script type="module" src="/liquid-flow-v2.js?v=20260818-v32-fading-wave-live-pump"></script>
+    <script type="module" src="/liquid-flow-v2.js?v=20260823-v33-paper-binance-sync"></script>
   </body>
 </html>

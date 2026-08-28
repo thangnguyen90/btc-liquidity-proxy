@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Liquid Flow V2 · Binance Stats</title>
     <link rel="stylesheet" href="/styles.css?v=20260809-flow-v2">
-    <link rel="stylesheet" href="/liquid-flow-v2.css?v=20260822-realtime-v3">
+    <link rel="stylesheet" href="/liquid-flow-v2.css?v=20260823-daily-timing-v8">
   </head>
   <body>
     <main class="flow-v2-shell">
@@ -21,6 +21,25 @@
           <a href="/orders">Orders</a>
         </nav>
       </header>
+
+      <aside id="binanceStatsDailyTiming" class="flow-v2-daily-timing is-loading" data-timing-recommendation="WAIT" aria-live="polite">
+        <div class="flow-v2-daily-timing-main">
+          <span class="flow-v2-daily-timing-kicker">DAILY TIMING EDGE · 7 NGÀY · ASIA/BANGKOK · OBSERVE ONLY</span>
+          <strong id="binanceStatsDailyTimingTitle">ĐANG THỐNG KÊ KHUNG GIỜ LONG / SHORT…</strong>
+          <p id="binanceStatsDailyTimingDetail">Kết hợp hiệu suất ngày hiện tại với giờ entry trong 7 ngày gần nhất.</p>
+        </div>
+        <div class="flow-v2-daily-timing-grid">
+          <article><span>HÔM NAY · LONG</span><b id="binanceStatsDailyLongToday">--</b></article>
+          <article><span>HÔM NAY · SHORT</span><b id="binanceStatsDailyShortToday">--</b></article>
+          <article><span>GIỜ NÀY · LONG</span><b id="binanceStatsHourlyLongNow">--</b></article>
+          <article><span>GIỜ NÀY · SHORT</span><b id="binanceStatsHourlyShortNow">--</b></article>
+        </div>
+        <div class="flow-v2-daily-timing-windows">
+          <span id="binanceStatsBestLongWindows">LONG tốt: đang tính…</span>
+          <span id="binanceStatsBestShortWindows">SHORT tốt: đang tính…</span>
+          <small id="binanceStatsDailyTimingUpdated">--</small>
+        </div>
+      </aside>
 
       <section class="flow-v2-binance-stats">
         <div class="flow-v2-section-head">
@@ -38,6 +57,23 @@
           <button id="binanceStatsToday" type="button">HÔM NAY</button>
           <button id="binanceStatsAll" type="button">TẤT CẢ</button>
         </form>
+        <aside id="binanceStatsMarketBias" class="flow-v2-market-bias is-loading" data-market-label="NO_DATA" aria-live="polite">
+          <div class="flow-v2-market-bias-main">
+            <span class="flow-v2-market-bias-kicker"><b>ĐÁNH GIÁ SÓNG REALTIME</b> · OBSERVE ONLY</span>
+            <strong id="binanceStatsMarketBiasTitle">ĐANG KẾT NỐI DỮ LIỆU THỊ TRƯỜNG…</strong>
+            <p id="binanceStatsMarketBiasDetail">Đọc breadth altcoin 1h/3h/6h, cấu trúc EMA và xu hướng BTC.</p>
+          </div>
+          <div class="flow-v2-market-bias-metrics">
+            <span>LONG <b id="binanceStatsMarketLongScore">--</b></span>
+            <span>SHORT <b id="binanceStatsMarketShortScore">--</b></span>
+            <span>CONF <b id="binanceStatsMarketConfidence">--</b></span>
+            <span id="binanceStatsMarketBreadth">BREADTH --</span>
+          </div>
+          <div class="flow-v2-market-bias-foot">
+            <span id="binanceStatsMarketBiasState">Chờ nhãn đã xác nhận</span>
+            <span id="binanceStatsMarketBiasUpdated">--</span>
+          </div>
+        </aside>
         <div id="binanceStatsSummary" class="flow-v2-binance-summary"></div>
         <div class="flow-v2-binance-layout">
           <div>
@@ -48,7 +84,13 @@
             </table></div>
           </div>
           <div>
-            <h3>Chi tiết nguyên nhân thắng/thua <span class="flow-v2-realtime-badge is-live">REALTIME</span></h3>
+            <div class="flow-v2-detail-head">
+              <h3>Chi tiết nguyên nhân thắng/thua <span class="flow-v2-realtime-badge is-live">REALTIME</span></h3>
+              <label class="flow-v2-symbol-search">
+                <span>TÌM ALTCOIN</span>
+                <input id="binanceStatsSymbolSearch" type="search" placeholder="VD: POL hoặc POLUSDT" autocomplete="off" spellcheck="false">
+              </label>
+            </div>
             <div class="flow-v2-table-wrap"><table class="flow-v2-binance-table is-detail">
               <thead><tr><th>FILLED</th><th>SYMBOL</th><th>TÍN HIỆU</th><th>ENTRY PAPER / BINANCE</th><th>SLIPPAGE</th><th>KẾT QUẢ</th><th>NET PNL / ROE</th><th>NGUỒN PNL</th></tr></thead>
               <tbody id="binanceStatsRows"><tr><td colspan="8">Đang tải…</td></tr></tbody>
@@ -62,6 +104,6 @@
         </div>
       </section>
     </main>
-    <script type="module" src="/liquid-flow-v2-binance-stats.js?v=20260822-v6-realtime"></script>
+    <script type="module" src="/liquid-flow-v2-binance-stats.js?v=20260823-v11-daily-timing-cache"></script>
   </body>
 </html>

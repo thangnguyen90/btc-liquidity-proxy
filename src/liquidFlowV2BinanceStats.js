@@ -1,10 +1,14 @@
 export const LIQUID_FLOW_V2_BINANCE_STATS_VERSION = 'LIQUID_FLOW_V2_BINANCE_STATS_V3_REALTIME_20260822';
+export const LIQUID_FLOW_V2_DAILY_TIMING_EDGE_VERSION = 'LIQUID_FLOW_V2_DAILY_TIMING_EDGE_V1_20260823';
 export const COINGLASS_QUALIFIED_LONG_STATS_KEY = 'COINGLASS_QUALIFIED_LONG';
 export const COINGLASS_QUALIFIED_SHORT_STATS_KEY = 'COINGLASS_QUALIFIED_SHORT';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const formatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit',
+});
+const hourFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Bangkok', hour: '2-digit', hourCycle: 'h23',
 });
 
 const finite = (value) => {
@@ -33,6 +37,171 @@ export function normalizeLiquidFlowV2BinanceRange(fromDay, toDay) {
   if (!to) to = from;
   if (from > to) [from, to] = [to, from];
   return { fromDay: from, toDay: to };
+}
+
+export function liquidFlowV2BinanceRollingRange(now = Date.now(), days = 7) {
+  const toDay = liquidFlowV2BinanceDateKey(now);
+  const safeDays = Math.min(31, Math.max(1, Math.floor(Number(days) || 7)));
+  const anchor = Date.parse(`${toDay}T00:00:00.000Z`);
+  return {
+    fromDay: new Date(anchor - (safeDays - 1) * 24 * 60 * 60_000).toISOString().slice(0, 10),
+    toDay,
+    days: safeDays,
+  };
+}
+
+function liquidFlowV2BinanceHour(value) {
+  const date = new Date(Number(value) || value);
+  if (!Number.isFinite(date.getTime())) return null;
+  const hour = Number(hourFormatter.format(date));
+  return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+}
+
+function timingSummary(rows = []) {
+  const known = rows.filter((row) => finite(row?.pnl) != null);
+  const wins = known.filter((row) => Number(row.pnl) > 0).length;
+  const losses = known.filter((row) => Number(row.pnl) < 0).length;
+  const grossProfit = known.reduce((sum, row) => sum + Math.max(0, Number(row.pnl)), 0);
+  const grossLoss = known.reduce((sum, row) => sum + Math.max(0, -Number(row.pnl)), 0);
+  const roeRows = known.filter((row) => finite(row?.roe) != null);
+  return {
+    closed: known.length,
+    wins,
+    losses,
+    winRate: wins + losses > 0 ? wins / (wins + losses) * 100 : null,
+    profitFactor: grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? null : 0,
+    netPnl: known.reduce((sum, row) => sum + Number(row.pnl), 0),
+    avgRoe: roeRows.length ? roeRows.reduce((sum, row) => sum + Number(row.roe), 0) / roeRows.length : null,
+  };
+}
+
+function timingQuality(summary, minimumSamples) {
+  if (Number(summary?.closed ?? 0) < minimumSamples) return 'INSUFFICIENT';
+  const pf = summary.profitFactor == null && summary.netPnl > 0 ? Number.POSITIVE_INFINITY : Number(summary.profitFactor);
+  if (summary.netPnl > 0 && pf >= 1.2 && Number(summary.winRate) >= 60 && Number(summary.avgRoe) > 0) return 'GOOD';
+  if (summary.netPnl < 0 && (pf < 0.95 || Number(summary.avgRoe) < 0 || Number(summary.winRate) < 50)) return 'AVOID';
+  return 'NEUTRAL';
+}
+
+function timingScore(summary) {
+  const samples = Number(summary?.closed ?? 0);
+  if (!samples) return Number.NEGATIVE_INFINITY;
+  const winRate = finite(summary.winRate) ?? 50;
+  const pf = summary.profitFactor == null && summary.netPnl > 0 ? 5 : Math.max(0.05, finite(summary.profitFactor) ?? 0.05);
+  const avgRoe = finite(summary.avgRoe) ?? 0;
+  return (winRate - 50) / 10
+    + Math.log2(Math.min(5, pf))
+    + Math.max(-2, Math.min(2, avgRoe / 5))
+    + Math.min(1.5, samples / 10);
+}
+
+function timingWindowLabel(hours) {
+  const first = hours[0];
+  const last = hours.at(-1);
+  return `${String(first).padStart(2, '0')}:00–${String(last).padStart(2, '0')}:59`;
+}
+
+function mergeTimingHours(hourRows, wantedQuality, sourceRows, minimumSamples) {
+  const matched = hourRows.filter((row) => row.quality === wantedQuality).map((row) => row.hour);
+  const groups = [];
+  for (const hour of matched) {
+    const current = groups.at(-1);
+    if (current && current.at(-1) === hour - 1) current.push(hour);
+    else groups.push([hour]);
+  }
+  return groups.map((hours) => {
+    const summary = timingSummary(sourceRows.filter((row) => hours.includes(row._timingHour)));
+    return {
+      hours,
+      label: timingWindowLabel(hours),
+      ...summary,
+      quality: timingQuality(summary, minimumSamples),
+      score: timingScore(summary),
+    };
+  }).sort((a, b) => b.score - a.score || b.closed - a.closed);
+}
+
+function timingSideState(dayQuality, hourQuality) {
+  if (dayQuality === 'GOOD' && hourQuality === 'GOOD') return 'STRONG';
+  if (dayQuality === 'AVOID' || hourQuality === 'AVOID') return 'AVOID';
+  if (dayQuality === 'GOOD' || hourQuality === 'GOOD') return 'SELECTIVE';
+  return 'WAIT';
+}
+
+function timingRecommendation(longState, shortState) {
+  if (longState === 'STRONG' && shortState !== 'STRONG') return 'LONG_FAVORED';
+  if (shortState === 'STRONG' && longState !== 'STRONG') return 'SHORT_FAVORED';
+  if (longState === 'STRONG' && shortState === 'STRONG') return 'BOTH_SELECTIVE';
+  if (longState === 'AVOID' && shortState === 'AVOID') return 'AVOID_BOTH';
+  if (longState === 'SELECTIVE' && ['WAIT', 'AVOID'].includes(shortState)) return 'LONG_SELECTIVE';
+  if (shortState === 'SELECTIVE' && ['WAIT', 'AVOID'].includes(longState)) return 'SHORT_SELECTIVE';
+  return 'WAIT_CONFIRMATION';
+}
+
+export function buildLiquidFlowV2DailyTimingInsight({
+  rows = [], now = Date.now(), rollingDays = 7, minimumHourlySamples = 5, minimumDailySamples = 3,
+} = {}) {
+  const range = liquidFlowV2BinanceRollingRange(now, rollingDays);
+  const today = range.toDay;
+  const currentHour = liquidFlowV2BinanceHour(now);
+  const closedKnown = (Array.isArray(rows) ? rows : []).filter((row) => (
+    String(row?.status ?? '').toUpperCase() === 'CLOSED'
+    && row?.pnlKnown === true
+    && String(row?.pnlSource ?? '').toUpperCase() === 'BINANCE_INCOME'
+    && ['LONG', 'SHORT'].includes(String(row?.side ?? '').toUpperCase())
+    && finite(row?.entryAt) != null
+    && liquidFlowV2BinanceDateKey(row.entryAt) >= range.fromDay
+    && liquidFlowV2BinanceDateKey(row.entryAt) <= range.toDay
+  ));
+  const coreRows = closedKnown
+    .filter((row) => !String(row?.labelKey ?? '').toUpperCase().startsWith('COINGLASS_QUALIFIED'))
+    .map((row) => ({
+      ...row,
+      side: String(row.side).toUpperCase(),
+      _timingDay: liquidFlowV2BinanceDateKey(row.entryAt),
+      _timingHour: liquidFlowV2BinanceHour(row.entryAt),
+    }))
+    .filter((row) => row._timingHour != null);
+
+  const sideResults = {};
+  for (const side of ['LONG', 'SHORT']) {
+    const sideRows = coreRows.filter((row) => row.side === side);
+    const todaySummary = timingSummary(sideRows.filter((row) => row._timingDay === today));
+    const todayQuality = timingQuality(todaySummary, minimumDailySamples);
+    const hourly = Array.from({ length: 24 }, (_, hour) => {
+      const summary = timingSummary(sideRows.filter((row) => row._timingHour === hour));
+      return { hour, ...summary, quality: timingQuality(summary, minimumHourlySamples) };
+    });
+    const current = hourly[currentHour] ?? {
+      hour: currentHour, ...timingSummary([]), quality: 'INSUFFICIENT',
+    };
+    sideResults[side.toLowerCase()] = {
+      today: { ...todaySummary, quality: todayQuality },
+      currentHour: current,
+      state: timingSideState(todayQuality, current.quality),
+      bestWindows: mergeTimingHours(hourly, 'GOOD', sideRows, minimumHourlySamples).slice(0, 3),
+      avoidWindows: mergeTimingHours(hourly, 'AVOID', sideRows, minimumHourlySamples).slice(0, 3),
+    };
+  }
+
+  const recommendation = timingRecommendation(sideResults.long.state, sideResults.short.state);
+  return {
+    version: LIQUID_FLOW_V2_DAILY_TIMING_EDGE_VERSION,
+    generatedAt: Number(now),
+    timeZone: 'Asia/Bangkok',
+    range,
+    today,
+    currentHour,
+    recommendation,
+    long: sideResults.long,
+    short: sideResults.short,
+    sample: {
+      closedKnown: closedKnown.length,
+      coreClosedKnown: coreRows.length,
+      excludedCoinglass: closedKnown.length - coreRows.length,
+    },
+    policy: 'ROLLING_7D_ENTRY_HOUR_BANGKOK_PLUS_CURRENT_DAY; CLOSED_BINANCE_INCOME_ONLY; COINGLASS_EXCLUDED_FROM_DECISION; OBSERVE_ONLY',
+  };
 }
 
 export function liquidFlowV2RealTrades(trades = [], { fromDay = '', toDay = '', labelKey = '' } = {}) {

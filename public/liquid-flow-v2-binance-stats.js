@@ -2,7 +2,20 @@ const els = Object.fromEntries([
   'binanceStatsStatus', 'binanceStatsFilters', 'binanceStatsFromDay', 'binanceStatsToDay',
   'binanceStatsLabel', 'binanceStatsToday', 'binanceStatsAll', 'binanceStatsSummary',
   'binanceStatsGroups', 'binanceStatsRows', 'binanceStatsPrev', 'binanceStatsNext', 'binanceStatsPageInfo',
+  'binanceStatsSymbolSearch',
+  'binanceStatsMarketBias', 'binanceStatsMarketBiasTitle', 'binanceStatsMarketBiasDetail',
+  'binanceStatsMarketLongScore', 'binanceStatsMarketShortScore', 'binanceStatsMarketConfidence',
+  'binanceStatsMarketBreadth', 'binanceStatsMarketBiasState', 'binanceStatsMarketBiasUpdated',
+  'binanceStatsDailyTiming', 'binanceStatsDailyTimingTitle', 'binanceStatsDailyTimingDetail',
+  'binanceStatsDailyLongToday', 'binanceStatsDailyShortToday',
+  'binanceStatsHourlyLongNow', 'binanceStatsHourlyShortNow',
+  'binanceStatsBestLongWindows', 'binanceStatsBestShortWindows', 'binanceStatsDailyTimingUpdated',
 ].map((id) => [id, document.getElementById(id)]));
+
+const LIQUID_FLOW_V2_BINANCE_STATS_UI_VERSION = 'LIQUID_FLOW_V2_BINANCE_STATS_UI_V7_DAILY_TIMING_EDGE_20260823';
+const BINANCE_SIGNAL_SETTINGS_SYNC_CHANNEL = 'liquid-flow-v2-binance-signal-settings-sync';
+const BINANCE_SIGNAL_SETTINGS_SYNC_STORAGE_KEY = 'liquid_flow_v2_binance_signal_settings_sync';
+const BINANCE_SIGNAL_SETTINGS_SYNC_MS = 10_000;
 
 let statsData = null;
 let signalSettingsData = { signals: {}, globalOrderEnabled: false, dryRun: true };
@@ -14,9 +27,44 @@ let realtimeReconnectTimer = null;
 let realtimeConnected = false;
 let realtimeRenderTimer = null;
 let fullRefreshTimer = null;
+let marketBiasTimer = null;
+let marketBiasPulseTimer = null;
+let marketBiasLoading = false;
+let marketBiasData = null;
+let marketBiasStateKey = '';
+let dailyTimingTimer = null;
+let dailyTimingLoading = false;
+let dailyTimingData = null;
+let signalSettingsFingerprint = '';
+let signalSettingsSyncTimer = null;
+const signalSettingsChannel = typeof BroadcastChannel === 'function'
+  ? new BroadcastChannel(BINANCE_SIGNAL_SETTINGS_SYNC_CHANNEL)
+  : null;
 const missingPositionKeys = new Set();
 const PAGE_SIZE = 20;
 const DISCONNECTED_REFRESH_MS = 30_000;
+const MARKET_BIAS_REFRESH_MS = 20_000;
+const DAILY_TIMING_REFRESH_MS = 5 * 60_000;
+
+const MARKET_BIAS_PRESENTATION = {
+  LONG_FAVORED: { title: 'SÓNG LONG · ƯU TIÊN SETUP LONG', tone: 'LONG' },
+  SHORT_FAVORED: { title: 'SÓNG SHORT · ƯU TIÊN SETUP SHORT', tone: 'SHORT' },
+  MARKET_CHOP: { title: 'THỊ TRƯỜNG SIDEWAY · GIẢM TẦN SUẤT', tone: 'NEUTRAL' },
+  MARKET_DISPERSION: { title: 'THỊ TRƯỜNG PHÂN HÓA · CHỌN COIN KỸ', tone: 'DISPERSION' },
+  MARKET_TRANSITION: { title: 'THỊ TRƯỜNG ĐANG CHUYỂN SÓNG · CHỜ XÁC NHẬN', tone: 'TRANSITION' },
+  MARKET_SHOCK: { title: 'BIẾN ĐỘNG SỐC · RỦI RO CAO', tone: 'SHOCK' },
+  NO_DATA: { title: 'CHƯA ĐỦ DỮ LIỆU XÁC ĐỊNH SÓNG', tone: 'NO_DATA' },
+};
+
+const DAILY_TIMING_PRESENTATION = {
+  LONG_FAVORED: 'HÔM NAY + GIỜ NÀY ĐỒNG THUẬN LONG',
+  SHORT_FAVORED: 'HÔM NAY + GIỜ NÀY ĐỒNG THUẬN SHORT',
+  LONG_SELECTIVE: 'KHUNG GIỜ / NGÀY NGHIÊNG LONG · CHỌN LỌC',
+  SHORT_SELECTIVE: 'KHUNG GIỜ / NGÀY NGHIÊNG SHORT · CHỌN LỌC',
+  BOTH_SELECTIVE: 'CẢ LONG VÀ SHORT CÓ EDGE · CHỌN ĐÚNG SETUP',
+  AVOID_BOTH: 'GIỜ NÀY KHÔNG TỐT CHO CẢ LONG LẪN SHORT',
+  WAIT_CONFIRMATION: 'YẾU TỐ NGÀY VÀ KHUNG GIỜ CHƯA ĐỒNG THUẬN',
+};
 
 const escapeHtml = (value) => String(value ?? '')
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -48,6 +96,155 @@ const bangkokDay = () => {
   }).formatToParts(new Date()).map((part) => [part.type, part.value]));
   return `${parts.year}-${parts.month}-${parts.day}`;
 };
+const normalizedSymbolSearch = () => String(els.binanceStatsSymbolSearch?.value ?? '')
+  .trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+function detailRows() {
+  const rows = Array.isArray(statsData?.rows) ? statsData.rows : [];
+  const query = normalizedSymbolSearch();
+  if (!query) return rows;
+  return rows.filter((row) => String(row.symbol ?? '').toUpperCase().includes(query));
+}
+
+const finiteScore = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
+const compactMarketLabel = (value) => String(value ?? 'NO_DATA').toUpperCase().replaceAll('_', ' ');
+
+function renderMarketBias(data, error = '') {
+  if (!els.binanceStatsMarketBias) return;
+  if (data) marketBiasData = data;
+  const current = marketBiasData;
+  if (!current) {
+    els.binanceStatsMarketBias.classList.remove('is-loading');
+    els.binanceStatsMarketBias.classList.add('is-stale');
+    els.binanceStatsMarketBiasTitle.textContent = 'KHÔNG ĐỌC ĐƯỢC ĐÁNH GIÁ SÓNG';
+    els.binanceStatsMarketBiasDetail.textContent = error || 'Chưa có snapshot Market Direction.';
+    els.binanceStatsMarketBiasUpdated.textContent = 'REALTIME MẤT KẾT NỐI';
+    return;
+  }
+
+  const stableLabel = String(current.label ?? 'NO_DATA').toUpperCase();
+  const rawLabel = String(current.rawLabel ?? stableLabel).toUpperCase();
+  const pendingLabel = current.pendingLabel ? String(current.pendingLabel).toUpperCase() : '';
+  const changing = Boolean(pendingLabel) || rawLabel !== stableLabel;
+  const visualLabel = pendingLabel || (rawLabel !== stableLabel ? rawLabel : stableLabel);
+  const presentation = MARKET_BIAS_PRESENTATION[visualLabel] ?? MARKET_BIAS_PRESENTATION.NO_DATA;
+  const scores = current.scores ?? {};
+  const breadth = current.breadth ?? {};
+  const btc = current.btc ?? {};
+  const longScore = finiteScore(scores.long);
+  const shortScore = finiteScore(scores.short);
+  const confidence = finiteScore(scores.confidence);
+  const up1h = finiteScore(breadth.up1hPct);
+  const down1h = finiteScore(breadth.down1hPct);
+  const reasons = Array.isArray(current.reasons) ? current.reasons.filter(Boolean).slice(0, 2) : [];
+  const nextStateKey = `${stableLabel}:${visualLabel}:${Number(current.pendingCount ?? 0)}`;
+
+  els.binanceStatsMarketBias.dataset.marketLabel = presentation.tone;
+  els.binanceStatsMarketBias.classList.remove('is-loading', 'is-stale');
+  if (error) els.binanceStatsMarketBias.classList.add('is-stale');
+  els.binanceStatsMarketBiasTitle.textContent = changing
+    ? `ĐANG ĐỔI SÓNG → ${presentation.title}`
+    : presentation.title;
+  els.binanceStatsMarketBiasDetail.textContent = reasons.length
+    ? reasons.join(' · ')
+    : `BTC 15m ${percent(btc.ret15m, 2)} · 1h ${percent(btc.ret1h, 2)} · 6h ${percent(btc.ret6h, 2)}`;
+  els.binanceStatsMarketLongScore.textContent = longScore == null ? '--' : longScore.toFixed(0);
+  els.binanceStatsMarketShortScore.textContent = shortScore == null ? '--' : shortScore.toFixed(0);
+  els.binanceStatsMarketConfidence.textContent = confidence == null ? '--' : `${confidence.toFixed(0)}%`;
+  els.binanceStatsMarketBreadth.textContent = up1h == null || down1h == null
+    ? 'BREADTH 1H --'
+    : `1H ↑${up1h.toFixed(0)}% / ↓${down1h.toFixed(0)}%`;
+  els.binanceStatsMarketBiasState.textContent = changing
+    ? `Đã xác nhận ${compactMarketLabel(stableLabel)} · đang chờ ${compactMarketLabel(visualLabel)} ${Number(current.pendingCount ?? 0)}/${Number(current.hysteresisSamples ?? 2)} nến 5m`
+    : `Đã xác nhận ${compactMarketLabel(stableLabel)} qua ${Number(current.hysteresisSamples ?? 2)} nến 5m`;
+  els.binanceStatsMarketBiasUpdated.textContent = `${error ? 'STALE' : 'LIVE'} · ${dateTime(current.evaluatedAt)}`;
+
+  if (marketBiasStateKey && nextStateKey !== marketBiasStateKey) {
+    els.binanceStatsMarketBias.classList.add('is-changing');
+    clearTimeout(marketBiasPulseTimer);
+    marketBiasPulseTimer = setTimeout(() => els.binanceStatsMarketBias.classList.remove('is-changing'), 2_000);
+  }
+  marketBiasStateKey = nextStateKey;
+}
+
+async function loadMarketBias() {
+  if (marketBiasLoading) return;
+  marketBiasLoading = true;
+  try {
+    const data = await jsonApi('/api/liquid-market-direction-health');
+    renderMarketBias(data);
+  } catch (error) {
+    renderMarketBias(null, error.message);
+  } finally {
+    marketBiasLoading = false;
+  }
+}
+
+const timingQualityLabel = (quality) => ({
+  GOOD: 'TỐT', AVOID: 'TRÁNH', NEUTRAL: 'TRUNG TÍNH', INSUFFICIENT: 'ÍT MẪU',
+})[String(quality ?? '').toUpperCase()] ?? 'CHỜ';
+
+function timingMetric(summary = {}) {
+  const quality = String(summary.quality ?? 'INSUFFICIENT').toLowerCase();
+  return {
+    className: quality === 'good' ? 'is-good' : quality === 'avoid' ? 'is-avoid' : quality === 'insufficient' ? 'is-insufficient' : '',
+    text: `${timingQualityLabel(summary.quality)} · WR ${percent(summary.winRate)} · PF ${pf(summary.profitFactor, summary.netPnl)} · ${money(summary.netPnl, Number(summary.closed) > 0)} · n${Number(summary.closed ?? 0)}`,
+  };
+}
+
+function applyTimingMetric(element, summary) {
+  if (!element) return;
+  const metric = timingMetric(summary);
+  element.className = metric.className;
+  element.textContent = metric.text;
+}
+
+function timingWindowsText(side, windows = []) {
+  const labels = windows.map((window) => window.label).filter(Boolean);
+  return `${side} tốt: ${labels.length ? labels.join(' · ') : 'chưa có khung đủ edge'}`;
+}
+
+function renderDailyTiming(data, error = '') {
+  if (!els.binanceStatsDailyTiming) return;
+  if (data) dailyTimingData = data;
+  const current = dailyTimingData;
+  if (!current) {
+    els.binanceStatsDailyTiming.classList.remove('is-loading');
+    els.binanceStatsDailyTiming.classList.add('is-stale');
+    els.binanceStatsDailyTimingTitle.textContent = 'KHÔNG ĐỌC ĐƯỢC DAILY TIMING EDGE';
+    els.binanceStatsDailyTimingDetail.textContent = error || 'Chưa có thống kê Binance Income 7 ngày.';
+    els.binanceStatsDailyTimingUpdated.textContent = 'MẤT KẾT NỐI';
+    return;
+  }
+  const recommendation = String(current.recommendation ?? 'WAIT_CONFIRMATION').toUpperCase();
+  const hour = String(Number(current.currentHour ?? 0)).padStart(2, '0');
+  els.binanceStatsDailyTiming.dataset.timingRecommendation = recommendation;
+  els.binanceStatsDailyTiming.classList.remove('is-loading', 'is-stale');
+  if (error) els.binanceStatsDailyTiming.classList.add('is-stale');
+  els.binanceStatsDailyTimingTitle.textContent = DAILY_TIMING_PRESENTATION[recommendation]
+    ?? DAILY_TIMING_PRESENTATION.WAIT_CONFIRMATION;
+  els.binanceStatsDailyTimingDetail.textContent = `${current.today} · giờ entry ${hour}:00–${hour}:59 · core ${Number(current.sample?.coreClosedKnown ?? 0)} lệnh đóng có Income · CoinGlass đã loại khỏi nguồn quyết định.`;
+  applyTimingMetric(els.binanceStatsDailyLongToday, current.long?.today);
+  applyTimingMetric(els.binanceStatsDailyShortToday, current.short?.today);
+  applyTimingMetric(els.binanceStatsHourlyLongNow, current.long?.currentHour);
+  applyTimingMetric(els.binanceStatsHourlyShortNow, current.short?.currentHour);
+  els.binanceStatsBestLongWindows.textContent = timingWindowsText('LONG', current.long?.bestWindows);
+  els.binanceStatsBestShortWindows.textContent = timingWindowsText('SHORT', current.short?.bestWindows);
+  els.binanceStatsDailyTimingUpdated.textContent = `${error ? 'STALE' : 'LIVE'} · ${dateTime(current.generatedAt)} · tự làm mới 5 phút`;
+}
+
+async function loadDailyTiming() {
+  if (dailyTimingLoading) return;
+  dailyTimingLoading = true;
+  try {
+    const data = await ordersJsonApi('/api/liquid-flow-v2-binance-daily-timing');
+    renderDailyTiming(data);
+  } catch (error) {
+    renderDailyTiming(null, error.message);
+  } finally {
+    dailyTimingLoading = false;
+  }
+}
 
 const realtimeDiagnosis = (pnl, known = true) => {
   if (!known || !Number.isFinite(Number(pnl))) return 'ĐANG MỞ · CHỜ PNL BINANCE';
@@ -128,9 +325,27 @@ async function ordersJsonApi(url, options = {}) {
   }
 }
 
-async function loadSignalSettings() {
-  signalSettingsData = await ordersJsonApi('/api/liquid-flow-v2-binance-signal-settings');
+const fingerprintSignalSettings = (data = {}) => JSON.stringify({
+  version: data.version ?? '',
+  globalOrderEnabled: data.globalOrderEnabled === true,
+  dryRun: data.dryRun === true,
+  signals: data.signals ?? {},
+});
+
+async function loadSignalSettings({ renderIfChanged = false } = {}) {
+  const data = await ordersJsonApi('/api/liquid-flow-v2-binance-signal-settings');
+  const nextFingerprint = fingerprintSignalSettings(data);
+  const changed = nextFingerprint !== signalSettingsFingerprint;
+  signalSettingsData = data;
+  signalSettingsFingerprint = nextFingerprint;
+  if (changed && renderIfChanged && statsData) render(statsData);
   return signalSettingsData;
+}
+
+function announceSignalSettingsChange(labelKey) {
+  const message = { version: LIQUID_FLOW_V2_BINANCE_STATS_UI_VERSION, labelKey, updatedAt: Date.now() };
+  signalSettingsChannel?.postMessage(message);
+  try { localStorage.setItem(BINANCE_SIGNAL_SETTINGS_SYNC_STORAGE_KEY, JSON.stringify(message)); } catch {}
 }
 
 function signalControlHtml(labelKey) {
@@ -158,11 +373,15 @@ function signalControlHtml(labelKey) {
 }
 
 function renderRows() {
-  const rows = Array.isArray(statsData?.rows) ? statsData.rows : [];
+  const allRows = Array.isArray(statsData?.rows) ? statsData.rows : [];
+  const rows = detailRows();
+  const query = normalizedSymbolSearch();
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   page = Math.min(Math.max(1, page), pages);
   const shown = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  els.binanceStatsPageInfo.textContent = `Trang ${page} / ${pages} · ${rows.length} lệnh`;
+  els.binanceStatsPageInfo.textContent = query
+    ? `Trang ${page} / ${pages} · ${rows.length}/${allRows.length} lệnh · ${query}`
+    : `Trang ${page} / ${pages} · ${rows.length} lệnh`;
   els.binanceStatsPrev.disabled = page <= 1;
   els.binanceStatsNext.disabled = page >= pages;
   els.binanceStatsRows.innerHTML = shown.map((row) => {
@@ -184,7 +403,9 @@ function renderRows() {
       <td class="${row.pnlKnown ? signedClass(pnl) : ''}"><strong>${money(pnl, row.pnlKnown)}</strong><small>ROE ${percent(row.roe)} · mark ${price(row.exitPrice)} · realized ${money(row.realizedPnl, row.pnlKnown)} · fee ${money(row.commission, row.pnlKnown)} · funding ${money(row.funding, row.pnlKnown)}</small></td>
       <td><strong>${escapeHtml(row.pnlSource)}</strong><small>Paper: ${escapeHtml(row.paperOutcome || '--')} · ${money(row.paperPnl, row.paperPnl != null)}</small></td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8">Không có lệnh Binance V2/CoinGlass đã xác nhận fill trong bộ lọc.</td></tr>';
+  }).join('') || `<tr><td colspan="8">${query
+    ? `Không tìm thấy altcoin khớp “${escapeHtml(query)}” trong bộ lọc ngày/nhãn hiện tại.`
+    : 'Không có lệnh Binance V2/CoinGlass đã xác nhận fill trong bộ lọc.'}</td></tr>`;
 }
 
 function renderSummary(s = {}) {
@@ -404,7 +625,9 @@ els.binanceStatsGroups.addEventListener('click', async (event) => {
     signalSettingsData.signals[labelKey] = response.setting;
     signalSettingsData.globalOrderEnabled = response.globalOrderEnabled;
     signalSettingsData.dryRun = response.dryRun;
+    signalSettingsFingerprint = fingerprintSignalSettings(signalSettingsData);
     render(statsData);
+    announceSignalSettingsChange(labelKey);
   } catch (error) {
     status.textContent = `Không lưu được: ${error.message}`;
     status.className = 'js-signal-binance-status is-negative';
@@ -422,16 +645,27 @@ els.binanceStatsAll.addEventListener('click', () => {
 });
 els.binanceStatsPrev.addEventListener('click', () => { page = Math.max(1, page - 1); renderRows(); });
 els.binanceStatsNext.addEventListener('click', () => { page += 1; renderRows(); });
+els.binanceStatsSymbolSearch.addEventListener('input', () => {
+  page = 1;
+  renderRows();
+});
 
 const today = bangkokDay();
 els.binanceStatsFromDay.value = today;
 els.binanceStatsToDay.value = today;
+loadMarketBias();
+marketBiasTimer = setInterval(() => {
+  if (document.visibilityState === 'visible') loadMarketBias();
+}, MARKET_BIAS_REFRESH_MS);
 loadSignalSettings().catch((error) => {
   signalSettingsData = { signals: {}, globalOrderEnabled: false, dryRun: true, error: error.message };
 }).finally(() => {
-  load();
+  load().finally(() => loadDailyTiming());
   connectRealtimeStream();
 });
+dailyTimingTimer = setInterval(() => {
+  if (document.visibilityState === 'visible') loadDailyTiming();
+}, DAILY_TIMING_REFRESH_MS);
 
 setInterval(() => {
   if (!realtimeConnected && document.visibilityState === 'visible') {
@@ -439,8 +673,35 @@ setInterval(() => {
   }
 }, DISCONNECTED_REFRESH_MS);
 
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    loadMarketBias();
+    loadDailyTiming();
+    loadSignalSettings({ renderIfChanged: true }).catch(() => {});
+  }
+});
+
+signalSettingsChannel?.addEventListener('message', () => {
+  loadSignalSettings({ renderIfChanged: true }).catch(() => {});
+});
+window.addEventListener('storage', (event) => {
+  if (event.key === BINANCE_SIGNAL_SETTINGS_SYNC_STORAGE_KEY) {
+    loadSignalSettings({ renderIfChanged: true }).catch(() => {});
+  }
+});
+signalSettingsSyncTimer = setInterval(() => {
+  if (document.visibilityState === 'visible') {
+    loadSignalSettings({ renderIfChanged: true }).catch(() => {});
+  }
+}, BINANCE_SIGNAL_SETTINGS_SYNC_MS);
+
 window.addEventListener('beforeunload', () => {
   clearTimeout(realtimeReconnectTimer);
   clearTimeout(fullRefreshTimer);
+  clearInterval(marketBiasTimer);
+  clearInterval(dailyTimingTimer);
+  clearInterval(signalSettingsSyncTimer);
+  clearTimeout(marketBiasPulseTimer);
+  signalSettingsChannel?.close();
   realtimeController?.abort();
 });

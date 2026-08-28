@@ -25,6 +25,7 @@
     "login:coinglass-web": "node scripts/open-coinglass-web-login.mjs",
     "setup:coinglass-web-browser": "playwright install chromium",
     "test:coinglass-web-top20": "node scripts/test-coinglass-web-top20.mjs",
+    "test:coinglass-zone-lifecycle": "node scripts/test-coinglass-zone-lifecycle.mjs",
     "test:br-like-rule": "node scripts/test-br-like-eval-rule.mjs",
     "analyze:pump": "node --max-old-space-size=2048 scripts/analyze-pump-performance.js",
     "analyze:pump-candle": "node --max-old-space-size=2048 scripts/analyze-pump-candle-context.mjs",

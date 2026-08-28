@@ -21,7 +21,10 @@ import {
   buildCoinglassWebAuthAlertPayload,
   buildCoinglassWebDiscordPayload,
   buildCoinglassWebExternalLinks,
+  buildCoinglassTwoSidedLiquidationBands,
+  buildCoinglassWebZoneEvaluationPayload,
   coinglassWebDiscordDedupeKey,
+  selectCoinglassZoneEvaluationRow,
 } from '../src/coinglassWebDiscord.js';
 import {
   COINGLASS_WEB_BINANCE_MARGIN_USDT,
@@ -120,6 +123,8 @@ assert.equal(summary.liquidationCellCount, 8);
 assert.equal(summary.zones[0].strength, 100);
 assert.equal(summary.zones[0].side, 'ABOVE');
 assert.equal(summary.zones.some((zone) => zone.price === 90 && zone.side === 'BELOW'), true);
+assert.equal(summary.zones.every((zone) => Number.isFinite(zone.bandLow) && Number.isFinite(zone.bandHigh)), true);
+assert.equal(summary.zones.every((zone) => zone.bandLow < zone.bandHigh), true);
 
 const richHeatmap = {
   liquidationCellCount: 300,
@@ -187,6 +192,42 @@ assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name
 assert.match(qualifiedDiscordPayload.embeds[0].description, /BINANCE AUTO.*BẬT.*\$2 x5/s);
 assert.equal(qualifiedDiscordPayload.embeds[0].url, 'https://www.binance.com/en/futures/GOODUSDT');
 assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('MỞ BIỂU ĐỒ')).value, /coinglass\.com.*coin=GOOD.*binance\.com\/en\/futures\/GOODUSDT/);
+assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('PHÍA TRÊN')).value, /105/);
+assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('PHÍA DƯỚI')).value, /95/);
+assert.match(qualifiedDiscordPayload.embeds[0].fields.find((field) => field.name.includes('THANH LÝ 12H')).value, /Chưa lấy được/);
+const qualifiedMultiFramePayload = buildCoinglassWebDiscordPayload({
+  ...qualifiedRow,
+  qualified: true,
+  qualifiedTimeframes: {
+    version: 'COINGLASS_WEB_QUALIFIED_TIMEFRAMES_V1_12H_24H_20260823',
+    '12h': {
+      range: '12h',
+      heatmap: {
+        currentPrice: 100,
+        zones: [
+          { price: 103, bandLow: 102, bandHigh: 104, strength: 90, persistenceBars: 30 },
+          { price: 97, bandLow: 96, bandHigh: 98, strength: 80, persistenceBars: 25 },
+        ],
+      },
+    },
+    '24h': {
+      range: '24h',
+      heatmap: {
+        currentPrice: 100,
+        zones: [
+          { price: 108, bandLow: 107, bandHigh: 109, strength: 95, persistenceBars: 50 },
+          { price: 92, bandLow: 91, bandHigh: 93, strength: 85, persistenceBars: 45 },
+        ],
+      },
+    },
+  },
+});
+const twelveHourField = qualifiedMultiFramePayload.embeds[0].fields.find((field) => field.name.includes('THANH LÝ 12H'));
+const twentyFourHourField = qualifiedMultiFramePayload.embeds[0].fields.find((field) => field.name.includes('THANH LÝ 24H'));
+assert.match(twelveHourField.value, /102–104/);
+assert.match(twelveHourField.value, /96–98/);
+assert.match(twentyFourHourField.value, /107–109/);
+assert.match(twentyFourHourField.value, /91–93/);
 assert.deepEqual(buildCoinglassWebExternalLinks({ symbol: '../../etc', baseAsset: 'BAD' }), { binance: null, coinglass: null });
 const shortDiscordPayload = buildCoinglassWebDiscordPayload({
   ...qualifiedRow,
@@ -197,6 +238,23 @@ const shortDiscordPayload = buildCoinglassWebDiscordPayload({
 assert.equal(shortDiscordPayload.embeds[0].color, 0xef4444);
 assert.match(shortDiscordPayload.embeds[0].title, /SHORT.*TOP GIẢM #1/);
 assert.match(buildCoinglassWebAuthAlertPayload({ pageUrl: 'http://localhost/test' }).embeds[0].description, /Đăng nhập cho collector/);
+const twoSidedBands = buildCoinglassTwoSidedLiquidationBands(qualifiedRow);
+assert.equal(twoSidedBands.complete, true);
+assert.equal(twoSidedBands.upper.midpoint, 105);
+assert.equal(twoSidedBands.lower.midpoint, 95);
+const unqualifiedEvaluationRow = { ...qualifiedRow, qualified: false, proposal: balancedProposal };
+assert.equal(selectCoinglassZoneEvaluationRow([unqualifiedEvaluationRow])?.row.symbol, 'GOODUSDT');
+const evaluationPayload = buildCoinglassWebZoneEvaluationPayload({
+  row: unqualifiedEvaluationRow,
+  pageUrl: 'http://localhost/coinglass-web-top20',
+});
+assert.equal(evaluationPayload.embeds[0].color, 0x8b5cf6);
+assert.match(evaluationPayload.embeds[0].title, /ĐÁNH GIÁ 2 VÙNG.*GOODUSDT/);
+assert.match(evaluationPayload.embeds[0].description, /KHÔNG PHẢI TÍN HIỆU VÀO LỆNH/);
+assert.match(evaluationPayload.embeds[0].description, /BINANCE AUTO.*KHÔNG/);
+assert.match(evaluationPayload.embeds[0].fields.find((field) => field.name.includes('PHÍA TRÊN')).value, /105/);
+assert.match(evaluationPayload.embeds[0].fields.find((field) => field.name.includes('PHÍA DƯỚI')).value, /95/);
+assert.equal(buildCoinglassWebZoneEvaluationPayload({ statusMessage: 'login required' }).embeds[0].color, 0xf59e0b);
 
 const qualifiedLongRow = { ...qualifiedRow, qualified: true, status: 'OK', stale: false };
 assert.equal(COINGLASS_WEB_BINANCE_MARGIN_USDT, 2);
@@ -272,18 +330,30 @@ const notifyManager = new CoinGlassWebTop20Manager({
   dataDir: notifyDataDir,
 });
 const originalWebhook = process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL;
+const originalZoneEvaluationWebhook = process.env.COINGLASS_WEB_ZONE_EVALUATION_WEBHOOK_URL;
 process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL = 'https://unit.test/webhook';
+process.env.COINGLASS_WEB_ZONE_EVALUATION_WEBHOOK_URL = 'https://unit.test/zone-evaluation';
 const sentPayloads = [];
+const sentZoneEvaluationPayloads = [];
 notifyManager.postDiscord = async (payload) => {
   sentPayloads.push(payload);
+  return { sent: true };
+};
+notifyManager.postZoneEvaluationDiscord = async (payload) => {
+  sentZoneEvaluationPayloads.push(payload);
   return { sent: true };
 };
 assert.equal((await notifyManager.notifyQualifiedRows([{ ...qualifiedRow, qualified: true }])).sent, 1);
 assert.equal((await notifyManager.notifyQualifiedRows([{ ...qualifiedRow, qualified: true }])).sent, 0);
 assert.equal((await notifyManager.notifyAuthRequired('test auth')).sent, true);
+assert.equal((await notifyManager.notifyZoneEvaluationRows([unqualifiedEvaluationRow])).sent, true);
+assert.equal((await notifyManager.notifyZoneEvaluationRows([unqualifiedEvaluationRow])).sent, true);
 assert.equal(sentPayloads.length, 2);
+assert.equal(sentZoneEvaluationPayloads.length, 2, 'zone evaluation must send once after every completed scan without qualified dedupe');
 if (originalWebhook == null) delete process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL;
 else process.env.COINGLASS_WEB_DISCORD_WEBHOOK_URL = originalWebhook;
+if (originalZoneEvaluationWebhook == null) delete process.env.COINGLASS_WEB_ZONE_EVALUATION_WEBHOOK_URL;
+else process.env.COINGLASS_WEB_ZONE_EVALUATION_WEBHOOK_URL = originalZoneEvaluationWebhook;
 await rm(notifyDataDir, { recursive: true, force: true });
 
 const executionDataDir = await mkdtemp(join(tmpdir(), 'coinglass-binance-v1-'));
@@ -397,5 +467,9 @@ assert.match(crawlSource, /canvas\.style\.visibility = 'hidden'/);
 assert.match(crawlSource, /COINGLASS_WEB_BROWSER_MODE === 'headed'/);
 assert.match(crawlSource, /assessCoinglassLiquidity/);
 assert.match(crawlSource, /qualifyCoinglassOpportunity/);
+assert.match(crawlSource, /qualifiedTimeframes/);
+assert.match(crawlSource, /captureQualifiedTimeframe/);
+assert.match(crawlSource, /'12h'/);
+assert.match(crawlSource, /'24h'/);
 
 console.log('CoinGlass web top20 tests passed.');

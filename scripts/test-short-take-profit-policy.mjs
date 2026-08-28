@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
+  BINANCE_BOT_SHORT_TP_ONLY_VERSION,
+  BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION,
   BINANCE_MANUAL_SOCKET_SOURCE,
   NON_LIQUID_FLOW_V2_LONG_TP_ROE,
   NON_LIQUID_FLOW_V2_LONG_TP_VERSION,
@@ -8,12 +10,57 @@ import {
   ORDERS_MANUAL_TP_ROE,
   ORDERS_MANUAL_TP_VERSION,
   isCoinglassWebQualifiedSource,
+  isManualShortProtectionSource,
   isUserOrLiquidFlowV2ManagedSource,
   resolveManualSocketProtection,
+  resolveManualShortEma99TakeProfit,
   resolveNonLiquidFlowV2TakeProfit,
   resolveNonLiquidFlowV2ShortTakeProfit,
   resolveOrdersManualTakeProfit,
+  shouldSuppressBotShortStopLoss,
 } from '../src/shortTakeProfitPolicy.js';
+
+assert.match(BINANCE_BOT_SHORT_TP_ONLY_VERSION, /V1_20260824$/);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'coinglass-web-qualified' }), true);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SELL', source: 'live-card-whitelist-edge' }), true);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'LONG', source: 'live-card-whitelist-edge' }), false);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'orders-manual' }), false);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: BINANCE_MANUAL_SOCKET_SOURCE }), false);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'liquid-flow-v2-manual' }), false);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'signal' }), true);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: '' }), false);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'pump-order', enabled: false }), false);
+assert.equal(isManualShortProtectionSource({ side: 'SHORT', source: 'orders-manual' }), true);
+assert.equal(isManualShortProtectionSource({ side: 'SELL', source: 'liquid-flow-v2-manual' }), true);
+assert.equal(isManualShortProtectionSource({ side: 'LONG', source: 'orders-manual' }), false);
+
+const manualShortNearestEma = resolveManualShortEma99TakeProfit({
+  entryPrice: 100,
+  leverage: 10,
+  candidates: [{ interval: '5m', price: 98 }, { interval: '15m', price: 99 }],
+});
+assert.equal(manualShortNearestEma.takeProfitPrice, 99);
+assert.equal(manualShortNearestEma.selectedInterval, '15m');
+assert.equal(manualShortNearestEma.cappedAtMaxRoe, false);
+assert.equal(manualShortNearestEma.version, BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION);
+
+const manualShortEmaCapped = resolveManualShortEma99TakeProfit({
+  entryPrice: 100,
+  leverage: 10,
+  candidates: [{ interval: '5m', price: 95 }],
+});
+assert.equal(manualShortEmaCapped.takeProfitPrice, 97);
+assert.equal(manualShortEmaCapped.cappedAtMaxRoe, true);
+assert.equal(manualShortEmaCapped.roePct, 30);
+
+const manualShortNoProfitSideEma = resolveManualShortEma99TakeProfit({
+  entryPrice: 100,
+  leverage: 5,
+  candidates: [{ interval: '5m', price: 101 }, { interval: '15m', price: 102 }],
+});
+assert.equal(manualShortNoProfitSideEma.takeProfitPrice, 94);
+assert.equal(manualShortNoProfitSideEma.selectedInterval, null);
+assert.equal(manualShortNoProfitSideEma.cappedAtMaxRoe, true);
 
 const short10x = resolveNonLiquidFlowV2ShortTakeProfit({
   side: 'SHORT', source: 'live-card-whitelist-edge', entryPrice: 100, leverage: 10, requestedTakeProfitPrice: 90,
@@ -132,9 +179,11 @@ assert.equal(socketLongProtection.source, BINANCE_MANUAL_SOCKET_SOURCE);
 
 const socketShortProtection = resolveManualSocketProtection({
   side: 'SELL', entryPrice: 80, leverage: 10, stopLossRoePct: 25,
+  ema99Candidates: [{ interval: '5m', price: 79.2 }, { interval: '15m', price: 78 }],
 });
-assert.equal(socketShortProtection.takeProfitPrice, 77.6);
-assert.equal(socketShortProtection.stopLossPrice, 82);
+assert.equal(socketShortProtection.takeProfitPrice, 79.2);
+assert.equal(socketShortProtection.selectedInterval, '5m');
+assert.equal(socketShortProtection.stopLossPrice, null);
 
 const socketTpOnly = resolveManualSocketProtection({
   side: 'BUY', entryPrice: 80, leverage: 5, stopLossEnabled: false,
@@ -164,5 +213,9 @@ assert.doesNotMatch(serverSource, /if \(!takeProfitUserOrV2Managed && roeInfo\.r
 assert.doesNotMatch(serverSource, /\[NegTp\].*user\/Liquid Flow V2 keeps its own TP plan/);
 assert.match(serverSource, /shouldMoveNegativeTpToEntry/);
 assert.match(serverSource, /BINANCE_NEGATIVE_TP_TO_ENTRY_VERSION/);
+assert.match(serverSource, /const stopLossSuppression = shortStopLossSuppression\(side, protectionSource\)/);
+assert.match(serverSource, /manualShortEma99Candidates/);
+assert.match(serverSource, /isTrackedBotShortTpOnlyPosition\(symbol, pos\) \|\| isTrackedManualShortTpOnlyPosition\(symbol, pos\)/);
+assert.match(serverSource, /SHORT TP-only; skip missing SL/);
 
 console.log('short take-profit policy tests passed');

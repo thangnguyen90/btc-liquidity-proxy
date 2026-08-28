@@ -2,11 +2,181 @@
 
 > **Đọc trước:** [CURRENT_DECISION_AND_EMA_RULES.md](CURRENT_DECISION_AND_EMA_RULES.md) là bản tóm tắt logic Decision/Recommended/EMA đang chạy, cập nhật ngày 2026-07-20. File hiện tại giữ lịch sử và bối cảnh chi tiết; nếu nội dung cũ mâu thuẫn, ưu tiên bản current và kiểm tra code.
 
-Last updated: 2026-08-22
+Last updated: 2026-08-28
 
 Use this file as the first read before changing or evaluating trading logic. It summarizes the current intent, naming, pages, paper stores, and rule decisions from prior work so Codex does not need to rediscover everything from `src/server.js` and old chat history.
 
 ## Operating Principles
+
+### 2026-08-28 - CoinGlass Zone Lifecycle LONG/SHORT TP-only, không auto SL
+
+- Versions `COINGLASS_ZONE_LIFECYCLE_V3_BINANCE_5USDT_TP_ONLY_20260828`,
+  `COINGLASS_ZONE_LIFECYCLE_DISCORD_V3_TP_ONLY_5USDT_20260828`,
+  `COINGLASS_ZONE_LIFECYCLE_BINANCE_V3_MARKET_5USDT_TP_ONLY_20260828` và
+  `COINGLASS_ZONE_LIFECYCLE_TP_ONLY_NO_SL_V1_20260828`; supersede policy LONG `-20% ROE` của V2. Dữ liệu causal/classification trước entry
+  không đổi: structured Model 3 48h + latest OHLC, active edge band, strength/persistence, scan match và terminal REJECTED/ACCEPTED; TP vẫn cần
+  next active-edge target `1-15%` đúng hướng.
+- Chỉ source `coinglass-zone-lifecycle` bị suppression SL cho cả LONG và SHORT. Entry plan/evaluator trả SL `null`; MARKET `$5 x5`, TP zone và
+  slippage/no-position/no-reversal gates giữ nguyên. Socket fill/protection replay, automatic `setTpSl`, missing-SL guard và profit-lock nhận diện
+  source persisted rồi không dựng hoặc dời STOP. LONG của CoinGlass Qualified, Liquid Flow V2, manual và các source khác không bị thay đổi.
+- Thay đổi áp dụng cho protection tự động từ entry mới sau reload; không tự cancel STOP đã tồn tại trước deploy. Không đổi paper/stats, không thêm
+  label/card/reporting key/WHITELIST; W/L, WR, PF, Net PnL và AvgROE giữ nguyên. JSON V1/V2 đọc tương thích; plan/track V3 giữ schema cũ và ghi các
+  field SL thành `null`, không migrate/rewrite history.
+
+### 2026-08-28 - CoinGlass Zone Lifecycle nâng Binance margin lên $5
+
+- Versions mới `COINGLASS_ZONE_LIFECYCLE_V2_EDGE_CONFIRMED_BINANCE_5USDT_20260828`,
+  `COINGLASS_ZONE_LIFECYCLE_DISCORD_V2_ENTRY_PLAN_5USDT_20260828` và `COINGLASS_ZONE_LIFECYCLE_BINANCE_V2_MARKET_5USDT_20260828`; thay bộ V1
+  `$1` của ngày 2026-08-27. Dữ liệu causal trước entry và phân loại không đổi: structured heatmap Model 3 48h, last candle OHLC, zone edge-gap,
+  strength/persistence, band match qua scan và lifecycle `FRESH → APPROACHING → SWEPT → REJECTED/ACCEPTED`; 12h/24h vẫn chỉ telemetry khi có.
+- Entry terminal, target edge `1-15%`, max slippage `1.5%`, no-reversal/no-existing-position và cách đặt TP/SL tại thời điểm V2 không đổi. Chỉ lệnh
+  Binance mới của source `coinglass-zone-lifecycle` đổi sang MARKET margin `$5`, leverage `5x` (notional khoảng `$25`); policy LONG `-20% ROE`
+  của V2 này đã được supersede bởi mục TP-only V3 ngay phía trên. Discord entry plan/footer đọc cùng margin runtime `$5`, không còn hard-code `$1`.
+- Không thêm label/card/stats/WHITELIST; W/L, WR, PF, Net PnL và AvgROE không đổi. JSON cũ tương thích: state V1 được đọc nguyên và track mới ghi
+  version V2 theo schema cũ, không migrate/rewrite history; `.env.example` đổi default margin nhưng giữ Binance lifecycle default-off an toàn.
+
+### 2026-08-27 - CoinGlass edge-zone lifecycle + Discord + Binance test $1
+
+- Versions `COINGLASS_ZONE_LIFECYCLE_V1_EDGE_CONFIRMED_BINANCE_1USDT_20260827`,
+  `COINGLASS_ZONE_LIFECYCLE_DISCORD_V1_ENTRY_PLAN_20260827` và `COINGLASS_ZONE_LIFECYCLE_BINANCE_V1_MARKET_1USDT_20260827`. Pipeline mới
+  độc lập với V14 qualified; không đổi proposal/qualification/Binance route cũ.
+- Input causal: structured 48h exact instrument, last candle OHLC, band/strength/persistence và `lastX` so với `lastHeatmapX`. Chỉ zone edge-gap
+  `<=2`, persistence `>=3`, strength `>=20`, distance `<=15%`; phải match band qua 2 scan. 12h/24h overlap chỉ telemetry khi có sẵn.
+- States: FRESH; APPROACHING ở `<=4%`; SWEPT khi candle chạm band; REJECTED khi close quay ra ngoài buffer `0.1%`; ACCEPTED khi close xuyên mép xa
+  buffer `0.1%`. Discord gửi mọi transition trừ FRESH. Terminal mapping: upper reject SHORT, lower reject LONG, upper accept LONG, lower accept SHORT;
+  chỉ executable khi có next active-edge target cách `1-15%`.
+- Binance explicit-on: MARKET `$1 x5`, max slippage `1.5%`, không có position/entry order cùng symbol và không reversal; vẫn chịu Orders/dry-run/
+  credential/max-position. LONG SL `-20% ROE`; SHORT TP-only không SL theo policy bot hiện tại; TP zone kế tiếp re-anchor theo fill.
+- Không thêm label/card/stats/WHITELIST và không đổi W/L/WR/PF/Net/AvgROE. Snapshot thêm field optional, state/dedupe dùng file mới
+  `data/coinglass-web-top20/zone-lifecycle.json`; JSON/history cũ không migrate/rewrite, lượt đầu cần 2 scan để arm.
+
+### 2026-08-24 - Khôi phục TP-to-entry ở ROE âm sâu và start worker độc lập warm-up
+
+- Version `BINANCE_NEGATIVE_TP_TO_ENTRY_V4_CAP_TSL_INDEPENDENT_ROE20_20260824`, thay V3. Protection sau entry chỉ dùng active Binance
+  average entry, Mark/uPnL, initial margin/leverage và open close-orders hiện tại; không dùng candle, future outcome hay paper PnL.
+- Bot, Liquid Flow V2 và manual đều match tại ROE `<=-20%` kể cả đang check `Cap TSL`. Cap TSL vẫn giới hạn profit-lock/trailing SL dương,
+  nhưng không còn chặn socket, scanner hoặc deep TP guard. Nhánh 8h còn âm giữ opt-out Cap TSL riêng; deep-loss V4 luôn ưu tiên.
+- Scanner negative TP và cleaner LIMIT 12h start ngay khi server listen, trước kline warm-up, có start/single-flight guard. Match sẽ hủy TP close-side
+  xa entry và đặt full remaining quantity `LIMIT GTC` tại average entry; không đổi entry/side/size/margin/leverage hoặc SL.
+- Không đổi label/tier/gate/stats và không thêm card/WHITELIST. JSON cũ không migrate/rewrite; Cap TSL state tiếp tục dùng cho profit-lock, dedupe
+  deep TP chỉ ở RAM và open order Binance được kiểm tra lại sau restart.
+
+### 2026-08-24 - Entry LIMIT hết hạn sau 12 giờ
+
+- Version `ENTRY_LIMIT_TWELVE_HOUR_EXPIRY_V1_20260824`; default-on, max age `43,200,000ms`. Cleaner 35 giây dùng timestamp Binance và chỉ chọn
+  LIMIT/LIMIT_MAKER entry không reduce-only/close-position; TP/SL/algo order không bị hủy.
+- Cơ chế độc lập với legacy BTC-bias auto-cancel nên không phát sinh hủy sớm theo biến động thị trường. Plan chỉ xóa nếu order identity khớp.
+- Không đổi signal/tier/gate/entry/size/leverage/protection sau fill hay stats; không thêm label/card/WHITELIST và không đổi JSON cũ.
+
+### 2026-08-24 - Manual SHORT TP EMA99 5m/15m, cap +30% ROE, không SL
+
+- Version `BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_V1_20260824`. Input causal gồm entry/fill, leverage và closed kline 5m/15m; chọn EMA99 profit-side
+  gần entry nhất. TP đúng EMA nếu khoảng cách `<=30% ROE`, ngược lại dùng TP +30% ROE; EMA thiếu hoặc cả hai ở trên entry cũng fallback +30%.
+- Áp dụng `orders-manual`, socket fill Binance manual và explicit manual flow. Manual SHORT bỏ SL, tắt fill-anchor cho TP EMA tuyệt đối; socket/restart,
+  missing-SL guard, profit-lock và automatic set-tp-sl không tái tạo SL. LONG manual giữ nguyên; STOP cũ không bị cancel.
+- Không đổi label/tier/gate/stats/entry/size/margin/leverage. Không thêm card/key/WHITELIST; W/L/WR/PF/Net/AvgROE và JSON cũ giữ tương thích,
+  telemetry EMA99 là additive và không migrate/rewrite history.
+
+### 2026-08-24 - Bot SHORT tạm chạy TP-only, không auto SL
+
+- Version `BINANCE_BOT_SHORT_TP_ONLY_V1_20260824`, default-on và rollback bằng `BINANCE_BOT_SHORT_TP_ONLY_ENABLED=false`. Classification chỉ dựa
+  side SHORT/SELL + known bot source trước entry (gồm legacy auto source `signal`); manual/unknown source được loại trừ. Không đổi dữ liệu signal,
+  tier, gate hoặc thống kê.
+- `placeOrder` và protection plan bỏ SL/signal-SL/fill-anchor-SL; socket/lifecycle `setTpSl`, missing-SL guard và profit-lock không tái tạo STOP.
+  TP, LONG và explicit manual flow giữ nguyên. SL đã có không bị cancel; người dùng vẫn có thể đặt SL tay qua source `set-tp-sl`.
+- Binance entry price/type, size/margin/leverage, TP, dedupe và vị thế LONG không đổi. Không thêm label/card/WHITELIST; stats W/L/WR/PF/Net/
+  AvgROE giữ nguyên. Telemetry response additive, JSON tracking cũ load nguyên trạng và không bị migrate/rewrite.
+
+### 2026-08-23 - Daily Timing Edge kết hợp ngày hiện tại và giờ entry
+
+- Versions `LIQUID_FLOW_V2_DAILY_TIMING_EDGE_V1_20260823` và
+  `LIQUID_FLOW_V2_BINANCE_STATS_UI_V7_DAILY_TIMING_EDGE_20260823`; endpoint auth mới
+  `/api/liquid-flow-v2-binance-daily-timing` lấy rolling 7 ngày Asia/Bangkok. Chỉ `CLOSED + pnlKnown + BINANCE_INCOME`, phân nhóm theo giờ
+  entry; CoinGlass Qualified bị loại khỏi điểm quyết định để outlier không chi phối core Liquid Flow V2. Đây là hậu nghiệm OBSERVE ONLY,
+  không phải feature causal trước entry.
+- Mỗi side tính W/L, WR, PF, Net, AvgROE cho hôm nay và từng giờ. GOOD: giờ `n>=5` hoặc ngày `n>=3`, Net `>0`, PF `>=1.2`, WR `>=60%`,
+  AvgROE `>0`; AVOID: đủ mẫu, Net `<0` và có PF `<0.95`/AvgROE `<0`/WR `<50%`. Giờ liền nhau cùng chất lượng được gộp thành khung và xếp
+  score; ngày + giờ đồng thuận mới lên `STRONG`, xung đột hạ SELECTIVE/AVOID/WAIT.
+- Banner nổi bật ở đầu V2 Binance Stats hiển thị khuyến nghị hợp nhất, bốn ô hôm nay/giờ này cho LONG/SHORT và tối đa ba khung tốt mỗi hướng;
+  tải sau stats chính, refresh 5 phút + foreground, giữ last-good dưới trạng thái STALE khi lỗi.
+- Route timing bỏ toàn bộ CoinGlass order verify/position REST. Result cache 5 phút; sau lần Income 7 ngày đầu tiên của process, refresh sau chỉ
+  thay phần Income từ đầu ngày Bangkok hiện tại và giữ lịch sử đã cache, tránh lặp burst REST mà không đổi thống kê nguồn.
+- Không đổi bảng/filter/summary stats hiện hữu; không tạo signal label/reporting key/runtime matcher nên không thêm WHITELIST. Policy checkbox
+  per-label default-off và CLOSED AvgROE `>4%` giữ nguyên. Không ảnh hưởng Binance entry/side/size/margin/leverage/SL/TP/protection/dedupe hay
+  vị thế mở. Không thêm JSON/state và không migrate/rewrite/replay dữ liệu cũ.
+
+### 2026-08-23 - Binance per-label control ở Liquid Flow V2, đồng bộ hai trang
+
+- Versions `LIQUID_FLOW_V2_PAPER_BINANCE_CONTROL_UI_V1_SHARED_SYNC_20260823` và
+  `LIQUID_FLOW_V2_BINANCE_STATS_UI_V7_DAILY_TIMING_EDGE_20260823`; API/store per-label hiện hữu giữ nguyên. Bảng paper `Thống kê theo nhãn`
+  thêm BẬT/TẮT + margin USDT + LƯU cho exact supported route, cùng giá trị/default/global Orders/dry-run như trang Binance Stats; draft chưa lưu
+  sống qua SSE rerender.
+- Hai UI dùng chung persistent store, phát BroadcastChannel/storage sau save và poll 10 giây + foreground refresh; payload settings chỉ re-render
+  khi fingerprint đổi. Không truyền credential qua channel.
+- Stats/date/label/paper giữ nguyên; không thêm label/card/key/WHITELIST, policy default-off và CLOSED AvgROE `>4%` giữ nguyên. Save có thể đổi
+  quyền và margin của entry Binance **tương lai** cho supported label nhưng không đổi side/entry policy/leverage/SL/TP/protection/dedupe hay lệnh
+  đã mở. JSON settings cũ load nguyên trạng, không migrate/rewrite lịch sử.
+
+### 2026-08-23 - Discord khi Market Direction stable label đổi
+
+- Version `LIQUID_MARKET_DIRECTION_DISCORD_V1_COMMITTED_CHANGE_20260823`; input/classifier causal giữ
+  `LIQUID_MARKET_DIRECTION_HEALTH_V3_20260729`. Chỉ stable `label` đã qua hysteresis hai closed-5m sample mới so với persistent `lastLabel`;
+  pending/raw và NO_DATA không gửi. Startup đầu tiên arm baseline, restart đọc state chống duplicate, lỗi webhook giữ label cũ để retry chu kỳ sau.
+- Embed màu theo LONG/SHORT/CHOP/DISPERSION/TRANSITION/SHOCK, có old→new, scores/confidence, breadth, BTC, sample và reasons. Secret webhook riêng
+  chỉ lưu `.env`; `.env.example` trống. State JSON additive optional, không migrate/rewrite dữ liệu giao dịch.
+- Observe-only: không thêm label/card/key/WHITELIST, không đổi stats W/L/WR/PF/Net/AvgROE và không ảnh hưởng Binance entry/side/size/margin/
+  leverage/SL/TP/protection/dedupe.
+
+### 2026-08-23 - Banner cảnh báo sóng realtime trên V2 Binance Stats
+
+- Version UI `LIQUID_FLOW_V2_BINANCE_STATS_UI_V5_REALTIME_MARKET_BIAS_20260823`; nguồn là classifier hiện hữu
+  `LIQUID_MARKET_DIRECTION_HEALTH_V3_20260729`, không tạo classifier/label mới. Input causal giữ nguyên: 120 alt thanh khoản, closed 15m,
+  breadth 1h/3h/6h, EMA20/50, volume và BTC đa khung; không dùng outcome/PnL tương lai.
+- Banner poll API hiện hữu ngay khi load và mỗi 20 giây khi tab visible. LONG/SHORT đổi xanh/đỏ; CHOP/TRANSITION vàng, DISPERSION tím,
+  SHOCK cam và NO_DATA xám. Hiển thị scores/confidence/breadth/reasons; raw/pending khác stable sẽ hiện `ĐANG ĐỔI SÓNG` cùng tiến độ
+  hysteresis, còn fetch lỗi giữ snapshot cũ và đánh `STALE`.
+- Chỉ là observe-only reporting: không đổi W/L/WR/PF/Net/AvgROE, date/label/symbol filter hoặc row realtime; không thêm label/card/key/
+  WHITELIST checkbox, policy default-off và CLOSED AvgROE `>4%` giữ nguyên. Không ảnh hưởng Binance entry/side/size/margin/leverage/SL/TP,
+  protection hay dedupe. JSON/schema giữ nguyên, không migrate/rewrite lịch sử.
+
+### 2026-08-23 - Tìm altcoin realtime trong chi tiết V2 Binance Stats
+
+- Version UI `LIQUID_FLOW_V2_BINANCE_STATS_UI_V4_SYMBOL_SEARCH_20260823`; backend giữ
+  `LIQUID_FLOW_V2_BINANCE_STATS_V3_REALTIME_20260822`. Input/gate trước entry không đổi; ô `TÌM ALTCOIN` chỉ lọc client-side các row đã xác nhận
+  fill mà API trả về sau datepicker/label. Nhập `POL`, `POLUSDT` hoặc symbol có dấu phân cách đều được normalize uppercase và đối chiếu contains.
+- Search reset pagination về trang 1, page info hiện số row khớp trên tổng số row; position socket tiếp tục mutate dataset gốc rồi render tập đang tìm.
+  Summary và group giữ toàn bộ date/label set, nên W/L/WR/PF/Net/AvgROE không đổi.
+- Không thêm label/card/WHITELIST, không đổi Binance entry/side/size/leverage/SL/TP/protection và không gọi thêm Binance REST. JSON/schema giữ nguyên,
+  không migrate/rewrite lịch sử; đây chỉ là thay đổi HTML/CSS/JS của màn reporting.
+
+### 2026-08-23 - CoinGlass qualified có heatmap 12h/24h riêng trong Discord
+
+- Versions `COINGLASS_WEB_QUALIFIED_BINANCE_V14_QUALIFIED_12H24H_20260823`,
+  `COINGLASS_WEB_QUALIFIED_TIMEFRAMES_V1_12H_24H_20260823` và `COINGLASS_WEB_DISCORD_BINANCE_V9_QUALIFIED_12H24H_20260823`.
+  Classifier/entry tiếp tục chỉ dùng exact 48h causal structured state; 12h/24h được crawl sau khi row fresh đã qualified, không dùng ảnh/crop
+  và không hồi tố quyết định.
+- Main scan 40 coin chạy trước. Trong budget 150 giây còn lại, bốn page mở lại exact qualified symbol, chọn UI `12 hour` và `24 hour`,
+  xác nhận đúng response range/symbol rồi lấy từng React state độc lập. Discord qualified thêm hai field, mỗi field có upper/lower range,
+  distance/strength/reference. Thiếu budget/range chỉ báo unavailable; không fallback dữ liệu phụ cũ và không chặn alert/order.
+- Stats chỉ thêm telemetry requested/complete/failed, không thay W/L/WR/PF/Net/AvgROE. Không thêm label/card/WHITELIST key; default-off và
+  CLOSED AvgROE `>4%` giữ nguyên. Không đổi Binance entry/side/margin/leverage/TP 48h/SL/protection/reversal/dedupe; hai timeframe chỉ là
+  context Discord. JSON additive optional, không migrate/rewrite lịch sử; V13 fail-closed tới V14 fresh.
+
+### 2026-08-23 - CoinGlass gửi một đánh giá hai vùng sau mỗi scan
+
+- Versions `COINGLASS_WEB_QUALIFIED_BINANCE_V13_ZONE_EVAL_20260823`,
+  `COINGLASS_WEB_DISCORD_BINANCE_V8_TWO_SIDED_ZONES_20260823` và
+  `COINGLASS_WEB_TWO_SIDED_ZONE_EVAL_V1_20260823`. Input causal là exact Binance mover/liquidity snapshot cùng CoinGlass Model 3 48h
+  structured cells/zones; ảnh/crop và outcome tương lai không được dùng.
+- Local peak được mở thành `bandLow/bandHigh` bằng tối đa năm bin liền kề với intensity floor `28%` peak, một weak-bin bridge và clamp đúng phía giá tham chiếu.
+  Candidate evaluation chỉ cần fresh `OK`, không stale, có cả upper/lower trong `±20%`; không cần pass qualified/direction/R:R/full liquidity.
+  Alt mover có two-sided score cao nhất được chọn, fallback BTC; mỗi scan hoàn tất gửi đúng một embed tím tới webhook riêng, còn auth/no-data
+  gửi embed cam. Payload có giá, hai range, distance/strength/persistence và link CoinGlass/Binance.
+- Qualified embed xanh/đỏ cũng có hai vùng, nhưng gate/order route giữ nguyên. Evaluation message là observe-only, không tạo paper/Binance,
+  không đổi entry/size/leverage/SL/TP, dedupe, reversal hay profit-lock; lỗi notifier riêng không chặn executor.
+- Stats chỉ có telemetry in-memory thời điểm/symbol gửi gần nhất; không tính W/L/WR/PF/Net/AvgROE. Không thêm label/card/WHITELIST key;
+  default-off và điều kiện CLOSED AvgROE `>4%` giữ nguyên. `bandLow/bandHigh` optional cho JSON cũ; V12 fail-closed tới snapshot V13 fresh,
+  không migrate/rewrite lịch sử. Secret chỉ lưu `.env`, `.env.example` để trống.
 
 ### 2026-08-22 - Hot paper cache, bỏ read/parse file lớn lặp lại
 
@@ -139,9 +309,9 @@ Use this file as the first read before changing or evaluating trading logic. It 
 
 ### 2026-08-16 - Position Binance đủ 8h còn âm thì TP về entry
 
-- Version `BINANCE_NEGATIVE_TP_TO_ENTRY_AFTER_8H_V1_20260816`; giữ rule deep-loss V3 ở `<=-20% ROE` và rule 12h +1% cho trường hợp không bị rule âm ưu tiên.
+- Version tuổi position `BINANCE_NEGATIVE_TP_TO_ENTRY_AFTER_8H_V1_20260816`; deep-loss hiện dùng V4 ở `<=-20% ROE` và rule 12h +1% dành cho trường hợp không bị rule âm ưu tiên.
 - Snapshot causal chỉ gồm active position average entry/amount/side, Mark hoặc uPnL/margin để tính ROE hiện tại, `openedAt` từ fill tracking (fallback runtime first-seen), `Cap TSL`, rồi open TP orders + tick/lot metadata lúc write. Không dùng candle, outcome hoặc PnL tương lai.
-- Match khi tuổi position `>=8h` và ROE realtime `<0`; ROE `>=0` không tác động, `Cap TSL` vẫn opt-out. Bỏ fallback cũ âm liên tục 4h và không còn đọc `NEG_TP_TIMEOUT_MS`; deep-loss `<=-20%` vẫn có thể chạy sớm hơn. Env mới: `BINANCE_NEGATIVE_TP_AFTER_8H_ENABLED` và `BINANCE_NEGATIVE_TP_AFTER_8H_MS`.
+- Match khi tuổi position `>=8h` và ROE realtime `<0`; ROE `>=0` không tác động, `Cap TSL` vẫn opt-out riêng cho nhánh tuổi. Bỏ fallback cũ âm liên tục 4h và không còn đọc `NEG_TP_TIMEOUT_MS`; deep-loss V4 `<=-20%` độc lập Cap TSL và có thể chạy sớm hơn. Env: `BINANCE_NEGATIVE_TP_AFTER_8H_ENABLED` và `BINANCE_NEGATIVE_TP_AFTER_8H_MS`.
 - Binance chỉ thay TP: hủy TP close-side xa entry, giữ SL, rồi đặt full remaining quantity bằng `LIMIT GTC` tại average entry (`reduceOnly`/đúng positionSide). Không MARKET-close khi đang âm, không đổi entry/side/size/margin/leverage; dedupe symbol+entry và cooldown 2 phút. Rule 12h không ghi đè target entry khi condition 8h đang match.
 - Không thêm signal/card/cohort/WHITELIST và không đổi stats. Không thêm field JSON bắt buộc hay rewrite history; field 12h cũ giữ nguyên, record thiếu openedAt dùng first-seen fail-safe sau restart.
 
@@ -197,12 +367,12 @@ Use this file as the first read before changing or evaluating trading logic. It 
 - Backtest 14 ngày dùng next-5m-open, fee `0.4% ROE`, SL-first nếu cùng nến: price-only 25 lệnh, WR `76.0%`, AvgROE `+3.875%`, PF `2.13`; PRIME 6/6, AvgROE `+9.6%` nhưng mẫu nhỏ. Giữ paper-only để tích lũy out-of-sample.
 - JSON cũ tương thích vì `postPumpUniverse`, feature/snapshot mới đều optional; không migrate/rewrite và thiếu field thì không match nhãn mới.
 
-### 2026-08-15 - Binance negative TP-to-entry loại trừ Cap TSL
+### 2026-08-15 - Binance negative TP-to-entry (V4 cập nhật 2026-08-24)
 
-- Version `BINANCE_NEGATIVE_TP_TO_ENTRY_V3_CAP_TSL_EXCLUDED_ROE20_20260815`. Protection sau entry chỉ dùng average entry, mark/uPnL, margin, leverage và trạng thái checkbox Cap TSL hiện hữu của active position; không dùng future candle hoặc paper outcome.
-- Bot, Liquid Flow V2 và lệnh tay pass tại Binance ROE `<= -20%`, nhưng symbol đang check `Cap TSL` trên Orders được fail-closed khỏi toàn bộ đường dời TP: socket, scanner dự phòng, deep guard và fallback âm theo thời gian. Bỏ check sẽ áp lại rule ở tick/scan sau; symbol + entry dedupe và cooldown 2 phút giữ idempotency.
-- Khi pass và Cap TSL tắt, TP close-side xa entry bị hủy rồi thay bằng `LIMIT GTC reduceOnly` tại average entry; SL, entry, margin/size và leverage không đổi. Khi Cap TSL bật, rule này giữ nguyên TP/SL hiện tại và không write/cancel Binance. Profit-lock dương của Cap TSL vẫn giữ rule riêng `10% -> +1%` tối đa.
-- Không thêm signal/label/card/stat cohort hay checkbox whitelist. Tái sử dụng key/API/localStorage Cap TSL hiện hữu; server tách checkbox Orders khỏi legacy signal-exclude và lưu optional `data/orders-cap-tsl.json` theo `ORDERS_CAP_TSL_STATE_V1_DURABLE_20260815`, nên restart không làm mất rule. File cũ thiếu được xem là rỗng và Orders vẫn đồng bộ localStorage lên; không migrate/rewrite trade JSON.
+- Version hiện tại `BINANCE_NEGATIVE_TP_TO_ENTRY_V4_CAP_TSL_INDEPENDENT_ROE20_20260824`; V3 loại trừ Cap TSL đã bị thay thế. Protection sau entry chỉ dùng average entry, mark/uPnL, margin/leverage và open close-orders hiện tại; không dùng future candle hoặc paper outcome.
+- Bot, Liquid Flow V2 và lệnh tay pass tại Binance ROE `<= -20%` dù symbol có Cap TSL. Socket, scanner 90 giây và deep guard dùng chung policy; scanner start trước kline warm-up. Symbol + entry dedupe và cooldown 2 phút giữ idempotency.
+- Khi pass, TP close-side xa entry bị hủy rồi thay bằng `LIMIT GTC reduceOnly` tại average entry; SL, entry, margin/size và leverage không đổi. Cap TSL tiếp tục chỉ quản lý profit-lock/trailing SL dương `10% -> +1%` tối đa và không còn chặn emergency TP-to-entry.
+- Không thêm signal/label/card/stat cohort hay checkbox whitelist. Key/API/localStorage và optional `data/orders-cap-tsl.json` vẫn tương thích cho profit-lock; không migrate/rewrite trade JSON, còn runtime dedupe được phục hồi bằng cách đọc order Binance sau restart.
 
 ### 2026-08-12 - Startup TP-only recovery cho position Binance dang mo
 

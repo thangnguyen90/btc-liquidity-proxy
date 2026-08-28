@@ -5,6 +5,11 @@ export const NON_LIQUID_FLOW_V2_LONG_TP_ROE = 10;
 export const ORDERS_MANUAL_TP_VERSION = 'MANUAL_SOCKET_TP_ROE30_V2_20260812';
 export const ORDERS_MANUAL_TP_ROE = 30;
 export const BINANCE_MANUAL_SOCKET_SOURCE = 'binance-manual-socket';
+export const BINANCE_BOT_SHORT_TP_ONLY_VERSION = 'BINANCE_BOT_SHORT_TP_ONLY_V1_20260824';
+export const BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION = 'BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_V1_20260824';
+export const COINGLASS_ZONE_LIFECYCLE_TP_ONLY_VERSION =
+  'COINGLASS_ZONE_LIFECYCLE_TP_ONLY_NO_SL_V1_20260828';
+export const BINANCE_MANUAL_SHORT_MAX_TP_ROE = 30;
 
 const MANUAL_TP_SOURCES = new Set([
   'orders-manual',
@@ -17,6 +22,14 @@ export function isLiquidFlowV2Source(source) {
 
 export function isCoinglassWebQualifiedSource(source) {
   return String(source ?? '').trim().toLowerCase() === 'coinglass-web-qualified';
+}
+
+export function isCoinglassZoneLifecycleSource(source) {
+  return String(source ?? '').trim().toLowerCase() === 'coinglass-zone-lifecycle';
+}
+
+export function shouldSuppressCoinglassZoneLifecycleStopLoss({ source, enabled = true } = {}) {
+  return enabled === true && isCoinglassZoneLifecycleSource(source);
 }
 
 export function isKnownBotSource(source) {
@@ -35,6 +48,68 @@ export function isKnownBotSource(source) {
     'rest_fill_recovery',
   ].includes(normalized)) return false;
   return true;
+}
+
+export function shouldSuppressBotShortStopLoss({
+  side,
+  source,
+  enabled = true,
+} = {}) {
+  if (enabled !== true) return false;
+  const normalizedSide = String(side ?? '').trim().toUpperCase();
+  if (normalizedSide !== 'SELL' && normalizedSide !== 'SHORT') return false;
+  const normalizedSource = String(source ?? '').trim().toLowerCase();
+  const isLegacyBotSignalSource = normalizedSource === 'signal';
+  // Explicit manual sources must keep their requested protection. Requiring a
+  // known bot source (plus the server's legacy auto source "signal") makes
+  // unknown/manual fills fail safe.
+  if ((!isKnownBotSource(normalizedSource) && !isLegacyBotSignalSource) || normalizedSource.includes('manual')) return false;
+  return true;
+}
+
+export function isManualShortProtectionSource({ side, source } = {}) {
+  const normalizedSide = String(side ?? '').trim().toUpperCase();
+  if (normalizedSide !== 'SELL' && normalizedSide !== 'SHORT') return false;
+  const normalizedSource = String(source ?? '').trim().toLowerCase();
+  return normalizedSource === 'manual'
+    || normalizedSource === 'orders-manual'
+    || normalizedSource === BINANCE_MANUAL_SOCKET_SOURCE
+    || normalizedSource.includes('manual');
+}
+
+export function resolveManualShortEma99TakeProfit({
+  entryPrice,
+  leverage,
+  candidates = [],
+  maxRoePct = BINANCE_MANUAL_SHORT_MAX_TP_ROE,
+} = {}) {
+  const entry = Number(entryPrice);
+  const lev = Number(leverage);
+  const maxRoe = Number(maxRoePct);
+  if (!(entry > 0) || !(lev > 0) || !(maxRoe > 0)) return null;
+
+  const validCandidates = (Array.isArray(candidates) ? candidates : [])
+    .map((row) => ({ interval: String(row?.interval ?? ''), price: Number(row?.price) }))
+    .filter((row) => row.price > 0 && row.price < entry)
+    .sort((a, b) => Math.abs(entry - a.price) - Math.abs(entry - b.price));
+  const selected = validCandidates[0] ?? null;
+  const capPrice = entry * (1 - (maxRoe / 100) / lev);
+  const selectedRoePct = selected ? ((entry - selected.price) / entry) * lev * 100 : null;
+  const capped = !selected || selectedRoePct > maxRoe;
+  const takeProfitPrice = capped ? capPrice : selected.price;
+  const roePct = ((entry - takeProfitPrice) / entry) * lev * 100;
+  return {
+    applied: true,
+    direction: 'SHORT',
+    takeProfitPrice,
+    roePct,
+    version: BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION,
+    selectedInterval: selected?.interval || null,
+    selectedEma99: selected?.price ?? null,
+    selectedEma99RoePct: selectedRoePct,
+    cappedAtMaxRoe: capped,
+    maxRoePct: maxRoe,
+  };
 }
 
 export function resolveOrdersManualTakeProfit({
@@ -90,21 +165,25 @@ export function resolveManualSocketProtection({
   side,
   entryPrice,
   leverage,
+  ema99Candidates = [],
   stopLossRoePct = 25,
   stopLossEnabled = true,
 } = {}) {
-  const takeProfit = resolveOrdersManualTakeProfit({
-    side,
-    source: BINANCE_MANUAL_SOCKET_SOURCE,
-    entryPrice,
-    leverage,
-  });
+  const manualShort = isManualShortProtectionSource({ side, source: BINANCE_MANUAL_SOCKET_SOURCE });
+  const takeProfit = manualShort
+    ? resolveManualShortEma99TakeProfit({ entryPrice, leverage, candidates: ema99Candidates })
+    : resolveOrdersManualTakeProfit({
+        side,
+        source: BINANCE_MANUAL_SOCKET_SOURCE,
+        entryPrice,
+        leverage,
+      });
   if (!takeProfit?.applied) return null;
 
   const entry = Number(entryPrice);
   const lev = Number(leverage);
   const slRoe = Number(stopLossRoePct);
-  const stopLossPrice = stopLossEnabled && Number.isFinite(slRoe) && slRoe > 0
+  const stopLossPrice = !manualShort && stopLossEnabled && Number.isFinite(slRoe) && slRoe > 0
     ? entry * (
         takeProfit.direction === 'LONG'
           ? 1 - (slRoe / 100) / lev
@@ -154,7 +233,8 @@ export function resolveNonLiquidFlowV2TakeProfit({
       ? NON_LIQUID_FLOW_V2_SHORT_TP_VERSION
       : null;
   if (!direction || !isKnownBotSource(source) || isLiquidFlowV2Source(source)
-    || isCoinglassWebQualifiedSource(source) || !(entry > 0) || !(lev > 0) || !(roe > 0)) {
+    || isCoinglassWebQualifiedSource(source) || isCoinglassZoneLifecycleSource(source)
+    || !(entry > 0) || !(lev > 0) || !(roe > 0)) {
     return {
       applied: false,
       direction,
