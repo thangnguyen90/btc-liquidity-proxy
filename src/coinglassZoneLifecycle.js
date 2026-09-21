@@ -1,7 +1,7 @@
 export const COINGLASS_ZONE_LIFECYCLE_VERSION =
-  'COINGLASS_ZONE_LIFECYCLE_V3_BINANCE_5USDT_TP_ONLY_20260828';
+  'COINGLASS_ZONE_LIFECYCLE_V16_LONG_00_06_VN_TIME_GATE_20260903';
 export const COINGLASS_ZONE_LIFECYCLE_DISCORD_VERSION =
-  'COINGLASS_ZONE_LIFECYCLE_DISCORD_V3_TP_ONLY_5USDT_20260828';
+  'COINGLASS_ZONE_LIFECYCLE_DISCORD_V16_LONG_00_06_VN_TIME_GATE_20260903';
 
 export const COINGLASS_ZONE_STATES = Object.freeze({
   FRESH: 'FRESH',
@@ -24,7 +24,29 @@ const DEFAULTS = Object.freeze({
   minTargetDistancePct: 1,
   maxTargetDistancePct: 15,
   leverage: 5,
-  marginUsdt: 5,
+  marginUsdt: 2,
+  acceptedBreakoutMarginUsdt: 10,
+  unconfirmedBounceLongMarginUsdt: 5,
+  fixedTakeProfitRoePct: 0,
+  supportReclaimMarginUsdt: 3,
+  supportReclaimMinLowerWickRangeRatio: 0.2,
+  supportReclaimMinCloseLocationRatio: 0.65,
+  strongShortMarginUsdt: 2,
+  largeTargetThresholdPct: 5,
+  largeTargetMarginUsdt: 2,
+  longSingleTargetMaxPct: 3,
+  longTp1DistancePct: 2,
+  longTp1CloseRatio: 0.7,
+  longTp2CapPct: 5,
+  shortSingleTargetMaxPct: 3,
+  shortTp1DistancePct: 2,
+  shortTp1CloseRatio: 0.7,
+  shortTp2CapPct: 5,
+  shortStrongWaveChange24hPct: 10,
+  shortStrongTakeProfitRoePct: 5,
+  shortStrongTp1DistancePct: 1,
+  shortStrongTp1CloseRatio: 0.8,
+  shortStrongTp2CapPct: 3,
   trackExpiryMs: 18 * 60_000,
 });
 
@@ -150,6 +172,56 @@ function structuralInvalidation(zone, side) {
   return side === 'LONG' ? zone.bandLow : zone.bandHigh;
 }
 
+function classifyLongSetup(track = {}, side = null, config = DEFAULTS) {
+  if (side !== 'LONG') return { label: null, ready: false, candidate: false };
+  if (track.zoneSide === 'ABOVE' && track.state === COINGLASS_ZONE_STATES.ACCEPTED) {
+    return {
+      label: 'BREAKOUT_ACCEPTED_LONG_READY',
+      ready: false,
+      candidate: false,
+      reason: 'ABOVE_ZONE_ACCEPTED_NOT_SUPPORT_RECLAIM',
+    };
+  }
+  const candidate = track.zoneSide === 'BELOW'
+    && track.state === COINGLASS_ZONE_STATES.REJECTED
+    && track.swept === true;
+  if (!candidate) {
+    return {
+      label: 'UNCLASSIFIED_LONG',
+      ready: false,
+      candidate: false,
+      reason: 'NOT_BELOW_SWEPT_REJECTED',
+    };
+  }
+  const candle = track.candle ?? {};
+  const range = Math.max(0, finite(candle.high, 0) - finite(candle.low, 0));
+  const lowerWick = Math.max(0, Math.min(
+    finite(candle.open, finite(candle.close, 0)),
+    finite(candle.close, 0),
+  ) - finite(candle.low, 0));
+  const lowerWickRangeRatio = range > 0 ? lowerWick / range : 0;
+  const closeLocationRatio = range > 0
+    ? (finite(candle.close, 0) - finite(candle.low, 0)) / range
+    : 0;
+  const bullishClose = finite(candle.close, 0) > finite(candle.open, 0);
+  const reclaimedZone = finite(candle.close, 0) > finite(track.zone?.bandHigh, 0)
+    * (1 + config.rejectionBufferPct / 100);
+  const ready = bullishClose
+    && reclaimedZone
+    && lowerWickRangeRatio >= config.supportReclaimMinLowerWickRangeRatio
+    && closeLocationRatio >= config.supportReclaimMinCloseLocationRatio;
+  return {
+    label: ready ? 'SUPPORT_RECLAIM_LONG_READY' : 'UNCONFIRMED_BOUNCE_LONG',
+    ready,
+    candidate: true,
+    reason: ready ? 'BELOW_ZONE_SWEPT_REJECTED_WITH_BULLISH_LOWER_WICK' : 'RECLAIM_LACKS_BULLISH_WICK_CONFIRMATION',
+    bullishClose,
+    reclaimedZone,
+    lowerWickRangeRatio: Number(lowerWickRangeRatio.toFixed(4)),
+    closeLocationRatio: Number(closeLocationRatio.toFixed(4)),
+  };
+}
+
 function buildEntryPlan({ row, track, activeZones, config }) {
   const side = terminalDirection(track.zoneSide, track.state);
   const entryPrice = finite(track.currentPrice);
@@ -158,17 +230,138 @@ function buildEntryPlan({ row, track, activeZones, config }) {
     side === 'LONG' ? zone.bandLow > entryPrice : zone.bandHigh < entryPrice
   )).sort((left, right) => left.distancePct - right.distancePct || right.attractionScore - left.attractionScore);
   const targetZone = targetPool[0] ?? null;
-  const takeProfitPrice = targetZone
+  const zoneTakeProfitPrice = targetZone
     ? side === 'LONG' ? targetZone.bandLow : targetZone.bandHigh
     : null;
-  const targetDistancePct = takeProfitPrice > 0
-    ? Math.abs(takeProfitPrice / entryPrice - 1) * 100
+  const zoneTargetDistancePct = zoneTakeProfitPrice > 0
+    ? Math.abs(zoneTakeProfitPrice / entryPrice - 1) * 100
     : null;
   const complete = Boolean(
-    takeProfitPrice > 0
-    && targetDistancePct >= config.minTargetDistancePct
-    && targetDistancePct <= config.maxTargetDistancePct,
+    zoneTakeProfitPrice > 0
+    && zoneTargetDistancePct >= config.minTargetDistancePct
+    && zoneTargetDistancePct <= config.maxTargetDistancePct,
   );
+  const useLongPartialTakeProfit = side === 'LONG'
+    && zoneTargetDistancePct > config.longSingleTargetMaxPct;
+  const change24hPct = finite(row?.change24hPct, finite(row?.priceChangePercent24h));
+  const strongUpWaveShort = side === 'SHORT'
+    && change24hPct >= config.shortStrongWaveChange24hPct;
+  const longSetup = classifyLongSetup(track, side, config);
+  const acceptedBreakoutLong = track.state === COINGLASS_ZONE_STATES.ACCEPTED
+    && track.zoneSide === 'ABOVE'
+    && side === 'LONG'
+    && longSetup.label === 'BREAKOUT_ACCEPTED_LONG_READY';
+  const acceptedBreakoutShort = track.state === COINGLASS_ZONE_STATES.ACCEPTED
+    && track.zoneSide === 'BELOW'
+    && side === 'SHORT';
+  const acceptedBreakout = acceptedBreakoutLong || acceptedBreakoutShort;
+  const fixedTakeProfitRoePct = config.fixedTakeProfitRoePct > 0
+    ? config.fixedTakeProfitRoePct
+    : null;
+  const fixedTakeProfitDistancePct = fixedTakeProfitRoePct == null
+    ? null
+    : fixedTakeProfitRoePct / Math.max(1, config.leverage);
+  const strongShortScalpDistancePct = config.shortStrongTakeProfitRoePct
+    / Math.max(1, config.leverage);
+  const shortTp1DistancePct = strongUpWaveShort
+    ? config.shortStrongTp1DistancePct
+    : config.shortTp1DistancePct;
+  const shortTp1CloseRatio = strongUpWaveShort
+    ? config.shortStrongTp1CloseRatio
+    : config.shortTp1CloseRatio;
+  const shortTp2CapPct = strongUpWaveShort
+    ? config.shortStrongTp2CapPct
+    : config.shortTp2CapPct;
+  const shortPartialThresholdPct = strongUpWaveShort
+    ? shortTp1DistancePct
+    : config.shortSingleTargetMaxPct;
+  const useShortPartialTakeProfit = side === 'SHORT' && !strongUpWaveShort
+    && zoneTargetDistancePct > shortPartialThresholdPct;
+  const takeProfitLegs = fixedTakeProfitDistancePct != null
+    ? [{
+        key: 'TP_FULL',
+        closeRatio: 1,
+        distancePct: fixedTakeProfitDistancePct,
+        distanceFraction: (side === 'LONG' ? 1 : -1) * fixedTakeProfitDistancePct / 100,
+        price: entryPrice * (1 + (side === 'LONG' ? 1 : -1) * fixedTakeProfitDistancePct / 100),
+      }]
+    : useLongPartialTakeProfit
+    ? [
+        {
+          key: 'TP1',
+          closeRatio: config.longTp1CloseRatio,
+          distancePct: config.longTp1DistancePct,
+          distanceFraction: config.longTp1DistancePct / 100,
+          price: entryPrice * (1 + config.longTp1DistancePct / 100),
+        },
+        {
+          key: 'TP2',
+          closeRatio: 1 - config.longTp1CloseRatio,
+          distancePct: Math.min(zoneTargetDistancePct, config.longTp2CapPct),
+          distanceFraction: Math.min(zoneTargetDistancePct, config.longTp2CapPct) / 100,
+          price: Math.min(zoneTakeProfitPrice, entryPrice * (1 + config.longTp2CapPct / 100)),
+        },
+      ]
+    : strongUpWaveShort
+      ? [{
+          key: 'TP_FULL',
+          closeRatio: 1,
+          distancePct: strongShortScalpDistancePct,
+          distanceFraction: -strongShortScalpDistancePct / 100,
+          price: entryPrice * (1 - strongShortScalpDistancePct / 100),
+        }]
+    : useShortPartialTakeProfit
+      ? [
+          {
+            key: 'TP1',
+            closeRatio: shortTp1CloseRatio,
+            distancePct: shortTp1DistancePct,
+            distanceFraction: -shortTp1DistancePct / 100,
+            price: entryPrice * (1 - shortTp1DistancePct / 100),
+          },
+          {
+            key: 'TP2',
+            closeRatio: 1 - shortTp1CloseRatio,
+            distancePct: Math.min(zoneTargetDistancePct, shortTp2CapPct),
+            distanceFraction: -Math.min(zoneTargetDistancePct, shortTp2CapPct) / 100,
+            price: Math.max(zoneTakeProfitPrice, entryPrice * (1 - shortTp2CapPct / 100)),
+          },
+        ]
+    : zoneTakeProfitPrice > 0
+      ? [{
+          key: 'TP_FULL',
+          closeRatio: 1,
+          distancePct: zoneTargetDistancePct,
+          distanceFraction: zoneTargetDistancePct / 100,
+          price: zoneTakeProfitPrice,
+        }]
+      : [];
+  const takeProfitPrice = takeProfitLegs.at(-1)?.price ?? zoneTakeProfitPrice;
+  const effectiveTargetDistancePct = takeProfitPrice > 0
+    ? Math.abs(takeProfitPrice / entryPrice - 1) * 100
+    : null;
+  const hasHigherTimeframeAgreement = Array.isArray(track.timeframeAgreement)
+    && track.timeframeAgreement.some((range) => range === '12h' || range === '24h');
+  const largeTargetEligible = side === 'LONG'
+    && track.zoneSide === 'ABOVE'
+    && track.state === COINGLASS_ZONE_STATES.ACCEPTED
+    && hasHigherTimeframeAgreement
+    && zoneTargetDistancePct > config.largeTargetThresholdPct;
+  const unconfirmedBounceLong = side === 'LONG'
+    && track.zoneSide === 'BELOW'
+    && track.state === COINGLASS_ZONE_STATES.REJECTED
+    && longSetup.label === 'UNCONFIRMED_BOUNCE_LONG';
+  const marginUsdt = acceptedBreakout
+    ? config.acceptedBreakoutMarginUsdt
+    : longSetup.ready
+    ? config.supportReclaimMarginUsdt
+    : unconfirmedBounceLong
+      ? config.unconfirmedBounceLongMarginUsdt
+    : largeTargetEligible
+      ? config.largeTargetMarginUsdt
+    : strongUpWaveShort
+      ? config.strongShortMarginUsdt
+      : config.marginUsdt;
   return {
     complete,
     reason: complete ? 'CONFIRMED_TERMINAL_WITH_NEXT_ACTIVE_EDGE_ZONE' : 'NO_VALID_NEXT_EDGE_TARGET',
@@ -176,14 +369,57 @@ function buildEntryPlan({ row, track, activeZones, config }) {
     entryType: 'MARKET_ON_CONFIRMED_TRANSITION',
     entryPrice,
     takeProfitPrice,
-    targetDistancePct: targetDistancePct == null ? null : Number(targetDistancePct.toFixed(3)),
+    targetDistancePct: effectiveTargetDistancePct == null ? null : Number(effectiveTargetDistancePct.toFixed(3)),
+    zoneTakeProfitPrice,
+    zoneTargetDistancePct: zoneTargetDistancePct == null ? null : Number(zoneTargetDistancePct.toFixed(3)),
+    takeProfitMode: fixedTakeProfitRoePct != null
+      ? `FIXED_FULL_${compactNumber(fixedTakeProfitRoePct, 3)}ROE`
+      : useLongPartialTakeProfit
+      ? 'LONG_PARTIAL_70_30'
+      : strongUpWaveShort
+        ? 'SHORT_SCALP_FULL_5ROE_STRONG_WAVE'
+      : useShortPartialTakeProfit
+        ? 'SHORT_PARTIAL_70_30'
+        : 'SINGLE_FULL',
+    takeProfitLegs: takeProfitLegs.map((leg) => ({
+      ...leg,
+      price: Number(leg.price.toPrecision(12)),
+      closeRatio: Number(leg.closeRatio.toFixed(4)),
+      distancePct: Number(leg.distancePct.toFixed(3)),
+      distanceFraction: Number(leg.distanceFraction.toFixed(6)),
+    })),
     stopLossPrice: null,
     stopLossRoePct: null,
     stopLossPolicy: 'COINGLASS_ZONE_LIFECYCLE_TP_ONLY_NO_SL',
     leverage: config.leverage,
-    marginUsdt: config.marginUsdt,
+    marginUsdt,
+    marginRule: acceptedBreakout
+      ? 'ACCEPTED_BREAKOUT_MARGIN'
+      : longSetup.ready
+      ? 'SUPPORT_RECLAIM_LONG_READY_MARGIN'
+      : unconfirmedBounceLong
+        ? 'UNCONFIRMED_BOUNCE_LONG_MARGIN'
+      : largeTargetEligible
+        ? `LONG_ABOVE_ACCEPTED_HTF_TARGET_GT_${compactNumber(config.largeTargetThresholdPct, 3)}PCT`
+      : strongUpWaveShort
+        ? 'STRONG_UP_WAVE_SHORT_MARGIN'
+        : 'BASE_MARGIN',
+    signalLabel: side === 'LONG'
+      ? longSetup.label
+      : acceptedBreakoutShort
+        ? 'BREAKDOWN_ACCEPTED_SHORT_READY'
+        : null,
+    supportReclaim: side === 'LONG' ? longSetup : null,
     structuralInvalidationPrice: structuralInvalidation(track.zone, side),
     targetZone,
+    change24hPct,
+    acceptedBreakout,
+    acceptedBreakoutLong,
+    acceptedBreakoutShort,
+    unconfirmedBounceLong,
+    shortWaveClass: side === 'SHORT' ? strongUpWaveShort ? 'STRONG_UP_WAVE' : 'NORMAL' : null,
+    takeProfitRoePct: fixedTakeProfitRoePct
+      ?? (strongUpWaveShort ? config.shortStrongTakeProfitRoePct : null),
   };
 }
 
@@ -323,8 +559,51 @@ export function buildCoinglassZoneLifecycleDiscordPayload({
   const links = externalLinks(event);
   const isEntry = event.shouldEnter === true;
   const stateLabel = `${event.previousState ?? 'NEW'} → ${event.state ?? 'UNKNOWN'}`;
-  const direction = plan.side ?? 'CHỜ';
+  const direction = plan.signalLabel ?? plan.side ?? 'CHỜ';
   const binanceDecision = execution?.decision ?? (isEntry ? 'CHƯA THỰC THI' : 'KHÔNG VÀO Ở STATE NÀY');
+  const timeGateNote = execution?.decision === 'BLOCKED_LONG_RULE_TIME_WINDOW_00_06_VN'
+    ? '\nKhông vào từ **00:00–05:59 giờ Việt Nam**; Discord chỉ báo để theo dõi.'
+    : '';
+  const partialTpText = Array.isArray(plan.takeProfitLegs) && plan.takeProfitLegs.length >= 2
+    ? [
+        `MARKET ~${compactNumber(plan.entryPrice)}`,
+        ...plan.takeProfitLegs.map((leg) => (
+          `${leg.key} **${compactNumber(leg.price)}** `
+          + `(${plan.side === 'SHORT' ? '-' : '+'}${compactNumber(leg.distancePct, 2)}%, `
+          + `đóng ${compactNumber(Number(leg.closeRatio) * 100, 0)}%)`
+        )),
+        `Vùng CoinGlass gốc **${compactNumber(plan.zoneTakeProfitPrice)}** `
+          + `(${plan.side === 'SHORT' ? '-' : '+'}${compactNumber(plan.zoneTargetDistancePct, 2)}%)`,
+        plan.shortWaveClass === 'STRONG_UP_WAVE'
+          ? `Sóng SHORT: **MẠNH — ưu tiên chốt sớm** · change24h **+${compactNumber(plan.change24hPct, 2)}%**`
+          : null,
+        plan.shortWaveClass === 'STRONG_UP_WAVE'
+          ? 'SL **BAN ĐẦU KHÔNG ĐẶT** · runner chỉ dời về entry sau TP1 + ROE ≥5%; hyper-volatile/ZKP/4 được loại trừ'
+          : 'SL **KHÔNG ĐẶT — entry Zone Lifecycle chạy TP-only**',
+      ].filter(Boolean).join('\n')
+    : null;
+  const strongShortScalpText = plan.takeProfitMode === 'SHORT_SCALP_FULL_5ROE_STRONG_WAVE'
+    ? `MARKET ~${compactNumber(plan.entryPrice)}\nTP **${compactNumber(plan.takeProfitPrice)}** (+${compactNumber(plan.takeProfitRoePct, 2)}% ROE, đóng 100%)\nSau khi SHORT đóng mới bật **LONG WATCH**; chỉ LONG $1 khi nến 5m quét EMA13/25, đóng reclaim, taker-buy xác nhận và 15m còn trên EMA99.\nSL **KHÔNG ĐẶT — riêng Zone Lifecycle chạy TP-only**`
+    : null;
+  const fixedRoeText = String(plan.takeProfitMode ?? '').startsWith('FIXED_FULL_')
+    ? `MARKET ~${compactNumber(plan.entryPrice)}\nTP **${compactNumber(plan.takeProfitPrice)}** (+${compactNumber(plan.takeProfitRoePct, 2)}% ROE, đóng 100%)\nSL **KHÔNG ĐẶT — riêng Zone Lifecycle chạy TP-only**`
+    : null;
+  const longClassificationText = plan.side === 'LONG'
+    ? plan.signalLabel === 'SUPPORT_RECLAIM_LONG_READY'
+      ? [
+          `**SUPPORT_RECLAIM_LONG_READY** · Binance **$${compactNumber(plan.marginUsdt, 2)}**`,
+          'Vùng hỗ trợ CoinGlass phía dưới đã **SWEPT → REJECTED**, nến đóng lấy lại vùng.',
+          `Nến tăng **${plan.supportReclaim?.bullishClose ? 'CÓ' : 'KHÔNG'}** · râu dưới **${compactNumber(Number(plan.supportReclaim?.lowerWickRangeRatio) * 100, 1)}% range** · close ở **${compactNumber(Number(plan.supportReclaim?.closeLocationRatio) * 100, 1)}% range**.`,
+          'Đây là hỗ trợ bật ngắn đã xác nhận cấu trúc; **không đồng nghĩa đảo xu hướng dài hạn**.',
+          '⚠️ Nếu giá vẫn dưới EMA99 dốc xuống hoặc bounce đi kèm OI giảm/taker-buy yếu thì vẫn có rủi ro **hồi quang phản chiếu**.',
+        ].join('\n')
+      : plan.signalLabel === 'BREAKOUT_ACCEPTED_LONG_READY'
+        ? '**BREAKOUT_ACCEPTED_LONG_READY** · xuyên và giữ vùng phía trên; không phải case chạm hỗ trợ bật lên.'
+        : `**${plan.signalLabel ?? 'UNCONFIRMED_BOUNCE_LONG'}** · chưa đạt bộ râu dưới + vị trí đóng nến của SUPPORT_RECLAIM.`
+    : null;
+  const shortClassificationText = plan.signalLabel === 'BREAKDOWN_ACCEPTED_SHORT_READY'
+    ? `**BREAKDOWN_ACCEPTED_SHORT_READY** · xuyên và giữ dưới vùng thanh lý phía dưới; Binance **$${compactNumber(plan.marginUsdt, 2)}** khi executor còn xác nhận state hợp lệ.`
+    : null;
   return {
     username: 'CoinGlass Zone Lifecycle',
     embeds: [{
@@ -349,16 +628,32 @@ export function buildCoinglassZoneLifecycleDiscordPayload({
           value: `H ${compactNumber(event.candle?.high)} · L ${compactNumber(event.candle?.low)} · C ${compactNumber(event.candle?.close)}\nKhung trùng mép phải: **${event.timeframeAgreement?.length ? event.timeframeAgreement.join(' + ') : 'chưa có 12h/24h bổ sung'}**`,
           inline: false,
         },
+        ...(longClassificationText ? [{
+          name: '🧭 PHÂN LOẠI LONG',
+          value: longClassificationText,
+          inline: false,
+        }] : []),
+        ...(shortClassificationText ? [{
+          name: '🧭 PHÂN LOẠI SHORT',
+          value: shortClassificationText,
+          inline: false,
+        }] : []),
         {
           name: isEntry ? '🎯 ENTRY / TP / SL' : '⏳ KẾ HOẠCH',
           value: plan.complete
-            ? `MARKET ~${compactNumber(plan.entryPrice)}\nTP **${compactNumber(plan.takeProfitPrice)}** (${compactNumber(plan.targetDistancePct, 2)}%)\nSL **KHÔNG ĐẶT — riêng Zone Lifecycle chạy TP-only**`
+            ? fixedRoeText
+              ? fixedRoeText
+              : strongShortScalpText
+                ? strongShortScalpText
+              : partialTpText
+              ? partialTpText
+              : `MARKET ~${compactNumber(plan.entryPrice)}\nTP **${compactNumber(plan.takeProfitPrice)}** (${compactNumber(plan.targetDistancePct, 2)}%, đóng 100%)\nSL **KHÔNG ĐẶT — riêng Zone Lifecycle chạy TP-only**`
             : `Chưa có vùng TP mép phải đúng hướng: ${plan.reason ?? 'NO_PLAN'}.`,
           inline: false,
         },
         {
           name: '🤖 BINANCE',
-          value: `**${binanceDecision}**${execution?.orderId ? ` · orderId ${execution.orderId}` : ''}${execution?.error ? `\n${String(execution.error).slice(0, 300)}` : ''}`,
+          value: `**${binanceDecision}**${execution?.orderId ? ` · orderId ${execution.orderId}` : ''}${timeGateNote}${execution?.error ? `\n${String(execution.error).slice(0, 300)}` : ''}`,
           inline: false,
         },
         {

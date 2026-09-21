@@ -60,7 +60,7 @@
         display: grid;
         gap: 11px;
       }
-      .ekr-card.long::before, .ekr-card.short::before {
+      .ekr-card.long::before, .ekr-card.short::before, .ekr-card.watch::before {
         content: "";
         position: absolute;
         inset: 0 0 auto;
@@ -68,6 +68,7 @@
       }
       .ekr-card.long::before { background: var(--green); }
       .ekr-card.short::before { background: var(--red); }
+      .ekr-card.watch::before { background: var(--amber); }
       .ekr-top {
         display: flex;
         justify-content: space-between;
@@ -112,6 +113,11 @@
         color: var(--red);
         border: 1px solid rgba(251, 113, 133, .4);
         background: rgba(251, 113, 133, .15);
+      }
+      .ekr-badge.watch {
+        color: var(--amber);
+        border-color: color-mix(in srgb, var(--amber) 55%, transparent);
+        background: color-mix(in srgb, var(--amber) 12%, transparent);
       }
       .ekr-score {
         display: flex;
@@ -237,9 +243,10 @@
       <section class="ekr-controls">
         <input id="searchInput" placeholder="Search symbol: CLO, BTC, ...">
         <select id="sideFilter">
-          <option value="all">LONG + SHORT</option>
+          <option value="all">LONG + SHORT + WATCH</option>
           <option value="LONG">LONG only</option>
           <option value="SHORT">SHORT only</option>
+          <option value="WATCH">WATCH only</option>
         </select>
         <select id="scoreFilter">
           <option value="0">Score all</option>

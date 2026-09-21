@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import {
   LIQUID_HEATMAP_FLOW_V2_LABELS,
   LIQUID_HEATMAP_FLOW_V2_VERSION,
+  LIQUID_FLOW_V2_SHORT_EMA99_ENTRY_GATE_VERSION,
   buildEmaFanLongSnapshot,
   buildEmaFanShortSnapshot,
   buildLiquidHeatmapFlowV2Features,
   buildPostPumpShortSqueezeSnapshot,
   buildPumpDistributionSnapshot,
   classifyLiquidHeatmapFlowV2,
+  evaluateLiquidFlowV2ShortEma99EntryGate,
   liquidHeatmapFlowV2ExtendedPrefilter,
   liquidHeatmapFlowV2Stats,
   selectLiquidHeatmapFlowV2Candidates,
@@ -61,7 +63,9 @@ const base = {
   liquidationSocketState: 'OPEN',
 };
 
-assert.equal(LIQUID_HEATMAP_FLOW_V2_VERSION, 'LIQUID_HEATMAP_FLOW_V2_FADING_WAVE_LIVE_RECOVERY_V24_20260819');
+assert.equal(LIQUID_HEATMAP_FLOW_V2_VERSION, 'LIQUID_HEATMAP_FLOW_V2_HTF_SHORT_LARGE_REBOUND_V30_20260914');
+assert.equal(LIQUID_FLOW_V2_SHORT_EMA99_ENTRY_GATE_VERSION,
+  'LIQUID_FLOW_V2_SHORT_EMA99_ENTRY_GATE_V1_20260830');
 assert.equal(LIQUID_FLOW_V2_FLAGPOLE_SHORT_KILL_VERSION,
   'LIQUID_FLOW_V2_FLAGPOLE_SHORT_KILL_V1_20260818');
 assert.equal(LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_VERSION,
@@ -427,6 +431,8 @@ assert.equal(upBaseLongReady.warmingUp, false);
 
 const downBaseShortReady = classifyLiquidHeatmapFlowV2({
   ...base,
+  ema99: 100,
+  lastClosedCandle: { close: 99.25, takerDeltaPct: -11 },
   change24hPct: -32,
   change1hPct: -6,
   volumeX: 2.2,
@@ -456,6 +462,8 @@ const htfPumpRejectShort = classifyLiquidHeatmapFlowV2({
   trend4h: { ready: true, bearish: false },
   ema99Retest15m: {
     ready: true,
+    ema99: 100,
+    close: 99.25,
     shortReady: true,
     shortTouchDistancePct: 0.4,
     pumpPct: 6.2,
@@ -539,6 +547,8 @@ assert.equal(distributionWatch.warmingUp, false);
 
 const distributionShortReady = classifyLiquidHeatmapFlowV2({
   ...base,
+  ema99: 100,
+  lastClosedCandle: { close: 99.25, takerDeltaPct: -18 },
   change24hPct: 45,
   pumpDistribution15m: {
     watchReady: false,
@@ -563,6 +573,8 @@ assert(distributionShortReady.confidence >= distributionWatch.confidence);
 
 const distributionNotMaskedByPrimary = classifyLiquidHeatmapFlowV2({
   ...base,
+  ema99: 100,
+  lastClosedCandle: { close: 99.25, takerDeltaPct: -8 },
   change24hPct: 45,
   change1hPct: 8,
   volumeX: 2.8,
@@ -705,9 +717,59 @@ const preDownBaseShort = classifyLiquidHeatmapFlowV2({
   bounceFromRecentLowPct: 2.8,
   baseSweepShort: { ready: false },
 });
-assert.equal(preDownBaseShort.labelKey, 'PRE_DOWN_BASE_SHORT');
+assert.equal(preDownBaseShort.labelKey, 'SHORT_EMA99_CONFIRMATION_WATCH');
 assert.equal(preDownBaseShort.side, 'SHORT');
-assert.equal(preDownBaseShort.phase, 'READY');
+assert.equal(preDownBaseShort.phase, 'WATCH');
+assert.equal(preDownBaseShort.sourceLabelKey, 'PRE_DOWN_BASE_SHORT');
+assert.equal(preDownBaseShort.ema99ShortEntryGate.state, 'WATCH_EMA99_CONGESTION');
+
+const preDownBaseShortConfirmed = classifyLiquidHeatmapFlowV2({
+  ...base,
+  candleCount: 180,
+  change24hPct: -18,
+  change1hPct: 1.4,
+  volumeX: 1.05,
+  takerDeltaPct: -5,
+  ema13: 98.8,
+  ema25: 99.3,
+  ema99: 100,
+  ema99DistancePct: -0.45,
+  ema99ShortTouchDistancePct: -0.2,
+  rejectFromApproachHighPct: 0.7,
+  ema99SlopePct: -0.04,
+  bounceFromRecentLowPct: 2.8,
+  lastClosedCandle: { close: 99.25, takerDeltaPct: -5 },
+  baseSweepShort: { ready: false },
+});
+assert.equal(preDownBaseShortConfirmed.labelKey, 'PRE_DOWN_BASE_SHORT');
+assert.equal(preDownBaseShortConfirmed.phase, 'READY');
+assert.equal(preDownBaseShortConfirmed.ema99ShortEntryGate.state,
+  'READY_CONFIRMED_0_5_TO_1_BELOW_EMA99');
+
+const shortNoChaseGate = evaluateLiquidFlowV2ShortEma99EntryGate({
+  labelKey: 'DOWN_BASE_SWEEP_SHORT_READY',
+}, {
+  ema99: 100,
+  lastClosedCandle: { close: 98.8, takerDeltaPct: -8 },
+  baseSweepShort: { holdConfirmed: true, breakoutConfirmed: true },
+});
+assert.equal(shortNoChaseGate.ready, false);
+assert.equal(shortNoChaseGate.state, 'WATCH_NO_CHASE_BELOW_EMA99');
+const shortPositiveFlowGate = evaluateLiquidFlowV2ShortEma99EntryGate({
+  labelKey: 'DOWN_BASE_SWEEP_SHORT_READY',
+}, {
+  ema99: 100,
+  lastClosedCandle: { close: 99.25, takerDeltaPct: 3 },
+  baseSweepShort: { holdConfirmed: true, breakoutConfirmed: true },
+});
+assert.equal(shortPositiveFlowGate.ready, false);
+assert.equal(shortPositiveFlowGate.state, 'WATCH_TAKER_SELL_REQUIRED');
+assert.equal(evaluateLiquidFlowV2ShortEma99EntryGate({
+  labelKey: 'UP_SWEEP_SHORT_READY',
+}, {}).applied, false);
+assert.equal(evaluateLiquidFlowV2ShortEma99EntryGate({
+  labelKey: 'EMA_FAN_SHORT_READY',
+}, {}).applied, false);
 
 const preLongBlockedBySellFlow = classifyLiquidHeatmapFlowV2({
   ...base,
@@ -907,7 +969,8 @@ const liveShortWickFeatures = {
   baseSweepShort: { ready: false },
 };
 const liveShortWick = classifyLiquidHeatmapFlowV2(liveShortWickFeatures);
-assert.equal(liveShortWick.labelKey, 'PRE_DOWN_BASE_SHORT');
+assert.equal(liveShortWick.labelKey, 'SHORT_EMA99_CONFIRMATION_WATCH');
+assert.equal(liveShortWick.sourceLabelKey, 'PRE_DOWN_BASE_SHORT');
 
 const liveShortOutsideEntryCap = classifyLiquidHeatmapFlowV2({
   ...liveShortWickFeatures,
@@ -1575,6 +1638,7 @@ const stats = liquidHeatmapFlowV2Stats([
   { symbol: 'KILLLONGUSDT', classification: killLongExhaustionReady },
   { symbol: 'FLAGPOLEUSDT', classification: flagpoleShortKillReady },
   { symbol: 'FADINGWAVEUSDT', classification: fadingWaveLivePumpReady },
+  { symbol: 'EMAWATCHUSDT', classification: preDownBaseShort },
   { symbol: 'MASKEDUSDT', classification: distributionNotMaskedByPrimary },
   { symbol: 'EXTENDEDUSDT', classification: extendedPanic },
   {
@@ -1624,6 +1688,12 @@ assert.equal(stats.find((row) => row.key === 'PRE_UP_BASE_LONG').paperClosed, 2)
 assert.equal(stats.find((row) => row.key === 'PRE_UP_BASE_LONG').paperAvgRoe, 5.25);
 assert.equal(stats.find((row) => row.key === 'PRE_UP_BASE_LONG').whitelistEligible, true);
 assert.equal(stats.find((row) => row.key === 'PRE_DOWN_BASE_SHORT').whitelistEligible, false);
+assert.equal(stats.find((row) => row.key === 'SHORT_EMA99_CONFIRMATION_WATCH').active, 1);
+assert.equal(stats.find((row) => row.key === 'SHORT_EMA99_CONFIRMATION_WATCH').whitelistKey,
+  'heatmap-v2:SHORT_EMA99_CONFIRMATION_WATCH');
+assert.equal(stats.find((row) => row.key === 'SHORT_EMA99_CONFIRMATION_WATCH').whitelistEligible, false);
+assert.equal(normalizeLiquidLiveCardKey('heatmap-v2:SHORT_EMA99_CONFIRMATION_WATCH'),
+  'heatmap-v2:SHORT_EMA99_CONFIRMATION_WATCH');
 assert.equal(stats.find((row) => row.key === 'HTF_BEAR_15M_EMA99_PUMP_REJECT').whitelistKey, 'heatmap-v2:HTF_BEAR_15M_EMA99_PUMP_REJECT');
 assert.equal(stats.find((row) => row.key === 'HTF_BEAR_15M_EMA99_PUMP_REJECT').whitelistEligible, true);
 assert.equal(stats.find((row) => row.key === 'HTF_BULL_15M_EMA99_DUMP_RECLAIM').whitelistEligible, false);

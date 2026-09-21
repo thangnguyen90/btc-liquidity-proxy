@@ -1,8 +1,12 @@
 import { buildFlagpoleShortKillSnapshot } from './liquidFlowV2FlagpoleShortKill.js';
 import { buildFadingWaveLivePumpSnapshot } from './liquidFlowV2FadingWaveLivePump.js';
+import { buildAgedPumpFadeRepumpSnapshot } from './liquidFlowV2AgedPumpFadeRepump.js';
+import { buildHtfDeepDumpBaseReclaimSnapshot } from './htfDeepDumpBaseReclaim.js';
 
-export const LIQUID_HEATMAP_FLOW_V2_VERSION = 'LIQUID_HEATMAP_FLOW_V2_FADING_WAVE_LIVE_RECOVERY_V24_20260819';
+export const LIQUID_HEATMAP_FLOW_V2_VERSION = 'LIQUID_HEATMAP_FLOW_V2_HTF_SHORT_LARGE_REBOUND_V30_20260914';
 export const PUMP_FLUSH_RECLAIM_VERSION = 'PUMP_FLUSH_RECLAIM_5M_V1_20260816';
+export const LIQUID_FLOW_V2_SHORT_EMA99_ENTRY_GATE_VERSION =
+  'LIQUID_FLOW_V2_SHORT_EMA99_ENTRY_GATE_V1_20260830';
 
 export const LIQUID_HEATMAP_FLOW_V2_LABELS = Object.freeze({
   UP_SQUEEZE_ACTIVE: Object.freeze({
@@ -115,6 +119,19 @@ export const LIQUID_HEATMAP_FLOW_V2_LABELS = Object.freeze({
     phase: 'READY',
     description: 'Rau nen 5m cham EMA99 roi reject; vao som truoc khi du BASE READY.',
   }),
+  SHORT_EMA99_CONFIRMATION_WATCH: Object.freeze({
+    key: 'SHORT_EMA99_CONFIRMATION_WATCH',
+    title: 'SHORT EMA99 · CONFIRMATION WATCH',
+    side: 'SHORT',
+    phase: 'WATCH',
+    description: 'Ung vien SHORT dang o vung tranh chap EMA99, chua du close 0.5-1% ben duoi + reject + taker ban. OBSERVE ONLY.',
+    observationOnly: true,
+    affectsOrders: false,
+    affectsBinance: false,
+    affectsEntry: false,
+    affectsSize: false,
+    affectsSlTp: false,
+  }),
   HTF_BEAR_15M_EMA99_PUMP_REJECT: Object.freeze({
     key: 'HTF_BEAR_15M_EMA99_PUMP_REJECT',
     title: 'HTF BEAR · 5M/15M EMA99 PUMP REJECT',
@@ -207,6 +224,19 @@ export const LIQUID_HEATMAP_FLOW_V2_LABELS = Object.freeze({
     affectsEntry: true,
     affectsSize: true,
     affectsSlTp: true,
+  }),
+  AGED_PUMP_FADE_REPUMP_SHORT_ALERT: Object.freeze({
+    key: 'AGED_PUMP_FADE_REPUMP_SHORT_ALERT',
+    title: 'AGED PUMP FADE · REPUMP SHORT ALERT',
+    side: 'SHORT',
+    phase: 'READY',
+    description: 'Coin đã bơm tạo đỉnh, xả dần/lower-high rồi dựng nến 5m volume lớn quét SHORT và rút khỏi đỉnh. OBSERVE ONLY.',
+    observationOnly: true,
+    affectsOrders: false,
+    affectsBinance: false,
+    affectsEntry: false,
+    affectsSize: false,
+    affectsSlTp: false,
   }),
   PUMP_FLUSH_RECLAIM_LONG_READY: Object.freeze({
     key: 'PUMP_FLUSH_RECLAIM_LONG_READY',
@@ -1748,9 +1778,18 @@ export function buildLiquidHeatmapFlowV2Features({
   const postPumpShortSqueeze5m = buildPostPumpShortSqueezeSnapshot(klines, now);
   const flagpoleShortKill5m = buildFlagpoleShortKillSnapshot(klines, now);
   const fadingWaveLivePump5m = buildFadingWaveLivePumpSnapshot(klines, now);
+  const agedPumpFadeRepump5m = buildAgedPumpFadeRepumpSnapshot(klines, now);
   const pumpFlushReclaim5m = buildPumpFlushReclaimSnapshot(klines, now);
   const emaFanLong5m = buildEmaFanLongSnapshot(klines, now);
   const emaFanShort5m = buildEmaFanShortSnapshot(klines, now);
+  const htfDeepDumpBaseReclaim = buildHtfDeepDumpBaseReclaimSnapshot({
+    symbol: String(market.symbol ?? ''),
+    klines5m: klines,
+    klines15m,
+    klines1h,
+    klines4h,
+    now,
+  });
   const htfBearCount = Number(trend1h.bearish) + Number(trend4h.bearish);
   const htfBullCount = Number(trend1h.bullish) + Number(trend4h.bullish);
 
@@ -1835,9 +1874,11 @@ export function buildLiquidHeatmapFlowV2Features({
     postPumpShortSqueeze5m,
     flagpoleShortKill5m,
     fadingWaveLivePump5m,
+    agedPumpFadeRepump5m,
     pumpFlushReclaim5m,
     emaFanLong5m,
     emaFanShort5m,
+    htfDeepDumpBaseReclaim,
     heatmapBias: finite(heatmap?.bias, null),
     openInterest: finite(openInterest?.value, null),
     openInterestDeltaPct: finite(openInterest?.deltaPct, null),
@@ -1870,6 +1911,182 @@ function evidence(name, matched, value = null) {
 
 function evidenceScore(rows, weights) {
   return rows.reduce((sum, row) => sum + (row.matched ? (weights[row.name] ?? 1) : 0), 0);
+}
+
+const SHORT_EMA99_GATED_LABELS = new Set([
+  'DOWN_BASE_SWEEP_SHORT_READY',
+  'PRE_DOWN_BASE_SHORT',
+  'HTF_BEAR_15M_EMA99_PUMP_REJECT',
+  'PUMP_DISTRIBUTION_SHORT_READY',
+]);
+
+function shortGateNumber(value, digits = 4) {
+  const number = finite(value, null);
+  return number == null ? '-' : Number(number.toFixed(digits));
+}
+
+function shortEma99RejectionConfirmed(labelKey, features = {}, selectedRetest = null) {
+  if (features.upperRejection === true) return true;
+  if (labelKey === 'DOWN_BASE_SWEEP_SHORT_READY') {
+    return features.baseSweepShort?.holdConfirmed === true
+      && features.baseSweepShort?.breakoutConfirmed === true;
+  }
+  if (labelKey === 'PRE_DOWN_BASE_SHORT') {
+    return finite(features.rejectFromApproachHighPct, 0) >= 0.6;
+  }
+  if (labelKey === 'HTF_BEAR_15M_EMA99_PUMP_REJECT') {
+    return selectedRetest?.shortReady === true
+      && finite(selectedRetest?.givebackRatio, 0) >= 0.25;
+  }
+  if (labelKey === 'PUMP_DISTRIBUTION_SHORT_READY') {
+    return finite(features.pumpDistribution15m?.upperWickCount, 0) >= 2
+      && (features.pumpDistribution15m?.retestFailed === true
+        || features.pumpDistribution15m?.continuationConfirmed === true);
+  }
+  return false;
+}
+
+function shortEma99SellFlow(labelKey, features = {}, selectedRetest = null) {
+  if (labelKey === 'HTF_BEAR_15M_EMA99_PUMP_REJECT') {
+    return finite(selectedRetest?.takerDeltaPct,
+      finite(features.lastClosedCandle?.takerDeltaPct, finite(features.takerDeltaPct, null)));
+  }
+  if (labelKey === 'PUMP_DISTRIBUTION_SHORT_READY') {
+    return finite(features.pumpDistribution15m?.breakdownTakerDeltaPct,
+      finite(features.lastClosedCandle?.takerDeltaPct, finite(features.takerDeltaPct, null)));
+  }
+  return finite(features.lastClosedCandle?.takerDeltaPct, finite(features.takerDeltaPct, null));
+}
+
+export function evaluateLiquidFlowV2ShortEma99EntryGate(classification = {}, features = {}) {
+  const labelKey = String(classification?.labelKey ?? '');
+  const base = {
+    version: LIQUID_FLOW_V2_SHORT_EMA99_ENTRY_GATE_VERSION,
+    applied: SHORT_EMA99_GATED_LABELS.has(labelKey),
+    sourceLabelKey: labelKey || null,
+    ready: true,
+    state: 'NOT_APPLICABLE',
+    timeframe: null,
+    ema99: null,
+    close: null,
+    distancePct: null,
+    rejectionConfirmed: null,
+    sellFlowPct: null,
+  };
+  if (!base.applied) return base;
+
+  const preferredTimeframe = String(classification?.ema99RetestTimeframe ?? '');
+  const candidates = [];
+  for (const [timeframe, retest] of [
+    ['5m', features.ema99Retest5m],
+    ['15m', features.ema99Retest15m],
+  ]) {
+    const ema99 = finite(retest?.ema99, null);
+    const close = finite(retest?.close, null);
+    if (ema99 > 0 && close > 0) {
+      candidates.push({
+        timeframe,
+        ema99,
+        close,
+        distancePct: (close - ema99) / ema99 * 100,
+        retest,
+      });
+    }
+  }
+  const closedPrice = finite(features.lastClosedCandle?.close, null);
+  const featureEma99 = finite(features.ema99, null);
+  if (closedPrice > 0 && featureEma99 > 0) {
+    candidates.push({
+      timeframe: '5m',
+      ema99: featureEma99,
+      close: closedPrice,
+      distancePct: (closedPrice - featureEma99) / featureEma99 * 100,
+      retest: features.ema99Retest5m ?? null,
+    });
+  }
+  if (!candidates.length) {
+    const fallbackDistance = finite(features.ema99DistancePct, null);
+    if (fallbackDistance != null) {
+      candidates.push({
+        timeframe: '5m',
+        ema99: featureEma99,
+        close: closedPrice,
+        distancePct: fallbackDistance,
+        retest: features.ema99Retest5m ?? null,
+      });
+    }
+  }
+  candidates.sort((a, b) => {
+    if (preferredTimeframe) {
+      const preferredDiff = Number(b.timeframe === preferredTimeframe) - Number(a.timeframe === preferredTimeframe);
+      if (preferredDiff) return preferredDiff;
+    }
+    return Math.abs(a.distancePct) - Math.abs(b.distancePct);
+  });
+  const selected = candidates[0] ?? null;
+  if (!selected || !Number.isFinite(selected.distancePct)) {
+    return { ...base, ready: false, state: 'WATCH_MISSING_CAUSAL_EMA99' };
+  }
+
+  const rejectionConfirmed = shortEma99RejectionConfirmed(labelKey, features, selected.retest);
+  const sellFlowPct = shortEma99SellFlow(labelKey, features, selected.retest);
+  const common = {
+    ...base,
+    timeframe: selected.timeframe,
+    ema99: selected.ema99,
+    close: selected.close,
+    distancePct: Number(selected.distancePct.toFixed(4)),
+    rejectionConfirmed,
+    sellFlowPct,
+  };
+  if (selected.distancePct > -0.5) {
+    return {
+      ...common,
+      ready: false,
+      state: Math.abs(selected.distancePct) <= 0.5
+        ? 'WATCH_EMA99_CONGESTION'
+        : 'WATCH_CLOSE_NOT_BELOW_EMA99',
+    };
+  }
+  if (selected.distancePct < -1) {
+    return { ...common, ready: false, state: 'WATCH_NO_CHASE_BELOW_EMA99' };
+  }
+  if (!rejectionConfirmed) {
+    return { ...common, ready: false, state: 'WATCH_UPPER_REJECTION_REQUIRED' };
+  }
+  if (!(sellFlowPct != null && sellFlowPct <= 0)) {
+    return { ...common, ready: false, state: 'WATCH_TAKER_SELL_REQUIRED' };
+  }
+  return { ...common, ready: true, state: 'READY_CONFIRMED_0_5_TO_1_BELOW_EMA99' };
+}
+
+function applyLiquidFlowV2ShortEma99EntryGate(classification = {}, features = {}) {
+  const gate = evaluateLiquidFlowV2ShortEma99EntryGate(classification, features);
+  if (!gate.applied || gate.ready) return { ...classification, ema99ShortEntryGate: gate };
+  const watch = LIQUID_HEATMAP_FLOW_V2_LABELS.SHORT_EMA99_CONFIRMATION_WATCH;
+  return {
+    ...classification,
+    labelKey: watch.key,
+    label: watch.title,
+    side: watch.side,
+    phase: watch.phase,
+    confidence: Math.min(finite(classification.confidence, 0), 88),
+    reason: `${classification.labelKey} tam chuyen WATCH boi EMA99 gate ${gate.state}; close/EMA99=${shortGateNumber(gate.close, 8)}/${shortGateNumber(gate.ema99, 8)}, dist=${shortGateNumber(gate.distancePct, 3)}%, reject=${gate.rejectionConfirmed === true ? 'YES' : 'NO'}, taker=${shortGateNumber(gate.sellFlowPct, 2)}%.`,
+    evidence: [
+      ...(Array.isArray(classification.evidence) ? classification.evidence : []),
+      evidence('ema99-gate-distance', gate.distancePct >= -1 && gate.distancePct <= -0.5, gate.distancePct),
+      evidence('ema99-gate-upper-reject', gate.rejectionConfirmed === true, gate.rejectionConfirmed),
+      evidence('ema99-gate-taker-sell', gate.sellFlowPct != null && gate.sellFlowPct <= 0, gate.sellFlowPct),
+    ],
+    sourceLabelKey: classification.labelKey,
+    observationOnly: true,
+    affectsOrders: false,
+    affectsBinance: false,
+    affectsEntry: false,
+    affectsSize: false,
+    affectsSlTp: false,
+    ema99ShortEntryGate: gate,
+  };
 }
 
 export function classifyLiquidHeatmapFlowV2(features = {}) {
@@ -2190,6 +2407,61 @@ export function classifyLiquidHeatmapFlowV2(features = {}) {
     affectsEntry: true,
     affectsSize: true,
     affectsSlTp: true,
+  } : null;
+
+  const agedPumpFadeRepump = features.agedPumpFadeRepump5m ?? {};
+  const agedPumpFadeRepumpUniverseReady = features.postPumpUniverse === true
+    && finite(features.liquidityRank, null) != null
+    && finite(features.liquidityRank, Infinity) <= 150
+    && finite(features.quoteVolume, 0) >= 2_000_000;
+  const agedPumpFadeRepumpShortReady = agedPumpFadeRepumpUniverseReady
+    && agedPumpFadeRepump.shortReady === true;
+  const agedPumpFadeRepumpEvidence = [
+    evidence('top-liquidity-rank', agedPumpFadeRepumpUniverseReady, features.liquidityRank),
+    evidence('aged-prior-pump', finite(agedPumpFadeRepump.priorPumpPct, 0) >= 10
+      && finite(agedPumpFadeRepump.barsSincePriorPeak, 0) >= 8,
+    `${agedPumpFadeRepump.priorPumpPct}/${agedPumpFadeRepump.barsSincePriorPeak}`),
+    evidence('fade-drawdown', finite(agedPumpFadeRepump.waveDrawdownPct, 0) >= 10
+      && finite(agedPumpFadeRepump.fadeReturnPct, Infinity) <= -2,
+    `${agedPumpFadeRepump.waveDrawdownPct}/${agedPumpFadeRepump.fadeReturnPct}`),
+    evidence('fade-lower-highs', finite(agedPumpFadeRepump.lowerHighSteps, 0) >= 1,
+      agedPumpFadeRepump.lowerHighSteps),
+    evidence('fade-bearish-ema', finite(agedPumpFadeRepump.ema13, Infinity)
+      < finite(agedPumpFadeRepump.ema25, -Infinity)
+      && finite(agedPumpFadeRepump.ema25, Infinity) < finite(agedPumpFadeRepump.ema99, -Infinity)
+      && finite(agedPumpFadeRepump.ema25Slope12Pct, Infinity) <= -0.35,
+    `${agedPumpFadeRepump.ema25Slope12Pct}`),
+    evidence('repump-height-atr', finite(agedPumpFadeRepump.signalHighOpenPct, 0) >= 4.5
+      && finite(agedPumpFadeRepump.signalRangeAtr, 0) >= 2.2,
+    `${agedPumpFadeRepump.signalHighOpenPct}/${agedPumpFadeRepump.signalRangeAtr}`),
+    evidence('repump-volume-taker', finite(agedPumpFadeRepump.signalVolumeX, 0) >= 2.5
+      && finite(agedPumpFadeRepump.signalTakerDeltaPct, -Infinity) >= 5,
+    `${agedPumpFadeRepump.signalVolumeX}/${agedPumpFadeRepump.signalTakerDeltaPct}`),
+    evidence('recent-high-sweep', finite(agedPumpFadeRepump.localHighSweepPct, 0) >= 0.5,
+      agedPumpFadeRepump.localHighSweepPct),
+    evidence('repump-rejection', finite(agedPumpFadeRepump.signalGivebackPct, 0) >= 1
+      && finite(agedPumpFadeRepump.signalUpperWickShare, 0) >= 0.2,
+    `${agedPumpFadeRepump.signalGivebackPct}/${agedPumpFadeRepump.signalUpperWickShare}`),
+  ];
+  const agedPumpFadeRepumpMatched = agedPumpFadeRepumpEvidence
+    .filter((row) => row.matched).length;
+  const agedPumpFadeRepumpClassification = agedPumpFadeRepumpShortReady ? {
+    labelKey: LIQUID_HEATMAP_FLOW_V2_LABELS.AGED_PUMP_FADE_REPUMP_SHORT_ALERT.key,
+    label: LIQUID_HEATMAP_FLOW_V2_LABELS.AGED_PUMP_FADE_REPUMP_SHORT_ALERT.title,
+    side: LIQUID_HEATMAP_FLOW_V2_LABELS.AGED_PUMP_FADE_REPUMP_SHORT_ALERT.side,
+    phase: LIQUID_HEATMAP_FLOW_V2_LABELS.AGED_PUMP_FADE_REPUMP_SHORT_ALERT.phase,
+    confidence: clamp(Math.round(56 + agedPumpFadeRepumpMatched * 3.5
+      + Math.min(finite(agedPumpFadeRepump.signalVolumeX, 2.5), 10)), 0, 96),
+    reason: 'Đây không phải nhịp pump đầu: coin đã có đỉnh cũ, xả dần/lower-high trong EMA bearish rồi nến 5m mới volume lớn quét đỉnh gần và rút râu. Chỉ gửi Discord đánh giá, không tạo paper/Binance.',
+    evidence: agedPumpFadeRepumpEvidence,
+    signalCandleClosedAt: finite(agedPumpFadeRepump.readyAt, null),
+    agedPumpFadeRepumpReadyAt: finite(agedPumpFadeRepump.readyAt, null),
+    observationOnly: true,
+    affectsOrders: false,
+    affectsBinance: false,
+    affectsEntry: false,
+    affectsSize: false,
+    affectsSlTp: false,
   } : null;
 
   const baseLong = features.baseSweepLong ?? {};
@@ -2705,61 +2977,7 @@ export function classifyLiquidHeatmapFlowV2(features = {}) {
     reason = 'Gia/volume dang mo rong xuong; cho sweep + reclaim truoc khi xet LONG.';
   }
 
-  const missing = [];
-  if (!candleReady) missing.push('closed-candles');
-  if (features.trend1h?.ready !== true && features.trend4h?.ready !== true) missing.push('htf-1h-4h-candles');
-  if (features.ema99Retest5m?.ready !== true && features.ema99Retest15m?.ready !== true) missing.push('5m-15m-ema99-candles');
-  if (finite(features.openInterestSamples, 0) < 2 || finite(features.openInterestDeltaPct, null) == null) missing.push('oi-delta');
-  if (String(features.liquidationSocketState) !== 'OPEN') missing.push('force-order-socket');
-  else if (finite(features.liquidationEvents, 0) === 0) missing.push('liquidation-events');
-  const continuationReady = label?.key === 'UP_BASE_SWEEP_LONG_READY'
-    || label?.key === 'UP_SWEEP_SHORT_READY'
-    || label?.key === 'DOWN_SWEEP_LONG_READY'
-    || label?.key === 'DOWN_BASE_SWEEP_SHORT_READY'
-    || label?.key === 'PRE_UP_BASE_LONG'
-    || label?.key === 'PRE_DOWN_BASE_SHORT'
-    || label?.key === 'HTF_BEAR_15M_EMA99_PUMP_REJECT'
-    || label?.key === 'HTF_BULL_15M_EMA99_DUMP_RECLAIM'
-    || label?.key === 'EXTENDED_EMA99_PANIC_RECLAIM_LONG'
-    || label?.key === 'PRIMARY_EMA99_PANIC_FLUSH_ACTIVE'
-    || label?.key === 'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY'
-    || label?.key === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY'
-    || label?.key === 'PUMP_DISTRIBUTION_WATCH'
-    || label?.key === 'PUMP_DISTRIBUTION_SHORT_READY'
-    || label?.key === 'POST_PUMP_BASE_ABSORPTION_WATCH'
-    || label?.key === 'POST_PUMP_SHORT_SQUEEZE_LONG_READY'
-    || label?.key === 'POST_PUMP_SHORT_SQUEEZE_PRIME'
-    || label?.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY'
-    || label?.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY'
-    || label?.key === 'PUMP_FLUSH_RECLAIM_LONG_READY';
-  const sweepWatch = label?.key === 'UP_SWEEP_SHORT_WATCH'
-    || label?.key === 'DOWN_SWEEP_LONG_WATCH';
-  const secondaryLabels = [
-    distributionClassification,
-    postPumpClassification,
-    flagpoleShortKillClassification,
-    pumpFlushClassification,
-    emaFanClassification,
-    emaFanShortClassification,
-  ]
-    .filter((classification) => classification && classification.labelKey !== label?.key);
-
-  const selectedPostPumpReady = label?.key === 'POST_PUMP_SHORT_SQUEEZE_LONG_READY';
-  const selectedPostPumpPrime = label?.key === 'POST_PUMP_SHORT_SQUEEZE_PRIME';
-  const selectedPrimaryPanicReady = label?.key === 'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY';
-  const selectedKillLongExhaustion = label?.key === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY';
-  const selectedFlagpoleShortKill = label?.key === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY';
-  const selectedFadingWaveLivePump = label?.key === 'FADING_WAVE_LIVE_PUMP_SHORT_READY';
-  const selectedPumpFlush = label?.key === 'PUMP_FLUSH_RECLAIM_LONG_READY';
-  const selectedSweepReady = label?.key === 'UP_SWEEP_SHORT_READY'
-    || label?.key === 'DOWN_SWEEP_LONG_READY';
-  const selectedPaperOnly = selectedPostPumpPrime || selectedKillLongExhaustion || selectedFlagpoleShortKill;
-  const selectedBinanceReady = selectedPostPumpReady || selectedPrimaryPanicReady
-    || selectedPumpFlush || selectedFadingWaveLivePump;
-  const selectedExecutable = selectedPaperOnly || selectedBinanceReady;
-
-  return {
-    version: LIQUID_HEATMAP_FLOW_V2_VERSION,
+  const rawPrimaryClassification = {
     labelKey: label?.key ?? 'WAIT',
     label: label?.title ?? 'WAIT · NO CONFIRMATION',
     side: label?.side ?? null,
@@ -2767,6 +2985,72 @@ export function classifyLiquidHeatmapFlowV2(features = {}) {
     confidence,
     reason,
     evidence: evidenceRows,
+    ema99RetestTimeframe,
+    ema99RetestCandleClosedAt,
+  };
+  const primaryClassification = applyLiquidFlowV2ShortEma99EntryGate(rawPrimaryClassification, features);
+  const primaryLabelKey = primaryClassification.labelKey;
+  const missing = [];
+  if (!candleReady) missing.push('closed-candles');
+  if (features.trend1h?.ready !== true && features.trend4h?.ready !== true) missing.push('htf-1h-4h-candles');
+  if (features.ema99Retest5m?.ready !== true && features.ema99Retest15m?.ready !== true) missing.push('5m-15m-ema99-candles');
+  if (finite(features.openInterestSamples, 0) < 2 || finite(features.openInterestDeltaPct, null) == null) missing.push('oi-delta');
+  if (String(features.liquidationSocketState) !== 'OPEN') missing.push('force-order-socket');
+  else if (finite(features.liquidationEvents, 0) === 0) missing.push('liquidation-events');
+  const continuationReady = primaryLabelKey === 'UP_BASE_SWEEP_LONG_READY'
+    || primaryLabelKey === 'UP_SWEEP_SHORT_READY'
+    || primaryLabelKey === 'DOWN_SWEEP_LONG_READY'
+    || primaryLabelKey === 'DOWN_BASE_SWEEP_SHORT_READY'
+    || primaryLabelKey === 'PRE_UP_BASE_LONG'
+    || primaryLabelKey === 'PRE_DOWN_BASE_SHORT'
+    || primaryLabelKey === 'HTF_BEAR_15M_EMA99_PUMP_REJECT'
+    || primaryLabelKey === 'HTF_BULL_15M_EMA99_DUMP_RECLAIM'
+    || primaryLabelKey === 'EXTENDED_EMA99_PANIC_RECLAIM_LONG'
+    || primaryLabelKey === 'PRIMARY_EMA99_PANIC_FLUSH_ACTIVE'
+    || primaryLabelKey === 'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY'
+    || primaryLabelKey === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY'
+    || primaryLabelKey === 'PUMP_DISTRIBUTION_WATCH'
+    || primaryLabelKey === 'PUMP_DISTRIBUTION_SHORT_READY'
+    || primaryLabelKey === 'POST_PUMP_BASE_ABSORPTION_WATCH'
+    || primaryLabelKey === 'POST_PUMP_SHORT_SQUEEZE_LONG_READY'
+    || primaryLabelKey === 'POST_PUMP_SHORT_SQUEEZE_PRIME'
+    || primaryLabelKey === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY'
+    || primaryLabelKey === 'FADING_WAVE_LIVE_PUMP_SHORT_READY'
+    || primaryLabelKey === 'PUMP_FLUSH_RECLAIM_LONG_READY';
+  const sweepWatch = primaryLabelKey === 'UP_SWEEP_SHORT_WATCH'
+    || primaryLabelKey === 'DOWN_SWEEP_LONG_WATCH'
+    || primaryLabelKey === 'SHORT_EMA99_CONFIRMATION_WATCH';
+  const secondaryLabels = [
+    agedPumpFadeRepumpClassification,
+    distributionClassification,
+    postPumpClassification,
+    flagpoleShortKillClassification,
+    pumpFlushClassification,
+    emaFanClassification,
+    emaFanShortClassification,
+  ]
+    .filter((classification) => classification && classification.labelKey !== label?.key)
+    .map((classification) => applyLiquidFlowV2ShortEma99EntryGate(classification, features))
+    .filter((classification, index, rows) => classification.labelKey !== primaryLabelKey
+      && rows.findIndex((row) => row.labelKey === classification.labelKey) === index);
+
+  const selectedPostPumpReady = primaryLabelKey === 'POST_PUMP_SHORT_SQUEEZE_LONG_READY';
+  const selectedPostPumpPrime = primaryLabelKey === 'POST_PUMP_SHORT_SQUEEZE_PRIME';
+  const selectedPrimaryPanicReady = primaryLabelKey === 'PRIMARY_EMA99_PANIC_RECLAIM_LONG_READY';
+  const selectedKillLongExhaustion = primaryLabelKey === 'KILL_LONG_EXHAUSTION_RECLAIM_LONG_READY';
+  const selectedFlagpoleShortKill = primaryLabelKey === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY';
+  const selectedFadingWaveLivePump = primaryLabelKey === 'FADING_WAVE_LIVE_PUMP_SHORT_READY';
+  const selectedPumpFlush = primaryLabelKey === 'PUMP_FLUSH_RECLAIM_LONG_READY';
+  const selectedSweepReady = primaryLabelKey === 'UP_SWEEP_SHORT_READY'
+    || primaryLabelKey === 'DOWN_SWEEP_LONG_READY';
+  const selectedPaperOnly = selectedPostPumpPrime || selectedKillLongExhaustion || selectedFlagpoleShortKill;
+  const selectedBinanceReady = selectedPostPumpReady || selectedPrimaryPanicReady
+    || selectedPumpFlush || selectedFadingWaveLivePump;
+  const selectedExecutable = selectedPaperOnly || selectedBinanceReady;
+
+  return {
+    version: LIQUID_HEATMAP_FLOW_V2_VERSION,
+    ...primaryClassification,
     signalCandleClosedAt: selectedFadingWaveLivePump
       ? finite(features.fadingWaveLivePump5m?.liveCandleOpenAt, null)
       : selectedFlagpoleShortKill
@@ -2778,8 +3062,6 @@ export function classifyLiquidHeatmapFlowV2(features = {}) {
         : selectedPrimaryPanicReady || selectedKillLongExhaustion || selectedSweepReady
           ? finite(features.candleClosedAt, null)
           : null,
-    ema99RetestTimeframe,
-    ema99RetestCandleClosedAt,
     secondaryLabels,
     missing,
     warmingUp: !candleReady || (!continuationReady && !sweepWatch && !postPumpLongReady && !postPumpWatchReady

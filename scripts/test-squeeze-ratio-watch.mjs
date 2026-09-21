@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { squeezePriceCandidate, derivativeAsOf, qualifySqueeze, squeezeDiscordPayload, SqueezeRatioWatch } from '../src/squeezeRatioWatch.js';
+const Q=900_000,H=3600_000,start=Date.UTC(2026,8,1);
+const bars=Array.from({length:160},(_,i)=>{
+  const o=100+i*0.1,c=o+0.09;
+  return {openTime:start+i*Q,closeTime:start+(i+1)*Q-1,open:o,close:c,high:c+0.01,low:o-0.01,quoteVolume:i===159?300:100};
+});
+const now=bars.at(-1).closeTime+1;
+const candidate=squeezePriceCandidate('TESTUSDT',bars,now);
+assert(candidate);
+assert.equal(squeezePriceCandidate('TESTUSDT',bars,now+Q),null);
+assert.equal(squeezePriceCandidate('TESTUSDT',bars,now-Q),null,'open trigger excluded');
+assert.equal(squeezePriceCandidate('TESTUSDT',bars.filter((_,i)=>i!==153),now),null,'gap rejected');
+assert.equal(squeezePriceCandidate('TESTUSDT',bars.map((b,i)=>({...b,quoteVolume:i===159?199:100})),now),null);
+const ts=candidate.at-2*Q+1;
+const ratios=[{timestamp:ts-H,longShortRatio:1.1},{timestamp:ts,longShortRatio:0.8},{timestamp:candidate.at,longShortRatio:2}];
+const interests=[{timestamp:ts-H,sumOpenInterest:100},{timestamp:ts,sumOpenInterest:104}];
+assert.equal(derivativeAsOf([{timestamp:0}],Q-1),null);
+assert.equal(derivativeAsOf([{timestamp:0}],2*Q+2001),null);
+assert.equal(qualifySqueeze(candidate,ratios,interests).tier,'RATIO_OI');
+assert.equal(qualifySqueeze(candidate,ratios,[]).oiDelta,null);
+assert.equal(qualifySqueeze(candidate,ratios,[]).tier,'RATIO');
+assert.equal(qualifySqueeze(candidate,[],interests),null);
+assert.equal(qualifySqueeze(candidate,ratios.map(r=>({...r,longShortRatio:1.2})),interests),null);
+assert.notEqual(squeezeDiscordPayload(qualifySqueeze(candidate,ratios,[])).embeds[0].color,
+  squeezeDiscordPayload(qualifySqueeze(candidate,ratios,interests)).embeds[0].color);
+const dir=await mkdtemp(join(tmpdir(),'squeeze-ratio-test-'));
+try {
+  let clock=now-2*Q,posts=0;
+  const config={stateFile:join(dir,'state.json'),webhookUrl:()=> 'https://example.invalid/test',now:()=>clock,
+    fetchImpl:async()=>{posts++;return {ok:true};},isBusy:()=>false};
+  const watcher=new SqueezeRatioWatch(config);
+  const event=qualifySqueeze(candidate,ratios,interests);
+  clock=now;
+  await watcher.deliver({...event,at:now-3*Q});assert.equal(posts,0,'no startup history replay');
+  await watcher.deliver(event);await watcher.deliver(event);assert.equal(posts,1);
+  await watcher.deliver({...event,tier:'RATIO'});assert.equal(posts,1,'strong covers weak');
+  assert.equal((await watcher.snapshot()).events[0].delivery,'sent');
+  assert(!JSON.stringify(await watcher.snapshot()).includes('example.invalid'));
+  const restarted=new SqueezeRatioWatch(config);
+  await restarted.deliver(event);assert.equal(posts,1);
+  clock+=Q;
+  await restarted.deliver({...event,at:clock-1});assert.equal(posts,1,'dedupe survives restart');
+  const rejected=new SqueezeRatioWatch({...config,stateFile:join(dir,'rejected.json'),fetchImpl:async()=>{posts++;return {ok:false,status:429,json:async()=>({retry_after:60})};}});
+  clock+=Q;
+  const later={...event,at:clock-1};
+  await rejected.deliver(later);assert.equal((await rejected.snapshot()).events[0].delivery,'rejected');
+  const count=posts;await rejected.deliver(later);assert.equal(posts,count);
+  clock+=61_000;rejected.fetchImpl=async()=>{posts++;return {ok:true};};
+  await rejected.deliver(later);assert.equal(posts,count+1);assert.equal((await rejected.snapshot()).events.length,1);
+  const uncertain=new SqueezeRatioWatch({...config,stateFile:join(dir,'unknown.json'),fetchImpl:async()=>{throw new Error('timeout');}});
+  clock+=Q;const unknown={...event,at:clock-1};await uncertain.deliver(unknown);
+  assert.equal((await uncertain.snapshot()).events[0].delivery,'unknown');
+  uncertain.fetchImpl=async()=>{throw new Error('must not replay');};await uncertain.deliver(unknown);
+  const scanning=new SqueezeRatioWatch({...config,stateFile:join(dir,'scan.json'),getSymbols:async()=>[{symbol:'TESTUSDT'}],
+    cache:{subscribeGroup(){},needsRefresh:()=>[],getIfCached:()=>bars},client:{getGlobalLongShortRatio:async()=>ratios,get:async()=>interests}});
+  scanning.startedAt=now-Q;clock=now;await scanning.scan();
+  assert.equal(scanning.health.status,'running');assert.equal(scanning.health.candidates,1);
+  assert.equal((await scanning.snapshot()).events[0].tier,'RATIO_OI');
+  const apiOnly=new SqueezeRatioWatch({...config,stateFile:join(dir,'api.json'),getSymbols:()=>{throw new Error('GET must not scan');}});
+  assert.deepEqual((await apiOnly.snapshot()).events,[]);
+  const server=await readFile(new URL('../src/server.js',import.meta.url),'utf8');
+  assert(server.includes("requestUrl.pathname === '/api/squeeze-ratio-watch'"));
+  assert(server.includes('squeezeRatioWatch.start();'));
+  const page=await readFile(new URL('../public/coin-level-analysis.html',import.meta.url),'utf8');
+  assert(page.indexOf('squeeze-watch-rows')<page.indexOf('id="result"'),'feed independent search result visibility');
+  assert(!page.includes('1551011831487799297'),'no webhook secret in UI');
+  console.log('PASS squeeze ratio: causal candles/asof, missing data, tiers, persisted dedupe, no replay, rate retry, scanner, read-only API/UI');
+} finally {await rm(dir,{recursive:true,force:true});}

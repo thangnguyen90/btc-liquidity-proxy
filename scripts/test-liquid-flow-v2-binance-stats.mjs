@@ -7,6 +7,8 @@ import {
   buildLiquidFlowV2BinanceStats,
   coinglassQualifiedBinanceAudits,
   coinglassQualifiedBinanceTrades,
+  coinglassZoneLifecycleBinanceAudits,
+  coinglassZoneLifecycleBinanceTrades,
   liquidFlowV2RealTrades,
   liquidFlowV2BinanceRollingRange,
   liquidFlowV2SyntheticExecutions,
@@ -126,6 +128,95 @@ assert.equal(coinglassQualifiedBinanceTrades({
   orderSnapshots: [{ symbol: 'CGOPENUSDT', orderId: 101, status: 'NEW', executedQty: '0' }],
 }).length, 0, 'CoinGlass SUBMITTED chưa xác nhận fill không được tính vào stats');
 
+const zoneLifecycleStates = [
+  {
+    streamId: 'primary',
+    state: {
+      processedEvents: {
+        long: {
+          id: 'ZLC1:ZONELONGUSDT:BELOW:REJECTED', symbol: 'ZONELONGUSDT', side: 'LONG',
+          state: 'REJECTED', signalLabel: 'SUPPORT_RECLAIM_LONG_READY', executionDecision: 'SUBMITTED',
+          orderId: 201, marginUsdt: 3, processedAt: bangkokNoon('2026-08-14'),
+        },
+        oldShort: {
+          id: 'ZLC1:ZONESHORTUSDT:BELOW:ACCEPTED', symbol: 'ZONESHORTUSDT', side: 'SHORT',
+          state: 'ACCEPTED', signalLabel: 'BREAKDOWN_ACCEPTED_SHORT_READY', executionDecision: 'SUBMITTED', orderId: 202,
+          processedAt: bangkokNoon('2026-08-14') + 60_000,
+        },
+        observe: {
+          id: 'ZLC1:WATCHUSDT:ABOVE:APPROACHING', symbol: 'WATCHUSDT', side: null,
+          state: 'APPROACHING', executionDecision: 'OBSERVE_APPROACHING', orderId: null,
+          processedAt: bangkokNoon('2026-08-14'),
+        },
+      },
+      strongWaveReversalWatches: {},
+    },
+  },
+  {
+    streamId: 'secondary',
+    state: {
+      processedEvents: {},
+      strongWaveReversalWatches: {
+        reversal: {
+          id: 'ZLC1:REVERSALUSDT:STRONG_WAVE_REVERSAL_LONG', symbol: 'REVERSALUSDT', status: 'SUBMITTED',
+          longOrderId: 203, longSubmittedAt: bangkokNoon('2026-08-14') + 120_000,
+        },
+      },
+    },
+  },
+];
+const zoneLifecycleAudits = coinglassZoneLifecycleBinanceAudits(zoneLifecycleStates, {
+  fromDay: '2026-08-14', toDay: '2026-08-14',
+});
+assert.equal(zoneLifecycleAudits.length, 3, 'phải lấy cả primary, secondary và reversal đã SUBMITTED');
+assert.equal(coinglassZoneLifecycleBinanceAudits(zoneLifecycleStates, {
+  labelKey: 'COINGLASS_ZONE_LIFECYCLE_SHORT',
+}).length, 1);
+const zoneLifecycleTrades = coinglassZoneLifecycleBinanceTrades({
+  audits: zoneLifecycleAudits,
+  orderSnapshots: [
+    { symbol: 'ZONELONGUSDT', orderId: 201, status: 'FILLED', executedQty: '10', avgPrice: '1.01', updateTime: bangkokNoon('2026-08-14') + 1_000 },
+    { symbol: 'ZONESHORTUSDT', orderId: 202, status: 'FILLED', executedQty: '20', avgPrice: '2.02', updateTime: bangkokNoon('2026-08-14') + 61_000 },
+    { symbol: 'REVERSALUSDT', orderId: 203, status: 'NEW', executedQty: '0', updateTime: bangkokNoon('2026-08-14') + 121_000 },
+  ],
+  positions: [
+    { symbol: 'ZONELONGUSDT', positionAmt: '10', markPrice: '1.02', unRealizedProfit: '0.1' },
+    { symbol: 'REVERSALUSDT', positionAmt: '3', markPrice: '3.1', unRealizedProfit: '0.2' },
+  ],
+  trackingPositions: {
+    REVERSALUSDT: {
+      entryOrderId: '203', signalSource: 'coinglass-zone-lifecycle', openedAt: bangkokNoon('2026-08-14') + 122_000,
+      entry: 3, protectionFillPrice: 3.01,
+    },
+  },
+  now: bangkokNoon('2026-08-14') + 3_600_000,
+});
+assert.equal(zoneLifecycleTrades.length, 3);
+assert.equal(zoneLifecycleTrades.find((trade) => trade.symbol === 'ZONELONGUSDT').status, 'OPEN');
+assert.equal(zoneLifecycleTrades.find((trade) => trade.symbol === 'ZONESHORTUSDT').status, 'CLOSED');
+assert.equal(zoneLifecycleTrades.find((trade) => trade.symbol === 'ZONESHORTUSDT').statsSignalLabel,
+  'BREAKDOWN_ACCEPTED_SHORT_READY');
+assert.equal(zoneLifecycleTrades.find((trade) => trade.symbol === 'ZONESHORTUSDT').binanceMarginUsdt, 2,
+  'JSON lifecycle cũ thiếu margin phải dùng mặc định primary');
+assert.equal(zoneLifecycleTrades.find((trade) => trade.symbol === 'REVERSALUSDT').binanceMarginUsdt, 1,
+  'secondary reversal thiếu margin phải dùng mặc định secondary');
+assert.equal(zoneLifecycleTrades.find((trade) => trade.symbol === 'REVERSALUSDT').binanceEntryState, 'FILLED',
+  'tracking exact order/source được dùng khi REST snapshot chưa thấy FILLED');
+const withZoneLifecycle = buildLiquidFlowV2BinanceStats({
+  trades: zoneLifecycleTrades,
+  reconciled: [{
+    lifecycleId: 'coinglass-zone-lifecycle:ZONESHORTUSDT:202', net: 0.19, realized: 0.2,
+    commission: -0.01, funding: 0, realizedIncomeCount: 1,
+  }],
+  positions: [
+    { symbol: 'ZONELONGUSDT', positionAmt: '10', markPrice: '1.02', unRealizedProfit: '0.1' },
+    { symbol: 'REVERSALUSDT', positionAmt: '3', markPrice: '3.1', unRealizedProfit: '0.2' },
+  ],
+});
+assert.equal(withZoneLifecycle.summary.total, 3);
+assert.equal(withZoneLifecycle.groups.some((group) => group.key === 'COINGLASS_ZONE_LIFECYCLE_LONG'), true);
+assert.equal(withZoneLifecycle.groups.some((group) => group.key === 'COINGLASS_ZONE_LIFECYCLE_SHORT'), true);
+
 const timingNow = bangkokTime('2026-08-23', 9, 30);
 assert.deepEqual(liquidFlowV2BinanceRollingRange(timingNow, 7), {
   fromDay: '2026-08-17', toDay: '2026-08-23', days: 7,
@@ -169,7 +260,10 @@ assert.match(uiSource, /position-closed/);
 assert.match(uiSource, /DISCONNECTED_REFRESH_MS = 30_000/);
 assert.match(htmlSource, /Chi tiết nguyên nhân thắng\/thua[\s\S]*REALTIME/);
 assert.match(htmlSource, /id="binanceStatsSymbolSearch"[\s\S]*type="search"/);
-assert.match(uiSource, /LIQUID_FLOW_V2_BINANCE_STATS_UI_V7_DAILY_TIMING_EDGE_20260823/);
+assert.match(uiSource, /LIQUID_FLOW_V2_BINANCE_STATS_UI_V8_ZONE_LIFECYCLE_20260902/);
+assert.match(htmlSource, /CoinGlass Qualified và Zone Lifecycle top 1–80/);
+assert.match(serverSource, /coinGlassWebTop20\.zoneLifecycleState\(\)/);
+assert.match(serverSource, /coinGlassWebSecondary\.zoneLifecycleState\(\)/);
 assert.match(uiSource, /String\(row\.symbol \?\? ''\)\.toUpperCase\(\)\.includes\(query\)/);
 assert.match(uiSource, /binanceStatsSymbolSearch\.addEventListener\('input'/);
 assert.match(htmlSource, /id="binanceStatsMarketBias"[\s\S]*ĐÁNH GIÁ SÓNG REALTIME/);

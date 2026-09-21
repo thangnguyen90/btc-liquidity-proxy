@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   EMA_FAN_LONG_ENTRY_CONFIRMATION_VERSION,
   LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_VERSION,
+  LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_VERSION,
   LIQUID_FLOW_V2_PAPER_VERSION,
   LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION,
   LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_VERSION,
@@ -12,6 +13,7 @@ import {
   LiquidFlowV2PaperManager,
   buildLiquidFlowV2PaperPlan,
   buildLiquidFlowV2PaperLabelDateStats,
+  compactLiquidFlowV2PaperSnapshot,
   evaluateLiquidFlowV2PaperExit,
   liquidFlowV2PaperMetrics,
   liquidFlowV2AutoBinanceProfile,
@@ -51,13 +53,28 @@ const settings = {
   roundTripFeeRate: 0.0008,
 };
 
-assert.equal(LIQUID_FLOW_V2_PAPER_VERSION, 'LIQUID_FLOW_V2_PAPER_V31_FADING_WAVE_LIVE_PUMP_BINANCE_20260818');
+assert.equal(LIQUID_FLOW_V2_PAPER_VERSION, 'LIQUID_FLOW_V2_PAPER_V32_SHORT_EMA99_CONFIRMATION_GATE_20260830');
 assert.equal(LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_VERSION, 'LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V1_2USDT_20260816');
 assert.equal(LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION,
   'LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_V1_1USDT_20260818');
 assert.equal(EMA_FAN_LONG_ENTRY_CONFIRMATION_VERSION, 'EMA_FAN_LONG_RETEST_CONFIRM_V1_20260816');
 assert.equal(LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_VERSION, 'LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_V1_20260816');
 assert.equal(LIQUID_FLOW_V2_SWEEP_ENTRY_POLICY_VERSION, 'LIQUID_FLOW_V2_SWEEP_ENTRY_GUARD_V1_20260816');
+assert.equal(LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_VERSION,
+  'LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_V1_ACTIVE_ONLY_20260831');
+const compactSnapshot = compactLiquidFlowV2PaperSnapshot({
+  total: 3,
+  closed: 1,
+  trades: [
+    { id: 'open', status: 'OPEN' },
+    { id: 'pending', status: 'PENDING_ENTRY' },
+    { id: 'closed', status: 'CLOSED' },
+  ],
+});
+assert.deepEqual(compactSnapshot.trades.map((trade) => trade.id), ['open', 'pending']);
+assert.equal(compactSnapshot.total, 3);
+assert.equal(compactSnapshot.closed, 1);
+assert.equal(compactSnapshot.historyOmitted, true);
 
 const bangkokTimestamp = (value) => Date.parse(`${value}+07:00`);
 const labelDateStatsTrades = [
@@ -186,16 +203,44 @@ const continuationShortPlan = buildLiquidFlowV2PaperPlan({
   classification: { phase: 'READY', labelKey: 'DOWN_BASE_SWEEP_SHORT_READY' },
   features: {
     markPrice: 0.97,
-    lastClosedCandle: { open: 1, high: 1.01, low: 0.96, close: 0.98 },
+    lastClosedCandle: { open: 1, high: 1.01, low: 0.96, close: 0.9925, takerDeltaPct: -8 },
+    ema99: 1,
     lowerZone: { price: 0.92 },
     upperZone: { price: 1.02 },
-    baseSweepShort: { sweepExtreme: 1.025, breakoutLevel: 1 },
+    baseSweepShort: {
+      sweepExtreme: 1.025,
+      breakoutLevel: 1,
+      holdConfirmed: true,
+      breakoutConfirmed: true,
+    },
   },
 }, settings);
 assert.equal(continuationShortPlan.side, 'SHORT');
 assert.equal(continuationShortPlan.entryPrice, 0.994);
 assert.equal(continuationShortPlan.leverage, 5);
 assert(continuationShortPlan.stopLoss > continuationShortPlan.entryPrice);
+assert.equal(buildLiquidFlowV2PaperPlan({
+  symbol: 'BASESHORTWATCHUSDT',
+  classification: { phase: 'READY', labelKey: 'DOWN_BASE_SWEEP_SHORT_READY' },
+  features: {
+    markPrice: 1,
+    ema99: 1,
+    lastClosedCandle: { close: 0.998, takerDeltaPct: -8 },
+    lowerZone: { price: 0.95 },
+    baseSweepShort: { holdConfirmed: true, breakoutConfirmed: true },
+  },
+}, settings), null);
+assert.equal(buildLiquidFlowV2PaperPlan({
+  symbol: 'BASESHORTCHASEUSDT',
+  classification: { phase: 'READY', labelKey: 'DOWN_BASE_SWEEP_SHORT_READY' },
+  features: {
+    markPrice: 0.98,
+    ema99: 1,
+    lastClosedCandle: { close: 0.988, takerDeltaPct: -8 },
+    lowerZone: { price: 0.95 },
+    baseSweepShort: { holdConfirmed: true, breakoutConfirmed: true },
+  },
+}, settings), null);
 
 const preLongPlan = buildLiquidFlowV2PaperPlan({
   symbol: 'PRELONGUSDT',
@@ -216,8 +261,9 @@ const preShortPlan = buildLiquidFlowV2PaperPlan({
   classification: { phase: 'READY', labelKey: 'PRE_DOWN_BASE_SHORT' },
   features: {
     markPrice: 0.995,
-    lastClosedCandle: { close: 0.994 },
+    lastClosedCandle: { close: 0.994, takerDeltaPct: -5 },
     ema99: 1,
+    rejectFromApproachHighPct: 0.7,
     lowerZone: { price: 0.96 },
   },
 }, settings);
@@ -313,7 +359,17 @@ assert.equal(liquidFlowV2AutoBinanceProfile({ labelKey: 'EMA_FAN_SHORT_READY' },
 const htfShortPlan = buildLiquidFlowV2PaperPlan({
   symbol: 'HTFSHORTUSDT',
   classification: { phase: 'READY', labelKey: 'HTF_BEAR_15M_EMA99_PUMP_REJECT' },
-  features: { markPrice: 1, lowerZone: { price: 0.97 } },
+  features: {
+    markPrice: 1,
+    lowerZone: { price: 0.97 },
+    ema99Retest15m: {
+      ema99: 1,
+      close: 0.9925,
+      shortReady: true,
+      givebackRatio: 0.5,
+      takerDeltaPct: -4,
+    },
+  },
 }, settings);
 assert.equal(htfShortPlan.side, 'SHORT');
 assert.equal(htfShortPlan.entryMode, 'IMMEDIATE_MARK');
@@ -324,7 +380,17 @@ assert.deepEqual(
 const distributionPlan = buildLiquidFlowV2PaperPlan({
   symbol: 'DISTUSDT',
   classification: { phase: 'READY', labelKey: 'PUMP_DISTRIBUTION_SHORT_READY' },
-  features: { markPrice: 1, lowerZone: { price: 0.96 } },
+  features: {
+    markPrice: 1,
+    lowerZone: { price: 0.96 },
+    ema99: 1,
+    lastClosedCandle: { close: 0.9925, takerDeltaPct: -5 },
+    pumpDistribution15m: {
+      upperWickCount: 2,
+      retestFailed: true,
+      breakdownTakerDeltaPct: -5,
+    },
+  },
 }, settings);
 assert.equal(distributionPlan.side, 'SHORT');
 assert.equal(distributionPlan.entryMode, 'IMMEDIATE_MARK');
@@ -445,6 +511,15 @@ assert.equal(liquidFlowV2AutoBinanceProfile(
   { labelKey: 'FADING_WAVE_LIVE_PUMP_SHORT_READY' },
   { ...settings, fadingWaveLivePumpBinanceEnabled: false },
 ).eligible, false);
+assert.equal(buildLiquidFlowV2PaperPlan({
+  symbol: 'PROMUSDT',
+  classification: { phase: 'READY', labelKey: 'AGED_PUMP_FADE_REPUMP_SHORT_ALERT' },
+  features: { markPrice: 5.4, lastClosedCandle: { close: 5.4 } },
+}, settings), null);
+assert.deepEqual(
+  liquidFlowV2AutoBinanceProfile({ labelKey: 'AGED_PUMP_FADE_REPUMP_SHORT_ALERT' }, settings),
+  { eligible: false, cohort: null, marginUsdt: null, leverage: null, source: null },
+);
 const htfLongPlan = buildLiquidFlowV2PaperPlan({
   symbol: 'HTFLONGUSDT',
   classification: { phase: 'READY', labelKey: 'HTF_BULL_15M_EMA99_DUMP_RECLAIM' },
@@ -717,7 +792,14 @@ try {
     features: {
       markPrice: 1,
       candleClosedAt: 3_000_000,
-      ema99Retest15m: { candleClosedAt: 9_000_000 },
+      ema99Retest15m: {
+        candleClosedAt: 9_000_000,
+        ema99: 1,
+        close: 0.9925,
+        shortReady: true,
+        givebackRatio: 0.5,
+        takerDeltaPct: -4,
+      },
       lowerZone: { price: 0.97 },
     },
   }], new Set(['HTFEVALUSDT']), 10_000_000);
@@ -765,7 +847,15 @@ try {
     features: {
       markPrice: 1,
       candleClosedAt: 4_000_000,
-      pumpDistribution15m: { candleClosedAt: 11_000_000, support: 1.01 },
+      ema99: 1,
+      lastClosedCandle: { close: 0.9925, takerDeltaPct: -5 },
+      pumpDistribution15m: {
+        candleClosedAt: 11_000_000,
+        support: 1.01,
+        upperWickCount: 2,
+        retestFailed: true,
+        breakdownTakerDeltaPct: -5,
+      },
       lowerZone: { price: 0.96 },
     },
   }], new Set(['DISTUSDT']), 12_000_000);
@@ -793,7 +883,15 @@ try {
     features: {
       markPrice: 2,
       candleClosedAt: 13_000_000,
-      pumpDistribution15m: { readyAt: 12_500_000, candleClosedAt: 13_000_000 },
+      ema99: 2,
+      lastClosedCandle: { close: 1.985, takerDeltaPct: -5 },
+      pumpDistribution15m: {
+        readyAt: 12_500_000,
+        candleClosedAt: 13_000_000,
+        upperWickCount: 2,
+        retestFailed: true,
+        breakdownTakerDeltaPct: -5,
+      },
       lowerZone: { price: 1.92 },
     },
   }], new Set(), 14_000_000, new Set(['MASKEDDISTUSDT|PUMP_DISTRIBUTION_SHORT_READY']));
@@ -1160,5 +1258,19 @@ try {
 } finally {
   await rm(legacyRoot, { recursive: true, force: true });
 }
+
+const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+const pageSource = await readFile(new URL('../public/liquid-flow-v2.js', import.meta.url), 'utf8');
+assert.match(serverSource, /function liquidFlowV2ClientPayload\(data = \{\}\)/);
+assert.match(serverSource, /function liquidFlowV2InitializingPayload\(\)/);
+assert.match(serverSource, /LIQUID_FLOW_V2_SSE_COALESCE_V1_5S_20260831/);
+assert.match(serverSource, /function flushLiquidFlowV2ClientSse\(\)/);
+assert.match(serverSource, /pushLiquidFlowV2ClientSse\(result\)/);
+assert.match(serverSource, /initial background refresh failed/);
+assert.match(serverSource, /sendJson\(response, liquidFlowV2InitializingPayload\(\)\)/);
+assert.match(serverSource, /sendJson\(response, liquidFlowV2ClientPayload\(cached\)\)/);
+assert.match(pageSource, /lastRenderedBoardKey/);
+assert.match(pageSource, /boardKey === lastRenderedBoardKey/);
+assert.match(pageSource, /Đang khởi động dữ liệu scan/);
 
 console.log('Liquid Flow V2 automatic paper tests passed.');

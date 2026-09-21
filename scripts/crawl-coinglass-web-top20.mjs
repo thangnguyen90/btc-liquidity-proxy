@@ -12,9 +12,12 @@ import {
   COINGLASS_WEB_TOP20_ISOLATION,
   COINGLASS_WEB_TOP20_MODE,
   COINGLASS_WEB_TOP20_VERSION,
+  COIN_LEVEL_COINGLASS_ON_DEMAND_VERSION,
   mergeLastGoodHeatmapRows,
   qualifyCoinglassOpportunity,
+  safeCoinglassSymbol,
   selectBinanceAppMoverCandidates,
+  sliceCoinglassMoverStream,
   summarizeCoinglassHeatmap,
 } from '../src/coinglassWebTop20.js';
 
@@ -222,7 +225,7 @@ async function captureQualifiedTimeframe(page, market, range, previousSummary) {
 }
 
 async function crawlSymbol(page, market, {
-  imageDir, range, initial = false, captureImages = false,
+  imageDir, imageUrlBase, range, initial = false, captureImages = false,
 }) {
   const expectedSymbol = `Binance_${market.symbol}`;
   const coin = market.baseAsset;
@@ -284,7 +287,7 @@ async function crawlSymbol(page, market, {
     await canvas.waitFor({ state: 'visible', timeout: 30_000 });
     const imageFile = join(imageDir, `${market.symbol}.png`);
     await canvas.screenshot({ path: imageFile });
-    imageUrl = `/api/coinglass-web-top20/image?symbol=${encodeURIComponent(market.symbol)}`;
+    imageUrl = `${imageUrlBase}?symbol=${encodeURIComponent(market.symbol)}`;
   }
   // The proposal and qualification use the structured React state above, not
   // canvas pixels. Keeping four large WebGL heatmaps visible makes Chromium's
@@ -309,17 +312,27 @@ async function crawlSymbol(page, market, {
 
 const rootDir = process.cwd();
 const limit = Math.max(1, Math.min(40, Number(argument('--limit', '40')) || 40));
+const rankOffset = Math.max(0, Math.min(960, Number(argument('--rank-offset', '0')) || 0));
+const rawOnDemandSymbol = argument('--on-demand-symbol', '');
+const onDemandSymbol = rawOnDemandSymbol ? safeCoinglassSymbol(rawOnDemandSymbol) : '';
+if (rawOnDemandSymbol && !onDemandSymbol) {
+  throw new Error(`Invalid on-demand CoinGlass symbol: ${rawOnDemandSymbol}`);
+}
 const range = '48h';
 const reason = argument('--reason', 'manual');
 const dataDir = resolve(argument('--data-dir', join(rootDir, 'data', 'coinglass-web-top20')));
 const imageDir = join(dataDir, 'images');
+const imageUrlBase = argument('--image-url-base', '/api/coinglass-web-top20/image');
 const snapshotFile = join(dataDir, 'snapshot.json');
 const progressFile = join(dataDir, 'progress.json');
+const onDemandDir = join(dataDir, 'on-demand');
+const onDemandFile = onDemandSymbol ? join(onDemandDir, `${onDemandSymbol}.json`) : null;
+const onDemandProgressFile = onDemandSymbol ? join(onDemandDir, `${onDemandSymbol}.progress.json`) : null;
 const profileDir = join(dataDir, 'browser-profile');
 const startedAt = new Date().toISOString();
 const scanBudgetMs = Math.max(60_000, Math.min(
   150_000,
-  Number(process.env.COINGLASS_WEB_SCAN_BUDGET_MS) || 150_000,
+  Number(argument('--scan-budget-ms', process.env.COINGLASS_WEB_SCAN_BUDGET_MS || '150000')) || 150_000,
 ));
 const scanDeadlineAt = Date.parse(startedAt) + scanBudgetMs;
 const binanceBase = String(process.env.BINANCE_FUTURES_BASE_URL ?? 'https://fapi.binance.com').replace(/\/$/, '');
@@ -329,6 +342,7 @@ const viewportHeight = Math.max(360, Math.min(900, Number(process.env.COINGLASS_
 const disableGpu = process.env.COINGLASS_WEB_DISABLE_GPU !== 'false';
 
 await mkdir(imageDir, { recursive: true });
+if (onDemandSymbol) await mkdir(onDemandDir, { recursive: true });
 
 let context;
 try {
@@ -337,21 +351,50 @@ try {
     fetchJson(`${binanceBase}/fapi/v1/ticker/24hr`),
     fetchJson(`${binanceBase}/fapi/v1/ticker/bookTicker`),
   ]);
-  const topPerSide = Math.max(20, Math.ceil((limit - 1) / 2));
-  const moverCandidates = selectBinanceAppMoverCandidates(exchangeInfo, tickers, {
-    topPerSide,
-    maxSymbols: Math.max(2, limit - 1),
-    minQuoteVolume: 2_000_000,
-  });
-  if (!moverCandidates.length) throw new Error('Binance returned no eligible top gainer/loser contracts');
-  const liquidityMetrics = await loadBinanceLiquidityMetrics(binanceBase, moverCandidates, bookTickers);
-  const binanceSelection = applyBinanceLiquidityFilter(
-    moverCandidates,
-    liquidityMetrics,
-    Math.min(moverCandidates.length, limit + 16),
-    { preserveOrder: true },
-  );
-  const markets = binanceSelection.assessed.slice(0, limit);
+  let moverUniverse = [];
+  let moverCandidates = [];
+  let binanceSelection = { assessed: [], excluded: [] };
+  let markets = [];
+  if (onDemandSymbol) {
+    const contract = (Array.isArray(exchangeInfo?.symbols) ? exchangeInfo.symbols : [])
+      .find((item) => item?.symbol === onDemandSymbol
+        && item?.contractType === 'PERPETUAL'
+        && item?.quoteAsset === 'USDT'
+        && item?.status === 'TRADING');
+    const ticker = (Array.isArray(tickers) ? tickers : []).find((item) => item?.symbol === onDemandSymbol);
+    if (!contract || !ticker) throw new Error(`${onDemandSymbol} is not an active Binance USDT perpetual contract`);
+    markets = [{
+      symbol: onDemandSymbol,
+      baseAsset: contract.baseAsset,
+      quoteAsset: contract.quoteAsset,
+      lastPrice: Number(ticker.lastPrice),
+      priceChangePercent: Number(ticker.priceChangePercent),
+      quoteVolume: Number(ticker.quoteVolume),
+      count: Number(ticker.count),
+      rank: null,
+      globalRank: null,
+      moverSide: 'ON_DEMAND',
+      moverRank: null,
+    }];
+  } else {
+    const requestedUniverseSize = rankOffset + limit;
+    const topPerSide = Math.max(20, Math.ceil((requestedUniverseSize - 1) / 2));
+    moverUniverse = selectBinanceAppMoverCandidates(exchangeInfo, tickers, {
+      topPerSide,
+      maxSymbols: Math.max(2, requestedUniverseSize - 1),
+      minQuoteVolume: 2_000_000,
+    });
+    moverCandidates = sliceCoinglassMoverStream(moverUniverse, rankOffset, limit);
+    if (!moverCandidates.length) throw new Error('Binance returned no eligible top gainer/loser contracts');
+    const liquidityMetrics = await loadBinanceLiquidityMetrics(binanceBase, moverCandidates, bookTickers);
+    binanceSelection = applyBinanceLiquidityFilter(
+      moverCandidates,
+      liquidityMetrics,
+      Math.min(moverCandidates.length, limit + 16),
+      { preserveOrder: true },
+    );
+    markets = binanceSelection.assessed.slice(0, limit);
+  }
   if (!markets.length) throw new Error('No Binance market passed the liquidity filter');
 
   const localLibraryPath = join(rootDir, '.playwright-libs', 'root', 'usr', 'lib', 'x86_64-linux-gnu');
@@ -396,11 +439,68 @@ try {
   const browserConcurrency = Math.max(1, Math.min(
     4,
     markets.length,
-    Math.trunc(Number(process.env.COINGLASS_WEB_BROWSER_CONCURRENCY) || 4),
+    Math.trunc(Number(argument('--browser-concurrency', process.env.COINGLASS_WEB_BROWSER_CONCURRENCY || '4')) || 4),
   ));
   const pages = [context.pages()[0] ?? await context.newPage()];
   while (pages.length < browserConcurrency) pages.push(await context.newPage());
   await Promise.all(pages.map((page) => page.emulateMedia({ reducedMotion: 'reduce' })));
+
+  if (onDemandSymbol) {
+    await writeJsonAtomic(onDemandProgressFile, {
+      version: COIN_LEVEL_COINGLASS_ON_DEMAND_VERSION,
+      symbol: onDemandSymbol,
+      status: 'RUNNING',
+      startedAt,
+    });
+    const page = pages[0];
+    const market = markets[0];
+    const base = await withinDeadline(crawlSymbol(page, market, {
+      imageDir,
+      imageUrlBase,
+      range: '48h',
+      initial: true,
+      captureImages: false,
+    }), scanDeadlineAt - Date.now());
+    const twelveHour = await withinDeadline(
+      captureQualifiedTimeframe(page, market, '12h', base.heatmap),
+      scanDeadlineAt - Date.now(),
+    );
+    const twentyFourHour = await withinDeadline(
+      captureQualifiedTimeframe(page, market, '24h', twelveHour.heatmap),
+      scanDeadlineAt - Date.now(),
+    );
+    const completedAt = new Date().toISOString();
+    const payload = {
+      version: COIN_LEVEL_COINGLASS_ON_DEMAND_VERSION,
+      mode: 'OBSERVE_ONLY',
+      symbol: onDemandSymbol,
+      updatedAt: completedAt,
+      row: {
+        ...base,
+        qualifiedTimeframes: {
+          version: COINGLASS_WEB_QUALIFIED_TIMEFRAMES_VERSION,
+          '12h': twelveHour,
+          '24h': twentyFourHour,
+        },
+      },
+      execution: {
+        binanceEnabled: false,
+        affectsEntry: false,
+        affectsSize: false,
+        affectsStopLoss: false,
+        affectsTakeProfit: false,
+      },
+    };
+    await writeJsonAtomic(onDemandFile, payload);
+    await writeJsonAtomic(onDemandProgressFile, {
+      version: payload.version,
+      symbol: onDemandSymbol,
+      status: 'COMPLETE',
+      startedAt,
+      completedAt,
+    });
+    process.stdout.write(JSON.stringify({ ok: true, symbol: onDemandSymbol, updatedAt: completedAt }));
+  } else {
 
   let nextMarketIndex = 0;
   let progressWrite = Promise.resolve();
@@ -441,7 +541,7 @@ try {
       try {
         rows.push(await withinDeadline(
           crawlSymbol(page, market, {
-            imageDir, range, initial, captureImages,
+            imageDir, imageUrlBase, range, initial, captureImages,
           }),
           scanDeadlineAt - Date.now(),
         ));
@@ -515,6 +615,7 @@ try {
           await setHeatmapRange(page, '48h');
           const base = await crawlSymbol(page, row, {
             imageDir,
+            imageUrlBase,
             range: '48h',
             initial: false,
             captureImages: false,
@@ -568,6 +669,10 @@ try {
     reason,
     source: {
       ranking: 'BTC reference + Binance app-style top gainers/losers by 24h change; volume/trades/OI/top-book/spread are eligibility only; CoinGlass cluster quality is the final filter',
+      rankOffset,
+      rankFrom: rankOffset + 1,
+      rankTo: rankOffset + publishedRows.length,
+      moverUniverseSize: moverUniverse.length,
       contracts: `${binanceBase}/fapi/v1/exchangeInfo`,
       heatmap: 'https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3',
       exchange: 'Binance',
@@ -618,15 +723,27 @@ try {
     scanBudgetMs,
   });
   process.stdout.write(JSON.stringify({ ok: true, updatedAt: snapshot.updatedAt, rows: rows.length, failures: failures.length }));
+  }
 } catch (error) {
   const message = String(error?.message ?? error);
-  await writeJsonAtomic(progressFile, {
-    version: COINGLASS_WEB_TOP20_VERSION,
-    running: false,
-    startedAt,
-    failedAt: new Date().toISOString(),
-    error: message,
-  }).catch(() => {});
+  if (onDemandSymbol) {
+    await writeJsonAtomic(onDemandProgressFile, {
+      version: COIN_LEVEL_COINGLASS_ON_DEMAND_VERSION,
+      symbol: onDemandSymbol,
+      status: 'FAILED',
+      startedAt,
+      failedAt: new Date().toISOString(),
+      error: message,
+    }).catch(() => {});
+  } else {
+    await writeJsonAtomic(progressFile, {
+      version: COINGLASS_WEB_TOP20_VERSION,
+      running: false,
+      startedAt,
+      failedAt: new Date().toISOString(),
+      error: message,
+    }).catch(() => {});
+  }
   process.stdout.write(JSON.stringify({ ok: false, error: message }));
   process.exitCode = 1;
 } finally {

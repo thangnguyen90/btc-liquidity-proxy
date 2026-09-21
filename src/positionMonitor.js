@@ -12,8 +12,9 @@
 // onRoeUpdate(symbol, pos, markPrice, roe) is called on every mark price tick.
 
 import WebSocket from 'ws';
+import { binancePositionPriceRoe } from './binanceProfitLock.js';
 
-export const POSITION_MONITOR_MARK_STREAM_VERSION = 'POSITION_MONITOR_PER_SYMBOL_MARK_STREAM_V4_20260812';
+export const POSITION_MONITOR_MARK_STREAM_VERSION = 'POSITION_MONITOR_PER_SYMBOL_MARK_STREAM_V5_PRICE_ROE_20260831';
 export const POSITION_PROTECTION_TRIGGER_VERSION = 'POSITION_PROTECTION_SOCKET_FILL_V4_LISTEN_KEY_RECONNECT_20260816';
 export const POSITION_USER_DATA_STREAM_VERSION = 'POSITION_USER_DATA_STREAM_V2_LISTEN_KEY_RECOVERY_20260816';
 export const POSITION_MONITOR_MARK_STREAM_URL = 'wss://fstream.binance.com/market/stream';
@@ -118,10 +119,6 @@ export function startPositionMonitor({
   };
 
   // ── Helpers ────────────────────────────────────────────────────────────────
-  function calcMargin(pos) {
-    return resolvePositionRoeMargin(pos);
-  }
-
   function upsert(symbol, fields) {
     const prev = posCache.get(symbol) ?? {};
     posCache.set(symbol, { ...prev, ...fields });
@@ -169,8 +166,17 @@ export function startPositionMonitor({
       // Remove positions that are now closed
       for (const sym of posCache.keys()) {
         if (!activeSymbols.has(sym)) {
+          const closedPosition = posCache.get(sym);
           posCache.delete(sym);
           updateMarkPriceSubscriptions();
+          if (onPositionClose) {
+            Promise.resolve(onPositionClose(sym, closedPosition, {
+              source: 'REST_POSITION_SYNC',
+              eventTime: Date.now(),
+            })).catch((error) => {
+              console.warn(`[PosMonitor] REST close callback ${sym}: ${error.message}`);
+            });
+          }
         }
       }
       stats.lastRestSyncAt = Date.now();
@@ -532,12 +538,26 @@ export function startPositionMonitor({
           if (amt === 0) {
             if (posCache.has(p.s)) {
               // Position vừa đóng (SL/TP/manual) → trigger cleanup ngay
+              const closedPosition = posCache.get(p.s);
               posCache.delete(p.s);
               updateMarkPriceSubscriptions();
-              if (onPositionClose) onPositionClose(p.s);
+              if (onPositionClose) onPositionClose(p.s, closedPosition, {
+                source: 'ACCOUNT_UPDATE',
+                eventTime: Number(msg.E ?? msg.T) || Date.now(),
+                transactionTime: Number(msg.T) || null,
+                eventReason: msg.a?.m ?? null,
+              });
             }
           } else {
             const prev = posCache.get(p.s);
+            if (prev && Number(prev.amt) !== 0 && Math.sign(Number(prev.amt)) !== Math.sign(amt)) {
+              if (onPositionClose) onPositionClose(p.s, prev, {
+                source: 'ACCOUNT_UPDATE_REVERSAL',
+                eventTime: Number(msg.E ?? msg.T) || Date.now(),
+                transactionTime: Number(msg.T) || null,
+                eventReason: msg.a?.m ?? null,
+              });
+            }
             const next = {
               amt,
               entry: Number(p.ep),
@@ -748,14 +768,18 @@ export function startPositionMonitor({
 
       // Calculate ROE from current mark price (not stale upnl)
       const upnl = (markPrice - pos.entry) * pos.amt;
-      const margin = calcMargin(pos);
-      if (margin <= 0) return;
+      const roe = binancePositionPriceRoe({
+        side: Number(pos.amt) > 0 ? 'LONG' : 'SHORT',
+        entryPrice: pos.entry,
+        markPrice,
+        leverage: pos.leverage,
+      });
+      if (!Number.isFinite(roe)) return;
 
       // Keep markPrice + upnl fresh in posCache so callers don't need extra REST calls
       pos.markPrice = markPrice;
       pos.unRealizedProfit = upnl;
 
-      const roe = (upnl / margin) * 100;
       stats.lastRoeUpdateAt = Date.now();
       stats.lastRoeSymbol = symbol;
       onRoeUpdate(symbol, pos, markPrice, roe);

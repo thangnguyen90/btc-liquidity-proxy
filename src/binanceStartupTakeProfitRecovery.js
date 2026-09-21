@@ -5,7 +5,7 @@ import {
   resolveOrdersManualTakeProfit,
 } from './shortTakeProfitPolicy.js';
 
-export const BINANCE_STARTUP_TP_ONLY_RECOVERY_VERSION = 'BINANCE_TP_ONLY_GUARD_V2_20260812';
+export const BINANCE_STARTUP_TP_ONLY_RECOVERY_VERSION = 'BINANCE_TP_ONLY_GUARD_V3_BREAK_EVEN_LIMIT_AWARE_20260905';
 
 const finitePositive = (value) => {
   const parsed = Number(value);
@@ -17,10 +17,26 @@ export function startupPositionNeedsTakeProfit(position, regularOrders = [], alg
   const amount = Number(position?.positionAmt ?? position?.amt);
   if (!symbol || !Number.isFinite(amount) || amount === 0) return false;
   const closeSide = amount > 0 ? 'SELL' : 'BUY';
+  const positionSide = String(position?.positionSide ?? 'BOTH').toUpperCase();
+  const entry = Number(position?.entryPrice ?? position?.entry);
+  const breakEvenLimitExists = Number.isFinite(entry) && entry > 0
+    && (Array.isArray(regularOrders) ? regularOrders : []).some((order) => {
+      if (String(order?.symbol ?? '').toUpperCase() !== symbol) return false;
+      if (String(order?.side ?? '').toUpperCase() !== closeSide) return false;
+      if (String(order?.positionSide ?? 'BOTH').toUpperCase() !== positionSide) return false;
+      if (String(order?.origType ?? order?.type ?? '').toUpperCase() !== 'LIMIT') return false;
+      if (positionSide === 'BOTH' && order?.reduceOnly !== true && String(order?.reduceOnly) !== 'true') return false;
+      const price = Number(order?.price);
+      const quantity = Number(order?.origQty ?? order?.quantity);
+      const priceNearEntry = Number.isFinite(price) && Math.abs(price - entry) / entry <= 0.005;
+      const coversPosition = Number.isFinite(quantity) && quantity >= Math.abs(amount) * 0.995;
+      return priceNearEntry && coversPosition;
+    });
+  if (breakEvenLimitExists) return false;
   return !hasOpenProtectionOrder(regularOrders, algoOrders, {
     symbol,
     closeSide,
-    positionSide: position?.positionSide ?? 'BOTH',
+    positionSide,
     kind: 'TP',
   });
 }

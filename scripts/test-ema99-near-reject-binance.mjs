@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import {mkdtemp} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {POST_PUMP_EMA99_RETEST_VERSION,EMA99_REBOUND_PUMP_NEAR_REJECT_STAGE,EMA99_FIRST_PUMP_NEAR_REJECT_STAGE} from '../src/postPumpEma99Retest.js';
+import {Ema99NearRejectRunner,buildEma99NearRejectOrder,EMA99_NEAR_REJECT_ROUTE} from '../src/ema99NearRejectBinance.js';
+import {AutoEntryControls} from '../src/autoEntryControls.js';
+import {authorizeEma99NearRejectOrder,evaluateAutoBinanceEntryPolicy} from '../src/autoBinancePolicy.js';
+import {shouldSuppressBotShortStopLoss,resolveNonLiquidFlowV2TakeProfit} from '../src/shortTakeProfitPolicy.js';
+const now=Date.now()+5000;
+const event={version:POST_PUMP_EMA99_RETEST_VERSION,stage:EMA99_REBOUND_PUMP_NEAR_REJECT_STAGE,pumpLegType:'REBOUND_PUMP_AFTER_DUMP',side:'SHORT',closed:true,nearMiss:true,
+  symbol:'TESTUSDT',interval:'15m',candleAt:now-901000,candleCloseAt:now-1000,generatedAt:new Date(now).toISOString(),
+  referenceEntry:100,takeProfit:95,invalidation:103,reason:'test',upperWickPct:50,gapToEmaPct:.5,volumeRatio:2};
+const opts={now,enabledAt:new Date(now-2000).toISOString(),markPrice:100};
+const plan=buildEma99NearRejectOrder(event,opts);assert.ok(plan);assert.equal(plan.notionalUsdt,25);assert.equal(plan.leverage,5);assert.equal(plan.orderType,'MARKET');
+assert.equal(plan.takeProfitPrice,97);assert.equal(plan.takeProfitDistanceFraction,.03);assert.equal(plan.stopLossDistanceFraction,.06);
+for(const patch of [{stage:'NEAR_EMA_WATCH'},{stage:'REJECTED_SHORT_WATCH'},{stage:EMA99_FIRST_PUMP_NEAR_REJECT_STAGE,pumpLegType:'FIRST_PUMP_FROM_BASE'},{pumpLegType:'FIRST_PUMP_FROM_BASE'},{side:'LONG'},{closed:false},{nearMiss:false},{takeProfit:null},{invalidation:null},{candleCloseAt:now-91000},{generatedAt:'bad'}])assert.equal(buildEma99NearRejectOrder({...event,...patch},opts),null);
+assert.equal(buildEma99NearRejectOrder(event,{...opts,enabledAt:new Date(now).toISOString()}),null,'no replay before activation');
+assert.equal(buildEma99NearRejectOrder(event,{...opts,markPrice:99}),null,'no chasing');
+assert.equal(shouldSuppressBotShortStopLoss({side:'SHORT',source:plan.source}),false);
+const tp=resolveNonLiquidFlowV2TakeProfit({side:'SELL',source:plan.source,entryPrice:100,leverage:5,requestedTakeProfitPrice:95});
+assert.equal(tp.applied,false);assert.equal(tp.takeProfitPrice,95);
+assert.equal(evaluateAutoBinanceEntryPolicy({payload:plan,orderEnabled:true}).allowed,false,'text cannot authorize');
+assert.equal(evaluateAutoBinanceEntryPolicy({payload:authorizeEma99NearRejectOrder(plan),orderEnabled:true}).allowed,true);
+assert.equal(evaluateAutoBinanceEntryPolicy({payload:authorizeEma99NearRejectOrder({...plan,leverage:10}),orderEnabled:true}).allowed,false);
+const dir=await mkdtemp(join(tmpdir(),'near-reject-order-')),controls=new AutoEntryControls(join(dir,'controls.json'));
+const route=controls.register({...EMA99_NEAR_REJECT_ROUTE,signalInterval:event.interval});
+let count=0,context={enabled:true,positions:[],openOrders:[],markPrice:100};
+const runner=()=>new Ema99NearRejectRunner({file:join(dir,'attempts.json'),controls,now:()=>now,
+  getContext:async()=>context,submit:async()=>{count++;return {status:'submitted',orderResult:{orderId:1}};}});
+let run=runner();assert.equal((await run.handle(event)).status,'off');
+controls.update({action:'route',key:route.key,enabled:true});controls.update({action:'master',enabled:true});
+context.positions=[{symbol:'TESTUSDT',positionAmt:1}];assert.equal((await run.handle(event)).status,'existing-position');
+context.positions=[];context.openOrders=[{symbol:'TESTUSDT',reduceOnly:false}];assert.equal((await run.handle(event)).status,'existing-order');
+context.openOrders=[];
+await Promise.all([run.handle(event),run.handle(event)]);assert.equal(count,1);
+run=runner();assert.equal((await run.handle(event)).status,'deduped');assert.equal(count,1);
+const other=controls.register({...EMA99_NEAR_REJECT_ROUTE,signalInterval:'5m'});
+controls.update({action:'route',key:other.key,enabled:true});
+assert.equal((await run.handle({...event,interval:'5m',candleAt:event.candleAt+1})).status,'deduped','symbol cooldown across frames');
+controls.update({action:'pauseAll'});assert.equal((await run.handle(event)).status,'off');
+console.log('EMA99 near-reject Binance tests passed: exact stage, $5 x5, fresh-only, protection, controls, position/order guard, durable dedupe; mock orders only.');

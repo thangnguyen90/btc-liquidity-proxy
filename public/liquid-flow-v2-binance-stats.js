@@ -12,7 +12,7 @@ const els = Object.fromEntries([
   'binanceStatsBestLongWindows', 'binanceStatsBestShortWindows', 'binanceStatsDailyTimingUpdated',
 ].map((id) => [id, document.getElementById(id)]));
 
-const LIQUID_FLOW_V2_BINANCE_STATS_UI_VERSION = 'LIQUID_FLOW_V2_BINANCE_STATS_UI_V7_DAILY_TIMING_EDGE_20260823';
+const LIQUID_FLOW_V2_BINANCE_STATS_UI_VERSION = 'LIQUID_FLOW_V2_BINANCE_STATS_UI_V8_ZONE_LIFECYCLE_20260902';
 const BINANCE_SIGNAL_SETTINGS_SYNC_CHANNEL = 'liquid-flow-v2-binance-signal-settings-sync';
 const BINANCE_SIGNAL_SETTINGS_SYNC_STORAGE_KEY = 'liquid_flow_v2_binance_signal_settings_sync';
 const BINANCE_SIGNAL_SETTINGS_SYNC_MS = 10_000;

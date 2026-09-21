@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import { assessLiqScanSweepRejectShort as assess } from '../src/liqScanSweepRejectShort.js';
+const t = Date.UTC(2026,8,6,1), now=t+30*60000+1000;
+const candle=(m,o,h,l,c,d=5)=>({openTime:t+m*60000,closeTime:t+(m+d)*60000-1,open:o,high:h,low:l,close:c,quoteVolume:100,takerBuyQuoteVolume:30});
+const alert={symbol:'TESTUSDT',isAlert:true,dominantSide:'ABOVE',markPrice:90,evaluatedAt:new Date(t).toISOString(),killZoneCluster:{mainKillZone:{low:104,high:105}}};
+const a={symbol:'TESTUSDT',generatedAt:new Date(now).toISOString(),freshness:{stale:false},market:{markPrice:100},trend:{frames:[{interval:'5m',atr14:1}]},zones:{supports:[]},liqScanCandleContext:{
+  '5m':[candle(0,95,99,94,98),candle(5,98,103,97,102),candle(10,102,106,101,104.5),candle(15,104.5,105,100,102),candle(20,102,103,99,99.8),candle(25,99.8,101,99,100)],
+  '15m':[candle(0,95,106,94,104.5,15),candle(15,104.5,105,99,100,15)]}};
+assert.equal(assess(a,alert,now).state,'SHORT_SETUP_CONFIRMED');
+assert.equal(assess(a,alert,now).observeOnly,true);
+assert.equal(assess(a,alert,now).takeProfit,90);
+assert.equal(assess(a,null,now).state,'WAIT_ALERT');
+assert.equal(assess(a,{...alert,symbol:'OTHERUSDT'},now).state,'WAIT_ALERT');
+assert.equal(assess(a,alert,now+7*3600000).state,'EXPIRED');
+const stale=structuredClone(a); stale.freshness.stale=true;
+assert.equal(assess(stale,alert,now).state,'MISSING_DATA');
+const chase=structuredClone(a); chase.market.markPrice=97;
+assert.equal(assess(chase,alert,now).state,'WATCH_NO_CHASE');
+const flow=structuredClone(a); flow.liqScanCandleContext['5m'][4].takerBuyQuoteVolume=80;
+assert.equal(assess(flow,alert,now).ready,false);
+const missingFlow=structuredClone(a); delete missingFlow.liqScanCandleContext['5m'][4].takerBuyQuoteVolume;
+assert.equal(assess(missingFlow,alert,now).ready,false);
+const noRR=structuredClone(a); noRR.zones.supports=[{high:99.9}];
+assert.equal(assess(noRR,alert,now).ready,false);
+const invalidate=structuredClone(a); invalidate.liqScanCandleContext['5m'][5].high=107;
+assert.equal(assess(invalidate,alert,now).state,'INVALIDATED');
+const accept=structuredClone(a); accept.liqScanCandleContext['15m'][0].close=105.5;
+accept.liqScanCandleContext['5m'][3]=candle(15,105.5,106,105.1,105.7);
+assert.equal(assess(accept,alert,now).state,'CANCELLED_ACCEPTED');
+const gap=structuredClone(a); gap.liqScanCandleContext['5m'].splice(1,1);
+assert.equal(assess(gap,alert,now).state,'MISSING_DATA');
+const noPostAlertSweep={...alert,evaluatedAt:new Date(t+15*60000).toISOString()};
+const noSweep=structuredClone(a); noSweep.liqScanCandleContext['5m'][3]=candle(15,103,103.5,100,102);
+assert.equal(assess(noSweep,noPostAlertSweep,now).state,'WAIT_SWEEP');
+console.log('LiqScan sweep/reject SHORT tests passed');

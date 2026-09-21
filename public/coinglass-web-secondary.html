@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CoinGlass · Movers hạng 41–80</title>
+  <link rel="stylesheet" href="/coinglass-web-top20.css">
+</head>
+<body data-coinglass-stream="secondary">
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">WEB COLLECTOR LAB · SECONDARY STREAM · MODEL 3</p>
+        <h1>Binance movers hạng 41–80 · Vùng thanh lý</h1>
+        <p class="subtitle">Luồng phụ dùng profile, snapshot và lịch quét riêng. Qualified chỉ tham khảo; Zone Lifecycle gửi Discord riêng, MARKET $2.5 mặc định, $5 cho UNCONFIRMED_BOUNCE_LONG và $10 cho ACCEPTED breakout, TP cố định +6% ROE.</p>
+      </div>
+      <nav>
+        <a href="/coinglass-web-top20">Nhóm chính 1–40</a>
+        <a href="/liquid-flow-v2">Liquid Flow V2</a>
+        <a href="https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3" target="_blank" rel="noreferrer">Mở CoinGlass</a>
+      </nav>
+    </header>
+
+    <section class="isolation" aria-label="Phạm vi sử dụng">
+      <span>LIFECYCLE AUTO · $2.5 / BOUNCE $5 / ACCEPTED $10 · TP +6% ROE</span>
+      <strong>Luồng phụ độc lập</strong>
+      <p>Hạng mặc định 41–80 có cache, profile đăng nhập, dedupe và lifecycle state riêng. FRESH/APPROACHING/SWEPT chỉ cảnh báo; terminal REJECTED hợp lệ vào Binance $2.5, riêng UNCONFIRMED_BOUNCE_LONG vào $5, còn ACCEPTED breakout LONG/SHORT hợp lệ vào $10. Tất cả dùng TP +6% ROE; Qualified thông thường vẫn OBSERVE ONLY.</p>
+    </section>
+
+    <section class="toolbar">
+      <div>
+        <p id="statusText" class="status">Đang đọc snapshot luồng phụ…</p>
+        <p id="updatedText" class="muted"></p>
+        <p id="authText" class="auth-text"></p>
+        <p id="scheduleText" class="schedule-text"></p>
+      </div>
+      <div class="toolbar-actions">
+        <button id="loginButton" class="secondary" type="button">Đăng nhập profile phụ</button>
+        <button id="refreshButton" type="button">Quét lại hạng 41–80</button>
+      </div>
+    </section>
+
+    <section id="progressPanel" class="progress-panel" hidden>
+      <div class="progress-copy">
+        <strong id="progressSymbol">Đang khởi tạo trình duyệt phụ…</strong>
+        <span id="progressCount">0 / 40</span>
+      </div>
+      <div class="progress-track"><i id="progressBar"></i></div>
+    </section>
+
+    <section id="summary" class="summary"></section>
+    <section id="failures" class="failures" hidden></section>
+    <section id="grid" class="grid" aria-live="polite"></section>
+  </main>
+  <script type="module" src="/coinglass-web-top20.js"></script>
+</body>
+</html>

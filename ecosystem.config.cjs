@@ -6,7 +6,7 @@ module.exports = {
       cwd: '/home/thangnguyen/project/btc-liquidity-proxy',
       script: 'src/server.js',
       interpreter: '/home/thangnguyen/.nvm/versions/node/v22.16.0/bin/node',
-      node_args: '--max-old-space-size=16384',
+      node_args: '--max-old-space-size=4096',
       exec_mode: 'fork',
       instances: 1,
       watch: false,
@@ -14,7 +14,7 @@ module.exports = {
       min_uptime: '30s',
       max_restarts: 30,
       exp_backoff_restart_delay: 5000,
-      max_memory_restart: '18G',
+      max_memory_restart: '4G',
       kill_timeout: 30000,
       listen_timeout: 30000,
       treekill: true,
@@ -23,6 +23,9 @@ module.exports = {
       vizion: false,
       env: {
         NODE_ENV: 'production',
+        // Bind the WSL virtual adapter as well as loopback. Windows localhost
+        // forwarding can otherwise keep a stale relay socket after PM2 reloads.
+        HOST: '0.0.0.0',
         PORT: '19082',
       },
     },
@@ -51,8 +54,8 @@ module.exports = {
         WATCHDOG_INTERVAL_MS: '15000',
         WATCHDOG_TIMEOUT_MS: '5000',
         WATCHDOG_FAILURE_LIMIT: '2',
-        WATCHDOG_STARTUP_GRACE_MS: '3600000',
-        WATCHDOG_RESTART_GRACE_MS: '3600000',
+        WATCHDOG_STARTUP_GRACE_MS: '120000',
+        WATCHDOG_RESTART_GRACE_MS: '300000',
       },
     },
   ],

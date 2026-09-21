@@ -51,6 +51,12 @@ function buildFactors(sig) {
   const f = sig.factors || {};
   const chips = [];
   chips.push(chip(`${sig.interval || '5m'}`, 'ok'));
+  if (sig.setupVariant === 'PUMP_DUMP_ABSORPTION') {
+    chips.push(chip('PUMP→FLUSH→ABSORB', sig.action === 'LONG' ? 'ok' : 'warn'));
+    chips.push(chip(`Spike ${Number(f.spikeMovePct ?? 0).toFixed(1)}% / ${Number(f.spikeVolumeRatio ?? 0).toFixed(1)}x`, 'ok'));
+    chips.push(chip(`Flush ${Number(f.flushDropPct ?? 0).toFixed(1)}% / ${Number(f.flushVolumeRatio ?? 0).toFixed(1)}x`, 'ok'));
+    chips.push(chip(`Abs ${f.absorptionBars ?? '?'} nến · vol ${Number(f.absorptionVolumeSharePct ?? 0).toFixed(0)}%`, Number(f.absorptionVolumeSharePct ?? 100) <= 60 ? 'ok' : 'warn'));
+  }
   chips.push(chip(`${sig.action === 'SHORT' ? 'Dump' : 'Pump'} ${Number(f.contextMovePct ?? 0).toFixed(1)}%`, 'ok'));
   chips.push(chip(`Kill ${f.killAgeBars ?? '?'} nến trước`, Number(f.killAgeBars ?? 99) <= 3 ? 'ok' : 'warn'));
   chips.push(chip(`EMA99 dist ${Number(f.ema99DistPct ?? 0).toFixed(2)}%`, Number(f.ema99DistPct ?? 99) <= 1 ? 'ok' : 'warn'));
@@ -64,8 +70,9 @@ function buildFactors(sig) {
 
 function buildCard(sig) {
   const isShort = sig.action === 'SHORT';
-  const cls = isShort ? 'short' : 'long';
-  const sideText = isShort ? 'SHORT · EMA99 Reject' : 'LONG · EMA99 Reclaim';
+  const isWatch = sig.action === 'WATCH';
+  const cls = isWatch ? 'watch' : isShort ? 'short' : 'long';
+  const sideText = isWatch ? 'WATCH · Wait EMA99 Reclaim' : isShort ? 'SHORT · EMA99 Reject' : 'LONG · EMA99 Reclaim';
   const detailUrl = `/?symbol=${encodeURIComponent(sig.symbol)}`;
   const changeColor = Number(sig.change24h ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
   const reason = sig.reason || (isShort
@@ -97,7 +104,7 @@ function buildCard(sig) {
 
       <div class="ekr-footer">
         <span>${timeAgo(sig.scannedAt)} ago</span>
-        <span>${isShort ? 'Kill long at EMA99' : 'Kill weak long at EMA99'}</span>
+        <span>${isWatch ? 'No Binance order' : isShort ? 'Kill long at EMA99' : 'Kill weak long at EMA99'}</span>
       </div>
     </article>
   `;

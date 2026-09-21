@@ -32,6 +32,23 @@ async function loginVisible(page) {
   }).catch(() => true);
 }
 
+function isCoinGlassPage(page) {
+  try {
+    return /(^|\.)coinglass\.com$/i.test(new URL(page.url()).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isExternalLoginPage(page) {
+  try {
+    const hostname = new URL(page.url()).hostname.toLowerCase();
+    return hostname === 'accounts.google.com';
+  } catch {
+    return false;
+  }
+}
+
 async function verifyAltcoinAccess(page) {
   await page.goto('https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3', {
     waitUntil: 'domcontentloaded',
@@ -127,8 +144,23 @@ try {
   const deadline = Date.now() + timeoutMs;
   let result = null;
   while (Date.now() < deadline) {
-    const coinGlassPages = context.pages().filter((candidate) => candidate.url().includes('coinglass.com'));
-    const activePage = coinGlassPages.at(-1) ?? page;
+    const pages = context.pages();
+    const externalLoginPage = pages.find(isExternalLoginPage);
+    if (externalLoginPage) {
+      // Google OAuth may replace the CoinGlass tab instead of opening a popup.
+      // Never navigate that page away while the user is entering credentials.
+      await externalLoginPage.waitForTimeout(2_000).catch(() => {});
+      continue;
+    }
+    const coinGlassPages = pages.filter(isCoinGlassPage);
+    if (!coinGlassPages.length) {
+      // Any external identity-provider redirect must complete by itself. Calling
+      // verifyAltcoinAccess here would force a goto() back to CoinGlass and
+      // create the reload loop seen during Google sign-in.
+      await page.waitForTimeout(2_000).catch(() => {});
+      continue;
+    }
+    const activePage = coinGlassPages.at(-1);
     if (!await loginVisible(activePage)) {
       try {
         result = await verifyAltcoinAccess(activePage);

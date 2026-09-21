@@ -4,6 +4,7 @@ import {
   BINANCE_BOT_SHORT_TP_ONLY_VERSION,
   BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION,
   BINANCE_MANUAL_SOCKET_SOURCE,
+  COINGLASS_ZONE_LIFECYCLE_POSITION_MATCH_VERSION,
   NON_LIQUID_FLOW_V2_LONG_TP_ROE,
   NON_LIQUID_FLOW_V2_LONG_TP_VERSION,
   NON_LIQUID_FLOW_V2_SHORT_TP_ROE,
@@ -18,9 +19,27 @@ import {
   resolveNonLiquidFlowV2ShortTakeProfit,
   resolveOrdersManualTakeProfit,
   shouldSuppressBotShortStopLoss,
+  shouldSuppressTrackedCoinglassZoneLifecycleStopLoss,
 } from '../src/shortTakeProfitPolicy.js';
 
-assert.match(BINANCE_BOT_SHORT_TP_ONLY_VERSION, /V1_20260824$/);
+assert.match(COINGLASS_ZONE_LIFECYCLE_POSITION_MATCH_VERSION, /V2_SIDE_ALIGNED_20260830$/);
+assert.equal(shouldSuppressTrackedCoinglassZoneLifecycleStopLoss({
+  source: 'coinglass-zone-lifecycle', plannedSide: 'SELL', positionAmount: -4.03,
+}), true);
+assert.equal(shouldSuppressTrackedCoinglassZoneLifecycleStopLoss({
+  source: 'coinglass-zone-lifecycle', plannedSide: 'SELL', positionAmount: 20.3,
+}), false, 'stale CoinGlass SHORT plan must not suppress the SL of a new LONG position');
+assert.equal(shouldSuppressTrackedCoinglassZoneLifecycleStopLoss({
+  source: 'coinglass-zone-lifecycle', plannedSide: 'BUY', positionAmount: -20.3,
+}), false, 'stale CoinGlass LONG plan must not suppress the SL of a new SHORT position');
+assert.equal(shouldSuppressTrackedCoinglassZoneLifecycleStopLoss({
+  source: 'coinglass-zone-lifecycle', positionAmount: -4.03,
+}), true, 'legacy tracking without signalSide remains compatible');
+assert.equal(shouldSuppressTrackedCoinglassZoneLifecycleStopLoss({
+  source: BINANCE_MANUAL_SOCKET_SOURCE, plannedSide: 'BUY', positionAmount: 20.3,
+}), false);
+
+assert.equal(BINANCE_BOT_SHORT_TP_ONLY_VERSION, 'BINANCE_BOT_SHORT_TP_ONLY_COIN_LEVEL_EXEMPT_V6_20260920');
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'coinglass-web-qualified' }), true);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SELL', source: 'live-card-whitelist-edge' }), true);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'LONG', source: 'live-card-whitelist-edge' }), false);
@@ -28,6 +47,16 @@ assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'orders-man
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: BINANCE_MANUAL_SOCKET_SOURCE }), false);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'liquid-flow-v2-manual' }), false);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'signal' }), true);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'extreme-short-squeeze' }), false);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'htf-deep-base-ready' }), false);
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'coin-horizon-sweep-transition' }), false,
+  'Coin Horizon SHORT must retain its explicit -25% ROE stop.');
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'liqscan-high-score' }), false,
+  'LiqScan high-score SHORT must retain its explicit -30% ROE stop.');
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'liqscan-main-kill-sweep' }), false,
+  'LiqScan MAIN KILL reversal SHORT must retain its explicit -30% ROE stop.');
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'coin-level-entry-watch' }), false,
+  'Coin Level RETEST SHORT must retain its explicit -30% ROE stop.');
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: '' }), false);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'pump-order', enabled: false }), false);
 assert.equal(isManualShortProtectionSource({ side: 'SHORT', source: 'orders-manual' }), true);
@@ -107,6 +136,11 @@ const longV2 = resolveNonLiquidFlowV2TakeProfit({
 });
 assert.equal(longV2.applied, false);
 assert.equal(longV2.takeProfitPrice, 104);
+for (const source of ['ema99-near-reject-short','ema99-reclaim-long','ema99-bounce-long','ema99-observe-only','ema99-kill-reclaim','ema99-kill-reclaim-pump-dump-absorption']) {
+  const ema99 = resolveNonLiquidFlowV2TakeProfit({side:source==='ema99-near-reject-short'?'SHORT':'LONG',source,entryPrice:100,leverage:5,requestedTakeProfitPrice:103});
+  assert.equal(ema99.applied,false,`EMA99 fixed TP must bypass generic ROE override: ${source}`);
+  assert.equal(ema99.takeProfitPrice,103);
+}
 const coinglassProposalTp = resolveNonLiquidFlowV2TakeProfit({
   side: 'SHORT', source: 'coinglass-web-qualified', entryPrice: 100, leverage: 5, requestedTakeProfitPrice: 94,
 });
@@ -215,7 +249,10 @@ assert.match(serverSource, /shouldMoveNegativeTpToEntry/);
 assert.match(serverSource, /BINANCE_NEGATIVE_TP_TO_ENTRY_VERSION/);
 assert.match(serverSource, /const stopLossSuppression = shortStopLossSuppression\(side, protectionSource\)/);
 assert.match(serverSource, /manualShortEma99Candidates/);
-assert.match(serverSource, /isTrackedBotShortTpOnlyPosition\(symbol, pos\) \|\| isTrackedManualShortTpOnlyPosition\(symbol, pos\)/);
+assert.match(serverSource, /const isBotShortTpOnlyPosition = isTrackedBotShortTpOnlyPosition\(symbol, pos\)/);
+assert.match(serverSource, /const isManualShortTpOnlyPosition = isTrackedManualShortTpOnlyPosition\(symbol, pos\)/);
+assert.match(serverSource, /const isShortTpOnlyBreakEven = isBotShortTpOnlyPosition \|\| isManualShortTpOnlyPosition/);
+assert.match(serverSource, /resolveShortTpOnlyBreakEvenProfitLockRoe\(effectiveRoe\)/);
 assert.match(serverSource, /SHORT TP-only; skip missing SL/);
 
 console.log('short take-profit policy tests passed');

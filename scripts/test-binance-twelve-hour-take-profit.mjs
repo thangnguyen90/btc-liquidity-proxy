@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION,
   BINANCE_TWELVE_HOUR_TAKE_PROFIT_VERSION,
@@ -13,7 +14,7 @@ import {
 } from '../src/binanceTwelveHourTakeProfit.js';
 
 const now = Date.parse('2026-08-12T12:00:00.000Z');
-assert.match(BINANCE_TWELVE_HOUR_TAKE_PROFIT_VERSION, /20260812$/);
+assert.equal(BINANCE_TWELVE_HOUR_TAKE_PROFIT_VERSION, 'BINANCE_TP_AFTER_12H_DISABLED_V2_20260905');
 assert.equal(BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION, 'BINANCE_NEGATIVE_TP_TO_ENTRY_AFTER_8H_V1_20260816');
 assert.equal(DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS, 8 * 60 * 60 * 1000);
 assert.equal(parseBinancePositionOpenedAt('2026-08-12T00:00:00.000Z'), now - DEFAULT_BINANCE_TP_MAX_AGE_MS);
@@ -120,5 +121,12 @@ assert.equal(evaluateBinanceEightHourNegativeTakeProfit({
   positionAmount: 2,
   currentRoe: null,
 }).reason, 'missing_roe');
+
+const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+assert.match(
+  serverSource,
+  /const enabled = process\.env\.BINANCE_TP_AFTER_12H_ENABLED === 'true';/,
+  '12h take-profit runtime must stay explicit opt-in',
+);
 
 console.log('Binance 8h-negative and 12h take-profit policy tests passed');

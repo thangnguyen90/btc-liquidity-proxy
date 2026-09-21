@@ -17,7 +17,7 @@ import {
 
 assert.equal(
   POSITION_MONITOR_MARK_STREAM_VERSION,
-  'POSITION_MONITOR_PER_SYMBOL_MARK_STREAM_V4_20260812',
+  'POSITION_MONITOR_PER_SYMBOL_MARK_STREAM_V5_PRICE_ROE_20260831',
 );
 assert.equal(POSITION_MONITOR_MARK_STREAM_URL, 'wss://fstream.binance.com/market/stream');
 assert.equal(POSITION_MONITOR_MARK_STREAM_STALE_MS, 15_000);
@@ -62,6 +62,8 @@ assert.equal(resolvePositionRoeMargin({
 assert.equal(resolvePositionRoeMargin({ positionAmt: '62', entryPrice: '1.2042', leverage: '5' }), 14.93208);
 
 const monitorSource = await readFile(new URL('../src/positionMonitor.js', import.meta.url), 'utf8');
+assert.match(monitorSource, /binancePositionPriceRoe/);
+assert.doesNotMatch(monitorSource, /const roe = \(upnl \/ margin\) \* 100/);
 assert.match(monitorSource, /scheduleUserDataReconnect\(0, 'listen-key-expired'\)/);
 assert.match(monitorSource, /scheduleUserDataReconnect\(0, 'keepalive-listen-key-invalid'\)/);
 assert.match(monitorSource, /onUserDataReconnect\(\{/);

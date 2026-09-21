@@ -3,9 +3,11 @@ node_modules/
 .env
 *.log
 data/coinglass-web-top20/
+data/binance-filled-signal-audit/
 data/liquid-flow-v2-paper.json
 data/liquid-flow-v2-paper.json.tmp-*
 data/liquid-market-direction-discord-state.json
+data/liq-scan-latest-alerts.json
 # Runtime append-only stores and interrupted atomic-write files are local data,
 # not source. Keeping them out of Codex/Git checkpoints prevents 700MB+ loose
 # blobs from being recreated on every turn.
@@ -15,3 +17,33 @@ data/*.json.*.tmp
 data/*.json.tmp
 scripts/__pycache__/
 reports/
+data/coin-horizon-discord.json
+data/coin-horizon-discord.json.tmp
+data/coin-horizon-sweep-transition-discord.json
+data/coin-horizon-sweep-transition-discord.json.tmp
+data/liqscan-tier-discord.json
+data/liqscan-tier-discord.json.tmp
+data/post-pump-ema99-discord.json
+data/post-pump-ema99-discord.json.tmp
+data/auto-entry-controls.json
+data/auto-entry-controls.json.tmp
+data/ema99-near-reject-binance.json
+data/ema99-near-reject-binance.json.tmp
+data/ema99-reclaim-long-binance.json
+data/ema99-reclaim-long-binance.json.tmp
+data/ema99-bounce-long-binance.json
+data/ema99-bounce-long-binance.json.tmp
+data/ema99-watch-binance.json
+data/ema99-watch-binance.json.tmp
+data/htf-deep-dump-base-15m-discord.json
+data/htf-deep-dump-base-15m-discord.json.tmp
+data/market-breadth-shock-discord.json
+data/market-breadth-shock-discord.json.tmp
+data/mega-pump-staircase-discord.json
+data/mega-pump-staircase-discord.json.tmp
+data/week-long-post-pump-ema99-slope-discord.json
+data/week-long-post-pump-ema99-slope-discord.json.tmp
+data/coin-level-entry-watch-discord.json
+data/coin-level-entry-watch-discord.json.tmp
+data/coin-level-entry-watch-binance.json
+data/coin-level-entry-watch-binance.json.tmp

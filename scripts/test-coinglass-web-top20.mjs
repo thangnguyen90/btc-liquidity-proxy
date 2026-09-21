@@ -7,6 +7,8 @@ import {
   assessCoinglassLiquidity,
   buildCoinglassZoneProposal,
   buildCoinglassObservedTradePlan,
+  COINGLASS_WEB_SECONDARY_ISOLATION,
+  COINGLASS_WEB_SECONDARY_STREAM_VERSION,
   COINGLASS_WEB_TOP20_ISOLATION,
   COINGLASS_WEB_TOP20_MODE,
   CoinGlassWebTop20Manager,
@@ -15,6 +17,8 @@ import {
   safeCoinglassSymbol,
   selectBinanceAppMoverCandidates,
   selectTopBinanceUsdtPerpetuals,
+  shouldNotifyCoinglassZoneLifecycleEvent,
+  sliceCoinglassMoverStream,
   summarizeCoinglassHeatmap,
 } from '../src/coinglassWebTop20.js';
 import {
@@ -70,6 +74,11 @@ assert.deepEqual(moverRows.map((row) => row.symbol), ['BTCUSDT', 'AAAUSDT', 'BBB
 assert.deepEqual(moverRows.map((row) => row.moverSide), ['REFERENCE', 'UP', 'DOWN', 'UP', 'DOWN', 'UP']);
 assert.equal(moverRows.find((row) => row.symbol === 'AAAUSDT').moverRank, 1);
 assert.equal(moverRows.find((row) => row.symbol === 'PEPEUSDT').moverRank, 3);
+const secondaryMoverRows = sliceCoinglassMoverStream(moverRows, 2, 3);
+assert.deepEqual(secondaryMoverRows.map((row) => row.symbol), ['BBBUSDT', 'CCCUSDT', 'SOLUSDT']);
+assert.deepEqual(secondaryMoverRows.map((row) => row.globalRank), [3, 4, 5]);
+assert.deepEqual(secondaryMoverRows.map((row) => row.streamRank), [1, 2, 3]);
+assert.deepEqual(secondaryMoverRows.map((row) => row.rank), [1, 2, 3]);
 
 const liquidSelection = applyBinanceLiquidityFilter([
   { symbol: 'BTCUSDT', quoteVolume24h: 1, tradeCount24h: 1 },
@@ -100,8 +109,13 @@ const preservedMoverOrder = applyBinanceLiquidityFilter([
 assert.deepEqual(preservedMoverOrder.rows.map((row) => row.symbol), ['FIRSTUSDT', 'SECONDUSDT']);
 
 assert.equal(safeCoinglassSymbol('btcusdt'), 'BTCUSDT');
+assert.equal(safeCoinglassSymbol('龙虾usdt'), '龙虾USDT');
+assert.equal(safeCoinglassSymbol('# 龙虾USDT'), '龙虾USDT');
 assert.equal(safeCoinglassSymbol('../../etc/passwd'), '');
 assert.equal(safeCoinglassSymbol('BTCBUSD'), '');
+assert.deepEqual(selectTopBinanceUsdtPerpetuals({
+  symbols: [{ symbol: '龙虾USDT', baseAsset: '龙虾', quoteAsset: 'USDT', status: 'TRADING', contractType: 'PERPETUAL' }],
+}, [{ symbol: '龙虾USDT', quoteVolume: '999999999', lastPrice: '1', priceChangePercent: '10', count: 1_000_000 }], 1), []);
 
 const summary = summarizeCoinglassHeatmap({
   instrument: { exName: 'Binance', instrumentId: 'AAAUSDT', baseAsset: 'AAA', quoteAsset: 'USDT', contractType: 'PERPETUAL' },
@@ -433,24 +447,150 @@ assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsBinance, true);
 assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsEntry, true);
 assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsSize, true);
 assert.equal(COINGLASS_WEB_TOP20_ISOLATION.affectsSlTp, true);
+assert.equal(COINGLASS_WEB_SECONDARY_STREAM_VERSION,
+  'COINGLASS_WEB_SECONDARY_STREAM_V10_SHORT_BREAKDOWN_ONLY_20260905');
+assert.equal(COINGLASS_WEB_SECONDARY_ISOLATION.observationOnly, false);
+assert.equal(COINGLASS_WEB_SECONDARY_ISOLATION.qualifiedObservationOnly, true);
+assert.equal(COINGLASS_WEB_SECONDARY_ISOLATION.lifecycleOnly, true);
+assert.equal(COINGLASS_WEB_SECONDARY_ISOLATION.affectsDiscord, true);
+assert.equal(COINGLASS_WEB_SECONDARY_ISOLATION.affectsBinance, true);
+assert.equal(COINGLASS_WEB_SECONDARY_ISOLATION.affectsEntry, true);
+assert.equal(shouldNotifyCoinglassZoneLifecycleEvent({
+  secondary: true,
+  event: { state: 'APPROACHING', shouldEnter: false },
+}), false);
+assert.equal(shouldNotifyCoinglassZoneLifecycleEvent({
+  secondary: true,
+  event: { state: 'SWEPT', shouldEnter: false },
+}), false);
+assert.equal(shouldNotifyCoinglassZoneLifecycleEvent({
+  secondary: true,
+  event: {
+    state: 'REJECTED',
+    shouldEnter: true,
+    entryPlan: { side: 'SHORT', signalLabel: null },
+  },
+}), false, 'secondary generic REJECTED SHORT must not notify');
+assert.equal(shouldNotifyCoinglassZoneLifecycleEvent({
+  secondary: true,
+  event: {
+    state: 'ACCEPTED',
+    shouldEnter: true,
+    entryPlan: { side: 'SHORT', signalLabel: 'BREAKDOWN_ACCEPTED_SHORT_READY' },
+  },
+}), true, 'secondary exact breakdown SHORT remains notify eligible');
+assert.equal(shouldNotifyCoinglassZoneLifecycleEvent({
+  secondary: true,
+  event: {
+    state: 'REJECTED',
+    shouldEnter: true,
+    entryPlan: { side: 'LONG', signalLabel: 'UNCONFIRMED_BOUNCE_LONG' },
+  },
+}), true, 'secondary LONG notification policy remains unchanged');
+assert.equal(shouldNotifyCoinglassZoneLifecycleEvent({
+  secondary: false,
+  event: { state: 'APPROACHING', shouldEnter: false },
+}), true, 'primary lifecycle Discord keeps all transitions');
+const secondaryEnvKeys = [
+  'COINGLASS_WEB_SECONDARY_RANK_OFFSET',
+  'COINGLASS_WEB_SECONDARY_LIMIT',
+  'COINGLASS_WEB_SECONDARY_SCAN_INTERVAL_MS',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_ENABLED',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_DISCORD_WEBHOOK_URL',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_BINANCE_ENABLED',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_MARGIN_USDT',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_ACCEPTED_MARGIN_USDT',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_UNCONFIRMED_BOUNCE_MARGIN_USDT',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_TAKE_PROFIT_ROE_PCT',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_SUPPORT_RECLAIM_MARGIN_USDT',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_STRONG_SHORT_MARGIN_USDT',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_LARGE_TARGET_MARGIN_USDT',
+  'COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_LEVERAGE',
+];
+const secondaryEnvBefore = Object.fromEntries(secondaryEnvKeys.map((key) => [key, process.env[key]]));
+process.env.COINGLASS_WEB_SECONDARY_RANK_OFFSET = '40';
+process.env.COINGLASS_WEB_SECONDARY_LIMIT = '40';
+process.env.COINGLASS_WEB_SECONDARY_SCAN_INTERVAL_MS = '360000';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_ENABLED = 'true';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_DISCORD_WEBHOOK_URL = 'https://discord.test/webhook';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_BINANCE_ENABLED = 'true';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_MARGIN_USDT = '1';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_ACCEPTED_MARGIN_USDT = '9';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_UNCONFIRMED_BOUNCE_MARGIN_USDT = '8';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_TAKE_PROFIT_ROE_PCT = '7';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_SUPPORT_RECLAIM_MARGIN_USDT = '1.5';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_STRONG_SHORT_MARGIN_USDT = '1.75';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_LARGE_TARGET_MARGIN_USDT = '1';
+process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_LEVERAGE = '5';
+try {
+  const secondaryManager = new CoinGlassWebTop20Manager({
+    rootDir: process.cwd(),
+    dataDir: join(tmpdir(), 'coinglass-web-secondary-config-test'),
+    streamId: 'secondary',
+  });
+  const secondaryConfig = secondaryManager.config();
+  assert.equal(secondaryConfig.streamId, 'secondary');
+  assert.equal(secondaryConfig.rankFrom, 41);
+  assert.equal(secondaryConfig.rankTo, 80);
+  assert.equal(secondaryConfig.limit, 40);
+  assert.equal(secondaryConfig.schedulerIntervalMs, 360_000);
+  assert.equal(secondaryConfig.niceLevel, 10);
+  assert.equal(secondaryConfig.observationOnly, false);
+  assert.equal(secondaryConfig.qualifiedObservationOnly, true);
+  assert.equal(secondaryConfig.lifecycleOnly, true);
+  assert.equal(secondaryConfig.discordConfigured, false);
+  assert.equal(secondaryConfig.zoneLifecycleEnabled, true);
+  assert.equal(secondaryConfig.zoneLifecycleDiscordConfigured, true);
+  assert.equal(secondaryConfig.zoneLifecycleBinanceEnabled, true);
+  assert.equal(secondaryConfig.zoneLifecycleMarginUsdt, 1);
+  assert.equal(secondaryConfig.zoneLifecycleAcceptedBreakoutMarginUsdt, 9);
+  assert.equal(secondaryConfig.zoneLifecycleUnconfirmedBounceLongMarginUsdt, 8);
+  assert.equal(secondaryConfig.zoneLifecycleFixedTakeProfitRoePct, 7);
+  assert.equal(secondaryConfig.zoneLifecycleSupportReclaimMarginUsdt, 1.5);
+  assert.equal(secondaryConfig.zoneLifecycleStrongShortMarginUsdt, 1.75);
+  assert.equal(secondaryConfig.zoneLifecycleLargeTargetMarginUsdt, 1);
+  assert.equal(secondaryConfig.zoneLifecycleLeverage, 5);
+  assert.equal(secondaryConfig.binanceEnabled, false);
+  assert.equal(secondaryManager.onQualifiedRow, null);
+  assert.equal(secondaryManager.onZoneLifecycleSignal, null);
+} finally {
+  for (const key of secondaryEnvKeys) {
+    if (secondaryEnvBefore[key] == null) delete process.env[key];
+    else process.env[key] = secondaryEnvBefore[key];
+  }
+}
 
 const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
 assert.match(serverSource, /\/api\/coinglass-web-top20/);
+assert.match(serverSource, /\/api\/coinglass-web-secondary/);
 assert.match(serverSource, /\/api\/liquid-flow-v2-binance-signal-settings/);
 assert.match(serverSource, /BLOCKED_COINGLASS_BINANCE_DISABLED/);
 assert.match(serverSource, /BLOCKED_SIGNAL_BINANCE_DISABLED/);
 assert.match(serverSource, /coinGlassWebTop20\.startRefresh\('manual'\)/);
 assert.match(serverSource, /coinGlassWebTop20\.startLogin\(\)/);
 assert.match(serverSource, /coinGlassWebTop20\.startScheduler\(\)/);
+assert.match(serverSource, /coinGlassWebSecondary\.startScheduler\(\)/);
+assert.match(serverSource, /streamId: 'secondary'/);
+assert.match(serverSource, /streamId: 'secondary',[\s\S]{0,160}onZoneLifecycleSignal: executeCoinGlassZoneLifecycleBinanceEvent/);
+assert.match(serverSource, /executeCoinGlassZoneLifecycleBinanceEvent\(event = \{\}, executionConfig = null\)/);
+assert.match(serverSource, /executionConfig \?\? coinGlassWebTop20\.config\(\)/);
 const collectorSource = await readFile(new URL('../src/coinglassWebTop20.js', import.meta.url), 'utf8');
 assert.doesNotMatch(collectorSource, /placeFuturesOrder|LiquidFlowV2PaperManager|BinanceClient/);
 assert.match(collectorSource, /onQualifiedRow/);
+assert.match(collectorSource, /executable = this\.secondary && niceLevel > 0 \? 'nice'/);
+assert.match(collectorSource, /this\.onZoneLifecycleSignal\(event, config\)/);
+assert.match(collectorSource, /this\.secondary\) await this\.postZoneLifecycleDiscord\(payload\)/);
+assert.match(collectorSource, /shouldNotifyCoinglassZoneLifecycleEvent\(\{ event, secondary: this\.secondary \}\)/);
 assert.match(serverSource, /executeCoinGlassQualifiedBinanceRow/);
 assert.match(serverSource, /authorizeCoinglassWebAutoOrder/);
 assert.match(collectorSource, /viewLiquidityExcluded/);
 const crawlSource = await readFile(new URL('./crawl-coinglass-web-top20.mjs', import.meta.url), 'utf8');
 assert.match(crawlSource, /launchPersistentContext/);
 assert.match(crawlSource, /COINGLASS_WEB_BROWSER_CONCURRENCY/);
+assert.match(crawlSource, /--rank-offset/);
+assert.match(crawlSource, /sliceCoinglassMoverStream/);
+assert.match(crawlSource, /--browser-concurrency/);
+assert.match(crawlSource, /--scan-budget-ms/);
 assert.match(crawlSource, /Promise\.all\(pages\.map/);
 assert.match(crawlSource, /Math\.min\(40/);
 assert.match(crawlSource, /Math\.min\(\s*4,/);
@@ -471,5 +611,13 @@ assert.match(crawlSource, /qualifiedTimeframes/);
 assert.match(crawlSource, /captureQualifiedTimeframe/);
 assert.match(crawlSource, /'12h'/);
 assert.match(crawlSource, /'24h'/);
+const secondaryPageSource = await readFile(new URL('../public/coinglass-web-secondary.html', import.meta.url), 'utf8');
+assert.match(secondaryPageSource, /data-coinglass-stream="secondary"/);
+assert.match(secondaryPageSource, /OBSERVE ONLY/);
+assert.match(secondaryPageSource, /LIFECYCLE AUTO · \$2\.5 \/ BOUNCE \$5 \/ ACCEPTED \$10 · TP \+6% ROE/);
+const loginSource = await readFile(new URL('./open-coinglass-web-login.mjs', import.meta.url), 'utf8');
+assert.match(loginSource, /hostname === 'accounts\.google\.com'/);
+assert.match(loginSource, /if \(!coinGlassPages\.length\)/);
+assert.match(loginSource, /Never navigate that page away while the user is entering credentials/);
 
 console.log('CoinGlass web top20 tests passed.');

@@ -15,7 +15,7 @@ import {
 
 assert.equal(
   LIQUID_LIVE_CARD_WHITELIST_VERSION,
-  'LIVE_CARD_WHITELIST_V16_FADING_WAVE_LIVE_PUMP_20260818',
+  'LIVE_CARD_WHITELIST_V17_SHORT_EMA99_WATCH_20260830',
 );
 
 const trade = {
@@ -112,6 +112,7 @@ for (const key of [
   'heatmap-v2:POST_PUMP_SHORT_SQUEEZE_PRIME',
   'heatmap-v2:POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY',
   'heatmap-v2:FADING_WAVE_LIVE_PUMP_SHORT_READY',
+  'heatmap-v2:AGED_PUMP_FADE_REPUMP_SHORT_ALERT',
   'heatmap-v2:PUMP_FLUSH_RECLAIM_LONG_READY',
 ]) {
   assert.equal(normalizeLiquidLiveCardKey(key), key);
@@ -149,6 +150,14 @@ const [whitelistState, realEnabledState] = await Promise.all([
 ]);
 assert(whitelistState.enabledKeys.includes(liquidKzTestKey));
 assert(realEnabledState.enabledKeys.includes(liquidKzTestKey));
+assert.equal(
+  whitelistState.enabledKeys.includes('heatmap-v2:AGED_PUMP_FADE_REPUMP_SHORT_ALERT'),
+  false,
+);
+assert.equal(
+  realEnabledState.enabledKeys.includes('heatmap-v2:AGED_PUMP_FADE_REPUMP_SHORT_ALERT'),
+  false,
+);
 
 const openEdgeCombo = 'DUMP | SHORT | 15M | BTC_CORR_YEU | BTC_UP_WEAK | THEO_YEU | GATE_-';
 const openEdgeComboKey = liveCardComboKeyAtEntry('edge', openEdgeCombo);

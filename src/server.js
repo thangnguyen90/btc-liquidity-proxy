@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 
 import crypto from 'node:crypto';
+import { SqueezeRatioWatch } from './squeezeRatioWatch.js';
+import { AutoEntryControls,BINANCE_PROTECTION_EXCLUSION_VERSION,buildAutoEntryDailyStats } from './autoEntryControls.js';
+import {EMA99_ENTRY_CATALOG,EMA99_CONTROL_CATALOG} from './ema99EntryCatalog.js';
+import {buildEma99WatchOrder} from './ema99WatchBinance.js';
+import {withEma99EntryProtection} from './ema99ShortStopLoss.js';
+import {MANUAL_SHORT_SL30_VERSION,buildManualShortSl30,applyManualShortSl30ToPlan,isManualShortSl30Source,manualShortSl30MatchesPosition,reconcileManualShortSl30} from './manualShortStopLoss.js';
+import { Ema99NearRejectRunner, EMA99_NEAR_REJECT_ROUTE } from './ema99NearRejectBinance.js';
+import { EMA99_RECLAIM_LONG_ROUTE, buildEma99ReclaimLongOrder } from './ema99ReclaimLongBinance.js';
+import { EMA99_BOUNCE_LONG_ROUTE, buildEma99BounceLongOrder } from './ema99BounceLongBinance.js';
 import { execFile } from 'node:child_process';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { appendFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
@@ -14,12 +23,96 @@ import {
   compactPumpPaperTradeForStorage,
   replayPumpPaperWalFile,
 } from './pumpPaperWal.js';
+import {
+  PAPER_HOT_STORE_VERSION,
+  applyPaperHotStorePartition,
+  partitionPaperHotRows,
+} from './paperHotStore.js';
 import { BinanceClient, BinanceRateLimitError } from './binanceClient.js';
+import {
+  BINANCE_FILLED_SIGNAL_AUDIT_VERSION,
+  BinanceFilledSignalAudit,
+} from './binanceFilledSignalAudit.js';
 import { BINANCE_SCIENTIFIC_STEP_PRECISION_VERSION, decimalsFromStep } from './binancePrecision.js';
 import { BinanceRateGate, binanceRateGate } from './binanceRateGate.js';
 import { loadEnv } from './env.js';
 import { fetchAnalysis, normalizeSymbol } from './marketAnalysis.js';
+import {
+  attachCoinGlassLiquidationAnalysis,
+  buildCoinLevelAnalysis,
+  markCoinLevelAnalysisStale,
+} from './coinLevelAnalysis.js';
+import { scanCoinLevelEntryWatch } from './coinLevelEntryWatch.js';
+import { CoinLevelEntryWatchDiscordNotifier } from './coinLevelEntryWatchDiscord.js';
+import {
+  COIN_LEVEL_ENTRY_WATCH_ROUTES,
+  CoinLevelEntryWatchBinanceRunner,
+} from './coinLevelEntryWatchBinance.js';
+import { CoinLevelLifecycleDiscordNotifier } from './coinLevelLifecycleDiscord.js';
 import { computeHeatmapData } from './liquidityProxy.js';
+import {
+  LIQ_SCAN_SNAPSHOT_VERSION,
+  buildLiqScanSnapshot,
+  assessSweepDirection,
+} from './liqScanSnapshot.js';
+import { assessLiqScanSweepRejectShort } from './liqScanSweepRejectShort.js';
+import { buildCoinHorizonAnalysis } from './coinHorizonAnalysis.js';
+import { CoinHorizonDiscordNotifier } from './coinHorizonDiscord.js';
+import { CoinHorizonSweepTransitionNotifier } from './coinHorizonSweepTransitionDiscord.js';
+import { CoinHorizonSweepBinanceRunner, COIN_HORIZON_SWEEP_ROUTES } from './coinHorizonSweepBinance.js';
+import {
+  buildHtfDeepDumpBase15mDiscordPayload,
+  collectHtfDeepDumpBase15mDiscordEvent,
+  normalizeHtfDeepDumpDiscordWebhookUrl,
+} from './htfDeepDumpBaseReclaimDiscord.js';
+import {
+  HTF_DEEP_DUMP_BASE_UNIVERSE_REQUIREMENTS,
+  scanHtfDeepDumpBaseUniverse,
+  selectHtfDeepDumpBaseUniverse,
+} from './htfDeepDumpBaseUniverse.js';
+import { classifyLiqScanTier, buildLiqScanTierPayload } from './liqScanTierDiscord.js';
+import { LiqScanHighScoreDiscordNotifier } from './liqScanHighScoreDiscord.js';
+import {
+  scanLiqScanHighScoreBackground,
+} from './liqScanHighScoreBackground.js';
+import {
+  LiqScanMainKillSweepTracker,
+  LiqScanReferenceSweepTracker,
+  buildLiqScanMainKillSweepPayload,
+  collectLiqScanSweepDiscordEvent,
+  deliverLiqScanSweepDiscord,
+  isLargeVolumeLiqScanSweepEvent,
+} from './liqScanMainKillSweep.js';
+import {
+  LIQ_SCAN_HIGH_SCORE_ROUTES,
+  LiqScanHighScoreBinanceRunner,
+} from './liqScanHighScoreBinance.js';
+import {
+  LIQ_SCAN_MAIN_KILL_SWEEP_ROUTES,
+  LiqScanMainKillSweepBinanceRunner,
+} from './liqScanMainKillSweepBinance.js';
+import { scanPostPumpEma99Retest, postPumpEma99Event, postPumpEma99Payload } from './postPumpEma99Retest.js';
+import { scanEma99PullbackLong, ema99PullbackLongEvent, ema99PullbackLongPayload } from './ema99PullbackLong.js';
+import { enrichFiveMinuteEma99Context } from './ema99Context.js';
+import { createEma99DiscordTimeframeRouter, ema99DiscordAnyWebhookConfigured } from './ema99DiscordRouting.js';
+import { ema99PartialCacheCoverage } from './ema99PartialCacheScan.js';
+import { scanExtremeShortSqueeze, extremeShortSqueezeEvent, extremeShortSqueezePayload } from './extremeShortSqueeze.js';
+import {
+  ExtremeShortSqueezeBinanceRunner,
+  EXTREME_SHORT_SQUEEZE_ROUTES,
+} from './extremeShortSqueezeBinance.js';
+import {
+  HtfDeepBaseRetestBinanceRunner,
+  HTF_DEEP_BASE_RETEST_ROUTES,
+} from './htfDeepDumpBaseBinance.js';
+import {
+  COINGLASS_HYBRID_LIQUIDITY_ROUTES,
+  CoinglassHybridLiquidityBinanceRunner,
+} from './coinglassHybridLiquidityBinance.js';
+import {
+  BIG_CANDLE_PUMP_15M_ROUTE,
+  BigCandlePump15mBinanceRunner,
+} from './bigCandlePumpBinance.js';
 import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked, summarizeTopTraderTrend, formatTopTraderTrend } from './discordNotifier.js';
 import { KLINE_CACHE_MANAGED_LIVE_GROUP_VERSION, KlineCache } from './klineCache.js';
 import { resolveEmaWarmupReadyTarget, warmupRetryDelayMs } from './klineWarmupPolicy.js';
@@ -31,7 +124,11 @@ import { runSpikeReversalScan } from './spikeReversalDetector.js';
 import { detectPostDumpKillLong, detectPostPumpKillShort, runPostPumpKillShortScan } from './postPumpKillShortDetector.js';
 import { runPumpIgnitionScan } from './pumpIgnitionDetector.js';
 import { runEmaSqueezeScan } from './emaSqueezeDetector.js';
-import { runEma99KillReclaimScan } from './ema99KillReclaimDetector.js';
+import {
+  EMA99_KILL_RECLAIM_VERSION,
+  PUMP_DUMP_ABSORPTION_VARIANT,
+  runEma99KillReclaimScan,
+} from './ema99KillReclaimDetector.js';
 import { detectClosedCandlePattern, runShakeoutReclaimScan } from './shakeoutReclaimDetector.js';
 import { evaluateShakeoutSideCandle } from './shakeoutSideCandleRule.js';
 import {
@@ -81,6 +178,8 @@ import {
   buildLiquidFlowV2BinanceStats,
   coinglassQualifiedBinanceAudits,
   coinglassQualifiedBinanceTrades,
+  coinglassZoneLifecycleBinanceAudits,
+  coinglassZoneLifecycleBinanceTrades,
   liquidFlowV2BinanceRollingRange,
   liquidFlowV2RealTrades,
   liquidFlowV2SyntheticExecutions,
@@ -91,6 +190,7 @@ import {
 } from './liquidFlowV2BinanceSignalSettings.js';
 import {
   appendEdgePaperEntryJournal,
+  compactEdgePaperEntryJournal,
   readLatestEdgePaperJournalRecords,
   recoverEdgePaperTradesFromJournal,
 } from './edgePaperEntryJournal.js';
@@ -100,6 +200,20 @@ import {
   authorizeCoinglassWebAutoOrder,
   authorizeLiquidFlowV2AutoOrder,
   authorizeLiveCardAutoOrder,
+  authorizePostPumpKillShortAutoOrder,
+  authorizePumpDumpAbsorptionAutoOrder,
+  authorizeEma99NearRejectOrder,
+  authorizeEma99ReclaimLongOrder,
+  authorizeEma99BounceLongOrder,
+  authorizeEma99WatchOrder,
+  authorizeExtremeShortSqueezeOrder,
+  authorizeHtfDeepBaseRetestOrder,
+  authorizeCoinglassHybridLiquidityOrder,
+  authorizeCoinHorizonSweepOrder,
+  authorizeBigCandlePump15mOrder,
+  authorizeLiqScanHighScoreOrder,
+  authorizeLiqScanMainKillSweepOrder,
+  authorizeCoinLevelEntryWatchOrder,
   evaluateAutoBinanceEntryPolicy,
   liveCardOnlyAutoBinanceEnabled,
 } from './autoBinancePolicy.js';
@@ -112,10 +226,30 @@ import {
 } from './coinglassWebBinance.js';
 import {
   COINGLASS_ZONE_LIFECYCLE_BINANCE_VERSION,
+  COINGLASS_ZONE_LIFECYCLE_ACCEPTED_BREAKOUT_MARGIN_USDT,
+  COINGLASS_ZONE_LIFECYCLE_LARGE_TARGET_MARGIN_USDT,
+  COINGLASS_ZONE_LIFECYCLE_LARGE_TARGET_THRESHOLD_PCT,
   COINGLASS_ZONE_LIFECYCLE_LEVERAGE,
   COINGLASS_ZONE_LIFECYCLE_MARGIN_USDT,
+  COINGLASS_ZONE_LIFECYCLE_SUPPORT_RECLAIM_MARGIN_USDT,
+  COINGLASS_ZONE_LIFECYCLE_UNCONFIRMED_BOUNCE_LONG_MARGIN_USDT,
+  COINGLASS_ZONE_LIFECYCLE_PARTIAL_TP_VERSION,
+  COINGLASS_ZONE_LIFECYCLE_HYPER_VOLATILE_CHANGE_24H_PCT,
+  COINGLASS_ZONE_LIFECYCLE_STRONG_SHORT_BREAK_EVEN_TRIGGER_ROE,
+  COINGLASS_ZONE_LIFECYCLE_STRONG_SHORT_BREAK_EVEN_VERSION,
+  buildCoinglassZoneLifecycleBreakEvenStopParams,
+  buildCoinglassZoneLifecyclePartialTpParams,
+  evaluateCoinglassZoneLifecycleStrongShortBreakEven,
   evaluateCoinglassZoneLifecycleBinanceEntry,
+  parseCoinglassZoneLifecycleBreakEvenExcludedSymbols,
+  splitCoinglassZoneLifecyclePartialTpQuantity,
 } from './coinglassZoneLifecycleBinance.js';
+import {
+  COINGLASS_STRONG_WAVE_REVERSAL_LEVERAGE,
+  COINGLASS_STRONG_WAVE_REVERSAL_MARGIN_USDT,
+  COINGLASS_STRONG_WAVE_REVERSAL_VERSION,
+  evaluateCoinglassStrongWaveReversal,
+} from './coinglassStrongWaveReversal.js';
 import { hasOpenProtectionOrder } from './protectionOrderGuard.js';
 import {
   BINANCE_CLOSE_POSITION_PROTECTION_VERSION,
@@ -150,6 +284,8 @@ import {
   BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION,
   BINANCE_MANUAL_SOCKET_SOURCE,
   COINGLASS_ZONE_LIFECYCLE_TP_ONLY_VERSION,
+  NON_LIQUID_FLOW_V2_SHORT_TP_ROE,
+  isCoinglassZoneLifecycleSource,
   isManualShortProtectionSource,
   isUserOrLiquidFlowV2ManagedSource,
   resolveManualShortEma99TakeProfit,
@@ -157,12 +293,19 @@ import {
   resolveNonLiquidFlowV2TakeProfit,
   resolveOrdersManualTakeProfit,
   shouldSuppressCoinglassZoneLifecycleStopLoss,
+  shouldSuppressTrackedCoinglassZoneLifecycleStopLoss,
   shouldSuppressBotShortStopLoss,
 } from './shortTakeProfitPolicy.js';
 import {
+  BINANCE_FAST_WAVE_RECOVERY_LOCK_ROE,
+  BINANCE_FAST_WAVE_RECOVERY_LOCK_TRIGGER_ROE,
+  BINANCE_FAST_WAVE_RECOVERY_TRIGGER_ROE,
+  BINANCE_FAST_WAVE_RECOVERY_VERSION,
   BINANCE_NEGATIVE_TP_TO_ENTRY_DEFAULT_ROE,
   BINANCE_NEGATIVE_TP_TO_ENTRY_VERSION,
+  evaluateBinanceFastWaveRecovery,
   normalizeNegativeTpRoe,
+  shouldBypassFastWaveRecoveryForNegativeTp,
   shouldMoveNegativeTpToEntry,
 } from './negativeTakeProfitPolicy.js';
 import {
@@ -204,22 +347,36 @@ import {
   liveCardShortEntryMatchedKeys,
 } from './liveCardShortEntryPolicy.js';
 import {
+  DCA_ATTACHED_LIMIT_RETENTION_VERSION,
   DEFAULT_ENTRY_LIMIT_MAX_AGE_MS,
   ENTRY_LIMIT_TWELVE_HOUR_EXPIRY_VERSION,
   isEntryLimitExpiryEnabled,
   LIMIT_ORDER_RETENTION_VERSION,
   isAutoCancelEntryLimitEnabled,
+  isDcaAttachedLimitOrder,
   isRegularLimitOrder,
+  selectDcaAttachedLimitOrders,
   selectExpiredEntryLimitOrders,
   selectAutomaticProtectionCleanupOrders,
+  shouldRetainDcaAttachedLimitOrder,
 } from './limitOrderRetention.js';
 import {
   BINANCE_PROFIT_LOCK_VERSION,
+  FAST_WAVE_CANDLE_5M_RANGE_THRESHOLD_PCT,
+  FAST_WAVE_CANDLE_15M_RANGE_THRESHOLD_PCT,
+  FAST_WAVE_CANDLE_REVERSAL_BODY_MIN_RATIO,
+  FAST_WAVE_CANDLE_WICK_MIN_RATIO,
+  FAST_WAVE_PROFIT_LOCK_FIRST_LOCK_ROE,
+  FAST_WAVE_PROFIT_LOCK_STEP_ROE,
+  FAST_WAVE_PROFIT_LOCK_TRAIL_GAP_ROE,
+  FAST_WAVE_PROFIT_LOCK_TRIGGER_ROE,
   LEGACY_TRAILING_STOP_DISABLED_VERSION,
   ORDERS_EXCLUDED_PROFIT_LOCK_ROE,
   ORDERS_EXCLUDED_PROFIT_LOCK_TRIGGER_ROE,
   binanceProfitLockLifecycleKey,
   binanceProfitLockStopPrice,
+  binancePositionPriceRoe,
+  classifyBinanceFastWaveProfitLock,
   hasBinanceProfitLockStopAtTarget,
   isBinanceProfitLockImmediateTriggerError,
   isBinanceProfitLockTargetBreached,
@@ -227,9 +384,13 @@ import {
   isLiquidFlowV2ProfitLockSource,
   matchesManualLiquidFlowV2ProfitLockTrade,
   matchesLiquidFlowV2ProfitLockTrade,
+  parseBinanceFastWaveSymbols,
+  resolveBinanceFastWaveProfitLockRoe,
   resolveBinanceProfitLockRoe,
   resolveManualBinanceProfitLockRoe,
   resolveOrdersExcludedBinanceProfitLockRoe,
+  resolveShortTpOnlyBreakEvenProfitLockRoe,
+  summarizeBinanceCandleVolatility,
 } from './binanceProfitLock.js';
 import {
   BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION,
@@ -244,10 +405,21 @@ import {
   roundBinanceTakeProfitTowardProfit,
 } from './binanceTwelveHourTakeProfit.js';
 import { sharedLastTicker } from './sharedLastTicker.js';
+import { sharedMarkTicker } from './sharedMarkTicker.js';
+import { attachCoinLevelLiveSocket } from './coinLevelLiveSocket.js';
+import { LimitPaperLab } from './limitPaperLab.js';
 import { getEtfProxy } from './etfProxy.js';
 import { fetchMarketNews, loadMarketNews, marketNewsConfig, saveMarketNews } from './marketNews.js';
 import { coinFlowConfig, fetchCoinFlowBoard, loadCoinFlow, saveCoinFlow } from './coinFlow.js';
-import { CoinGlassWebTop20Manager } from './coinglassWebTop20.js';
+import {
+  COIN_LEVEL_COINGLASS_ON_DEMAND_VERSION,
+  CoinGlassWebTop20Manager,
+  safeCoinglassSymbol,
+} from './coinglassWebTop20.js';
+import {
+  evaluateCoinglassHybridLiquidityHunter,
+  selectCoinglassHybridLiquidityCandidates,
+} from './coinglassHybridLiquidityHunter.js';
 import { fetchTokenUnlocksBoard, getUnlockSummaryForSymbol, loadTokenUnlocks, saveTokenUnlocks, tokenUnlocksConfig } from './tokenUnlocks.js';
 import { applyRecommendedDefaultSlLiveClose, getRecommendedPaper, getRecommendedPaperActiveSymbols, getRecommendedSignals, paperSupportEntryStats, processRecommendedPaperSocketPrice, processRecommendedSourceOpenEvent, recommendedLiveCardKeysOfTrade } from './recommendedSignals.js';
 import { buildRecommendedSupportEntryStatRows, decorateRecommendedSupportEntrySnapshots } from './recommendedSupportEntry.js';
@@ -406,6 +578,41 @@ import {
   evaluateMarketDirectionDiscordTransition,
 } from './liquidMarketDirectionDiscord.js';
 import {
+  MARKET_BREADTH_SHOCK_VERSION,
+  MarketBreadthShockDetector,
+  MarketBreadthShockDiscordNotifier,
+  collectMarketBreadthShockMetrics,
+} from './marketBreadthShock.js';
+import {
+  EMA99_MARKET_BREADTH_15M_VERSION,
+  Ema99MarketBreadth15mDetector,
+  Ema99MarketBreadth15mDiscordNotifier,
+  collectEma99MarketBreadth15m,
+} from './ema99MarketBreadth15m.js';
+import {
+  MEGA_PUMP_STAIRCASE_VERSION,
+  MegaPumpStaircaseDiscordNotifier,
+  scanMegaPumpStaircase,
+} from './megaPumpStaircase.js';
+import {
+  PUMP_FLUSH_RECLAIM_VERSION,
+  PumpFlushReclaimDiscordNotifier,
+  scanPumpFlushReclaim,
+} from './pumpFlushReclaim.js';
+import {
+  POST_PUMP_EMA99_BEARISH_CROSS_RULE,
+  POST_PUMP_EMA99_BEARISH_CROSS_VERSION,
+  PostPumpEma99BearishCrossDiscordNotifier,
+  scanPostPumpEma99BearishCross,
+} from './postPumpEma99BearishCross.js';
+import {
+  WEEK_LONG_POST_PUMP_EMA99_SLOPE_RULE,
+  WEEK_LONG_POST_PUMP_EMA99_SLOPE_VERSION,
+  buildWeekLongPostPumpEma99SlopePayload,
+  collectWeekLongPostPumpEma99SlopeEvent,
+  scanWeekLongPostPumpEma99Slope,
+} from './weekLongPostPumpEma99Slope.js';
+import {
   LIQUID_RUNNER_DIRECTION_VERSION,
   deriveLiquidRunnerDirectionSnapshots,
   evaluateLiquidRunnerDirectionSnapshot,
@@ -487,7 +694,12 @@ import {
   suppressLiquidFlowV2RecoveredSignal,
 } from './liquidFlowV2Freshness.js';
 import { LiquidationFlowCollector } from './liquidationFlowCollector.js';
-import { LiquidFlowV2PaperManager, liquidFlowV2AutoBinanceProfile } from './liquidFlowV2Paper.js';
+import {
+  LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_VERSION,
+  LiquidFlowV2PaperManager,
+  compactLiquidFlowV2PaperSnapshot,
+  liquidFlowV2AutoBinanceProfile,
+} from './liquidFlowV2Paper.js';
 import {
   LIQUID_FLOW_V2_HTF_DISCORD_LABELS,
   buildLiquidFlowV2HtfDiscordPayload,
@@ -517,13 +729,181 @@ import {
   buildLiquidFlowV2FadingWaveLivePumpDiscordPayload,
   liquidFlowV2FadingWaveLivePumpDiscordDedupeKey,
 } from './liquidFlowV2FadingWaveLivePumpDiscord.js';
+import {
+  LIQUID_FLOW_V2_AGED_PUMP_FADE_REPUMP_DISCORD_LABELS,
+  buildLiquidFlowV2AgedPumpFadeRepumpDiscordPayload,
+  liquidFlowV2AgedPumpFadeRepumpDiscordDedupeKey,
+} from './liquidFlowV2AgedPumpFadeRepumpDiscord.js';
 import WebSocket from 'ws';
 
 loadEnv();
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const publicDir = join(rootDir, 'public');
+const marketBreadthShockRule = Object.freeze({
+  maxSymbols: Math.max(50, Math.min(400, Number(process.env.MARKET_BREADTH_SHOCK_MAX_SYMBOLS ?? 400))),
+  minQuoteVolume: Math.max(0, Number(process.env.MARKET_BREADTH_SHOCK_MIN_QUOTE_VOLUME ?? 1_000_000)),
+  minSamples: Math.max(30, Number(process.env.MARKET_BREADTH_SHOCK_MIN_SAMPLES ?? 60)),
+  minCoveragePct: Math.max(10, Number(process.env.MARKET_BREADTH_SHOCK_MIN_COVERAGE_PCT ?? 20)),
+  movePct: Math.max(0.1, Number(process.env.MARKET_BREADTH_SHOCK_MOVE_PCT ?? 0.30)),
+  strongMovePct: Math.max(0.3, Number(process.env.MARKET_BREADTH_SHOCK_STRONG_MOVE_PCT ?? 0.75)),
+  volumeRatio: Math.max(1, Number(process.env.MARKET_BREADTH_SHOCK_VOLUME_RATIO ?? 1.5)),
+  watchScore: Math.max(1, Math.min(100, Number(process.env.MARKET_BREADTH_SHOCK_WATCH_SCORE ?? 58))),
+  dangerScore: Math.max(1, Math.min(100, Number(process.env.MARKET_BREADTH_SHOCK_DANGER_SCORE ?? 78))),
+  persistenceSamples: Math.max(1, Number(process.env.MARKET_BREADTH_SHOCK_PERSISTENCE_SAMPLES ?? 2)),
+});
+const ema99MarketBreadth15mRule = Object.freeze({
+  maxSymbols: Math.max(50, Math.min(400, Number(process.env.EMA99_MARKET_BREADTH_15M_MAX_SYMBOLS ?? 400))),
+  minQuoteVolume: Math.max(0, Number(process.env.EMA99_MARKET_BREADTH_15M_MIN_QUOTE_VOLUME ?? 1_000_000)),
+  minSamples: Math.max(30, Number(process.env.EMA99_MARKET_BREADTH_15M_MIN_SAMPLES ?? 60)),
+  minCoveragePct: Math.max(10, Number(process.env.EMA99_MARKET_BREADTH_15M_MIN_COVERAGE_PCT ?? 20)),
+  minimumNearPct: Math.max(0.1, Number(process.env.EMA99_MARKET_BREADTH_15M_MIN_NEAR_PCT ?? 0.30)),
+  maximumNearPct: Math.max(0.3, Number(process.env.EMA99_MARKET_BREADTH_15M_MAX_NEAR_PCT ?? 1.50)),
+  atrNearMultiplier: Math.max(0.1, Number(process.env.EMA99_MARKET_BREADTH_15M_ATR_MULTIPLIER ?? 0.75)),
+  minProgressPct: Math.max(0, Number(process.env.EMA99_MARKET_BREADTH_15M_MIN_PROGRESS_PCT ?? 0.05)),
+  watchCount: Math.max(2, Number(process.env.EMA99_MARKET_BREADTH_15M_WATCH_COUNT ?? 8)),
+  dangerCount: Math.max(3, Number(process.env.EMA99_MARKET_BREADTH_15M_DANGER_COUNT ?? 15)),
+  dangerSharePct: Math.max(1, Number(process.env.EMA99_MARKET_BREADTH_15M_DANGER_SHARE_PCT ?? 10)),
+  minimumDominancePct: Math.max(50, Math.min(100, Number(process.env.EMA99_MARKET_BREADTH_15M_MIN_DOMINANCE_PCT ?? 65))),
+  watchPersistenceSamples: Math.max(1, Number(process.env.EMA99_MARKET_BREADTH_15M_WATCH_PERSISTENCE_SAMPLES ?? 2)),
+});
+const marketBreadthShockDetector = new MarketBreadthShockDetector({ config: marketBreadthShockRule });
+const marketBreadthShockDiscord = new MarketBreadthShockDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'market-breadth-shock-discord.json'),
+  webhookUrl: () => process.env.MARKET_BREADTH_SHOCK_DISCORD_WEBHOOK_URL ?? '',
+  cooldownMs: Math.max(5 * 60_000, Number(process.env.MARKET_BREADTH_SHOCK_DISCORD_COOLDOWN_MS ?? 30 * 60_000)),
+});
+const ema99MarketBreadth15mDetector = new Ema99MarketBreadth15mDetector({ config: ema99MarketBreadth15mRule });
+const ema99MarketBreadth15mDiscord = new Ema99MarketBreadth15mDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'ema99-market-breadth-15m-discord.json'),
+  webhookUrl: () => process.env.MARKET_BREADTH_SHOCK_DISCORD_WEBHOOK_URL ?? '',
+  cooldownMs: Math.max(5 * 60_000, Number(process.env.EMA99_MARKET_BREADTH_15M_DISCORD_COOLDOWN_MS ?? 30 * 60_000)),
+});
+const megaPumpStaircaseDiscord = new MegaPumpStaircaseDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'mega-pump-staircase-discord.json'),
+  webhookUrl: () => process.env.MARKET_BREADTH_SHOCK_DISCORD_WEBHOOK_URL ?? '',
+  cooldownMs: Math.max(60 * 60_000, Number(process.env.MEGA_PUMP_STAIRCASE_DISCORD_COOLDOWN_MS ?? 6 * 60 * 60_000)),
+});
+const pumpFlushReclaimDiscord = new PumpFlushReclaimDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'pump-flush-reclaim-discord.json'),
+  webhookUrl: () => process.env.PUMP_FLUSH_RECLAIM_DISCORD_WEBHOOK_URL ?? '',
+  cooldownMs: Math.max(60 * 60_000,
+    Number(process.env.PUMP_FLUSH_RECLAIM_DISCORD_COOLDOWN_MS ?? 6 * 60 * 60_000)),
+});
+const postPumpEma99BearishCrossDiscord = new PostPumpEma99BearishCrossDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'post-pump-ema99-bearish-cross-discord.json'),
+  webhookUrl: () => process.env.POST_PUMP_EMA99_BEARISH_CROSS_DISCORD_WEBHOOK_URL ?? '',
+  cooldownMs: Math.max(60 * 60_000,
+    Number(process.env.POST_PUMP_EMA99_BEARISH_CROSS_DISCORD_COOLDOWN_MS
+      ?? 6 * 60 * 60_000)),
+});
+const weekLongPostPumpEma99SlopeDiscord = new CoinHorizonDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'week-long-post-pump-ema99-slope-discord.json'),
+  webhookUrl: () => process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_DISCORD_WEBHOOK_URL ?? '',
+  eventBuilder: collectWeekLongPostPumpEma99SlopeEvent,
+  payloadBuilder: buildWeekLongPostPumpEma99SlopePayload,
+});
+const binanceFilledSignalAudit = new BinanceFilledSignalAudit({
+  rootDir,
+  webhookUrl: () => process.env.BINANCE_FILLED_SIGNAL_AUDIT_WEBHOOK_URL ?? '',
+  closeWebhookUrl: () => process.env.BINANCE_CLOSED_SIGNAL_AUDIT_WEBHOOK_URL ?? '',
+});
+binanceFilledSignalAudit.init().catch((error) => {
+  console.error('[BinanceFilledSignalAudit] init failed:', error.message);
+});
+const coinLevelAnalysisSnapshotDir = join(rootDir, 'data', 'coin-level-analysis-cache');
+const liqScanLatestAlertsFile = join(rootDir, 'data', 'liq-scan-latest-alerts.json');
+const postPumpEma99Discord = new CoinHorizonDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'post-pump-ema99-discord.json'),
+  webhookUrl: () => process.env.POST_PUMP_EMA99_DISCORD_WEBHOOK_URL ?? '',
+  eventBuilder: (event,now) => ema99PullbackLongEvent(event,now) ?? postPumpEma99Event(event,now),
+  payloadBuilder: event => event.side === 'LONG' ? ema99PullbackLongPayload(event) : postPumpEma99Payload(event),
+});
+const postPumpEma9915mDiscord = new CoinHorizonDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'post-pump-ema99-15m-discord.json'),
+  webhookUrl: () => process.env.POST_PUMP_EMA99_15M_DISCORD_WEBHOOK_URL ?? '',
+  eventBuilder: (event,now) => ema99PullbackLongEvent(event,now) ?? postPumpEma99Event(event,now),
+  payloadBuilder: event => event.side === 'LONG' ? ema99PullbackLongPayload(event) : postPumpEma99Payload(event),
+});
+const notifyPostPumpEma99Discord = createEma99DiscordTimeframeRouter({
+  fiveMinuteNotifier: postPumpEma99Discord,
+  fifteenMinuteNotifier: postPumpEma9915mDiscord,
+});
+let postPumpEma99Running = false;
+let postPumpEma99LastScan = 0;
+let htfDeepDumpBaseUniverseRunning = false;
+let htfDeepDumpBaseUniverseLastScan = 0;
+let htfDeepDumpBaseUniverseLastLog = 0;
+let htfDeepDumpBaseUniverseState = {
+  requested: 0,
+  processed: 0,
+  detected: 0,
+  sent: 0,
+  coverage: { '15m': 0, '1h': 0, '4h': 0, all: 0 },
+  generatedAt: null,
+};
+const extremeShortSqueezeDiscord = new CoinHorizonDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'extreme-short-squeeze-discord.json'),
+  webhookUrl: () => process.env.EXTREME_SHORT_SQUEEZE_DISCORD_WEBHOOK_URL ?? '',
+  eventBuilder: extremeShortSqueezeEvent,
+  payloadBuilder: extremeShortSqueezePayload,
+});
+let extremeShortSqueezeRunning = false;
+let extremeShortSqueezeLastLog = 0;
+let liqScanHighScoreBackgroundRunning = false;
+let liqScanHighScoreBackgroundLastLog = 0;
+let liqScanHighScoreBackgroundWarmupRunning = false;
+let liqScanHighScoreBackgroundWarmupTimer = null;
+const liqScanTierDiscord = new CoinHorizonDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'liqscan-tier-discord.json'),
+  webhookUrl: () => process.env.COIN_HORIZON_DISCORD_WEBHOOK_URL ?? '',
+  eventBuilder: classifyLiqScanTier,
+  payloadBuilder: buildLiqScanTierPayload,
+});
+const coinHorizonDiscord = new CoinHorizonDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'coin-horizon-discord.json'),
+  webhookUrl: () => process.env.COIN_HORIZON_DISCORD_WEBHOOK_URL ?? '',
+});
+const coinHorizonSweepTransitionDiscord = new CoinHorizonSweepTransitionNotifier({
+  stateFile: join(rootDir, 'data', 'coin-horizon-sweep-transition-discord.json'),
+  webhookUrl: () => process.env.COIN_HORIZON_SWEEP_TRANSITION_DISCORD_WEBHOOK_URL ?? '',
+});
+const liqScanHighScoreDiscord = new LiqScanHighScoreDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'liq-scan-high-score-discord.json'),
+  webhookUrl: () => process.env.LIQ_SCAN_HIGH_SCORE_DISCORD_WEBHOOK_URL
+    ?? process.env.COIN_HORIZON_SWEEP_TRANSITION_DISCORD_WEBHOOK_URL
+    ?? '',
+  execute: (event) => liqScanHighScoreBinanceRunner.handle(event),
+});
+const liqScanMainKillSweepTracker = new LiqScanMainKillSweepTracker();
+const liqScanReferenceSweepTracker = new LiqScanReferenceSweepTracker();
+const liqScanMainKillSweepBackgroundDiscord = new CoinHorizonDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'liq-scan-main-kill-sweep-background-discord.json'),
+  webhookUrl: () => process.env.LIQ_SCAN_HIGH_SCORE_DISCORD_WEBHOOK_URL
+    ?? process.env.COIN_HORIZON_SWEEP_TRANSITION_DISCORD_WEBHOOK_URL
+    ?? '',
+  eventBuilder: collectLiqScanSweepDiscordEvent,
+  payloadBuilder: buildLiqScanMainKillSweepPayload,
+});
+const liqScanLargeVolumeSweepDiscord = new CoinHorizonDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'liq-scan-large-volume-sweep-discord.json'),
+  webhookUrl: () => process.env.LIQ_SCAN_LARGE_VOLUME_DISCORD_WEBHOOK_URL ?? '',
+  eventBuilder: collectLiqScanSweepDiscordEvent,
+  payloadBuilder: buildLiqScanMainKillSweepPayload,
+});
+const htfDeepDumpBase15mDiscord = new CoinHorizonDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'htf-deep-dump-base-15m-discord.json'),
+  webhookUrl: () => normalizeHtfDeepDumpDiscordWebhookUrl(
+    process.env.HTF_DEEP_DUMP_BASE_15M_DISCORD_WEBHOOK_URL,
+  ),
+  eventBuilder: collectHtfDeepDumpBase15mDiscordEvent,
+  payloadBuilder: buildHtfDeepDumpBase15mDiscordPayload,
+});
 const execFileAsync = promisify(execFile);
+const coinLevelLifecycleDiscord = new CoinLevelLifecycleDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'coin-level-lifecycle-discord.json'),
+  webhookUrl: () => process.env.COIN_LEVEL_LIFECYCLE_DISCORD_WEBHOOK_URL ?? '',
+});
 const liquidFlowV2BinanceSignalSettings = new LiquidFlowV2BinanceSignalSettings({
   file: join(rootDir, 'data', 'liquid-flow-v2-binance-signal-settings.json'),
 });
@@ -531,7 +911,59 @@ const coinGlassWebTop20 = new CoinGlassWebTop20Manager({
   rootDir,
   onQualifiedRow: executeCoinGlassQualifiedBinanceRow,
   onZoneLifecycleSignal: executeCoinGlassZoneLifecycleBinanceEvent,
+  onZoneLifecyclePaper: (event, execution) => recordLimitPaperWhenBinanceSkipped(event, {
+    status: execution?.decision ?? 'OBSERVE_ONLY',
+  }, {
+    source: 'coinglass-zone-lifecycle',
+    streamId: 'primary',
+    label: event?.entryPlan?.signalLabel ?? `${event.state}_${event?.entryPlan?.side ?? 'WATCH'}`,
+    side: event?.entryPlan?.side,
+    signalPrice: event.currentPrice ?? event?.entryPlan?.entryPrice,
+    signalAt: event.generatedAt,
+    interval: '15m',
+    dedupeKey: `primary|${event.id}`,
+  }),
+  onZoneLifecycleReversalWatch: executeCoinGlassStrongWaveReversalWatch,
+  onHybridLiquidityScan: evaluateCoinGlassHybridLiquidityRows,
+  onHybridLiquiditySignal: executeCoinGlassHybridLiquidityBinanceSignal,
+  onHybridLiquidityPaper: (signal, outcome) => recordLimitPaperWhenBinanceSkipped(signal, outcome, {
+    source: 'coinglass-hybrid-liquidity',
+    streamId: signal.streamId ?? 'primary',
+    label: signal.label,
+    signalPrice: signal?.binance?.lastPrice,
+    signalAt: signal.confirmedAt ?? signal.candleCloseAt ?? signal.generatedAt,
+    interval: '5m',
+  }),
   resolveBinanceSettings: resolveCoinGlassQualifiedSignalSetting,
+});
+const coinGlassWebSecondary = new CoinGlassWebTop20Manager({
+  rootDir,
+  dataDir: join(rootDir, 'data', 'coinglass-web-secondary'),
+  streamId: 'secondary',
+  onZoneLifecycleSignal: executeCoinGlassZoneLifecycleBinanceEvent,
+  onZoneLifecyclePaper: (event, execution) => recordLimitPaperWhenBinanceSkipped(event, {
+    status: execution?.decision ?? 'OBSERVE_ONLY',
+  }, {
+    source: 'coinglass-zone-lifecycle',
+    streamId: 'secondary',
+    label: event?.entryPlan?.signalLabel ?? `${event.state}_${event?.entryPlan?.side ?? 'WATCH'}`,
+    side: event?.entryPlan?.side,
+    signalPrice: event.currentPrice ?? event?.entryPlan?.entryPrice,
+    signalAt: event.generatedAt,
+    interval: '15m',
+    dedupeKey: `secondary|${event.id}`,
+  }),
+  onZoneLifecycleReversalWatch: executeCoinGlassStrongWaveReversalWatch,
+  onHybridLiquidityScan: evaluateCoinGlassHybridLiquidityRows,
+  onHybridLiquiditySignal: executeCoinGlassHybridLiquidityBinanceSignal,
+  onHybridLiquidityPaper: (signal, outcome) => recordLimitPaperWhenBinanceSkipped(signal, outcome, {
+    source: 'coinglass-hybrid-liquidity',
+    streamId: signal.streamId ?? 'secondary',
+    label: signal.label,
+    signalPrice: signal?.binance?.lastPrice,
+    signalAt: signal.confirmedAt ?? signal.candleCloseAt ?? signal.generatedAt,
+    interval: '5m',
+  }),
 });
 // Python learning is analysis-only and can be expensive on large paper stores.
 // Keep every sidecar opt-in so a missing environment variable can never start
@@ -807,6 +1239,210 @@ const client = new BinanceClient({
   baseUrl: process.env.BINANCE_FUTURES_BASE_URL || undefined,
   timeoutMs: 20_000,
 });
+const autoEntryControls = new AutoEntryControls(join(rootDir,'data','auto-entry-controls.json'));
+const protectionExclusionLastLogAt = new Map();
+function isBinanceProtectionExcluded(symbol, stage = 'AUTO_PROTECTION') {
+  if (!autoEntryControls.isProtectionExcluded(symbol)) return false;
+  const normalizedSymbol = normalizeSymbol(symbol);
+  const key = `${normalizedSymbol}|${stage}`;
+  const now = Date.now();
+  if (now - Number(protectionExclusionLastLogAt.get(key) ?? 0) >= 60_000) {
+    protectionExclusionLastLogAt.set(key, now);
+    console.warn(
+      `[ProtectionExclusion] ${normalizedSymbol} skip ${stage}; giữ nguyên mọi TP/SL đang có,`
+      + ` không tạo/bù/đổi TP/SL và không chạy Fast Wave; version=${BINANCE_PROTECTION_EXCLUSION_VERSION}`,
+    );
+  }
+  return true;
+}
+function resetBinanceProtectionExclusionAfterClose(symbol, reason = 'POSITION_CLOSED') {
+  const normalizedSymbol = normalizeSymbol(symbol);
+  let removed = false;
+  try {
+    removed = autoEntryControls.clearProtectionExclusion(normalizedSymbol);
+  } catch (error) {
+    console.warn(
+      `[ProtectionExclusion] ${normalizedSymbol} auto reset failed after ${reason};`
+      + ` exclusion retained fail-safe: ${error.message}`,
+    );
+    return false;
+  }
+  if (!removed) return false;
+  for (const key of protectionExclusionLastLogAt.keys()) {
+    if (key.startsWith(`${normalizedSymbol}|`)) protectionExclusionLastLogAt.delete(key);
+  }
+  console.log(
+    `[ProtectionExclusion] ${normalizedSymbol} auto reset after ${reason};`
+    + ` next position uses normal TP/SL, SL trail and Fast Wave; version=${BINANCE_PROTECTION_EXCLUSION_VERSION}`,
+  );
+  return true;
+}
+autoEntryControls.seed([
+  ...EMA99_CONTROL_CATALOG,
+  ...EXTREME_SHORT_SQUEEZE_ROUTES,
+  ...HTF_DEEP_BASE_RETEST_ROUTES,
+  ...COINGLASS_HYBRID_LIQUIDITY_ROUTES,
+  ...COIN_HORIZON_SWEEP_ROUTES,
+  BIG_CANDLE_PUMP_15M_ROUTE,
+  ...LIQ_SCAN_HIGH_SCORE_ROUTES,
+  ...LIQ_SCAN_MAIN_KILL_SWEEP_ROUTES,
+  ...COIN_LEVEL_ENTRY_WATCH_ROUTES,
+]);
+autoEntryControls.guardClient(client);
+const ema99NearRejectRunner=new Ema99NearRejectRunner({
+  file:join(rootDir,'data','ema99-near-reject-binance.json'),controls:autoEntryControls,
+  getContext:async symbol=>{
+    if(!runtimeSettings.orderEnabled||runtimeSettings.dryRun)return {enabled:false};
+    const credentials=getApiCredentials(null);
+    const [positions,openOrders,premium]=await Promise.all([
+      client.getPositions(credentials),client.getOpenOrders({...credentials,symbol}),client.getPremiumIndex(symbol),
+    ]);
+    return {enabled:true,credentials,positions,openOrders,markPrice:Number(premium.markPrice)};
+  },
+  submit:async (plan,context)=>{
+    const result=await placeOrder(authorizeEma99NearRejectOrder(plan),null,context.credentials,{positions:context.positions,openOrders:context.openOrders});
+    invalidateOpenOrdersCache();return result;
+  },
+});
+const ema99ReclaimLongRunner=new Ema99NearRejectRunner({
+  file:join(rootDir,'data','ema99-reclaim-long-binance.json'),controls:autoEntryControls,
+  routeSpec:EMA99_RECLAIM_LONG_ROUTE,buildOrder:buildEma99ReclaimLongOrder,referencePrice:e=>e?.price,
+  getContext:ema99NearRejectRunner.getContext,
+  submit:async (plan,context)=>{
+    const result=await placeOrder(authorizeEma99ReclaimLongOrder(plan),null,context.credentials,{positions:context.positions,openOrders:context.openOrders});
+    invalidateOpenOrdersCache();return result;
+  },
+});
+const ema99BounceLongRunner=new Ema99NearRejectRunner({
+  file:join(rootDir,'data','ema99-bounce-long-binance.json'),controls:autoEntryControls,
+  routeSpec:EMA99_BOUNCE_LONG_ROUTE,buildOrder:buildEma99BounceLongOrder,
+  getContext:ema99NearRejectRunner.getContext,
+  submit:async (plan,context)=>{
+    const result=await placeOrder(authorizeEma99BounceLongOrder(plan),null,context.credentials,{positions:context.positions,openOrders:context.openOrders});
+    invalidateOpenOrdersCache();return result;
+  },
+});
+const ema99WatchRunners=new Map(EMA99_ENTRY_CATALOG.filter(r=>r.source==='ema99-observe-only').map(spec=>[spec.signalLabel,new Ema99NearRejectRunner({
+  file:join(rootDir,'data','ema99-watch-binance.json'),controls:autoEntryControls,routeSpec:spec,buildOrder:buildEma99WatchOrder,referencePrice:e=>e?.price,
+  getContext:ema99NearRejectRunner.getContext,
+  submit:async(plan,context)=>{const result=await placeOrder(authorizeEma99WatchOrder(plan),null,context.credentials,{positions:context.positions,openOrders:context.openOrders});invalidateOpenOrdersCache();return result;},
+})]));
+const extremeShortSqueezeBinanceRunner=new ExtremeShortSqueezeBinanceRunner({
+  file:join(rootDir,'data','extreme-short-squeeze-binance.json'),controls:autoEntryControls,
+  getContext:ema99NearRejectRunner.getContext,
+  submit:async(plan,context)=>{
+    const result=await placeOrder(authorizeExtremeShortSqueezeOrder(plan),null,context.credentials,{positions:context.positions,openOrders:context.openOrders});
+    invalidateOpenOrdersCache();return result;
+  },
+});
+const htfDeepBaseRetestBinanceRunner = new HtfDeepBaseRetestBinanceRunner({
+  file: join(rootDir, 'data', 'htf-deep-base-retest-binance.json'),
+  controls: autoEntryControls,
+  getContext: ema99NearRejectRunner.getContext,
+  submit: async (plan, context) => {
+    const result = await placeOrder(
+      authorizeHtfDeepBaseRetestOrder(plan),
+      null,
+      context.credentials,
+      { positions: context.positions, openOrders: context.openOrders },
+    );
+    invalidateOpenOrdersCache();
+    return result;
+  },
+});
+const coinglassHybridLiquidityBinanceRunner = new CoinglassHybridLiquidityBinanceRunner({
+  file: join(rootDir, 'data', 'coinglass-hybrid-liquidity-binance.json'),
+  controls: autoEntryControls,
+  getContext: ema99NearRejectRunner.getContext,
+  submit: async (plan, context) => {
+    const result = await placeOrder(
+      authorizeCoinglassHybridLiquidityOrder(plan),
+      null,
+      context.credentials,
+      { positions: context.positions, openOrders: context.openOrders },
+    );
+    invalidateOpenOrdersCache();
+    return result;
+  },
+});
+const bigCandlePump15mBinanceRunner = new BigCandlePump15mBinanceRunner({
+  file: join(rootDir, 'data', 'big-candle-pump-15m-binance.json'),
+  controls: autoEntryControls,
+  getContext: ema99NearRejectRunner.getContext,
+  submit: async (plan, context) => {
+    const result = await placeOrder(
+      authorizeBigCandlePump15mOrder(plan),
+      null,
+      context.credentials,
+      { positions: context.positions, openOrders: context.openOrders },
+    );
+    invalidateOpenOrdersCache();
+    return result;
+  },
+});
+const liqScanHighScoreBinanceRunner = new LiqScanHighScoreBinanceRunner({
+  file: join(rootDir, 'data', 'liq-scan-high-score-binance.json'),
+  controls: autoEntryControls,
+  getContext: ema99NearRejectRunner.getContext,
+  submit: async (plan, context) => {
+    const result = await placeOrder(
+      authorizeLiqScanHighScoreOrder(plan),
+      null,
+      context.credentials,
+      { positions: context.positions, openOrders: context.openOrders },
+    );
+    invalidateOpenOrdersCache();
+    return result;
+  },
+});
+const liqScanMainKillSweepBinanceRunner = new LiqScanMainKillSweepBinanceRunner({
+  file: join(rootDir, 'data', 'liq-scan-main-kill-sweep-binance.json'),
+  controls: autoEntryControls,
+  getContext: ema99NearRejectRunner.getContext,
+  submit: async (plan, context) => {
+    const result = await placeOrder(
+      authorizeLiqScanMainKillSweepOrder(plan),
+      null,
+      context.credentials,
+      { positions: context.positions, openOrders: context.openOrders },
+    );
+    invalidateOpenOrdersCache();
+    return result;
+  },
+});
+const coinLevelEntryWatchBinanceRunner = new CoinLevelEntryWatchBinanceRunner({
+  file: join(rootDir, 'data', 'coin-level-entry-watch-binance.json'),
+  controls: autoEntryControls,
+  getContext: ema99NearRejectRunner.getContext,
+  submit: async (plan, context) => {
+    const result = await placeOrder(
+      authorizeCoinLevelEntryWatchOrder(plan),
+      null,
+      context.credentials,
+      { positions: context.positions, openOrders: context.openOrders },
+    );
+    invalidateOpenOrdersCache();
+    return result;
+  },
+});
+const coinHorizonSweepBinanceRunner = new CoinHorizonSweepBinanceRunner({
+  file: join(rootDir, 'data', 'coin-horizon-sweep-binance.json'),
+  controls: autoEntryControls,
+  getContext: ema99NearRejectRunner.getContext,
+  submit: async (plan, context) => {
+    const result = await placeOrder(
+      authorizeCoinHorizonSweepOrder(plan),
+      null,
+      context.credentials,
+      { positions: context.positions, openOrders: context.openOrders },
+    );
+    invalidateOpenOrdersCache();
+    return result;
+  },
+});
+void binanceFilledSignalAudit.init().then(state=>autoEntryControls.seed([
+  ...Object.values(state.submissions??{}),...Object.values(state.fills??{}),
+])).catch(error=>console.warn(`[AutoEntryControls] Catalog unavailable: ${error.message}`));
 // Rate gate + client riêng cho /api/analyze — không tranh queue với background scans
 const analyzeRateGate = new BinanceRateGate({ limitPerMin: 600, concurrency: 4 });
 const analyzeClient = new BinanceClient({
@@ -828,6 +1464,25 @@ const ordersAuthClient = new BinanceClient({
   rateGate: ordersAuthRateGate,
 });
 const klineCache = new KlineCache({ client, maxKlines: 500 });
+const squeezeRatioWatch = new SqueezeRatioWatch({
+  stateFile: join(rootDir, 'data', 'squeeze-ratio-watch.json'),
+  webhookUrl: () => String(process.env.SQUEEZE_RATIO_DISCORD_WEBHOOK_URL ?? '').trim(),
+  client, cache: klineCache, getSymbols,
+  isBusy: () => binanceRateGate.isBlocked?.() || isBinanceRestCongested(),
+});
+const limitPaperLab = new LimitPaperLab({
+  file: join(rootDir, 'data', 'limit-paper-lab.json'),
+  getPrice: (symbol) => sharedLastTicker.getPrice(symbol),
+  onSymbolsChanged: (symbols) => sharedLastTicker.setSymbols('limitPaperLab', symbols),
+});
+sharedLastTicker.register('limitPaperLab', (tick) => {
+  void limitPaperLab.handlePriceTick(tick).catch((error) => {
+    console.warn(`[LimitPaperLab] price tick failed: ${error.message}`);
+  });
+});
+void limitPaperLab.init().catch((error) => {
+  console.warn(`[LimitPaperLab] init failed: ${error.message}`);
+});
 const pumpScanCache = { data: null, expiresAt: 0 };
 const capScanCache       = { data: null, expiresAt: 0 };
 const killShortScanCache    = { data: null, expiresAt: 0 };
@@ -841,6 +1496,13 @@ const shakeoutReclaimScanCache = { data: null, expiresAt: 0 };
 const topReversalScanCache = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 const liquidFlowV2Cache = { data: null, expiresAt: 0, inflight: null };
+const coinLevelAnalysisCache = new Map();
+const coinLevelEntryWatchCache = { data: null, expiresAt: 0, inflight: null };
+const coinLevelEntryWatchDiscord = new CoinLevelEntryWatchDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'coin-level-entry-watch-discord.json'),
+  webhookUrl: () => String(process.env.COIN_LEVEL_ENTRY_WATCH_DISCORD_WEBHOOK_URL ?? '').trim(),
+});
+let coinLevelEntryWatchDiscordRunning = false;
 let liquidFlowV2PostPumpSeedPromise = null;
 let liquidFlowV2PostPumpSymbols = [];
 const liquidFlowV2KlineMaxAgeMs = Object.freeze({
@@ -882,6 +1544,165 @@ const liquidFlowV2EmaFanDiscordSent = new Map();
 const liquidFlowV2KillLongDiscordSent = new Map();
 const liquidFlowV2FlagpoleShortKillDiscordSent = new Map();
 const liquidFlowV2FadingWaveLivePumpDiscordSent = new Map();
+const liquidFlowV2AgedPumpFadeRepumpDiscordSent = new Map();
+
+function limitPaperFinite(value, fallback = null) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function limitPaperSignalAt(event = {}) {
+  const now = Date.now();
+  for (const value of [
+    event.confirmedAt,
+    event.candleCloseAt,
+    event.evaluatedCloseAt,
+    event.observedAt,
+    event.generatedAt,
+  ]) {
+    const parsed = typeof value === 'string' ? Date.parse(value) : Number(value);
+    // Live WATCH events can expose the scheduled candle close in the future.
+    // The paper clock must never start after the snapshot that created it.
+    if (Number.isFinite(parsed) && parsed > 0 && parsed <= now) return parsed;
+  }
+  return now;
+}
+
+function limitPaperAtrPct(event = {}, signalPrice = null) {
+  const direct = limitPaperFinite(event.atrPct, limitPaperFinite(event.shockAtrPct));
+  if (direct > 0) return direct;
+  const atr = limitPaperFinite(event.atr, limitPaperFinite(event.atr14));
+  if (atr > 0 && signalPrice > 0) return atr / signalPrice * 100;
+  const nearLimitPct = limitPaperFinite(event.nearLimitPct);
+  if (nearLimitPct > 0) return nearLimitPct / 0.75;
+  const impulse = event?.binance?.impulse;
+  const impulseRange = impulse
+    ? limitPaperFinite(impulse.high) - limitPaperFinite(impulse.low)
+    : null;
+  const impulseAtrRatio = limitPaperFinite(impulse?.atrRatio);
+  return impulseRange > 0 && impulseAtrRatio > 0 && signalPrice > 0
+    ? impulseRange / impulseAtrRatio / signalPrice * 100
+    : null;
+}
+
+function limitPaperReferencePrice(event = {}, side = '') {
+  const signalPrice = limitPaperFinite(
+    event.price,
+    limitPaperFinite(event?.binance?.lastPrice, limitPaperFinite(event.currentPrice)),
+  );
+  const values = [event.ema99, event.ema13, event.supportHigh, event.supportLow]
+    .map((value) => limitPaperFinite(value))
+    .filter((value) => value > 0);
+  return values.find((value) => (
+    side === 'LONG' ? value < signalPrice : side === 'SHORT' ? value > signalPrice : false
+  )) ?? null;
+}
+
+async function recordLimitPaperWhenBinanceSkipped(event = {}, outcome = {}, overrides = {}) {
+  const status = String(outcome?.status ?? overrides.binanceSkipStatus ?? 'OBSERVE_ONLY').toLowerCase();
+  // A deduped runner commonly means this exact closed-candle event was already
+  // submitted on an earlier scan. Do not misclassify it as a missed live entry.
+  if (['submitted', 'new', 'filled', 'partially_filled', 'deduped'].includes(status)) {
+    return { status: 'live-entry-or-duplicate' };
+  }
+  const side = String(overrides.side ?? event.side ?? '').toUpperCase();
+  const signalPrice = limitPaperFinite(
+    overrides.signalPrice,
+    limitPaperFinite(event.price, limitPaperFinite(event?.binance?.lastPrice, limitPaperFinite(event.currentPrice))),
+  );
+  return limitPaperLab.observe({
+    source: overrides.source ?? event.source ?? 'unknown',
+    streamId: overrides.streamId ?? event.streamId ?? 'default',
+    label: overrides.label ?? event.stage ?? event.label ?? event.type ?? 'UNLABELED',
+    symbol: overrides.symbol ?? event.symbol,
+    side,
+    interval: overrides.interval ?? event.interval ?? '15m',
+    signalPrice,
+    signalAt: overrides.signalAt ?? limitPaperSignalAt(event),
+    atrPct: overrides.atrPct ?? limitPaperAtrPct(event, signalPrice),
+    referencePrice: overrides.referencePrice ?? limitPaperReferencePrice(event, side),
+    binanceSkipStatus: status.toUpperCase(),
+    reason: overrides.reason ?? event.reason ?? '',
+    dedupeKey: overrides.dedupeKey ?? event.dedupeKey ?? '',
+  }).catch((error) => {
+    console.warn(`[LimitPaperLab] record ${event.symbol ?? '-'} failed: ${error.message}`);
+    return { status: 'error' };
+  });
+}
+
+async function processHtfDeepDumpBase15mRow(row = {}) {
+  const event = collectHtfDeepDumpBase15mDiscordEvent(row);
+  if (!event) return { sent: 0, status: 'ineligible' };
+  const ready = event.executionEligible === true;
+  const binanceExecution = ready
+    ? await htfDeepBaseRetestBinanceRunner.handle(event)
+      .catch((error) => ({ status: 'error', code: error.code ?? 'BINANCE_ERROR' }))
+    : { status: 'ineligible' };
+  if (!['off', 'ineligible', 'deduped'].includes(binanceExecution.status)) {
+    console.log(`[HtfDeepBaseRetestBinance] ${event.symbol} ${JSON.stringify(binanceExecution)}`);
+  }
+  await recordLimitPaperWhenBinanceSkipped(event, binanceExecution, {
+    source: 'htf-deep-dump-base',
+    streamId: 'htf-deep-dump-base',
+  });
+  const discordResult = await htfDeepDumpBase15mDiscord.notify({
+    ...row,
+    binanceExecution,
+  });
+  return { ...discordResult, binanceExecution };
+}
+
+async function executeCoinGlassHybridLiquidityBinanceSignal(signal = {}) {
+  const binanceExecution = await coinglassHybridLiquidityBinanceRunner.handle(signal)
+    .catch((error) => ({ status: 'error', code: error.code ?? 'BINANCE_ERROR' }));
+  if (!['off', 'ineligible', 'deduped'].includes(binanceExecution.status)) {
+    console.log(
+      `[CoinglassHybridLiquidityBinance] ${signal.symbol ?? '-'} ${signal.label ?? '-'}`
+      + ` ${JSON.stringify(binanceExecution)}`,
+    );
+  }
+  await recordLimitPaperWhenBinanceSkipped(signal, binanceExecution, {
+    source: 'coinglass-hybrid-liquidity',
+    streamId: signal.streamId ?? 'primary',
+    label: signal.label,
+    signalPrice: signal?.binance?.lastPrice,
+    signalAt: signal.confirmedAt ?? signal.candleCloseAt ?? signal.generatedAt,
+    interval: '5m',
+  });
+  return binanceExecution;
+}
+
+async function executeBigCandlePump15mBinanceSignal(signal = {}) {
+  const binanceExecution = await bigCandlePump15mBinanceRunner.handle(signal)
+    .catch((error) => ({ status: 'error', code: error.code ?? 'BINANCE_ERROR' }));
+  if (!['off', 'ineligible', 'deduped'].includes(binanceExecution.status)) {
+    console.log(
+      `[BigCandlePump15mBinance] ${signal.symbol ?? '-'} ${signal.label ?? '-'}`
+      + ` ${JSON.stringify(binanceExecution)}`,
+    );
+  }
+  await recordLimitPaperWhenBinanceSkipped(signal, binanceExecution, {
+    source: 'big-candle-pump-15m',
+    streamId: 'volume-dump-scanner',
+    label: signal.label,
+    signalPrice: signal.markPrice,
+    signalAt: signal.candleCloseAt ?? signal.observedAt,
+    interval: '15m',
+  });
+  return binanceExecution;
+}
+
+function notifyHtfDeepDumpBase15mDiscord(rows = []) {
+  for (const row of Array.isArray(rows) ? rows : []) {
+    processHtfDeepDumpBase15mRow(row).then((result) => {
+      if (result?.sent === 1) {
+        console.log(`[HtfDeepDumpBase15m] Discord sent: ${row?.symbol ?? '-'} ${result.side}`);
+      }
+    }).catch((error) => {
+      console.warn(`[HtfDeepDumpBase15m] Discord ${row?.symbol ?? '-'}: ${error.message}`);
+    });
+  }
+}
 
 async function notifyLiquidFlowV2HtfDiscord(rows = [], readyTransitions = new Set(), generatedAt = Date.now()) {
   const webhookUrl = process.env.LIQ_FLOW_V2_HTF_WEBHOOK_URL
@@ -1150,10 +1971,119 @@ async function notifyLiquidFlowV2FadingWaveLivePumpDiscord(
     }
   }
 }
+
+async function notifyLiquidFlowV2AgedPumpFadeRepumpDiscord(
+  rows = [],
+  readyLabelKeys = new Set(),
+  generatedAt = Date.now(),
+) {
+  const webhookUrl = process.env.LIQ_FLOW_V2_AGED_PUMP_FADE_REPUMP_WEBHOOK_URL;
+  if (!webhookUrl) return;
+  const now = Date.now();
+  const retentionMs = Math.max(60 * 60_000, Number(
+    process.env.LIQ_FLOW_V2_AGED_PUMP_FADE_REPUMP_DISCORD_DEDUPE_MS
+      ?? 24 * 60 * 60_000,
+  ));
+  for (const [key, sentAt] of liquidFlowV2AgedPumpFadeRepumpDiscordSent) {
+    if (now - sentAt > retentionMs) liquidFlowV2AgedPumpFadeRepumpDiscordSent.delete(key);
+  }
+  for (const row of rows) {
+    const symbol = String(row?.symbol ?? '').toUpperCase();
+    const classifications = [
+      row?.classification,
+      ...(Array.isArray(row?.classification?.secondaryLabels) ? row.classification.secondaryLabels : []),
+    ];
+    for (const classification of classifications) {
+      const labelKey = String(classification?.labelKey ?? '');
+      if (!LIQUID_FLOW_V2_AGED_PUMP_FADE_REPUMP_DISCORD_LABELS.has(labelKey)
+        || !readyLabelKeys.has(`${symbol}|${labelKey}`)) continue;
+      const dedupeKey = liquidFlowV2AgedPumpFadeRepumpDiscordDedupeKey(row, classification);
+      if (!dedupeKey || liquidFlowV2AgedPumpFadeRepumpDiscordSent.has(dedupeKey)) continue;
+      const payload = buildLiquidFlowV2AgedPumpFadeRepumpDiscordPayload(
+        row,
+        classification,
+        generatedAt,
+      );
+      if (!payload) continue;
+      liquidFlowV2AgedPumpFadeRepumpDiscordSent.set(dedupeKey, now);
+      try {
+        const response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          liquidFlowV2AgedPumpFadeRepumpDiscordSent.delete(dedupeKey);
+          console.warn(`[LiquidFlowV2AgedPumpFadeRepump] Discord ${symbol} ${labelKey} failed: ${response.status}`);
+        } else {
+          console.log(`[LiquidFlowV2AgedPumpFadeRepump] Discord sent: ${symbol} ${labelKey}`);
+        }
+      } catch (error) {
+        liquidFlowV2AgedPumpFadeRepumpDiscordSent.delete(dedupeKey);
+        console.warn(`[LiquidFlowV2AgedPumpFadeRepump] Discord ${symbol} ${labelKey}: ${error.message}`);
+      }
+    }
+  }
+}
 const liquidFlowV2Collector = new LiquidationFlowCollector({
   url: process.env.BINANCE_FORCE_ORDER_WS_URL || undefined,
 });
 liquidFlowV2Collector.start();
+
+async function evaluateCoinGlassHybridLiquidityRows(rows = [], config = {}, streamId = 'primary') {
+  const detectorConfig = {
+    maxCandidates: config.hybridLiquidityMaxCandidates,
+    maxZoneDistancePct: config.hybridLiquidityMaxZoneDistancePct,
+    minZonesPerSide: config.hybridLiquidityMinZonesPerSide,
+    maxSideScoreRatio: config.hybridLiquidityMaxSideScoreRatio,
+  };
+  const candidates = selectCoinglassHybridLiquidityCandidates(rows, detectorConfig);
+  if (!candidates.length) return [];
+
+  const symbols = candidates.map(({ profile }) => profile.symbol).filter(Boolean);
+  await Promise.all([
+    klineCache.seed(symbols, '5m', 140, {
+      batchSize: 4,
+      batchDelayMs: 100,
+      maxAgeMs: 12 * 60_000,
+      subscribe: false,
+    }),
+    klineCache.seed(symbols, '15m', 140, {
+      batchSize: 4,
+      batchDelayMs: 100,
+      maxAgeMs: 35 * 60_000,
+      subscribe: false,
+    }),
+  ]);
+
+  return mapConcurrent(candidates, 4, async ({ row, profile }) => {
+    const symbol = profile.symbol;
+    let openInterest = liquidFlowV2Collector.openInterestSummary(symbol);
+    try {
+      const latest = await client.getOpenInterest(symbol, {
+        priority: 7,
+        dropOnCongestion: true,
+        source: `coinglassHybridLiquidity:${streamId}:oi`,
+      });
+      const value = Number(latest?.openInterest);
+      if (value > 0) openInterest = liquidFlowV2Collector.recordOpenInterest(symbol, value) ?? openInterest;
+    } catch {
+      // OI is supporting context. Cached/unknown OI remains neutral; OHLCV/taker
+      // confirmation still has to pass before Discord can be notified.
+    }
+    return evaluateCoinglassHybridLiquidityHunter({
+      row,
+      profile,
+      klines5m: klineCache.getIfCached(symbol, '5m', 140) ?? [],
+      klines15m: klineCache.getIfCached(symbol, '15m', 140) ?? [],
+      openInterest,
+      liquidation: liquidFlowV2Collector.summary(symbol),
+      config: detectorConfig,
+      streamId,
+      now: Date.now(),
+    });
+  });
+}
 const liquidFlowV2Paper = new LiquidFlowV2PaperManager({
   file: join(rootDir, 'data', 'liquid-flow-v2-paper.json'),
   settings: {
@@ -1204,7 +2134,7 @@ const liquidFlowV2Paper = new LiquidFlowV2PaperManager({
     sharedLastTicker.setSymbols('liquidFlowV2Paper', activeSymbols);
     if (!liquidFlowV2Cache.data) return;
     liquidFlowV2Cache.data = { ...liquidFlowV2Cache.data, paper: snapshot };
-    pushSse(liquidFlowV2SseClients, liquidFlowV2Cache.data);
+    pushLiquidFlowV2ClientSse(liquidFlowV2Cache.data);
   },
 });
 const liquidFlowV2ManualOrderRunning = new Set();
@@ -1436,6 +2366,18 @@ async function handleLiquidFlowV2BinanceEvents(events = []) {
         maxOpenPositions: Math.max(0, Number(process.env.LIQ_FLOW_V2_BINANCE_MAX_POSITIONS ?? process.env.LIQ_FLOW_V2_BASE_BINANCE_MAX_POSITIONS ?? 30)),
         dryRun: false,
         source: profile.source,
+        signalType: event.labelKey,
+        signalLabel: event.labelKey,
+        signalCombo: trade.recommendationCombo
+          ?? trade.liquidCombo
+          ?? trade.edgeShortLabelGroup
+          ?? trade.combo
+          ?? null,
+        signalReason: trade.reason
+          ?? trade.note
+          ?? `Liquid Flow V2 ${event.labelKey}; cohort=${profile.cohort}`,
+        streamId: 'liquid-flow-v2',
+        executionPage: 'liquid-flow-v2',
       }), null, credentials, { positions });
       const orderResult = result?.orderResult ?? {};
       const avgPrice = Number(orderResult.avgPrice ?? 0) || Number(result?.order?.markPrice ?? trade.entryPrice);
@@ -1915,6 +2857,14 @@ const emaSqueezePaperSseClients = new Set();
 const liquidPaperSseClients    = new Set();
 const intradayDecisionPaperSseClients = new Set();
 const liquidFlowV2SseClients = new Set();
+const LIQUID_FLOW_V2_SSE_COALESCE_VERSION = 'LIQUID_FLOW_V2_SSE_COALESCE_V1_5S_20260831';
+const LIQUID_FLOW_V2_SSE_MIN_INTERVAL_MS = Math.max(
+  1_000,
+  Number(process.env.LIQ_FLOW_V2_SSE_MIN_INTERVAL_MS ?? 5_000),
+);
+let liquidFlowV2PendingClientSseData = null;
+let liquidFlowV2ClientSseTimer = null;
+let liquidFlowV2ClientSseLastAt = 0;
 
 function pushSse(clients, data) {
   if (!clients || clients.size === 0) return;
@@ -1922,6 +2872,57 @@ function pushSse(clients, data) {
   for (const res of clients) {
     try { res.write(payload); } catch { clients.delete(res); }
   }
+}
+
+function liquidFlowV2ClientPayload(data = {}) {
+  return {
+    ...data,
+    clientSnapshotVersion: LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_VERSION,
+    clientBroadcastVersion: LIQUID_FLOW_V2_SSE_COALESCE_VERSION,
+    paper: compactLiquidFlowV2PaperSnapshot(data?.paper ?? {}),
+  };
+}
+
+function liquidFlowV2InitializingPayload() {
+  return liquidFlowV2ClientPayload({
+    version: LIQUID_HEATMAP_FLOW_V2_VERSION,
+    generatedAt: Date.now(),
+    initializing: true,
+    candidateCount: 0,
+    readyCount: 0,
+    activeCount: 0,
+    warmupCount: 0,
+    staleDataCount: 0,
+    telemetry: liquidFlowV2Collector.health(),
+    paper: liquidFlowV2Paper.snapshot(),
+    stats: [],
+    rows: [],
+  });
+}
+
+function flushLiquidFlowV2ClientSse() {
+  liquidFlowV2ClientSseTimer = null;
+  const data = liquidFlowV2PendingClientSseData;
+  liquidFlowV2PendingClientSseData = null;
+  if (!data || !liquidFlowV2SseClients.size) return;
+  liquidFlowV2ClientSseLastAt = Date.now();
+  pushSse(liquidFlowV2SseClients, liquidFlowV2ClientPayload(data));
+}
+
+function pushLiquidFlowV2ClientSse(data = {}) {
+  if (!liquidFlowV2SseClients.size) return;
+  liquidFlowV2PendingClientSseData = data;
+  if (liquidFlowV2ClientSseTimer) return;
+  const waitMs = Math.max(
+    0,
+    LIQUID_FLOW_V2_SSE_MIN_INTERVAL_MS - (Date.now() - liquidFlowV2ClientSseLastAt),
+  );
+  if (waitMs === 0) {
+    flushLiquidFlowV2ClientSse();
+    return;
+  }
+  liquidFlowV2ClientSseTimer = setTimeout(flushLiquidFlowV2ClientSse, waitMs);
+  liquidFlowV2ClientSseTimer.unref?.();
 }
 
 const liquidPaperPendingTradeUpdates = new Map();
@@ -2808,6 +3809,12 @@ async function handlePostPumpDumpRiskRealOrder(sig) {
     stopLossPrice: sig.sl ?? undefined,
     maxOpenPositions,
     dryRun: false,
+    source: 'post-pump-dump-risk',
+    signalType: sig.type,
+    signalLabel: 'POST_PUMP_DUMP_RISK_SHORT',
+    signalReason: sig.reason ?? `Post-pump dump risk; score=${sig.score}; grade=${sig.grade ?? '-'}`,
+    signalCombo: sig.grade ? `score=${sig.score} | grade=${sig.grade}` : `score=${sig.score}`,
+    executionPage: 'dump-ignition',
   }, null, { apiKey, apiSecret });
 
   postPumpDumpRiskOrderFired.set(dedupKey, Date.now());
@@ -3022,6 +4029,12 @@ async function handlePostDumpBounceRiskRealOrder(sig) {
     stopLossPrice: sig.sl ?? undefined,
     maxOpenPositions,
     dryRun: false,
+    source: 'post-dump-bounce-risk',
+    signalType: sig.type,
+    signalLabel: 'POST_DUMP_BOUNCE_RISK_LONG',
+    signalReason: sig.reason ?? `Post-dump bounce risk; score=${sig.score}; grade=${sig.grade ?? '-'}`,
+    signalCombo: sig.grade ? `score=${sig.score} | grade=${sig.grade}` : `score=${sig.score}`,
+    executionPage: 'dump-ignition',
   }, null, { apiKey, apiSecret });
 
   postDumpBounceRiskOrderFired.set(dedupKey, Date.now());
@@ -3234,9 +4247,7 @@ async function scheduleSpikeReversalScan() {
 }
 
 let _postPumpKillShortDebounce = null;
-// PPKS is a paper/observation page. This hard lock intentionally ignores env
-// toggles so a future config reload cannot accidentally place Binance orders.
-const POST_PUMP_KILL_SHORT_BINANCE_HARD_DISABLED = true;
+const POST_PUMP_KILL_SHORT_BINANCE_VERSION = 'PPKS_BINANCE_CONFIRMED_SHORT_V2_1USDT_20260902';
 async function schedulePostPumpKillShortScan() {
   clearTimeout(_postPumpKillShortDebounce);
   _postPumpKillShortDebounce = setTimeout(async () => {
@@ -3307,12 +4318,10 @@ async function schedulePostPumpKillShortScan() {
         }).catch((e) => console.warn(`[PpksPaper] auto-fire ${sig.symbol}:`, e.message));
       }
 
-      if (!POST_PUMP_KILL_SHORT_BINANCE_HARD_DISABLED) {
-        for (const sig of signals) {
-          handlePostPumpKillShortRealOrder(sig).catch((e) => {
-            console.warn(`[PostPumpKillShortOrder] ${sig.symbol}:`, e.message);
-          });
-        }
+      for (const sig of signals) {
+        handlePostPumpKillShortRealOrder(sig).catch((e) => {
+          console.warn(`[PostPumpKillShortOrder] ${sig.symbol}:`, e.message);
+        });
       }
 
       const ppksWebhook = process.env.POST_PUMP_KILL_SHORT_WEBHOOK_URL || '';
@@ -3380,16 +4389,13 @@ async function schedulePostPumpKillShortScan() {
 }
 
 async function handlePostPumpKillShortRealOrder(sig) {
-  if (liveCardOnlyAutoBinanceEnabled()) return;
-  if (POST_PUMP_KILL_SHORT_BINANCE_HARD_DISABLED) return;
   if (process.env.POST_PUMP_KILL_SHORT_AUTO_ORDER_ENABLED !== 'true') return;
-  const isShort = sig.stage === 'confirmed_short' || sig.stage === 'watch_spike';
-  const isLong = sig.stage === 'confirmed_long' || sig.stage === 'watch_long_sweep';
-  if (!isShort && !isLong) return;
+  if (sig?.type !== 'post_pump_kill_short') return;
+  if (sig.stage !== 'confirmed_short' || sig.action !== 'SHORT') return;
 
-  const minScore = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MIN_SCORE ?? 0);
+  const minScore = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MIN_SCORE ?? 60);
   if (sig.score < minScore) return;
-  if (!sig.entry || !sig.sl) return;
+  if (!sig.entry || !sig.sl || !sig.tp) return;
 
   const cooldownMs = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_COOLDOWN_MS ?? 4 * 3600 * 1000);
   const dedupKey = `${sig.symbol}|${sig.stage}|${sig.type}`;
@@ -3441,8 +4447,8 @@ async function handlePostPumpKillShortRealOrder(sig) {
   const notionalUsdt = marginUsdt * leverage;
   const orderType = String(process.env.POST_PUMP_KILL_SHORT_AUTO_ORDER_TYPE ?? 'MARKET').toUpperCase();
   const maxOpenPositions = Number(process.env.POST_PUMP_KILL_SHORT_AUTO_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
-  const side = isLong ? 'BUY' : 'SELL';
-  const result = await placeOrder({
+  const side = 'SELL';
+  const result = await placeOrder(authorizePostPumpKillShortAutoOrder({
     symbol: sig.symbol,
     side,
     orderType,
@@ -3452,25 +4458,38 @@ async function handlePostPumpKillShortRealOrder(sig) {
     takeProfitPrice: sig.tp ?? undefined,
     stopLossPrice: sig.sl ?? undefined,
     maxOpenPositions,
+    allowMinNotionalCeil: true,
+    source: 'post-pump-kill-short',
+    signalType: sig.type,
+    signalLabel: 'POST_PUMP_KILL_SHORT',
+    signalReason: sig.reason
+      ?? `Post-pump distribution + kill-short spike rejected; stage=${sig.stage}; score=${sig.score}`,
+    signalCombo: `stage=${sig.stage} | score=${sig.score} | grade=${sig.grade ?? '-'}`,
+    executionPage: 'post-pump-kill-short',
     dryRun: false,
-  }, null, { apiKey, apiSecret });
+  }), null, { apiKey, apiSecret }, { positions, openOrders });
 
   postPumpKillShortOrderFired.set(dedupKey, Date.now());
   invalidateOpenOrdersCache();
 
   const orderId = result?.orderResult?.orderId ?? '-';
   const avgPrice = result?.orderResult?.avgPrice ?? result?.order?.markPrice ?? sig.entry;
-  console.log(`[PostPumpKillShortOrder] REAL ${sig.symbol} ${side} ${orderType} orderId=${orderId} score=${sig.score}`);
+  console.log(
+    `[PostPumpKillShortOrder] REAL ${sig.symbol} ${side} ${orderType}`
+    + ` orderId=${orderId} score=${sig.score} version=${POST_PUMP_KILL_SHORT_BINANCE_VERSION}`,
+  );
 
   const webhookUrl = process.env.POST_PUMP_KILL_SHORT_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '';
   if (webhookUrl) {
     const fmt = (v) => v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toPrecision(8).replace(/\.?0+$/, '');
     const msg = [
-      `**[REAL ORDER] ${sig.symbol} ${isLong ? 'LONG' : 'SHORT'} - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
+      `**[REAL ORDER] ${sig.symbol} SHORT - ${orderType} - Score ${sig.score} (${sig.grade ?? '-'})**`,
       `OrderId: \`${orderId}\` | Avg/Mark: \`${fmt(avgPrice)}\``,
       `Margin: $${marginUsdt} x ${leverage}x | Notional: $${notionalUsdt}`,
-      `Entry signal: \`${fmt(sig.entry)}\` | SL: \`${fmt(sig.sl)}\` | TP: \`${fmt(sig.tp)}\``,
+      `Detector plan: Entry \`${fmt(sig.entry)}\` | SL \`${fmt(sig.sl)}\` | TP \`${fmt(sig.tp)}\``,
       `Type: ${sig.type ?? '-'} | Stage: ${sig.stage}`,
+      `Binance effective: TP-only +${NON_LIQUID_FLOW_V2_SHORT_TP_ROE}% ROE from fill | SL: NONE`,
+      `Policy: ${POST_PUMP_KILL_SHORT_BINANCE_VERSION}`,
     ].join('\n');
     fetch(webhookUrl, {
       method: 'POST',
@@ -3888,24 +4907,34 @@ async function sendEma99KillReclaimDiscord(signals = []) {
 
   for (const sig of signals) {
     if (Number(sig?.score ?? 0) < minScore) continue;
-    const side = String(sig.action ?? '').toUpperCase() === 'SHORT' ? 'SHORT' : 'LONG';
+    const rawAction = String(sig.action ?? '').toUpperCase();
+    const isWatch = rawAction === 'WATCH';
+    const side = isWatch ? 'WATCH' : rawAction === 'SHORT' ? 'SHORT' : 'LONG';
     const key = `${sig.symbol}|${sig.interval ?? '5m'}|${side}|${sig.stage ?? ''}`;
     const lastFired = ema99KillReclaimDiscordFired.get(key) ?? 0;
     if (now - lastFired < cooldownMs) continue;
     ema99KillReclaimDiscordFired.set(key, now);
 
     const f = sig.factors ?? {};
+    const isPumpDumpAbsorption = sig.setupVariant === PUMP_DUMP_ABSORPTION_VARIANT;
     const embed = {
-      title: `[EMA99 Kill Reclaim ${side} ${sig.interval ?? '5m'}] ${sig.symbol} - Score ${sig.score} (${sig.grade ?? '-'})`,
+      title: isPumpDumpAbsorption
+        ? `[EMA99 Pump-Dump ${side} ${sig.interval ?? '5m'}] ${sig.symbol} - Score ${sig.score} (${sig.grade ?? '-'})`
+        : `[EMA99 Kill Reclaim ${side} ${sig.interval ?? '5m'}] ${sig.symbol} - Score ${sig.score} (${sig.grade ?? '-'})`,
       description: cleanText(sig.reason ?? (side === 'SHORT'
         ? 'Dump xong wick len EMA99 roi reject'
         : 'Pump xong kill ve EMA99 roi reclaim')),
-      color: side === 'SHORT' ? 0xef4444 : 0x22c55e,
+      color: isWatch ? 0xf59e0b : side === 'SHORT' ? 0xef4444 : 0x22c55e,
       fields: [
         { name: 'Entry / SL / TP', value: `\`${fmt(sig.entry)}\` / \`${fmt(sig.sl)}\` / \`${fmt(sig.tp)}\``, inline: false },
         { name: 'Side', value: side, inline: true },
         { name: 'Timeframe', value: String(sig.interval ?? '5m'), inline: true },
         { name: 'Mark', value: fmt(sig.markPrice), inline: true },
+        ...(isPumpDumpAbsorption ? [
+          { name: 'Variant', value: `${PUMP_DUMP_ABSORPTION_VARIANT}\n${sig.stage ?? '-'}`, inline: false },
+          { name: 'Spike / Flush', value: `${pct(f.spikeMovePct, 1)} @ ${fmt(f.spikeVolumeRatio)}x / ${pct(f.flushDropPct, 1)} @ ${fmt(f.flushVolumeRatio)}x`, inline: false },
+          { name: 'Absorption', value: `${f.absorptionBars ?? '-'} bars · vol ${pct(f.absorptionVolumeSharePct, 0)} of flush`, inline: true },
+        ] : []),
         { name: 'Context move', value: pct(f.contextMovePct, 1), inline: true },
         { name: 'Kill age', value: `${f.killAgeBars ?? '-'} bars`, inline: true },
         { name: 'EMA99 dist', value: pct(f.ema99DistPct, 2), inline: true },
@@ -3926,7 +4955,7 @@ async function sendEma99KillReclaimDiscord(signals = []) {
     })
       .then((res) => {
         if (!res.ok) console.warn(`[Ema99KillReclaim] Discord ${sig.symbol} failed: ${res.status}`);
-        else console.log(`[Ema99KillReclaim] Discord sent: ${sig.symbol} ${side} score=${sig.score}`);
+        else console.log(`[Ema99KillReclaim] Discord sent: ${sig.symbol} ${side} score=${sig.score} variant=${sig.setupVariant ?? 'GENERIC'}`);
       })
       .catch((err) => console.warn(`[Ema99KillReclaim] Discord ${sig.symbol}:`, err.message));
   }
@@ -8724,6 +9753,14 @@ async function handleEmaSqueezeRealLongOrders(signals = []) {
         stopLossPrice: Number.isFinite(orderSl) && orderSl > 0 ? orderSl : undefined,
         maxOpenPositions,
         dryRun: false,
+        source: 'ema-squeeze',
+        signalType: `EMA_SQUEEZE_${stage}_LONG`,
+        signalLabel: `EMA_SQUEEZE_${stage}_LONG`,
+        signalReason: orderSignal.reason
+          ?? sig.reason
+          ?? `EMA squeeze ${stage}; interval=${interval}; score=${sig.score}; liquidEntry=${Boolean(orderSignal.liquidityEntry)}`,
+        signalCombo: `stage=${stage} | interval=${interval} | score=${sig.score}`,
+        executionPage: 'ema-squeeze',
       }, null, { apiKey, apiSecret });
 
       submitted++;
@@ -8740,8 +9777,15 @@ async function handleEmaSqueezeRealLongOrders(signals = []) {
 }
 
 async function handleEma99KillReclaimRealLongOrders(signals = []) {
-  if (liveCardOnlyAutoBinanceEnabled()) return;
-  if (process.env.EMA99_KILL_RECLAIM_REAL_ORDER_ENABLED !== 'true') return;
+  const liveCardOnly = liveCardOnlyAutoBinanceEnabled();
+  const genericRealEnabled = process.env.EMA99_KILL_RECLAIM_REAL_ORDER_ENABLED === 'true';
+  const pumpDumpRealEnabled = process.env.PUMP_DUMP_ABSORPTION_REAL_ORDER_ENABLED === 'true';
+  const eligibleSignals = signals.filter((sig) => {
+    const isPumpDumpAbsorption = sig?.setupVariant === PUMP_DUMP_ABSORPTION_VARIANT;
+    if (isPumpDumpAbsorption) return pumpDumpRealEnabled;
+    return !liveCardOnly && genericRealEnabled;
+  });
+  if (!eligibleSignals.length) return;
   if (!runtimeSettings.orderEnabled || runtimeSettings.dryRun) {
     console.log('[Ema99KillReclaimReal] skip - real Binance order disabled/dry-run');
     return;
@@ -8750,14 +9794,21 @@ async function handleEma99KillReclaimRealLongOrders(signals = []) {
   const minScore = Number(process.env.EMA99_KILL_RECLAIM_REAL_MIN_SCORE ?? 55);
   const maxScore = Number(process.env.EMA99_KILL_RECLAIM_REAL_MAX_SCORE ?? 100);
   const intervalAllow = String(process.env.EMA99_KILL_RECLAIM_REAL_INTERVAL ?? '5m');
-  const marginUsdt = Number(process.env.EMA99_KILL_RECLAIM_REAL_MARGIN_USDT ?? 1);
-  const leverage = Math.max(1, Math.min(125, Number(process.env.EMA99_KILL_RECLAIM_REAL_LEVERAGE ?? 10)));
-  const orderType = String(process.env.EMA99_KILL_RECLAIM_REAL_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const defaultMarginUsdt = Number(process.env.EMA99_KILL_RECLAIM_REAL_MARGIN_USDT ?? 1);
+  const defaultLeverage = Math.max(1, Math.min(125, Number(process.env.EMA99_KILL_RECLAIM_REAL_LEVERAGE ?? 10)));
+  const defaultOrderType = String(process.env.EMA99_KILL_RECLAIM_REAL_ORDER_TYPE ?? 'MARKET').toUpperCase();
   const cooldownMs = Number(process.env.EMA99_KILL_RECLAIM_REAL_COOLDOWN_MS ?? 4 * 3600 * 1000);
   const maxPerScan = Math.max(1, Number(process.env.EMA99_KILL_RECLAIM_REAL_MAX_ORDERS_PER_SCAN ?? 1));
   const maxOpenPositions = Number(process.env.EMA99_KILL_RECLAIM_REAL_MAX_POSITIONS ?? process.env.AUTO_TRADE_MAX_POSITIONS ?? 0);
-  if (!['MARKET', 'LIMIT', 'LIMIT_IOC'].includes(orderType)) {
-    console.warn(`[Ema99KillReclaimReal] invalid order type: ${orderType}`);
+  const pumpDumpMinScore = Number(process.env.PUMP_DUMP_ABSORPTION_REAL_MIN_SCORE ?? 70);
+  const pumpDumpMarginUsdt = Number(process.env.PUMP_DUMP_ABSORPTION_REAL_MARGIN_USDT ?? 1);
+  const pumpDumpLeverage = Math.max(1, Math.min(125, Number(process.env.PUMP_DUMP_ABSORPTION_REAL_LEVERAGE ?? 10)));
+  const pumpDumpOrderType = String(process.env.PUMP_DUMP_ABSORPTION_REAL_ORDER_TYPE ?? 'MARKET').toUpperCase();
+  const pumpDumpMaxAgeMs = Math.max(30_000, Number(process.env.PUMP_DUMP_ABSORPTION_REAL_MAX_AGE_MS ?? 7 * 60_000));
+  const pumpDumpMaxChasePct = Math.max(0, Number(process.env.PUMP_DUMP_ABSORPTION_REAL_MAX_CHASE_PCT ?? 0.8));
+  const supportedOrderTypes = new Set(['MARKET', 'LIMIT', 'LIMIT_IOC']);
+  if (!supportedOrderTypes.has(defaultOrderType) || !supportedOrderTypes.has(pumpDumpOrderType)) {
+    console.warn(`[Ema99KillReclaimReal] invalid order type: default=${defaultOrderType} pumpDump=${pumpDumpOrderType}`);
     return;
   }
 
@@ -8776,7 +9827,7 @@ async function handleEma99KillReclaimRealLongOrders(signals = []) {
     getCachedOpenOrders(apiKey, apiSecret),
   ]);
 
-  const orderedSignals = [...signals]
+  const orderedSignals = [...eligibleSignals]
     .filter((sig) => String(sig?.action ?? '').toUpperCase() === 'LONG')
     .filter((sig) => String(sig?.interval ?? '5m') === intervalAllow)
     .sort((a, b) => Number(b?.score ?? 0) - Number(a?.score ?? 0));
@@ -8784,8 +9835,13 @@ async function handleEma99KillReclaimRealLongOrders(signals = []) {
   let submitted = 0;
   for (const sig of orderedSignals) {
     if (submitted >= maxPerScan) break;
+    const isPumpDumpAbsorption = sig?.setupVariant === PUMP_DUMP_ABSORPTION_VARIANT;
+    const signalMinScore = isPumpDumpAbsorption ? pumpDumpMinScore : minScore;
+    const signalMarginUsdt = isPumpDumpAbsorption ? pumpDumpMarginUsdt : defaultMarginUsdt;
+    const signalLeverage = isPumpDumpAbsorption ? pumpDumpLeverage : defaultLeverage;
+    const signalOrderType = isPumpDumpAbsorption ? pumpDumpOrderType : defaultOrderType;
     const score = Number(sig.score ?? 0);
-    if (score < minScore || score > maxScore) continue;
+    if (score < signalMinScore || score > maxScore) continue;
     const entry = Number(sig.entry);
     const tp = Number(sig.tp);
     const sl = Number(sig.sl);
@@ -8795,13 +9851,38 @@ async function handleEma99KillReclaimRealLongOrders(signals = []) {
       continue;
     }
 
+    if (isPumpDumpAbsorption) {
+      const triggerCloseTime = Number(sig?.factors?.triggerCloseTime ?? 0);
+      const ageMs = triggerCloseTime > 0 ? Date.now() - triggerCloseTime : Infinity;
+      if (!Number.isFinite(ageMs) || ageMs < -60_000 || ageMs > pumpDumpMaxAgeMs) {
+        console.log(`[Ema99KillReclaimReal] skip ${sig.symbol} ${PUMP_DUMP_ABSORPTION_VARIANT} - stale closed-candle trigger age=${Math.round(ageMs / 1000)}s`);
+        continue;
+      }
+      const mark = Number(sig.markPrice);
+      const ema99 = Number(sig.ema99);
+      const chasePct = Number.isFinite(mark) && entry > 0 ? ((mark - entry) / entry) * 100 : Infinity;
+      if (!Number.isFinite(mark) || mark <= 0 || mark <= ema99 || mark <= sl || tp <= mark * 1.002) {
+        console.log(`[Ema99KillReclaimReal] skip ${sig.symbol} ${PUMP_DUMP_ABSORPTION_VARIANT} - live mark invalidated reclaim mark=${mark} ema99=${ema99} sl=${sl} tp=${tp}`);
+        continue;
+      }
+      if (chasePct > pumpDumpMaxChasePct || chasePct < -1) {
+        console.log(`[Ema99KillReclaimReal] skip ${sig.symbol} ${PUMP_DUMP_ABSORPTION_VARIANT} - chase=${chasePct.toFixed(2)}% outside [-1, ${pumpDumpMaxChasePct}]%`);
+        continue;
+      }
+      const btcGuard = emaSqueezeBtcHealthAllowsOrder();
+      if (!btcGuard.ok) {
+        console.log(`[Ema99KillReclaimReal] skip ${sig.symbol} ${PUMP_DUMP_ABSORPTION_VARIANT} - ${btcGuard.reason}`);
+        continue;
+      }
+    }
+
     const symbol = normalizeSymbol(sig.symbol);
     const liqBlock = liqAutoBlockReason(symbol, 'LONG');
     if (liqBlock) {
       console.log(`[Ema99KillReclaimReal] skip ${symbol} - ${liqBlock}`);
       continue;
     }
-    const dedupKey = `${symbol}|${sig.interval ?? '5m'}|EMA99_RECLAIM_LONG`;
+    const dedupKey = `${symbol}|${sig.interval ?? '5m'}|EMA99_RECLAIM_LONG|${sig.setupVariant ?? 'GENERIC'}`;
     const last = ema99KillReclaimRealOrderFired.get(dedupKey) ?? 0;
     if (Date.now() - last < cooldownMs) continue;
 
@@ -8822,24 +9903,49 @@ async function handleEma99KillReclaimRealLongOrders(signals = []) {
     }
 
     try {
-      const result = await placeOrder({
+      const orderPayload = {
         symbol,
         side: 'BUY',
-        orderType,
-        notionalUsdt: marginUsdt * leverage,
-        leverage,
-        limitPrice: orderType === 'MARKET' ? undefined : entry,
+        orderType: signalOrderType,
+        notionalUsdt: signalMarginUsdt * signalLeverage,
+        leverage: signalLeverage,
+        limitPrice: signalOrderType === 'MARKET' ? undefined : entry,
         takeProfitPrice: tp,
         stopLossPrice: sl,
         maxOpenPositions,
         dryRun: false,
-      }, null, { apiKey, apiSecret });
+        source: isPumpDumpAbsorption
+          ? 'ema99-kill-reclaim-pump-dump-absorption'
+          : 'ema99-kill-reclaim',
+        signalType: isPumpDumpAbsorption ? PUMP_DUMP_ABSORPTION_VARIANT : 'EMA99_KILL_RECLAIM_LONG',
+        signalLabel: isPumpDumpAbsorption ? PUMP_DUMP_ABSORPTION_VARIANT : 'EMA99_KILL_RECLAIM_LONG',
+        signalReason: sig.reason
+          ?? `EMA99 reclaim LONG; interval=${sig.interval ?? '5m'}; score=${score}; variant=${sig.setupVariant ?? 'GENERIC'}`,
+        signalCombo: `interval=${sig.interval ?? '5m'} | score=${score} | variant=${sig.setupVariant ?? 'GENERIC'}`,
+        executionPage: 'ema99-kill-reclaim',
+        clientOrderId: isPumpDumpAbsorption
+          ? `pda_${symbol}_${Date.now()}`
+          : `ekr_${symbol}_${Date.now()}`,
+      };
+      const protectedOrderPayload = withEma99EntryProtection({
+        ...orderPayload,
+        signalEntryPrice: entry,
+        protectionOnFill: true,
+        preserveSignalProtection: true,
+      });
+      const result = await placeOrder(
+        isPumpDumpAbsorption
+          ? authorizePumpDumpAbsorptionAutoOrder(protectedOrderPayload)
+          : protectedOrderPayload,
+        null,
+        { apiKey, apiSecret },
+      );
 
       submitted++;
       ema99KillReclaimRealOrderFired.set(dedupKey, Date.now());
       invalidateOpenOrdersCache();
       const orderId = result?.orderResult?.orderId ?? '-';
-      console.log(`[Ema99KillReclaimReal] REAL ${symbol} LONG ${sig.interval ?? '5m'} ${orderType} entry=${entry} tp=${tp} sl=${sl} orderId=${orderId} margin=$${marginUsdt} score=${score}`);
+      console.log(`[Ema99KillReclaimReal] REAL ${symbol} LONG ${sig.interval ?? '5m'} ${signalOrderType} entry=${entry} tp=${tp} sl=${sl} orderId=${orderId} margin=$${signalMarginUsdt} score=${score} variant=${sig.setupVariant ?? 'GENERIC'} version=${EMA99_KILL_RECLAIM_VERSION}`);
     } catch (e) {
       console.warn(`[Ema99KillReclaimReal] ${sig.symbol}: ${e.message}`);
     }
@@ -9040,6 +10146,899 @@ function scheduleMissingEmaWarmupRetry(symbols, minBars) {
   _emaWarmupRetryTimer.unref?.();
 }
 
+async function schedulePostPumpEma99RetestScan() {
+  if (postPumpEma99Running || Date.now()-postPumpEma99LastScan<55_000
+    || !ema99DiscordAnyWebhookConfigured(process.env)) return;
+  postPumpEma99Running=true;postPumpEma99LastScan=Date.now();
+  try {
+    const snapshot=await getSharedSnapshot();
+    const symbols=[...snapshot].sort((a,b)=>b.quoteVolume-a.quoteVolume).slice(0,400).map(r=>r.symbol);
+    const coverage=ema99PartialCacheCoverage(klineCache,symbols);
+    if(!coverage.ready) {
+      console.log(`[PostPumpEma99Retest] ${JSON.stringify({processed:0,detected:0,sent:0,coverage})}`);
+      return;
+    }
+    for(const [label,scan] of [['PostPumpEma99Retest',scanPostPumpEma99Retest],['Ema99PullbackLong',scanEma99PullbackLong]]) {
+      try {
+        const result=await scan(symbols,klineCache,async event=>{
+          const notifyWithHtfContext=async outgoing=>notifyPostPumpEma99Discord(
+            await enrichFiveMinuteEma99Context(outgoing,klineCache,Date.now()),
+          );
+          const finish=async(outgoing,outcome={status:'observe-only'})=>{
+            const paperRoute=EMA99_ENTRY_CATALOG.find(route=>route.signalLabel===outgoing.stage&&route.side===outgoing.side);
+            await recordLimitPaperWhenBinanceSkipped(outgoing,outcome,{
+              source:paperRoute?.source??'ema99-observe-only',streamId:paperRoute?.streamId??'ema99-retest',label:outgoing.stage,
+              referencePrice:outgoing.ema99,
+            });
+            return notifyWithHtfContext({...outgoing,binanceExecution:outcome});
+          };
+          if(ema99WatchRunners.has(event.stage)) {
+            const outcome=await ema99WatchRunners.get(event.stage).handle(event).catch(error=>({status:'error',code:error.code??'BINANCE_ERROR'}));
+            return finish(event,outcome);
+          }
+          if(event.stage==='REBOUND_PUMP_NEAR_REJECT_SHORT_WATCH'&&event.side==='SHORT') {
+            const outcome=await ema99NearRejectRunner.handle(event).catch(error=>({status:'error',code:error.code??'BINANCE_ERROR'}));
+            if(!['off','ineligible','deduped'].includes(outcome.status))console.log(`[Ema99NearRejectBinance] ${event.symbol} ${JSON.stringify(outcome)}`);
+            return finish(event,outcome);
+          }
+          if(event.stage==='BOUNCE_CONFIRMED_LONG_WATCH'&&event.side==='LONG') {
+            const outcome=await ema99BounceLongRunner.handle(event).catch(error=>({status:'error',code:error.code??'BINANCE_ERROR'}));
+            if(!['off','ineligible','deduped'].includes(outcome.status))console.log(`[Ema99BounceLongBinance] ${event.symbol} ${JSON.stringify(outcome)}`);
+            return finish(event,outcome);
+          }
+          if(event.stage==='RECLAIM_LONG_WATCH'&&event.side==='LONG') {
+            const outcome=await ema99ReclaimLongRunner.handle(event).catch(error=>({status:'error',code:error.code??'BINANCE_ERROR'}));
+            if(!['off','ineligible','deduped'].includes(outcome.status))console.log(`[Ema99ReclaimLongBinance] ${event.symbol} ${JSON.stringify(outcome)}`);
+            return finish(event,outcome);
+          }
+          return finish(event);
+        });
+        console.log(`[${label}] ${JSON.stringify({...result,coverage})}`);
+      } catch(error) {console.warn(`[${label}] ${error.message}`);}
+    }
+  } catch(error) { console.warn(`[PostPumpEma99Retest] ${error.message}`); }
+  finally {postPumpEma99Running=false;}
+}
+setInterval(()=>{void schedulePostPumpEma99RetestScan();},60_000).unref();
+
+async function scheduleHtfDeepDumpBaseUniverseScan() {
+  const now = Date.now();
+  const webhookUrl = normalizeHtfDeepDumpDiscordWebhookUrl(
+    process.env.HTF_DEEP_DUMP_BASE_15M_DISCORD_WEBHOOK_URL,
+  );
+  const minGapMs = Math.max(
+    30_000,
+    Number(process.env.HTF_DEEP_DUMP_BASE_SCAN_INTERVAL_MS ?? 60_000),
+  );
+  const registeredRoutes = HTF_DEEP_BASE_RETEST_ROUTES
+    .map((spec) => autoEntryControls.register(spec));
+  const controls = autoEntryControls.read();
+  const binanceEnabled = controls.enabled === true
+    && registeredRoutes.some((route) => controls.routes[route.key]?.enabled === true);
+  if ((!webhookUrl && !binanceEnabled)
+    || htfDeepDumpBaseUniverseRunning
+    || now - htfDeepDumpBaseUniverseLastScan < minGapMs - 1_000) return;
+  htfDeepDumpBaseUniverseRunning = true;
+  htfDeepDumpBaseUniverseLastScan = now;
+  try {
+    const marketRows = await getSharedSnapshot();
+    const maxSymbols = Math.max(
+      1,
+      Math.min(400, Number(process.env.HTF_DEEP_DUMP_BASE_UNIVERSE_MAX_SYMBOLS ?? 400)),
+    );
+    const universe = selectHtfDeepDumpBaseUniverse(marketRows, maxSymbols);
+    const symbols = universe.map((market) => market.symbol);
+    for (const interval of Object.keys(HTF_DEEP_DUMP_BASE_UNIVERSE_REQUIREMENTS)) {
+      klineCache.subscribe(symbols, interval);
+    }
+
+    let warmed = 0;
+    const warmupPerInterval = Math.max(
+      1,
+      Math.min(40, Number(process.env.HTF_DEEP_DUMP_BASE_WARMUP_SYMBOLS_PER_INTERVAL ?? 16)),
+    );
+    if (!binanceRateGate.isBlocked?.() && !isBinanceRestCongested()) {
+      for (const [interval, requirement] of Object.entries(HTF_DEEP_DUMP_BASE_UNIVERSE_REQUIREMENTS)) {
+        if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) break;
+        // The FAST 5m branch is opportunistic and reuses the shared market-breadth
+        // cache. Do not spend extra REST warm-up budget for an optional shortcut;
+        // missing 5m data simply leaves the established 15m READY fallback active.
+        if (requirement.optional === true) continue;
+        const missing = klineCache.needsRefresh(
+          symbols,
+          interval,
+          requirement.minBars,
+          requirement.maxAgeMs,
+        ).slice(0, warmupPerInterval);
+        if (!missing.length) continue;
+        await klineCache.seed(missing, interval, requirement.seedBars, {
+          batchSize: 2,
+          batchDelayMs: Math.max(
+            1_000,
+            Number(process.env.HTF_DEEP_DUMP_BASE_WARMUP_BATCH_DELAY_MS ?? 2_000),
+          ),
+          maxAgeMs: requirement.maxAgeMs,
+          subscribe: false,
+        });
+        warmed += missing.length;
+      }
+    }
+
+    const scan = scanHtfDeepDumpBaseUniverse({
+      marketRows: universe,
+      klineCache,
+      now: Date.now(),
+      maxSymbols,
+    });
+    let sent = 0;
+    let failed = 0;
+    for (const row of scan.rows) {
+      try {
+        const result = await processHtfDeepDumpBase15mRow(row);
+        sent += Number(result?.sent === 1);
+      } catch (error) {
+        failed += 1;
+        console.warn(`[HtfDeepDumpBase400] Discord ${row.symbol}: ${error.message}`);
+      }
+    }
+    htfDeepDumpBaseUniverseState = {
+      version: scan.version,
+      requested: scan.requested,
+      processed: scan.processed,
+      detected: scan.detected,
+      sent,
+      failed,
+      warmed,
+      coverage: scan.coverage,
+      generatedAt: scan.generatedAt,
+    };
+    if (sent || failed || Date.now() - htfDeepDumpBaseUniverseLastLog >= 5 * 60_000) {
+      console.log(`[HtfDeepDumpBase400] ${JSON.stringify(htfDeepDumpBaseUniverseState)}`);
+      htfDeepDumpBaseUniverseLastLog = Date.now();
+    }
+  } catch (error) {
+    console.warn(`[HtfDeepDumpBase400] scan failed: ${error.message}`);
+  } finally {
+    htfDeepDumpBaseUniverseRunning = false;
+  }
+}
+
+const htfDeepDumpBaseUniverseTimer = setInterval(
+  () => { void scheduleHtfDeepDumpBaseUniverseScan(); },
+  Math.max(30_000, Number(process.env.HTF_DEEP_DUMP_BASE_SCAN_INTERVAL_MS ?? 60_000)),
+);
+htfDeepDumpBaseUniverseTimer.unref?.();
+setTimeout(() => { void scheduleHtfDeepDumpBaseUniverseScan(); }, 45_000).unref?.();
+
+let marketBreadthShockRunning = false;
+let marketBreadthShockTimer = null;
+let marketBreadthShockUniverse = [];
+let marketBreadthShockUniverseAt = 0;
+let marketBreadthShockLastLog = 0;
+let ema99MarketBreadth15mLastLog = 0;
+
+async function scheduleMarketBreadthShockScan() {
+  const webhookUrl = String(process.env.MARKET_BREADTH_SHOCK_DISCORD_WEBHOOK_URL ?? '').trim();
+  if (!webhookUrl || marketBreadthShockRunning) return;
+  marketBreadthShockRunning = true;
+  try {
+    const snapshot = await getSharedSnapshot();
+    const now = Date.now();
+    if (!marketBreadthShockUniverse.length || now - marketBreadthShockUniverseAt >= 15 * 60_000) {
+      marketBreadthShockUniverse = [...snapshot]
+        .filter((row) => Number(row?.quoteVolume ?? 0) >= marketBreadthShockRule.minQuoteVolume)
+        .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+        .slice(0, marketBreadthShockRule.maxSymbols)
+        .map((row) => row.symbol);
+      marketBreadthShockUniverseAt = now;
+      const subscription = klineCache.subscribeGroup(
+        'market-breadth-shock',
+        marketBreadthShockUniverse,
+        '5m',
+      );
+      const ema99Subscription = klineCache.subscribeGroup(
+        'ema99-market-breadth-15m',
+        marketBreadthShockUniverse,
+        '15m',
+      );
+      console.log(`[MarketBreadthShock] 5m live universe ${JSON.stringify(subscription)}`);
+      console.log(`[Ema99MarketBreadth15m] live universe ${JSON.stringify(ema99Subscription)}`);
+    }
+    const universeSet = new Set(marketBreadthShockUniverse);
+    const marketRows = snapshot.filter((row) => universeSet.has(row.symbol));
+    const metrics = collectMarketBreadthShockMetrics({
+      marketRows,
+      klineCache,
+      now,
+      config: marketBreadthShockRule,
+    });
+    const event = marketBreadthShockDetector.observe(metrics);
+    if (event) {
+      const result = await marketBreadthShockDiscord.notify(event);
+      if (result.sent) {
+        console.log(
+          `[MarketBreadthShock] Discord ${event.direction}/${event.severity}`
+          + ` score=${event.score} breadth=${event.sideCount}/${event.processed}`
+          + ` strong=${event.strongCount} taker=${Number(event.takerBuyRatio ?? 0).toFixed(3)}`,
+        );
+      }
+    }
+    if (event || now - marketBreadthShockLastLog >= 5 * 60_000) {
+      console.log(`[MarketBreadthShock] ${JSON.stringify({
+        version: MARKET_BREADTH_SHOCK_VERSION,
+        context: metrics.context,
+        confirmation: event?.persistence ?? null,
+        requested: metrics.requested,
+        processed: metrics.processed,
+        coveragePct: Number(metrics.coveragePct.toFixed(1)),
+        up: metrics.upCount,
+        down: metrics.downCount,
+        strongUp: metrics.strongUpCount,
+        strongDown: metrics.strongDownCount,
+        takerBuyRatio: Number.isFinite(metrics.takerBuyRatio)
+          ? Number(metrics.takerBuyRatio.toFixed(3))
+          : null,
+        signal: event ? `${event.direction}_${event.severity}_${event.score}` : null,
+      })}`);
+      marketBreadthShockLastLog = now;
+    }
+    const ema99Metrics = collectEma99MarketBreadth15m({
+      marketRows,
+      klineCache,
+      now,
+      config: ema99MarketBreadth15mRule,
+      context: metrics.context,
+    });
+    const ema99Event = ema99MarketBreadth15mDetector.observe(ema99Metrics);
+    if (ema99Event) {
+      const result = await ema99MarketBreadth15mDiscord.notify(ema99Event);
+      if (result.sent) {
+        console.log(
+          `[Ema99MarketBreadth15m] Discord ${ema99Event.direction}/${ema99Event.severity}`
+          + ` score=${ema99Event.score} near=${ema99Event.nearCount}/${ema99Event.processed}`
+          + ` dominant=${ema99Event.dominantCount} (${ema99Event.dominancePct.toFixed(1)}%)`,
+        );
+      }
+    }
+    if (ema99Event || now - ema99MarketBreadth15mLastLog >= 5 * 60_000) {
+      console.log(`[Ema99MarketBreadth15m] ${JSON.stringify({
+        version: EMA99_MARKET_BREADTH_15M_VERSION,
+        requested: ema99Metrics.requested,
+        processed: ema99Metrics.processed,
+        coveragePct: Number(ema99Metrics.coveragePct.toFixed(1)),
+        near: ema99Metrics.nearCount,
+        fromBelow: ema99Metrics.fromBelowCount,
+        fromAbove: ema99Metrics.fromAboveCount,
+        signal: ema99Event ? `${ema99Event.direction}_${ema99Event.severity}_${ema99Event.score}` : null,
+      })}`);
+      ema99MarketBreadth15mLastLog = now;
+    }
+  } catch (error) {
+    console.warn(`[MarketBreadthShock] ${error.message}`);
+  } finally {
+    marketBreadthShockRunning = false;
+  }
+}
+
+function startMarketBreadthShockScheduler() {
+  if (marketBreadthShockTimer || !String(process.env.MARKET_BREADTH_SHOCK_DISCORD_WEBHOOK_URL ?? '').trim()) return;
+  const intervalMs = Math.max(10_000, Number(process.env.MARKET_BREADTH_SHOCK_SCAN_INTERVAL_MS ?? 15_000));
+  marketBreadthShockTimer = setInterval(() => {
+    void scheduleMarketBreadthShockScan();
+  }, intervalMs);
+  marketBreadthShockTimer.unref?.();
+  setTimeout(() => { void scheduleMarketBreadthShockScan(); }, 20_000).unref?.();
+  console.log(`[MarketBreadthShock] ${MARKET_BREADTH_SHOCK_VERSION} enabled; interval=${intervalMs}ms; OBSERVE ONLY`);
+  console.log(`[Ema99MarketBreadth15m] ${EMA99_MARKET_BREADTH_15M_VERSION} enabled; shared interval=${intervalMs}ms; OBSERVE ONLY`);
+}
+
+let megaPumpStaircaseRunning = false;
+let megaPumpStaircaseTimer = null;
+let megaPumpStaircaseUniverse = [];
+let megaPumpStaircaseUniverseAt = 0;
+let megaPumpStaircaseLastLog = 0;
+
+async function scheduleMegaPumpStaircaseScan() {
+  const webhookUrl = String(process.env.MARKET_BREADTH_SHOCK_DISCORD_WEBHOOK_URL ?? '').trim();
+  if (!webhookUrl || megaPumpStaircaseRunning) return;
+  megaPumpStaircaseRunning = true;
+  try {
+    const now = Date.now();
+    const snapshot = await getSharedSnapshot();
+    if (!megaPumpStaircaseUniverse.length || now - megaPumpStaircaseUniverseAt >= 15 * 60_000) {
+      const maxSymbols = Math.max(50, Math.min(400, Number(process.env.MEGA_PUMP_STAIRCASE_MAX_SYMBOLS ?? 400)));
+      megaPumpStaircaseUniverse = [...snapshot]
+        .filter((row) => Number(row?.quoteVolume ?? 0) >= marketBreadthShockRule.minQuoteVolume)
+        .sort((a, b) => Number(b.quoteVolume ?? 0) - Number(a.quoteVolume ?? 0))
+        .slice(0, maxSymbols)
+        .map((row) => row.symbol)
+        .filter(Boolean);
+      megaPumpStaircaseUniverseAt = now;
+      // Reuse any existing shared 1h streams (for example HTF Deep Dump) instead of
+      // opening a second managed connection for the same Top-400 symbols.
+      klineCache.subscribe(megaPumpStaircaseUniverse, '1h');
+      console.log(`[MegaPumpStaircase] 1h live universe symbols=${megaPumpStaircaseUniverse.length}`);
+    }
+    const result = await scanMegaPumpStaircase(
+      megaPumpStaircaseUniverse,
+      klineCache,
+      (event) => megaPumpStaircaseDiscord.notify(event),
+      {
+        now,
+        maxAlerts: Math.max(1, Math.min(25, Number(process.env.MEGA_PUMP_STAIRCASE_MAX_ALERTS_PER_SCAN ?? 10))),
+        signalPrices: new Map(snapshot
+          .map((row) => [
+            String(row?.symbol ?? '').toUpperCase(),
+            Number(row?.markPrice ?? row?.lastPrice ?? row?.price),
+          ])
+          .filter(([symbol, price]) => symbol && Number.isFinite(price) && price > 0)),
+      },
+    );
+    if (result.sent || result.failed || now - megaPumpStaircaseLastLog >= 5 * 60_000) {
+      console.log(`[MegaPumpStaircase] ${JSON.stringify({
+        version: MEGA_PUMP_STAIRCASE_VERSION,
+        requested: megaPumpStaircaseUniverse.length,
+        processed: result.processed,
+        detected: result.detected,
+        sent: result.sent,
+        failed: result.failed,
+        top: result.top.slice(0, 5).map((event) => `${event.symbol}:${event.stage}:${event.score}`),
+      })}`);
+      megaPumpStaircaseLastLog = now;
+    }
+  } catch (error) {
+    console.warn(`[MegaPumpStaircase] ${error.message}`);
+  } finally {
+    megaPumpStaircaseRunning = false;
+  }
+}
+
+function startMegaPumpStaircaseScheduler() {
+  if (megaPumpStaircaseTimer || !String(process.env.MARKET_BREADTH_SHOCK_DISCORD_WEBHOOK_URL ?? '').trim()) return;
+  const intervalMs = Math.max(60_000, Number(process.env.MEGA_PUMP_STAIRCASE_SCAN_INTERVAL_MS ?? 60_000));
+  megaPumpStaircaseTimer = setInterval(() => {
+    void scheduleMegaPumpStaircaseScan();
+  }, intervalMs);
+  megaPumpStaircaseTimer.unref?.();
+  setTimeout(() => { void scheduleMegaPumpStaircaseScan(); }, 45_000).unref?.();
+  console.log(`[MegaPumpStaircase] ${MEGA_PUMP_STAIRCASE_VERSION} enabled; interval=${intervalMs}ms; OBSERVE ONLY`);
+}
+
+let pumpFlushReclaimRunning = false;
+let pumpFlushReclaimTimer = null;
+let pumpFlushReclaimUniverse = [];
+let pumpFlushReclaimUniverseAt = 0;
+let pumpFlushReclaimLastLog = 0;
+
+async function schedulePumpFlushReclaimScan() {
+  const webhookUrl = String(process.env.PUMP_FLUSH_RECLAIM_DISCORD_WEBHOOK_URL ?? '').trim();
+  if (!webhookUrl || pumpFlushReclaimRunning) return;
+  pumpFlushReclaimRunning = true;
+  try {
+    const now = Date.now();
+    const snapshot = await getSharedSnapshot();
+    if (!pumpFlushReclaimUniverse.length || now - pumpFlushReclaimUniverseAt >= 15 * 60_000) {
+      const maxSymbols = Math.max(50,
+        Math.min(400, Number(process.env.PUMP_FLUSH_RECLAIM_MAX_SYMBOLS ?? 400)));
+      const minQuoteVolume = Math.max(0,
+        Number(process.env.PUMP_FLUSH_RECLAIM_MIN_QUOTE_VOLUME ?? 1_000_000));
+      pumpFlushReclaimUniverse = [...snapshot]
+        .filter((row) => Number(row?.quoteVolume ?? 0) >= minQuoteVolume)
+        .sort((left, right) => Number(right?.quoteVolume ?? 0) - Number(left?.quoteVolume ?? 0))
+        .slice(0, maxSymbols)
+        .map((row) => row.symbol)
+        .filter(Boolean);
+      pumpFlushReclaimUniverseAt = now;
+      // Reuse KlineCache WebSocket pools. This detector never warms REST by itself.
+      klineCache.subscribe(pumpFlushReclaimUniverse, '5m');
+      klineCache.subscribe(pumpFlushReclaimUniverse, '15m');
+      console.log(`[PumpFlushReclaim] live universe symbols=${pumpFlushReclaimUniverse.length} intervals=5m,15m`);
+    }
+    const result = await scanPumpFlushReclaim(
+      pumpFlushReclaimUniverse,
+      klineCache,
+      (event) => pumpFlushReclaimDiscord.notify(event),
+      {
+        now,
+        maxAlerts: Math.max(1,
+          Math.min(25, Number(process.env.PUMP_FLUSH_RECLAIM_MAX_ALERTS_PER_SCAN ?? 10))),
+        signalPrices: new Map(snapshot
+          .map((row) => [
+            String(row?.symbol ?? '').toUpperCase(),
+            Number(row?.markPrice ?? row?.lastPrice ?? row?.price),
+          ])
+          .filter(([symbol, price]) => symbol && Number.isFinite(price) && price > 0)),
+      },
+    );
+    if (result.sent || result.failed || now - pumpFlushReclaimLastLog >= 5 * 60_000) {
+      console.log(`[PumpFlushReclaim] ${JSON.stringify({
+        version: PUMP_FLUSH_RECLAIM_VERSION,
+        requested: pumpFlushReclaimUniverse.length,
+        processed: result.processed,
+        detected: result.detected,
+        sent: result.sent,
+        failed: result.failed,
+        top: result.top.slice(0, 5)
+          .map((event) => `${event.symbol}:${event.side}:${event.score}`),
+      })}`);
+      pumpFlushReclaimLastLog = now;
+    }
+  } catch (error) {
+    console.warn(`[PumpFlushReclaim] ${error.message}`);
+  } finally {
+    pumpFlushReclaimRunning = false;
+  }
+}
+
+function startPumpFlushReclaimScheduler() {
+  if (pumpFlushReclaimTimer
+    || !String(process.env.PUMP_FLUSH_RECLAIM_DISCORD_WEBHOOK_URL ?? '').trim()) return;
+  const intervalMs = Math.max(15_000,
+    Number(process.env.PUMP_FLUSH_RECLAIM_SCAN_INTERVAL_MS ?? 30_000));
+  pumpFlushReclaimTimer = setInterval(() => {
+    void schedulePumpFlushReclaimScan();
+  }, intervalMs);
+  pumpFlushReclaimTimer.unref?.();
+  setTimeout(() => { void schedulePumpFlushReclaimScan(); }, 40_000).unref?.();
+  console.log(`[PumpFlushReclaim] ${PUMP_FLUSH_RECLAIM_VERSION} enabled; interval=${intervalMs}ms; OBSERVE ONLY`);
+}
+
+let postPumpEma99BearishCrossRunning = false;
+let postPumpEma99BearishCrossTimer = null;
+let postPumpEma99BearishCrossUniverse = [];
+let postPumpEma99BearishCrossUniverseAt = 0;
+let postPumpEma99BearishCrossLastLog = 0;
+
+async function schedulePostPumpEma99BearishCrossScan() {
+  const webhookUrl = String(
+    process.env.POST_PUMP_EMA99_BEARISH_CROSS_DISCORD_WEBHOOK_URL ?? '',
+  ).trim();
+  if (!webhookUrl || postPumpEma99BearishCrossRunning) return;
+  postPumpEma99BearishCrossRunning = true;
+  try {
+    const now = Date.now();
+    const snapshot = await getSharedSnapshot();
+    if (!postPumpEma99BearishCrossUniverse.length
+      || now - postPumpEma99BearishCrossUniverseAt >= 15 * 60_000) {
+      const maxSymbols = Math.max(50, Math.min(400,
+        Number(process.env.POST_PUMP_EMA99_BEARISH_CROSS_MAX_SYMBOLS ?? 400)));
+      const minQuoteVolume = Math.max(0,
+        Number(process.env.POST_PUMP_EMA99_BEARISH_CROSS_MIN_QUOTE_VOLUME ?? 1_000_000));
+      postPumpEma99BearishCrossUniverse = [...snapshot]
+        .filter((row) => Number(row?.quoteVolume ?? 0) >= minQuoteVolume)
+        .sort((left, right) => {
+          const rightChange = Number(right?.priceChangePercent ?? right?.change24hPct ?? 0);
+          const leftChange = Number(left?.priceChangePercent ?? left?.change24hPct ?? 0);
+          return Math.abs(rightChange) - Math.abs(leftChange)
+            || Number(right?.quoteVolume ?? 0) - Number(left?.quoteVolume ?? 0);
+        })
+        .slice(0, maxSymbols)
+        .map((row) => row.symbol)
+        .filter(Boolean);
+      postPumpEma99BearishCrossUniverseAt = now;
+      klineCache.subscribe(postPumpEma99BearishCrossUniverse, '5m');
+      klineCache.subscribe(postPumpEma99BearishCrossUniverse, '15m');
+      console.log(`[PostPumpEma99BearishCross] live universe symbols=${postPumpEma99BearishCrossUniverse.length} intervals=5m,15m`);
+    }
+
+    let baseWarmed = 0;
+    if (!binanceRateGate.isBlocked?.() && !isBinanceRestCongested()) {
+      const warmupPerInterval = Math.max(1, Math.min(20,
+        Number(process.env.POST_PUMP_EMA99_BEARISH_CROSS_WARMUP_SYMBOLS_PER_INTERVAL ?? 8)));
+      const batchDelayMs = Math.max(1_000,
+        Number(process.env.POST_PUMP_EMA99_BEARISH_CROSS_WARMUP_BATCH_DELAY_MS ?? 1_500));
+      const requirements = [
+        ['5m', POST_PUMP_EMA99_BEARISH_CROSS_RULE.minBars5m,
+          POST_PUMP_EMA99_BEARISH_CROSS_RULE.maxBars5m,
+          POST_PUMP_EMA99_BEARISH_CROSS_RULE.max5mAgeMs],
+        ['15m', POST_PUMP_EMA99_BEARISH_CROSS_RULE.minBars15m,
+          POST_PUMP_EMA99_BEARISH_CROSS_RULE.maxBars15m,
+          POST_PUMP_EMA99_BEARISH_CROSS_RULE.max15mAgeMs],
+      ];
+      for (const [interval, minBars, seedBars, maxAgeMs] of requirements) {
+        if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) break;
+        const missing = klineCache.needsRefresh(
+          postPumpEma99BearishCrossUniverse,
+          interval,
+          minBars,
+          maxAgeMs,
+        ).slice(0, warmupPerInterval);
+        if (!missing.length) continue;
+        await klineCache.seed(missing, interval, seedBars, {
+          batchSize: 2,
+          batchDelayMs,
+          maxAgeMs,
+          subscribe: false,
+        });
+        baseWarmed += missing.length;
+      }
+    }
+
+    const signalPrices = new Map(snapshot
+      .map((row) => [
+        String(row?.symbol ?? '').toUpperCase(),
+        Number(row?.markPrice ?? row?.lastPrice ?? row?.price),
+      ])
+      .filter(([symbol, value]) => symbol && Number.isFinite(value) && value > 0));
+    const result = await scanPostPumpEma99BearishCross(
+      postPumpEma99BearishCrossUniverse,
+      klineCache,
+      (event) => postPumpEma99BearishCrossDiscord.notify(event),
+      {
+        now: Date.now(),
+        maxAlerts: Math.max(1, Math.min(25,
+          Number(process.env.POST_PUMP_EMA99_BEARISH_CROSS_MAX_ALERTS_PER_SCAN ?? 10))),
+        maxOneHourWarmups: Math.max(0, Math.min(12,
+          Number(process.env.POST_PUMP_EMA99_BEARISH_CROSS_MAX_ONE_HOUR_WARMUPS ?? 6))),
+        signalPrices,
+        ensureOneHour: async (symbol) => {
+          if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) return;
+          const missing = klineCache.needsRefresh(
+            [symbol],
+            '1h',
+            POST_PUMP_EMA99_BEARISH_CROSS_RULE.minBars1h,
+            POST_PUMP_EMA99_BEARISH_CROSS_RULE.max1hAgeMs,
+          );
+          if (!missing.length) return;
+          await klineCache.seed(missing, '1h', POST_PUMP_EMA99_BEARISH_CROSS_RULE.maxBars1h, {
+            batchSize: 1,
+            batchDelayMs: 1_000,
+            maxAgeMs: POST_PUMP_EMA99_BEARISH_CROSS_RULE.max1hAgeMs,
+            subscribe: true,
+          });
+        },
+      },
+    );
+    if (result.sent || result.failed
+      || Date.now() - postPumpEma99BearishCrossLastLog >= 5 * 60_000) {
+      console.log(`[PostPumpEma99BearishCross] ${JSON.stringify({
+        version: POST_PUMP_EMA99_BEARISH_CROSS_VERSION,
+        requested: postPumpEma99BearishCrossUniverse.length,
+        baseWarmed,
+        processed: result.processed,
+        candidates: result.candidates,
+        shortCandidates: result.shortCandidates,
+        longCandidates: result.longCandidates,
+        oneHourReady: result.oneHourReady,
+        oneHourWarmed: result.warmed,
+        detected: result.detected,
+        sent: result.sent,
+        failed: result.failed,
+        top: result.top.slice(0, 5)
+          .map((event) => `${event.symbol}:${event.side}:${event.score}`),
+      })}`);
+      postPumpEma99BearishCrossLastLog = Date.now();
+    }
+  } catch (error) {
+    console.warn(`[PostPumpEma99BearishCross] ${error.message}`);
+  } finally {
+    postPumpEma99BearishCrossRunning = false;
+  }
+}
+
+function startPostPumpEma99BearishCrossScheduler() {
+  if (postPumpEma99BearishCrossTimer
+    || !String(process.env.POST_PUMP_EMA99_BEARISH_CROSS_DISCORD_WEBHOOK_URL ?? '').trim()) return;
+  const intervalMs = Math.max(30_000,
+    Number(process.env.POST_PUMP_EMA99_BEARISH_CROSS_SCAN_INTERVAL_MS ?? 60_000));
+  postPumpEma99BearishCrossTimer = setInterval(() => {
+    void schedulePostPumpEma99BearishCrossScan();
+  }, intervalMs);
+  postPumpEma99BearishCrossTimer.unref?.();
+  setTimeout(() => { void schedulePostPumpEma99BearishCrossScan(); }, 50_000).unref?.();
+  console.log(`[PostPumpEma99BearishCross] ${POST_PUMP_EMA99_BEARISH_CROSS_VERSION} enabled; interval=${intervalMs}ms; OBSERVE ONLY`);
+}
+
+let weekLongPostPumpEma99SlopeRunning = false;
+let weekLongPostPumpEma99SlopeTimer = null;
+let weekLongPostPumpEma99SlopeUniverse = [];
+let weekLongPostPumpEma99SlopeUniverseAt = 0;
+let weekLongPostPumpEma99SlopeLastLog = 0;
+
+async function scheduleWeekLongPostPumpEma99SlopeScan() {
+  const webhookUrl = String(
+    process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_DISCORD_WEBHOOK_URL ?? '',
+  ).trim();
+  if (!webhookUrl || weekLongPostPumpEma99SlopeRunning) return;
+  weekLongPostPumpEma99SlopeRunning = true;
+  try {
+    const now = Date.now();
+    const snapshot = await getSharedSnapshot();
+    if (!weekLongPostPumpEma99SlopeUniverse.length
+      || now - weekLongPostPumpEma99SlopeUniverseAt >= 15 * 60_000) {
+      const maxSymbols = Math.max(50, Math.min(400,
+        Number(process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_MAX_SYMBOLS ?? 400)));
+      const minQuoteVolume = Math.max(0,
+        Number(process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_MIN_QUOTE_VOLUME ?? 1_000_000));
+      weekLongPostPumpEma99SlopeUniverse = [...snapshot]
+        .filter((row) => Number(row?.quoteVolume ?? 0) >= minQuoteVolume)
+        .sort((left, right) => {
+          const rightChange = Math.abs(Number(
+            right?.priceChangePercent ?? right?.change24hPct ?? 0,
+          ));
+          const leftChange = Math.abs(Number(
+            left?.priceChangePercent ?? left?.change24hPct ?? 0,
+          ));
+          return rightChange - leftChange
+            || Number(right?.quoteVolume ?? 0) - Number(left?.quoteVolume ?? 0);
+        })
+        .slice(0, maxSymbols)
+        .map((row) => row.symbol)
+        .filter(Boolean);
+      weekLongPostPumpEma99SlopeUniverseAt = now;
+      const live15m = klineCache.subscribeGroup(
+        'week-long-post-pump-ema99-slope',
+        weekLongPostPumpEma99SlopeUniverse,
+        '15m',
+      );
+      const live1h = klineCache.subscribeGroup(
+        'week-long-post-pump-ema99-slope',
+        weekLongPostPumpEma99SlopeUniverse,
+        '1h',
+      );
+      console.log(`[WeekLongPostPumpEma99Slope] live universe symbols=${weekLongPostPumpEma99SlopeUniverse.length} intervals=15m,1h connections=${live15m.connections + live1h.connections}`);
+    }
+
+    let warmed = 0;
+    if (!binanceRateGate.isBlocked?.() && !isBinanceRestCongested()) {
+      const warmupPerInterval = Math.max(1, Math.min(20,
+        Number(process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_WARMUP_SYMBOLS_PER_INTERVAL ?? 8)));
+      const batchDelayMs = Math.max(1_000,
+        Number(process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_WARMUP_BATCH_DELAY_MS ?? 1_500));
+      const requirements = [
+        ['15m', WEEK_LONG_POST_PUMP_EMA99_SLOPE_RULE.minBars15m,
+          WEEK_LONG_POST_PUMP_EMA99_SLOPE_RULE.maxBars15m,
+          WEEK_LONG_POST_PUMP_EMA99_SLOPE_RULE.max15mAgeMs],
+      ];
+      for (const [interval, minBars, seedBars, maxAgeMs] of requirements) {
+        if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) break;
+        const missing = klineCache.needsRefresh(
+          weekLongPostPumpEma99SlopeUniverse,
+          interval,
+          minBars,
+          maxAgeMs,
+        ).slice(0, warmupPerInterval);
+        if (!missing.length) continue;
+        await klineCache.seed(missing, interval, seedBars, {
+          batchSize: 2,
+          batchDelayMs,
+          maxAgeMs,
+          subscribe: false,
+        });
+        warmed += missing.length;
+      }
+    }
+
+    const signalPrices = new Map(snapshot
+      .map((row) => [
+        String(row?.symbol ?? '').toUpperCase(),
+        Number(row?.markPrice ?? row?.lastPrice ?? row?.price),
+      ])
+      .filter(([symbol, value]) => symbol && Number.isFinite(value) && value > 0));
+    const result = await scanWeekLongPostPumpEma99Slope(
+      weekLongPostPumpEma99SlopeUniverse,
+      klineCache,
+      (event) => weekLongPostPumpEma99SlopeDiscord.notify(event),
+      {
+        now: Date.now(),
+        maxAlerts: Math.max(1, Math.min(25,
+          Number(process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_MAX_ALERTS_PER_SCAN ?? 10))),
+        maxOneHourWarmups: Math.max(0, Math.min(12,
+          Number(process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_MAX_ONE_HOUR_WARMUPS ?? 6))),
+        ensureOneHour: async (symbol) => {
+          if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) return;
+          const missing = klineCache.needsRefresh(
+            [symbol],
+            '1h',
+            WEEK_LONG_POST_PUMP_EMA99_SLOPE_RULE.minBars1h,
+            WEEK_LONG_POST_PUMP_EMA99_SLOPE_RULE.max1hAgeMs,
+          );
+          if (!missing.length) return;
+          await klineCache.seed(
+            missing,
+            '1h',
+            WEEK_LONG_POST_PUMP_EMA99_SLOPE_RULE.maxBars1h,
+            {
+              batchSize: 1,
+              batchDelayMs: 1_000,
+              maxAgeMs: WEEK_LONG_POST_PUMP_EMA99_SLOPE_RULE.max1hAgeMs,
+              subscribe: false,
+            },
+          );
+        },
+        signalPrices,
+      },
+    );
+    if (result.sent || result.failed
+      || Date.now() - weekLongPostPumpEma99SlopeLastLog >= 5 * 60_000) {
+      console.log(`[WeekLongPostPumpEma99Slope] ${JSON.stringify({
+        version: WEEK_LONG_POST_PUMP_EMA99_SLOPE_VERSION,
+        requested: weekLongPostPumpEma99SlopeUniverse.length,
+        warmed,
+        processed: result.processed,
+        candidates: result.candidates,
+        candidateOneHourWarmed: result.warmed,
+        oneHourReady: result.oneHourReady,
+        detected: result.detected,
+        sent: result.sent,
+        failed: result.failed,
+        top: result.top.slice(0, 5).map((event) => `${event.symbol}:${event.score}`),
+      })}`);
+      weekLongPostPumpEma99SlopeLastLog = Date.now();
+    }
+  } catch (error) {
+    console.warn(`[WeekLongPostPumpEma99Slope] ${error.message}`);
+  } finally {
+    weekLongPostPumpEma99SlopeRunning = false;
+  }
+}
+
+function startWeekLongPostPumpEma99SlopeScheduler() {
+  if (weekLongPostPumpEma99SlopeTimer
+    || !String(process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_DISCORD_WEBHOOK_URL ?? '').trim()) return;
+  const intervalMs = Math.max(30_000,
+    Number(process.env.WEEK_LONG_POST_PUMP_EMA99_SLOPE_SCAN_INTERVAL_MS ?? 60_000));
+  weekLongPostPumpEma99SlopeTimer = setInterval(() => {
+    void scheduleWeekLongPostPumpEma99SlopeScan();
+  }, intervalMs);
+  weekLongPostPumpEma99SlopeTimer.unref?.();
+  setTimeout(() => { void scheduleWeekLongPostPumpEma99SlopeScan(); }, 55_000).unref?.();
+  console.log(`[WeekLongPostPumpEma99Slope] ${WEEK_LONG_POST_PUMP_EMA99_SLOPE_VERSION} enabled; interval=${intervalMs}ms; OBSERVE ONLY`);
+}
+
+async function scheduleExtremeShortSqueezeScan() {
+  const routes=EXTREME_SHORT_SQUEEZE_ROUTES.map(spec=>autoEntryControls.register(spec)),controls=autoEntryControls.read();
+  const binanceEnabled=controls.enabled===true&&routes.some(route=>controls.routes[route.key]?.enabled===true);
+  const discordEnabled=Boolean(process.env.EXTREME_SHORT_SQUEEZE_DISCORD_WEBHOOK_URL);
+  if (extremeShortSqueezeRunning || (!discordEnabled&&!binanceEnabled)) return;
+  extremeShortSqueezeRunning=true;
+  try {
+    // Existing shared market/cache coverage only; no extra REST warmup.
+    const symbols=(_snapshotCache??[]).map(row=>row.symbol).filter(Boolean);
+    const result=await scanExtremeShortSqueeze(symbols,klineCache,async event=>{
+      const outcome=event.binanceEligible===true
+        ?await extremeShortSqueezeBinanceRunner.handle(event).catch(error=>({status:'error',code:error.code??'BINANCE_ERROR'}))
+        :{status:'ineligible'};
+      if(!['off','ineligible','deduped'].includes(outcome.status))console.log(`[ExtremeShortSqueezeBinance] ${event.symbol} ${JSON.stringify(outcome)}`);
+      // The first-pump absorption signal is a Discord-only research alert. Keep it
+      // out of Limit Paper/WHITELIST statistics until a separate causal study exists.
+      if(event.kind!=='FIRST_PUMP_FLUSH_RECLAIM_LONG') {
+        await recordLimitPaperWhenBinanceSkipped(event,outcome,{
+          source:'extreme-short-squeeze',streamId:'extreme-short-squeeze',label:event.stage,
+        });
+      }
+      return discordEnabled?extremeShortSqueezeDiscord.notify({...event,binanceExecution:outcome}):{sent:0};
+    });
+    if (result.sent || result.failed || Date.now()-extremeShortSqueezeLastLog>=300000) {
+      console.log(`[ExtremeShortSqueeze] ${JSON.stringify(result)}`);
+      extremeShortSqueezeLastLog=Date.now();
+    }
+  } catch(error) { console.warn(`[ExtremeShortSqueeze] ${error.message}`); }
+  finally { extremeShortSqueezeRunning=false; }
+}
+setInterval(()=>{void scheduleExtremeShortSqueezeScan();},15000).unref();
+
+async function scheduleLiqScanHighScoreBackground() {
+  const webhookConfigured=Boolean(
+    process.env.LIQ_SCAN_HIGH_SCORE_DISCORD_WEBHOOK_URL
+    || process.env.COIN_HORIZON_SWEEP_TRANSITION_DISCORD_WEBHOOK_URL
+    || process.env.LIQ_SCAN_LARGE_VOLUME_DISCORD_WEBHOOK_URL,
+  );
+  if(liqScanHighScoreBackgroundRunning
+    ||process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_ENABLED==='false'
+    ||!webhookConfigured)return;
+  liqScanHighScoreBackgroundRunning=true;
+  try {
+    const now=Date.now();
+    const snapshot=await getSharedSnapshot();
+    const result=await scanLiqScanHighScoreBackground({
+      snapshot,
+      snapshotAt:_snapshotCacheAt,
+      cache:klineCache,
+      notify:async(analysis)=>{
+        const events=[
+          {event:liqScanMainKillSweepTracker.observe(analysis),tracker:liqScanMainKillSweepTracker},
+          {event:liqScanReferenceSweepTracker.observe(analysis),tracker:liqScanReferenceSweepTracker},
+        ].filter(item=>item.event);
+        if(!events.length)return {sent:0,reason:'no_fresh_liqscan_sweep',detected:false};
+        let sent=0;
+        const deliveries=[];
+        for(const item of events) {
+          const event=item.event;
+          let binanceExecution={status:'OBSERVE_ONLY'};
+          if(event.zoneType!=='REFERENCE_PROXY') {
+            try {
+              binanceExecution=await liqScanMainKillSweepBinanceRunner.handle(event);
+            } catch(error) {
+              binanceExecution={status:'ERROR_OR_UNKNOWN',errorCode:error?.code??null,message:error?.message??'unknown'};
+              console.warn(`[LiqScanMainKillSweepBinance] ${event.symbol} ${error?.code??''} ${error?.message??error}`);
+            }
+          }
+          const largeVolume=isLargeVolumeLiqScanSweepEvent(event);
+          const notifier=largeVolume
+            ? liqScanLargeVolumeSweepDiscord
+            : liqScanMainKillSweepBackgroundDiscord;
+          const outcome=await deliverLiqScanSweepDiscord({...event,binanceExecution},notifier,item.tracker);
+          sent+=Number(outcome.sent??0);
+          deliveries.push({zoneType:event.zoneType??'MAIN_KILL',largeVolume,...outcome,binanceExecution});
+        }
+        return {sent,detected:true,deliveries};
+      },
+      now,
+      maxSymbols:Math.max(1,Math.min(400,Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_MAX_SYMBOLS??400))),
+      minBars:Math.max(60,Math.min(500,Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_MIN_BARS??60))),
+      maxSnapshotAgeMs:Math.max(30_000,Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_MAX_SNAPSHOT_AGE_MS??90_000)),
+      maxTickAgeMs:Math.max(30_000,Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_MAX_TICK_AGE_MS??90_000)),
+      alertDelayMs:Math.max(0,Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_ALERT_DELAY_MS??450)),
+    });
+    if(result.sent||result.failed||Date.now()-liqScanHighScoreBackgroundLastLog>=300_000) {
+      console.log(`[LiqScanHighScoreBackground] ${JSON.stringify(result)}`);
+      liqScanHighScoreBackgroundLastLog=Date.now();
+    }
+  } catch(error) {
+    console.warn(`[LiqScanHighScoreBackground] ${error.message}`);
+  } finally {
+    liqScanHighScoreBackgroundRunning=false;
+  }
+}
+const liqScanHighScoreBackgroundIntervalMs=Math.max(
+  15_000,
+  Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_INTERVAL_MS??30_000),
+);
+setInterval(()=>{void scheduleLiqScanHighScoreBackground();},liqScanHighScoreBackgroundIntervalMs).unref();
+setTimeout(()=>{void scheduleLiqScanHighScoreBackground();},60_000).unref();
+
+function scheduleLiqScanHighScoreBackgroundWarmup(delayMs=75_000) {
+  if(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_ENABLED==='false'
+    ||process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_WARMUP_ENABLED==='false'
+    ||liqScanHighScoreBackgroundWarmupTimer||liqScanHighScoreBackgroundWarmupRunning)return;
+  liqScanHighScoreBackgroundWarmupTimer=setTimeout(async()=>{
+    liqScanHighScoreBackgroundWarmupTimer=null;
+    if(liqScanHighScoreBackgroundWarmupRunning)return;
+    if(isBinanceRestCongested()) {
+      scheduleLiqScanHighScoreBackgroundWarmup(90_000);
+      return;
+    }
+    liqScanHighScoreBackgroundWarmupRunning=true;
+    let retryDelayMs=null;
+    try {
+      const snapshot=await getSharedSnapshot();
+      const maxSymbols=Math.max(1,Math.min(400,Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_MAX_SYMBOLS??400)));
+      const minBars=Math.max(60,Math.min(99,Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_MIN_BARS??60)));
+      const symbols=[...snapshot]
+        .filter(row=>String(row?.symbol??'').toUpperCase().endsWith('USDT'))
+        .sort((left,right)=>Number(right?.quoteVolume??0)-Number(left?.quoteVolume??0))
+        .slice(0,maxSymbols)
+        .map(row=>String(row.symbol).toUpperCase());
+      const missing=klineCache.missingReady(symbols,'15m',minBars);
+      if(missing.length) {
+        console.log(`[LiqScanHighScoreBackground] warm-up ${missing.length}/${symbols.length} missing symbols @15m ×${minBars}`);
+        await klineCache.seed(missing,'15m',minBars,{
+          batchSize:Math.max(1,Math.min(5,Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_WARMUP_BATCH_SIZE??3))),
+          batchDelayMs:Math.max(1000,Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_WARMUP_DELAY_MS??2000)),
+        });
+      }
+      const ready=klineCache.countReady(symbols,'15m',minBars);
+      console.log(`[LiqScanHighScoreBackground] warm-up ready=${ready}/${symbols.length} @15m ×${minBars}`);
+      if(ready<symbols.length) {
+        retryDelayMs=Math.max(
+          60_000,
+          Number(process.env.LIQ_SCAN_HIGH_SCORE_BACKGROUND_WARMUP_RETRY_MS??300_000),
+        );
+      }
+      void scheduleLiqScanHighScoreBackground();
+    } catch(error) {
+      console.warn(`[LiqScanHighScoreBackground] warm-up failed: ${error.message}`);
+      retryDelayMs=300_000;
+    } finally {
+      liqScanHighScoreBackgroundWarmupRunning=false;
+      if(retryDelayMs!=null)scheduleLiqScanHighScoreBackgroundWarmup(retryDelayMs);
+    }
+  },Math.max(10_000,Number(delayMs)||75_000));
+  liqScanHighScoreBackgroundWarmupTimer.unref?.();
+}
+scheduleLiqScanHighScoreBackgroundWarmup();
+
 function scheduleStrategyScans(reason = 'manual') {
   if (isBinanceRestCongested()) {
     binanceRateGate.pruneLowPriorityQueue?.();
@@ -9058,6 +11057,7 @@ function scheduleStrategyScans(reason = 'manual') {
   scheduleDumpIgnitionScan();
   scheduleSpikeReversalScan();
   schedulePostPumpKillShortScan();
+  void schedulePostPumpEma99RetestScan();
   schedulePumpIgnitionScan();
   scheduleEmaSqueezeScan();
   scheduleEma99KillReclaimScan();
@@ -9291,6 +11291,7 @@ const autoTradeState = {
   signalStreak: new Map(),   // symbol → { direction, count }
 };
 const port = Number(process.env.PORT ?? 19082);
+const host = String(process.env.HOST ?? '127.0.0.1').trim() || '127.0.0.1';
 const ordersTokens = new Set();
 const runtimeSettings = {
   orderEnabled: process.env.BINANCE_ORDER_ENABLED === 'true',
@@ -9313,7 +11314,9 @@ const runtimeSettings = {
 if (liveCardOnlyAutoBinanceEnabled()) {
   console.log(
     `[AutoBinancePolicy] ${AUTO_BINANCE_ENTRY_POLICY_VERSION} active:`
-    + ' checked Orders cards, Liquid Flow V2 READY routes and CoinGlass qualified setups may auto-enter.',
+    + ' checked Orders cards, Liquid Flow V2 READY, CoinGlass qualified, pump-dump absorption'
+    + ' confirmed Post Pump Kill Short, HTF base, Hybrid Liquidity, Big Candle 15m, LiqScan >80'
+    + ' and LiqScan MAIN KILL red >=50M reversal routes may auto-enter.',
   );
 }
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
@@ -9610,15 +11613,67 @@ function sendOrderFillDiscord({
   orderStatus,
   orderId,
   clientOrderId,
+  orderType,
   signalSource,
+  signalType,
   executionPage,
+  streamId,
   lifecycleId,
   matchedKeys,
   signalCombo,
   signalLabel,
+  signalReason,
+  signalEntryPrice,
+  takeProfitPrice,
+  stopLossPrice,
+  stopLossSuppressed,
   marginUsdt,
   leverage,
+  isDca = false,
 }) {
+  binanceFilledSignalAudit.recordFill({
+    symbol,
+    side,
+    filledQty,
+    cumulativeFilledQty,
+    avgPrice,
+    positionSide,
+    fillTime,
+    source,
+    orderStatus,
+    orderId,
+    clientOrderId,
+    orderType,
+    signalSource,
+    signalType,
+    executionPage,
+    streamId,
+    lifecycleId,
+    matchedKeys,
+    signalCombo,
+    signalLabel,
+    signalReason,
+    signalEntryPrice,
+    takeProfitPrice,
+    stopLossPrice,
+    stopLossSuppressed,
+    marginUsdt,
+    leverage,
+    isDca,
+  }).then((result) => {
+    if (result?.recorded) {
+      console.log(
+        `[FilledSignalAudit] recorded ${symbol} ${side} orderId=${orderId ?? '-'} discord=${result.discordSent}`
+        + ` version=${BINANCE_FILLED_SIGNAL_AUDIT_VERSION}`,
+      );
+    }
+    if (result?.discordError) {
+      console.warn(`[FilledSignalAudit] Discord ${symbol}: ${result.discordError}`);
+    }
+  }).catch((error) => {
+    console.warn(`[FilledSignalAudit] ${symbol}: ${error.message}`);
+  });
+
   const webhookUrl = process.env.ORDER_FILL_WEBHOOK_URL || '';
   if (!webhookUrl || !['ORDER_TRADE_UPDATE', 'TRADE_LITE_VERIFIED'].includes(source) || orderStatus !== 'FILLED') return;
 
@@ -9688,8 +11743,8 @@ function startPositionSocketMonitor() {
   posMonitor = startPositionMonitor({
     client,
     getCredentials: () => getApiCredentials(null),
-    onPositionClose: (symbol) => {
-      handleConfirmedPositionClose(symbol).catch((error) => {
+    onPositionClose: (symbol, closedPosition, closeMeta = {}) => {
+      handleConfirmedPositionClose(symbol, closedPosition, closeMeta).catch((error) => {
         console.warn(`[PosMonitor] close confirmation ${symbol}:`, error.message);
       });
     },
@@ -9727,6 +11782,7 @@ function startPositionSocketMonitor() {
         console.warn(`[Protection] ${symbol} ignored source=${source} status=${orderStatus ?? '-'}; ${POSITION_PROTECTION_TRIGGER_VERSION}`);
         return;
       }
+      const protectionExcluded = isBinanceProtectionExcluded(symbol, 'SOCKET_FULL_FILL');
       const sameSideDcaFill = isBinanceSameSideDcaFill({
         side,
         positionSide,
@@ -9759,12 +11815,31 @@ function startPositionSocketMonitor() {
         })
         : null;
       if (sameSideDcaFill) {
-        const pendingPlan = signalProtectionPlans.get(symbol);
+        let pendingPlan = signalProtectionPlans.get(symbol);
+        if (protectionExcluded && pendingPlan) {
+          pendingPlan.appliedAt = Date.now();
+          pendingPlan.protectionSuppressedBySymbol = true;
+          pendingPlan.protectionExclusionVersion = BINANCE_PROTECTION_EXCLUSION_VERSION;
+          signalProtectionPlans.delete(symbol);
+        }
+        const trackedManual=slTracking.positions?.[symbol];
+        if (!protectionExcluded && !pendingPlan && trackedManual?.manualShortSl50?.version===MANUAL_SHORT_SL30_VERSION && trackedManual.slPlaced!==true
+          && String(trackedManual.entryOrderId)===trackedManual.manualShortSl50.orderId) {
+          pendingPlan=applyManualShortSl30ToPlan({symbol,side:'SELL',source:trackedManual.signalSource,
+            tpPrice:trackedManual.signalTp,orderId:trackedManual.entryOrderId,createdAt:Date.now(),
+            signalEntryPrice:trackedManual.entry,signalReason:'Recover pending first manual SL30 after restart',
+            takeProfitWorkingType:'MARK_PRICE',stopLossWorkingType:'MARK_PRICE'},trackedManual.manualShortSl50);
+          signalProtectionPlans.set(symbol,pendingPlan);
+        }
         const pendingPlanMatchesDcaOrder = pendingPlan && (
           (pendingPlan.orderId != null && orderId != null && String(pendingPlan.orderId) === String(orderId))
           || (pendingPlan.entryClientOrderId && clientOrderId && pendingPlan.entryClientOrderId === clientOrderId)
         );
-        if (pendingPlanMatchesDcaOrder) signalProtectionPlans.delete(symbol);
+        if (pendingPlanMatchesDcaOrder && !pendingPlan.manualShortSl50) signalProtectionPlans.delete(symbol);
+        if (!protectionExcluded && pendingPlan?.manualShortSl50 && !pendingPlan.appliedAt) {
+          await applySignalProtectionOnFill(symbol);
+          if (!pendingPlan.appliedAt) throw new Error(`${symbol} first manual SL30 still pending; retry fill delivery`);
+        }
         const manualFlowTrade = liquidFlowV2Paper.state.trades.find((row) => {
           if (normalizeSymbol(row.symbol) !== normalizeSymbol(symbol)) return false;
           if (!String(row.binanceEntryMode ?? '').startsWith('MANUAL_')) return false;
@@ -9812,14 +11887,23 @@ function startPositionSocketMonitor() {
           orderStatus,
           orderId,
           clientOrderId,
-          signalSource: lifecycleExecution?.signalSource ?? 'dca-keep-existing-protection',
-          executionPage: lifecycleExecution?.executionPage ?? null,
-          lifecycleId: lifecycleExecution?.lifecycleId ?? null,
-          matchedKeys: lifecycleExecution?.matchedKeys ?? [],
-          signalCombo: lifecycleExecution?.signalCombo ?? null,
-          signalLabel: lifecycleExecution?.signalLabel ?? null,
-          marginUsdt: lifecycleExecution?.marginUsdt ?? null,
-          leverage: lifecycleExecution?.leverage ?? null,
+          orderType,
+          signalSource: lifecycleExecution?.signalSource ?? pendingPlan?.source ?? 'dca-keep-existing-protection',
+          signalType: lifecycleExecution?.signalType ?? pendingPlan?.signalType ?? null,
+          executionPage: lifecycleExecution?.executionPage ?? pendingPlan?.executionPage ?? null,
+          streamId: pendingPlan?.streamId ?? null,
+          lifecycleId: lifecycleExecution?.lifecycleId ?? pendingPlan?.lifecycleId ?? null,
+          matchedKeys: lifecycleExecution?.matchedKeys ?? pendingPlan?.matchedKeys ?? [],
+          signalCombo: lifecycleExecution?.signalCombo ?? pendingPlan?.signalCombo ?? null,
+          signalLabel: lifecycleExecution?.signalLabel ?? pendingPlan?.signalLabel ?? null,
+          signalReason: pendingPlan?.signalReason ?? null,
+          signalEntryPrice: lifecycleExecution?.signalEntryPrice ?? pendingPlan?.signalEntryPrice ?? null,
+          takeProfitPrice: lifecycleExecution?.takeProfitPrice ?? pendingPlan?.tpPrice ?? null,
+          stopLossPrice: lifecycleExecution?.stopLossPrice ?? pendingPlan?.slPrice ?? null,
+          stopLossSuppressed: pendingPlan?.stopLossSuppressed === true,
+          marginUsdt: lifecycleExecution?.marginUsdt ?? pendingPlan?.marginUsdt ?? null,
+          leverage: lifecycleExecution?.leverage ?? pendingPlan?.leverage ?? positionLeverage ?? null,
+          isDca: true,
         });
         appendFillLog({ symbol, side, filledQty, avgPrice, positionSide, fillTime }).catch(() => {});
         invalidateOpenOrdersCache();
@@ -9852,6 +11936,15 @@ function startPositionSocketMonitor() {
           stopLossDistanceFraction: lifecycleExecution.stopLossDistanceFraction,
           fillPrice: lifecycleExecution.fillPrice ?? avgPrice,
           source: `live-card-whitelist-${lifecycleExecution.executionPage ?? 'unknown'}`,
+          signalType: lifecycleExecution.signalType,
+          signalLabel: lifecycleExecution.signalLabel,
+          signalReason: lifecycleExecution.signalCombo
+            ?? (Array.isArray(lifecycleExecution.matchedKeys) ? lifecycleExecution.matchedKeys.join(' | ') : null),
+          signalCombo: lifecycleExecution.signalCombo,
+          matchedKeys: lifecycleExecution.matchedKeys,
+          executionPage: lifecycleExecution.executionPage,
+          marginUsdt: lifecycleExecution.marginUsdt,
+          leverage: lifecycleExecution.leverage,
           orderId: lifecycleExecution.entryOrderId,
           entryClientOrderId: lifecycleExecution.entryClientOrderId,
           lifecycleId: lifecycleExecution.lifecycleId,
@@ -9887,6 +11980,16 @@ function startPositionSocketMonitor() {
             stopLossDistanceFraction: manualFlowTrade.binanceStopLossDistanceFraction,
             fillPrice: Number(avgPrice) || manualFlowTrade.binanceEntryPrice,
             source: 'liquid-flow-v2-manual',
+            signalType: manualFlowTrade.signalType ?? manualFlowTrade.setup ?? 'LIQUID_FLOW_V2_MANUAL',
+            signalLabel: manualFlowTrade.recommendationCombo
+              ?? manualFlowTrade.liquidCombo
+              ?? manualFlowTrade.label
+              ?? null,
+            signalReason: manualFlowTrade.note ?? manualFlowTrade.reason ?? null,
+            signalCombo: manualFlowTrade.recommendationCombo ?? manualFlowTrade.liquidCombo ?? null,
+            executionPage: 'liquid-flow-v2',
+            marginUsdt: manualFlowTrade.binanceMarginUsdt ?? manualFlowTrade.marginUsdt ?? null,
+            leverage: manualFlowTrade.binanceLeverage ?? manualFlowTrade.leverage ?? null,
             orderId: manualFlowTrade.binanceOrderId,
             entryClientOrderId: manualFlowTrade.binanceClientOrderId,
             preserveSignalProtection: true,
@@ -9930,6 +12033,16 @@ function startPositionSocketMonitor() {
             signalStopLossPrice: manualStopLossPrice,
             fillPrice: manualEntry,
             source: BINANCE_MANUAL_SOCKET_SOURCE,
+            signalType: 'BINANCE_MANUAL_ENTRY',
+            signalLabel: 'BINANCE_MANUAL_ENTRY',
+            signalReason: manualProtection.selectedEma99
+              ? `Lệnh tay; quản lý theo EMA99 ${manualProtection.selectedInterval}=${manualProtection.selectedEma99}`
+              : 'Lệnh mở trực tiếp trên Binance; không có metadata tín hiệu bot.',
+            executionPage: 'binance-manual',
+            marginUsdt: Number(positionAmount) && manualEntry && manualLeverage
+              ? Math.abs(Number(positionAmount)) * manualEntry / manualLeverage
+              : null,
+            leverage: manualLeverage,
             orderId,
             entryClientOrderId: clientOrderId,
             preserveSignalProtection: false,
@@ -9944,6 +12057,31 @@ function startPositionSocketMonitor() {
             + ` positionEntry=${manualEntry} lev=${manualLeverage}x amount=${positionAmount ?? '-'}`
             + ` version=${manualProtection.version}`,
           );
+        }
+      }
+      // Only verified NEW manual SELL openings qualify. Existing/DCA positions
+      // and pre-activation orders retain their previous TP-only/SL behavior.
+      const manualSl30ActivatedAt=process.env.MANUAL_SHORT_SL30_ACTIVATED_AT;
+      if (protectionPlan && side==='SELL' && isManualShortSl30Source(protectionPlan.source)
+        && Number(fillTime)>=Date.parse(manualSl30ActivatedAt) && orderId!=null) {
+        const auditState=await binanceFilledSignalAudit.init();
+        const auditSubmission=auditState.submissions?.[`ORDER:${orderId}`]
+          ?? auditState.submissions?.[`CLIENT:${clientOrderId}`];
+        const knownSource=auditSubmission?.signalSource??protectionPlan.source;
+        // A lost in-memory bot plan must not be adopted as a manual SL30 order.
+        const botClient=/^(?:ew_|enrs_|erl_|ebl_|zlc_|zlr_|cg_|lfv2_|ppks_|pks_|ekr_|pda_|lp_auto_|liq_|paper_probe_)/i.test(String(clientOrderId??''))
+          || (!auditSubmission && /^lp_(?!manual_)/i.test(String(clientOrderId??'')));
+        if (isManualShortSl30Source(knownSource) && !botClient && !lifecycleExecution) {
+          const credentials=getApiCredentials(null);
+          const verifiedOrder=await client.getOrder({symbol,orderId,...credentials});
+          const policy=buildManualShortSl30({activatedAt:manualSl30ActivatedAt,fillTime,symbol,orderId,
+            source:protectionPlan.source,order:verifiedOrder,positionAmount,positionEntryPrice,
+            positionLeverage,positionSide});
+          if (policy) {
+            protectionPlan=applyManualShortSl30ToPlan(protectionPlan,policy);
+            signalProtectionPlans.set(symbol,protectionPlan);
+            console.log(`[ManualShortSL30] ${symbol} orderId=${orderId} entry=${policy.entryPrice} leverage=${policy.leverage} SL=${policy.stopLossPrice}`);
+          }
         }
       }
       if (protectionPlan) {
@@ -9975,6 +12113,8 @@ function startPositionSocketMonitor() {
           fillAnchorEnabled: protectionPlan?.fillAnchorEnabled === true,
           protectionFillPrice: currentEntry || protectionPlan?.fillPrice || null,
           signalSource: protectionPlan?.source ?? null,
+          signalSide: protectionPlan?.side ?? null,
+          manualShortSl50: protectionPlan?.manualShortSl50 ?? null,
           lifecycleId: protectionPlan?.lifecycleId ?? null,
           signalProtectionVersion: protectionPlan?.preserveSignalProtection
             ? LIVE_CARD_SIGNAL_PROTECTION_VERSION
@@ -9984,6 +12124,61 @@ function startPositionSocketMonitor() {
           stopLossWorkingType: protectionPlan?.stopLossWorkingType ?? null,
         };
         saveSlTracking();
+      }
+      sendOrderFillDiscord({
+        symbol,
+        side,
+        filledQty,
+        cumulativeFilledQty,
+        avgPrice,
+        positionSide,
+        fillTime,
+        source,
+        orderStatus,
+        orderId,
+        clientOrderId,
+        orderType,
+        signalSource: lifecycleExecution?.signalSource ?? protectionPlan?.source ?? null,
+        signalType: lifecycleExecution?.signalType ?? protectionPlan?.signalType ?? null,
+        executionPage: lifecycleExecution?.executionPage ?? protectionPlan?.executionPage ?? null,
+        streamId: protectionPlan?.streamId ?? null,
+        lifecycleId: lifecycleExecution?.lifecycleId ?? protectionPlan?.lifecycleId ?? null,
+        matchedKeys: lifecycleExecution?.matchedKeys ?? protectionPlan?.matchedKeys ?? [],
+        signalCombo: lifecycleExecution?.signalCombo ?? protectionPlan?.signalCombo ?? null,
+        signalLabel: lifecycleExecution?.signalLabel ?? protectionPlan?.signalLabel ?? null,
+        signalReason: protectionPlan?.signalReason ?? null,
+        signalEntryPrice: lifecycleExecution?.signalEntryPrice ?? protectionPlan?.signalEntryPrice ?? null,
+        takeProfitPrice: lifecycleExecution?.takeProfitPrice ?? protectionPlan?.tpPrice ?? null,
+        stopLossPrice: lifecycleExecution?.stopLossPrice ?? protectionPlan?.slPrice ?? null,
+        stopLossSuppressed: protectionPlan?.stopLossSuppressed === true,
+        marginUsdt: lifecycleExecution?.marginUsdt ?? protectionPlan?.marginUsdt ?? null,
+        leverage: lifecycleExecution?.leverage ?? protectionPlan?.leverage ?? positionLeverage ?? null,
+        isDca: false,
+      });
+      if (protectionExcluded) {
+        if (protectionPlan) {
+          protectionPlan.appliedAt = Date.now();
+          protectionPlan.protectionSuppressedBySymbol = true;
+          protectionPlan.protectionExclusionVersion = BINANCE_PROTECTION_EXCLUSION_VERSION;
+        }
+        if (slTracking.positions?.[symbol]) {
+          slTracking.positions[symbol].protectionSuppressedBySymbol = true;
+          slTracking.positions[symbol].protectionExclusionVersion = BINANCE_PROTECTION_EXCLUSION_VERSION;
+          slTracking.positions[symbol].protectionSuppressedAt = new Date().toISOString();
+          saveSlTracking();
+        }
+        signalProtectionPlans.delete(symbol);
+        appendFillLog({ symbol, side, filledQty, avgPrice, positionSide, fillTime }).catch(() => {});
+        invalidateOpenOrdersCache();
+        tpConfirmedClear(symbol);
+        negTpLastRun.delete(symbol);
+        twelveHourTpLastRun.delete(symbol);
+        twelveHourTpMoved.delete(symbol);
+        return {
+          protectionComplete: true,
+          protectionSuppressedBySymbol: true,
+          protectionExclusionVersion: BINANCE_PROTECTION_EXCLUSION_VERSION,
+        };
       }
       if (protectionPlan) {
         if (!protectionPlan.appliedAt) {
@@ -9998,27 +12193,6 @@ function startPositionSocketMonitor() {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         await triggerSlGuardForSymbol(symbol);
       }
-      sendOrderFillDiscord({
-        symbol,
-        side,
-        filledQty,
-        cumulativeFilledQty,
-        avgPrice,
-        positionSide,
-        fillTime,
-        source,
-        orderStatus,
-        orderId,
-        clientOrderId,
-        signalSource: lifecycleExecution?.signalSource ?? protectionPlan?.source ?? null,
-        executionPage: lifecycleExecution?.executionPage ?? null,
-        lifecycleId: lifecycleExecution?.lifecycleId ?? null,
-        matchedKeys: lifecycleExecution?.matchedKeys ?? [],
-        signalCombo: lifecycleExecution?.signalCombo ?? null,
-        signalLabel: lifecycleExecution?.signalLabel ?? null,
-        marginUsdt: lifecycleExecution?.marginUsdt ?? null,
-        leverage: lifecycleExecution?.leverage ?? null,
-      });
       if (lifecycleExecution?.lifecycleId) {
         broadcastOrdersPositionPnl('live-card-lifecycle', {
           version: ORDERS_POSITION_PNL_STREAM_VERSION,
@@ -10089,11 +12263,8 @@ function startPositionSocketMonitor() {
         placePendingLiqTp(symbol, pos).catch(() => {});
       }
       const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
-      if (roe <= tpGuardRoe) {
+      if (roe <= tpGuardRoe || shouldMoveSymbolNegativeTpToEntry(symbol, roe)) {
         handleTpEntryGuard(symbol, pos, markPrice, roe).catch(() => {});
-      }
-      if (shouldMoveSymbolNegativeTpToEntry(symbol, roe)) {
-        handleNegativeTimeoutTp(symbol, pos).catch(() => {});
       }
       const avgDownRoe = Number(process.env.AVG_DOWN_ROE ?? -60);
       if (roe <= avgDownRoe) {
@@ -10164,6 +12335,11 @@ let protectionFillWatermark = normalizeProtectionFillWatermark({}, 0);
 let protectionFillWatermarkWriteLock = Promise.resolve();
 const PAPER_TRADES_FILE = join(rootDir, 'data', 'paper-trades.json');
 const LIQUID_PAPER_FILE = join(rootDir, 'data', 'liquid-paper-trades.json');
+const LIQUID_PAPER_ARCHIVE_FILE = join(rootDir, 'data', 'archive', 'liquid-paper-trades.ndjson');
+const LIQUID_PAPER_MAX_HOT_ROWS = Math.max(
+  1_000,
+  Number(process.env.LIQUID_PAPER_MAX_HOT_ROWS ?? 1_000),
+);
 const LIQUID_LIVE_CARD_WHITELIST_FILE = join(rootDir, 'data', 'liquid-live-card-whitelist.json');
 const LIVE_CARD_REAL_ENABLED_FILE = join(rootDir, 'data', 'live-card-real-enabled.json');
 const LIVE_CARD_BINANCE_STATE_FILE = join(rootDir, 'data', 'live-card-binance-state.json');
@@ -10187,12 +12363,17 @@ const PUMP_PAPER_FILE   = join(rootDir, 'data', 'pump-paper-trades.json');
 const PUMP_PAPER_WAL_FILE = join(rootDir, 'data', 'pump-paper-trades.wal.ndjson');
 const PUMP_PAPER_ARCHIVE_FILE = join(rootDir, 'data', 'archive', 'pump-paper-trades.ndjson');
 const PUMP_PAPER_MAX_ACTIVE_ROWS = Math.max(
-  5_000,
-  Number(process.env.PUMP_PAPER_MAX_ACTIVE_ROWS ?? 25_000),
+  1_000,
+  Number(process.env.PUMP_PAPER_MAX_ACTIVE_ROWS ?? 1_000),
 );
 const BR_LIKE_LIMIT_EVAL_FILE = join(rootDir, 'data', 'br-like-limit-eval.json');
 const BR_LIKE_LIMIT_PAPER_FILE = join(rootDir, 'data', 'br-like-limit-paper-trades.json');
 const EDGE_PAPER_FILE   = join(rootDir, 'data', 'edge-paper-trades.json');
+const EDGE_PAPER_ARCHIVE_FILE = join(rootDir, 'data', 'archive', 'edge-paper-trades.ndjson');
+const EDGE_PAPER_MAX_HOT_ROWS = Math.max(
+  1_000,
+  Number(process.env.EDGE_PAPER_MAX_HOT_ROWS ?? 1_000),
+);
 const EDGE_PAPER_ENTRY_JOURNAL_FILE = join(rootDir, 'data', 'edge-paper-entry-journal.ndjson');
 const SR_PAPER_FILE     = join(rootDir, 'data', 'sr-paper-trades.json');
 const PPKS_PAPER_FILE   = join(rootDir, 'data', 'ppks-paper-trades.json');
@@ -10927,7 +13108,8 @@ async function pollPumpOrders() {
         await upsertPumpHistory(histRecord);
         pumpWatchingOrders.push(histRecord);
         // Đặt TP_MARKET ngay sau khi fill
-        if (o.qty && creds) {
+        const protectionSuppressedBySymbol = isBinanceProtectionExcluded(o.symbol, 'PUMP_FILL_TP');
+        if (o.qty && creds && !protectionSuppressedBySymbol) {
           const { apiKey, apiSecret } = creds;
           const symbols = await getSymbols().catch(() => []);
           const info = symbols.find((s) => s.symbol === o.symbol);
@@ -11082,6 +13264,32 @@ async function addToDynamicBlacklist(symbol, durationMs = 2 * 60 * 60 * 1000, re
 const server = createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url ?? '/', `http://${request.headers.host}`);
+    if(requestUrl.pathname==='/api/auto-entry-controls') {
+      response.setHeader('Cache-Control','no-store');
+      const token=request.headers['x-orders-token'];
+      const authorized=Boolean(token&&ordersTokens.has(token));
+      if(request.method==='GET') {
+        const controls=autoEntryControls.read(),auditState=await binanceFilledSignalAudit.init();
+        await sendJson(response,{...controls,dailyStats:buildAutoEntryDailyStats(auditState.fills,controls.routes),canEdit:authorized});return;
+      }
+      if(request.method==='POST') {
+        const origin=request.headers.origin;
+        if(origin&&origin!==requestUrl.origin){await sendJson(response,{error:'Cross-origin write refused'},403);return;}
+        const body=await readJsonBody(request);
+        const local=['127.0.0.1','::1','::ffff:127.0.0.1'].includes(request.socket.remoteAddress);
+        if(!authorized&&!(body.action==='pauseAll'&&local)) {await sendJson(response,{error:'Đăng nhập /orders để thay đổi công tắc.'},401);return;}
+        try {const controls=autoEntryControls.update(body),auditState=await binanceFilledSignalAudit.init();
+          await sendJson(response,{...controls,dailyStats:buildAutoEntryDailyStats(auditState.fills,controls.routes),canEdit:authorized});}
+        catch(error){await sendJson(response,{error:error.message},400);}return;
+      }
+      await sendJson(response,{error:'Method not allowed'},405);return;
+    }
+
+    if (requestUrl.pathname === '/api/limit-paper-lab' && request.method === 'GET') {
+      response.setHeader('Cache-Control', 'no-store');
+      await sendJson(response, await limitPaperLab.snapshot());
+      return;
+    }
 
     // Kept deliberately allocation-light so the PM2 watchdog can detect an
     // event-loop stall/OOM before users are left with an "online" but dead app.
@@ -11099,6 +13307,21 @@ const server = createServer(async (request, response) => {
         rssMb: Math.round(memory.rss / 1024 / 1024),
         at: new Date().toISOString(),
       }));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/binance-filled-signal-audit.csv' && request.method === 'GET') {
+      if (!isLocalEnvAutoLoginRequest(request)) {
+        await sendJson(response, { error: 'CSV audit chỉ được tải từ máy local.' }, 403);
+        return;
+      }
+      await binanceFilledSignalAudit.init();
+      response.writeHead(200, {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': 'attachment; filename="binance-filled-signals.csv"',
+        'cache-control': 'no-store',
+      });
+      createReadStream(binanceFilledSignalAudit.csvFile).pipe(response);
       return;
     }
 
@@ -11217,6 +13440,64 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/squeeze-ratio-watch' && request.method === 'GET') {
+      await sendJson(response, await squeezeRatioWatch.snapshot());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coin-level-entry-watch' && request.method === 'GET') {
+      await sendJson(response, await getCoinLevelEntryWatchSnapshot());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coin-level-analysis' && request.method === 'GET') {
+      const rawSymbol = requestUrl.searchParams.get('symbol') ?? requestUrl.searchParams.get('coin');
+      if (!rawSymbol) {
+        await sendJson(response, { error: 'Nhap ma coin, vi du CYS hoac CYSUSDT.' }, 400);
+        return;
+      }
+      try {
+        const analysis = await getCoinLevelAnalysis(rawSymbol, {
+          coinGlassOnly: requestUrl.searchParams.has('coinglassPoll'),
+        });
+        await sendJson(response, await attachLatestLiqScanAlert(analysis));
+      } catch (error) {
+        const status = Number(error?.statusCode)
+          || (error instanceof BinanceRateLimitError ? 503 : 502);
+        await sendJson(response, { error: error?.message ?? 'Khong the phan tich coin luc nay.' }, status);
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coin-level-analysis/coinglass-refresh' && request.method === 'POST') {
+      const body = await readJsonBody(request);
+      const symbol = safeCoinglassSymbol(normalizeSymbol(body?.symbol ?? body?.coin ?? ''));
+      if (!symbol) {
+        await sendJson(response, { error: 'Ma coin khong hop le.' }, 400);
+        return;
+      }
+      const symbols = await getSymbols();
+      if (!symbols.some((item) => item.symbol === symbol)) {
+        await sendJson(response, { error: `${symbol} khong phai hop dong USDT perpetual dang giao dich.` }, 404);
+        return;
+      }
+      const result = await coinGlassWebTop20.startOnDemand(symbol);
+      await sendJson(response, {
+        ...result,
+        version: COIN_LEVEL_COINGLASS_ON_DEMAND_VERSION,
+        symbol,
+        observeOnly: true,
+        execution: {
+          binanceEnabled: false,
+          affectsEntry: false,
+          affectsSize: false,
+          affectsStopLoss: false,
+          affectsTakeProfit: false,
+        },
+      }, result.accepted ? 202 : 200);
+      return;
+    }
+
     if (requestUrl.pathname === '/api/market-news') {
       const cfg = marketNewsConfig();
       await sendJson(response, {
@@ -11253,6 +13534,11 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/coinglass-web-top20' && request.method === 'GET') {
       await sendJson(response, await coinGlassWebTop20.snapshot());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coinglass-web-secondary' && request.method === 'GET') {
+      await sendJson(response, await coinGlassWebSecondary.snapshot());
       return;
     }
 
@@ -11310,8 +13596,20 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/coinglass-web-secondary/refresh' && request.method === 'POST') {
+      const result = await coinGlassWebSecondary.startRefresh('manual');
+      await sendJson(response, result, result.accepted ? 202 : 200);
+      return;
+    }
+
     if (requestUrl.pathname === '/api/coinglass-web-top20/login' && request.method === 'POST') {
       const result = await coinGlassWebTop20.startLogin();
+      await sendJson(response, result, result.accepted ? 202 : 200);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coinglass-web-secondary/login' && request.method === 'POST') {
+      const result = await coinGlassWebSecondary.startLogin();
       await sendJson(response, result, result.accepted ? 202 : 200);
       return;
     }
@@ -11325,6 +13623,30 @@ const server = createServer(async (request, response) => {
       const imageStat = await stat(imageFile).catch(() => null);
       if (!imageStat?.isFile()) {
         await sendJson(response, { error: 'CoinGlass image is not available yet.' }, 404);
+        return;
+      }
+      const imageMagic = await readFile(imageFile).then((buffer) => buffer.subarray(0, 8)).catch(() => null);
+      const imageContentType = imageMagic?.[0] === 0xff && imageMagic?.[1] === 0xd8
+        ? 'image/jpeg'
+        : 'image/png';
+      response.writeHead(200, {
+        'content-type': imageContentType,
+        'content-length': imageStat.size,
+        'cache-control': 'no-store',
+      });
+      createReadStream(imageFile).pipe(response);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/coinglass-web-secondary/image' && request.method === 'GET') {
+      const imageFile = coinGlassWebSecondary.imageFile(requestUrl.searchParams.get('symbol'));
+      if (!imageFile) {
+        await sendJson(response, { error: 'Invalid Binance USDT symbol.' }, 400);
+        return;
+      }
+      const imageStat = await stat(imageFile).catch(() => null);
+      if (!imageStat?.isFile()) {
+        await sendJson(response, { error: 'CoinGlass secondary image is not available yet.' }, 404);
         return;
       }
       const imageMagic = await readFile(imageFile).then((buffer) => buffer.subarray(0, 8)).catch(() => null);
@@ -11390,8 +13712,41 @@ const server = createServer(async (request, response) => {
     }
 
     if (requestUrl.pathname === '/api/liquid-flow-v2' && request.method === 'GET') {
-      const result = await refreshLiquidHeatmapFlowV2();
-      await sendJson(response, { ...result, paper: liquidFlowV2Paper.snapshot() });
+      const cached = liquidFlowV2Cache.data;
+      if (!cached) {
+        refreshLiquidHeatmapFlowV2().catch((error) => {
+          console.warn(`[LiquidFlowV2] initial background refresh failed: ${error.message}`);
+        });
+        await sendJson(response, liquidFlowV2InitializingPayload());
+        return;
+      }
+      if (Date.now() >= liquidFlowV2Cache.expiresAt && !liquidFlowV2Cache.inflight) {
+        refreshLiquidHeatmapFlowV2({ force: true }).catch((error) => {
+          console.warn(`[LiquidFlowV2] background refresh failed: ${error.message}`);
+        });
+      }
+      await sendJson(response, liquidFlowV2ClientPayload(cached));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/htf-deep-dump-base-universe' && request.method === 'GET') {
+      const controls = autoEntryControls.read();
+      const routes = HTF_DEEP_BASE_RETEST_ROUTES.map((spec) => {
+        const route = autoEntryControls.register(spec);
+        return { ...route, enabled: controls.routes[route.key]?.enabled === true };
+      });
+      const executionEnabled = controls.enabled === true && routes.some((route) => route.enabled);
+      await sendJson(response, {
+        ...htfDeepDumpBaseUniverseState,
+        running: htfDeepDumpBaseUniverseRunning,
+        maxSymbols: Math.max(
+          1,
+          Math.min(400, Number(process.env.HTF_DEEP_DUMP_BASE_UNIVERSE_MAX_SYMBOLS ?? 400)),
+        ),
+        observeOnly: !executionEnabled,
+        executionEnabled,
+        routes,
+      });
       return;
     }
 
@@ -11418,7 +13773,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       const paper = await liquidFlowV2Paper.updateSettings({ autoEnabled: body.autoEnabled });
-      await sendJson(response, paper);
+      await sendJson(response, compactLiquidFlowV2PaperSnapshot(paper));
       return;
     }
 
@@ -11573,7 +13928,7 @@ const server = createServer(async (request, response) => {
       response.write(': connected\n\n');
       liquidFlowV2SseClients.add(response);
       if (liquidFlowV2Cache.data) {
-        response.write(`data: ${JSON.stringify(liquidFlowV2Cache.data)}\n\n`);
+        response.write(`data: ${JSON.stringify(liquidFlowV2ClientPayload(liquidFlowV2Cache.data))}\n\n`);
       }
       request.on('close', () => liquidFlowV2SseClients.delete(response));
       refreshLiquidHeatmapFlowV2().catch((error) => {
@@ -13082,6 +15437,25 @@ const server = createServer(async (request, response) => {
           params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow },
           apiKey, apiSecret,
         });
+        await binanceFilledSignalAudit.registerSubmission({
+          orderId: order?.orderId,
+          clientOrderId: order?.clientOrderId,
+          symbol,
+          side,
+          orderType: 'LIMIT',
+          signalSource: 'pump-auto-order-test',
+          signalType: testSignal.type ?? 'PUMP_AUTO_TEST',
+          signalLabel: testSignal.type ?? 'PUMP_AUTO_TEST',
+          signalReason: `Pump Auto test; score=${testSignal.score ?? '-'}; marketOk=${testSignal.marketOk ?? '-'}`,
+          signalCombo: testSignal.type ?? null,
+          executionPage: 'pump-scanner',
+          signalEntryPrice: Number(entryStr),
+          stopLossPrice: Number(testSignal.sl) || null,
+          takeProfitPrice: Number(testSignal.tp) || null,
+          marginUsdt: margin,
+          leverage,
+          submittedAt: Date.now(),
+        }).catch((error) => console.warn(`[FilledSignalAudit] PumpAuto TEST ${symbol}: ${error.message}`));
         console.log(`[PumpAuto TEST] ✅ ${symbol} ${side} LIMIT @${entryStr} qty=${qtyStr} orderId=${order.orderId}`);
         await sendJson(response, { ok: true, symbol, side, entry: entryStr, qty: qtyStr, markPrice, orderId: order.orderId });
       } catch (err) {
@@ -13154,13 +15528,34 @@ const server = createServer(async (request, response) => {
           ? { symbol, side, type: 'MARKET', quantity: qtyStr, recvWindow, newClientOrderId: `lp_manual_${Date.now()}`.slice(0, 36) }
           : { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow, newClientOrderId: `lp_manual_${Date.now()}`.slice(0, 36) };
 
-        const order = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret });
+        const order = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret,
+          entryControl:{manual:Boolean(token&&ordersTokens.has(token))} });
+        await binanceFilledSignalAudit.registerSubmission({
+          orderId: order?.orderId,
+          clientOrderId: order?.clientOrderId ?? orderParams.newClientOrderId,
+          symbol,
+          side,
+          orderType: orderParams.type,
+          signalSource: 'pump-manual-order',
+          signalType: bodyType ?? 'PUMP_MANUAL_ORDER',
+          signalLabel: bodyType ?? 'PUMP_MANUAL_ORDER',
+          signalReason: `Người dùng bấm vào Binance từ Pump; score=${score ?? '-'}; forceMarket=${forceMarket === true}`,
+          signalCombo: bodyType ?? null,
+          executionPage: 'pump-scanner',
+          signalEntryPrice: Number(entryStr),
+          stopLossPrice: Number(sl) || null,
+          takeProfitPrice: Number(tp) || null,
+          marginUsdt: margin,
+          leverage,
+          submittedAt: Date.now(),
+        }).catch((error) => console.warn(`[FilledSignalAudit] PumpManual ${symbol}: ${error.message}`));
         invalidateOpenOrdersCache();
         console.log(`[PumpManual] ✅ ${symbol} ${side} ${useMarket ? 'MARKET' : `LIMIT @${entryStr}`} qty=${qtyStr} margin=$${margin} score=${score}`);
         // Đặt SL nếu có
         let slPlaced = false;
         let slPriceStr = null;
-        if (sl && info) {
+        const protectionSuppressedBySymbol = isBinanceProtectionExcluded(symbol, 'PUMP_MANUAL_SL');
+        if (sl && info && !protectionSuppressedBySymbol) {
           slPriceStr = tickSize > 0
             ? Number(sl).toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
             : Number(sl).toFixed(8);
@@ -13191,7 +15586,8 @@ const server = createServer(async (request, response) => {
           margin, leverage, score: score ?? 0, type: bodyType ?? null, slPlaced,
           slPrice: slPriceStr ? Number(slPriceStr) : null, tp: tp ?? null, placedAt: Date.now(),
         }).catch(() => {});
-        await sendJson(response, { ok: true, orderId: order.orderId, symbol, side, entry: entryStr, qty: qtyStr, markPrice, slPlaced, slPrice: slPriceStr, marketFilled: useMarket });
+        await sendJson(response, { ok: true, orderId: order.orderId, symbol, side, entry: entryStr, qty: qtyStr, markPrice, slPlaced, slPrice: slPriceStr, marketFilled: useMarket,
+          protectionSuppressedBySymbol,protectionExclusionVersion:protectionSuppressedBySymbol?BINANCE_PROTECTION_EXCLUSION_VERSION:null });
       } catch (err) {
         console.error('[PumpManual] ❌', err.message);
         await sendJson(response, { ok: false, error: err.message }, 400);
@@ -13408,6 +15804,20 @@ const server = createServer(async (request, response) => {
         binanceProfitLockFirstLockRoe: Number(process.env.BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE ?? 1),
         ordersExcludedTriggerRoe: ORDERS_EXCLUDED_PROFIT_LOCK_TRIGGER_ROE,
         ordersExcludedMaxLockRoe: ORDERS_EXCLUDED_PROFIT_LOCK_ROE,
+        fastWaveCandle5mRangePct: Number(
+          process.env.BINANCE_FAST_WAVE_CANDLE_5M_RANGE_PCT ?? FAST_WAVE_CANDLE_5M_RANGE_THRESHOLD_PCT,
+        ),
+        fastWaveCandle15mRangePct: Number(
+          process.env.BINANCE_FAST_WAVE_CANDLE_15M_RANGE_PCT ?? FAST_WAVE_CANDLE_15M_RANGE_THRESHOLD_PCT,
+        ),
+        fastWaveCandleWickMinRatio: Number(
+          process.env.BINANCE_FAST_WAVE_CANDLE_WICK_MIN_RATIO ?? FAST_WAVE_CANDLE_WICK_MIN_RATIO,
+        ),
+        fastWaveCandleReversalBodyMinRatio: Number(
+          process.env.BINANCE_FAST_WAVE_CANDLE_REVERSAL_BODY_MIN_RATIO
+            ?? FAST_WAVE_CANDLE_REVERSAL_BODY_MIN_RATIO,
+        ),
+        lateProfitLockMarketCloseEnabled: false,
         protected: protected_,
       });
       return;
@@ -13474,8 +15884,17 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, '127.0.0.1', async () => {
-  console.log(`BTC liquidity proxy web app: http://127.0.0.1:${port}`);
+const coinLevelLiveSocket = attachCoinLevelLiveSocket({
+  server,
+  ticker: sharedMarkTicker,
+  normalizeSymbol: (rawSymbol) => safeCoinglassSymbol(normalizeSymbol(rawSymbol)),
+});
+
+server.listen(port, host, async () => {
+  console.log(
+    `BTC liquidity proxy web app listening on ${host}:${port} (local URL: http://127.0.0.1:${port});`
+    + ` coin-level live=${coinLevelLiveSocket.version}`,
+  );
   await loadOrdersCapTslSymbols();
   loadDynamicBlacklist();
   await loadSlTracking();
@@ -13487,6 +15906,7 @@ server.listen(port, '127.0.0.1', async () => {
   initCoinFlowBatch().catch((err) => console.warn('[CoinFlow] Init failed:', err.message));
   await liquidFlowV2BinanceSignalSettings.init();
   coinGlassWebTop20.startScheduler();
+  coinGlassWebSecondary.startScheduler();
   // Account-risk maintenance must start before paper stores and market-kline
   // warm-up. Large store recovery can take tens of seconds, while an active
   // Binance position still needs its emergency TP-to-entry protection.
@@ -13562,6 +15982,13 @@ server.listen(port, '127.0.0.1', async () => {
   startTopReversalPaperTicker();
   startRecommendedPaperTicker();
   startLiquidMarketDirectionHealthMonitor();
+  startMarketBreadthShockScheduler();
+  startMegaPumpStaircaseScheduler();
+  startPumpFlushReclaimScheduler();
+  startPostPumpEma99BearishCrossScheduler();
+  startWeekLongPostPumpEma99SlopeScheduler();
+  squeezeRatioWatch.start();
+  startCoinLevelEntryWatchScheduler();
   startLiquidScanAutoPaperScheduler();
   intradayDecisionPaper = createIntradayDecisionPaper();
   intradayDecisionPaper.init().catch((err) => console.warn('[DecisionPaper] Init failed:', err.message));
@@ -13618,6 +16045,7 @@ server.listen(port, '127.0.0.1', async () => {
       highProbThreshold: getLiqHighProbThreshold(),
       topTraderCache: topPositionCache, // tái dùng cache từ startLongShortRefresh, tránh 51 REST calls
       topTraderRestFallback: process.env.LIQ_SCAN_TOP_TRADER_REST_FALLBACK === 'true',
+      onAlert: retainLatestLiqScanAlert,
     });
     startVolumeDumpScanner({
       client: analyzeClient,
@@ -13635,6 +16063,7 @@ server.listen(port, '127.0.0.1', async () => {
       move4cPct: Number(process.env.VOL_DUMP_MOVE4C_PCT ?? 2.5),
       bigCandlePct: Number(process.env.BIG_CANDLE_PCT ?? 8),
       bigCandleCooldownMs: Number(process.env.BIG_CANDLE_COOLDOWN_MS ?? 3600000),
+      onBigCandleSignal: executeBigCandlePump15mBinanceSignal,
     });
     runBtcHealthMonitor(); // initial read — seed _prevBtcBias, no cancellations
     setInterval(runBtcHealthMonitor, 2 * 60_000); // check every 2 minutes
@@ -14124,6 +16553,518 @@ async function getSymbols() {
   }
 }
 
+async function getCoinLevelEntryWatchSnapshot() {
+  if (coinLevelEntryWatchCache.data && Date.now() < coinLevelEntryWatchCache.expiresAt) {
+    return coinLevelEntryWatchCache.data;
+  }
+  if (coinLevelEntryWatchCache.inflight) return coinLevelEntryWatchCache.inflight;
+  coinLevelEntryWatchCache.inflight = (async () => {
+    const symbols = await getSymbols();
+    const data = scanCoinLevelEntryWatch({
+      symbols,
+      getKlines: (symbol, interval, limit) => klineCache.getIfCached(symbol, interval, limit),
+    });
+    const controlState = autoEntryControls.read();
+    const binanceRoutes = Object.fromEntries(COIN_LEVEL_ENTRY_WATCH_ROUTES.map((spec) => {
+      const route = autoEntryControls.register(spec);
+      const state = controlState.routes[route.key];
+      return [spec.side, {
+        enabled: controlState.enabled === true && state?.enabled === true,
+        marginUsdt: state?.marginUsdt ?? null,
+        leverage: state?.leverage ?? null,
+        takeProfitRoePct: state?.takeProfitRoePct ?? null,
+      }];
+    }));
+    const snapshot = {
+      ...data,
+      discordConfigured: Boolean(String(process.env.COIN_LEVEL_ENTRY_WATCH_DISCORD_WEBHOOK_URL ?? '').trim()),
+      binanceExecution: {
+        mode: 'LIMIT_3USDT_PRE_RETEST_OR_MARKET_AFTER_CLOSED_5M_RETEST',
+        limitMarginUsdt: 3,
+        limitMaxAgeMinutes: 45,
+        masterEnabled: controlState.enabled === true,
+        routes: binanceRoutes,
+      },
+    };
+    coinLevelEntryWatchCache.data = snapshot;
+    coinLevelEntryWatchCache.expiresAt = Date.now() + 20_000;
+    return snapshot;
+  })();
+  try {
+    return await coinLevelEntryWatchCache.inflight;
+  } finally {
+    coinLevelEntryWatchCache.inflight = null;
+  }
+}
+
+function startCoinLevelEntryWatchScheduler() {
+  const tick = async () => {
+    if (coinLevelEntryWatchDiscordRunning) return;
+    coinLevelEntryWatchDiscordRunning = true;
+    try {
+      const snapshot = await getCoinLevelEntryWatchSnapshot();
+      await coinLevelEntryWatchDiscord.deliverCandidates(snapshot.candidates);
+      for (const candidate of snapshot.candidates) {
+        try {
+          const execution = await coinLevelEntryWatchBinanceRunner.handle(candidate);
+          if (!['waiting-closed-5m-retest', 'off', 'ineligible'].includes(execution.status)) {
+            console.log(`[CoinLevelEntryWatchBinance] ${candidate.symbol} ${candidate.side}: ${execution.status}`);
+          }
+        } catch (error) {
+          console.warn(`[CoinLevelEntryWatchBinance] ${candidate.symbol} ${candidate.side} failed: ${error.code ?? error.message}`);
+        }
+      }
+    } catch (error) {
+      console.warn(`[CoinLevelEntryWatchDiscord] scan failed: ${error.message}`);
+    } finally {
+      coinLevelEntryWatchDiscordRunning = false;
+    }
+  };
+  setTimeout(tick, 45_000).unref?.();
+  setInterval(tick, 30_000).unref?.();
+}
+
+async function readOptionalJson(file) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function coinLevelCoinglassContext(symbol) {
+  const streams = [
+    {
+      streamId: 'primary',
+      snapshotFile: join(rootDir, 'data', 'coinglass-web-top20', 'snapshot.json'),
+      lifecycleFile: join(rootDir, 'data', 'coinglass-web-top20', 'zone-lifecycle.json'),
+    },
+    {
+      streamId: 'secondary',
+      snapshotFile: join(rootDir, 'data', 'coinglass-web-secondary', 'snapshot.json'),
+      lifecycleFile: join(rootDir, 'data', 'coinglass-web-secondary', 'zone-lifecycle.json'),
+    },
+  ];
+  const loaded = await Promise.all(streams.map(async (stream) => {
+    const [snapshot, lifecycle] = await Promise.all([
+      readOptionalJson(stream.snapshotFile),
+      readOptionalJson(stream.lifecycleFile),
+    ]);
+    return {
+      ...stream,
+      snapshot,
+      lifecycle,
+      row: Array.isArray(snapshot?.rows) ? snapshot.rows.find((item) => item?.symbol === symbol) ?? null : null,
+    };
+  }));
+  const [onDemand, refresh] = await Promise.all([
+    readOptionalJson(join(rootDir, 'data', 'coinglass-web-top20', 'on-demand', `${symbol}.json`)),
+    coinGlassWebTop20.onDemandStatus(symbol),
+  ]);
+  if (onDemand?.symbol === symbol && onDemand?.row?.symbol === symbol) {
+    const onDemandAgeMs = onDemand.updatedAt ? Math.max(0, Date.now() - Date.parse(onDemand.updatedAt)) : Infinity;
+    loaded.push({
+      streamId: 'on-demand',
+      snapshotFile: null,
+      lifecycleFile: streams[0].lifecycleFile,
+      snapshot: onDemand,
+      lifecycle: loaded.find((item) => item.streamId === 'primary')?.lifecycle ?? null,
+      row: onDemand.row,
+      preferredOnDemand: onDemandAgeMs <= 10 * 60_000
+        && Boolean(onDemand.row?.qualifiedTimeframes?.['12h']?.heatmap)
+        && Boolean(onDemand.row?.qualifiedTimeframes?.['24h']?.heatmap),
+    });
+  }
+  const matches = loaded.filter((item) => item.row);
+  const selected = matches.sort((left, right) => {
+    const leftReady = left.row?.status === 'OK' && left.row?.heatmap ? 1 : 0;
+    const rightReady = right.row?.status === 'OK' && right.row?.heatmap ? 1 : 0;
+    if (leftReady !== rightReady) return rightReady - leftReady;
+    if (Boolean(left.preferredOnDemand) !== Boolean(right.preferredOnDemand)) {
+      return Number(Boolean(right.preferredOnDemand)) - Number(Boolean(left.preferredOnDemand));
+    }
+    return Date.parse(right.row?.scrapedAt ?? right.snapshot?.updatedAt ?? 0)
+      - Date.parse(left.row?.scrapedAt ?? left.snapshot?.updatedAt ?? 0);
+  })[0] ?? null;
+  return selected ? {
+    streamId: selected.streamId,
+    snapshotUpdatedAt: selected.snapshot?.updatedAt ?? null,
+    row: selected.row,
+    lifecycle: selected.lifecycle,
+    refresh,
+  } : {
+    streamId: null,
+    snapshotUpdatedAt: loaded.map((item) => item.snapshot?.updatedAt).filter(Boolean).sort().at(-1) ?? null,
+    row: null,
+    lifecycle: null,
+    refresh,
+  };
+}
+
+const COIN_LEVEL_ANALYSIS_CACHE_VERSION = 'COIN_LEVEL_ANALYSIS_CACHE_V1_20260901';
+const COIN_LEVEL_ANALYSIS_LIVE_CACHE_MS = 30_000;
+const COIN_LEVEL_ANALYSIS_POLL_MAX_BINANCE_AGE_MS = 90_000;
+const LIQ_SCAN_LATEST_ALERTS_STORE_VERSION = 'LIQ_SCAN_LATEST_ALERTS_STORE_V1_20260905';
+const LIQ_SCAN_LATEST_ALERT_RETENTION_MS = 24 * 60 * 60_000;
+const liqScanLatestAlerts = new Map();
+let liqScanLatestAlertsLoadPromise = null;
+let liqScanLatestAlertsWriteQueue = Promise.resolve();
+
+function pruneLiqScanLatestAlerts(now = Date.now()) {
+  for (const [symbol, alert] of liqScanLatestAlerts) {
+    const evaluatedAt = Date.parse(alert?.evaluatedAt ?? 0);
+    if (!Number.isFinite(evaluatedAt) || now - evaluatedAt > LIQ_SCAN_LATEST_ALERT_RETENTION_MS) {
+      liqScanLatestAlerts.delete(symbol);
+    }
+  }
+  if (liqScanLatestAlerts.size <= 500) return;
+  const oldest = [...liqScanLatestAlerts.entries()]
+    .sort((left, right) => Date.parse(left[1]?.evaluatedAt ?? 0) - Date.parse(right[1]?.evaluatedAt ?? 0));
+  for (const [symbol] of oldest.slice(0, liqScanLatestAlerts.size - 500)) {
+    liqScanLatestAlerts.delete(symbol);
+  }
+}
+
+async function loadLiqScanLatestAlerts() {
+  if (liqScanLatestAlertsLoadPromise) return liqScanLatestAlertsLoadPromise;
+  liqScanLatestAlertsLoadPromise = (async () => {
+    try {
+      const saved = JSON.parse(await readFile(liqScanLatestAlertsFile, 'utf8'));
+      for (const alert of Array.isArray(saved?.alerts) ? saved.alerts : []) {
+        const symbol = String(alert?.symbol ?? '').trim().toUpperCase();
+        if (symbol && alert?.isAlert === true) liqScanLatestAlerts.set(symbol, alert);
+      }
+      pruneLiqScanLatestAlerts();
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        console.warn(`[LiqScan] latest-alert store read failed: ${error.message}`);
+      }
+    }
+  })();
+  return liqScanLatestAlertsLoadPromise;
+}
+
+async function retainLatestLiqScanAlert(alert = {}) {
+  if (alert?.isAlert !== true) return;
+  const symbol = String(alert?.symbol ?? '').trim().toUpperCase();
+  if (!symbol) return;
+  await loadLiqScanLatestAlerts();
+  liqScanLatestAlerts.set(symbol, alert);
+  pruneLiqScanLatestAlerts();
+  const payload = `${JSON.stringify({
+    version: LIQ_SCAN_LATEST_ALERTS_STORE_VERSION,
+    snapshotVersion: LIQ_SCAN_SNAPSHOT_VERSION,
+    updatedAt: new Date().toISOString(),
+    alerts: [...liqScanLatestAlerts.values()],
+  }, null, 2)}\n`;
+  liqScanLatestAlertsWriteQueue = liqScanLatestAlertsWriteQueue.catch(() => {}).then(async () => {
+    const temporary = `${liqScanLatestAlertsFile}.tmp-${process.pid}-${Date.now()}`;
+    await mkdir(join(rootDir, 'data'), { recursive: true });
+    await writeFile(temporary, payload, 'utf8');
+    await rename(temporary, liqScanLatestAlertsFile);
+  });
+  return liqScanLatestAlertsWriteQueue;
+}
+
+async function attachLatestLiqScanAlert(analysis = {}) {
+  await loadLiqScanLatestAlerts();
+  pruneLiqScanLatestAlerts();
+  const current = analysis?.liqScan ? {
+    ...analysis.liqScan,
+    stale: analysis?.freshness?.stale === true,
+  } : null;
+  const lastAlert = liqScanLatestAlerts.get(String(analysis?.symbol ?? '').toUpperCase()) ?? null;
+  const alertAt = Date.parse(lastAlert?.evaluatedAt ?? 0);
+  return {
+    ...analysis,
+    horizonAnalysis: buildCoinHorizonAnalysis(analysis),
+    liqScan: {
+      version: LIQ_SCAN_SNAPSHOT_VERSION,
+      current,
+      directionAssessment: assessSweepDirection(analysis, current),
+      alertTier: classifyLiqScanTier(analysis),
+      sweepRejectShort: assessLiqScanSweepRejectShort(analysis, lastAlert),
+      lastAlert: lastAlert ? {
+        ...lastAlert,
+        ageMs: Number.isFinite(alertAt) ? Math.max(0, Date.now() - alertAt) : null,
+        stale: !Number.isFinite(alertAt) || Date.now() - alertAt > 2 * 60 * 60_000,
+      } : null,
+      observeOnly: true,
+      execution: {
+        binanceEnabled: false,
+        affectsEntry: false,
+        affectsSize: false,
+        affectsStopLoss: false,
+        affectsTakeProfit: false,
+      },
+    },
+  };
+}
+
+function coinLevelAnalysisSnapshotFile(symbol) {
+  return join(coinLevelAnalysisSnapshotDir, `${symbol}.json`);
+}
+
+async function readCoinLevelAnalysisSnapshot(symbol) {
+  try {
+    const snapshot = JSON.parse(await readFile(coinLevelAnalysisSnapshotFile(symbol), 'utf8'));
+    if (snapshot?.symbol !== symbol || !snapshot?.data) return null;
+    return {
+      baseAnalysis: snapshot.baseAnalysis ?? null,
+      data: snapshot.data,
+      savedAt: snapshot.savedAt ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeCoinLevelAnalysisSnapshot(symbol, baseAnalysis, data) {
+  const file = coinLevelAnalysisSnapshotFile(symbol);
+  const temporary = `${file}.tmp-${process.pid}-${Date.now()}`;
+  await mkdir(coinLevelAnalysisSnapshotDir, { recursive: true });
+  await writeFile(temporary, `${JSON.stringify({
+    cacheVersion: COIN_LEVEL_ANALYSIS_CACHE_VERSION,
+    symbol,
+    savedAt: new Date().toISOString(),
+    baseAnalysis,
+    data,
+  }, null, 2)}\n`, 'utf8');
+  await rename(temporary, file);
+}
+
+function notifyCoinLevelLifecycle(analysis) {
+  if (analysis?.freshness?.binance === 'STALE_LAST_GOOD') return;
+  liqScanTierDiscord.notify(analysis)
+    .then(outcome => { if (outcome.sent) console.log(`[LiqScanTierDiscord] ${analysis.symbol} ${outcome.side} sent`); })
+    .catch(error => console.warn(`[LiqScanTierDiscord] ${error.message}`));
+  coinHorizonDiscord.notify(analysis)
+    .then(outcome => { if (outcome.sent) console.log(`[CoinHorizonDiscord] ${analysis.symbol} ${outcome.side} sent`); })
+    .catch(error => console.warn(`[CoinHorizonDiscord] ${error.message}`));
+  coinHorizonSweepBinanceRunner.handle(analysis)
+    .then((binanceExecution) => coinHorizonSweepTransitionDiscord.notify({
+      ...analysis,
+      horizonSweepBinanceExecution: binanceExecution,
+    }))
+    .then((outcome) => {
+      if (outcome?.sent) {
+        console.log(`[CoinHorizonSweepTransition] ${analysis.symbol} ${outcome.state} sent`);
+      }
+    })
+    .catch((error) => {
+      console.warn(`[CoinHorizonSweepBinance] ${analysis.symbol}: ${error.message}`);
+      coinHorizonSweepTransitionDiscord.notify({
+        ...analysis,
+        horizonSweepBinanceExecution: { status: 'error' },
+      }).catch((notifyError) => console.warn(`[CoinHorizonSweepTransition] ${notifyError.message}`));
+    });
+  liqScanHighScoreDiscord.notify(analysis)
+    .then((outcome) => {
+      if (outcome?.sent) {
+        console.log(`[LiqScanHighScoreDiscord] ${analysis.symbol} ${outcome.side} score=${outcome.score} Binance=${outcome.binanceExecution?.status ?? 'unknown'} sent`);
+      }
+    })
+    .catch((error) => console.warn(`[LiqScanHighScoreDiscord] ${error.message}`));
+  coinLevelLifecycleDiscord.notify(analysis)
+    .then((outcome) => {
+      if (outcome?.sent > 0) {
+        console.log(`[CoinLevelLifecycleDiscord] sent ${outcome.sent} event(s) for ${analysis.symbol}`);
+      }
+    })
+    .catch((error) => console.warn(`[CoinLevelLifecycleDiscord] ${analysis?.symbol ?? 'UNKNOWN'} failed: ${error.message}`));
+}
+
+function coinLevelRequestFailure(label, result) {
+  if (result?.status !== 'rejected') return null;
+  const message = String(result.reason?.message ?? result.reason ?? 'unknown error');
+  return `${label}: ${/abort/i.test(message) ? 'timeout/aborted' : message}`;
+}
+
+async function getCoinLevelAnalysis(rawSymbol, { coinGlassOnly = false } = {}) {
+  const symbol = safeCoinglassSymbol(normalizeSymbol(rawSymbol));
+  if (!symbol) {
+    throw Object.assign(new Error('Ma coin khong hop le.'), { statusCode: 400 });
+  }
+  let cached = coinLevelAnalysisCache.get(symbol);
+  if (!cached) {
+    const saved = await readCoinLevelAnalysisSnapshot(symbol);
+    if (saved?.data) {
+      cached = { ...saved, expiresAt: 0, inflight: null };
+      coinLevelAnalysisCache.set(symbol, cached);
+    }
+  }
+
+  if (coinGlassOnly && cached?.baseAnalysis) {
+    const coinglassContext = await coinLevelCoinglassContext(symbol);
+    let data = attachCoinGlassLiquidationAnalysis(cached.baseAnalysis, coinglassContext);
+    const sourceAgeMs = Math.max(0, Date.now() - Date.parse(cached.baseAnalysis.generatedAt ?? 0));
+    if (sourceAgeMs > COIN_LEVEL_ANALYSIS_POLL_MAX_BINANCE_AGE_MS) {
+      data = markCoinLevelAnalysisStale(data, 'CoinGlass poll đang dùng snapshot Binance cũ hơn 90 giây.');
+    }
+    coinLevelAnalysisCache.set(symbol, { ...cached, data, inflight: null });
+    notifyCoinLevelLifecycle(data);
+    return data;
+  }
+  if (coinGlassOnly && cached?.data) return cached.data;
+  if (cached?.data && cached.expiresAt > Date.now()) return cached.data;
+  if (cached?.inflight) {
+    const pending = await cached.inflight;
+    return pending.data;
+  }
+
+  const previous = cached;
+  const work = (async () => {
+    const symbols = await getSymbols();
+    if (!symbols.some((item) => item.symbol === symbol)) {
+      throw Object.assign(new Error(`${symbol} khong phai hop dong USDT perpetual dang giao dich.`), { statusCode: 404 });
+    }
+    const requestOptions = {
+      priority: 4,
+      dropOnCongestion: false,
+      source: `coinLevelAnalysis:${symbol}`,
+    };
+    const requests = [
+      ['premiumIndex', () => analyzeClient.getPremiumIndex(symbol, requestOptions)],
+      ['ticker24h', () => analyzeClient.getTicker24hrSymbol(symbol, requestOptions)],
+      ['openInterest', () => analyzeClient.getOpenInterest(symbol, requestOptions)],
+      ['depth', () => analyzeClient.getDepth(symbol, 500, requestOptions)],
+      ['klines5m', () => analyzeClient.getKlines(symbol, '5m', 240, requestOptions)],
+      ['klines15m', () => analyzeClient.getKlines(symbol, '15m', 240, requestOptions)],
+      ['klines1h', () => analyzeClient.getKlines(symbol, '1h', 240, requestOptions)],
+      ['klines4h', () => analyzeClient.getKlines(symbol, '4h', 240, requestOptions)],
+    ];
+    const settled = await Promise.allSettled(requests.map(([, requestData]) => requestData()));
+    const results = Object.fromEntries(requests.map(([label], index) => [label, settled[index]]));
+    const requiredKlines = ['klines5m', 'klines15m', 'klines1h', 'klines4h'];
+    const retryLabels = requiredKlines.filter((label) => results[label]?.status === 'rejected');
+    if (results.premiumIndex?.status === 'rejected' && results.ticker24h?.status === 'rejected') {
+      retryLabels.push('premiumIndex', 'ticker24h');
+    }
+    if (retryLabels.length) {
+      const retryResults = await Promise.allSettled(retryLabels.map((label) => (
+        requests.find(([requestLabel]) => requestLabel === label)[1]()
+      )));
+      retryLabels.forEach((label, index) => { results[label] = retryResults[index]; });
+    }
+    const essentialFailures = [
+      ...requiredKlines.filter((label) => results[label]?.status === 'rejected'),
+      ...(results.premiumIndex?.status === 'rejected' && results.ticker24h?.status === 'rejected'
+        ? ['premiumIndex', 'ticker24h'] : []),
+    ];
+    if (essentialFailures.length) {
+      const details = essentialFailures
+        .map((label) => coinLevelRequestFailure(label, results[label]))
+        .filter(Boolean)
+        .join('; ');
+      throw Object.assign(new Error(`Binance REST chưa đủ dữ liệu để phân tích (${details}).`), { statusCode: 503 });
+    }
+    const value = (label, fallback = null) => results[label]?.status === 'fulfilled'
+      ? results[label].value
+      : fallback;
+    const partialFailures = ['premiumIndex', 'ticker24h', 'openInterest', 'depth']
+      .map((label) => coinLevelRequestFailure(label, results[label]))
+      .filter(Boolean);
+    let baseAnalysis = buildCoinLevelAnalysis({
+      symbol,
+      premiumIndex: value('premiumIndex'),
+      ticker24h: value('ticker24h'),
+      openInterest: value('openInterest'),
+      depth: value('depth', { bids: [], asks: [] }),
+      klinesByInterval: {
+        '5m': value('klines5m'),
+        '15m': value('klines15m'),
+        '1h': value('klines1h'),
+        '4h': value('klines4h'),
+      },
+    });
+    try {
+      const liqHeatmap = computeHeatmapData({
+        klines: value('klines15m'),
+        currentPrice: baseAnalysis.market.markPrice,
+        momentumPct: baseAnalysis.market.change24hPct,
+      });
+      baseAnalysis = {
+        ...baseAnalysis,
+        liqScan: buildLiqScanSnapshot({
+          symbol,
+          markPrice: baseAnalysis.market.markPrice,
+          heatmap: liqHeatmap,
+          evaluatedAt: Date.parse(baseAnalysis.generatedAt),
+          biasThreshold: Number(process.env.LIQ_SCAN_BIAS_THRESHOLD ?? 0.4),
+        }),
+      };
+    } catch (error) {
+      console.warn(`[CoinLevelAnalysis] ${symbol} LiqScan snapshot unavailable: ${error.message}`);
+    }
+    if (partialFailures.length) {
+      baseAnalysis = {
+        ...baseAnalysis,
+        freshness: {
+          ...baseAnalysis.freshness,
+          binance: 'LIVE_PARTIAL',
+          partial: true,
+          partialFailures,
+        },
+        recommendation: {
+          ...baseAnalysis.recommendation,
+          warnings: [
+            ...(baseAnalysis.recommendation?.warnings ?? []),
+            `Một phần dữ liệu Binance phụ tạm thiếu: ${partialFailures.join('; ')}.`,
+          ],
+        },
+      };
+    }
+    const coinglassContext = await coinLevelCoinglassContext(symbol);
+    const data = attachCoinGlassLiquidationAnalysis(baseAnalysis, coinglassContext);
+    return { baseAnalysis, data };
+  })();
+
+  coinLevelAnalysisCache.set(symbol, {
+    baseAnalysis: previous?.baseAnalysis ?? null,
+    data: previous?.data ?? null,
+    expiresAt: 0,
+    inflight: work,
+  });
+  try {
+    const { baseAnalysis, data } = await work;
+    coinLevelAnalysisCache.set(symbol, {
+      baseAnalysis,
+      data,
+      expiresAt: Date.now() + COIN_LEVEL_ANALYSIS_LIVE_CACHE_MS,
+      inflight: null,
+    });
+    writeCoinLevelAnalysisSnapshot(symbol, baseAnalysis, data)
+      .catch((error) => console.warn(`[CoinLevelAnalysis] ${symbol} snapshot write failed: ${error.message}`));
+    notifyCoinLevelLifecycle(data);
+    if (coinLevelAnalysisCache.size > 80) {
+      const oldestKey = coinLevelAnalysisCache.keys().next().value;
+      if (oldestKey && oldestKey !== symbol) coinLevelAnalysisCache.delete(oldestKey);
+    }
+    return data;
+  } catch (error) {
+    let fallback = previous?.data ?? null;
+    if (previous?.baseAnalysis) {
+      const coinglassContext = await coinLevelCoinglassContext(symbol).catch(() => null);
+      fallback = coinglassContext
+        ? attachCoinGlassLiquidationAnalysis(previous.baseAnalysis, coinglassContext)
+        : fallback;
+    }
+    if (fallback) {
+      const stale = markCoinLevelAnalysisStale(fallback, error);
+      coinLevelAnalysisCache.set(symbol, {
+        baseAnalysis: previous?.baseAnalysis ?? null,
+        data: stale,
+        expiresAt: Date.now() + 5_000,
+        inflight: null,
+      });
+      console.warn(`[CoinLevelAnalysis] ${symbol} using stale last-good snapshot: ${error.message}`);
+      return stale;
+    }
+    coinLevelAnalysisCache.delete(symbol);
+    throw error;
+  }
+}
+
 const signalProtectionPlans = new Map(); // symbol -> intended TP/SL to apply after full fill
 const signalProtectionRunning = new Set();
 
@@ -14158,8 +17099,10 @@ function isTrackedCoinglassZoneLifecycleTpOnlyPosition(symbol, position = {}) {
   const normalizedSymbol = normalizeSymbol(symbol);
   const tracking = slTracking.positions?.[normalizedSymbol] ?? slTracking.positions?.[symbol] ?? null;
   const plan = signalProtectionPlans.get(normalizedSymbol) ?? signalProtectionPlans.get(symbol) ?? null;
-  return shouldSuppressCoinglassZoneLifecycleStopLoss({
+  return shouldSuppressTrackedCoinglassZoneLifecycleStopLoss({
     source: plan?.source ?? tracking?.signalSource ?? null,
+    plannedSide: plan?.side ?? tracking?.signalSide ?? null,
+    positionAmount: amount,
   });
 }
 
@@ -14229,12 +17172,26 @@ function rememberSignalProtectionPlan({
   stopLossDistanceFraction = null,
   fillPrice = null,
   source,
+  signalType = null,
+  signalLabel = null,
+  signalReason = null,
+  signalCombo = null,
+  matchedKeys = [],
+  executionPage = null,
+  streamId = null,
+  marginUsdt = null,
+  leverage = null,
   orderId = null,
   entryClientOrderId = null,
   lifecycleId = null,
   preserveSignalProtection = false,
   takeProfitWorkingType = null,
   stopLossWorkingType = null,
+  takeProfitLegs = [],
+  coinglassZoneLifecycleVersion = null,
+  coinglassZoneLifecycleTakeProfitMode = null,
+  coinglassZoneLifecycleShortWaveClass = null,
+  coinglassZoneLifecycleChange24hPct = null,
 }) {
   const tpPrice = Number(takeProfitPrice);
   const stopLossSuppression = shortStopLossSuppression(side, source);
@@ -14292,19 +17249,173 @@ function rememberSignalProtectionPlan({
     stopLossSuppressed,
     stopLossSuppressionVersion: stopLossSuppression.version,
     source: String(source ?? 'signal'),
+    signalType: String(signalType ?? '').slice(0, 300) || null,
+    signalLabel: String(signalLabel ?? '').slice(0, 300) || null,
+    signalReason: String(signalReason ?? '').slice(0, 1_500) || null,
+    signalCombo: String(signalCombo ?? '').slice(0, 1_000) || null,
+    matchedKeys: Array.isArray(matchedKeys)
+      ? matchedKeys.map((key) => String(key ?? '').slice(0, 200)).filter(Boolean)
+      : [],
+    executionPage: String(executionPage ?? '').slice(0, 100) || null,
+    streamId: String(streamId ?? '').slice(0, 60) || null,
+    marginUsdt: Number.isFinite(Number(marginUsdt)) ? Number(marginUsdt) : null,
+    leverage: Number.isFinite(Number(leverage)) ? Number(leverage) : null,
     orderId,
     entryClientOrderId,
     lifecycleId,
     fillPrice: Number(fillPrice) || null,
+    takeProfitLegs: Array.isArray(takeProfitLegs)
+      ? takeProfitLegs.map((leg) => ({ ...leg }))
+      : [],
+    coinglassZoneLifecycleVersion,
+    coinglassZoneLifecycleTakeProfitMode,
+    coinglassZoneLifecycleShortWaveClass,
+    coinglassZoneLifecycleChange24hPct: Number.isFinite(Number(coinglassZoneLifecycleChange24hPct))
+      ? Number(coinglassZoneLifecycleChange24hPct)
+      : null,
     ...fillAnchor,
     ...protectionPolicy,
     createdAt: Date.now(),
   });
 }
 
+async function applyCoinglassZoneLifecyclePartialTakeProfit(symbol, plan) {
+  const legs = Array.isArray(plan?.takeProfitLegs) ? plan.takeProfitLegs : [];
+  const entrySide = String(plan?.side).toUpperCase();
+  if (!isCoinglassZoneLifecycleSource(plan?.source) || !['BUY', 'SELL'].includes(entrySide) || legs.length < 2) {
+    return null;
+  }
+  const isLong = entrySide === 'BUY';
+  const { apiKey, apiSecret } = getApiCredentials(null);
+  const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+  const [symbols, positions, algoResult] = await Promise.all([
+    getSymbols(),
+    client.getPositions({
+      apiKey,
+      apiSecret,
+      priority: 0,
+      dropOnCongestion: false,
+      source: 'coinglassZoneLifecyclePartialTp:positions',
+    }),
+    client.getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow }),
+  ]);
+  const symbolInfo = symbols.find((row) => row.symbol === symbol);
+  const position = (Array.isArray(positions) ? positions : []).find((row) => (
+    normalizeSymbol(row?.symbol) === symbol
+    && (isLong
+      ? Number(row?.positionAmt ?? row?.amt) > 0
+      : Number(row?.positionAmt ?? row?.amt) < 0)
+  ));
+  if (!symbolInfo || !position) throw new Error(`No active ${isLong ? 'LONG' : 'SHORT'} position for partial TP ${symbol}.`);
+  const lotSize = symbolInfo.filters?.find((filter) => filter.filterType === 'LOT_SIZE');
+  const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
+  const allocations = splitCoinglassZoneLifecyclePartialTpQuantity({
+    totalQuantity: Math.abs(Number(position.positionAmt ?? position.amt)),
+    stepSize,
+    legs,
+  });
+  const fillPrice = Number(plan.fillPrice ?? position.entryPrice ?? position.entry);
+  const anchoredLegs = legs.map((leg) => ({
+    ...leg,
+    price: priceFromTick(symbolInfo, fillPrice * (1 + Number(leg.distanceFraction))),
+  }));
+  if (allocations.length !== anchoredLegs.length) {
+    const fallbackPrice = anchoredLegs[0]?.price;
+    console.warn(
+      `[CoinGlassZoneLifecyclePartialTP] ${symbol} quantity too small to split; full TP1 @${fallbackPrice}`
+      + ` version=${COINGLASS_ZONE_LIFECYCLE_PARTIAL_TP_VERSION}`,
+    );
+    return setTpSl({
+      symbol,
+      tpPrice: fallbackPrice,
+      slPrice: null,
+      source: plan.source,
+      clientIdPrefix: 'zlc_ptpf',
+      takeProfitWorkingType: plan.takeProfitWorkingType,
+    });
+  }
+  const positionSide = String(position.positionSide ?? 'BOTH').toUpperCase();
+  const closeSide = isLong ? 'SELL' : 'BUY';
+  const tickSize = Number(symbolInfo.filters?.find((filter) => filter.filterType === 'PRICE_FILTER')?.tickSize ?? 0);
+  const openAlgo = Array.isArray(algoResult?.orders)
+    ? algoResult.orders
+    : Array.isArray(algoResult) ? algoResult : [];
+  plan.partialTpPlacedByKey ??= {};
+  const placedLegs = [];
+  for (let index = 0; index < anchoredLegs.length; index += 1) {
+    const leg = anchoredLegs[index];
+    const allocation = allocations[index];
+    const existing = openAlgo.find((order) => {
+      const type = String(order?.type ?? order?.orderType ?? '').toUpperCase();
+      const triggerPrice = Number(order?.triggerPrice ?? order?.stopPrice);
+      return normalizeSymbol(order?.symbol) === symbol
+        && String(order?.side ?? '').toUpperCase() === closeSide
+        && type.includes('TAKE_PROFIT')
+        && triggerPrice > 0
+        && Math.abs(triggerPrice - Number(leg.price)) <= Math.max(tickSize / 2, Number(leg.price) * 1e-10);
+    });
+    if (existing || plan.partialTpPlacedByKey[leg.key]) {
+      placedLegs.push({ ...leg, quantity: allocation.quantity, existing: true, order: existing ?? null });
+      continue;
+    }
+    const quantity = Number(allocation.quantity)
+      .toFixed(decimalsFromStep(stepSize))
+      .replace(/\.?0+$/, '');
+    const params = buildCoinglassZoneLifecyclePartialTpParams({
+      symbol,
+      closeSide,
+      positionSide,
+      triggerPrice: leg.price,
+      quantity,
+      workingType: plan.takeProfitWorkingType ?? 'MARK_PRICE',
+      recvWindow,
+      clientAlgoId: `zlc_${leg.key.toLowerCase()}_${Date.now().toString(36)}`,
+    });
+    const order = await client.placeAlgoOrder({ params, apiKey, apiSecret });
+    plan.partialTpPlacedByKey[leg.key] = {
+      orderId: order?.algoId ?? order?.orderId ?? null,
+      price: leg.price,
+      quantity,
+      placedAt: Date.now(),
+    };
+    placedLegs.push({ ...leg, quantity: Number(quantity), existing: false, order });
+  }
+  plan.takeProfitLegs = placedLegs.map((leg) => ({
+    key: leg.key,
+    closeRatio: leg.closeRatio,
+    distancePct: leg.distancePct,
+    distanceFraction: leg.distanceFraction,
+    price: leg.price,
+    quantity: leg.quantity,
+  }));
+  console.log(
+    `[CoinGlassZoneLifecyclePartialTP] ${symbol} ${placedLegs.map((leg) => `${leg.key}=${leg.quantity}@${leg.price}`).join(' ')}`
+    + ` version=${COINGLASS_ZONE_LIFECYCLE_PARTIAL_TP_VERSION}`,
+  );
+  return {
+    version: COINGLASS_ZONE_LIFECYCLE_PARTIAL_TP_VERSION,
+    placed: { tp: placedLegs.find((leg) => !leg.existing)?.order ?? null, sl: null },
+    partialTakeProfits: placedLegs,
+    takeProfitPrice: plan.takeProfitLegs.at(-1)?.price ?? null,
+    stopLossSuppressed: true,
+    stopLossSuppressionVersion: COINGLASS_ZONE_LIFECYCLE_TP_ONLY_VERSION,
+  };
+}
+
 async function applySignalProtectionOnFill(symbol, attempt = 1) {
   const plan = signalProtectionPlans.get(symbol);
   if (!plan || signalProtectionRunning.has(symbol)) return;
+  if (isBinanceProtectionExcluded(symbol, 'SIGNAL_PROTECTION')) {
+    plan.appliedAt = Date.now();
+    plan.protectionSuppressedBySymbol = true;
+    plan.protectionExclusionVersion = BINANCE_PROTECTION_EXCLUSION_VERSION;
+    plan.protectionResult = {
+      protectionSuppressedBySymbol: true,
+      protectionExclusionVersion: BINANCE_PROTECTION_EXCLUSION_VERSION,
+    };
+    signalProtectionPlans.delete(symbol);
+    return plan.protectionResult;
+  }
   if (Date.now() - plan.createdAt > 24 * 3600_000) {
     signalProtectionPlans.delete(symbol);
     return;
@@ -14360,15 +17471,20 @@ async function applySignalProtectionOnFill(symbol, attempt = 1) {
         }
       }
     }
-    const protectionResult = await setTpSl({
-      symbol,
-      tpPrice: plan.tpPrice,
-      slPrice: plan.slPrice,
-      source: plan.source,
-      clientIdPrefix: plan.lifecycleId ? `lc_${String(plan.lifecycleId).replace(/[^a-zA-Z0-9]/g, '').slice(-12)}` : null,
-      takeProfitWorkingType: plan.takeProfitWorkingType,
-      stopLossWorkingType: plan.stopLossWorkingType,
-    });
+    const protectionResult = await applyCoinglassZoneLifecyclePartialTakeProfit(symbol, plan)
+      ?? await setTpSl({
+        symbol,
+        tpPrice: plan.tpPrice,
+        slPrice: plan.slPrice,
+        source: plan.source,
+        manualShortSl50: plan.manualShortSl50 ?? null,
+        clientIdPrefix: plan.lifecycleId ? `lc_${String(plan.lifecycleId).replace(/[^a-zA-Z0-9]/g, '').slice(-12)}` : null,
+        takeProfitWorkingType: plan.takeProfitWorkingType,
+        stopLossWorkingType: plan.stopLossWorkingType,
+      });
+    if (plan.manualShortSl50 && (protectionResult?.stopLossSuppressed || protectionResult?.hasSl!==true)) {
+      throw new Error(`${symbol} manual SL30 not confirmed by protection placement; keep plan pending`);
+    }
     if (protectionResult?.takeProfitPolicyVersion && protectionResult?.placed?.tp && protectionResult?.takeProfitPrice) {
       plan.tpPrice = protectionResult.takeProfitPrice;
     }
@@ -14378,14 +17494,25 @@ async function applySignalProtectionOnFill(symbol, attempt = 1) {
       slTracking.positions[symbol].signalEntryPrice = plan.signalEntryPrice;
       slTracking.positions[symbol].signalTakeProfitPrice = plan.signalTakeProfitPrice;
       slTracking.positions[symbol].signalStopLossPrice = plan.signalStopLossPrice;
+      slTracking.positions[symbol].signalTakeProfitLegs = Array.isArray(plan.takeProfitLegs)
+        ? plan.takeProfitLegs.map((leg) => ({ ...leg }))
+        : [];
+      slTracking.positions[symbol].coinglassZoneLifecycleVersion = plan.coinglassZoneLifecycleVersion ?? null;
+      slTracking.positions[symbol].coinglassZoneLifecycleTakeProfitMode = plan.coinglassZoneLifecycleTakeProfitMode ?? null;
+      slTracking.positions[symbol].coinglassZoneLifecycleShortWaveClass = plan.coinglassZoneLifecycleShortWaveClass ?? null;
+      slTracking.positions[symbol].coinglassZoneLifecycleChange24hPct = Number.isFinite(Number(
+        plan.coinglassZoneLifecycleChange24hPct,
+      )) ? Number(plan.coinglassZoneLifecycleChange24hPct) : null;
       slTracking.positions[symbol].lifecycleId = plan.lifecycleId ?? slTracking.positions[symbol].lifecycleId ?? null;
       slTracking.positions[symbol].fillAnchorVersion = plan.fillAnchorVersion;
+      slTracking.positions[symbol].manualShortSl50 = plan.manualShortSl50 ?? null;
       slTracking.positions[symbol].fillAnchorEnabled = plan.fillAnchorEnabled === true;
       slTracking.positions[symbol].protectionFillPrice = plan.fillPrice;
       slTracking.positions[symbol].protectionFillAnchoredAt = plan.fillAnchoredAt ?? null;
       if (plan.slPrice) {
         slTracking.positions[symbol].slPlaced = true;
-        slTracking.positions[symbol].slPrice = plan.slPrice;
+        slTracking.positions[symbol].slPrice = plan.manualShortSl50
+          ? protectionResult.stopLossPrice??slTracking.positions[symbol].slPrice??null : plan.slPrice;
         slTracking.positions[symbol].slPlacedAt = new Date().toISOString();
       }
       slTracking.positions[symbol].signalProtectionVersion = plan.preserveSignalProtection
@@ -14447,6 +17574,7 @@ async function waitForCoinGlassOppositeClose(symbol, targetSide, credentials) {
 }
 
 async function executeCoinGlassQualifiedBinanceRow(row = {}) {
+  if(!autoEntryControls.read().enabled)return {decision:'AUTO_ENTRY_CONTROL_DISABLED'};
   const symbol = normalizeSymbol(row?.symbol ?? '');
   if (!runtimeSettings.orderEnabled) return { decision: 'BLOCKED_ORDER_DISABLED' };
   if (runtimeSettings.dryRun) return { decision: 'BLOCKED_DRY_RUN' };
@@ -14505,6 +17633,8 @@ async function executeCoinGlassQualifiedBinanceRow(row = {}) {
   }
 
   const reversedOrderIds = [];
+  autoEntryControls.assertEntry({source:'coinglass-web-qualified',signalLabel:`COINGLASS_QUALIFIED_${decision.side}`,
+    side:decision.side,streamId:'primary-top-1-40'});
   let positionsForEntry = positions;
   if (decision.opposite?.length) {
     for (const position of decision.opposite) {
@@ -14579,6 +17709,12 @@ async function executeCoinGlassQualifiedBinanceRow(row = {}) {
     dryRun: false,
     maxOpenPositions: Math.max(0, Number(process.env.COINGLASS_WEB_BINANCE_MAX_POSITIONS ?? 30)),
     source: 'coinglass-web-qualified',
+    signalType: `COINGLASS_QUALIFIED_${decision.side}`,
+    signalLabel: `COINGLASS_QUALIFIED_${decision.side}`,
+    signalReason: `CoinGlass Qualified; giá hiện tại ${decision.currentPrice}; entry đề xuất ${decision.proposedEntry}; TP ${decision.takeProfit}; SL ${decision.stopLoss}`,
+    signalCombo: row?.proposal?.reason ?? row?.proposal?.summary ?? null,
+    streamId: 'primary-top-1-40',
+    executionPage: 'coinglass-web-top20',
     clientOrderId: `cg_${Date.now().toString(36)}_${symbol.slice(0, 8)}`.slice(0, 36),
   }), null, credentials, {
     liveCard: true,
@@ -14608,11 +17744,11 @@ async function executeCoinGlassQualifiedBinanceRow(row = {}) {
   };
 }
 
-async function executeCoinGlassZoneLifecycleBinanceEvent(event = {}) {
+async function executeCoinGlassZoneLifecycleBinanceEvent(event = {}, executionConfig = null) {
   const symbol = normalizeSymbol(event?.symbol ?? '');
   if (!runtimeSettings.orderEnabled) return { decision: 'BLOCKED_ORDER_DISABLED' };
   if (runtimeSettings.dryRun) return { decision: 'BLOCKED_DRY_RUN' };
-  const config = coinGlassWebTop20.config();
+  const config = executionConfig ?? coinGlassWebTop20.config();
   if (!config.zoneLifecycleBinanceEnabled) {
     return { decision: 'BLOCKED_ZONE_LIFECYCLE_BINANCE_DISABLED' };
   }
@@ -14649,19 +17785,42 @@ async function executeCoinGlassZoneLifecycleBinanceEvent(event = {}) {
   if (!symbols.some((item) => item.symbol === symbol)) return { decision: 'BLOCKED_INVALID_SYMBOL' };
   const decision = evaluateCoinglassZoneLifecycleBinanceEntry({
     event,
+    streamId: config.streamId,
     currentPrice: Number(premiumIndex?.markPrice),
     positions,
     openOrders,
     leverage,
     marginUsdt,
+    acceptedBreakoutMarginUsdt: Number(
+      config.zoneLifecycleAcceptedBreakoutMarginUsdt
+      ?? COINGLASS_ZONE_LIFECYCLE_ACCEPTED_BREAKOUT_MARGIN_USDT,
+    ),
+    unconfirmedBounceLongMarginUsdt: Number(
+      config.zoneLifecycleUnconfirmedBounceLongMarginUsdt
+      ?? COINGLASS_ZONE_LIFECYCLE_UNCONFIRMED_BOUNCE_LONG_MARGIN_USDT,
+    ),
+    supportReclaimMarginUsdt: Number(
+      config.zoneLifecycleSupportReclaimMarginUsdt
+      ?? COINGLASS_ZONE_LIFECYCLE_SUPPORT_RECLAIM_MARGIN_USDT,
+    ),
+    largeTargetThresholdPct: Number(
+      config.zoneLifecycleLargeTargetThresholdPct
+      ?? COINGLASS_ZONE_LIFECYCLE_LARGE_TARGET_THRESHOLD_PCT,
+    ),
+    largeTargetMarginUsdt: Number(
+      config.zoneLifecycleLargeTargetMarginUsdt
+      ?? COINGLASS_ZONE_LIFECYCLE_LARGE_TARGET_MARGIN_USDT,
+    ),
     maxSlippagePct: config.zoneLifecycleMaxSlippagePct,
   });
   if (!decision.allowed) return decision;
+  const executionMarginUsdt = decision.marginUsdt;
 
   const fillAnchorSpec = buildFillAnchoredProtectionSpec({
     side: decision.side,
     signalEntryPrice: decision.currentPrice,
     takeProfitPrice: decision.takeProfit,
+    takeProfitLegs: decision.takeProfitLegs,
     stopLossPrice: decision.stopLoss,
   });
   const protectionPolicy = resolveSignalProtectionWorkingTypes({
@@ -14672,13 +17831,29 @@ async function executeCoinGlassZoneLifecycleBinanceEvent(event = {}) {
     symbol,
     side: decision.side === 'LONG' ? 'BUY' : 'SELL',
     orderType: 'MARKET',
-    notionalUsdt: marginUsdt * leverage,
+    notionalUsdt: executionMarginUsdt * leverage,
     leverage,
     takeProfitPrice: decision.takeProfit,
+    takeProfitLegs: decision.takeProfitLegs,
     stopLossPrice: decision.stopLoss,
     protectionSignalEntryPrice: decision.currentPrice,
     protectionSignalTakeProfitPrice: decision.takeProfit,
     protectionSignalStopLossPrice: decision.stopLoss,
+    protectionMeta: {
+      signalType: decision.signalLabel ?? `COINGLASS_ZONE_LIFECYCLE_${decision.side}`,
+      signalLabel: decision.signalLabel ?? null,
+      signalReason: `CoinGlass Zone Lifecycle ${event.zoneSide} ${event.previousState}->${event.state}; target ${decision.targetPrice ?? decision.takeProfit}; distance ${decision.targetDistancePct ?? '-'}%`,
+      signalCombo: `${event.zoneSide}:${event.previousState}->${event.state}`,
+      streamId: config.streamId === 'secondary' ? 'secondary-top-41-80' : 'primary-top-1-40',
+      executionPage: config.streamId === 'secondary' ? 'coinglass-web-secondary' : 'coinglass-web-top20',
+      coinglassZoneLifecycleVersion: event.version ?? null,
+      coinglassZoneLifecycleTakeProfitMode: decision.takeProfitMode ?? null,
+      coinglassZoneLifecycleShortWaveClass: decision.shortWaveClass ?? null,
+      coinglassZoneLifecycleSignalLabel: decision.signalLabel ?? null,
+      coinglassZoneLifecycleMarginRule: decision.marginRule ?? null,
+      coinglassZoneLifecycleChange24hPct: decision.change24hPct ?? null,
+      coinglassZoneLifecycleTakeProfitRoePct: decision.takeProfitRoePct ?? null,
+    },
     ...fillAnchorSpec,
     protectionOnFill: true,
     ...protectionPolicy,
@@ -14696,8 +17871,9 @@ async function executeCoinGlassZoneLifecycleBinanceEvent(event = {}) {
   console.log(
     `[CoinGlassZoneLifecycleBinance] ${submitted ? 'SUBMITTED' : 'NOT_SUBMITTED'} ${symbol} ${decision.side}`
     + ` state=${event.state} zone=${event.zoneSide} mark=${decision.currentPrice}`
-    + ` tp=${decision.takeProfit} sl=${decision.stopLoss ?? 'NONE_SHORT_TP_ONLY'}`
-    + ` margin=$${marginUsdt} x${leverage} version=${COINGLASS_ZONE_LIFECYCLE_BINANCE_VERSION}`,
+    + ` tp=${decision.takeProfit} sl=${decision.stopLoss ?? 'NONE_ZONE_LIFECYCLE_TP_ONLY'}`
+    + ` margin=$${executionMarginUsdt} x${leverage} target=${decision.targetDistancePct}%`
+    + ` version=${COINGLASS_ZONE_LIFECYCLE_BINANCE_VERSION}`,
   );
   return {
     ...decision,
@@ -14710,8 +17886,184 @@ async function executeCoinGlassZoneLifecycleBinanceEvent(event = {}) {
   };
 }
 
+async function executeCoinGlassStrongWaveReversalWatch(watch = {}, executionConfig = null) {
+  const symbol = normalizeSymbol(watch?.symbol ?? '');
+  const config = executionConfig ?? coinGlassWebTop20.config();
+  if (!runtimeSettings.orderEnabled) return { decision: 'BLOCKED_ORDER_DISABLED' };
+  if (runtimeSettings.dryRun) return { decision: 'BLOCKED_DRY_RUN' };
+  if (!config.zoneLifecycleBinanceEnabled || !config.zoneLifecycleReversalEnabled) {
+    return { decision: 'BLOCKED_ZONE_LIFECYCLE_REVERSAL_DISABLED' };
+  }
+  const now = Date.now();
+  if (now >= Number(watch?.expiresAt ?? 0)) {
+    return { decision: 'EXPIRED_REVERSAL_WATCH', watchPatch: { status: 'EXPIRED' } };
+  }
+  const credentials = getApiCredentials(null);
+  const [symbols, premiumIndex, positions, openOrders] = await Promise.all([
+    getSymbols(),
+    client.getPremiumIndex(symbol, {
+      priority: 0,
+      dropOnCongestion: false,
+      source: 'coinglassStrongWaveReversal:premiumIndex',
+    }),
+    client.getPositions({
+      ...credentials,
+      priority: 0,
+      dropOnCongestion: false,
+      source: 'coinglassStrongWaveReversal:positions',
+    }),
+    client.getOpenOrders({
+      ...credentials,
+      symbol,
+      priority: 0,
+      dropOnCongestion: false,
+      source: 'coinglassStrongWaveReversal:openOrders',
+    }),
+  ]);
+  if (!symbols.some((item) => item.symbol === symbol)) {
+    return { decision: 'CANCELLED_INVALID_SYMBOL', watchPatch: { status: 'CANCELLED' } };
+  }
+  const symbolPosition = positions.find((position) => (
+    normalizeSymbol(position?.symbol ?? '') === symbol
+    && Number(position?.positionAmt ?? position?.amt) !== 0
+  ));
+  const positionAmount = Number(symbolPosition?.positionAmt ?? symbolPosition?.amt ?? 0);
+  if (positionAmount < 0) {
+    return {
+      decision: 'WAIT_SHORT_STILL_OPEN',
+      watchPatch: { shortObservedOpen: true },
+    };
+  }
+  if (positionAmount > 0) {
+    return {
+      decision: 'CANCELLED_EXISTING_LONG_POSITION',
+      watchPatch: { status: 'CANCELLED' },
+    };
+  }
+  const entryOrders = openOrders.filter((order) => (
+    order?.reduceOnly !== true && order?.reduceOnly !== 'true'
+    && order?.closePosition !== true && order?.closePosition !== 'true'
+  ));
+  if (entryOrders.length) return { decision: 'WAIT_EXISTING_ENTRY_ORDER' };
+  if (openOrders.length) return { decision: 'WAIT_SHORT_CLOSE_ORDER_RECONCILE' };
+  if (watch.status === 'ARMED_SHORT_EXIT') {
+    return {
+      decision: 'ARMED_LONG_RECLAIM_AFTER_SHORT_CLOSED',
+      watchPatch: {
+        status: 'WAIT_RECLAIM',
+        shortClosedAt: now,
+        lastEvaluatedCandleCloseTime: null,
+      },
+    };
+  }
+
+  const [klines5m, klines15m] = await Promise.all([
+    client.getKlines(symbol, '5m', 140, {
+      priority: 1,
+      dropOnCongestion: false,
+      source: 'coinglassStrongWaveReversal:5m',
+    }),
+    client.getKlines(symbol, '15m', 140, {
+      priority: 1,
+      dropOnCongestion: false,
+      source: 'coinglassStrongWaveReversal:15m',
+    }),
+  ]);
+
+  const reversalDecision = evaluateCoinglassStrongWaveReversal({
+    watch,
+    klines5m,
+    klines15m,
+    currentPrice: Number(premiumIndex?.markPrice),
+    now,
+    leverage: Math.max(
+      1,
+      Math.min(125, Number(config.zoneLifecycleLeverage ?? COINGLASS_STRONG_WAVE_REVERSAL_LEVERAGE)),
+    ),
+    marginUsdt: Math.max(
+      0.01,
+      Number(config.zoneLifecycleReversalMarginUsdt ?? COINGLASS_STRONG_WAVE_REVERSAL_MARGIN_USDT),
+    ),
+  });
+  const watchPatch = {
+    lastEvaluatedCandleCloseTime: reversalDecision.lastEvaluatedCandleCloseTime
+      ?? watch.lastEvaluatedCandleCloseTime
+      ?? null,
+  };
+  if (reversalDecision.decision === 'EXPIRED_REVERSAL_WATCH') {
+    return { decision: reversalDecision.decision, reversalDecision, watchPatch: { ...watchPatch, status: 'EXPIRED' } };
+  }
+  if (!reversalDecision.ready) return { decision: reversalDecision.decision, reversalDecision, watchPatch };
+
+  const fillAnchorSpec = buildFillAnchoredProtectionSpec({
+    side: 'LONG',
+    signalEntryPrice: reversalDecision.currentPrice,
+    takeProfitPrice: reversalDecision.takeProfitPrice,
+    stopLossPrice: null,
+  });
+  const protectionPolicy = resolveSignalProtectionWorkingTypes({
+    source: 'coinglass-zone-lifecycle',
+    preserveSignalProtection: true,
+  });
+  const orderResult = await placeOrder(authorizeCoinglassWebAutoOrder({
+    symbol,
+    side: 'BUY',
+    orderType: 'MARKET',
+    notionalUsdt: reversalDecision.marginUsdt * reversalDecision.leverage,
+    leverage: reversalDecision.leverage,
+    takeProfitPrice: reversalDecision.takeProfitPrice,
+    stopLossPrice: null,
+    protectionSignalEntryPrice: reversalDecision.currentPrice,
+    protectionSignalTakeProfitPrice: reversalDecision.takeProfitPrice,
+    protectionSignalStopLossPrice: null,
+    protectionMeta: {
+      signalType: 'COINGLASS_STRONG_WAVE_REVERSAL_LONG',
+      signalLabel: 'COINGLASS_STRONG_WAVE_REVERSAL_LONG',
+      signalReason: `Short wave đã đóng; nến reclaim xác nhận LONG sau kill-long/short reversal; TP ${reversalDecision.takeProfitPrice}`,
+      signalCombo: `${watch.status ?? 'WAIT_RECLAIM'}->LONG_RECLAIM`,
+      streamId: config.streamId === 'secondary' ? 'secondary-top-41-80' : 'primary-top-1-40',
+      executionPage: config.streamId === 'secondary' ? 'coinglass-web-secondary' : 'coinglass-web-top20',
+      coinglassZoneLifecycleVersion: COINGLASS_STRONG_WAVE_REVERSAL_VERSION,
+      coinglassZoneLifecycleTakeProfitMode: 'LONG_REJECTED_ZONE_TARGET_CAP_3PCT',
+      coinglassZoneLifecycleShortWaveClass: 'STRONG_UP_WAVE_REVERSAL',
+    },
+    ...fillAnchorSpec,
+    protectionOnFill: true,
+    ...protectionPolicy,
+    allowMinNotionalCeil: true,
+    dryRun: false,
+    maxOpenPositions: Math.max(0, Number(config.zoneLifecycleMaxPositions ?? 30)),
+    source: 'coinglass-zone-lifecycle',
+    clientOrderId: `zlr_${String(watch.shortOrderId ?? watch.createdAt ?? '').slice(-12)}_${symbol.slice(0, 8)}`.slice(0, 36),
+  }), null, credentials, {
+    liveCard: true,
+    positions,
+    openOrders: [],
+  });
+  const submitted = orderResult?.status === 'submitted';
+  console.log(
+    `[CoinGlassStrongWaveReversal] ${submitted ? 'SUBMITTED' : 'NOT_SUBMITTED'} ${symbol} LONG`
+    + ` mark=${reversalDecision.currentPrice} tp=${reversalDecision.takeProfitPrice}`
+    + ` margin=$${reversalDecision.marginUsdt} x${reversalDecision.leverage}`
+    + ` version=${COINGLASS_STRONG_WAVE_REVERSAL_VERSION}`,
+  );
+  return {
+    decision: submitted ? 'SUBMITTED' : 'NOT_SUBMITTED',
+    reversalDecision,
+    watchPatch,
+    orderId: orderResult?.orderResult?.orderId ?? null,
+    binanceEntryPrice: Number(orderResult?.orderResult?.avgPrice) > 0
+      ? Number(orderResult.orderResult.avgPrice)
+      : reversalDecision.currentPrice,
+    filledAt: Number(orderResult?.orderResult?.updateTime ?? orderResult?.orderResult?.transactTime) || null,
+  };
+}
+
 async function placeOrder(payload, token = null, credentialsOverride = null, executionContext = null) {
+  const entryControl={payload,manual:Boolean(token&&ordersTokens.has(token))};
+  if(payload.dryRun===false)autoEntryControls.assertEntry(payload,entryControl.manual);
   const symbol = normalizeSymbol(payload.symbol ?? '');
+  const protectionSuppressedBySymbol = isBinanceProtectionExcluded(symbol, 'ORDER_PROTECTION');
   const side = String(payload.side ?? '').toUpperCase();
   const orderType = String(payload.orderType ?? payload.type ?? 'MARKET').toUpperCase();
   const notionalUsdt = Number(payload.notionalUsdt);
@@ -14794,6 +18146,15 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
   const roundedLimitPrice = limitPrice
     ? priceFromTick(symbolInfo, limitPrice)
     : null;
+  if (protectionSource === 'coin-level-entry-watch' && orderType === 'LIMIT') {
+    const roundedEntry = Number(roundedLimitPrice);
+    const gap = side === 'BUY' ? markPrice / roundedEntry - 1 : 1 - markPrice / roundedEntry;
+    if (!Number.isFinite(Number(payload.entryExpiresAt)) || Date.now() > Number(payload.entryExpiresAt)
+      || !(roundedEntry > 0) || !(markPrice > 0)
+      || gap < 0.0015 || gap > 0.05) {
+      throw new Error('Coin Level LIMIT stale, marketable or too far from expected entry; blocked.');
+    }
+  }
   const executionPrice = roundedLimitPrice ? Number(roundedLimitPrice) : markPrice;
   const quantity = quantityFromNotional(symbolInfo, notionalUsdt, executionPrice, dryRun, {
     allowMinNotionalCeil: payload.allowMinNotionalCeil === true,
@@ -14824,15 +18185,46 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
   const roundedTakeProfitPrice = effectiveTakeProfitPrice
     ? priceFromTick(symbolInfo, effectiveTakeProfitPrice)
     : null;
+  const roundedTakeProfitLegs = Array.isArray(payload.takeProfitLegs)
+    ? payload.takeProfitLegs.map((leg) => ({
+        ...leg,
+        price: Number(leg?.price) > 0 ? priceFromTick(symbolInfo, Number(leg.price)) : null,
+      })).filter((leg) => leg.price > 0 && Number(leg.closeRatio) > 0)
+    : [];
   const roundedStopLossPrice = stopLossPrice
     ? priceFromTick(symbolInfo, stopLossPrice)
     : null;
+  if(protectionSource==='ema99-observe-only'&&(!Number.isFinite(Number(payload.entryExpiresAt))||Date.now()>Number(payload.entryExpiresAt)
+    ||!(Number(payload.signalEntryPrice)>0)||Math.abs(markPrice/Number(payload.signalEntryPrice)-1)>.005
+    ||!(Number(roundedStopLossPrice)>0)||!(Number(roundedTakeProfitPrice)>0)
+    ||!(payload.side==='BUY'?(Number(roundedStopLossPrice)<markPrice&&markPrice<Number(roundedTakeProfitPrice)):(Number(roundedTakeProfitPrice)<markPrice&&markPrice<Number(roundedStopLossPrice)))))throw new Error('EMA99 WATCH invalid price/age/protection; blocked.');
+  if(['ema99-reclaim-long','ema99-bounce-long'].includes(protectionSource)&&(!Number.isFinite(Number(payload.entryExpiresAt))
+    ||Date.now()>Number(payload.entryExpiresAt)||!(Number(payload.signalEntryPrice)>0)
+    ||Math.abs(markPrice/Number(payload.signalEntryPrice)-1)>.005||!(Number(roundedStopLossPrice)>0)
+    ||!(Number(roundedStopLossPrice)<markPrice&&markPrice<Number(roundedTakeProfitPrice)))) {
+    throw new Error('EMA99 reclaim LONG TP/SL or price/age invalid; entry blocked.');
+  }
+  if(protectionSource==='ema99-near-reject-short'&&(Date.now()>Number(payload.entryExpiresAt)
+    ||Math.abs(markPrice/Number(payload.signalEntryPrice)-1)>.005||!(Number(roundedTakeProfitPrice)>0)
+    ||!(Number(roundedTakeProfitPrice)<markPrice&&markPrice<Number(roundedStopLossPrice)))) {
+    throw new Error('EMA99 near reject TP/SL invalid after price rounding; entry blocked.');
+  }
+  if(protectionSource==='coin-horizon-sweep-transition'&&(
+    !Number.isFinite(Number(payload.entryExpiresAt))||Date.now()>Number(payload.entryExpiresAt)
+    ||!(Number(payload.signalEntryPrice)>0)||Math.abs(markPrice/Number(payload.signalEntryPrice)-1)>.005
+    ||!(Number(roundedStopLossPrice)>0)||!(Number(roundedTakeProfitPrice)>0)
+    ||!(Number(payload.rewardRisk)>=1)
+    ||!(side==='BUY'
+      ?Number(roundedStopLossPrice)<markPrice&&markPrice<Number(roundedTakeProfitPrice)
+      :Number(roundedTakeProfitPrice)<markPrice&&markPrice<Number(roundedStopLossPrice)))) {
+    throw new Error('Coin Horizon transition TP/SL, reward:risk, price or age invalid; entry blocked.');
+  }
   // Every attached TP/SL waits for Binance's full-fill user-data event. This
   // prevents protection from being submitted against an unfilled LIMIT entry.
   const requestedProtectionOnFill = payload.protectionOnFill === true
     || roundedTakeProfitPrice != null
     || roundedStopLossPrice != null;
-  let protectionOnFill = requestedProtectionOnFill;
+  let protectionOnFill = requestedProtectionOnFill && !protectionSuppressedBySymbol;
   let protectionSuppressedForDca = false;
   const plannedOrder = {
     enabled: runtimeSettings.orderEnabled,
@@ -14847,6 +18239,7 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     quantity,
     leverage,
     takeProfitPrice: roundedTakeProfitPrice,
+    takeProfitLegs: roundedTakeProfitLegs,
     stopLossPrice: roundedStopLossPrice,
     stopLossSuppressed,
     stopLossSuppressionVersion: stopLossSuppression.version,
@@ -14855,8 +18248,10 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     manualShortEma99Interval: manualShortEmaPolicy?.selectedInterval ?? null,
     manualShortEma99Price: manualShortEmaPolicy?.selectedEma99 ?? null,
     manualShortTpCappedAt30Roe: manualShortEmaPolicy?.cappedAtMaxRoe === true,
-    protectionOnFill: requestedProtectionOnFill,
+    protectionOnFill,
     protectionSuppressedForDca: false,
+    protectionSuppressedBySymbol,
+    protectionExclusionVersion: protectionSuppressedBySymbol ? BINANCE_PROTECTION_EXCLUSION_VERSION : null,
   };
 
   if (dryRun || !runtimeSettings.orderEnabled) {
@@ -14972,6 +18367,55 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
         apiSecret,
         recvWindow,
       });
+  const fillAuditSignalLabel = String(
+    protectionMeta.signalLabel
+      ?? protectionMeta.coinglassZoneLifecycleSignalLabel
+      ?? payload.signalLabel
+      ?? '',
+  ).slice(0, 300) || null;
+  const fillAuditSignalType = String(
+    protectionMeta.signalType
+      ?? payload.signalType
+      ?? fillAuditSignalLabel
+      ?? protectionSource,
+  ).slice(0, 300);
+  const fillAuditSignalReason = String(
+    protectionMeta.signalReason
+      ?? payload.signalReason
+      ?? payload.reason
+      ?? [
+        `source=${protectionSource}`,
+        `type=${fillAuditSignalType}`,
+        `order=${orderType}`,
+        `TP=${roundedTakeProfitPrice ?? 'NONE'}`,
+        `SL=${stopLossSuppressed ? 'SUPPRESSED' : roundedStopLossPrice ?? 'NONE'}`,
+      ].join('; '),
+  ).slice(0, 1_500);
+  const fillAuditContext = {
+    symbol,
+    side,
+    clientOrderId: orderParams.newClientOrderId,
+    orderType,
+    signalSource: protectionSource,
+    signalType: fillAuditSignalType,
+    signalLabel: fillAuditSignalLabel,
+    signalReason: fillAuditSignalReason,
+    signalCombo: protectionMeta.signalCombo ?? payload.signalCombo ?? null,
+    matchedKeys: protectionMeta.matchedKeys ?? payload.matchedKeys ?? [],
+    executionPage: protectionMeta.executionPage ?? payload.executionPage ?? null,
+    streamId: protectionMeta.streamId ?? payload.streamId ?? null,
+    lifecycleId: protectionMeta.lifecycleId ?? null,
+    signalEntryPrice: payload.protectionSignalEntryPrice ?? executionPrice,
+    takeProfitPrice: roundedTakeProfitPrice,
+    stopLossPrice: roundedStopLossPrice,
+    stopLossSuppressed,
+    marginUsdt: notionalUsdt / leverage,
+    leverage,
+    submittedAt: Date.now(),
+  };
+  await binanceFilledSignalAudit.registerSubmission(fillAuditContext).catch((error) => {
+    console.warn(`[FilledSignalAudit] register client ${symbol}: ${error.message}`);
+  });
   if (protectionOnFill) {
     const policyTakeProfitDistanceFraction = takeProfitPolicy.applied
       ? (takeProfitPolicy.roePct / 100) / leverage
@@ -14992,16 +18436,30 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
       fillAnchorVersion: payload.fillAnchorVersion,
       takeProfitDistanceFraction: manualShortEmaPolicy ? null : policyTakeProfitDistanceFraction,
       stopLossDistanceFraction: stopLossSuppressed ? null : payload.stopLossDistanceFraction,
+      takeProfitLegs: roundedTakeProfitLegs,
       source: protectionSource,
+      signalType: fillAuditContext.signalType,
+      signalLabel: fillAuditContext.signalLabel,
+      signalReason: fillAuditContext.signalReason,
+      signalCombo: fillAuditContext.signalCombo,
+      matchedKeys: fillAuditContext.matchedKeys,
+      executionPage: fillAuditContext.executionPage,
+      streamId: fillAuditContext.streamId,
+      marginUsdt: fillAuditContext.marginUsdt,
+      leverage: fillAuditContext.leverage,
       entryClientOrderId: orderParams.newClientOrderId,
       lifecycleId: protectionMeta.lifecycleId ?? null,
+      coinglassZoneLifecycleVersion: protectionMeta.coinglassZoneLifecycleVersion ?? null,
+      coinglassZoneLifecycleTakeProfitMode: protectionMeta.coinglassZoneLifecycleTakeProfitMode ?? null,
+      coinglassZoneLifecycleShortWaveClass: protectionMeta.coinglassZoneLifecycleShortWaveClass ?? null,
+      coinglassZoneLifecycleChange24hPct: protectionMeta.coinglassZoneLifecycleChange24hPct ?? null,
       ...protectionPolicy,
     });
   }
 
   let orderResult;
   try {
-    orderResult = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret });
+    orderResult = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret, entryControl });
   } catch (err) {
     if (protectionOnFill) signalProtectionPlans.delete(symbol);
     throw err;
@@ -15013,7 +18471,7 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     const marketParams = { ...orderParams, type: 'MARKET', timeInForce: undefined };
     delete marketParams.price;
     delete marketParams.timeInForce;
-    orderResult = await client.placeFuturesOrder({ params: marketParams, apiKey, apiSecret });
+    orderResult = await client.placeFuturesOrder({ params: marketParams, apiKey, apiSecret, entryControl });
   }
   if (!protectionSuppressedForDca && !protectionOnFill
     && takeProfitPolicy.applied && takeProfitParams && Number(orderResult?.avgPrice) > 0) {
@@ -15028,10 +18486,10 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     });
     takeProfitParams.triggerPrice = String(priceFromTick(symbolInfo, fillAnchoredTakeProfit.takeProfitPrice));
   }
-  const takeProfitResult = !protectionSuppressedForDca && !protectionOnFill && takeProfitParams
+  const takeProfitResult = !protectionSuppressedBySymbol && !protectionSuppressedForDca && !protectionOnFill && takeProfitParams
     ? await client.placeAlgoOrder({ params: takeProfitParams, apiKey, apiSecret })
     : null;
-  const stopLossResult = !protectionSuppressedForDca && !protectionOnFill && stopLossParams
+  const stopLossResult = !protectionSuppressedBySymbol && !protectionSuppressedForDca && !protectionOnFill && stopLossParams
     ? await client.placeAlgoOrder({ params: stopLossParams, apiKey, apiSecret })
     : null;
 
@@ -15043,6 +18501,14 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
       plan.submittedQty = Number(quantity) || null;
     }
   }
+  await binanceFilledSignalAudit.registerSubmission({
+    ...fillAuditContext,
+    orderId: orderResult?.orderId ?? null,
+    clientOrderId: orderResult?.clientOrderId ?? orderParams.newClientOrderId,
+    submittedAt: Number(orderResult?.updateTime ?? orderResult?.transactTime) || Date.now(),
+  }).catch((error) => {
+    console.warn(`[FilledSignalAudit] register order ${symbol}: ${error.message}`);
+  });
 
   trackSubmittedOrderPosition({
     symbol,
@@ -15065,6 +18531,8 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
     takeProfitResult,
     stopLossResult,
     protectionSuppressedForDca,
+    protectionSuppressedBySymbol,
+    protectionExclusionVersion: protectionSuppressedBySymbol ? BINANCE_PROTECTION_EXCLUSION_VERSION : null,
     stopLossSuppressed,
     stopLossSuppressionVersion: stopLossSuppression.version,
     dcaProtectionPolicyVersion: protectionSuppressedForDca ? BINANCE_DCA_KEEP_PROTECTION_VERSION : null,
@@ -15090,6 +18558,17 @@ function trackSubmittedOrderPosition({ symbol, side, quantity, leverage, markPri
 async function setTpSl(payload, token = null) {
   const symbol = normalizeSymbol(payload.symbol ?? '');
   if (!symbol) throw new Error('symbol is required.');
+  if (isBinanceProtectionExcluded(symbol, 'SET_TP_SL')) {
+    return {
+      symbol,
+      cancelled: { tp: [], sl: [] },
+      placed: { tp: null, sl: null },
+      hasTp: false,
+      hasSl: false,
+      protectionSuppressedBySymbol: true,
+      protectionExclusionVersion: BINANCE_PROTECTION_EXCLUSION_VERSION,
+    };
+  }
   let tpPrice = payload.tpPrice !== '' && payload.tpPrice != null ? Number(payload.tpPrice) : null;
   let slPrice = payload.slPrice !== '' && payload.slPrice != null ? Number(payload.slPrice) : null;
   const clientIdPrefix = String(payload.clientIdPrefix ?? 'lp')
@@ -15116,7 +18595,8 @@ async function setTpSl(payload, token = null) {
   const symbolInfo = symbols.find((s) => s.symbol === symbol);
   if (!symbolInfo) throw new Error(`Symbol ${symbol} không tìm thấy.`);
 
-  const pos = positions.find((p) => p.symbol === symbol && Number(p.positionAmt) !== 0);
+  const pos = positions.find((p) => p.symbol === symbol && Number(p.positionAmt) !== 0
+    && (!payload.manualShortSl50 || String(p.positionSide??'BOTH')===payload.manualShortSl50.positionSide));
   if (!pos) throw new Error(`Không có vị thế mở cho ${symbol}.`);
 
   const isHedge = String(pos.positionSide ?? 'BOTH') !== 'BOTH';
@@ -15124,9 +18604,22 @@ async function setTpSl(payload, token = null) {
   const isLong = Number(pos.positionAmt) > 0;
   const sourceStopLossSuppression = shortStopLossSuppression(isLong ? 'LONG' : 'SHORT', protectionSource);
   const trackedManualShort = !isLong && isTrackedManualShortTpOnlyPosition(symbol, pos);
-  const stopLossSuppressed = sourceStopLossSuppression.suppressed || trackedManualShort;
-  const stopLossSuppressionVersion = sourceStopLossSuppression.version
+  const ensureManualSl50Position=async current=>{
+    if (manualShortSl30MatchesPosition(payload.manualShortSl50,current,protectionSource)) return true;
+    const history=await client.getUserTrades({symbol,limit:1000,apiKey,apiSecret,recvWindow});
+    const reconciled=reconcileManualShortSl30(payload.manualShortSl50,current,history,protectionSource);
+    if (!reconciled) return false;
+    Object.assign(payload.manualShortSl50,reconciled);
+    return true;
+  };
+  const newManualSl50 = !isLong && payload.manualShortSl50 && await ensureManualSl50Position(pos);
+  if (payload.manualShortSl50 && !newManualSl50) {
+    throw new Error('Manual SHORT SL30: cannot verify current position lifecycle; keep first SL pending');
+  }
+  const stopLossSuppressed = (sourceStopLossSuppression.suppressed || trackedManualShort) && !newManualSl50;
+  const stopLossSuppressionVersion = newManualSl50 ? null : sourceStopLossSuppression.version
     ?? (trackedManualShort ? BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION : null);
+  if (newManualSl50) slPrice=payload.manualShortSl50.stopLossPrice;
   if (stopLossSuppressed) slPrice = null;
   const closeSide = isLong ? 'SELL' : 'BUY';
   const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
@@ -15164,9 +18657,10 @@ async function setTpSl(payload, token = null) {
     }) || algoRows.some((o) => matchesPosition(o) && isAlgoTp(o)),
     hasSl: hasOpenProtectionOrder(regularRows, algoRows, {
       symbol, closeSide, positionSide, kind: 'SL',
-    }) || algoRows.some((o) => matchesPosition(o) && isAlgoSl(o)),
+    }) || (!newManualSl50 && algoRows.some((o) => matchesPosition(o) && isAlgoSl(o))),
   });
   let { hasTp, hasSl } = protectionState(openOrders, allAlgo);
+  let lastRegular=openOrders,lastAlgo=allAlgo;
 
   const tpSlBase = (type, triggerPrice, workingType, clientId) => {
     return buildClosePositionProtectionParams({
@@ -15192,6 +18686,7 @@ async function setTpSl(payload, token = null) {
       ? freshAlgoResult.orders
       : Array.isArray(freshAlgoResult) ? freshAlgoResult : [];
     ({ hasTp, hasSl } = protectionState(freshRegular, freshAlgo));
+    lastRegular=freshRegular;lastAlgo=freshAlgo;
   }
 
   if (tpPrice && !hasTp) {
@@ -15206,6 +18701,13 @@ async function setTpSl(payload, token = null) {
     console.log(`[SetTpSl] ${symbol} TP skipped: existing protection retained`);
   }
   if (slPrice && !hasSl) {
+    if (newManualSl50) {
+      const freshPositions=await client.getPositions({apiKey,apiSecret,recvWindow});
+      const freshPosition=freshPositions.find(p=>p.symbol===symbol&&String(p.positionSide??'BOTH')===positionSide);
+      if (!freshPosition || !await ensureManualSl50Position(freshPosition)) {
+        throw new Error('Manual SHORT SL30: position changed after fill; retain existing protection');
+      }
+    }
     const params = tpSlBase(
       'STOP_MARKET',
       slPrice,
@@ -15217,6 +18719,19 @@ async function setTpSl(payload, token = null) {
     console.log(`[SetTpSl] ${symbol} SL skipped: existing protection retained`);
   }
 
+  if (newManualSl50) {
+    const [confirmedRegular, confirmedAlgoResult]=await Promise.all([
+      client.getOpenOrders({symbol,apiKey,apiSecret,recvWindow}),
+      client.getOpenAlgoOrders({symbol,apiKey,apiSecret,recvWindow}),
+    ]);
+    const confirmedAlgo=Array.isArray(confirmedAlgoResult?.orders)?confirmedAlgoResult.orders
+      :Array.isArray(confirmedAlgoResult)?confirmedAlgoResult:[];
+    if (!protectionState(confirmedRegular,confirmedAlgo).hasSl) {
+      throw new Error('Manual SHORT SL30: exchange has not confirmed an open SL; keep first SL pending');
+    }
+    hasSl=true;lastRegular=confirmedRegular;lastAlgo=confirmedAlgo;
+  }
+
   console.log(`[SetTpSl] ${symbol} tp=${tpPrice ?? '-'}(${protectionPolicy.takeProfitWorkingType}) sl=${slPrice ?? '-'}(${protectionPolicy.stopLossWorkingType}) cancelled=${JSON.stringify(cancelled)} version=${BINANCE_CLOSE_POSITION_PROTECTION_VERSION}`);
   return {
     symbol,
@@ -15224,6 +18739,10 @@ async function setTpSl(payload, token = null) {
     placed,
     takeProfitPrice: placed.tp ? tpPrice : null,
     takeProfitPolicyVersion: takeProfitPolicy.version,
+    hasSl:Boolean(placed.sl)||hasSl,
+    stopLossPrice:placed.sl?priceFromTick(symbolInfo,slPrice):Number([...lastRegular,...lastAlgo]
+      .filter(matchesPosition).find(o=>['STOP','STOP_MARKET'].includes(String(o.type??o.orderType??o.origType)))?.triggerPrice
+      ?? lastRegular.filter(matchesPosition).find(o=>['STOP','STOP_MARKET'].includes(String(o.type??o.origType)))?.stopPrice)||null,
     stopLossSuppressed,
     stopLossSuppressionVersion,
     ...protectionPolicy,
@@ -15560,6 +19079,7 @@ function liquidFlowV2SignalCandleClosedAt(row = {}, classification = {}) {
     ?? classification.signalLiveCandleOpenAt
     ?? classification.pumpFlushReadyAt
     ?? classification.flagpoleShortKillReadyAt
+    ?? classification.agedPumpFadeRepumpReadyAt
     ?? classification.emaFanReadyAt
     ?? classification.postPumpReadyAt
     ?? classification.ema99RetestCandleClosedAt
@@ -15568,6 +19088,7 @@ function liquidFlowV2SignalCandleClosedAt(row = {}, classification = {}) {
     ?? row?.features?.postPumpShortSqueeze5m?.readyAt
     ?? row?.features?.flagpoleShortKill5m?.readyAt
     ?? row?.features?.fadingWaveLivePump5m?.liveCandleOpenAt
+    ?? row?.features?.agedPumpFadeRepump5m?.readyAt
     ?? row?.features?.pumpFlushReclaim5m?.readyAt
     ?? row?.features?.pumpDistribution15m?.readyAt
     ?? row?.features?.ema99Retest5m?.candleClosedAt
@@ -15630,6 +19151,9 @@ function noteLiquidFlowV2Transitions(rows = []) {
       const freshFadingWaveLivePumpFirstObservation = labelKey === 'FADING_WAVE_LIVE_PUMP_SHORT_READY'
         && signalCandleClosedAt > 0
         && Date.now() - signalCandleClosedAt <= 6 * 60_000;
+      const freshAgedPumpFadeRepumpFirstObservation = labelKey === 'AGED_PUMP_FADE_REPUMP_SHORT_ALERT'
+        && signalCandleClosedAt > 0
+        && Date.now() - signalCandleClosedAt <= 10 * 60_000;
       const seedFirstObservation = labelKey === 'PUMP_DISTRIBUTION_WATCH'
         || labelKey === 'PUMP_DISTRIBUTION_SHORT_READY'
         || labelKey === 'EXTENDED_EMA99_PANIC_RECLAIM_LONG'
@@ -15641,7 +19165,8 @@ function noteLiquidFlowV2Transitions(rows = []) {
         || freshKillLongFirstObservation
         || freshPumpFlushFirstObservation
         || freshFlagpoleShortKillFirstObservation
-        || freshFadingWaveLivePumpFirstObservation;
+        || freshFadingWaveLivePumpFirstObservation
+        || freshAgedPumpFadeRepumpFirstObservation;
       // Existing primary labels retain the old no-fire-on-process-start policy.
       // Distribution labels may be long-lived, so seed their first causal
       // observation; signalKey dedupe in paper keeps restarts idempotent.
@@ -15761,17 +19286,21 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
         const pumpFlush = features.pumpFlushReclaim5m ?? {};
         const flagpoleShortKill = features.flagpoleShortKill5m ?? {};
         const fadingWaveLivePump = features.fadingWaveLivePump5m ?? {};
+        const agedPumpFadeRepump = features.agedPumpFadeRepump5m ?? {};
         const qualified = setup.watchReady === true || setup.longReady === true
           || pumpFlush.watchReady === true || pumpFlush.longReady === true
           || flagpoleShortKill.watchReady === true || flagpoleShortKill.longReady === true
-          || fadingWaveLivePump.shortReady === true;
+          || fadingWaveLivePump.shortReady === true
+          || agedPumpFadeRepump.watchReady === true || agedPumpFadeRepump.shortReady === true;
         return qualified ? {
           market,
           fadingWaveLivePumpActive: fadingWaveLivePump.shortReady === true,
+          agedPumpFadeRepumpActive: agedPumpFadeRepump.shortReady === true,
         } : null;
       })
       .filter(Boolean)
-      .sort((a, b) => Number(b.fadingWaveLivePumpActive) - Number(a.fadingWaveLivePumpActive)
+      .sort((a, b) => Number(b.agedPumpFadeRepumpActive) - Number(a.agedPumpFadeRepumpActive)
+        || Number(b.fadingWaveLivePumpActive) - Number(a.fadingWaveLivePumpActive)
         || Number(a.market.liquidityRank ?? Infinity) - Number(b.market.liquidityRank ?? Infinity))
       .slice(0, Math.max(1, Math.min(60, Number(process.env.LIQ_FLOW_V2_POST_PUMP_MAX_QUALIFIED ?? 60))))
       .map((row) => row.market);
@@ -15870,6 +19399,7 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
       next.delete('POST_PUMP_SHORT_SQUEEZE_PRIME');
       next.delete('POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY');
       next.delete('FADING_WAVE_LIVE_PUMP_SHORT_READY');
+      next.delete('AGED_PUMP_FADE_REPUMP_SHORT_ALERT');
       next.delete('PUMP_FLUSH_RECLAIM_LONG_READY');
       if (next.size) liquidFlowV2Session.lastLabelBySymbol.set(market.symbol, next);
       else liquidFlowV2Session.lastLabelBySymbol.delete(market.symbol);
@@ -15982,6 +19512,7 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
       console.warn(`[LiquidFlowV2Real] confirmation-event failed: ${error.message}`);
     });
     const transitions = noteLiquidFlowV2Transitions(rows);
+    notifyHtfDeepDumpBase15mDiscord(rows);
     notifyLiquidFlowV2HtfDiscord(rows, transitions.primaryReadySymbols, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2HTF] notify failed: ${error.message}`);
     });
@@ -15999,6 +19530,9 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
     });
     notifyLiquidFlowV2FadingWaveLivePumpDiscord(rows, transitions.readyLabelKeys, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2FadingWaveLivePump] notify failed: ${error.message}`);
+    });
+    notifyLiquidFlowV2AgedPumpFadeRepumpDiscord(rows, transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2AgedPumpFadeRepump] notify failed: ${error.message}`);
     });
     const createdPaperTrades = await liquidFlowV2Paper.createFromReadyTransitions(
       rows,
@@ -16055,7 +19589,7 @@ async function refreshLiquidHeatmapFlowV2({ force = false } = {}) {
     };
     liquidFlowV2Cache.data = result;
     liquidFlowV2Cache.expiresAt = Date.now() + 12_000;
-    pushSse(liquidFlowV2SseClients, result);
+    pushLiquidFlowV2ClientSse(result);
     return result;
   })().finally(() => {
     liquidFlowV2Cache.inflight = null;
@@ -16149,6 +19683,7 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
     console.warn(`[LiquidFlowV2Real] fast confirmation-event failed: ${error.message}`);
   });
   const transitions = noteLiquidFlowV2Transitions([row]);
+  notifyHtfDeepDumpBase15mDiscord([row]);
     notifyLiquidFlowV2HtfDiscord([row], transitions.primaryReadySymbols, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2HTF] fast notify failed: ${error.message}`);
     });
@@ -16166,6 +19701,9 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
     });
     notifyLiquidFlowV2FadingWaveLivePumpDiscord([row], transitions.readyLabelKeys, generatedAt).catch((error) => {
       console.warn(`[LiquidFlowV2FadingWaveLivePump] fast notify failed: ${error.message}`);
+    });
+    notifyLiquidFlowV2AgedPumpFadeRepumpDiscord([row], transitions.readyLabelKeys, generatedAt).catch((error) => {
+      console.warn(`[LiquidFlowV2AgedPumpFadeRepump] fast notify failed: ${error.message}`);
     });
   const createdPaperTrades = await liquidFlowV2Paper.createFromReadyTransitions(
     [row],
@@ -16210,7 +19748,7 @@ async function refreshLiquidHeatmapFlowV2Symbol(symbolInput) {
   };
   liquidFlowV2Cache.data = result;
   liquidFlowV2Cache.expiresAt = Date.now() + 12_000;
-  pushSse(liquidFlowV2SseClients, result);
+  pushLiquidFlowV2ClientSse(result);
 }
 
 function scheduleLiquidHeatmapFlowV2FastScan({ symbol, interval } = {}) {
@@ -16947,11 +20485,19 @@ async function readLiquidPaperStore() {
     try {
       const text = await readFile(LIQUID_PAPER_FILE, 'utf8');
       const parsed = JSON.parse(text);
-      _liquidPaperStoreCache = {
+      const loadedStore = {
         createdAt: parsed.createdAt ?? new Date().toISOString(),
         updatedAt: parsed.updatedAt ?? null,
+        hotStore: parsed.hotStore ?? null,
         trades: Array.isArray(parsed.trades) ? parsed.trades : [],
       };
+      const compacted = await compactPaperHotStoreInMemory(loadedStore, {
+        label: 'LiquidPaper',
+        archiveFile: LIQUID_PAPER_ARCHIVE_FILE,
+        maxRows: LIQUID_PAPER_MAX_HOT_ROWS,
+      });
+      if (compacted.changed) await rewritePaperHotStore(LIQUID_PAPER_FILE, loadedStore);
+      _liquidPaperStoreCache = loadedStore;
     } catch (e) {
       if (e.code === 'ENOENT') {
         _liquidPaperStoreCache = { createdAt: new Date().toISOString(), updatedAt: null, trades: [] };
@@ -16981,6 +20527,11 @@ async function drainLiquidPaperWrites() {
       _liquidPaperWritePending = false;
       const waiters = _liquidPaperWriteWaiters.splice(0);
       try {
+        await compactPaperHotStoreInMemory(_liquidPaperStoreCache, {
+          label: 'LiquidPaper',
+          archiveFile: LIQUID_PAPER_ARCHIVE_FILE,
+          maxRows: LIQUID_PAPER_MAX_HOT_ROWS,
+        });
         await mkdir(join(rootDir, 'data'), { recursive: true });
         const tmp = `${LIQUID_PAPER_FILE}.tmp`;
         // Snapshot the array so socket mutations made while the stream is
@@ -18310,7 +21861,17 @@ async function maybePlaceSourceLiveCardOrder(
       ...fillAnchorSpec,
       protectionOnFill: true,
       ...liveCardProtectionPolicy,
-      protectionMeta: { lifecycleId },
+      protectionMeta: {
+        lifecycleId,
+        signalType: lifecycleBase.signalType,
+        signalLabel: lifecycleBase.signalLabel,
+        signalReason: lifecycleBase.signalCombo
+          ?? (Array.isArray(lifecycleBase.matchedKeys) ? lifecycleBase.matchedKeys.join(' | ') : null),
+        signalCombo: lifecycleBase.signalCombo,
+        matchedKeys: lifecycleBase.matchedKeys,
+        executionPage: page,
+        streamId: `live-card-${page}`,
+      },
       dryRun: false,
       maxOpenPositions,
       source: `live-card-whitelist-${page}`,
@@ -18355,6 +21916,10 @@ async function maybePlaceSourceLiveCardOrder(
     submittedQty: Number(result?.order?.quantity) || null,
     filledQty: Number(result?.orderResult?.executedQty) || null,
     fillPrice: Number(result?.orderResult?.avgPrice) || null,
+    dcaAttachedLimit: entryOrderType === 'LIMIT' && result?.protectionSuppressedForDca === true,
+    dcaAttachedLimitVersion: entryOrderType === 'LIMIT' && result?.protectionSuppressedForDca === true
+      ? DCA_ATTACHED_LIMIT_RETENTION_VERSION
+      : null,
   });
   if (result?.status !== 'submitted') {
     sendLiveCardOrderFailureDiscord({
@@ -18409,7 +21974,7 @@ async function maybePlaceLiquidLiveCardOrder(trade, existingTrades = []) {
   );
 }
 
-const LIVE_CARD_LIMIT_RETEST_EXPIRY_VERSION = 'LIVE_CARD_LIMIT_RETEST_EXPIRY_V1_20260816';
+const LIVE_CARD_LIMIT_RETEST_EXPIRY_VERSION = 'LIVE_CARD_LIMIT_RETEST_EXPIRY_V2_DCA_ATTACHED_EXEMPT_20260828';
 const LIVE_CARD_LIMIT_RETEST_OPEN_STATUSES = new Set(['NEW', 'PARTIALLY_FILLED']);
 let liveCardLimitRetestExpiryRunning = false;
 
@@ -18439,6 +22004,12 @@ async function expireLiveCardLimitRetestEntries() {
     ));
     if (!candidates.length) return;
     const credentials = getApiCredentials(null);
+    const currentPositions = await client.getPositions({
+      ...credentials,
+      priority: 0,
+      dropOnCongestion: false,
+      source: 'liveCardRetestExpiry:dcaCheck',
+    });
     for (const execution of candidates) {
       const symbol = normalizeSymbol(execution.symbol ?? '');
       try {
@@ -18450,6 +22021,34 @@ async function expireLiveCardLimitRetestEntries() {
         });
         const queriedStatus = String(queried?.status ?? '').toUpperCase();
         if (queriedStatus === 'FILLED') continue;
+        const queriedExecutedQty = Number(queried?.executedQty ?? 0);
+        const dcaParentPosition = (Array.isArray(currentPositions) ? currentPositions : []).find((position) => (
+          isDcaAttachedLimitOrder(queried, position)
+        ));
+        const runtimeDca = shouldRetainDcaAttachedLimitOrder({
+          order: queried,
+          position: dcaParentPosition,
+          taggedAtSubmission: execution.dcaAttachedLimit === true
+            || execution.dcaProtectionSuppressed === true,
+        });
+        if (runtimeDca) {
+          await liveCardBinanceLifecycle.upsert({
+            lifecycleId: execution.lifecycleId,
+            status: queriedExecutedQty > 0 ? 'ENTRY_PARTIALLY_FILLED' : execution.status,
+            filledQty: queriedExecutedQty || execution.filledQty || null,
+            entryRetestExpiresAt: null,
+            entryRetestExpiryState: 'DCA_ATTACHED_RETAINED_UNTIL_PARENT_CLOSE',
+            entryRetestExpiryVersion: LIVE_CARD_LIMIT_RETEST_EXPIRY_VERSION,
+            dcaAttachedLimit: true,
+            dcaAttachedLimitVersion: DCA_ATTACHED_LIMIT_RETENTION_VERSION,
+          }, 'ENTRY_RETEST_DCA_ATTACHED_RETAINED', {
+            symbol,
+            orderId: execution.entryOrderId,
+            positionAmt: Number(dcaParentPosition.positionAmt),
+          });
+          console.log(`[LiveCardRetest] ${symbol} orderId=${execution.entryOrderId} retained as DCA_ATTACHED`);
+          continue;
+        }
 
         let finalOrder = queried;
         if (LIVE_CARD_LIMIT_RETEST_OPEN_STATUSES.has(queriedStatus)) {
@@ -19154,9 +22753,31 @@ async function placeBinanceMarketFromPaperTrade(payload, token = null) {
   if (isHedge) params.positionSide = positionSide;
   else params.reduceOnly = 'false';
 
-  const orderResult = await client.placeFuturesOrder({ params, apiKey, apiSecret });
+  const orderResult = await client.placeFuturesOrder({ params, apiKey, apiSecret,
+    entryControl:{manual:Boolean(token&&ordersTokens.has(token)),payload:{source:'paper-trade-manual-binance',side}} });
   const executedQty = Number(orderResult.executedQty ?? quantity);
   const avgPrice = Number(orderResult.avgPrice ?? 0) || markPrice;
+  await binanceFilledSignalAudit.registerSubmission({
+    orderId: orderResult?.orderId,
+    clientOrderId: orderResult?.clientOrderId ?? params.newClientOrderId,
+    symbol,
+    side,
+    orderType: 'MARKET',
+    signalSource: 'paper-trade-manual-binance',
+    signalType: trade.signalType ?? trade.type ?? trade.setup ?? 'PAPER_TRADE_MANUAL_MARKET',
+    signalLabel: trade.label ?? trade.signalLabel ?? trade.type ?? trade.setup ?? 'PAPER_TRADE_MANUAL_MARKET',
+    signalReason: trade.reason ?? trade.note ?? `Người dùng bấm MARKET từ paper trade ${trade.id}`,
+    signalCombo: trade.combo ?? trade.recommendationCombo ?? null,
+    matchedKeys: trade.matchedKeys ?? [],
+    executionPage: trade.page ?? trade.sourcePage ?? 'paper-trades',
+    lifecycleId: trade.liveCardLifecycleId ?? trade.liquidLiveCardLifecycleId ?? null,
+    signalEntryPrice: Number(trade.entryPrice) || markPrice,
+    takeProfitPrice: Number(trade.takeProfit ?? trade.tp) || null,
+    stopLossPrice: Number(trade.stopLoss ?? trade.sl) || null,
+    marginUsdt,
+    leverage,
+    submittedAt: Date.now(),
+  }).catch((error) => console.warn(`[FilledSignalAudit] Paper manual ${symbol}: ${error.message}`));
 
   store.trades[idx] = {
     ...trade,
@@ -19194,6 +22815,7 @@ function appendPaperNote(note, part) {
 }
 
 async function autoPlaceBinanceOnEntryReady(trade, reason, markPrice) {
+  if(!autoEntryControls.read().enabled)return;
   if (liveCardOnlyAutoBinanceEnabled()) return;
   if (!runtimeSettings.autoProbeEnabled) return;
   if (isVnBlockHour()) { console.log('[AutoProbe] ⏰ Block 17-19h VN'); return; }
@@ -19204,6 +22826,8 @@ async function autoPlaceBinanceOnEntryReady(trade, reason, markPrice) {
     const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
     const symbol = normalizeSymbol(trade.symbol);
     const side = trade.side === 'LONG' ? 'BUY' : 'SELL';
+
+    autoEntryControls.assertEntry({source:'paper-auto-probe',signalLabel:trade.signalType??trade.type??trade.setup??'PAPER_AUTO_PROBE',side,executionPage:'paper'});
 
     const [symbols, premiumIndex] = await Promise.all([getSymbols(), client.getPremiumIndex(symbol)]);
     const symbolInfo = symbols.find((s) => s.symbol === symbol);
@@ -19218,9 +22842,31 @@ async function autoPlaceBinanceOnEntryReady(trade, reason, markPrice) {
     const params = { symbol, side, type: 'MARKET', quantity, recvWindow, newClientOrderId: `paper_probe_${Date.now()}`.slice(0, 36) };
     if (isHedge) params.positionSide = positionSide; else params.reduceOnly = 'false';
 
-    const orderResult = await client.placeFuturesOrder({ params, apiKey, apiSecret });
+    const orderResult = await client.placeFuturesOrder({ params, apiKey, apiSecret,
+      entryControl:{payload:{source:'paper-auto-probe',signalLabel:trade.signalType??trade.type??trade.setup??'PAPER_AUTO_PROBE',side,executionPage:'paper'}} });
     const executedQty = Number(orderResult.executedQty ?? quantity);
     const avgPrice = Number(orderResult.avgPrice ?? 0) || currentMark;
+    await binanceFilledSignalAudit.registerSubmission({
+      orderId: orderResult?.orderId,
+      clientOrderId: orderResult?.clientOrderId ?? params.newClientOrderId,
+      symbol,
+      side,
+      orderType: 'MARKET',
+      signalSource: 'paper-auto-probe',
+      signalType: trade.signalType ?? trade.type ?? trade.setup ?? 'PAPER_AUTO_PROBE',
+      signalLabel: trade.label ?? trade.signalLabel ?? trade.type ?? trade.setup ?? 'PAPER_AUTO_PROBE',
+      signalReason: reason ?? trade.reason ?? trade.note ?? 'Paper trade chuyển ENTRY_READY và AutoProbe được bật.',
+      signalCombo: trade.combo ?? trade.recommendationCombo ?? null,
+      matchedKeys: trade.matchedKeys ?? [],
+      executionPage: trade.page ?? trade.sourcePage ?? 'paper-trades',
+      lifecycleId: trade.liveCardLifecycleId ?? trade.liquidLiveCardLifecycleId ?? null,
+      signalEntryPrice: Number(trade.entryPrice) || currentMark,
+      takeProfitPrice: Number(trade.takeProfit ?? trade.tp) || null,
+      stopLossPrice: Number(trade.stopLoss ?? trade.sl) || null,
+      marginUsdt,
+      leverage,
+      submittedAt: Date.now(),
+    }).catch((error) => console.warn(`[FilledSignalAudit] AutoProbe ${symbol}: ${error.message}`));
 
     // Update paper trade → OPEN
     const store = await readPaperStore();
@@ -20471,15 +24117,14 @@ function startPiPaperTicker() {
 
 async function replayPumpPaperWal(store) {
   return replayPumpPaperWalFile(store, PUMP_PAPER_WAL_FILE, {
-    maxRows: PUMP_PAPER_MAX_ACTIVE_ROWS,
+    maxRows: Number.POSITIVE_INFINITY,
   });
 }
 
 async function checkpointPumpPaperStore(store, walResult, preArchived = 0) {
-  const trades = Array.isArray(store?.trades) ? store.trades : [];
-  const overflow = trades.length > PUMP_PAPER_MAX_ACTIVE_ROWS
-    ? trades.splice(PUMP_PAPER_MAX_ACTIVE_ROWS)
-    : [];
+  const partition = partitionPaperHotRows(store?.trades, PUMP_PAPER_MAX_ACTIVE_ROWS);
+  const overflow = partition.archiveRows;
+  store.trades = partition.hotRows;
   const shouldCheckpoint = overflow.length > 0
     || preArchived > 0
     || Number(walResult?.applied ?? 0) > 0
@@ -20518,9 +24163,10 @@ async function readPumpPaperStore() {
       if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
       let preArchived = 0;
       if (parsed.trades.length > PUMP_PAPER_MAX_ACTIVE_ROWS) {
-        const overflow = parsed.trades.splice(PUMP_PAPER_MAX_ACTIVE_ROWS);
-        preArchived = overflow.length;
-        await queuePumpPaperArchive(overflow);
+        const partition = partitionPaperHotRows(parsed.trades, PUMP_PAPER_MAX_ACTIVE_ROWS);
+        parsed.trades = partition.hotRows;
+        preArchived = partition.archiveRows.length;
+        await queuePumpPaperArchive(partition.archiveRows);
       }
       const walResult = await replayPumpPaperWal(parsed);
       const checkpoint = await checkpointPumpPaperStore(parsed, walResult, preArchived);
@@ -20718,6 +24364,75 @@ async function writePumpPaperSnapshot(filePath, store) {
   }
 }
 
+const _paperHotArchiveWrites = new Map();
+
+function queuePaperHotArchive(label, archiveFile, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return Promise.resolve();
+  const previous = _paperHotArchiveWrites.get(archiveFile) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(async () => {
+      await mkdir(join(rootDir, 'data', 'archive'), { recursive: true });
+      const output = createWriteStream(archiveFile, { encoding: 'utf8', flags: 'a' });
+      try {
+        for (let index = 0; index < rows.length; index += 100) {
+          const chunk = `${rows.slice(index, index + 100)
+            .map((row) => JSON.stringify(compactPumpPaperTradeForStorage(row)))
+            .join('\n')}\n`;
+          if (!output.write(chunk)) {
+            await new Promise((resolve, reject) => {
+              const cleanup = () => {
+                output.off('drain', onDrain);
+                output.off('error', onError);
+              };
+              const onDrain = () => {
+                cleanup();
+                resolve();
+              };
+              const onError = (error) => {
+                cleanup();
+                reject(error);
+              };
+              output.once('drain', onDrain);
+              output.once('error', onError);
+            });
+          }
+        }
+        output.end();
+        await finished(output);
+      } catch (error) {
+        output.destroy(error);
+        throw error;
+      }
+      console.log(`[${label}] Archived ${rows.length} CLOSED overflow row(s) -> ${archiveFile}.`);
+    });
+  _paperHotArchiveWrites.set(archiveFile, next);
+  return next;
+}
+
+async function compactPaperHotStoreInMemory(store, { label, archiveFile, maxRows }) {
+  const partition = partitionPaperHotRows(store?.trades, maxRows);
+  if (partition.archiveRows.length === 0) {
+    return { changed: false, ...partition };
+  }
+  await queuePaperHotArchive(label, archiveFile, partition.archiveRows);
+  applyPaperHotStorePartition(store, partition, {
+    archiveFile: archiveFile.slice(rootDir.length + 1).replaceAll('\\', '/'),
+  });
+  console.log(
+    `[${label}] Hot store compacted: kept=${partition.hotRows.length}`
+    + ` protected=${partition.protectedRows} archived=${partition.archiveRows.length}`
+    + ` max=${partition.maxRows} version=${PAPER_HOT_STORE_VERSION}`,
+  );
+  return { changed: true, ...partition };
+}
+
+async function rewritePaperHotStore(filePath, store) {
+  const temporary = `${filePath}.${process.pid}.hot-store.tmp`;
+  await writePumpPaperSnapshot(temporary, store);
+  await rename(temporary, filePath);
+}
+
 function appendPumpPaperWal(events) {
   const valid = (Array.isArray(events) ? events : []).filter(Boolean);
   if (!valid.length) return Promise.resolve();
@@ -20812,14 +24527,13 @@ function getPumpPaperActiveIndex(store) {
   return _pumpPaperActiveIndexCache;
 }
 
+let _pumpPaperHotPersistLock = Promise.resolve();
 function writePumpPaperStore(store, { upsertIds = [], deleteIds = [] } = {}) {
   const allTrades = Array.isArray(store?.trades) ? store.trades : [];
-  _pumpPaperStoreCache = store;
-  invalidatePumpPaperDerivedCache();
   const events = [];
   for (const rawId of new Set(upsertIds.map((id) => String(id ?? '')).filter(Boolean))) {
     const trade = allTrades.find((row) => String(row?.id ?? '') === rawId);
-    if (trade) events.push({ op: 'UPSERT', id: rawId, trade });
+    if (trade) events.push({ op: 'UPSERT', id: rawId, trade: structuredClone(trade) });
   }
   for (const rawId of new Set(deleteIds.map((id) => String(id ?? '')).filter(Boolean))) {
     events.push({ op: 'DELETE', id: rawId });
@@ -20827,7 +24541,23 @@ function writePumpPaperStore(store, { upsertIds = [], deleteIds = [] } = {}) {
   if (!events.length) {
     throw new Error('Pump paper mutation missing WAL ids; refusing an untracked in-memory-only write');
   }
-  return appendPumpPaperWal(events);
+  const persist = _pumpPaperHotPersistLock
+    .catch(() => {})
+    .then(async () => {
+      const partition = partitionPaperHotRows(store?.trades, PUMP_PAPER_MAX_ACTIVE_ROWS);
+      if (partition.archiveRows.length > 0) {
+        await queuePumpPaperArchive(partition.archiveRows);
+        applyPaperHotStorePartition(store, partition, {
+          archiveFile: PUMP_PAPER_ARCHIVE_FILE.slice(rootDir.length + 1).replaceAll('\\', '/'),
+        });
+      }
+      _pumpPaperStoreCache = store;
+      invalidatePumpPaperDerivedCache();
+      await appendPumpPaperWal(events);
+      return store;
+    });
+  _pumpPaperHotPersistLock = persist.then(() => undefined, () => undefined);
+  return persist;
 }
 function getPumpPaperMarkFreshMs() {
   const freshMs = Number(process.env.PUMP_PAPER_MARK_STALE_MS
@@ -26528,6 +30258,12 @@ async function readEdgePaperStore() {
       const raw = await readFile(EDGE_PAPER_FILE, 'utf8');
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed?.trades)) throw new Error('invalid structure');
+      const compacted = await compactPaperHotStoreInMemory(parsed, {
+        label: 'EdgePaper',
+        archiveFile: EDGE_PAPER_ARCHIVE_FILE,
+        maxRows: EDGE_PAPER_MAX_HOT_ROWS,
+      });
+      if (compacted.changed) await rewritePaperHotStore(EDGE_PAPER_FILE, parsed);
       _edgePaperStoreCache = parsed;
       console.log(`[EdgePaper] Store cached in memory (${parsed.trades.length} trades; ${EDGE_PAPER_STORE_CACHE_VERSION}).`);
     } catch (e) {
@@ -26549,7 +30285,14 @@ async function writeEdgePaperStore(store) {
   _edgePaperStoreCache = store;
   _edgePaperWriteLock = _edgePaperWriteLock
     .catch((error) => console.warn(`[EdgePaper] previous write failed; queue continues: ${error.message}`))
-    .then(() => atomicWriteJson(EDGE_PAPER_FILE, store));
+    .then(async () => {
+      await compactPaperHotStoreInMemory(store, {
+        label: 'EdgePaper',
+        archiveFile: EDGE_PAPER_ARCHIVE_FILE,
+        maxRows: EDGE_PAPER_MAX_HOT_ROWS,
+      });
+      await atomicWriteJson(EDGE_PAPER_FILE, store);
+    });
   return _edgePaperWriteLock;
 }
 
@@ -26579,13 +30322,50 @@ async function upsertEdgePaperTrade(trade) {
 async function recoverEdgePaperEntryJournal() {
   const latest = await readLatestEdgePaperJournalRecords(EDGE_PAPER_ENTRY_JOURNAL_FILE);
   if (!latest.size) return { recoveredIds: [] };
+  const recoveryMaxAgeMs = Math.max(
+    60_000,
+    Number(process.env.EDGE_PAPER_ENTRY_RECOVERY_MAX_AGE_MS ?? 30 * 60_000),
+  );
   const result = await mutateEdgePaperStore((store) => {
-    const recovered = recoverEdgePaperTradesFromJournal(store, latest);
+    const recovered = recoverEdgePaperTradesFromJournal(store, latest, {
+      maxPreparedAgeMs: recoveryMaxAgeMs,
+    });
     if (recovered.recoveredIds.length) store.trades = recovered.store.trades;
-    return { changed: recovered.recoveredIds.length > 0, recoveredIds: recovered.recoveredIds };
+    const recoveredTrades = recovered.recoveredIds
+      .map((id) => recovered.store.trades.find((trade) => String(trade?.id) === String(id)))
+      .filter(Boolean);
+    return {
+      changed: recovered.recoveredIds.length > 0,
+      recoveredIds: recovered.recoveredIds,
+      recoveredTrades,
+    };
   });
   if (result.recoveredIds.length) {
-    console.warn(`[EdgePaperJournal] recovered ${result.recoveredIds.length} paper row(s): ${result.recoveredIds.join(', ')}`);
+    for (const trade of result.recoveredTrades) {
+      const committed = await appendEdgePaperEntryJournal(
+        EDGE_PAPER_ENTRY_JOURNAL_FILE,
+        'COMMITTED',
+        trade,
+        { source: 'recoverEdgePaperEntryJournal' },
+      );
+      latest.set(String(trade.id), committed);
+    }
+    console.warn(`[EdgePaperJournal] recovered ${result.recoveredIds.length} recent PREPARED paper row(s): ${result.recoveredIds.slice(0, 10).join(', ')}${result.recoveredIds.length > 10 ? ', ...' : ''}`);
+  }
+  const compacted = await compactEdgePaperEntryJournal(
+    EDGE_PAPER_ENTRY_JOURNAL_FILE,
+    latest,
+    {
+      archiveDir: join(rootDir, 'data', 'archive'),
+      maxBytes: Math.max(
+        8 * 1024 * 1024,
+        Number(process.env.EDGE_PAPER_ENTRY_JOURNAL_MAX_BYTES ?? 64 * 1024 * 1024),
+      ),
+      maxPreparedAgeMs: recoveryMaxAgeMs,
+    },
+  );
+  if (compacted.changed) {
+    console.log(`[EdgePaperJournal] compacted ${(compacted.sourceBytes / 1024 / 1024).toFixed(1)} MiB journal; retained=${compacted.retainedRows}; archive=${compacted.archiveFile}`);
   }
   return result;
 }
@@ -27004,6 +30784,14 @@ async function closeEdgePaperTrade(payload) {
   });
   const outcome = result.trade.outcome ?? payload.outcome ?? 'MANUAL';
   if (!result.alreadyClosed) {
+    if (result.trade.liveCardAutoEligible === true) {
+      await appendEdgePaperEntryJournal(
+        EDGE_PAPER_ENTRY_JOURNAL_FILE,
+        'CLOSED',
+        result.trade,
+        { source: 'closeEdgePaperTrade', outcome },
+      ).catch((error) => console.warn(`[EdgePaperJournal] close audit failed ${result.trade.id}: ${error.message}`));
+    }
     queueLiveCardBotClose('edge', result.trade, { outcome, reason: outcome });
   }
   await syncEdgePaperTicker();
@@ -32931,6 +36719,13 @@ async function placeAutoTrade(row, setup, limitPrice = null, score = 0) {
     stopLossPrice,
     maxOpenPositions: maxPositions,
     source: 'auto-trader',
+    signalType: `AUTO_TRADER_${String(setup.direction ?? '').toUpperCase()}`,
+    signalLabel: row?.signal?.label ?? row?.label ?? `AUTO_TRADER_${String(setup.direction ?? '').toUpperCase()}`,
+    signalReason: Array.isArray(setup.reason)
+      ? setup.reason.join(' | ')
+      : setup.reason ?? `Auto trader score=${score}; direction=${setup.direction}`,
+    signalCombo: `score=${score} | direction=${setup.direction} | strong=${isStrong}`,
+    executionPage: 'auto-trader',
   });
 }
 
@@ -33424,8 +37219,20 @@ async function getLiquidFlowV2DailyTiming({ token } = {}) {
 
 async function getLiquidFlowV2BinanceStats({ token, fromDay = '', toDay = '', labelKey = '' } = {}) {
   const paperTrades = liquidFlowV2Paper.state.trades;
-  const coinglassExecutionState = await coinGlassWebTop20.binanceExecutionState();
+  const [coinglassExecutionState, primaryZoneLifecycleState, secondaryZoneLifecycleState] = await Promise.all([
+    coinGlassWebTop20.binanceExecutionState(),
+    coinGlassWebTop20.zoneLifecycleState(),
+    coinGlassWebSecondary.zoneLifecycleState(),
+  ]);
   const coinglassAudits = coinglassQualifiedBinanceAudits(coinglassExecutionState, {
+    fromDay,
+    toDay,
+    labelKey,
+  });
+  const zoneLifecycleAudits = coinglassZoneLifecycleBinanceAudits([
+    { streamId: 'primary', state: primaryZoneLifecycleState },
+    { streamId: 'secondary', state: secondaryZoneLifecycleState },
+  ], {
     fromDay,
     toDay,
     labelKey,
@@ -33439,7 +37246,8 @@ async function getLiquidFlowV2BinanceStats({ token, fromDay = '', toDay = '', la
     console.warn(`[LiquidFlowV2BinanceStats] positions: ${error.message}`);
     return [];
   });
-  const orderSnapshotsPromise = Promise.all(coinglassAudits.map((audit) => client.getOrder({
+  const allCoinglassAudits = [...coinglassAudits, ...zoneLifecycleAudits];
+  const orderSnapshotsPromise = Promise.all(allCoinglassAudits.map((audit) => client.getOrder({
     symbol: audit.symbol,
     orderId: audit.orderId,
     ...credentials,
@@ -33456,7 +37264,16 @@ async function getLiquidFlowV2BinanceStats({ token, fromDay = '', toDay = '', la
     defaultMarginUsdt: coinGlassWebTop20.config().binanceMarginUsdt,
     defaultLeverage: coinGlassWebTop20.config().binanceLeverage,
   });
-  const trades = [...paperTrades, ...coinglassTrades];
+  const zoneLifecycleTrades = coinglassZoneLifecycleBinanceTrades({
+    audits: zoneLifecycleAudits,
+    orderSnapshots,
+    positions,
+    trackingPositions: slTracking.positions,
+    defaultPrimaryMarginUsdt: coinGlassWebTop20.config().zoneLifecycleMarginUsdt,
+    defaultSecondaryMarginUsdt: coinGlassWebSecondary.config().zoneLifecycleMarginUsdt,
+    defaultLeverage: coinGlassWebTop20.config().zoneLifecycleLeverage,
+  });
+  const trades = [...paperTrades, ...coinglassTrades, ...zoneLifecycleTrades];
   const selected = liquidFlowV2RealTrades(trades, { fromDay, toDay, labelKey });
   const executions = liquidFlowV2SyntheticExecutions(selected);
   const closed = executions.filter((row) => row.status === 'POSITION_CLOSED');
@@ -33789,8 +37606,100 @@ function restorePositionMonitorFromBinance(position) {
   });
 }
 
-async function handleConfirmedPositionClose(symbol) {
+async function auditBinancePositionClose(symbol, closedPosition = null, closeMeta = {}) {
+  const amount = Number(closedPosition?.amt ?? closedPosition?.positionAmt);
+  const direction = amount < 0 ? 'SHORT' : 'LONG';
+  const openContext = await binanceFilledSignalAudit.getOpenPositionContext(symbol, direction);
+  if (!openContext.records.length) {
+    console.log(`[FilledSignalAudit] close ${symbol} ${direction}: no matching audited entry`);
+    return { recorded: false, reason: 'no_open_entry_audit' };
+  }
+
   const { apiKey, apiSecret } = getApiCredentials(null);
+  const openedAt = Math.max(0, Date.parse(openContext.openedAt) - 10_000);
+  const rawTrades = await client.getUserTrades({ symbol, limit: 1_000, apiKey, apiSecret });
+  const positionSide = String(closedPosition?.positionSide ?? 'BOTH').toUpperCase();
+  const lifecycleTrades = (Array.isArray(rawTrades) ? rawTrades : [])
+    .filter((trade) => Number(trade?.time) >= openedAt)
+    .filter((trade) => positionSide === 'BOTH'
+      || String(trade?.positionSide ?? 'BOTH').toUpperCase() === positionSide);
+  const closeSide = direction === 'LONG' ? 'SELL' : 'BUY';
+  const closingTrades = lifecycleTrades.filter((trade) => String(trade?.side ?? '').toUpperCase() === closeSide);
+  const tradeGrossRealizedPnlUsdt = lifecycleTrades.reduce(
+    (sum, trade) => sum + (Number.isFinite(Number(trade?.realizedPnl)) ? Number(trade.realizedPnl) : 0),
+    0,
+  );
+  const tradeCommissionUsdt = lifecycleTrades.reduce(
+    (sum, trade) => sum + (Number.isFinite(Number(trade?.commission)) ? Math.abs(Number(trade.commission)) : 0),
+    0,
+  );
+  const incomeRows = await client.getIncome({
+    startTime: openedAt,
+    endTime: Date.now(),
+    limit: 1_000,
+    apiKey,
+    apiSecret,
+  }).catch((error) => {
+    console.warn(`[FilledSignalAudit] income fallback ${symbol}: ${error.message}`);
+    return [];
+  });
+  const lifecycleIncome = (Array.isArray(incomeRows) ? incomeRows : [])
+    .filter((row) => String(row?.symbol ?? '').toUpperCase() === symbol)
+    .filter((row) => Number(row?.time) >= openedAt);
+  const realizedIncome = lifecycleIncome.filter((row) => row?.incomeType === 'REALIZED_PNL');
+  const commissionIncome = lifecycleIncome.filter((row) => row?.incomeType === 'COMMISSION');
+  const fundingIncome = lifecycleIncome.filter((row) => row?.incomeType === 'FUNDING_FEE');
+  const grossRealizedPnlUsdt = realizedIncome.length
+    ? realizedIncome.reduce((sum, row) => sum + (Number(row?.income) || 0), 0)
+    : tradeGrossRealizedPnlUsdt;
+  const commissionUsdt = commissionIncome.length
+    ? Math.abs(commissionIncome.reduce((sum, row) => sum + (Number(row?.income) || 0), 0))
+    : tradeCommissionUsdt;
+  const fundingPnlUsdt = fundingIncome.reduce((sum, row) => sum + (Number(row?.income) || 0), 0);
+  const closedQty = closingTrades.reduce((sum, trade) => sum + Math.abs(Number(trade?.qty) || 0), 0);
+  const closeNotional = closingTrades.reduce(
+    (sum, trade) => sum + Math.abs(Number(trade?.qty) || 0) * (Number(trade?.price) || 0),
+    0,
+  );
+  const exitAvgPrice = closedQty > 0 ? closeNotional / closedQty : null;
+  const closeOrderIds = [...new Set(closingTrades.map((trade) => String(trade?.orderId ?? '')).filter(Boolean))];
+  const latestCloseTrade = [...closingTrades].sort((left, right) => Number(right?.time) - Number(left?.time))[0] ?? null;
+  const latestCloseOrder = latestCloseTrade?.orderId != null
+    ? await client.getOrder({ symbol, orderId: latestCloseTrade.orderId, apiKey, apiSecret }).catch(() => null)
+    : null;
+  const closedAt = Math.max(
+    Number(closeMeta.eventTime) || 0,
+    ...closingTrades.map((trade) => Number(trade?.time) || 0),
+    Date.now(),
+  );
+  const result = await binanceFilledSignalAudit.recordPositionClose({
+    symbol,
+    direction,
+    closedAt,
+    closeOrderIds,
+    closeClientOrderId: latestCloseOrder?.clientOrderId ?? null,
+    closeOrderType: latestCloseOrder?.origType ?? latestCloseOrder?.type ?? null,
+    exitAvgPrice,
+    closedQty,
+    grossRealizedPnlUsdt,
+    commissionUsdt,
+    fundingPnlUsdt,
+    netRealizedPnlUsdt: grossRealizedPnlUsdt - commissionUsdt + fundingPnlUsdt,
+    closeEventSource: closeMeta.source ?? 'BINANCE_POSITION_CLOSE',
+  });
+  console.log(
+    `[FilledSignalAudit] CLOSED ${symbol} ${direction} gross=${grossRealizedPnlUsdt.toFixed(6)}`
+    + ` fee=${commissionUsdt.toFixed(6)} funding=${fundingPnlUsdt.toFixed(6)}`
+    + ` net=${(grossRealizedPnlUsdt - commissionUsdt + fundingPnlUsdt).toFixed(6)}`
+    + ` discord=${result.discordSent}`,
+  );
+  if (result.discordError) console.warn(`[FilledSignalAudit] close Discord ${symbol}: ${result.discordError}`);
+  return result;
+}
+
+async function handleConfirmedPositionClose(symbol, closedPosition = null, closeMeta = {}) {
+  const { apiKey, apiSecret } = getApiCredentials(null);
+  const dcaParentPosition = closedPosition ?? lastKnownPositions.get(symbol) ?? null;
   await new Promise((resolve) => setTimeout(resolve, 750));
   const confirmation = await confirmBinancePositionClosed(
     symbol,
@@ -33799,6 +37708,13 @@ async function handleConfirmedPositionClose(symbol) {
     'positionSocketClose:confirmClosed',
   );
   if (!confirmation.closed) {
+    if (closeMeta.source === 'ACCOUNT_UPDATE_REVERSAL') {
+      await auditBinancePositionClose(symbol, dcaParentPosition, closeMeta).catch((error) => {
+        console.warn(`[FilledSignalAudit] reversal close ${symbol}: ${error.message}`);
+      });
+      resetBinanceProtectionExclusionAfterClose(symbol, 'POSITION_REVERSED');
+      return { symbol, skipped: 'POSITION_REVERSED_ACTIVE_OPPOSITE_SIDE' };
+    }
     restorePositionMonitorFromBinance(confirmation.activePosition);
     console.warn(
       `[ProtectionCleanup] ${symbol} stale/out-of-order close ignored; Binance position is active`
@@ -33808,15 +37724,20 @@ async function handleConfirmedPositionClose(symbol) {
   }
 
   console.log(
-    `[PosMonitor] ${symbol} close confirmed by Binance Position Risk -> cleaning TP/SL, retaining LIMIT orders`
+    `[PosMonitor] ${symbol} close confirmed by Binance Position Risk -> cleaning TP/SL and attached DCA LIMIT orders`
     + ` version=${BINANCE_POSITION_CLOSE_CONFIRM_VERSION}`,
   );
+  resetBinanceProtectionExclusionAfterClose(symbol, 'POSITION_CLOSED');
+  await auditBinancePositionClose(symbol, dcaParentPosition, closeMeta).catch((error) => {
+    console.warn(`[FilledSignalAudit] close ${symbol}: ${error.message}`);
+  });
   broadcastOrdersPositionPnl('position-closed', {
     version: ORDERS_POSITION_PNL_STREAM_VERSION,
     symbol,
     eventAt: Date.now(),
   });
   signalProtectionPlans.delete(symbol);
+  pendingLiqTp.delete(symbol);
   twelveHourTpMoved.delete(symbol);
   twelveHourTpLastRun.delete(symbol);
   twelveHourTpRunning.delete(symbol);
@@ -33839,13 +37760,16 @@ async function handleConfirmedPositionClose(symbol) {
     symbol,
     apiKey,
     apiSecret,
-    { confirmedClosed: true },
+    { confirmedClosed: true, closedPosition: dcaParentPosition },
   );
   invalidateOpenOrdersCache();
   return result;
 }
 
-async function cancelAutomaticProtectionOrdersForSymbol(symbol, apiKey, apiSecret, { confirmedClosed = false } = {}) {
+async function cancelAutomaticProtectionOrdersForSymbol(symbol, apiKey, apiSecret, {
+  confirmedClosed = false,
+  closedPosition = null,
+} = {}) {
   if (!confirmedClosed) {
     const confirmation = await confirmBinancePositionClosed(symbol, apiKey, apiSecret);
     if (!confirmation.closed) {
@@ -33862,12 +37786,26 @@ async function cancelAutomaticProtectionOrdersForSymbol(symbol, apiKey, apiSecre
     return [];
   });
   const protectionOrders = selectAutomaticProtectionCleanupOrders(regularOrders);
+  const dcaAttachedOrders = closedPosition
+    ? selectDcaAttachedLimitOrders(regularOrders, [{ ...closedPosition, symbol }])
+    : [];
   let regularCount = 0;
   for (const order of protectionOrders) {
     if (order?.orderId == null) continue;
     await client.cancelOrder({ symbol, orderId: order.orderId, apiKey, apiSecret, recvWindow })
       .then(() => { regularCount += 1; })
       .catch((error) => console.warn(`[ProtectionCleanup] ${symbol} orderId=${order.orderId}: ${error.message}`));
+  }
+  let dcaLimitCount = 0;
+  const cancelledDcaOrderIds = [];
+  for (const order of dcaAttachedOrders) {
+    if (order?.orderId == null) continue;
+    await client.cancelOrder({ symbol, orderId: order.orderId, apiKey, apiSecret, recvWindow })
+      .then(() => {
+        dcaLimitCount += 1;
+        cancelledDcaOrderIds.push(order.orderId);
+      })
+      .catch((error) => console.warn(`[DcaLimitCleanup] ${symbol} orderId=${order.orderId}: ${error.message}`));
   }
 
   const algoResult = await client.getOpenAlgoOrders({ symbol, apiKey, apiSecret, recvWindow }).catch((error) => {
@@ -33882,14 +37820,18 @@ async function cancelAutomaticProtectionOrdersForSymbol(symbol, apiKey, apiSecre
       .then(() => { algoCount += 1; })
       .catch((error) => console.warn(`[ProtectionCleanup] ${symbol} algoId=${order.algoId}: ${error.message}`));
   }
-  const retainedLimits = (Array.isArray(regularOrders) ? regularOrders : []).filter(isRegularLimitOrder).length;
-  if (regularCount || algoCount || retainedLimits) {
+  const cancelledDcaIds = new Set(cancelledDcaOrderIds.map(String));
+  const retainedLimits = (Array.isArray(regularOrders) ? regularOrders : [])
+    .filter((order) => isRegularLimitOrder(order) && !cancelledDcaIds.has(String(order?.orderId)))
+    .length;
+  if (regularCount || algoCount || dcaLimitCount || retainedLimits) {
     console.log(
-      `[ProtectionCleanup] ${symbol} regular=${regularCount} algo=${algoCount} `
-      + `LIMIT retained=${retainedLimits} version=${LIMIT_ORDER_RETENTION_VERSION}`,
+      `[ProtectionCleanup] ${symbol} regular=${regularCount} algo=${algoCount}`
+      + ` DCA_LIMIT cancelled=${dcaLimitCount} LIMIT retained=${retainedLimits}`
+      + ` version=${dcaLimitCount ? DCA_ATTACHED_LIMIT_RETENTION_VERSION : LIMIT_ORDER_RETENTION_VERSION}`,
     );
   }
-  return { symbol, regularCount, algoCount, retainedLimits };
+  return { symbol, regularCount, algoCount, dcaLimitCount, cancelledDcaOrderIds, retainedLimits };
 }
 
 // ── BTC Trend Monitor — cancel contra-trend LIMIT orders on bias shift ──────────
@@ -33905,10 +37847,14 @@ async function cancelContraTrendLimitOrders(direction, health, webhookUrl) {
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
     const allOrders = await getCachedOpenOrders(apiKey, apiSecret);
+    const { positions } = await getSharedPositionData();
     const isReduceOnly = (o) => o.reduceOnly === true || o.reduceOnly === 'true';
     const isLimit = (o) => ['LIMIT', 'LIMIT_MAKER'].includes(String(o.type ?? o.origType ?? '').toUpperCase());
     const side = direction === 'LONG' ? 'BUY' : 'SELL';
-    const targets = allOrders.filter((o) => isLimit(o) && !isReduceOnly(o) && o.side === side);
+    const targets = allOrders.filter((o) => isLimit(o)
+      && !isReduceOnly(o)
+      && o.side === side
+      && !positions.some((position) => shouldRetainDcaAttachedLimitOrder({ order: o, position })));
     if (!targets.length) return;
 
     const cancelled = [];
@@ -33991,11 +37937,17 @@ async function runStaleOrderCleaner() {
   staleOrderCleanerRunning = true;
   try {
     const { apiKey, apiSecret } = getApiCredentials(null);
-    const { positions } = await getSharedPositionData();
+    const { positions, openOrders } = await getSharedPositionData();
     const activeMap = new Map(
       positions
-        .map((p) => [p.symbol, { unRealizedProfit: Number(p.unRealizedProfit), positionAmt: Number(p.positionAmt) }]),
+        .map((p) => [p.symbol, {
+          symbol: p.symbol,
+          unRealizedProfit: Number(p.unRealizedProfit),
+          positionAmt: Number(p.positionAmt),
+          positionSide: p.positionSide ?? 'BOTH',
+        }]),
     );
+    const cancelledDcaOrderIds = new Set();
 
     if (lastKnownPositions.size > 0) {
       for (const [sym, prev] of lastKnownPositions) {
@@ -34016,8 +37968,10 @@ async function runStaleOrderCleaner() {
         if (!closeConfirmation.closed) {
           const active = closeConfirmation.activePosition;
           activeMap.set(sym, {
+            symbol: sym,
             unRealizedProfit: Number(active.unRealizedProfit),
             positionAmt: Number(active.positionAmt),
+            positionSide: active.positionSide ?? 'BOTH',
           });
           restorePositionMonitorFromBinance(active);
           console.warn(
@@ -34027,6 +37981,9 @@ async function runStaleOrderCleaner() {
           continue;
         }
 
+        resetBinanceProtectionExclusionAfterClose(sym, 'POSITION_CLOSED_REST_RECONCILE');
+        signalProtectionPlans.delete(sym);
+        pendingLiqTp.delete(sym);
         avgDownFired.delete(sym);
         tpMovedToEntry.delete(sym);
         twelveHourTpMoved.delete(sym);
@@ -34043,10 +38000,16 @@ async function runStaleOrderCleaner() {
           delete slTracking.positions[sym];
           saveSlTracking();
         }
-        console.log(`[StaleOrders] ${sym} closed → cleaning TP/SL, retaining LIMIT orders`);
-        cancelAutomaticProtectionOrdersForSymbol(sym, apiKey, apiSecret, { confirmedClosed: true }).catch((err) =>
-          console.warn(`[StaleOrders] protection cleanup ${sym}: ${err.message}`),
-        );
+        console.log(`[StaleOrders] ${sym} closed → cleaning TP/SL and attached DCA LIMIT orders`);
+        try {
+          const cleanup = await cancelAutomaticProtectionOrdersForSymbol(sym, apiKey, apiSecret, {
+            confirmedClosed: true,
+            closedPosition: prev,
+          });
+          for (const orderId of cleanup.cancelledDcaOrderIds ?? []) cancelledDcaOrderIds.add(String(orderId));
+        } catch (err) {
+          console.warn(`[StaleOrders] protection/DCA cleanup ${sym}: ${err.message}`);
+        }
 
         // Detect SL: fetch last few trades, if closing trade has negative realizedPnl → blacklist 2h
         try {
@@ -34070,10 +38033,18 @@ async function runStaleOrderCleaner() {
     // Independent age expiry: do not enable the legacy BTC-bias cancellation
     // switch just to expire genuinely stale entry LIMIT orders.
     const staleMs = Number(process.env.ENTRY_LIMIT_MAX_AGE_MS ?? DEFAULT_ENTRY_LIMIT_MAX_AGE_MS);
-    if (isEntryLimitExpiryEnabled(process.env.ENTRY_LIMIT_12H_CANCEL_ENABLED) && staleMs > 0) {
-      const allOrders = await client.getOpenOrders({ apiKey, apiSecret });
+    const generalEntryLimitExpiryEnabled = isEntryLimitExpiryEnabled(process.env.ENTRY_LIMIT_12H_CANCEL_ENABLED) && staleMs > 0;
+    {
+      const allOrders = (Array.isArray(openOrders) ? openOrders : [])
+        .filter((order) => !cancelledDcaOrderIds.has(String(order?.orderId)));
       const now = Date.now();
-      const stale = selectExpiredEntryLimitOrders(allOrders, { now, maxAgeMs: staleMs });
+      const stale = selectExpiredEntryLimitOrders(allOrders, {
+        now,
+        maxAgeMs: staleMs > 0 ? staleMs : DEFAULT_ENTRY_LIMIT_MAX_AGE_MS,
+        positions: [...activeMap.values()],
+        coinLevelStartedAt: coinLevelEntryWatchBinanceRunner.limitStartedAt,
+      }).filter((order) => generalEntryLimitExpiryEnabled
+        || String(order?.clientOrderId ?? '').startsWith('clel_'));
       for (const o of stale) {
         const ageMin = Math.round((now - Number(o.time)) / 60000);
         try {
@@ -34084,7 +38055,23 @@ async function runStaleOrderCleaner() {
             (plan.orderId != null && o.orderId != null && String(plan.orderId) === String(o.orderId))
             || (plan.entryClientOrderId && o.clientOrderId && plan.entryClientOrderId === o.clientOrderId)
           );
-          if (planMatchesOrder) signalProtectionPlans.delete(normalizedSymbol);
+          const coinLevelPartial = String(o.clientOrderId ?? '').startsWith('clel_')
+            && Number(o.executedQty) > 0;
+          const partialPosition = coinLevelPartial
+            ? positions.find((position) => position.symbol === normalizedSymbol
+              && (o.side === 'BUY' ? Number(position.positionAmt) > 0 : Number(position.positionAmt) < 0))
+            : null;
+          if (coinLevelPartial && partialPosition && planMatchesOrder) {
+            plan.fillPrice = Number(partialPosition.entryPrice) || Number(o.price) || plan.fillPrice;
+            await applySignalProtectionOnFill(normalizedSymbol);
+            if (!plan.appliedAt) {
+              console.error(`[StaleOrders] ${normalizedSymbol} partial Coin Level LIMIT cancelled, TP/SL still pending retry`);
+            }
+          } else if (planMatchesOrder) {
+            signalProtectionPlans.delete(normalizedSymbol);
+          } else if (coinLevelPartial && partialPosition) {
+            console.error(`[StaleOrders] ${normalizedSymbol} partial Coin Level LIMIT has no in-memory protection plan after cancel; verify TP/SL immediately`);
+          }
           console.log(
             `[StaleOrders] Cancelled ${o.symbol} #${o.orderId} LIMIT ${o.side} — ${ageMin}min old`
             + ` version=${ENTRY_LIMIT_TWELVE_HOUR_EXPIRY_VERSION}`,
@@ -34170,7 +38157,263 @@ function isTakeProfitUserOrLiquidFlowV2ManagedPosition(symbol, pos = {}) {
   return isUserOrLiquidFlowV2ManagedSource(tracking?.signalSource, plan?.source);
 }
 
-async function rememberBinanceProfitLock(symbol, stopLossPrice, lockRoe, lifecycleKey = null) {
+const fastWaveProfitLockLastLogAt = new Map();
+const fastWaveRecoveryRuntime = new Map();
+const fastWaveRecoveryLastLogAt = new Map();
+const FAST_WAVE_LOG_COOLDOWN_MS = 60_000;
+const FAST_WAVE_EXPLICIT_SYMBOLS = parseBinanceFastWaveSymbols(
+  process.env.BINANCE_FAST_WAVE_SYMBOLS ?? 'ZKPUSDT,4USDT',
+);
+
+function binanceFastWaveProfitLockPolicy(symbol, {
+  isLong,
+  isManualPosition,
+  isLiquidFlowV2Position,
+  isShortTpOnlyBreakEven,
+} = {}) {
+  const normalizedSymbol = normalizeSymbol(symbol);
+  const candleVolatility = summarizeBinanceCandleVolatility({
+    candles5m: klineCache.getIfCached(normalizedSymbol, '5m', 3) ?? [],
+    candles15m: klineCache.getIfCached(normalizedSymbol, '15m', 2) ?? [],
+    side: isLong ? 'LONG' : 'SHORT',
+    range5mThresholdPct: Number(
+      process.env.BINANCE_FAST_WAVE_CANDLE_5M_RANGE_PCT ?? FAST_WAVE_CANDLE_5M_RANGE_THRESHOLD_PCT,
+    ),
+    range15mThresholdPct: Number(
+      process.env.BINANCE_FAST_WAVE_CANDLE_15M_RANGE_PCT ?? FAST_WAVE_CANDLE_15M_RANGE_THRESHOLD_PCT,
+    ),
+    wickMinRatio: Number(
+      process.env.BINANCE_FAST_WAVE_CANDLE_WICK_MIN_RATIO ?? FAST_WAVE_CANDLE_WICK_MIN_RATIO,
+    ),
+    reversalBodyMinRatio: Number(
+      process.env.BINANCE_FAST_WAVE_CANDLE_REVERSAL_BODY_MIN_RATIO
+        ?? FAST_WAVE_CANDLE_REVERSAL_BODY_MIN_RATIO,
+    ),
+  });
+  return classifyBinanceFastWaveProfitLock({
+    symbol: normalizedSymbol,
+    side: isLong ? 'LONG' : 'SHORT',
+    isManualOrLiquidFlowV2: isManualPosition === true
+      || isLiquidFlowV2Position === true
+      || isShortTpOnlyBreakEven === true,
+    explicitSymbols: FAST_WAVE_EXPLICIT_SYMBOLS,
+    candleVolatility,
+  });
+}
+
+function binanceFastWavePositionContext(symbol, pos = {}) {
+  const amount = Number(pos?.amt ?? pos?.positionAmt);
+  const isLong = amount > 0;
+  const isBotShortTpOnlyPosition = isTrackedBotShortTpOnlyPosition(symbol, pos);
+  const isManualShortTpOnlyPosition = isTrackedManualShortTpOnlyPosition(symbol, pos);
+  const isShortTpOnlyBreakEven = isBotShortTpOnlyPosition || isManualShortTpOnlyPosition;
+  const isManualPosition = isManualBinanceManagedPosition(symbol, pos);
+  const isLiquidFlowV2Position = isLiquidFlowV2ManagedPosition(symbol, pos);
+  return {
+    isLong,
+    isManualPosition,
+    isLiquidFlowV2Position,
+    isShortTpOnlyBreakEven,
+    fastWavePolicy: binanceFastWaveProfitLockPolicy(symbol, {
+      isLong,
+      isManualPosition,
+      isLiquidFlowV2Position,
+      isShortTpOnlyBreakEven,
+    }),
+  };
+}
+
+function binanceFastWaveRecoveryLifecycle(symbol, pos = {}) {
+  const normalizedSymbol = normalizeSymbol(symbol);
+  const amount = Number(pos?.amt ?? pos?.positionAmt);
+  const entry = Number(pos?.entry ?? pos?.entryPrice);
+  const tracking = slTracking.positions?.[normalizedSymbol] ?? null;
+  return binanceProfitLockLifecycleKey({
+    symbol: normalizedSymbol,
+    side: amount > 0 ? 'LONG' : 'SHORT',
+    entryPrice: entry,
+    openedAt: tracking?.openedAt,
+  });
+}
+
+function binanceFastWaveRecoveryState(symbol, pos = {}) {
+  const normalizedSymbol = normalizeSymbol(symbol);
+  const lifecycleKey = binanceFastWaveRecoveryLifecycle(normalizedSymbol, pos);
+  if (!lifecycleKey) return null;
+  const runtime = fastWaveRecoveryRuntime.get(normalizedSymbol);
+  if (runtime?.version === BINANCE_FAST_WAVE_RECOVERY_VERSION
+    && runtime?.lifecycleKey === lifecycleKey) return runtime;
+  const tracking = slTracking.positions?.[normalizedSymbol] ?? null;
+  if (tracking?.fastWaveRecoveryVersion !== BINANCE_FAST_WAVE_RECOVERY_VERSION
+    || String(tracking?.fastWaveRecoveryLifecycleKey ?? '') !== lifecycleKey) return null;
+  const restored = {
+    version: BINANCE_FAST_WAVE_RECOVERY_VERSION,
+    lifecycleKey,
+    state: String(tracking.fastWaveRecoveryState ?? 'ARMED').toUpperCase(),
+    armedAt: tracking.fastWaveRecoveryArmedAt ?? null,
+    armedRoe: Number(tracking.fastWaveRecoveryArmedRoe),
+    reason: tracking.fastWaveRecoveryReason ?? null,
+  };
+  fastWaveRecoveryRuntime.set(normalizedSymbol, restored);
+  return restored;
+}
+
+function rememberBinanceFastWaveRecovery(symbol, pos, roe, fastWavePolicy) {
+  const normalizedSymbol = normalizeSymbol(symbol);
+  const lifecycleKey = binanceFastWaveRecoveryLifecycle(normalizedSymbol, pos);
+  if (!lifecycleKey) return null;
+  const existing = binanceFastWaveRecoveryState(normalizedSymbol, pos);
+  if (existing?.state === 'ARMED' || existing?.state === 'LOCKED') return existing;
+  const armedAt = new Date().toISOString();
+  const state = {
+    version: BINANCE_FAST_WAVE_RECOVERY_VERSION,
+    lifecycleKey,
+    state: 'ARMED',
+    armedAt,
+    armedRoe: Number(roe),
+    reason: fastWavePolicy?.reason ?? 'FAST_WAVE',
+  };
+  fastWaveRecoveryRuntime.set(normalizedSymbol, state);
+  const tracking = slTracking.positions?.[normalizedSymbol] ?? null;
+  if (tracking) {
+    tracking.fastWaveRecoveryVersion = BINANCE_FAST_WAVE_RECOVERY_VERSION;
+    tracking.fastWaveRecoveryLifecycleKey = lifecycleKey;
+    tracking.fastWaveRecoveryState = 'ARMED';
+    tracking.fastWaveRecoveryArmedAt = armedAt;
+    tracking.fastWaveRecoveryArmedRoe = Number(roe);
+    tracking.fastWaveRecoveryReason = state.reason;
+    tracking.fastWaveRecoveryUpdatedAt = armedAt;
+    saveSlTracking();
+  }
+  console.warn(
+    `[FastWaveRecovery] ARMED ${normalizedSymbol} ROE=${Number(roe).toFixed(1)}%`
+    + ` reason=${state.reason}; giữ TP hiện tại, không đặt TP-at-entry`
+    + ` version=${BINANCE_FAST_WAVE_RECOVERY_VERSION}`,
+  );
+  return state;
+}
+
+function completeBinanceFastWaveRecovery(symbol, pos, stopPrice) {
+  const normalizedSymbol = normalizeSymbol(symbol);
+  const current = binanceFastWaveRecoveryState(normalizedSymbol, pos);
+  if (!current || current.state === 'LOCKED') return;
+  const updatedAt = new Date().toISOString();
+  const next = { ...current, state: 'LOCKED', lockedAt: updatedAt, stopPrice: Number(stopPrice) };
+  fastWaveRecoveryRuntime.set(normalizedSymbol, next);
+  const tracking = slTracking.positions?.[normalizedSymbol] ?? null;
+  if (tracking) {
+    tracking.fastWaveRecoveryState = 'LOCKED';
+    tracking.fastWaveRecoveryLockedAt = updatedAt;
+    tracking.fastWaveRecoveryStopPrice = Number(stopPrice);
+    tracking.fastWaveRecoveryUpdatedAt = updatedAt;
+    saveSlTracking();
+  }
+  console.log(
+    `[FastWaveRecovery] LOCKED ${normalizedSymbol} → SL +${BINANCE_FAST_WAVE_RECOVERY_LOCK_ROE}% ROE`
+    + ` @${stopPrice} version=${BINANCE_FAST_WAVE_RECOVERY_VERSION}`,
+  );
+}
+
+function logBinanceFastWaveRecoveryWait(symbol, roe, state, reason = 'WAIT_RECOVERY') {
+  const normalizedSymbol = normalizeSymbol(symbol);
+  const now = Date.now();
+  const previous = Number(fastWaveRecoveryLastLogAt.get(normalizedSymbol) ?? 0);
+  if (now - previous < FAST_WAVE_LOG_COOLDOWN_MS) return;
+  fastWaveRecoveryLastLogAt.set(normalizedSymbol, now);
+  if (reason === 'DEEP_LOSS_OVERRIDE_TO_ENTRY') {
+    console.log(
+      `[FastWaveRecovery] ${normalizedSymbol} ${reason} ROE=${Number(roe).toFixed(1)}%`
+      + ` state=${state?.state ?? '-'}; bỏ qua FastWaveRecovery và chuyển TP về entry`,
+    );
+    return;
+  }
+  console.log(
+    `[FastWaveRecovery] ${normalizedSymbol} ${reason} ROE=${Number(roe).toFixed(1)}%`
+    + ` state=${state?.state ?? '-'}; giữ nguyên TP, chờ +${BINANCE_FAST_WAVE_RECOVERY_LOCK_TRIGGER_ROE}% để khóa SL +${BINANCE_FAST_WAVE_RECOVERY_LOCK_ROE}%`,
+  );
+}
+
+function logBinanceFastWaveCandleDataPending(symbol, roe, source = 'NEGATIVE_TP') {
+  const normalizedSymbol = normalizeSymbol(symbol);
+  const key = `${normalizedSymbol}|CANDLE_DATA_PENDING`;
+  const now = Date.now();
+  const previous = Number(fastWaveRecoveryLastLogAt.get(key) ?? 0);
+  if (now - previous < FAST_WAVE_LOG_COOLDOWN_MS) return;
+  fastWaveRecoveryLastLogAt.set(key, now);
+  console.warn(
+    `[FastWaveRecovery] ${normalizedSymbol} ${source} deferred ROE=${Number(roe).toFixed(1)}%`
+    + '; cache nến 5m/15m chưa sẵn sàng, giữ nguyên TP/SL đến lần phân loại kế tiếp',
+  );
+}
+
+async function routeNegativeTakeProfit(symbol, pos, roe, {
+  thresholdRoe = negativeTpRoeThreshold(),
+  triggerVersion = BINANCE_NEGATIVE_TP_TO_ENTRY_VERSION,
+  triggerAgeMs = null,
+  forceEligible = false,
+} = {}) {
+  if (isBinanceProtectionExcluded(symbol, 'NEGATIVE_TP_MOVE')) return false;
+  const currentRoe = Number(roe);
+  const eligible = forceEligible || shouldMoveSymbolNegativeTpToEntry(symbol, currentRoe, thresholdRoe);
+  if (!eligible) return false;
+  const deepLossOverridesFastWave = shouldBypassFastWaveRecoveryForNegativeTp({
+    roe: currentRoe,
+    thresholdRoe,
+  });
+  const recovery = binanceFastWaveRecoveryState(symbol, pos);
+  if (!deepLossOverridesFastWave && (recovery?.state === 'ARMED' || recovery?.state === 'LOCKED')) {
+    logBinanceFastWaveRecoveryWait(symbol, currentRoe, recovery, 'TP_REWRITE_BLOCKED');
+    return true;
+  }
+  if (deepLossOverridesFastWave && (recovery?.state === 'ARMED' || recovery?.state === 'LOCKED')) {
+    logBinanceFastWaveRecoveryWait(symbol, currentRoe, recovery, 'DEEP_LOSS_OVERRIDE_TO_ENTRY');
+  }
+  const positionContext = binanceFastWavePositionContext(symbol, pos);
+  if (!deepLossOverridesFastWave && positionContext.fastWavePolicy.reason === 'CANDLE_DATA_PENDING') {
+    logBinanceFastWaveCandleDataPending(symbol, currentRoe);
+    return true;
+  }
+  if (!deepLossOverridesFastWave) {
+    const recoveryDecision = evaluateBinanceFastWaveRecovery({
+      roe: currentRoe,
+      fastWaveActive: positionContext.fastWavePolicy.active,
+      triggerRoe: Number(
+        process.env.BINANCE_FAST_WAVE_RECOVERY_TRIGGER_ROE ?? BINANCE_FAST_WAVE_RECOVERY_TRIGGER_ROE,
+      ),
+      lockTriggerRoe: Number(
+        process.env.BINANCE_FAST_WAVE_RECOVERY_LOCK_TRIGGER_ROE
+          ?? BINANCE_FAST_WAVE_RECOVERY_LOCK_TRIGGER_ROE,
+      ),
+      lockRoe: Number(
+        process.env.BINANCE_FAST_WAVE_RECOVERY_LOCK_ROE ?? BINANCE_FAST_WAVE_RECOVERY_LOCK_ROE,
+      ),
+    });
+    if (recoveryDecision.action === 'ARM_RECOVERY') {
+      rememberBinanceFastWaveRecovery(symbol, pos, currentRoe, positionContext.fastWavePolicy);
+      return true;
+    }
+  }
+  await handleNegativeTimeoutTp(symbol, pos, {
+    triggerVersion,
+    triggerAgeMs,
+    triggerRoe: currentRoe,
+  });
+  return true;
+}
+
+function logBinanceFastWaveProfitLockDeferred(symbol, roe, policy) {
+  const now = Date.now();
+  const previous = Number(fastWaveProfitLockLastLogAt.get(symbol) ?? 0);
+  if (now - previous < FAST_WAVE_LOG_COOLDOWN_MS) return;
+  fastWaveProfitLockLastLogAt.set(symbol, now);
+  console.log(
+    `[FastWaveProfitLock] ${symbol} defer ROE=${Number(roe).toFixed(1)}% < `
+    + `${Number(process.env.BINANCE_FAST_WAVE_PROFIT_LOCK_TRIGGER_ROE ?? FAST_WAVE_PROFIT_LOCK_TRIGGER_ROE)}%`
+    + ` reason=${policy?.reason ?? 'UNKNOWN'}; giữ SL gốc`,
+  );
+}
+
+async function rememberBinanceProfitLock(symbol, stopLossPrice, lockRoe, lifecycleKey = null, fastWavePolicy = null) {
   const tracking = slTracking.positions?.[symbol] ?? null;
   const lifecycleId = tracking?.lifecycleId ?? signalProtectionPlans.get(symbol)?.lifecycleId ?? null;
   if (tracking) {
@@ -34185,6 +38428,8 @@ async function rememberBinanceProfitLock(symbol, stopLossPrice, lockRoe, lifecyc
     tracking.profitLockRoe = Number(lockRoe);
     tracking.profitLockStopLossPrice = Number(stopLossPrice);
     tracking.profitLockUpdatedAt = new Date().toISOString();
+    tracking.profitLockFastWave = fastWavePolicy?.active === true;
+    tracking.profitLockFastWaveReason = fastWavePolicy?.active === true ? fastWavePolicy.reason : null;
     saveSlTracking();
   }
   if (lifecycleId) {
@@ -34197,6 +38442,8 @@ async function rememberBinanceProfitLock(symbol, stopLossPrice, lockRoe, lifecyc
       profitLockLifecycleKey: lifecycleKey,
       profitLockArmedRoe: Number(lockRoe),
       profitLockArmedLifecycleKey: lifecycleKey,
+      profitLockFastWave: fastWavePolicy?.active === true,
+      profitLockFastWaveReason: fastWavePolicy?.active === true ? fastWavePolicy.reason : null,
       profitLockUpdatedAt: new Date().toISOString(),
     }, 'PROFIT_LOCK_SL_MOVED', {
       symbol,
@@ -34218,6 +38465,9 @@ function resetBinanceProfitLockRuntime(symbol, reason = 'UNKNOWN') {
   const previousLock = slTrailLockRoe.get(normalizedSymbol);
   slTrailLockRoe.delete(normalizedSymbol);
   slTrailLastRun.delete(normalizedSymbol);
+  fastWaveProfitLockLastLogAt.delete(normalizedSymbol);
+  fastWaveRecoveryRuntime.delete(normalizedSymbol);
+  fastWaveRecoveryLastLogAt.delete(normalizedSymbol);
   const tracking = slTracking.positions?.[normalizedSymbol] ?? null;
   if (tracking) {
     delete tracking.profitLockArmedRoe;
@@ -34229,6 +38479,17 @@ function resetBinanceProfitLockRuntime(symbol, reason = 'UNKNOWN') {
     delete tracking.profitLockRoe;
     delete tracking.profitLockStopLossPrice;
     delete tracking.profitLockUpdatedAt;
+    delete tracking.profitLockFastWave;
+    delete tracking.profitLockFastWaveReason;
+    delete tracking.fastWaveRecoveryVersion;
+    delete tracking.fastWaveRecoveryLifecycleKey;
+    delete tracking.fastWaveRecoveryState;
+    delete tracking.fastWaveRecoveryArmedAt;
+    delete tracking.fastWaveRecoveryArmedRoe;
+    delete tracking.fastWaveRecoveryReason;
+    delete tracking.fastWaveRecoveryLockedAt;
+    delete tracking.fastWaveRecoveryStopPrice;
+    delete tracking.fastWaveRecoveryUpdatedAt;
     saveSlTracking();
   }
   if (previousLock != null) {
@@ -34236,11 +38497,12 @@ function resetBinanceProfitLockRuntime(symbol, reason = 'UNKNOWN') {
   }
 }
 
-function armBinanceProfitLock(symbol, targetLockRoe, lifecycleKey, roe, markPrice) {
+function armBinanceProfitLock(symbol, targetLockRoe, lifecycleKey, roe, markPrice, fastWavePolicy = null) {
   const tracking = slTracking.positions?.[symbol] ?? null;
   if (!tracking || !lifecycleKey) return;
   const persistedKey = String(tracking.profitLockArmedLifecycleKey ?? '');
-  const persistedRoe = persistedKey === lifecycleKey
+  const persistedRoe = tracking.profitLockVersion === BINANCE_PROFIT_LOCK_VERSION
+    && persistedKey === lifecycleKey
     ? Number(tracking.profitLockArmedRoe ?? -Infinity)
     : -Infinity;
   if (Number.isFinite(persistedRoe) && persistedRoe >= targetLockRoe) return;
@@ -34250,8 +38512,14 @@ function armBinanceProfitLock(symbol, targetLockRoe, lifecycleKey, roe, markPric
   tracking.profitLockArmedLifecycleKey = lifecycleKey;
   tracking.profitLockArmedObservedRoe = Number(roe);
   tracking.profitLockArmedMarkPrice = Number(markPrice) || null;
+  tracking.profitLockFastWave = fastWavePolicy?.active === true;
+  tracking.profitLockFastWaveReason = fastWavePolicy?.active === true ? fastWavePolicy.reason : null;
   saveSlTracking();
-  console.log(`[ProfitLock] ARMED ${symbol} ROE=${Number(roe).toFixed(1)}% target=+${targetLockRoe}% lifecycle=${lifecycleKey}`);
+  console.log(
+    `[ProfitLock] ARMED ${symbol} ROE=${Number(roe).toFixed(1)}% target=+${targetLockRoe}%`
+    + ` lifecycle=${lifecycleKey}`
+    + `${fastWavePolicy?.active === true ? ` fastWave=${fastWavePolicy.reason}` : ''}`,
+  );
 }
 
 const slTrailRunning = new Set();
@@ -34260,71 +38528,173 @@ const slTrailLockRoe = new Map(); // symbol → { lockRoe, lifecycleKey } (in-me
 const slTrailLastRun = new Map(); // symbol → timestamp of last API call
 const SL_TRAIL_COOLDOWN_MS = 60_000; // tối thiểu 60s giữa 2 lần gọi API cho cùng symbol
 const SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS = 5_000;
+const coinglassStrongShortBreakEvenRunning = new Set();
+const coinglassStrongShortBreakEvenLastRun = new Map();
+const COINGLASS_STRONG_SHORT_BE_COOLDOWN_MS = 30_000;
 
-async function closeBinancePositionAtBreachedProfitLock(symbol, context) {
-  const { apiKey, apiSecret, symbolInfo, targetLockRoe, stopPrice, isLong } = context;
-  const [positions, premiumIndex] = await Promise.all([
-    client.getPositions({
-      apiKey,
-      apiSecret,
-      priority: 0,
-      dropOnCongestion: false,
-      source: 'profitLock:immediateTriggerPosition',
-    }),
-    client.getPremiumIndex(symbol),
-  ]);
-  const current = (Array.isArray(positions) ? positions : []).find((row) => {
-    if (normalizeSymbol(row?.symbol) !== symbol) return false;
-    const amount = Number(row?.positionAmt ?? row?.amt);
-    return isLong ? amount > 0 : amount < 0;
-  });
-  if (!current) return { closed: false, reason: 'POSITION_ALREADY_CLOSED' };
+function coinglassStrongShortCurrentChange24h(symbol, tracking = {}) {
+  const normalizedSymbol = normalizeSymbol(symbol);
+  const snapshot = (_snapshotCache ?? []).find((row) => normalizeSymbol(row?.symbol) === normalizedSymbol) ?? null;
+  const snapshotFresh = snapshot && _snapshotCacheAt > 0 && Date.now() - _snapshotCacheAt <= 180_000;
+  const entryChange = Number(tracking?.coinglassZoneLifecycleChange24hPct);
+  const currentChange = snapshotFresh
+    ? Number(snapshot?.change24hPct ?? snapshot?.priceChangePercent)
+    : NaN;
+  if (!Number.isFinite(currentChange)) return Number.isFinite(entryChange) ? entryChange : null;
+  if (!Number.isFinite(entryChange)) return currentChange;
+  return Math.abs(currentChange) >= Math.abs(entryChange) ? currentChange : entryChange;
+}
 
-  const latestMark = Number(premiumIndex?.markPrice ?? current.markPrice);
-  if (!isBinanceProfitLockTargetBreached({
-    side: isLong ? 'LONG' : 'SHORT',
-    markPrice: latestMark,
-    stopPrice,
-  })) {
-    return { closed: false, reason: 'LATEST_MARK_NOT_BREACHED', latestMark };
-  }
-
-  const currentAmount = Number(current.positionAmt ?? current.amt);
-  const lotSize = symbolInfo.filters?.find((filter) => filter.filterType === 'LOT_SIZE');
-  const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
-  const steppedQty = Math.floor(Math.abs(currentAmount) / stepSize) * stepSize;
-  const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
-  if (!(Number(quantity) > 0)) return { closed: false, reason: 'INVALID_QUANTITY', latestMark };
-
-  const positionSide = String(current.positionSide ?? 'BOTH').toUpperCase();
-  const closeIsLong = positionSide === 'LONG'
-    ? true
-    : positionSide === 'SHORT'
-      ? false
-      : currentAmount > 0;
-  const closeParams = {
+async function handleCoinglassStrongShortBreakEven(symbol, pos, roe, markPrice = null) {
+  const tracking = slTracking.positions?.[symbol] ?? null;
+  if (!tracking) return;
+  const amount = Number(pos?.amt ?? pos?.positionAmt);
+  const entry = Number(pos?.entry ?? pos?.entryPrice);
+  const mark = Number(markPrice ?? pos?.markPrice);
+  const legs = Array.isArray(tracking.signalTakeProfitLegs) ? tracking.signalTakeProfitLegs : [];
+  const tp1 = legs.find((leg) => String(leg?.key).toUpperCase() === 'TP1') ?? null;
+  const runner = legs.find((leg) => String(leg?.key).toUpperCase() === 'TP2') ?? null;
+  const runnerQuantity = Number(runner?.quantity);
+  const tp1FilledByQuantity = amount < 0
+    && runnerQuantity > 0
+    && Math.abs(amount) <= runnerQuantity * 1.01;
+  const decision = evaluateCoinglassZoneLifecycleStrongShortBreakEven({
     symbol,
-    side: closeIsLong ? 'SELL' : 'BUY',
-    type: 'MARKET',
-    quantity,
-    recvWindow: Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000),
-    newClientOrderId: `lp_plx_${Date.now()}`.slice(0, 36),
-  };
-  if (positionSide !== 'BOTH') closeParams.positionSide = positionSide;
-  else closeParams.reduceOnly = 'true';
+    source: tracking.signalSource,
+    side: amount < 0 ? 'SHORT' : 'LONG',
+    lifecycleVersion: tracking.coinglassZoneLifecycleVersion,
+    takeProfitMode: tracking.coinglassZoneLifecycleTakeProfitMode,
+    shortWaveClass: tracking.coinglassZoneLifecycleShortWaveClass,
+    change24hPct: coinglassStrongShortCurrentChange24h(symbol, tracking),
+    currentRoe: roe,
+    entryPrice: entry,
+    markPrice: mark,
+    tp1Filled: tp1FilledByQuantity,
+    excludedSymbols: parseCoinglassZoneLifecycleBreakEvenExcludedSymbols(
+      process.env.COINGLASS_ZONE_LIFECYCLE_STRONG_SHORT_BE_EXCLUDED_SYMBOLS ?? 'ZKPUSDT,4USDT',
+    ),
+    triggerRoe: Number(
+      process.env.COINGLASS_ZONE_LIFECYCLE_STRONG_SHORT_BE_TRIGGER_ROE
+      ?? COINGLASS_ZONE_LIFECYCLE_STRONG_SHORT_BREAK_EVEN_TRIGGER_ROE,
+    ),
+    hyperVolatileChange24hPct: Number(
+      process.env.COINGLASS_ZONE_LIFECYCLE_HYPER_VOLATILE_CHANGE_24H_PCT
+      ?? COINGLASS_ZONE_LIFECYCLE_HYPER_VOLATILE_CHANGE_24H_PCT,
+    ),
+  });
+  if (!decision.eligible) return;
 
-  const order = await client.placeFuturesOrder({ params: closeParams, apiKey, apiSecret });
-  console.error(
-    `[SlTrailEmergency] ✅ ${symbol} target +${targetLockRoe}% @ ${stopPrice} was crossed`
-    + ` (latest mark ${latestMark}); reduce-only MARKET close orderId=${order?.orderId ?? '-'} version=${BINANCE_PROFIT_LOCK_VERSION}`,
-  );
-  return { closed: true, latestMark, orderId: order?.orderId ?? null };
+  const lifecycleKey = `${symbol}:${entry}`;
+  if (tracking.coinglassStrongShortBreakEvenLifecycleKey === lifecycleKey
+    && Number(tracking.coinglassStrongShortBreakEvenStopPrice) > 0) return;
+  if (coinglassStrongShortBreakEvenRunning.has(symbol)) return;
+  const lastRun = Number(coinglassStrongShortBreakEvenLastRun.get(symbol) ?? 0);
+  if (Date.now() - lastRun < COINGLASS_STRONG_SHORT_BE_COOLDOWN_MS) return;
+  coinglassStrongShortBreakEvenLastRun.set(symbol, Date.now());
+  coinglassStrongShortBreakEvenRunning.add(symbol);
+
+  try {
+    const { apiKey, apiSecret } = getApiCredentials(null);
+    const recvWindow = Number(process.env.BINANCE_DEFAULT_RECV_WINDOW ?? 5000);
+    const [symbols, algoResult] = await Promise.all([
+      getSymbols(),
+      client.getOpenAlgoOrders({
+        symbol,
+        apiKey,
+        apiSecret,
+        recvWindow,
+        priority: 0,
+        dropOnCongestion: false,
+        source: 'coinglassZoneLifecycleStrongShortBE:openAlgoOrders',
+      }),
+    ]);
+    const symbolInfo = symbols.find((row) => row.symbol === symbol);
+    if (!symbolInfo) throw new Error('symbol metadata not found');
+    const openAlgo = Array.isArray(algoResult?.orders)
+      ? algoResult.orders
+      : Array.isArray(algoResult) ? algoResult : [];
+    const tickSize = Number(symbolInfo.filters?.find((filter) => filter.filterType === 'PRICE_FILTER')?.tickSize ?? 0);
+    const priceMatches = (left, right) => Math.abs(Number(left) - Number(right))
+      <= Math.max(tickSize / 2, Number(right) * 1e-10);
+    const tp1StillOpen = openAlgo.some((order) => {
+      const type = String(order?.orderType ?? order?.type ?? '').toUpperCase();
+      return normalizeSymbol(order?.symbol) === symbol
+        && String(order?.side ?? '').toUpperCase() === 'BUY'
+        && type.includes('TAKE_PROFIT')
+        && priceMatches(order?.triggerPrice ?? order?.stopPrice, tp1?.price);
+    });
+    const runnerStillOpen = openAlgo.some((order) => {
+      const type = String(order?.orderType ?? order?.type ?? '').toUpperCase();
+      return normalizeSymbol(order?.symbol) === symbol
+        && String(order?.side ?? '').toUpperCase() === 'BUY'
+        && type.includes('TAKE_PROFIT')
+        && priceMatches(order?.triggerPrice ?? order?.stopPrice, runner?.price);
+    });
+    if (tp1StillOpen || !runnerStillOpen) return;
+
+    const stopPrice = priceFromTick(symbolInfo, entry);
+    if (!(Number(stopPrice) > mark)) {
+      console.warn(
+        `[CoinGlassStrongShortBE] ${symbol} đã quay lên entry trước khi đặt STOP;`
+        + ' giữ runner, không MARKET-close',
+      );
+      return;
+    }
+    const existingStop = openAlgo.find((order) => {
+      const type = String(order?.orderType ?? order?.type ?? '').toUpperCase();
+      return normalizeSymbol(order?.symbol) === symbol
+        && String(order?.side ?? '').toUpperCase() === 'BUY'
+        && (type === 'STOP' || type === 'STOP_MARKET')
+        && priceMatches(order?.triggerPrice ?? order?.stopPrice, stopPrice);
+    });
+    if (!existingStop) {
+      const lotSize = symbolInfo.filters?.find((filter) => filter.filterType === 'LOT_SIZE');
+      const stepSize = Number(lotSize?.stepSize ?? 10 ** -Number(symbolInfo.quantityPrecision ?? 3));
+      const steppedQty = Math.floor(Math.abs(amount) / stepSize) * stepSize;
+      if (!(steppedQty > 0)) throw new Error('runner quantity rounds to zero');
+      const quantity = steppedQty.toFixed(decimalsFromStep(stepSize)).replace(/\.?0+$/, '');
+      const params = buildCoinglassZoneLifecycleBreakEvenStopParams({
+        symbol,
+        positionSide: pos?.positionSide ?? 'BOTH',
+        triggerPrice: stopPrice,
+        quantity,
+        workingType: 'MARK_PRICE',
+        recvWindow,
+        clientAlgoId: `zlc_be_${Date.now().toString(36)}`,
+      });
+      await client.placeAlgoOrder({ params, apiKey, apiSecret });
+      invalidateOpenOrdersCache();
+    }
+    tracking.slPlaced = true;
+    tracking.slPrice = Number(stopPrice);
+    tracking.slPlacedAt = new Date().toISOString();
+    tracking.coinglassStrongShortBreakEvenVersion = COINGLASS_ZONE_LIFECYCLE_STRONG_SHORT_BREAK_EVEN_VERSION;
+    tracking.coinglassStrongShortBreakEvenLifecycleKey = lifecycleKey;
+    tracking.coinglassStrongShortBreakEvenStopPrice = Number(stopPrice);
+    tracking.coinglassStrongShortBreakEvenObservedRoe = Number(roe);
+    tracking.coinglassStrongShortBreakEvenUpdatedAt = new Date().toISOString();
+    await saveSlTracking();
+    console.log(
+      `[CoinGlassStrongShortBE] ✅ ${symbol} TP1 filled, ROE=${Number(roe).toFixed(2)}%`
+      + ` → runner SL entry @${stopPrice} version=${COINGLASS_ZONE_LIFECYCLE_STRONG_SHORT_BREAK_EVEN_VERSION}`,
+    );
+  } catch (error) {
+    console.error(`[CoinGlassStrongShortBE] ${symbol}: ${error.message}`);
+  } finally {
+    coinglassStrongShortBreakEvenRunning.delete(symbol);
+  }
 }
 
 async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
   if (process.env.AUTO_SL_ENABLED === 'false') return;
-  if (isTrackedCoinglassZoneLifecycleTpOnlyPosition(symbol, pos)) return;
-  if (isTrackedBotShortTpOnlyPosition(symbol, pos) || isTrackedManualShortTpOnlyPosition(symbol, pos)) return;
+  if (isBinanceProtectionExcluded(symbol, 'SL_TRAIL_FAST_WAVE')) return;
+  if (isTrackedCoinglassZoneLifecycleTpOnlyPosition(symbol, pos)) {
+    await handleCoinglassStrongShortBreakEven(symbol, pos, roe, markPrice);
+    return;
+  }
+  const isBotShortTpOnlyPosition = isTrackedBotShortTpOnlyPosition(symbol, pos);
+  const isManualShortTpOnlyPosition = isTrackedManualShortTpOnlyPosition(symbol, pos);
+  const isShortTpOnlyBreakEven = isBotShortTpOnlyPosition || isManualShortTpOnlyPosition;
   const isManualPosition = isManualBinanceManagedPosition(symbol, pos);
   const isLiquidFlowV2Position = isLiquidFlowV2ManagedPosition(symbol, pos);
   if (slTrailRunning.has(symbol)) return;
@@ -34332,15 +38702,29 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
   if (Date.now() - lastRun < SL_TRAIL_COOLDOWN_MS) return;
 
   const usesRoe10Lock1 = isManualPosition || isLiquidFlowV2Position;
-  const isOrdersExcluded = isCapTslSymbol(symbol);
-  const observedTargetLockRoe = isOrdersExcluded
-    ? resolveOrdersExcludedBinanceProfitLockRoe(roe)
-    : usesRoe10Lock1
-      ? resolveManualBinanceProfitLockRoe(roe)
-      : getBinanceProfitLockTargetRoe(roe);
   const isLong = Number(pos.amt ?? pos.positionAmt) > 0;
   const entry = Number(pos.entry ?? pos.entryPrice);
   if (!isFinite(entry) || entry <= 0) return;
+  const leverage = Number(pos.leverage) || 10;
+  const priceDerivedRoe = binancePositionPriceRoe({
+    side: isLong ? 'LONG' : 'SHORT',
+    entryPrice: entry,
+    markPrice,
+    leverage,
+  });
+  const effectiveRoe = Number.isFinite(priceDerivedRoe) ? priceDerivedRoe : Number(roe);
+  if (!Number.isFinite(effectiveRoe)) return;
+  const fastWavePolicy = binanceFastWaveProfitLockPolicy(symbol, {
+    isLong,
+    isManualPosition,
+    isLiquidFlowV2Position,
+    isShortTpOnlyBreakEven,
+  });
+  if (fastWavePolicy.reason === 'CANDLE_DATA_PENDING') {
+    logBinanceFastWaveCandleDataPending(symbol, effectiveRoe, 'PROFIT_LOCK');
+    return;
+  }
+  const isOrdersExcluded = isCapTslSymbol(symbol);
   const tracking = slTracking.positions?.[symbol] ?? null;
   const lifecycleKey = binanceProfitLockLifecycleKey({
     symbol,
@@ -34348,16 +38732,71 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
     entryPrice: entry,
     openedAt: tracking?.openedAt,
   });
-  const persistedTargetLockRoe = String(tracking?.profitLockArmedLifecycleKey ?? '') === lifecycleKey
+  const fastWaveRecovery = binanceFastWaveRecoveryState(symbol, pos);
+  const fastWaveRecoveryDecision = evaluateBinanceFastWaveRecovery({
+    roe: effectiveRoe,
+    fastWaveActive: fastWavePolicy.active,
+    recoveryState: fastWaveRecovery?.state,
+    triggerRoe: Number(
+      process.env.BINANCE_FAST_WAVE_RECOVERY_TRIGGER_ROE ?? BINANCE_FAST_WAVE_RECOVERY_TRIGGER_ROE,
+    ),
+    lockTriggerRoe: Number(
+      process.env.BINANCE_FAST_WAVE_RECOVERY_LOCK_TRIGGER_ROE
+        ?? BINANCE_FAST_WAVE_RECOVERY_LOCK_TRIGGER_ROE,
+    ),
+    lockRoe: Number(
+      process.env.BINANCE_FAST_WAVE_RECOVERY_LOCK_ROE ?? BINANCE_FAST_WAVE_RECOVERY_LOCK_ROE,
+    ),
+  });
+  const fastWaveRecoveryControls = fastWaveRecovery?.state === 'ARMED'
+    || fastWaveRecovery?.state === 'LOCKED';
+  const observedTargetLockRoe = fastWaveRecoveryControls
+    ? (fastWaveRecoveryDecision.action === 'LOCK_SL' || fastWaveRecoveryDecision.action === 'LOCKED'
+        ? fastWaveRecoveryDecision.lockRoe
+        : null)
+    : fastWavePolicy.active
+    ? resolveBinanceFastWaveProfitLockRoe(effectiveRoe, {
+        triggerRoe: Number(
+          process.env.BINANCE_FAST_WAVE_PROFIT_LOCK_TRIGGER_ROE ?? FAST_WAVE_PROFIT_LOCK_TRIGGER_ROE,
+        ),
+        firstLockRoe: Number(
+          process.env.BINANCE_FAST_WAVE_PROFIT_LOCK_FIRST_LOCK_ROE ?? FAST_WAVE_PROFIT_LOCK_FIRST_LOCK_ROE,
+        ),
+        stepRoe: Number(
+          process.env.BINANCE_FAST_WAVE_PROFIT_LOCK_STEP_ROE ?? FAST_WAVE_PROFIT_LOCK_STEP_ROE,
+        ),
+        trailGapRoe: Number(
+          process.env.BINANCE_FAST_WAVE_PROFIT_LOCK_TRAIL_GAP_ROE ?? FAST_WAVE_PROFIT_LOCK_TRAIL_GAP_ROE,
+        ),
+      })
+    : isShortTpOnlyBreakEven
+      ? resolveShortTpOnlyBreakEvenProfitLockRoe(effectiveRoe)
+      : isOrdersExcluded
+      ? resolveOrdersExcludedBinanceProfitLockRoe(effectiveRoe)
+      : usesRoe10Lock1
+        ? resolveManualBinanceProfitLockRoe(effectiveRoe)
+        : getBinanceProfitLockTargetRoe(effectiveRoe);
+  const fastWavePersistenceCompatible = !fastWaveRecoveryControls
+    && tracking?.profitLockVersion === BINANCE_PROFIT_LOCK_VERSION
+    && tracking?.profitLockFastWave === fastWavePolicy.active;
+  const persistedTargetLockRoe = fastWavePersistenceCompatible
+    && String(tracking?.profitLockArmedLifecycleKey ?? '') === lifecycleKey
     ? Number(tracking?.profitLockArmedRoe)
     : NaN;
   const targetLockRoe = Number.isFinite(persistedTargetLockRoe)
     ? Math.max(observedTargetLockRoe ?? -Infinity, persistedTargetLockRoe)
     : observedTargetLockRoe;
-  if (targetLockRoe === null || !Number.isFinite(targetLockRoe)) return;
+  if (targetLockRoe === null || !Number.isFinite(targetLockRoe)) {
+    if (fastWaveRecoveryControls) {
+      logBinanceFastWaveRecoveryWait(symbol, effectiveRoe, fastWaveRecovery);
+    } else if (fastWavePolicy.active) {
+      logBinanceFastWaveProfitLockDeferred(symbol, effectiveRoe, fastWavePolicy);
+    }
+    return;
+  }
 
   if (observedTargetLockRoe != null) {
-    armBinanceProfitLock(symbol, observedTargetLockRoe, lifecycleKey, roe, markPrice);
+    armBinanceProfitLock(symbol, observedTargetLockRoe, lifecycleKey, effectiveRoe, markPrice, fastWavePolicy);
   }
   const lockState = slTrailLockRoe.get(symbol);
   const currentLockRoe = lockState?.lifecycleKey === lifecycleKey
@@ -34422,8 +38861,6 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
     const symbolInfo = symbolList.find((s) => s.symbol === symbol);
     if (!symbolInfo) return;
 
-    const leverage = pos.leverage || 10;
-
     const rawSlPrice = binanceProfitLockStopPrice({
       side: isLong ? 'LONG' : 'SHORT',
       entryPrice: entry,
@@ -34441,6 +38878,7 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
       targetLockRoe,
       stopPrice: Number(newSlPrice),
       isLong,
+      fastWavePolicy,
     };
 
     const mark = Number(markPrice ?? 0);
@@ -34449,12 +38887,18 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
       markPrice: mark,
       stopPrice: Number(newSlPrice),
     })) {
-      const recovery = await closeBinancePositionAtBreachedProfitLock(symbol, emergencyContext);
-      if (recovery.closed) return;
+      if (fastWavePolicy.active) {
+        slTrailLastRun.set(symbol, Date.now() - SL_TRAIL_COOLDOWN_MS + SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS);
+        console.warn(
+          `[FastWaveProfitLock] ${symbol} target +${targetLockRoe}% đã bị xuyên trước khi replace;`
+          + ` giữ SL gốc, không MARKET-close, retry sau ${SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS / 1000}s`,
+        );
+        return;
+      }
       slTrailLastRun.set(symbol, Date.now() - SL_TRAIL_COOLDOWN_MS + SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS);
       console.warn(
-        `[SlTrail] ${symbol} target +${targetLockRoe}% already crossed; recovery=${recovery.reason}`
-        + `${Number(recovery.latestMark) > 0 ? ` latestMark=${recovery.latestMark}` : ''}`,
+        `[SlTrail] ${symbol} target +${targetLockRoe}% đã bị xuyên trước khi đặt;`
+        + ` giữ nguyên position, không MARKET-close, retry sau ${SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS / 1000}s`,
       );
       return;
     }
@@ -34464,7 +38908,8 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
       const curSl = Number(slOrder.triggerPrice ?? slOrder.stopPrice ?? 0);
       if ((isLong && curSl >= newSlPrice) || (!isLong && curSl <= newSlPrice)) {
         slTrailLockRoe.set(symbol, { lockRoe: targetLockRoe, lifecycleKey });
-        await rememberBinanceProfitLock(symbol, curSl, targetLockRoe, lifecycleKey);
+        await rememberBinanceProfitLock(symbol, curSl, targetLockRoe, lifecycleKey, fastWavePolicy);
+        if (fastWaveRecoveryControls) completeBinanceFastWaveRecovery(symbol, pos, curSl);
         return;
       }
     }
@@ -34546,27 +38991,36 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
     }
 
     slTrailLockRoe.set(symbol, { lockRoe: targetLockRoe, lifecycleKey });
-    await rememberBinanceProfitLock(symbol, newSlPrice, targetLockRoe, lifecycleKey);
-    const profitLockPolicy = isOrdersExcluded
-      ? 'ORDERS_EXCLUDE_ROE10_CAP_LOCK1'
-      : isManualPosition
-        ? 'MANUAL_ROE10_LOCK1'
-        : isLiquidFlowV2Position
-          ? 'LIQUID_V2_ROE10_LOCK1'
-          : 'NON_V2';
-    console.log(`[SlTrail] ✅ ${symbol} ROE=${roe.toFixed(1)}% → ${slOrder ? 'SL dời lên' : 'SL mới'} +${targetLockRoe}% ROE @ ${newSlPrice} policy=${profitLockPolicy} version=${BINANCE_PROFIT_LOCK_VERSION}`);
+    await rememberBinanceProfitLock(symbol, newSlPrice, targetLockRoe, lifecycleKey, fastWavePolicy);
+    if (fastWaveRecoveryControls) completeBinanceFastWaveRecovery(symbol, pos, newSlPrice);
+    const profitLockPolicy = fastWaveRecoveryControls
+      ? 'FAST_WAVE_RECOVERY_NEG20_TO_ROE10_LOCK1'
+      : fastWavePolicy.active
+      ? 'FAST_WAVE_WICK_OR_REVERSAL_ROE30_GAP25'
+      : isShortTpOnlyBreakEven
+        ? 'SHORT_TP_ONLY_ROE10_BREAK_EVEN'
+        : isOrdersExcluded
+          ? 'ORDERS_EXCLUDE_ROE10_CAP_LOCK1'
+          : isManualPosition
+            ? 'MANUAL_ROE10_LOCK1'
+            : isLiquidFlowV2Position
+              ? 'LIQUID_V2_ROE10_LOCK1'
+              : 'NON_V2';
+    console.log(`[SlTrail] ✅ ${symbol} ROE=${effectiveRoe.toFixed(1)}% → ${slOrder ? 'SL dời lên' : 'SL mới'} +${targetLockRoe}% ROE @ ${newSlPrice} policy=${profitLockPolicy} version=${BINANCE_PROFIT_LOCK_VERSION}`);
   } catch (err) {
     if (emergencyContext && isBinanceProfitLockImmediateTriggerError(err)) {
-      try {
-        const recovery = await closeBinancePositionAtBreachedProfitLock(symbol, emergencyContext);
-        if (recovery.closed) return;
+      if (emergencyContext.fastWavePolicy?.active === true) {
         slTrailLastRun.set(symbol, Date.now() - SL_TRAIL_COOLDOWN_MS + SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS);
         console.warn(
-          `[SlTrail] ${symbol} immediate-trigger recovery=${recovery.reason}`
-          + `${Number(recovery.latestMark) > 0 ? ` latestMark=${recovery.latestMark}` : ''}; retry in ${SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS / 1000}s`,
+          `[FastWaveProfitLock] ${symbol} immediate-trigger sau rollback; giữ SL gốc,`
+          + ` không MARKET-close, retry sau ${SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS / 1000}s`,
         );
-      } catch (recoveryError) {
-        console.error(`[SlTrailEmergency] ❌ ${symbol}:`, recoveryError.message);
+      } else {
+        slTrailLastRun.set(symbol, Date.now() - SL_TRAIL_COOLDOWN_MS + SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS);
+        console.warn(
+          `[SlTrail] ${symbol} immediate-trigger; giữ nguyên position, không MARKET-close,`
+          + ` retry sau ${SL_TRAIL_IMMEDIATE_TRIGGER_RETRY_MS / 1000}s`,
+        );
       }
     }
     console.error(`[SlTrail] ❌ ${symbol}:`, err.message);
@@ -34576,6 +39030,7 @@ async function handleSlTrailByProfit(symbol, pos, roe, markPrice = null) {
 }
 
 async function triggerSlGuardForSymbol(symbol) {
+  if (isBinanceProtectionExcluded(symbol, 'MISSING_SL_GUARD')) return;
   if (slGuardRunning.has(symbol)) {
     console.log(`[SlGuard] ${symbol} skipped: protection check already running`);
     return;
@@ -34616,6 +39071,7 @@ async function handleMissingSl(rawPositions, allOrders, apiKey, apiSecret) {
 
   for (const p of rawPositions) {
     const symbol = p.symbol;
+    if (isBinanceProtectionExcluded(symbol, 'MISSING_SL_SCAN')) continue;
 
     // Only process positions registered in sl-tracking.json (opened after json was created)
     const tracked = slTracking.positions[symbol];
@@ -35058,10 +39514,37 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
     const side = action === 'LONG' ? 'BUY' : 'SELL';
     const entryStr = tickSize > 0 ? entry.toFixed(Math.max(0, -Math.floor(Math.log10(tickSize)))) : entry.toFixed(8);
 
+    const pumpAutoClientOrderId = `lp_auto_${Date.now()}`.slice(0, 36);
+    autoEntryControls.assertEntry({source:'legacy-pump-auto',signalLabel:signal.type??'LEGACY_PUMP_AUTO',side,executionPage:'pump-scanner'});
+    const pumpAutoAuditContext = {
+      clientOrderId: pumpAutoClientOrderId,
+      symbol,
+      side,
+      orderType: 'LIMIT',
+      signalSource: 'legacy-pump-auto',
+      signalType: signal.type ?? 'LEGACY_PUMP_AUTO',
+      signalLabel: signal.type ?? 'LEGACY_PUMP_AUTO',
+      signalReason: `Pump Auto pass; score=${score}; chase=${(Number(chasePct) * 100).toFixed(2)}% TP; marketOk=${signal.marketOk ?? '-'}`,
+      signalCombo: signal.type ?? null,
+      executionPage: 'pump-scanner',
+      signalEntryPrice: Number(entryStr),
+      takeProfitPrice: Number(signal.tp) || null,
+      stopLossPrice: Number(signal.sl) || null,
+      marginUsdt: margin,
+      leverage,
+      submittedAt: Date.now(),
+    };
+    await binanceFilledSignalAudit.registerSubmission(pumpAutoAuditContext)
+      .catch((error) => console.warn(`[FilledSignalAudit] PumpAuto client ${symbol}: ${error.message}`));
     const order = await client.placeFuturesOrder({
-      params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow, newClientOrderId: `lp_auto_${Date.now()}`.slice(0, 36) },
-      apiKey, apiSecret,
+      params: { symbol, side, type: 'LIMIT', price: entryStr, quantity: qtyStr, timeInForce: 'GTC', recvWindow, newClientOrderId: pumpAutoClientOrderId },
+      apiKey, apiSecret,entryControl:{payload:{source:'legacy-pump-auto',signalLabel:signal.type??'LEGACY_PUMP_AUTO',side,executionPage:'pump-scanner'}},
     });
+    await binanceFilledSignalAudit.registerSubmission({
+      ...pumpAutoAuditContext,
+      orderId: order?.orderId,
+      clientOrderId: order?.clientOrderId ?? pumpAutoClientOrderId,
+    }).catch((error) => console.warn(`[FilledSignalAudit] PumpAuto order ${symbol}: ${error.message}`));
 
     pumpAutoOrderFired.set(symbol, Date.now());
     if (side === 'BUY') recentLongOrderTimes.push(Date.now()); // track cho signal flood guard
@@ -35075,7 +39558,8 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
       : Number(entryStr) * (1 + slRoePct / 100 / leverage);
     let slPlaced = false;
     let slPriceStr = null;
-    if (isFinite(slPriceRaw) && slPriceRaw > 0 && info) {
+    const protectionSuppressedBySymbol = isBinanceProtectionExcluded(symbol, 'PUMP_AUTO_SL');
+    if (isFinite(slPriceRaw) && slPriceRaw > 0 && info && !protectionSuppressedBySymbol) {
       slPriceStr = tickSize > 0
         ? slPriceRaw.toFixed(Math.max(0, -Math.floor(Math.log10(tickSize))))
         : slPriceRaw.toFixed(8);
@@ -35113,7 +39597,9 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
 
     const webhookUrl = process.env.LIQ_SCAN_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL;
     if (webhookUrl) {
-      const slStatus = slPlaced ? `🛡 SL: \`${slPriceStr}\` (−${slRoePct}% ROE)` : `⚠ **SL không đặt được**`;
+      const slStatus = protectionSuppressedBySymbol
+        ? '⏭ **Coin đang BỎ QUA quản lý TP/SL tự động**'
+        : slPlaced ? `🛡 SL: \`${slPriceStr}\` (−${slRoePct}% ROE)` : `⚠ **SL không đặt được**`;
       const entryQuality = chasePct > 0.45 || score < 55
         ? '🚫 Đã trễ — chờ pullback'
         : chasePct > 0.30 || score < 70
@@ -35138,6 +39624,7 @@ async function handlePumpAutoOrder(signal, openOrders = null) {
 }
 
 async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPrice, sweepProb, confirmation = null }) {
+  if(!autoEntryControls.read().enabled)return;
   if (liveCardOnlyAutoBinanceEnabled()) return;
   // Dedup theo symbol (không theo price) — tránh đặt nhiều lệnh khi price thay đổi nhẹ giữa các scan
   const last = liqAutoOrderFired.get(symbol) ?? 0;
@@ -35233,7 +39720,32 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
       entryParams.timeInForce = 'GTC';
     }
     if (isHedge) { entryParams.positionSide = positionSide; } else { entryParams.reduceOnly = 'false'; }
-    await client.placeFuturesOrder({ params: entryParams, apiKey, apiSecret });
+    const autoLiqSignalType = isProbe
+      ? 'LIQUID_PROBE'
+      : useMarket
+        ? 'LIQUID_CONFIRMED_MARKET'
+        : 'LIQUID_CONFIRMED_LIMIT';
+    const autoLiqAuditContext = {
+      clientOrderId: entryParams.newClientOrderId,
+      symbol,
+      side,
+      positionSide,
+      orderType: entryParams.type,
+      signalSource: 'auto-liq',
+      signalType: autoLiqSignalType,
+      signalLabel: autoLiqSignalType,
+      signalReason: confirmation?.reason
+        ?? `Liquidation sweep probability ${sweepProb}%; target=${sweepTargetPrice}; confirmed=${isConfirmed}`,
+      signalCombo: `sweepProb=${sweepProb}% | ${isConfirmed ? 'CONFIRMED' : 'PROBE'}`,
+      executionPage: 'liquid-scanner',
+      signalEntryPrice: price,
+      marginUsdt: margin,
+      leverage,
+      submittedAt: Date.now(),
+    };
+    await binanceFilledSignalAudit.registerSubmission(autoLiqAuditContext)
+      .catch((error) => console.warn(`[FilledSignalAudit] AutoLiq client ${symbol}: ${error.message}`));
+    const entryOrderResult = await client.placeFuturesOrder({ params: entryParams, apiKey, apiSecret,entryControl:{payload:autoLiqAuditContext} });
 
     // TP động theo sweepProb: 90%→30% ROE, 99%→50% ROE
     const tpRoePct = direction === 'short'
@@ -35244,6 +39756,12 @@ async function handleLiqAutoOrder({ symbol, markPrice, direction, sweepTargetPri
       ? price * (1 - tpRoe / leverage)
       : price * (1 + tpRoe / leverage);
     const tpPrice = priceFromTick(symbolInfo, rawTpPrice);
+    await binanceFilledSignalAudit.registerSubmission({
+      ...autoLiqAuditContext,
+      orderId: entryOrderResult?.orderId,
+      clientOrderId: entryOrderResult?.clientOrderId ?? entryParams.newClientOrderId,
+      takeProfitPrice: tpPrice,
+    }).catch((error) => console.warn(`[FilledSignalAudit] AutoLiq order ${symbol}: ${error.message}`));
 
     // Lưu pending TP — sẽ đặt sau khi position monitor xác nhận position đã mở
     // (không đặt ngay vì entry là LIMIT chưa fill, one-way mode reject reduceOnly trước khi có position)
@@ -35263,6 +39781,7 @@ async function placePendingLiqTp(symbol, pos) {
   if (placingLiqTp.has(symbol)) return;
   // Bỏ qua nếu pending đã quá 2h (entry chưa fill sau 2h, bỏ)
   if (Date.now() - pending.at > 2 * 3600 * 1000) { pendingLiqTp.delete(symbol); return; }
+  if (isBinanceProtectionExcluded(symbol, 'PENDING_LIQ_TP')) return;
 
   placingLiqTp.add(symbol);
   try {
@@ -35483,6 +40002,8 @@ function negativeEntryGuardHasPriority(symbol, pos, roe) {
   const movedEntry = Number(tpMovedToEntry.get(symbol));
   if (Number.isFinite(movedEntry) && Number.isFinite(entry) && entry > 0
     && Math.abs(movedEntry - entry) / entry < 0.005) return true;
+  const recovery = binanceFastWaveRecoveryState(symbol, pos);
+  if (recovery?.state === 'ARMED' || recovery?.state === 'LOCKED') return true;
   const negTpRoe = negativeTpRoeThreshold();
   const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
   if (shouldMoveSymbolNegativeTpToEntry(symbol, roe, negTpRoe) || Number(roe) <= tpGuardRoe) return true;
@@ -35514,14 +40035,14 @@ async function handleEightHourNegativeTakeProfit(symbol, pos, roe) {
     ),
   });
   if (!decision.eligible) return;
-  await handleNegativeTimeoutTp(symbol, {
+  await routeNegativeTakeProfit(symbol, {
     ...pos,
     entry,
     amt,
-  }, {
+  }, decision.currentRoe, {
+    forceEligible: true,
     triggerVersion: BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION,
     triggerAgeMs: decision.ageMs,
-    triggerRoe: decision.currentRoe,
   });
 }
 
@@ -35560,7 +40081,8 @@ async function rememberTwelveHourTakeProfit(symbol, entry, targetPrice, targetRo
 }
 
 async function handleTwelveHourTakeProfit(symbol, pos, markPrice, roe) {
-  const enabled = process.env.BINANCE_TP_AFTER_12H_ENABLED !== 'false';
+  if (isBinanceProtectionExcluded(symbol, 'TWELVE_HOUR_TP_MOVE')) return;
+  const enabled = process.env.BINANCE_TP_AFTER_12H_ENABLED === 'true';
   const maxAgeMs = Number(process.env.BINANCE_TP_AFTER_12H_MS ?? DEFAULT_BINANCE_TP_MAX_AGE_MS);
   const targetRoePct = Number(process.env.BINANCE_TP_AFTER_12H_ROE ?? DEFAULT_BINANCE_TP_TARGET_ROE_PCT);
   const entry = Number(pos?.entry ?? pos?.entryPrice);
@@ -35701,7 +40223,12 @@ async function handleTwelveHourTakeProfit(symbol, pos, markPrice, roe) {
 }
 
 async function handleTpEntryGuard(symbol, pos, markPrice, roe) {
-  return handleNegativeTimeoutTp(symbol, pos);
+  void markPrice;
+  return routeNegativeTakeProfit(symbol, pos, roe, {
+    thresholdRoe: negativeTpRoeThreshold(),
+    triggerVersion: BINANCE_NEGATIVE_TP_TO_ENTRY_VERSION,
+    forceEligible: true,
+  });
 }
 
 // ── Real Binance Position Timeout ─────────────────────────────────────────────
@@ -35813,7 +40340,10 @@ function startNegTpScanner() {
         const roe = (upnl / margin) * 100;
         const pos = { amt, entry, leverage: lev, positionSide: p.positionSide ?? 'BOTH' };
         if (shouldMoveSymbolNegativeTpToEntry(symbol, roe, negTpRoe) || roe <= tpGuardRoe) {
-          handleNegativeTimeoutTp(symbol, pos).catch(() => {});
+          routeNegativeTakeProfit(symbol, pos, roe, {
+            thresholdRoe: negTpRoe,
+            forceEligible: true,
+          }).catch(() => {});
         }
         handleEightHourNegativeTakeProfit(symbol, pos, roe).catch(() => {});
         if (roe < 0) {
@@ -35896,6 +40426,7 @@ async function placeStartupMissingTakeProfitOnly({
 }) {
   const symbol = normalizeSymbol(pos?.symbol ?? '');
   if (!symbol || !symbolInfo || !target?.takeProfitPrice) return 'NO_TARGET';
+  if (isBinanceProtectionExcluded(symbol, 'STARTUP_MISSING_TP')) return 'EXCLUDED';
   if (!startupPositionNeedsTakeProfit(pos, snapshotRegularOrders, snapshotAlgoOrders)) return 'EXISTING';
 
   const amount = Number(pos.positionAmt ?? pos.amt);
@@ -35954,6 +40485,10 @@ async function runStartupTakeProfitRecovery() {
   for (const pos of active) {
     const symbol = normalizeSymbol(pos.symbol);
     try {
+      if (isBinanceProtectionExcluded(symbol, 'STARTUP_TP_SCAN')) {
+        summary.excluded = Number(summary.excluded ?? 0) + 1;
+        continue;
+      }
       if (!startupPositionNeedsTakeProfit(pos, openOrders, algoOrders)) {
         summary.existing += 1;
         continue;
@@ -36116,6 +40651,7 @@ function startSlTrailSafetyScanner() {
 }
 
 async function refreshTakeProfitForSymbol(symbol) {
+  if (isBinanceProtectionExcluded(symbol, 'FILL_TP_REFRESH')) return;
   const { apiKey, apiSecret } = getApiCredentials(null);
   invalidateOpenOrdersCache();
 
@@ -36234,6 +40770,7 @@ async function runMissingTpScan() {
 
 async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, sharedOpenOrders = null, sharedAlgoOrders = null, options = {}) {
   const symbol = pos?.symbol;
+  if (symbol && isBinanceProtectionExcluded(symbol, 'MISSING_TP_SCAN')) return;
   if (!symbol || tpProtectionRunning.has(symbol)) {
     if (symbol) console.log(`[AutoTP] ${symbol} skipped: protection check already running`);
     return;
@@ -36250,6 +40787,7 @@ async function ensureTakeProfitForPosition(pos, symbols, apiKey, apiSecret, shar
 
 async function ensureTakeProfitForPositionUnlocked(pos, symbols, apiKey, apiSecret, sharedOpenOrders = null, sharedAlgoOrders = null, options = {}) {
   const symbol = pos.symbol;
+  if (isBinanceProtectionExcluded(symbol, 'MISSING_TP_PLACEMENT')) return;
   const amt = Number(pos.positionAmt);
   const entry = Number(pos.entryPrice);
   const leverage = Number(pos.leverage) || 1;
@@ -36267,12 +40805,15 @@ async function ensureTakeProfitForPositionUnlocked(pos, symbols, apiKey, apiSecr
   const tpGuardRoe = Number(process.env.TP_ENTRY_GUARD_ROE ?? -50);
   if (roeInfo.ready
     && (shouldMoveSymbolNegativeTpToEntry(symbol, roeInfo.roe, negTpRoe) || roeInfo.roe <= tpGuardRoe)) {
-    console.log(`[AutoTP] ${symbol} ROE=${roeInfo.roe.toFixed(2)}% <= guard (${Math.max(negTpRoe, tpGuardRoe)}%) -> move TP to entry`);
-    await handleNegativeTimeoutTp(symbol, {
+    console.log(`[AutoTP] ${symbol} ROE=${roeInfo.roe.toFixed(2)}% <= guard (${Math.max(negTpRoe, tpGuardRoe)}%) -> route negative protection`);
+    await routeNegativeTakeProfit(symbol, {
       amt,
       entry,
       leverage,
       positionSide: pos.positionSide ?? 'BOTH',
+    }, roeInfo.roe, {
+      thresholdRoe: negTpRoe,
+      forceEligible: true,
     });
     return;
   }
@@ -36610,6 +41151,8 @@ async function handleNegativeTimeoutTp(symbol, pos, {
     // Check if a close order already exists near entry. A normal TP far above/below
     // entry is not enough here because this guard intentionally moves TP to breakeven.
     const allOpen = Array.isArray(openOrders) ? openOrders : [];
+    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
+    const closeSide = isLong ? 'SELL' : 'BUY';
     const existingClose = allOpen.find((o) => {
       const t = String(o.origType ?? o.type ?? '').toUpperCase();
       const sideOk = isLong ? o.side === 'SELL' : o.side === 'BUY';
@@ -36622,27 +41165,15 @@ async function handleNegativeTimeoutTp(symbol, pos, {
       }
       return false;
     });
-    if (existingClose) {
-      tpMovedToEntry.set(symbol, entry);
-      console.log(`[NegTp] ${symbol} đã có lệnh close ở entry, skip`);
-      return;
-    }
 
     // Check algo orders
-    const allAlgo = Array.isArray(algoResult?.orders) ? algoResult.orders : Array.isArray(algoResult) ? algoResult : [];
     const existingAlgo = allAlgo.find((o) => {
       if (o.symbol !== symbol) return false;
       const t = String(o.orderType ?? o.type ?? '').toUpperCase();
       if (t !== 'TAKE_PROFIT_MARKET' && t !== 'TAKE_PROFIT') return false;
       return isNearEntry(o.triggerPrice ?? o.stopPrice);
     });
-    if (existingAlgo) {
-      tpMovedToEntry.set(symbol, entry);
-      console.log(`[NegTp] ${symbol} already has algo close near entry, skip`);
-      return;
-    }
 
-    const closeSide = isLong ? 'SELL' : 'BUY';
     const staleTpOpen = allOpen.filter((o) => {
       const t = String(o.origType ?? o.type ?? '').toUpperCase();
       if (o.side !== closeSide) return false;
@@ -36675,6 +41206,14 @@ async function handleNegativeTimeoutTp(symbol, pos, {
     if (staleTpOpen.length || staleTpAlgo.length) {
       invalidateOpenOrdersCache();
       console.log(`[NegTp] ${symbol} canceled stale TP(s): regular=${staleTpOpen.length}, algo=${staleTpAlgo.length}`);
+    }
+
+    if (existingClose || existingAlgo) {
+      tpMovedToEntry.set(symbol, entry);
+      console.log(
+        `[NegTp] ${symbol} đã có lệnh close ở entry; TP xa còn lại đã được dọn, skip đặt trùng`,
+      );
+      return;
     }
 
     const lotSize = symbolInfo.filters?.find((f) => f.filterType === 'LOT_SIZE');
@@ -36851,12 +41390,20 @@ async function sendStatic(pathname, response) {
                 ? '/paper.html'
                 : pathname === '/liquid-scan'
                   ? '/liquid-scan.html'
+                : pathname === '/coin-level-analysis'
+                  ? '/coin-level-analysis.html'
+                : pathname === '/binance-auto-controls'
+                  ? '/binance-auto-controls.html'
+                : pathname === '/limit-paper-lab'
+                  ? '/limit-paper-lab.html'
                 : pathname === '/liquid-flow-v2'
                   ? '/liquid-flow-v2.html'
                 : pathname === '/liquid-flow-v2-binance-stats'
                   ? '/liquid-flow-v2-binance-stats.html'
                 : pathname === '/coinglass-web-top20'
                   ? '/coinglass-web-top20.html'
+                : pathname === '/coinglass-web-secondary'
+                  ? '/coinglass-web-secondary.html'
               : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);

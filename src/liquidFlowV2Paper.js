@@ -2,14 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { LIQUID_FLOW_V2_BINANCE_LEVERAGE } from './autoBinancePolicy.js';
+import { evaluateLiquidFlowV2ShortEma99EntryGate } from './liquidHeatmapFlowV2.js';
 
-export const LIQUID_FLOW_V2_PAPER_VERSION = 'LIQUID_FLOW_V2_PAPER_V31_FADING_WAVE_LIVE_PUMP_BINANCE_20260818';
+export const LIQUID_FLOW_V2_PAPER_VERSION = 'LIQUID_FLOW_V2_PAPER_V32_SHORT_EMA99_CONFIRMATION_GATE_20260830';
 export const EMA_FAN_LONG_ENTRY_CONFIRMATION_VERSION = 'EMA_FAN_LONG_RETEST_CONFIRM_V1_20260816';
 export const LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_VERSION = 'LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_V1_20260816';
 export const LIQUID_FLOW_V2_SWEEP_ENTRY_POLICY_VERSION = 'LIQUID_FLOW_V2_SWEEP_ENTRY_GUARD_V1_20260816';
 export const LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_VERSION = 'LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_V1_2USDT_20260816';
 export const LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION =
   'LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_V1_1USDT_20260818';
+export const LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_VERSION =
+  'LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_V1_ACTIVE_ONLY_20260831';
 
 function finite(value, fallback = null) {
   if (value == null || value === '') return fallback;
@@ -259,6 +262,8 @@ export function buildLiquidFlowV2PaperPlan(row = {}, settingsInput = {}) {
   const candle = features.lastClosedCandle ?? {};
   const liveMark = finite(features.markPrice, finite(candle.close, 0));
   if (!side || liveMark <= 0 || row.classification?.phase !== 'READY') return null;
+  const shortEma99Gate = evaluateLiquidFlowV2ShortEma99EntryGate(row.classification, features);
+  if (shortEma99Gate.applied && !shortEma99Gate.ready) return null;
 
   const targetZone = side === 'SHORT' ? features.lowerZone : features.upperZone;
   const continuation = isBaseSweepClassification(row.classification);
@@ -522,6 +527,17 @@ export function summarizeLiquidFlowV2Paper(trades = [], marks = new Map(), now =
     trades: decorated.sort((a, b) => (
       finite(b.entryAt, finite(b.pendingSince, 0)) - finite(a.entryAt, finite(a.pendingSince, 0))
     )),
+  };
+}
+
+export function compactLiquidFlowV2PaperSnapshot(snapshot = {}) {
+  const trades = Array.isArray(snapshot?.trades) ? snapshot.trades : [];
+  const activeTrades = trades.filter((trade) => ['OPEN', 'PENDING_ENTRY'].includes(String(trade?.status ?? '')));
+  return {
+    ...snapshot,
+    liveSnapshotVersion: LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_VERSION,
+    historyOmitted: true,
+    trades: activeTrades,
   };
 }
 
@@ -899,6 +915,8 @@ export class LiquidFlowV2PaperManager {
             htfBearTier: row.features?.htfBearTier ?? null,
             htfBullTier: row.features?.htfBullTier ?? null,
             ema99RetestTimeframe: classification.ema99RetestTimeframe ?? null,
+            ema99ShortEntryGate: classification.ema99ShortEntryGate
+              ?? evaluateLiquidFlowV2ShortEma99EntryGate(classification, row.features ?? {}),
             ema99Retest5m: row.features?.ema99Retest5m ?? null,
             ema99Retest15m: row.features?.ema99Retest15m ?? null,
             pumpDistribution15m: row.features?.pumpDistribution15m ?? null,
@@ -1127,6 +1145,10 @@ export class LiquidFlowV2PaperManager {
       ...summary,
       trades: summary.trades.slice(0, 300),
     };
+  }
+
+  liveSnapshot() {
+    return compactLiquidFlowV2PaperSnapshot(this.snapshot());
   }
 
   labelDateStats(options = {}) {

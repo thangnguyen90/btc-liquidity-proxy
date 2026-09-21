@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Phân tích hỗ trợ, kháng cự và kịch bản có điều kiện cho Binance Futures USDT perpetual.">
+    <title>Coin Level Map · Hỗ trợ & kháng cự</title>
+    <link rel="stylesheet" href="/coin-level-analysis.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">BINANCE FUTURES · MULTI-TIMEFRAME</p>
+          <h1>Bản đồ giá của một coin</h1>
+          <p class="subtitle">Nhập mã coin để xem vùng hỗ trợ, kháng cự, trạng thái nến và hai kịch bản LONG/SHORT có điều kiện.</p>
+        </div>
+        <nav aria-label="Điều hướng">
+          <a href="/orders">Orders</a>
+          <a href="/binance-auto-controls">Quản lý Binance tự động</a>
+          <a href="/liquid-flow-v2">Liquid Flow V2</a>
+          <a href="/liquid-flow-v2-binance-stats">Binance Stats</a>
+        </nav>
+      </header>
+
+      <section id="binance-block-panel" class="panel binance-block-panel checking" aria-labelledby="binance-block-title">
+        <div class="section-head"><div><span class="section-kicker">TRẠNG THÁI BINANCE REST · ĐỌC TRỰC TIẾP TỪ RATE GATE</span><h2 id="binance-block-title">Đang kiểm tra Binance…</h2></div><span id="binance-block-badge" class="binance-block-badge">ĐANG KIỂM TRA</span></div>
+        <div id="binance-block-details" class="binance-block-details" aria-live="polite">Đang lấy lý do chặn từ REST chung và REST phân tích.</div>
+        <p id="binance-coin-issue" class="binance-coin-issue" hidden></p>
+        <p id="binance-block-updated" class="muted"></p>
+      </section>
+
+      <section class="panel table-panel entry-watch-panel" aria-labelledby="entry-watch-title">
+        <div class="section-head"><div><span class="section-kicker">QUÉT NẾN ĐÃ ĐÓNG · LIMIT CHỜ GIÁ / MARKET SAU RETEST</span><h2 id="entry-watch-title">Coin đạt bộ lọc điểm vào</h2></div><span class="observe-badge">LIMIT 3 USDT · MARKET THEO ROUTE</span></div>
+        <p id="entry-watch-health" class="muted" aria-live="polite">Đang kiểm tra dữ liệu nến trong cache…</p>
+        <div class="entry-watch-legend" aria-label="Chú giải màu hàng tín hiệu"><span><i class="long" aria-hidden="true"></i>LONG: retest 5m đã xác nhận</span><span><i class="short" aria-hidden="true"></i>SHORT: retest 5m đã xác nhận</span><span>Chưa retest: nền thường. Màu hàng không xác nhận đã đặt hoặc khớp lệnh Binance.</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Coin</th><th>Hướng</th><th>Entry Score</th><th>Trend Score</th><th>Trạng thái nến</th><th class="entry-watch-price-heading">ENTRY DỰ KIẾN</th><th>T1 / T2 / T3 dự kiến</th><th>Mốc phá vùng</th><th>Close 5m</th><th>Xác nhận 15m (VN)</th></tr></thead><tbody id="entry-watch-rows"><tr><td colspan="10">Đang tải…</td></tr></tbody></table></div>
+        <p class="muted">Entry Score 0–100 và T1/T2/T3 chỉ đánh giá, không phải xác suất thắng hay điều kiện thêm để đặt lệnh. Lọc gốc: Trend Score ≥ +12 LONG hoặc ≤ −12 SHORT, 15m/1h đồng hướng và nến 15m đóng phá biên 12 nến trước. Khi tín hiệu mới ≤90 giây và giá đã đi qua entry dự kiến 0,15–5%, executor có thể đặt LIMIT 3 USDT margin tại entry (LONG BUY thấp hơn mark; SHORT SELL cao hơn mark), hủy lệnh chờ sau 45 phút. Nếu retest 5m đã đóng đạt, xét MARKET theo margin/leverage của route (mặc định 1 USDT ×5). Cả hai cần khóa tổng và route ON, không có vị thế/lệnh cùng coin; TP theo route, SL −30% ROE. Bảng này không chứng minh Binance đã nhận hoặc khớp lệnh.</p>
+      </section>
+
+      <section class="search-panel" aria-label="Tìm coin">
+        <form id="search-form" autocomplete="off">
+          <label for="symbol-input">Mã coin</label>
+          <div class="search-row">
+            <input id="symbol-input" name="symbol" value="CYS" maxlength="28" spellcheck="false" aria-describedby="search-hint">
+            <button id="search-button" type="submit">Phân tích</button>
+          </div>
+          <p id="search-hint">Có thể nhập CYS, CYSUSDT hoặc cys/usdt. Giá MARK live qua socket; cấu trúc nến/CoinGlass đồng bộ mỗi 20 giây.</p>
+        </form>
+        <div class="mode-block">
+          <span class="observe-badge">OBSERVE ONLY</span>
+          <strong>Không phát lệnh Binance</strong>
+          <small>Order book có thể bị rút; xác nhận luôn dựa trên giá đóng nến.</small>
+        </div>
+      </section>
+
+      <section class="panel table-panel squeeze-watch-panel" aria-labelledby="squeeze-watch-title">
+        <div class="section-head"><div><span class="section-kicker">TỰ QUÉT 15m + 1h · OBSERVE ONLY</span><h2 id="squeeze-watch-title">Cảnh báo nguy cơ squeeze SHORT</h2></div></div>
+        <p class="muted">🟠 Ratio đạt điều kiện · 🟣 Ratio + OI tăng ≥3%/1h. Không phải lệnh LONG/SHORT hoặc bằng chứng thanh lý. Không tự đặt Binance.</p>
+        <p id="squeeze-watch-health" class="muted" aria-live="polite">Đang lấy danh sách tự quét…</p>
+        <div class="table-wrap"><table><thead><tr><th>Giờ VN</th><th>Coin</th><th>Mức cảnh báo</th><th>Giá xác nhận</th><th>Volume</th><th>L/S</th><th>Δ L/S 1h</th><th>Δ OI 1h</th><th>Discord</th></tr></thead><tbody id="squeeze-watch-rows"><tr><td colspan="9">Chưa có dữ liệu.</td></tr></tbody></table></div>
+        <p class="muted">Danh sách tối đa 200 cảnh báo trong 7 ngày, độc lập coin đang tìm; cập nhật mỗi 30 giây. Chỉ ghi nhận tín hiệu mới sau khi bật scanner, không gửi lại lịch sử backtest. L/S là tỷ lệ tài khoản, không phải khối lượng vị thế.</p>
+      </section>
+
+      <div id="status" class="status" role="status" aria-live="polite">Đang tải dữ liệu CYSUSDT…</div>
+
+      <section id="result" class="result" hidden>
+        <div class="market-head panel">
+          <div>
+            <div class="symbol-line">
+              <h2 id="symbol">—</h2>
+              <span id="bias-badge" class="bias-badge neutral">NEUTRAL</span>
+            </div>
+            <div class="price-line">
+              <strong id="mark-price">—</strong>
+              <span id="change-24h">—</span>
+            </div>
+            <p id="updated-at" class="muted">—</p>
+            <div class="live-socket-line" aria-live="polite">
+              <span id="live-socket-badge" class="live-socket-badge connecting">SOCKET ĐANG NỐI</span>
+              <small id="live-socket-at">Đang chờ giá MARK Binance…</small>
+            </div>
+          </div>
+          <div class="market-actions" aria-label="Mở biểu đồ ngoài">
+            <a id="binance-link" class="external-link" href="#" target="_blank" rel="noreferrer">Mở Binance ↗</a>
+            <a id="coinglass-model3-link" class="external-link coinglass-model3-link" href="https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3" target="_blank" rel="noreferrer">Mở CoinGlass Model 3 ↗</a>
+          </div>
+        </div>
+
+        <div class="metrics" aria-label="Thông số thị trường">
+          <article class="metric"><span>Đỉnh / đáy 24h</span><strong id="range-24h">—</strong></article>
+          <article class="metric"><span>Biên độ 24h</span><strong id="range-pct">—</strong></article>
+          <article class="metric"><span>Funding</span><strong id="funding">—</strong></article>
+          <article class="metric"><span>Volume 24h</span><strong id="volume">—</strong></article>
+        </div>
+
+        <section id="decision" class="decision panel">
+          <div class="decision-kicker">ĐÁNH GIÁ HIỆN TẠI</div>
+          <h2 id="decision-title">—</h2>
+          <div class="decision-meta">
+            <span id="context-chip">—</span>
+            <span id="trend-score">—</span>
+            <span id="confirmation-chip">15M ĐANG CHỜ</span>
+          </div>
+          <div id="warnings" class="warnings"></div>
+        </section>
+
+        <section class="entry-previews" aria-label="Vùng quyết định LONG và SHORT, chỉ tham khảo">
+          <div id="entry-direction-summary" class="entry-direction-summary" aria-live="polite">
+            <span id="entry-trend-label">ĐANG ĐỌC XU HƯỚNG</span>
+            <strong id="entry-action-label">CHỜ XÁC NHẬN 15M</strong>
+          </div>
+          <article id="long-entry-preview" class="entry-preview long-entry-preview panel">
+            <div class="entry-preview-head"><span>↑ KỊCH BẢN LONG</span><small>CHỈ THAM KHẢO</small></div>
+            <div id="long-entry-condition" class="entry-preview-condition">ĐANG TÍNH NGƯỠNG 15M</div>
+            <strong id="long-entry-price" class="entry-preview-price">—</strong>
+            <div id="long-entry-range" class="entry-preview-range">Đang tính vùng giá…</div>
+            <div id="long-entry-state" class="entry-preview-state">CHỜ XÁC NHẬN</div>
+          </article>
+          <article id="short-entry-preview" class="entry-preview short-entry-preview panel">
+            <div class="entry-preview-head"><span>↓ KỊCH BẢN SHORT</span><small>CHỈ THAM KHẢO</small></div>
+            <div id="short-entry-condition" class="entry-preview-condition">ĐANG TÍNH NGƯỠNG 15M</div>
+            <strong id="short-entry-price" class="entry-preview-price">—</strong>
+            <div id="short-entry-range" class="entry-preview-range">Đang tính vùng giá…</div>
+            <div id="short-entry-state" class="entry-preview-state">CHỜ XÁC NHẬN</div>
+          </article>
+          <p id="entry-preview-disclaimer" class="entry-preview-disclaimer">Các mốc là ngưỡng xác nhận hoặc trung điểm vùng theo dõi, không phải giá vào lệnh. Chờ nến 15m đã đóng và retest 5m; trang này không đặt lệnh Binance.</p>
+        </section>
+
+        <section id="liq-scan-panel" class="liq-scan-panel panel" aria-live="polite">
+          <div class="liq-scan-head">
+            <div>
+              <span class="section-kicker">LIQSCAN · BINANCE 15M LIQUIDITY PROXY</span>
+              <h2>Lực hút quét thanh khoản</h2>
+            </div>
+            <span id="liq-scan-badge" class="liq-scan-badge idle">ĐANG ĐỐI CHIẾU</span>
+          </div>
+          <div id="liq-scan-content" class="liq-scan-content">
+            <div class="empty-zone">Đang đọc đánh giá LiqScan gần nhất…</div>
+          </div>
+        </section>
+
+        <section id="liqscan-short-panel" class="panel liqscan-short-panel" aria-live="polite">
+          <span class="section-kicker">LIQSCAN · QUÉT TRÊN → REJECT · CHỈ THAM KHẢO</span>
+          <h2>↓ SHORT sau cú quét thanh khoản trên</h2>
+          <div id="liqscan-short-content">Đang kiểm tra vùng gốc và nến xác nhận…</div>
+        </section>
+
+        <section id="horizon-panel" class="panel horizon-panel" aria-live="polite">
+          <span class="section-kicker">KỊCH BẢN GIÁ · CHỈ THAM KHẢO</span>
+          <h2>Cận trên / dưới trong 4h · 8h · 12h tới</h2>
+          <p class="liq-scan-note">Gửi Discord khi lần phân tích có hướng LONG/SHORT; bỏ qua ngược hướng, chưa đồng thuận hoặc dữ liệu cũ. Cùng chiều nhắc lại sau 4 giờ. Theo các coin đang được phân tích trên trang.</p>
+          <div id="horizon-content">Đang đối chiếu nến 1h/4h và vùng thanh lý…</div>
+        </section>
+
+        <section id="coinglass-panel" class="coinglass-panel panel">
+          <div class="section-head coinglass-head">
+            <div>
+              <span class="section-kicker">COINGLASS MODEL 3 · ACTIVE EDGE ONLY</span>
+              <h2>Vùng thanh lý CoinGlass</h2>
+            </div>
+            <a id="coinglass-link" class="external-link" href="https://www.coinglass.com/pro/futures/LiquidationHeatMapModel3" target="_blank" rel="noreferrer">Mở CoinGlass ↗</a>
+          </div>
+          <div id="coinglass-content" class="coinglass-content">
+            <div class="empty-zone">Đang đối chiếu lượt quét CoinGlass gần nhất…</div>
+          </div>
+        </section>
+
+        <section class="zone-layout">
+          <article class="panel zone-panel support-panel">
+            <div class="section-head">
+              <div><span class="section-kicker">PHÍA DƯỚI GIÁ</span><h2>Vùng hỗ trợ</h2></div>
+              <span class="legend-dot support"></span>
+            </div>
+            <div id="supports" class="zone-list"></div>
+          </article>
+
+          <article class="panel price-ladder" aria-label="Vị trí giá">
+            <span>KHÁNG CỰ</span>
+            <div class="ladder-line"></div>
+            <div class="current-marker"><small>MARK PRICE</small><strong id="ladder-price">—</strong></div>
+            <div class="ladder-line"></div>
+            <span>HỖ TRỢ</span>
+          </article>
+
+          <article class="panel zone-panel resistance-panel">
+            <div class="section-head">
+              <div><span class="section-kicker">PHÍA TRÊN GIÁ</span><h2>Vùng kháng cự</h2></div>
+              <span class="legend-dot resistance"></span>
+            </div>
+            <div id="resistances" class="zone-list"></div>
+          </article>
+        </section>
+
+        <section class="plans">
+          <article class="plan panel long-plan">
+            <div class="plan-head"><span>LONG PLAN</span><strong id="long-status">—</strong></div>
+            <h3 id="long-trigger">—</h3>
+            <dl>
+              <div><dt>Vùng theo dõi</dt><dd id="long-zone">—</dd></div>
+              <div><dt>Vô hiệu</dt><dd id="long-invalid">—</dd></div>
+              <div><dt>Mục tiêu</dt><dd id="long-targets">—</dd></div>
+            </dl>
+          </article>
+          <article class="plan panel short-plan">
+            <div class="plan-head"><span>SHORT PLAN</span><strong id="short-status">—</strong></div>
+            <h3 id="short-trigger">—</h3>
+            <dl>
+              <div><dt>Vùng theo dõi</dt><dd id="short-zone">—</dd></div>
+              <div><dt>Vô hiệu</dt><dd id="short-invalid">—</dd></div>
+              <div><dt>Mục tiêu</dt><dd id="short-targets">—</dd></div>
+            </dl>
+          </article>
+        </section>
+
+        <section class="detail-grid">
+          <article class="panel table-panel">
+            <div class="section-head"><div><span class="section-kicker">5M → 4H</span><h2>Cấu trúc đa khung</h2></div></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Khung</th><th>Trạng thái</th><th>Close</th><th>EMA13</th><th>EMA25</th><th>EMA99</th><th>ATR</th></tr></thead>
+                <tbody id="frame-rows"></tbody>
+              </table>
+            </div>
+          </article>
+          <article class="panel candle-panel">
+            <div class="section-head"><div><span class="section-kicker">LIVE CANDLE</span><h2>Nến đang chạy</h2></div></div>
+            <div id="candles" class="candle-list"></div>
+          </article>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="/coin-level-analysis.js"></script>
+  </body>
+</html>

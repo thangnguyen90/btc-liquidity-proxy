@@ -2,6 +2,9 @@
 // LONG: coin đã bơm, bị kill xuống quanh EMA99 trên 5m rồi reclaim để đi tiếp.
 // SHORT: đối xứng, coin đã dump, wick lên quanh EMA99 rồi reject để rơi tiếp.
 
+export const EMA99_KILL_RECLAIM_VERSION = 'EMA99_KILL_RECLAIM_V2_PUMP_DUMP_ABSORPTION_20260831';
+export const PUMP_DUMP_ABSORPTION_VARIANT = 'PUMP_DUMP_ABSORPTION';
+
 function clamp01(v) {
   return Math.max(0, Math.min(1, v));
 }
@@ -45,6 +48,16 @@ function sma(values, period, end) {
     count++;
   }
   return count ? sum / count : NaN;
+}
+
+function median(values = []) {
+  const sorted = values
+    .map(Number)
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  if (!sorted.length) return NaN;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
 function atrAt(highs, lows, closes, period, end) {
@@ -93,6 +106,241 @@ function scoreShort(meta, C) {
     clamp01((C.maxKillAgeBars - meta.killAge) / C.maxKillAgeBars) * 0.10 +
     clamp01((55 - meta.rsi14) / 35) * 0.10
   ));
+}
+
+// Dedicated closed-candle sequence:
+// pump/spike -> 1-2 deep flush candles -> 2-6 absorption candles -> EMA99 reclaim.
+// WATCH states are observable/Discord-only. Only LONG_READY is executable.
+export function detectPumpDumpAbsorptionReclaim(candles, state = {}, opts = {}) {
+  const C = {
+    interval: '5m',
+    emaSlow: 99,
+    spikeSearchBackBars: 12,
+    spikeLookbackBars: 20,
+    spikeMoveMinPct: 0.025,
+    spikeAtrMult: 1.8,
+    spikeVolumeMinX: 3,
+    flushMaxBars: 2,
+    flushDropMinPct: 0.05,
+    flushVolumeMinX: 1.5,
+    flushCloseBaseTolerancePct: 0.002,
+    absorptionMinBars: 2,
+    absorptionMaxBars: 6,
+    absorptionLowTolerancePct: 0.005,
+    absorptionVolumeMaxShare: 0.60,
+    triggerVolumeMinX: 1.5,
+    triggerRsi6Min: 38,
+    triggerMaxEma99DistancePct: 0.02,
+    minReadyScore: 70,
+    slBufferAtr: 0.20,
+    minTpPricePct: 0.006,
+    maxTpPricePct: 0.035,
+    includeWatch: true,
+    ...opts,
+  };
+
+  if (String(C.interval) !== '5m') return { pass: false, reason: 'pump-dump absorption only runs on 5m' };
+  const n = Array.isArray(candles) ? candles.length : 0;
+  if (n < C.emaSlow + 30) return { pass: false, reason: `not enough candles (${n})` };
+
+  const O = candles.map((k) => Number(k.open));
+  const H = candles.map((k) => Number(k.high));
+  const L = candles.map((k) => Number(k.low));
+  const Cl = candles.map((k) => Number(k.close));
+  const V = candles.map((k) => Number(k.volume));
+  if (![O, H, L, Cl, V].every((rows) => rows.every(Number.isFinite))) {
+    return { pass: false, reason: 'invalid OHLCV' };
+  }
+
+  const lastIdx = n - 2; // only the last fully closed candle
+  const ema99 = emaSeries(Cl, C.emaSlow);
+  const atr = atrAt(H, L, Cl, 14, lastIdx);
+  if (!Number.isFinite(atr) || atr <= 0) return { pass: false, reason: 'ATR invalid' };
+
+  let best = null;
+  const spikeStart = Math.max(C.emaSlow + C.spikeLookbackBars, lastIdx - C.spikeSearchBackBars);
+  const spikeEnd = lastIdx - C.absorptionMinBars - 1;
+  for (let spikeIdx = spikeStart; spikeIdx <= spikeEnd; spikeIdx++) {
+    const priorClose = Cl[spikeIdx - 1];
+    const spikeRange = H[spikeIdx] - L[spikeIdx];
+    const spikeMovePct = (H[spikeIdx] - priorClose) / Math.max(priorClose, 1e-9);
+    const spikeAtr = spikeRange / atr;
+    const priorVolume = sma(V, 20, spikeIdx - 1);
+    const spikeVolumeX = priorVolume > 0 ? V[spikeIdx] / priorVolume : 0;
+    const priorHigh = Math.max(...H.slice(Math.max(0, spikeIdx - C.spikeLookbackBars), spikeIdx));
+    const brokeRecentHigh = H[spikeIdx] > priorHigh;
+    if (!brokeRecentHigh
+      || spikeVolumeX < C.spikeVolumeMinX
+      || (spikeMovePct < C.spikeMoveMinPct && spikeAtr < C.spikeAtrMult)) continue;
+
+    const flushEnd = Math.min(lastIdx, spikeIdx + C.flushMaxBars);
+    if (flushEnd <= spikeIdx) continue;
+    let flushIdx = spikeIdx + 1;
+    for (let i = spikeIdx + 1; i <= flushEnd; i++) {
+      if (L[i] < L[flushIdx]) flushIdx = i;
+    }
+    const flushDropPct = (H[spikeIdx] - L[flushIdx]) / Math.max(H[spikeIdx], 1e-9);
+    const flushCandles = Array.from({ length: flushEnd - spikeIdx }, (_, offset) => spikeIdx + 1 + offset);
+    const flushHasRed = flushCandles.some((i) => Cl[i] < O[i]);
+    const flushMinClose = Math.min(...flushCandles.map((i) => Cl[i]));
+    const flushMaxVolume = Math.max(...flushCandles.map((i) => V[i]));
+    const flushVolumeX = priorVolume > 0 ? flushMaxVolume / priorVolume : 0;
+    const returnedToBase = flushMinClose <= O[spikeIdx] * (1 + C.flushCloseBaseTolerancePct);
+    if (!flushHasRed || !returnedToBase
+      || flushDropPct < C.flushDropMinPct
+      || flushVolumeX < C.flushVolumeMinX) continue;
+
+    const postFlushStart = flushIdx + 1;
+    const absorptionEnd = lastIdx - 1;
+    const absorptionBars = Math.max(0, absorptionEnd - postFlushStart + 1);
+    const postFlushLows = postFlushStart <= lastIdx ? L.slice(postFlushStart, lastIdx + 1) : [];
+    const madeDeeperLow = postFlushLows.some((low) => low < L[flushIdx] * (1 - C.absorptionLowTolerancePct));
+    if (madeDeeperLow) continue;
+
+    const absorptionVolumes = absorptionBars > 0 ? V.slice(postFlushStart, absorptionEnd + 1) : [];
+    const absorptionVolume = median(absorptionVolumes);
+    const absorptionVolumeShare = Number.isFinite(absorptionVolume) && V[flushIdx] > 0
+      ? absorptionVolume / V[flushIdx]
+      : Infinity;
+    const absorptionLowImproved = absorptionBars >= 2
+      && L[absorptionEnd] >= L[postFlushStart] * (1 - C.absorptionLowTolerancePct);
+
+    const triggerGreen = Cl[lastIdx] > O[lastIdx];
+    const triggerBreak = lastIdx > flushIdx && Cl[lastIdx] > H[lastIdx - 1];
+    const triggerEma99 = Number(ema99[lastIdx]);
+    const triggerAboveEma99 = Number.isFinite(triggerEma99) && Cl[lastIdx] > triggerEma99;
+    const ema99DistancePct = triggerAboveEma99
+      ? (Cl[lastIdx] - triggerEma99) / triggerEma99
+      : Infinity;
+    const triggerBaselineVolume = median(absorptionVolumes.length ? absorptionVolumes : V.slice(Math.max(0, lastIdx - 3), lastIdx));
+    const triggerVolumeX = triggerBaselineVolume > 0 ? V[lastIdx] / triggerBaselineVolume : 0;
+    const rsi6 = Number.isFinite(state.rsi6) ? Number(state.rsi6) : calcRsi(Cl, 6, lastIdx);
+    const previousRsi6 = calcRsi(Cl, 6, lastIdx - 1);
+    const rsiRecovering = Number.isFinite(rsi6)
+      && rsi6 >= C.triggerRsi6Min
+      && (!Number.isFinite(previousRsi6) || rsi6 > previousRsi6);
+    const notLate = Cl[lastIdx] <= Math.max(O[spikeIdx] * 1.01, triggerEma99 * 1.01);
+    const absorbed = absorptionBars >= C.absorptionMinBars
+      && absorptionBars <= C.absorptionMaxBars
+      && absorptionVolumeShare <= C.absorptionVolumeMaxShare
+      && absorptionLowImproved;
+    const ready = absorbed
+      && triggerGreen
+      && triggerBreak
+      && triggerAboveEma99
+      && ema99DistancePct <= C.triggerMaxEma99DistancePct
+      && triggerVolumeX >= C.triggerVolumeMinX
+      && rsiRecovering
+      && notLate;
+
+    const score = Math.max(0, Math.min(100, Math.round(
+      16
+      + clamp01((spikeMovePct - C.spikeMoveMinPct) / 0.055) * 10
+      + clamp01((spikeVolumeX - C.spikeVolumeMinX) / 7) * 12
+      + 16
+      + clamp01((flushDropPct - C.flushDropMinPct) / 0.08) * 12
+      + clamp01((C.absorptionVolumeMaxShare - absorptionVolumeShare) / C.absorptionVolumeMaxShare) * 14
+      + (triggerAboveEma99 && triggerBreak ? 10 : 0)
+      + clamp01((triggerVolumeX - C.triggerVolumeMinX) / 2.5) * 5
+      + clamp01((rsi6 - C.triggerRsi6Min) / 25) * 5
+    )));
+
+    const phase = ready && score >= C.minReadyScore
+      ? 'PUMP_DUMP_RECLAIM_LONG_READY'
+      : absorbed
+        ? 'PUMP_DUMP_ABSORPTION_WATCH'
+        : 'PUMP_DUMP_FLUSH_WATCH';
+    const candidate = {
+      spikeIdx,
+      flushIdx,
+      lastIdx,
+      spikeMovePct,
+      spikeAtr,
+      spikeVolumeX,
+      flushDropPct,
+      flushVolumeX,
+      absorptionBars,
+      absorptionVolumeShare,
+      absorptionLowImproved,
+      triggerVolumeX,
+      triggerEma99,
+      ema99DistancePct,
+      rsi6,
+      previousRsi6,
+      score,
+      phase,
+      ready: phase === 'PUMP_DUMP_RECLAIM_LONG_READY',
+    };
+    if (!best || candidate.ready > best.ready || candidate.score > best.score) best = candidate;
+  }
+
+  if (!best) return { pass: false, reason: 'no adjacent pump -> deep flush sequence' };
+  if (!best.ready && !C.includeWatch) return { pass: false, reason: `${best.phase}: waiting for absorption/reclaim` };
+
+  const entry = Cl[best.lastIdx];
+  const flushLow = L[best.flushIdx];
+  const rawTp = Math.max(entry * (1 + C.minTpPricePct), O[best.spikeIdx]);
+  const tp = Math.min(rawTp, entry * (1 + C.maxTpPricePct));
+  const sl = flushLow - C.slBufferAtr * atr;
+  const triggerCloseTime = Number(candles[best.lastIdx]?.closeTime ?? candles[best.lastIdx]?.time ?? 0) || null;
+  const action = best.ready ? 'LONG' : 'WATCH';
+
+  return {
+    pass: true,
+    type: 'ema99_kill_reclaim_long',
+    stage: best.phase,
+    action,
+    interval: C.interval,
+    score: best.score,
+    grade: gradeScore(best.score),
+    setupVariant: PUMP_DUMP_ABSORPTION_VARIANT,
+    detectorVersion: EMA99_KILL_RECLAIM_VERSION,
+    entry: best.ready ? Number(entry.toFixed(10)) : null,
+    sl: best.ready ? Number(sl.toFixed(10)) : null,
+    tp: best.ready ? Number(tp.toFixed(10)) : null,
+    ema99: Number(best.triggerEma99.toFixed(10)),
+    rsi14: Number.isFinite(calcRsi(Cl, 14, best.lastIdx))
+      ? Number(calcRsi(Cl, 14, best.lastIdx).toFixed(1))
+      : null,
+    reason: best.ready
+      ? 'Pump volume spike, deep flush returned to the base, sell volume contracted, then price reclaimed EMA99'
+      : best.phase === 'PUMP_DUMP_ABSORPTION_WATCH'
+        ? 'Deep post-pump flush is being absorbed; wait for a closed EMA99 reclaim candle'
+        : 'Deep dump immediately followed a pump-volume spike; WATCH only until absorption is confirmed',
+    note: [
+      `${C.interval}`,
+      `variant=${PUMP_DUMP_ABSORPTION_VARIANT}`,
+      `spike=${(best.spikeMovePct * 100).toFixed(1)}%/${best.spikeVolumeX.toFixed(1)}x`,
+      `flush=${(best.flushDropPct * 100).toFixed(1)}%/${best.flushVolumeX.toFixed(1)}x`,
+      `absVol=${(best.absorptionVolumeShare * 100).toFixed(0)}%`,
+      `reclaimVol=${best.triggerVolumeX.toFixed(1)}x`,
+      `RSI6=${Number.isFinite(best.rsi6) ? best.rsi6.toFixed(1) : '-'}`,
+    ].join(' | '),
+    factors: {
+      setupVariant: PUMP_DUMP_ABSORPTION_VARIANT,
+      spikeMovePct: Number((best.spikeMovePct * 100).toFixed(2)),
+      spikeAtr: Number(best.spikeAtr.toFixed(2)),
+      spikeVolumeRatio: Number(best.spikeVolumeX.toFixed(2)),
+      spikeOpen: Number(O[best.spikeIdx].toFixed(10)),
+      spikeHigh: Number(H[best.spikeIdx].toFixed(10)),
+      flushDropPct: Number((best.flushDropPct * 100).toFixed(2)),
+      flushVolumeRatio: Number(best.flushVolumeX.toFixed(2)),
+      flushLow: Number(flushLow.toFixed(10)),
+      absorptionBars: best.absorptionBars,
+      absorptionVolumeSharePct: Number((best.absorptionVolumeShare * 100).toFixed(1)),
+      triggerVolumeRatio: Number(best.triggerVolumeX.toFixed(2)),
+      triggerCloseTime,
+      contextMovePct: Number((best.spikeMovePct * 100).toFixed(2)),
+      killAgeBars: best.lastIdx - best.flushIdx,
+      killPrice: Number(flushLow.toFixed(10)),
+      ema99DistPct: Number((best.ema99DistancePct * 100).toFixed(3)),
+      wickRejectPct: Number((((Math.min(O[best.flushIdx], Cl[best.flushIdx]) - flushLow)
+        / Math.max(H[best.flushIdx] - flushLow, 1e-9)) * 100).toFixed(1)),
+      reclaimPct: Number((((entry - flushLow) / Math.max(flushLow, 1e-9)) * 100).toFixed(2)),
+      volRatio: Number(best.triggerVolumeX.toFixed(2)),
+      rsi6: Number.isFinite(best.rsi6) ? Number(best.rsi6.toFixed(1)) : null,
+    },
+  };
 }
 
 export function detectEma99KillReclaim(candles, state = {}, opts = {}) {
@@ -271,10 +519,26 @@ export async function runEma99KillReclaimScan(symbols, klineCache, snapshotMap =
     const candles = klineCache.getIfCached(symbol, interval, limit);
     if (!candles || candles.length < 130) continue;
     processed++;
+    const snap = snapshotMap.get(symbol) || {};
+    const pumpDump = interval === '5m'
+      ? detectPumpDumpAbsorptionReclaim(candles, {}, { ...opts, interval, includeWatch: true })
+      : { pass: false };
+    if (pumpDump.pass) {
+      signals.push({
+        symbol,
+        ...pumpDump,
+        markPrice: Number(snap.markPrice ?? candles[candles.length - 1]?.close ?? pumpDump.entry),
+        change24h: Number(snap.change24hPct ?? snap.priceChangePercent ?? 0),
+        volume: Number(snap.quoteVolume ?? 0),
+        scannedAt: Date.now(),
+      });
+    }
     for (const side of ['LONG', 'SHORT']) {
+      // The dedicated sequence is a stricter explanation of the same LONG label.
+      // Prefer it over the generic LONG detector when it has reached LONG_READY.
+      if (side === 'LONG' && pumpDump.pass && pumpDump.action === 'LONG') continue;
       const det = detectEma99KillReclaim(candles, {}, { ...opts, side, interval, minScore });
       if (!det.pass) continue;
-      const snap = snapshotMap.get(symbol) || {};
       signals.push({
         symbol,
         ...det,

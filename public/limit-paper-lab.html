@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Limit Paper Lab</title>
+  <link rel="stylesheet" href="/limit-paper-lab.css?v=20260913-v1">
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <p class="eyebrow">RESEARCH ONLY · KHÔNG GỬI LỆNH BINANCE</p>
+      <h1>Limit Paper Lab</h1>
+      <p class="lead">Đo giá chờ hồi phù hợp cho những tín hiệu không vào MARKET thật.</p>
+    </div>
+    <nav aria-label="Điều hướng">
+      <a href="/orders">Orders</a>
+      <a href="/binance-auto-controls">Quản lý Binance tự động</a>
+      <a class="active" href="/limit-paper-lab" aria-current="page">Limit Paper Lab</a>
+      <a href="/coin-level-analysis">Bản đồ giá</a>
+    </nav>
+  </header>
+
+  <section class="guardrail">
+    <strong>Trang này chỉ mô phỏng.</strong>
+    <span>Không bật route, không đặt LIMIT/MARKET, không sửa size/đòn bẩy/TP/SL Binance. V1 nhận EMA99, HTF Deep Base, Extreme, CoinGlass Zone Lifecycle và Hybrid khi kết quả không phải <code>submitted</code>.</span>
+  </section>
+
+  <section id="summary" class="summary" aria-label="Tổng quan"></section>
+
+  <section class="method">
+    <div>
+      <p class="eyebrow">CÁCH TÌM ENTRY</p>
+      <h2>So sánh ba độ sâu chờ hồi và mốc EMA/cấu trúc</h2>
+    </div>
+    <p id="method-text">Đang đọc phương pháp…</p>
+  </section>
+
+  <section class="toolbar">
+    <label>Tìm source / nhãn / coin
+      <input id="search" type="search" placeholder="EMA99, REJECTED, BTCUSDT…">
+    </label>
+    <label>Hướng
+      <select id="side"><option value="">Tất cả</option><option>LONG</option><option>SHORT</option></select>
+    </label>
+    <button id="refresh" type="button">Làm mới</button>
+    <span id="status" role="status" aria-live="polite"></span>
+  </section>
+
+  <section>
+    <div class="section-heading">
+      <div><p class="eyebrow">ENTRY RESEARCH</p><h2>Đánh giá theo từng loại tín hiệu</h2></div>
+      <p class="muted">Màu xanh chỉ xuất hiện khi đủ mẫu; màu vàng là kết quả tạm thời.</p>
+    </div>
+    <div id="groups" class="groups"></div>
+  </section>
+
+  <section>
+    <div class="section-heading">
+      <div><p class="eyebrow">AUDIT GẦN NHẤT</p><h2>Tín hiệu và các lệnh LIMIT paper</h2></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Thời gian / coin</th><th>Loại tín hiệu</th><th>Giá phát</th><th>Lý do không MARKET</th><th>Các mức LIMIT paper</th></tr></thead>
+        <tbody id="recent"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script src="/limit-paper-lab.js?v=20260913-v1" defer></script>
+</body>
+</html>

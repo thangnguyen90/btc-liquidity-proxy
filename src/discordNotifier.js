@@ -1,5 +1,7 @@
 import { fetchAnalysis } from './marketAnalysis.js';
 import { computeHeatmapData } from './liquidityProxy.js';
+import { buildLiqScanSnapshot } from './liqScanSnapshot.js';
+import { buildBigCandlePump15mSignal } from './bigCandlePumpBinance.js';
 
 const symbolUrl = (symbol) => {
   const base = process.env.LIQUIDITY_BASE_URL;
@@ -514,7 +516,7 @@ function buildBullishVolDumpEmbed(symbol, markPrice, stats, analysis) {
   };
 }
 
-function buildBigCandleEmbed(symbol, markPrice, candlePct, volRatio, symbolUrl) {
+export function buildBigCandleEmbed(symbol, markPrice, candlePct, volRatio, symbolUrl, binanceExecution = null) {
   const isDump = candlePct < 0;
   const color = isDump ? 0xef4444 : 0x22c55e;
   const icon = isDump ? '📉' : '📈';
@@ -527,6 +529,12 @@ function buildBigCandleEmbed(symbol, markPrice, candlePct, volRatio, symbolUrl) 
     `Mark: **${fp(markPrice)}**`,
     `Nến 15m: **${sign}${candlePct.toFixed(2)}%**`,
     volRatio > 0 ? `Volume: **${volRatio.toFixed(1)}×** trung bình` : null,
+    !isDump && binanceExecution
+      ? `Binance: **${String(binanceExecution.status ?? 'UNKNOWN').toUpperCase()}**`
+        + `${Number(binanceExecution.marginUsdt) > 0 ? ` · LONG MARKET ${binanceExecution.marginUsdt} USDT margin ×${binanceExecution.leverage}` : ''}`
+        + `${Number(binanceExecution.takeProfitRoePct) > 0 ? ` · TP +${binanceExecution.takeProfitRoePct}% ROE` : ''}`
+        + `${Number(binanceExecution.stopLossRoePct) > 0 ? ` · SL −${binanceExecution.stopLossRoePct}% ROE` : ''}`
+      : null,
   ].filter(Boolean).join('\n');
   return {
     embeds: [{
@@ -557,6 +565,7 @@ export function startVolumeDumpScanner({
   move4cPct = 2.5,
   bigCandlePct = 8,
   bigCandleCooldownMs = 3_600_000,
+  onBigCandleSignal = null,
 }) {
   const getKlines = (symbol, interval, limit) =>
     klineCache ? klineCache.getKlines(symbol, interval, limit) : client.getKlines(symbol, interval, limit);
@@ -627,13 +636,29 @@ export function startVolumeDumpScanner({
           }
 
           // Big candle alert: nến body >= bigCandlePct% (không cần volume điều kiện)
-          if (bigCandleWebhookUrl && Math.abs(dumpCandlePct) >= bigCandlePct) {
+          if ((bigCandleWebhookUrl || typeof onBigCandleSignal === 'function')
+            && Math.abs(dumpCandlePct) >= bigCandlePct) {
             const lastBig = bigCandleCooldowns.get(row.symbol) ?? 0;
             if (now - lastBig >= bigCandleCooldownMs) {
               bigCandleCooldowns.set(row.symbol, now);
               const volRatio = avgVol > 0 ? lastVol / avgVol : 0;
               const symbolUrl = process.env.LIQUIDITY_BASE_URL;
-              await sendWebhook(bigCandleWebhookUrl, buildBigCandleEmbed(row.symbol, row.markPrice, dumpCandlePct, volRatio, symbolUrl)).catch(() => {});
+              let binanceExecution = null;
+              if (dumpCandlePct > 0 && typeof onBigCandleSignal === 'function') {
+                const signal = buildBigCandlePump15mSignal({
+                  row, candle: lastClosed, candlePct: dumpCandlePct, volumeRatio: volRatio, now,
+                });
+                try {
+                  binanceExecution = await onBigCandleSignal(signal);
+                } catch (error) {
+                  binanceExecution = { status: 'error', code: error.code ?? 'BINANCE_ERROR' };
+                }
+              }
+              if (bigCandleWebhookUrl) {
+                await sendWebhook(bigCandleWebhookUrl, buildBigCandleEmbed(
+                  row.symbol, row.markPrice, dumpCandlePct, volRatio, symbolUrl, binanceExecution,
+                )).catch(() => {});
+              }
               console.log(`[BigCandle] 🕯️ ${row.symbol} nến ${dumpCandlePct.toFixed(1)}% vol=${volRatio.toFixed(1)}x`);
             }
           }
@@ -717,10 +742,11 @@ export function startVolumeDumpScanner({
 const liqCooldowns = new Map(); // symbol → last alert timestamp
 
 function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null, topTraderTrend = null) {
-  const above = heatmap.liquidityAbove;
-  const below = heatmap.liquidityBelow;
-  const bias = heatmap.bias;
-  const isAboveHeavy = bias > 0;
+  const snapshot = buildLiqScanSnapshot({ symbol, heatmap, markPrice });
+  const above = snapshot.liquidityAbove;
+  const below = snapshot.liquidityBelow;
+  const bias = snapshot.bias;
+  const isAboveHeavy = snapshot.dominantSide === 'ABOVE';
   const color = isAboveHeavy ? 0xfbbf24 : 0xfb7185; // amber = above, red = below
   const dirLabel = isAboveHeavy ? '⬆️ TRÊN DÀY HƠN' : '⬇️ DƯỚI DÀY HƠN';
   const action = isAboveHeavy
@@ -732,8 +758,7 @@ function buildLiqImbalanceEmbed(symbol, heatmap, markPrice, bigCandle = null, to
   const total = above + below;
 
   // Sweep probability: bias strength (60%) + volume skew (40%)
-  const dominantPct = total > 0 ? (isAboveHeavy ? above : below) / total : 0.5;
-  const sweepProb = Math.min(99, Math.round((Math.abs(bias) * 0.6 + (dominantPct - 0.5) * 2 * 0.4) * 100));
+  const sweepProb = snapshot.sweepProbabilityPct;
   const filled = Math.round(sweepProb / 10);
   const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
   const sweepIcon = sweepProb >= 70 ? '🔥' : sweepProb >= 45 ? '⚡' : '🔵';
@@ -893,6 +918,7 @@ export function startLiqImbalanceScanner({
   highProbThreshold = 90,
   topTraderCache = null, // Map<symbol, { longShortRatio, longPosition, shortPosition }> từ startLongShortRefresh
   topTraderRestFallback = false,
+  onAlert = null,
 }) {
   const getKlines = (symbol, interval, limit) =>
     klineCache ? klineCache.getKlines(symbol, interval, limit) : client.getKlines(symbol, interval, limit);
@@ -941,9 +967,22 @@ export function startLiqImbalanceScanner({
           );
 
           if (isImbalanced || isOneSided) {
-            // Compute sweepProb inline for auto-order check
-            const dominantPct = total > 0 ? (heatmap.bias > 0 ? heatmap.liquidityAbove : heatmap.liquidityBelow) / total : 0.5;
-            const sweepProb = Math.min(99, Math.round((Math.abs(heatmap.bias) * 0.6 + (dominantPct - 0.5) * 2 * 0.4) * 100));
+            const alertSnapshot = buildLiqScanSnapshot({
+              symbol: row.symbol,
+              heatmap,
+              markPrice: row.markPrice,
+              evaluatedAt: now,
+              biasThreshold,
+            });
+            const sweepProb = alertSnapshot.sweepProbabilityPct;
+
+            if (onAlert) {
+              try {
+                await onAlert(alertSnapshot);
+              } catch (error) {
+                console.warn(`[LiqScan] Could not retain latest alert for ${row.symbol}: ${error.message}`);
+              }
+            }
 
             if (onHighProbAlert && sweepProb >= highProbThreshold && heatmap.sweepTarget) {
               const direction = heatmap.bias > 0 ? 'short' : 'long';

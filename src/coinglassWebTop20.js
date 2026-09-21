@@ -21,10 +21,24 @@ import {
   advanceCoinglassZoneLifecycle,
   buildCoinglassZoneLifecycleDiscordPayload,
 } from './coinglassZoneLifecycle.js';
+import {
+  COINGLASS_STRONG_WAVE_REVERSAL_MARGIN_USDT,
+  buildCoinglassStrongWaveReversalDiscordPayload,
+  createCoinglassStrongWaveReversalWatch,
+} from './coinglassStrongWaveReversal.js';
+import {
+  COINGLASS_HYBRID_LIQUIDITY_DISCORD_VERSION,
+  COINGLASS_HYBRID_LIQUIDITY_HUNTER_VERSION,
+  buildCoinglassHybridLiquidityDiscordPayload,
+  coinglassHybridLiquidityDedupeKey,
+} from './coinglassHybridLiquidityHunter.js';
 
 export const COINGLASS_WEB_TOP20_VERSION = 'COINGLASS_WEB_QUALIFIED_BINANCE_V14_QUALIFIED_12H24H_20260823';
+export const COINGLASS_WEB_SECONDARY_STREAM_VERSION =
+  'COINGLASS_WEB_SECONDARY_STREAM_V10_SHORT_BREAKDOWN_ONLY_20260905';
 export const COINGLASS_WEB_QUALIFIED_TIMEFRAMES_VERSION = 'COINGLASS_WEB_QUALIFIED_TIMEFRAMES_V1_12H_24H_20260823';
 export const COINGLASS_WEB_ZONE_PROPOSAL_VERSION = 'COINGLASS_WEB_ZONE_PROPOSAL_V2_20260817';
+export const COIN_LEVEL_COINGLASS_ON_DEMAND_VERSION = 'COIN_LEVEL_COINGLASS_ON_DEMAND_V2_UNICODE_SYMBOL_20260902';
 export const COINGLASS_WEB_TOP20_MODE = 'QUALIFIED_BINANCE_AUTO';
 export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
   observationOnly: false,
@@ -36,6 +50,27 @@ export const COINGLASS_WEB_TOP20_ISOLATION = Object.freeze({
   affectsSize: true,
   affectsSlTp: true,
 });
+export const COINGLASS_WEB_SECONDARY_ISOLATION = Object.freeze({
+  observationOnly: false,
+  qualifiedObservationOnly: true,
+  lifecycleOnly: true,
+  affectsLiquidFlowV2: false,
+  affectsSignals: false,
+  affectsPaper: false,
+  affectsDiscord: true,
+  affectsBinance: true,
+  affectsEntry: true,
+  affectsSize: true,
+  affectsSlTp: true,
+});
+
+export function shouldNotifyCoinglassZoneLifecycleEvent({ event = {}, secondary = false } = {}) {
+  if (secondary !== true) return true;
+  if (event.shouldEnter !== true) return false;
+  const side = String(event.entryPlan?.side ?? '').toUpperCase();
+  const signalLabel = String(event.entryPlan?.signalLabel ?? '');
+  return side !== 'SHORT' || signalLabel === 'BREAKDOWN_ACCEPTED_SHORT_READY';
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -51,7 +86,17 @@ function finiteNumber(value, fallback = null) {
 }
 
 export function safeCoinglassSymbol(value) {
-  const symbol = String(value ?? '').trim().toUpperCase();
+  const symbol = String(value ?? '')
+    .normalize('NFKC')
+    .trim()
+    .toUpperCase()
+    .replace(/^[#$]+/u, '')
+    .replace(/[-/_\s]/gu, '');
+  return /^[\p{L}\p{N}]{1,40}USDT$/u.test(symbol) ? symbol : '';
+}
+
+function safeScheduledCoinglassSymbol(value) {
+  const symbol = safeCoinglassSymbol(value);
   return /^[A-Z0-9]{2,24}USDT$/.test(symbol) ? symbol : '';
 }
 
@@ -62,14 +107,14 @@ export function selectTopBinanceUsdtPerpetuals(exchangeInfo = {}, tickers = [], 
         row?.status === 'TRADING'
         && row?.contractType === 'PERPETUAL'
         && row?.quoteAsset === 'USDT'
-        && safeCoinglassSymbol(row?.symbol)
+        && safeScheduledCoinglassSymbol(row?.symbol)
       ))
-      .map((row) => [row.symbol, row]),
+      .map((row) => [safeScheduledCoinglassSymbol(row.symbol), row]),
   );
 
   return (Array.isArray(tickers) ? tickers : [])
     .map((ticker) => {
-      const symbol = safeCoinglassSymbol(ticker?.symbol);
+      const symbol = safeScheduledCoinglassSymbol(ticker?.symbol);
       const contract = contracts.get(symbol);
       if (!contract) return null;
       return {
@@ -118,6 +163,19 @@ export function selectBinanceAppMoverCandidates(exchangeInfo = {}, tickers = [],
     ...interleaved,
   ].slice(0, Math.max(1, maxSymbols + (btc ? 1 : 0)))
     .map((row, index) => ({ ...row, rank: index + 1 }));
+}
+
+export function sliceCoinglassMoverStream(markets = [], rankOffset = 0, limit = 40) {
+  const offset = Math.max(0, Math.min(960, Math.trunc(finiteNumber(rankOffset, 0))));
+  const size = Math.max(1, Math.min(40, Math.trunc(finiteNumber(limit, 40))));
+  return (Array.isArray(markets) ? markets : [])
+    .slice(offset, offset + size)
+    .map((row, index) => ({
+      ...row,
+      globalRank: Math.max(1, Math.trunc(finiteNumber(row?.globalRank ?? row?.rank, offset + index + 1))),
+      streamRank: index + 1,
+      rank: index + 1,
+    }));
 }
 
 export function applyBinanceLiquidityFilter(markets = [], metricsBySymbol = {}, limit = 20, thresholds = {}) {
@@ -631,22 +689,47 @@ export class CoinGlassWebTop20Manager {
   constructor({
     rootDir,
     dataDir = join(rootDir, 'data', 'coinglass-web-top20'),
+    streamId = 'primary',
     onQualifiedRow = null,
     onZoneLifecycleSignal = null,
+    onZoneLifecyclePaper = null,
+    onZoneLifecycleReversalWatch = null,
+    onHybridLiquidityScan = null,
+    onHybridLiquiditySignal = null,
+    onHybridLiquidityPaper = null,
     resolveBinanceSettings = null,
   } = {}) {
     if (!rootDir) throw new Error('rootDir is required');
     this.rootDir = rootDir;
     this.dataDir = dataDir;
+    this.streamId = streamId === 'secondary' ? 'secondary' : 'primary';
+    this.secondary = this.streamId === 'secondary';
+    this.logPrefix = this.secondary ? 'CoinGlassWebSecondary' : 'CoinGlassWebTop20';
     this.snapshotFile = join(dataDir, 'snapshot.json');
     this.progressFile = join(dataDir, 'progress.json');
     this.authFile = join(dataDir, 'auth.json');
     this.notificationFile = join(dataDir, 'notifications.json');
     this.executionFile = join(dataDir, 'binance-executions.json');
     this.zoneLifecycleFile = join(dataDir, 'zone-lifecycle.json');
+    this.hybridLiquidityFile = join(dataDir, 'hybrid-liquidity-hunter.json');
     this.onQualifiedRow = typeof onQualifiedRow === 'function' ? onQualifiedRow : null;
     this.onZoneLifecycleSignal = typeof onZoneLifecycleSignal === 'function'
       ? onZoneLifecycleSignal
+      : null;
+    this.onZoneLifecyclePaper = typeof onZoneLifecyclePaper === 'function'
+      ? onZoneLifecyclePaper
+      : null;
+    this.onZoneLifecycleReversalWatch = typeof onZoneLifecycleReversalWatch === 'function'
+      ? onZoneLifecycleReversalWatch
+      : null;
+    this.onHybridLiquidityScan = typeof onHybridLiquidityScan === 'function'
+      ? onHybridLiquidityScan
+      : null;
+    this.onHybridLiquiditySignal = typeof onHybridLiquiditySignal === 'function'
+      ? onHybridLiquiditySignal
+      : null;
+    this.onHybridLiquidityPaper = typeof onHybridLiquidityPaper === 'function'
+      ? onHybridLiquidityPaper
       : null;
     this.resolveBinanceSettings = typeof resolveBinanceSettings === 'function'
       ? resolveBinanceSettings
@@ -667,41 +750,236 @@ export class CoinGlassWebTop20Manager {
     this.lastZoneEvaluationSymbol = null;
     this.lastZoneLifecycleAt = null;
     this.lastZoneLifecycleEvent = null;
+    this.lastHybridLiquidityAt = null;
+    this.lastHybridLiquiditySignal = null;
+    this.onDemandRunning = false;
+    this.onDemandSymbol = null;
+    this.onDemandJobs = new Map();
   }
 
   config() {
-    const configuredLimit = finiteNumber(
-      process.env.COINGLASS_WEB_SCAN_LIMIT
-      ?? process.env.COINGLASS_WEB_TOP20_LIMIT
-      ?? 40,
-      40,
-    );
+    const secondary = this.secondary;
+    const configuredLimit = secondary
+      ? finiteNumber(process.env.COINGLASS_WEB_SECONDARY_LIMIT, 40)
+      : finiteNumber(
+        process.env.COINGLASS_WEB_SCAN_LIMIT
+        ?? process.env.COINGLASS_WEB_TOP20_LIMIT
+        ?? 40,
+        40,
+      );
+    const rankOffset = secondary
+      ? Math.max(0, Math.min(960, Math.trunc(finiteNumber(process.env.COINGLASS_WEB_SECONDARY_RANK_OFFSET, 40))))
+      : 0;
+    const limit = Math.max(1, Math.min(40, Math.trunc(configuredLimit)));
+    const secondaryLifecycleEnabled = secondary
+      && process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_ENABLED === 'true';
+    const secondaryLifecycleBinanceEnabled = secondaryLifecycleEnabled
+      && process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_BINANCE_ENABLED === 'true';
     return {
-      enabled: process.env.COINGLASS_WEB_TOP20_ENABLED !== 'false',
-      limit: Math.max(1, Math.min(40, configuredLimit)),
+      streamId: this.streamId,
+      streamVersion: secondary ? COINGLASS_WEB_SECONDARY_STREAM_VERSION : COINGLASS_WEB_TOP20_VERSION,
+      observationOnly: secondary ? !secondaryLifecycleEnabled : false,
+      qualifiedObservationOnly: secondary,
+      lifecycleOnly: secondary,
+      enabled: secondary
+        ? process.env.COINGLASS_WEB_SECONDARY_ENABLED !== 'false'
+        : process.env.COINGLASS_WEB_TOP20_ENABLED !== 'false',
+      limit,
+      rankOffset,
+      rankFrom: rankOffset + 1,
+      rankTo: rankOffset + limit,
       range: '48h',
       browserMode: process.env.COINGLASS_WEB_BROWSER_MODE ?? 'headless',
       captureImages: process.env.COINGLASS_WEB_CAPTURE_IMAGES === 'true',
       disableGpu: process.env.COINGLASS_WEB_DISABLE_GPU !== 'false',
       viewportWidth: Math.max(480, Math.min(1280, finiteNumber(process.env.COINGLASS_WEB_VIEWPORT_WIDTH, 1280))),
       viewportHeight: Math.max(360, Math.min(900, finiteNumber(process.env.COINGLASS_WEB_VIEWPORT_HEIGHT, 900))),
-      timeoutMs: Math.max(120_000, Number(process.env.COINGLASS_WEB_TOP20_TIMEOUT_MS ?? 12 * 60_000)),
-      loginTimeoutMs: Math.max(120_000, Number(process.env.COINGLASS_WEB_LOGIN_TIMEOUT_MS ?? 10 * 60_000)),
-      schedulerEnabled: process.env.COINGLASS_WEB_SCHEDULER_ENABLED !== 'false',
-      schedulerIntervalMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_SCAN_INTERVAL_MS, 180_000)),
-      scanBudgetMs: Math.max(60_000, Math.min(150_000, finiteNumber(process.env.COINGLASS_WEB_SCAN_BUDGET_MS, 150_000))),
-      discordConfigured: Boolean(this.discordWebhookUrl()),
-      zoneEvaluationDiscordConfigured: Boolean(this.zoneEvaluationWebhookUrl()),
-      zoneLifecycleEnabled: process.env.COINGLASS_ZONE_LIFECYCLE_ENABLED !== 'false',
-      zoneLifecycleDiscordConfigured: Boolean(this.zoneLifecycleWebhookUrl()),
-      zoneLifecycleBinanceEnabled: process.env.COINGLASS_ZONE_LIFECYCLE_BINANCE_ENABLED === 'true',
-      zoneLifecycleMarginUsdt: Math.max(0.01, finiteNumber(process.env.COINGLASS_ZONE_LIFECYCLE_MARGIN_USDT, 5)),
-      zoneLifecycleLeverage: Math.max(1, Math.min(125, finiteNumber(process.env.COINGLASS_ZONE_LIFECYCLE_LEVERAGE, 5))),
+      browserConcurrency: Math.max(1, Math.min(4, Math.trunc(finiteNumber(
+        secondary ? process.env.COINGLASS_WEB_SECONDARY_BROWSER_CONCURRENCY : process.env.COINGLASS_WEB_BROWSER_CONCURRENCY,
+        4,
+      )))),
+      niceLevel: secondary
+        ? Math.max(0, Math.min(19, Math.trunc(finiteNumber(process.env.COINGLASS_WEB_SECONDARY_NICE_LEVEL, 10))))
+        : 0,
+      timeoutMs: Math.max(120_000, finiteNumber(
+        secondary ? process.env.COINGLASS_WEB_SECONDARY_TIMEOUT_MS : process.env.COINGLASS_WEB_TOP20_TIMEOUT_MS,
+        12 * 60_000,
+      )),
+      loginTimeoutMs: Math.max(120_000, finiteNumber(
+        secondary ? process.env.COINGLASS_WEB_SECONDARY_LOGIN_TIMEOUT_MS : process.env.COINGLASS_WEB_LOGIN_TIMEOUT_MS,
+        10 * 60_000,
+      )),
+      schedulerEnabled: secondary
+        ? process.env.COINGLASS_WEB_SECONDARY_SCHEDULER_ENABLED !== 'false'
+        : process.env.COINGLASS_WEB_SCHEDULER_ENABLED !== 'false',
+      schedulerIntervalMs: Math.max(180_000, finiteNumber(
+        secondary ? process.env.COINGLASS_WEB_SECONDARY_SCAN_INTERVAL_MS : process.env.COINGLASS_WEB_SCAN_INTERVAL_MS,
+        secondary ? 360_000 : 180_000,
+      )),
+      schedulerInitialDelayMs: Math.max(5_000, finiteNumber(
+        secondary ? process.env.COINGLASS_WEB_SECONDARY_INITIAL_DELAY_MS : null,
+        secondary ? 270_000 : 180_000,
+      )),
+      scanBudgetMs: Math.max(60_000, Math.min(150_000, finiteNumber(
+        secondary ? process.env.COINGLASS_WEB_SECONDARY_SCAN_BUDGET_MS : process.env.COINGLASS_WEB_SCAN_BUDGET_MS,
+        150_000,
+      ))),
+      discordConfigured: !secondary && Boolean(this.discordWebhookUrl()),
+      zoneEvaluationDiscordConfigured: !secondary && Boolean(this.zoneEvaluationWebhookUrl()),
+      zoneLifecycleEnabled: secondary
+        ? secondaryLifecycleEnabled
+        : process.env.COINGLASS_ZONE_LIFECYCLE_ENABLED !== 'false',
+      zoneLifecycleDiscordConfigured: secondary
+        ? secondaryLifecycleEnabled && Boolean(this.zoneLifecycleWebhookUrl())
+        : Boolean(this.zoneLifecycleWebhookUrl()),
+      zoneLifecycleBinanceEnabled: secondary
+        ? secondaryLifecycleBinanceEnabled
+        : process.env.COINGLASS_ZONE_LIFECYCLE_BINANCE_ENABLED === 'true',
+      zoneLifecycleMarginUsdt: Math.max(0.01, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_MARGIN_USDT
+          : process.env.COINGLASS_ZONE_LIFECYCLE_MARGIN_USDT,
+        secondary ? 2.5 : 2,
+      )),
+      zoneLifecycleAcceptedBreakoutMarginUsdt: Math.max(0.01, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_ACCEPTED_MARGIN_USDT
+          : process.env.COINGLASS_ZONE_LIFECYCLE_ACCEPTED_MARGIN_USDT,
+        10,
+      )),
+      zoneLifecycleUnconfirmedBounceLongMarginUsdt: Math.max(0.01, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_UNCONFIRMED_BOUNCE_MARGIN_USDT
+          : process.env.COINGLASS_ZONE_LIFECYCLE_UNCONFIRMED_BOUNCE_MARGIN_USDT,
+        5,
+      )),
+      zoneLifecycleFixedTakeProfitRoePct: Math.max(0, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_TAKE_PROFIT_ROE_PCT
+          : process.env.COINGLASS_ZONE_LIFECYCLE_TAKE_PROFIT_ROE_PCT,
+        secondary ? 6 : 0,
+      )),
+      zoneLifecycleSupportReclaimMarginUsdt: Math.max(0.01, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_SUPPORT_RECLAIM_MARGIN_USDT
+          : process.env.COINGLASS_ZONE_LIFECYCLE_SUPPORT_RECLAIM_MARGIN_USDT,
+        secondary ? 2.5 : 3,
+      )),
+      zoneLifecycleStrongShortMarginUsdt: Math.max(0.01, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_STRONG_SHORT_MARGIN_USDT
+          : process.env.COINGLASS_ZONE_LIFECYCLE_STRONG_SHORT_MARGIN_USDT,
+        secondary ? 2.5 : 2,
+      )),
+      zoneLifecycleLargeTargetThresholdPct: Math.max(0, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_LARGE_TARGET_THRESHOLD_PCT,
+        5,
+      )),
+      zoneLifecycleLargeTargetMarginUsdt: Math.max(0.01, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_LARGE_TARGET_MARGIN_USDT
+          : process.env.COINGLASS_ZONE_LIFECYCLE_LARGE_TARGET_MARGIN_USDT,
+        secondary ? 2.5 : 2,
+      )),
+      zoneLifecycleLongSingleTargetMaxPct: Math.max(0, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_LONG_SINGLE_TARGET_MAX_PCT,
+        3,
+      )),
+      zoneLifecycleLongTp1DistancePct: Math.max(0.1, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_LONG_TP1_DISTANCE_PCT,
+        2,
+      )),
+      zoneLifecycleLongTp1CloseRatio: Math.max(0.05, Math.min(0.95, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_LONG_TP1_CLOSE_RATIO,
+        0.7,
+      ))),
+      zoneLifecycleLongTp2CapPct: Math.max(0.1, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_LONG_TP2_CAP_PCT,
+        5,
+      )),
+      zoneLifecycleShortSingleTargetMaxPct: Math.max(0, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_SHORT_SINGLE_TARGET_MAX_PCT,
+        3,
+      )),
+      zoneLifecycleShortTp1DistancePct: Math.max(0.1, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_SHORT_TP1_DISTANCE_PCT,
+        2,
+      )),
+      zoneLifecycleShortTp1CloseRatio: Math.max(0.05, Math.min(0.95, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_SHORT_TP1_CLOSE_RATIO,
+        0.7,
+      ))),
+      zoneLifecycleShortTp2CapPct: Math.max(0.1, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_SHORT_TP2_CAP_PCT,
+        5,
+      )),
+      zoneLifecycleShortStrongWaveChange24hPct: Math.max(0, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_SHORT_STRONG_WAVE_CHANGE_24H_PCT,
+        10,
+      )),
+      zoneLifecycleShortStrongTakeProfitRoePct: Math.max(0.1, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_SHORT_STRONG_TAKE_PROFIT_ROE_PCT,
+        5,
+      )),
+      zoneLifecycleShortStrongTp1DistancePct: Math.max(0.1, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_SHORT_STRONG_TP1_DISTANCE_PCT,
+        1,
+      )),
+      zoneLifecycleShortStrongTp1CloseRatio: Math.max(0.05, Math.min(0.95, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_SHORT_STRONG_TP1_CLOSE_RATIO,
+        0.8,
+      ))),
+      zoneLifecycleShortStrongTp2CapPct: Math.max(0.1, finiteNumber(
+        process.env.COINGLASS_ZONE_LIFECYCLE_SHORT_STRONG_TP2_CAP_PCT,
+        3,
+      )),
+      zoneLifecycleLeverage: Math.max(1, Math.min(125, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_LEVERAGE
+          : process.env.COINGLASS_ZONE_LIFECYCLE_LEVERAGE,
+        5,
+      ))),
       zoneLifecycleMaxSlippagePct: Math.max(0.1, finiteNumber(process.env.COINGLASS_ZONE_LIFECYCLE_MAX_SLIPPAGE_PCT, 1.5)),
-      zoneLifecycleMaxPositions: Math.max(0, finiteNumber(process.env.COINGLASS_ZONE_LIFECYCLE_MAX_POSITIONS, 30)),
+      zoneLifecycleMaxPositions: Math.max(0, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_MAX_POSITIONS
+          : process.env.COINGLASS_ZONE_LIFECYCLE_MAX_POSITIONS,
+        30,
+      )),
+      zoneLifecycleReversalEnabled: secondary
+        ? secondaryLifecycleBinanceEnabled
+        : process.env.COINGLASS_ZONE_LIFECYCLE_REVERSAL_ENABLED !== 'false',
+      zoneLifecycleReversalMarginUsdt: Math.max(0.01, finiteNumber(
+        secondary
+          ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_REVERSAL_MARGIN_USDT
+          : process.env.COINGLASS_ZONE_LIFECYCLE_REVERSAL_MARGIN_USDT,
+        COINGLASS_STRONG_WAVE_REVERSAL_MARGIN_USDT,
+      )),
+      hybridLiquidityEnabled: process.env.COINGLASS_HYBRID_LIQUIDITY_ENABLED === 'true',
+      hybridLiquidityDiscordConfigured: Boolean(this.hybridLiquidityWebhookUrl()),
+      hybridLiquidityMaxCandidates: Math.max(1, Math.min(12, Math.trunc(finiteNumber(
+        process.env.COINGLASS_HYBRID_LIQUIDITY_MAX_CANDIDATES,
+        8,
+      )))),
+      hybridLiquidityMaxZoneDistancePct: Math.max(3, Math.min(40, finiteNumber(
+        process.env.COINGLASS_HYBRID_LIQUIDITY_MAX_ZONE_DISTANCE_PCT,
+        25,
+      ))),
+      hybridLiquidityMinZonesPerSide: Math.max(1, Math.min(6, Math.trunc(finiteNumber(
+        process.env.COINGLASS_HYBRID_LIQUIDITY_MIN_ZONES_PER_SIDE,
+        2,
+      )))),
+      hybridLiquidityMaxSideScoreRatio: Math.max(1, Math.min(10, finiteNumber(
+        process.env.COINGLASS_HYBRID_LIQUIDITY_MAX_SIDE_SCORE_RATIO,
+        3,
+      ))),
+      hybridLiquidityDiscordCooldownMs: Math.max(180_000, finiteNumber(
+        process.env.COINGLASS_HYBRID_LIQUIDITY_DISCORD_COOLDOWN_MS,
+        4 * 60 * 60_000,
+      )),
       discordSignalCooldownMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_DISCORD_SIGNAL_COOLDOWN_MS, 30 * 60_000)),
       discordAuthCooldownMs: Math.max(180_000, finiteNumber(process.env.COINGLASS_WEB_DISCORD_AUTH_COOLDOWN_MS, 60 * 60_000)),
-      binanceEnabled: process.env.COINGLASS_WEB_BINANCE_ENABLED !== 'false',
+      binanceEnabled: !secondary && process.env.COINGLASS_WEB_BINANCE_ENABLED !== 'false',
       binanceMarginUsdt: Math.max(0.01, finiteNumber(process.env.COINGLASS_WEB_BINANCE_MARGIN_USDT, 2)),
       binanceLeverage: Math.max(1, Math.min(125, finiteNumber(process.env.COINGLASS_WEB_BINANCE_LEVERAGE, 5))),
       binanceStopLossRoePct: Math.max(1, finiteNumber(process.env.COINGLASS_WEB_BINANCE_STOP_LOSS_ROE_PCT, 20)),
@@ -723,7 +1001,16 @@ export class CoinGlassWebTop20Manager {
   }
 
   zoneLifecycleWebhookUrl() {
-    return String(process.env.COINGLASS_ZONE_LIFECYCLE_DISCORD_WEBHOOK_URL || '').trim();
+    return String(
+      (this.secondary
+        ? process.env.COINGLASS_WEB_SECONDARY_ZONE_LIFECYCLE_DISCORD_WEBHOOK_URL
+        : process.env.COINGLASS_ZONE_LIFECYCLE_DISCORD_WEBHOOK_URL)
+        || '',
+    ).trim();
+  }
+
+  hybridLiquidityWebhookUrl() {
+    return String(process.env.COINGLASS_HYBRID_LIQUIDITY_DISCORD_WEBHOOK_URL || '').trim();
   }
 
   async binanceExecutionState() {
@@ -734,14 +1021,25 @@ export class CoinGlassWebTop20Manager {
     });
   }
 
+  async zoneLifecycleState() {
+    return readJson(this.zoneLifecycleFile, {
+      version: COINGLASS_ZONE_LIFECYCLE_VERSION,
+      tracks: {},
+      processedEvents: {},
+      recent: [],
+      strongWaveReversalWatches: {},
+    });
+  }
+
   async snapshot() {
-    const [saved, progress, auth, notifications, executions, zoneLifecycle] = await Promise.all([
+    const [saved, progress, auth, notifications, executions, zoneLifecycle, hybridLiquidity] = await Promise.all([
       readJson(this.snapshotFile, null),
       this.running ? readJson(this.progressFile, null) : Promise.resolve(null),
       readJson(this.authFile, null),
       readJson(this.notificationFile, null),
       readJson(this.executionFile, null),
       readJson(this.zoneLifecycleFile, null),
+      readJson(this.hybridLiquidityFile, null),
     ]);
     const savedRows = Array.isArray(saved?.rows) ? saved.rows : [];
     const moverUniverseCompatible = saved?.version === COINGLASS_WEB_TOP20_VERSION;
@@ -769,8 +1067,10 @@ export class CoinGlassWebTop20Manager {
       .map((row, index) => ({ ...row, rank: index + 1 }));
     return {
       version: COINGLASS_WEB_TOP20_VERSION,
+      streamId: this.streamId,
+      streamVersion: this.config().streamVersion,
       mode: COINGLASS_WEB_TOP20_MODE,
-      isolation: COINGLASS_WEB_TOP20_ISOLATION,
+      isolation: this.secondary ? COINGLASS_WEB_SECONDARY_ISOLATION : COINGLASS_WEB_TOP20_ISOLATION,
       config: this.config(),
       running: this.running,
       startedAt: this.startedAt,
@@ -804,6 +1104,13 @@ export class CoinGlassWebTop20Manager {
         lastZoneLifecycleAt: this.lastZoneLifecycleAt ?? zoneLifecycle?.updatedAt ?? null,
         lastZoneLifecycleEvent: this.lastZoneLifecycleEvent ?? zoneLifecycle?.recent?.[0] ?? null,
         zoneLifecycleTracks: Object.keys(zoneLifecycle?.tracks ?? {}).length,
+        hybridLiquidityVersion: COINGLASS_HYBRID_LIQUIDITY_HUNTER_VERSION,
+        hybridLiquidityDiscordVersion: COINGLASS_HYBRID_LIQUIDITY_DISCORD_VERSION,
+        hybridLiquidityEnabled: this.config().hybridLiquidityEnabled,
+        hybridLiquidityDiscordConfigured: this.config().hybridLiquidityDiscordConfigured,
+        lastHybridLiquidityAt: this.lastHybridLiquidityAt ?? hybridLiquidity?.updatedAt ?? null,
+        lastHybridLiquiditySignal: this.lastHybridLiquiditySignal ?? hybridLiquidity?.recent?.[0] ?? null,
+        hybridLiquiditySentSignals: Object.keys(hybridLiquidity?.signalSent ?? {}).length,
         recent: Array.isArray(notifications?.recent) ? notifications.recent.slice(0, 20) : [],
       },
       binanceExecutions: {
@@ -826,7 +1133,7 @@ export class CoinGlassWebTop20Manager {
     if (!config.enabled) {
       return { accepted: false, reason: 'disabled', snapshot: await this.snapshot() };
     }
-    if (this.running) {
+    if (this.running || this.onDemandRunning) {
       return { accepted: false, reason: 'already_running', snapshot: await this.snapshot() };
     }
     if (this.loginRunning) {
@@ -836,7 +1143,7 @@ export class CoinGlassWebTop20Manager {
       const auth = await readJson(this.authFile, null);
       if (!auth?.altcoinAccess) {
         this.notifyAuthRequired(auth?.message || 'Phiên collector chưa có quyền CoinGlass Model 3 altcoin.')
-          .catch((error) => console.warn(`[CoinGlassWebTop20] auth alert failed: ${error.message}`));
+          .catch((error) => console.warn(`[${this.logPrefix}] auth alert failed: ${error.message}`));
         return { accepted: false, reason: 'auth_required', snapshot: await this.snapshot() };
       }
     }
@@ -846,10 +1153,10 @@ export class CoinGlassWebTop20Manager {
     this.lastError = null;
     this.inflight = this.runCollector({ ...config, reason })
       .then(() => this.handleCompletedRefresh()
-        .catch((error) => console.warn(`[CoinGlassWebTop20] post-refresh notify failed: ${error.message}`)))
+        .catch((error) => console.warn(`[${this.logPrefix}] post-refresh notify failed: ${error.message}`)))
       .catch((error) => {
         this.lastError = String(error?.message ?? error);
-        console.warn(`[CoinGlassWebTop20] refresh failed: ${this.lastError}`);
+        console.warn(`[${this.logPrefix}] refresh failed: ${this.lastError}`);
       })
       .finally(() => {
         this.running = false;
@@ -858,10 +1165,100 @@ export class CoinGlassWebTop20Manager {
     return { accepted: true, reason, snapshot: await this.snapshot() };
   }
 
+  onDemandFile(symbol) {
+    return join(this.dataDir, 'on-demand', `${symbol}.json`);
+  }
+
+  onDemandProgressFile(symbol) {
+    return join(this.dataDir, 'on-demand', `${symbol}.progress.json`);
+  }
+
+  async onDemandStatus(symbol) {
+    const normalized = safeCoinglassSymbol(symbol);
+    if (!normalized) {
+      return { symbol: normalized, status: 'INVALID', cached: false };
+    }
+    const [cached, progress] = await Promise.all([
+      readJson(this.onDemandFile(normalized), null),
+      readJson(this.onDemandProgressFile(normalized), null),
+    ]);
+    const runtime = this.onDemandJobs.get(normalized);
+    const updatedAt = cached?.updatedAt ?? null;
+    const ageMs = updatedAt ? Math.max(0, Date.now() - Date.parse(updatedAt)) : null;
+    const complete = Boolean(
+      cached?.row?.heatmap
+      && cached?.row?.qualifiedTimeframes?.['12h']?.heatmap
+      && cached?.row?.qualifiedTimeframes?.['24h']?.heatmap,
+    );
+    return {
+      version: COIN_LEVEL_COINGLASS_ON_DEMAND_VERSION,
+      symbol: normalized,
+      status: runtime?.status ?? progress?.status ?? (complete ? 'COMPLETE' : 'IDLE'),
+      queuedAt: runtime?.queuedAt ?? null,
+      startedAt: runtime?.startedAt ?? progress?.startedAt ?? null,
+      completedAt: runtime?.completedAt ?? progress?.completedAt ?? null,
+      error: runtime?.error ?? progress?.error ?? null,
+      cached: complete,
+      updatedAt,
+      ageMs,
+      fresh: complete && Number.isFinite(ageMs) && ageMs <= 10 * 60_000,
+    };
+  }
+
+  async startOnDemand(symbol) {
+    const normalized = safeCoinglassSymbol(symbol);
+    if (!normalized) {
+      return { accepted: false, reason: 'invalid_symbol', status: await this.onDemandStatus(normalized) };
+    }
+    const status = await this.onDemandStatus(normalized);
+    if (status.fresh) return { accepted: false, reason: 'fresh_cache', status };
+    const existing = this.onDemandJobs.get(normalized);
+    if (existing && ['QUEUED', 'RUNNING'].includes(existing.status)) {
+      return { accepted: false, reason: 'already_queued', status: await this.onDemandStatus(normalized) };
+    }
+
+    const job = {
+      symbol: normalized,
+      status: 'QUEUED',
+      queuedAt: new Date().toISOString(),
+      startedAt: null,
+      completedAt: null,
+      error: null,
+      promise: null,
+    };
+    this.onDemandJobs.set(normalized, job);
+    job.promise = (async () => {
+      while (this.running || this.loginRunning || this.onDemandRunning) {
+        const blocking = this.inflight ?? this.loginInflight;
+        if (blocking) await blocking.catch(() => {});
+        else await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      this.onDemandRunning = true;
+      this.onDemandSymbol = normalized;
+      job.status = 'RUNNING';
+      job.startedAt = new Date().toISOString();
+      try {
+        await this.runOnDemandCollector(normalized);
+        job.status = 'COMPLETE';
+        job.completedAt = new Date().toISOString();
+      } catch (error) {
+        job.status = 'FAILED';
+        job.error = String(error?.message ?? error);
+        job.completedAt = new Date().toISOString();
+        console.warn(`[${this.logPrefix}] on-demand ${normalized} failed: ${job.error}`);
+      } finally {
+        this.onDemandRunning = false;
+        this.onDemandSymbol = null;
+      }
+    })();
+    job.promise.catch(() => {});
+    return { accepted: true, reason: this.running ? 'queued_after_scan' : 'started', status: await this.onDemandStatus(normalized) };
+  }
+
   startScheduler({ initialDelayMs } = {}) {
     const config = this.config();
     if (!config.schedulerEnabled || this.schedulerTimer) return false;
-    const delayMs = Math.max(5_000, Number(initialDelayMs ?? config.schedulerIntervalMs));
+    const delayMs = Math.max(5_000, Number(initialDelayMs ?? config.schedulerInitialDelayMs));
     this.schedulerStartedAt = new Date().toISOString();
     this.schedulerNextRunAt = new Date(Date.now() + delayMs).toISOString();
     const tick = async () => {
@@ -872,7 +1269,7 @@ export class CoinGlassWebTop20Manager {
         reason: String(error?.message ?? error),
       }));
       if (!result?.accepted && !['already_running', 'login_running', 'auth_required'].includes(result?.reason)) {
-        console.warn(`[CoinGlassWebTop20] scheduled refresh skipped: ${result?.reason ?? 'unknown'}`);
+        console.warn(`[${this.logPrefix}] scheduled refresh skipped: ${result?.reason ?? 'unknown'}`);
       }
     };
     const timeout = setTimeout(() => {
@@ -882,7 +1279,11 @@ export class CoinGlassWebTop20Manager {
     }, delayMs);
     timeout.unref?.();
     this.schedulerTimer = timeout;
-    console.log(`[CoinGlassWebTop20] scheduler enabled interval=${config.schedulerIntervalMs}ms limit=${config.limit}`);
+    console.log(
+      `[${this.logPrefix}] scheduler enabled interval=${config.schedulerIntervalMs}ms`
+      + ` ranks=${config.rankFrom}-${config.rankTo} limit=${config.limit}`
+      + ` mode=${config.lifecycleOnly ? 'LIFECYCLE_AUTO_1USDT' : config.observationOnly ? 'OBSERVE_ONLY' : 'QUALIFIED_AUTO'}`,
+    );
     return true;
   }
 
@@ -895,23 +1296,65 @@ export class CoinGlassWebTop20Manager {
     return true;
   }
 
-  async runCollector({ limit, range, reason, timeoutMs }) {
+  async runCollector({
+    limit,
+    rankOffset,
+    range,
+    reason,
+    timeoutMs,
+    browserConcurrency,
+    scanBudgetMs,
+    niceLevel,
+  }) {
     const script = join(this.rootDir, 'scripts', 'crawl-coinglass-web-top20.mjs');
-    const { stdout, stderr } = await execFileAsync(process.execPath, [
+    const collectorArgs = [
       script,
       '--limit', String(limit),
+      '--rank-offset', String(rankOffset),
       '--range', range,
       '--data-dir', this.dataDir,
+      '--browser-concurrency', String(browserConcurrency),
+      '--scan-budget-ms', String(scanBudgetMs),
+      '--image-url-base', this.secondary
+        ? '/api/coinglass-web-secondary/image'
+        : '/api/coinglass-web-top20/image',
       '--reason', String(reason ?? 'manual'),
-    ], {
+    ];
+    const executable = this.secondary && niceLevel > 0 ? 'nice' : process.execPath;
+    const executableArgs = this.secondary && niceLevel > 0
+      ? ['-n', String(niceLevel), process.execPath, ...collectorArgs]
+      : collectorArgs;
+    const { stdout, stderr } = await execFileAsync(executable, executableArgs, {
       cwd: this.rootDir,
       timeout: timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
       env: process.env,
     });
-    if (stderr?.trim()) console.warn(`[CoinGlassWebTop20] ${stderr.trim()}`);
+    if (stderr?.trim()) console.warn(`[${this.logPrefix}] ${stderr.trim()}`);
     const result = JSON.parse(String(stdout).trim() || '{}');
     if (!result.ok) throw new Error(result.error || 'CoinGlass collector did not complete');
+    return result;
+  }
+
+  async runOnDemandCollector(symbol) {
+    const script = join(this.rootDir, 'scripts', 'crawl-coinglass-web-top20.mjs');
+    const args = [
+      script,
+      '--on-demand-symbol', symbol,
+      '--data-dir', this.dataDir,
+      '--browser-concurrency', '1',
+      '--scan-budget-ms', '120000',
+      '--reason', 'coin-level-search',
+    ];
+    const { stdout, stderr } = await execFileAsync(process.execPath, args, {
+      cwd: this.rootDir,
+      timeout: 150_000,
+      maxBuffer: 8 * 1024 * 1024,
+      env: process.env,
+    });
+    if (stderr?.trim()) console.warn(`[${this.logPrefix}] on-demand ${symbol}: ${stderr.trim()}`);
+    const result = JSON.parse(String(stdout).trim() || '{}');
+    if (!result.ok) throw new Error(result.error || `CoinGlass on-demand ${symbol} did not complete`);
     return result;
   }
 
@@ -946,6 +1389,95 @@ export class CoinGlassWebTop20Manager {
     return this.postWebhook(this.zoneLifecycleWebhookUrl(), payload);
   }
 
+  async postHybridLiquidityDiscord(payload) {
+    return this.postWebhook(this.hybridLiquidityWebhookUrl(), payload);
+  }
+
+  async processHybridLiquidityRows(rows = []) {
+    const config = this.config();
+    if (!config.hybridLiquidityEnabled) {
+      return { evaluated: 0, ready: 0, sent: 0, submitted: 0, reason: 'disabled' };
+    }
+    if (!this.onHybridLiquidityScan) {
+      return { evaluated: 0, ready: 0, sent: 0, submitted: 0, reason: 'evaluator_not_configured' };
+    }
+
+    let signals;
+    try {
+      signals = await this.onHybridLiquidityScan(rows, config, this.streamId);
+    } catch (error) {
+      console.warn(`[${this.logPrefix}] hybrid liquidity scan failed: ${error.message}`);
+      return { evaluated: 0, ready: 0, sent: 0, submitted: 0, reason: 'evaluation_error' };
+    }
+    const evaluated = Array.isArray(signals) ? signals : [];
+    const ready = evaluated.filter((signal) => signal?.ready === true);
+    const state = await readJson(this.hybridLiquidityFile, null) ?? {
+      version: COINGLASS_HYBRID_LIQUIDITY_HUNTER_VERSION,
+      signalSent: {},
+      recent: [],
+    };
+    const now = Date.now();
+    let sent = 0;
+    let submitted = 0;
+    for (const signal of ready) {
+      let outgoingSignal = signal;
+      if (signal.executionEligible === true && this.onHybridLiquiditySignal) {
+        const binanceExecution = await this.onHybridLiquiditySignal(signal).catch((error) => ({
+          status: 'error',
+          code: error.code ?? 'BINANCE_ERROR',
+        }));
+        outgoingSignal = { ...signal, binanceExecution };
+        if (String(binanceExecution?.status).toLowerCase() === 'submitted') submitted += 1;
+      } else if (signal.executionEligible !== true && this.onHybridLiquidityPaper) {
+        await this.onHybridLiquidityPaper(signal, { status: 'ineligible' }).catch((error) => {
+          console.warn(`[${this.logPrefix}] hybrid liquidity paper ${signal.symbol}: ${error.message}`);
+        });
+      }
+      if (!config.hybridLiquidityDiscordConfigured) continue;
+      const dedupeKey = coinglassHybridLiquidityDedupeKey(signal);
+      if (!dedupeKey
+        || now - finiteNumber(state.signalSent?.[dedupeKey], 0) < config.hybridLiquidityDiscordCooldownMs) {
+        continue;
+      }
+      try {
+        await this.postHybridLiquidityDiscord(buildCoinglassHybridLiquidityDiscordPayload(outgoingSignal));
+        state.signalSent = { ...(state.signalSent ?? {}), [dedupeKey]: now };
+        const audit = {
+          version: COINGLASS_HYBRID_LIQUIDITY_HUNTER_VERSION,
+          streamId: this.streamId,
+          symbol: signal.symbol,
+          label: signal.label,
+          bias: signal.bias,
+          targetPrice: finiteNumber(signal?.target?.targetPrice),
+          observeOnly: signal.observeOnly === true,
+          binanceExecution: outgoingSignal.binanceExecution ?? null,
+          sentAt: now,
+        };
+        state.recent = [audit, ...(Array.isArray(state.recent) ? state.recent : [])].slice(0, 100);
+        this.lastHybridLiquidityAt = new Date(now).toISOString();
+        this.lastHybridLiquiditySignal = audit;
+        sent += 1;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      } catch (error) {
+        console.warn(`[${this.logPrefix}] hybrid liquidity Discord ${signal.symbol}: ${error.message}`);
+      }
+    }
+    const cutoff = now - 7 * 24 * 60 * 60_000;
+    state.signalSent = Object.fromEntries(Object.entries(state.signalSent ?? {})
+      .filter(([, sentAt]) => finiteNumber(sentAt, 0) >= cutoff));
+    state.version = COINGLASS_HYBRID_LIQUIDITY_HUNTER_VERSION;
+    state.updatedAt = new Date(now).toISOString();
+    await mkdir(this.dataDir, { recursive: true });
+    await writeJsonAtomic(this.hybridLiquidityFile, state);
+    if (ready.length || sent) {
+      console.log(
+        `[${this.logPrefix}] hybrid liquidity evaluated=${evaluated.length}`
+        + ` ready=${ready.length} binance=${submitted} discord=${sent}`,
+      );
+    }
+    return { evaluated: evaluated.length, ready: ready.length, sent, submitted };
+  }
+
   async processZoneLifecycleRows(rows = []) {
     const config = this.config();
     if (!config.zoneLifecycleEnabled) return { events: 0, sent: 0, submitted: 0, reason: 'disabled' };
@@ -954,6 +1486,7 @@ export class CoinGlassWebTop20Manager {
       tracks: {},
       processedEvents: {},
       recent: [],
+      strongWaveReversalWatches: {},
     };
     const evaluated = advanceCoinglassZoneLifecycle({
       rows,
@@ -961,16 +1494,41 @@ export class CoinGlassWebTop20Manager {
       now: Date.now(),
       config: {
         marginUsdt: config.zoneLifecycleMarginUsdt,
+        acceptedBreakoutMarginUsdt: config.zoneLifecycleAcceptedBreakoutMarginUsdt,
+        unconfirmedBounceLongMarginUsdt: config.zoneLifecycleUnconfirmedBounceLongMarginUsdt,
+        fixedTakeProfitRoePct: config.zoneLifecycleFixedTakeProfitRoePct,
+        supportReclaimMarginUsdt: config.zoneLifecycleSupportReclaimMarginUsdt,
+        strongShortMarginUsdt: config.zoneLifecycleStrongShortMarginUsdt,
+        largeTargetThresholdPct: config.zoneLifecycleLargeTargetThresholdPct,
+        largeTargetMarginUsdt: config.zoneLifecycleLargeTargetMarginUsdt,
+        longSingleTargetMaxPct: config.zoneLifecycleLongSingleTargetMaxPct,
+        longTp1DistancePct: config.zoneLifecycleLongTp1DistancePct,
+        longTp1CloseRatio: config.zoneLifecycleLongTp1CloseRatio,
+        longTp2CapPct: config.zoneLifecycleLongTp2CapPct,
+        shortSingleTargetMaxPct: config.zoneLifecycleShortSingleTargetMaxPct,
+        shortTp1DistancePct: config.zoneLifecycleShortTp1DistancePct,
+        shortTp1CloseRatio: config.zoneLifecycleShortTp1CloseRatio,
+        shortTp2CapPct: config.zoneLifecycleShortTp2CapPct,
+        shortStrongWaveChange24hPct: config.zoneLifecycleShortStrongWaveChange24hPct,
+        shortStrongTakeProfitRoePct: config.zoneLifecycleShortStrongTakeProfitRoePct,
+        shortStrongTp1DistancePct: config.zoneLifecycleShortStrongTp1DistancePct,
+        shortStrongTp1CloseRatio: config.zoneLifecycleShortStrongTp1CloseRatio,
+        shortStrongTp2CapPct: config.zoneLifecycleShortStrongTp2CapPct,
         leverage: config.zoneLifecycleLeverage,
       },
     });
     const state = evaluated.state;
     const processedEvents = { ...(previous.processedEvents ?? {}) };
+    const strongWaveReversalWatches = { ...(previous.strongWaveReversalWatches ?? {}) };
+    const priorReversalWatchIds = new Set(Object.keys(strongWaveReversalWatches));
     const recent = Array.isArray(previous.recent) ? [...previous.recent] : [];
     let sent = 0;
     let submitted = 0;
-    const pageUrl = process.env.COINGLASS_WEB_PUBLIC_URL
-      || `http://127.0.0.1:${process.env.PORT ?? 19082}/coinglass-web-top20`;
+    const pageUrl = this.secondary
+      ? process.env.COINGLASS_WEB_SECONDARY_PUBLIC_URL
+        || `http://127.0.0.1:${process.env.PORT ?? 19082}/coinglass-web-secondary`
+      : process.env.COINGLASS_WEB_PUBLIC_URL
+        || `http://127.0.0.1:${process.env.PORT ?? 19082}/coinglass-web-top20`;
 
     for (const event of evaluated.events) {
       if (processedEvents[event.id]) continue;
@@ -982,16 +1540,34 @@ export class CoinGlassWebTop20Manager {
           execution = { decision: 'BLOCKED_ZONE_LIFECYCLE_EXECUTOR_MISSING' };
         } else {
           try {
-            execution = await this.onZoneLifecycleSignal(event);
+            execution = await this.onZoneLifecycleSignal(event, config);
           } catch (error) {
             execution = { decision: 'ZONE_LIFECYCLE_EXECUTION_ERROR', error: String(error?.message ?? error).slice(0, 500) };
           }
         }
       }
       if (execution?.decision === 'SUBMITTED') submitted += 1;
+      if (event.shouldEnter === true
+        && execution?.decision !== 'SUBMITTED'
+        && this.onZoneLifecyclePaper) {
+        await this.onZoneLifecyclePaper(event, execution).catch((error) => {
+          console.warn(`[${this.logPrefix}] zone lifecycle paper ${event.symbol}: ${error.message}`);
+        });
+      }
+      const reversalWatch = createCoinglassStrongWaveReversalWatch({ event, execution });
+      if (reversalWatch) {
+        strongWaveReversalWatches[reversalWatch.id] = {
+          ...reversalWatch,
+          streamId: this.streamId,
+        };
+      }
       let notified = false;
       let notifyError = null;
-      if (config.zoneLifecycleDiscordConfigured) {
+      const discordEligible = shouldNotifyCoinglassZoneLifecycleEvent({ event, secondary: this.secondary });
+      let notificationDecision = config.zoneLifecycleDiscordConfigured
+        ? discordEligible ? 'ELIGIBLE' : 'SUPPRESSED_SECONDARY_NON_ENTRY_TRANSITION'
+        : 'WEBHOOK_NOT_CONFIGURED';
+      if (config.zoneLifecycleDiscordConfigured && discordEligible) {
         try {
           await this.postZoneLifecycleDiscord(buildCoinglassZoneLifecycleDiscordPayload({
             event,
@@ -999,9 +1575,11 @@ export class CoinGlassWebTop20Manager {
             pageUrl,
           }));
           notified = true;
+          notificationDecision = 'SENT';
           sent += 1;
         } catch (error) {
           notifyError = String(error?.message ?? error).slice(0, 300);
+          notificationDecision = 'SEND_ERROR';
           console.warn(`[CoinGlassZoneLifecycle] Discord ${event.symbol}: ${notifyError}`);
         }
       }
@@ -1012,10 +1590,14 @@ export class CoinGlassWebTop20Manager {
         state: event.state,
         previousState: event.previousState,
         side: event.entryPlan?.side ?? null,
+        signalLabel: event.entryPlan?.signalLabel ?? null,
+        marginRule: event.entryPlan?.marginRule ?? null,
+        marginUsdt: event.entryPlan?.marginUsdt ?? null,
         shouldEnter: event.shouldEnter,
         executionDecision: execution?.decision ?? null,
         orderId: execution?.orderId ?? null,
         notified,
+        notificationDecision,
         notifyError,
         processedAt: Date.now(),
       };
@@ -1025,9 +1607,70 @@ export class CoinGlassWebTop20Manager {
       this.lastZoneLifecycleEvent = audit;
     }
 
+    if (config.zoneLifecycleReversalEnabled && this.onZoneLifecycleReversalWatch) {
+      for (const [watchId, watch] of Object.entries(strongWaveReversalWatches)) {
+        if (!priorReversalWatchIds.has(watchId)
+          || !['ARMED_SHORT_EXIT', 'WAIT_RECLAIM'].includes(String(watch?.status))) continue;
+        let result;
+        try {
+          result = await this.onZoneLifecycleReversalWatch(watch, config);
+        } catch (error) {
+          result = {
+            decision: 'ZONE_LIFECYCLE_REVERSAL_ERROR',
+            error: String(error?.message ?? error).slice(0, 500),
+          };
+        }
+        const nextWatch = {
+          ...watch,
+          ...(result?.watchPatch ?? {}),
+          lastDecision: result?.decision ?? null,
+          lastError: result?.error ?? null,
+          updatedAt: Date.now(),
+        };
+        if (result?.decision === 'SUBMITTED') {
+          nextWatch.status = 'SUBMITTED';
+          nextWatch.longOrderId = result.orderId ?? null;
+          nextWatch.longSubmittedAt = Date.now();
+          submitted += 1;
+          let notified = false;
+          let notifyError = null;
+          if (config.zoneLifecycleDiscordConfigured && result?.reversalDecision) {
+            try {
+              await this.postZoneLifecycleDiscord(buildCoinglassStrongWaveReversalDiscordPayload({
+                decision: result.reversalDecision,
+                execution: result,
+                pageUrl,
+              }));
+              notified = true;
+              sent += 1;
+            } catch (error) {
+              notifyError = String(error?.message ?? error).slice(0, 300);
+            }
+          }
+          const audit = {
+            id: watchId,
+            type: 'STRONG_WAVE_REVERSAL_LONG',
+            symbol: watch.symbol,
+            side: 'LONG',
+            executionDecision: result.decision,
+            orderId: result.orderId ?? null,
+            notified,
+            notifyError,
+            processedAt: Date.now(),
+          };
+          recent.unshift(audit);
+          this.lastZoneLifecycleAt = new Date().toISOString();
+          this.lastZoneLifecycleEvent = audit;
+        }
+        strongWaveReversalWatches[watchId] = nextWatch;
+      }
+    }
+
     const cutoff = Date.now() - 7 * 24 * 60 * 60_000;
     state.processedEvents = Object.fromEntries(Object.entries(processedEvents)
       .filter(([, record]) => finiteNumber(record?.processedAt, 0) >= cutoff));
+    state.strongWaveReversalWatches = Object.fromEntries(Object.entries(strongWaveReversalWatches)
+      .filter(([, watch]) => finiteNumber(watch?.updatedAt, finiteNumber(watch?.createdAt, 0)) >= cutoff));
     state.recent = recent.slice(0, 100);
     await mkdir(this.dataDir, { recursive: true });
     await writeJsonAtomic(this.zoneLifecycleFile, state);
@@ -1066,21 +1709,30 @@ export class CoinGlassWebTop20Manager {
 
   async notifyAuthRequired(message) {
     const config = this.config();
-    if (!config.discordConfigured) return { sent: false, reason: 'not_configured' };
+    const configured = this.secondary
+      ? config.zoneLifecycleDiscordConfigured
+      : config.discordConfigured;
+    if (!configured) return { sent: false, reason: 'not_configured' };
     const state = await this.notificationState();
     const now = Date.now();
     if (now - Number(state.lastAuthAlertAt ?? 0) < config.discordAuthCooldownMs) {
       return { sent: false, reason: 'cooldown' };
     }
-    await this.postDiscord(buildCoinglassWebAuthAlertPayload({
+    const payload = buildCoinglassWebAuthAlertPayload({
       message,
-      pageUrl: process.env.COINGLASS_WEB_PUBLIC_URL || `http://127.0.0.1:${process.env.PORT ?? 19082}/coinglass-web-top20`,
+      pageUrl: this.secondary
+        ? process.env.COINGLASS_WEB_SECONDARY_PUBLIC_URL
+          || `http://127.0.0.1:${process.env.PORT ?? 19082}/coinglass-web-secondary`
+        : process.env.COINGLASS_WEB_PUBLIC_URL
+          || `http://127.0.0.1:${process.env.PORT ?? 19082}/coinglass-web-top20`,
       generatedAt: now,
-    }));
+    });
+    if (this.secondary) await this.postZoneLifecycleDiscord(payload);
+    else await this.postDiscord(payload);
     state.lastAuthAlertAt = now;
     state.recent = [{ type: 'AUTH_REQUIRED', sentAt: now, message }, ...(state.recent ?? [])];
     await this.saveNotificationState(state);
-    console.warn('[CoinGlassWebTop20] Discord auth-required alert sent');
+    console.warn(`[${this.logPrefix}] Discord auth-required alert sent`);
     return { sent: true };
   }
 
@@ -1226,6 +1878,7 @@ export class CoinGlassWebTop20Manager {
     await this.notifyQualifiedRows(view.rows);
     await this.executeQualifiedRows(view.rows);
     await this.processZoneLifecycleRows(view.rows);
+    await this.processHybridLiquidityRows(view.rows);
     await zoneEvaluation;
   }
 

@@ -1,7 +1,9 @@
-export const LIQUID_FLOW_V2_BINANCE_STATS_VERSION = 'LIQUID_FLOW_V2_BINANCE_STATS_V3_REALTIME_20260822';
+export const LIQUID_FLOW_V2_BINANCE_STATS_VERSION = 'LIQUID_FLOW_V2_BINANCE_STATS_V4_ZONE_LIFECYCLE_20260902';
 export const LIQUID_FLOW_V2_DAILY_TIMING_EDGE_VERSION = 'LIQUID_FLOW_V2_DAILY_TIMING_EDGE_V1_20260823';
 export const COINGLASS_QUALIFIED_LONG_STATS_KEY = 'COINGLASS_QUALIFIED_LONG';
 export const COINGLASS_QUALIFIED_SHORT_STATS_KEY = 'COINGLASS_QUALIFIED_SHORT';
+export const COINGLASS_ZONE_LIFECYCLE_LONG_STATS_KEY = 'COINGLASS_ZONE_LIFECYCLE_LONG';
+export const COINGLASS_ZONE_LIFECYCLE_SHORT_STATS_KEY = 'COINGLASS_ZONE_LIFECYCLE_SHORT';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const formatter = new Intl.DateTimeFormat('en-US', {
@@ -339,6 +341,133 @@ export function coinglassQualifiedBinanceTrades({
       binanceOrderId: audit?.orderId ?? null,
       binanceEntryMode: 'COINGLASS_AUTO_MARKET',
       statsSource: 'COINGLASS_EXECUTION_STORE_PLUS_BINANCE_ORDER',
+    }];
+  });
+}
+
+function coinglassZoneLifecycleStatsLabel(side) {
+  return side === 'LONG'
+    ? { key: COINGLASS_ZONE_LIFECYCLE_LONG_STATS_KEY, label: 'COINGLASS ZONE LIFECYCLE · LONG' }
+    : { key: COINGLASS_ZONE_LIFECYCLE_SHORT_STATS_KEY, label: 'COINGLASS ZONE LIFECYCLE · SHORT' };
+}
+
+function coinglassZoneLifecycleStateEntries(states = []) {
+  return (Array.isArray(states) ? states : [states]).flatMap((entry) => {
+    const state = entry?.state ?? entry;
+    const streamId = String(entry?.streamId ?? state?.streamId ?? 'primary').toLowerCase();
+    const lifecycleEvents = Object.values(state?.processedEvents ?? {}).map((audit) => ({
+      ...audit,
+      statsStreamId: streamId,
+      statsEventType: 'ZONE_LIFECYCLE',
+    }));
+    const reversalEvents = Object.values(state?.strongWaveReversalWatches ?? {})
+      .filter((watch) => String(watch?.status ?? '').toUpperCase() === 'SUBMITTED')
+      .map((watch) => ({
+        id: watch.id,
+        symbol: watch.symbol,
+        side: 'LONG',
+        state: 'STRONG_WAVE_REVERSAL',
+        signalLabel: 'STRONG_WAVE_REVERSAL_LONG',
+        executionDecision: 'SUBMITTED',
+        orderId: watch.longOrderId,
+        processedAt: watch.longSubmittedAt ?? watch.updatedAt,
+        statsStreamId: streamId,
+        statsEventType: 'STRONG_WAVE_REVERSAL_LONG',
+      }));
+    return [...lifecycleEvents, ...reversalEvents];
+  });
+}
+
+export function coinglassZoneLifecycleBinanceAudits(
+  states = [],
+  { fromDay = '', toDay = '', labelKey = '' } = {},
+) {
+  const range = normalizeLiquidFlowV2BinanceRange(fromDay, toDay);
+  const wantedLabel = String(labelKey ?? '').trim().toUpperCase();
+  const seenOrders = new Set();
+  return coinglassZoneLifecycleStateEntries(states)
+    .filter((audit) => String(audit?.executionDecision ?? '').toUpperCase() === 'SUBMITTED')
+    .filter((audit) => ['LONG', 'SHORT'].includes(String(audit?.side ?? '').toUpperCase()))
+    .filter((audit) => finite(audit?.orderId) != null && finite(audit?.processedAt) != null)
+    .filter((audit) => {
+      const orderKey = `${String(audit?.symbol ?? '').toUpperCase()}:${String(audit.orderId)}`;
+      if (seenOrders.has(orderKey)) return false;
+      seenOrders.add(orderKey);
+      return true;
+    })
+    .filter((audit) => {
+      const side = String(audit.side).toUpperCase();
+      if (wantedLabel && coinglassZoneLifecycleStatsLabel(side).key !== wantedLabel) return false;
+      if (!range.fromDay || !range.toDay) return true;
+      const day = liquidFlowV2BinanceDateKey(audit.processedAt);
+      return day != null && day >= range.fromDay && day <= range.toDay;
+    });
+}
+
+export function coinglassZoneLifecycleBinanceTrades({
+  audits = [],
+  orderSnapshots = [],
+  positions = [],
+  trackingPositions = {},
+  now = Date.now(),
+  defaultPrimaryMarginUsdt = 2,
+  defaultSecondaryMarginUsdt = 1,
+  defaultLeverage = 5,
+} = {}) {
+  const orderByKey = new Map((Array.isArray(orderSnapshots) ? orderSnapshots : [])
+    .filter(Boolean)
+    .map((order) => [`${String(order?.symbol ?? '').toUpperCase()}:${String(order?.orderId ?? '')}`, order]));
+  return (Array.isArray(audits) ? audits : []).flatMap((audit) => {
+    const symbol = String(audit?.symbol ?? '').toUpperCase();
+    const side = String(audit?.side ?? '').toUpperCase();
+    const orderId = String(audit?.orderId ?? '');
+    if (!symbol || !['LONG', 'SHORT'].includes(side) || !orderId) return [];
+    const order = orderByKey.get(`${symbol}:${orderId}`) ?? null;
+    const tracking = trackingPositions?.[symbol] ?? null;
+    const trackingMatches = String(tracking?.entryOrderId ?? '') === orderId
+      && String(tracking?.signalSource ?? '').toLowerCase() === 'coinglass-zone-lifecycle';
+    const orderFilled = String(order?.status ?? '').toUpperCase() === 'FILLED'
+      && finite(order?.executedQty) > 0;
+    if (!orderFilled && !trackingMatches) return [];
+    const activePosition = (Array.isArray(positions) ? positions : []).find((position) => {
+      if (String(position?.symbol ?? '').toUpperCase() !== symbol) return false;
+      const amount = finite(position?.positionAmt ?? position?.amt);
+      return amount != null && amount !== 0 && (amount > 0 ? 'LONG' : 'SHORT') === side;
+    }) ?? null;
+    const filledAt = finite(order?.updateTime ?? order?.time ?? tracking?.openedAt ?? audit?.processedAt);
+    const fillPrice = finite(order?.avgPrice) > 0
+      ? finite(order.avgPrice)
+      : finite(tracking?.protectionFillPrice ?? tracking?.entry);
+    const closed = activePosition == null;
+    const label = coinglassZoneLifecycleStatsLabel(side);
+    const defaultMargin = String(audit?.statsStreamId ?? '').toLowerCase() === 'secondary'
+      ? defaultSecondaryMarginUsdt
+      : defaultPrimaryMarginUsdt;
+    return [{
+      id: `coinglass-zone-lifecycle:${symbol}:${orderId}`,
+      statsLifecycleId: `coinglass-zone-lifecycle:${symbol}:${orderId}`,
+      symbol,
+      side,
+      labelKey: label.key,
+      label: label.label,
+      confidence: null,
+      status: closed ? 'CLOSED' : 'OPEN',
+      outcome: closed ? 'BINANCE_POSITION_CLOSED' : '',
+      entryPrice: finite(audit?.binanceEntryPrice ?? audit?.currentPrice),
+      exitPrice: closed ? null : finite(activePosition?.markPrice),
+      exitAt: closed ? finite(now) : null,
+      binanceEntryState: 'FILLED',
+      binanceOrderStatus: 'FILLED',
+      binanceEntryRequestedAt: finite(audit?.processedAt),
+      binanceEntryFilledAt: filledAt,
+      binanceEntryPrice: fillPrice,
+      binanceMarginUsdt: finite(audit?.marginUsdt) ?? finite(defaultMargin),
+      binanceLeverage: finite(audit?.leverage) ?? finite(defaultLeverage),
+      binanceOrderId: audit?.orderId ?? null,
+      binanceEntryMode: 'COINGLASS_ZONE_LIFECYCLE_MARKET',
+      statsSource: 'COINGLASS_ZONE_LIFECYCLE_AUDIT_PLUS_BINANCE_ORDER',
+      statsSignalLabel: String(audit?.signalLabel ?? audit?.state ?? 'ZONE_LIFECYCLE'),
+      statsStreamId: String(audit?.statsStreamId ?? 'primary'),
     }];
   });
 }

@@ -2,13 +2,29 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   BINANCE_PROFIT_LOCK_VERSION,
+  FAST_WAVE_CHANGE_24H_ENABLED,
+  FAST_WAVE_CHANGE_24H_THRESHOLD_PCT,
+  FAST_WAVE_CANDLE_5M_LOOKBACK,
+  FAST_WAVE_CANDLE_5M_RANGE_THRESHOLD_PCT,
+  FAST_WAVE_CANDLE_15M_LOOKBACK,
+  FAST_WAVE_CANDLE_15M_RANGE_THRESHOLD_PCT,
+  FAST_WAVE_CANDLE_REVERSAL_BODY_MIN_RATIO,
+  FAST_WAVE_CANDLE_WICK_MIN_RATIO,
+  FAST_WAVE_PROFIT_LOCK_FIRST_LOCK_ROE,
+  FAST_WAVE_PROFIT_LOCK_STEP_ROE,
+  FAST_WAVE_PROFIT_LOCK_TRAIL_GAP_ROE,
+  FAST_WAVE_PROFIT_LOCK_TRIGGER_ROE,
   LEGACY_TRAILING_STOP_DISABLED_VERSION,
   MANUAL_BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE,
   MANUAL_BINANCE_PROFIT_LOCK_TRIGGER_ROE,
   ORDERS_EXCLUDED_PROFIT_LOCK_ROE,
   ORDERS_EXCLUDED_PROFIT_LOCK_TRIGGER_ROE,
+  SHORT_TP_ONLY_BREAK_EVEN_LOCK_ROE,
+  SHORT_TP_ONLY_BREAK_EVEN_TRIGGER_ROE,
   binanceProfitLockLifecycleKey,
   binanceProfitLockStopPrice,
+  binancePositionPriceRoe,
+  classifyBinanceFastWaveProfitLock,
   hasBinanceProfitLockStopAtTarget,
   isBinanceProfitLockImmediateTriggerError,
   isBinanceProfitLockTargetBreached,
@@ -16,17 +32,35 @@ import {
   isLiquidFlowV2ProfitLockSource,
   matchesManualLiquidFlowV2ProfitLockTrade,
   matchesLiquidFlowV2ProfitLockTrade,
+  parseBinanceFastWaveSymbols,
+  resolveBinanceFastWaveProfitLockRoe,
   resolveBinanceProfitLockRoe,
   resolveManualBinanceProfitLockRoe,
   resolveOrdersExcludedBinanceProfitLockRoe,
+  resolveShortTpOnlyBreakEvenProfitLockRoe,
+  summarizeBinanceCandleVolatility,
 } from '../src/binanceProfitLock.js';
 
-assert.equal(BINANCE_PROFIT_LOCK_VERSION, 'BINANCE_PROFIT_LOCK_V13_GTE_REPLACE_ROLLBACK_20260820');
+assert.equal(BINANCE_PROFIT_LOCK_VERSION, 'BINANCE_PROFIT_LOCK_V20_FAST_WAVE_RECOVERY_LOCK_20260902');
 assert.equal(LEGACY_TRAILING_STOP_DISABLED_VERSION, 'LEGACY_TSL_DISABLED_V1_20260809');
 assert.equal(MANUAL_BINANCE_PROFIT_LOCK_TRIGGER_ROE, 10);
 assert.equal(MANUAL_BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE, 1);
 assert.equal(ORDERS_EXCLUDED_PROFIT_LOCK_TRIGGER_ROE, 10);
 assert.equal(ORDERS_EXCLUDED_PROFIT_LOCK_ROE, 1);
+assert.equal(SHORT_TP_ONLY_BREAK_EVEN_TRIGGER_ROE, 10);
+assert.equal(SHORT_TP_ONLY_BREAK_EVEN_LOCK_ROE, 0);
+assert.equal(FAST_WAVE_CHANGE_24H_THRESHOLD_PCT, 10);
+assert.equal(FAST_WAVE_CHANGE_24H_ENABLED, false);
+assert.equal(FAST_WAVE_CANDLE_5M_RANGE_THRESHOLD_PCT, 4);
+assert.equal(FAST_WAVE_CANDLE_15M_RANGE_THRESHOLD_PCT, 6);
+assert.equal(FAST_WAVE_CANDLE_5M_LOOKBACK, 3);
+assert.equal(FAST_WAVE_CANDLE_15M_LOOKBACK, 2);
+assert.equal(FAST_WAVE_CANDLE_WICK_MIN_RATIO, 0.30);
+assert.equal(FAST_WAVE_CANDLE_REVERSAL_BODY_MIN_RATIO, 0.55);
+assert.equal(FAST_WAVE_PROFIT_LOCK_TRIGGER_ROE, 30);
+assert.equal(FAST_WAVE_PROFIT_LOCK_FIRST_LOCK_ROE, 5);
+assert.equal(FAST_WAVE_PROFIT_LOCK_STEP_ROE, 10);
+assert.equal(FAST_WAVE_PROFIT_LOCK_TRAIL_GAP_ROE, 25);
 assert.equal(isLiquidFlowV2ProfitLockSource('liquid-flow-v2-base'), true);
 assert.equal(isLiquidFlowV2ProfitLockSource(null, 'LIQUID-FLOW-V2-MANUAL'), true);
 assert.equal(isLiquidFlowV2ProfitLockSource('live-card-whitelist-edge'), false);
@@ -83,11 +117,161 @@ assert.equal(resolveOrdersExcludedBinanceProfitLockRoe(10), 1);
 assert.equal(resolveOrdersExcludedBinanceProfitLockRoe(15), 1);
 assert.equal(resolveOrdersExcludedBinanceProfitLockRoe(20), 1);
 assert.equal(resolveOrdersExcludedBinanceProfitLockRoe(100), 1);
+assert.equal(resolveShortTpOnlyBreakEvenProfitLockRoe(9.99), null);
+assert.equal(resolveShortTpOnlyBreakEvenProfitLockRoe(10), 0);
+assert.equal(resolveShortTpOnlyBreakEvenProfitLockRoe(14.99), 0);
+assert.equal(resolveShortTpOnlyBreakEvenProfitLockRoe(15), 5);
+assert.equal(resolveShortTpOnlyBreakEvenProfitLockRoe(20), 10);
+
+const fastWaveSymbols = parseBinanceFastWaveSymbols(' zkpUSDT,4usdt ');
+assert.deepEqual([...fastWaveSymbols], ['ZKPUSDT', '4USDT']);
+const pendingCandleVolatility = summarizeBinanceCandleVolatility({ candles5m: [], candles15m: [] });
+assert.equal(pendingCandleVolatility.hasCandleData, false);
+assert.deepEqual(classifyBinanceFastWaveProfitLock({
+  symbol: 'HEMIUSDT', side: 'LONG', isManualOrLiquidFlowV2: true,
+  explicitSymbols: fastWaveSymbols, candleVolatility: pendingCandleVolatility,
+}), {
+  active: false,
+  reason: 'CANDLE_DATA_PENDING',
+  max5mRangePct: null,
+  max15mRangePct: null,
+  max5mWickRatio: null,
+  max15mWickRatio: null,
+});
+assert.deepEqual(classifyBinanceFastWaveProfitLock({
+  symbol: 'ZKPUSDT', side: 'LONG', isManualOrLiquidFlowV2: true,
+  change24hPct: 1, explicitSymbols: fastWaveSymbols,
+}), {
+  active: false,
+  reason: 'EXPLICIT_SYMBOL_WAIT_WICK_REVERSAL',
+  change24hPct: 1,
+  max5mRangePct: null,
+  max15mRangePct: null,
+  max5mWickRatio: null,
+  max15mWickRatio: null,
+});
+assert.deepEqual(classifyBinanceFastWaveProfitLock({
+  symbol: 'NEWUSDT', side: 'LONG', isManualOrLiquidFlowV2: true,
+  change24hPct: 12.86, explicitSymbols: fastWaveSymbols,
+}), {
+  active: false,
+  reason: 'NORMAL_CANDLE_RANGE',
+  change24hPct: 12.86,
+  max5mRangePct: null,
+  max15mRangePct: null,
+  max5mWickRatio: null,
+  max15mWickRatio: null,
+});
+assert.deepEqual(classifyBinanceFastWaveProfitLock({
+  symbol: 'NEWUSDT', side: 'LONG', isManualOrLiquidFlowV2: true,
+  change24hPct: 12.86, explicitSymbols: fastWaveSymbols, change24hEnabled: true,
+}), {
+  active: false,
+  reason: 'NORMAL_CANDLE_RANGE',
+  change24hPct: 12.86,
+  max5mRangePct: null,
+  max15mRangePct: null,
+  max5mWickRatio: null,
+  max15mWickRatio: null,
+});
+assert.deepEqual(classifyBinanceFastWaveProfitLock({
+  symbol: 'NEWUSDT', side: 'LONG', isManualOrLiquidFlowV2: true,
+  change24hPct: 2, explicitSymbols: fastWaveSymbols, recentSameSideDca: true,
+}), {
+  active: false,
+  reason: 'NORMAL_CANDLE_RANGE',
+  change24hPct: 2,
+  max5mRangePct: null,
+  max15mRangePct: null,
+  max5mWickRatio: null,
+  max15mWickRatio: null,
+});
+assert.equal(classifyBinanceFastWaveProfitLock({
+  symbol: 'ZKPUSDT', side: 'SHORT', isManualOrLiquidFlowV2: true,
+  explicitSymbols: fastWaveSymbols,
+}).active, false);
+assert.equal(classifyBinanceFastWaveProfitLock({
+  symbol: 'ZKPUSDT', side: 'LONG', isManualOrLiquidFlowV2: false,
+  explicitSymbols: fastWaveSymbols,
+}).active, false);
+assert.equal(resolveBinanceFastWaveProfitLockRoe(29.99), null);
+assert.equal(resolveBinanceFastWaveProfitLockRoe(30), 5);
+assert.equal(resolveBinanceFastWaveProfitLockRoe(39.99), 5);
+assert.equal(resolveBinanceFastWaveProfitLockRoe(40), 15);
+assert.equal(resolveBinanceFastWaveProfitLockRoe(50), 25);
+
+const skrCandleVolatility = summarizeBinanceCandleVolatility({
+  side: 'SHORT',
+  candles5m: [
+    { open: 0.027, high: 0.0278, low: 0.0267, close: 0.0275 },
+    { open: 0.0275, high: 0.0309, low: 0.0271, close: 0.0305 },
+  ],
+  candles15m: [{ open: 0.026, high: 0.0309, low: 0.0258, close: 0.0305 }],
+});
+assert.equal(skrCandleVolatility.active, true);
+assert.equal(skrCandleVolatility.hasCandleData, true);
+assert.equal(skrCandleVolatility.reason, 'CANDLE_BODY_REVERSAL_5M');
+assert.ok(skrCandleVolatility.max5mRangePct > 13);
+const skrPolicy = classifyBinanceFastWaveProfitLock({
+  symbol: 'SKRUSDT', side: 'SHORT', isManualOrLiquidFlowV2: true,
+  explicitSymbols: fastWaveSymbols, candleVolatility: skrCandleVolatility,
+});
+assert.equal(skrPolicy.active, true);
+assert.equal(skrPolicy.reason, 'CANDLE_BODY_REVERSAL_5M');
+assert.equal(skrPolicy.selectedDirection, 'BULLISH');
+
+const alignedBullBody = summarizeBinanceCandleVolatility({
+  side: 'LONG',
+  candles5m: [{ open: 100, high: 108, low: 99.5, close: 107.8 }],
+  candles15m: [],
+});
+assert.equal(alignedBullBody.active, false);
+assert.equal(alignedBullBody.reason, 'DIRECTIONAL_BODY_ONLY');
+assert.ok(alignedBullBody.max5mRangePct > 8);
+assert.ok(alignedBullBody.max5mWickRatio < FAST_WAVE_CANDLE_WICK_MIN_RATIO);
+assert.equal(classifyBinanceFastWaveProfitLock({
+  symbol: 'ZKPUSDT', side: 'LONG', isManualOrLiquidFlowV2: true,
+  explicitSymbols: fastWaveSymbols, candleVolatility: alignedBullBody,
+}).reason, 'DIRECTIONAL_BODY_ONLY');
+
+const upperWickVolatility = summarizeBinanceCandleVolatility({
+  side: 'LONG',
+  candles5m: [{ open: 100, high: 110, low: 99, close: 105 }],
+});
+assert.equal(upperWickVolatility.active, true);
+assert.equal(upperWickVolatility.reason, 'CANDLE_WICK_5M');
+assert.ok(upperWickVolatility.selectedWickRatio >= FAST_WAVE_CANDLE_WICK_MIN_RATIO);
+
+const adverseBearBody = summarizeBinanceCandleVolatility({
+  side: 'LONG',
+  candles5m: [{ open: 100, high: 101, low: 94, close: 95 }],
+});
+assert.equal(adverseBearBody.active, true);
+assert.equal(adverseBearBody.reason, 'CANDLE_BODY_REVERSAL_5M');
+assert.ok(adverseBearBody.selectedBodyRatio >= FAST_WAVE_CANDLE_REVERSAL_BODY_MIN_RATIO);
+
+const zkcCandleVolatility = summarizeBinanceCandleVolatility({
+  side: 'LONG',
+  candles5m: [{ open: 0.059, high: 0.0612, low: 0.05865, close: 0.0608 }],
+  candles15m: [{ open: 0.0588, high: 0.0618, low: 0.05775, close: 0.0612 }],
+});
+assert.equal(zkcCandleVolatility.active, false);
+assert.equal(zkcCandleVolatility.reason, 'DIRECTIONAL_BODY_ONLY');
+const normalCandleVolatility = summarizeBinanceCandleVolatility({
+  candles5m: [{ open: 100, high: 102, low: 99, close: 101 }],
+  candles15m: [{ open: 100, high: 104, low: 99, close: 102 }],
+});
+assert.equal(normalCandleVolatility.active, false);
+assert.equal(normalCandleVolatility.reason, 'NORMAL_CANDLE_RANGE');
 
 assert.equal(binanceProfitLockStopPrice({ side: 'LONG', entryPrice: 100, leverage: 10, lockRoe: 1 }), 100.1);
 assert.equal(binanceProfitLockStopPrice({ side: 'SHORT', entryPrice: 100, leverage: 10, lockRoe: 1 }), 99.9);
+assert.equal(binanceProfitLockStopPrice({ side: 'SHORT', entryPrice: 100, leverage: 5, lockRoe: 0 }), 100);
 assert.equal(binanceProfitLockStopPrice({ side: 'LONG', entryPrice: 0, leverage: 10, lockRoe: 1 }), null);
 assert.equal(binanceProfitLockStopPrice({ side: 'LONG', entryPrice: 100, leverage: 10, lockRoe: -1 }), null);
+assert.equal(binancePositionPriceRoe({ side: 'SHORT', entryPrice: 100, markPrice: 98, leverage: 5 }), 10);
+assert.equal(binancePositionPriceRoe({ side: 'SHORT', entryPrice: 100, markPrice: 102, leverage: 5 }), -10);
+assert.equal(binancePositionPriceRoe({ side: 'LONG', entryPrice: 100, markPrice: 102, leverage: 5 }), 10);
 assert.equal(
   binanceProfitLockLifecycleKey({
     symbol: 'holousdt', side: 'LONG', entryPrice: 0.0861789425, openedAt: 1_786_511_961_095,
@@ -134,13 +318,32 @@ assert.match(serverSource, /const takeProfitUserOrV2Managed = isTakeProfitUserOr
 assert.doesNotMatch(serverSource, /const skipTsl = tslExcludedSymbols\.has\(symbol\)/);
 assert.doesNotMatch(serverSource, /if \(tslExcludedSymbols\.has\(p\.symbol\)\) continue;/);
 assert.match(serverSource, /const isOrdersExcluded = isCapTslSymbol\(symbol\)/);
-assert.match(serverSource, /isOrdersExcluded[\s\S]*resolveOrdersExcludedBinanceProfitLockRoe\(roe\)/);
+assert.match(serverSource, /isOrdersExcluded[\s\S]*resolveOrdersExcludedBinanceProfitLockRoe\(effectiveRoe\)/);
 assert.match(serverSource, /handleSlTrailByProfit\(symbol, pos, roe, markPrice\)\.catch/);
 assert.match(serverSource, /resetBinanceProfitLockRuntime\(symbol, 'SOCKET_FULL_FILL'\)/);
 assert.match(serverSource, /resetBinanceProfitLockRuntime\(symbol, 'POSITION_CLOSED'\)/);
-assert.match(serverSource, /closeBinancePositionAtBreachedProfitLock/);
+assert.doesNotMatch(serverSource, /closeBinancePositionAtBreachedProfitLock/);
 assert.match(serverSource, /profitLock:verifyReplacementAfterError/);
 assert.match(serverSource, /restored old SL/);
+assert.match(serverSource, /FAST_WAVE_WICK_OR_REVERSAL_ROE30_GAP25/);
+assert.match(serverSource, /const isShortTpOnlyBreakEven = isBotShortTpOnlyPosition \|\| isManualShortTpOnlyPosition/);
+assert.match(serverSource, /resolveShortTpOnlyBreakEvenProfitLockRoe\(effectiveRoe\)/);
+assert.match(serverSource, /SHORT_TP_ONLY_ROE10_BREAK_EVEN/);
+assert.doesNotMatch(serverSource, /if \(isTrackedBotShortTpOnlyPosition\(symbol, pos\) \|\| isTrackedManualShortTpOnlyPosition\(symbol, pos\)\) return/);
+assert.doesNotMatch(serverSource, /recentSameSideDca:/);
+assert.match(serverSource, /FastWaveProfitLock[\s\S]*không MARKET-close/);
+assert.match(serverSource, /BINANCE_FAST_WAVE_SYMBOLS/);
+assert.match(serverSource, /BINANCE_FAST_WAVE_CANDLE_5M_RANGE_PCT/);
+assert.match(serverSource, /BINANCE_FAST_WAVE_CANDLE_15M_RANGE_PCT/);
+assert.match(serverSource, /BINANCE_FAST_WAVE_CANDLE_WICK_MIN_RATIO/);
+assert.match(serverSource, /BINANCE_FAST_WAVE_CANDLE_REVERSAL_BODY_MIN_RATIO/);
+assert.match(serverSource, /tracking\?\.profitLockFastWave === fastWavePolicy\.active/);
+assert.match(serverSource, /fastWaveRecoveryControls/);
+assert.match(serverSource, /completeBinanceFastWaveRecovery/);
+assert.match(serverSource, /fastWavePolicy\.reason === 'CANDLE_DATA_PENDING'/);
+assert.match(serverSource, /binancePositionPriceRoe/);
+assert.match(serverSource, /giữ nguyên position, không MARKET-close/);
+assert.doesNotMatch(serverSource, /SlTrailEmergency/);
 assert.doesNotMatch(serverSource, /Place new SL FIRST/);
 assert.match(serverSource, /profitLockArmedLifecycleKey/);
 assert.doesNotMatch(serverSource, /startSlTrailSafetyScanner\(\);/);

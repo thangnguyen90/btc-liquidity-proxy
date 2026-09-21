@@ -5,10 +5,12 @@ export const NON_LIQUID_FLOW_V2_LONG_TP_ROE = 10;
 export const ORDERS_MANUAL_TP_VERSION = 'MANUAL_SOCKET_TP_ROE30_V2_20260812';
 export const ORDERS_MANUAL_TP_ROE = 30;
 export const BINANCE_MANUAL_SOCKET_SOURCE = 'binance-manual-socket';
-export const BINANCE_BOT_SHORT_TP_ONLY_VERSION = 'BINANCE_BOT_SHORT_TP_ONLY_V1_20260824';
+export const BINANCE_BOT_SHORT_TP_ONLY_VERSION = 'BINANCE_BOT_SHORT_TP_ONLY_COIN_LEVEL_EXEMPT_V6_20260920';
 export const BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION = 'BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_V1_20260824';
 export const COINGLASS_ZONE_LIFECYCLE_TP_ONLY_VERSION =
   'COINGLASS_ZONE_LIFECYCLE_TP_ONLY_NO_SL_V1_20260828';
+export const COINGLASS_ZONE_LIFECYCLE_POSITION_MATCH_VERSION =
+  'COINGLASS_ZONE_LIFECYCLE_POSITION_MATCH_V2_SIDE_ALIGNED_20260830';
 export const BINANCE_MANUAL_SHORT_MAX_TP_ROE = 30;
 
 const MANUAL_TP_SOURCES = new Set([
@@ -30,6 +32,29 @@ export function isCoinglassZoneLifecycleSource(source) {
 
 export function shouldSuppressCoinglassZoneLifecycleStopLoss({ source, enabled = true } = {}) {
   return enabled === true && isCoinglassZoneLifecycleSource(source);
+}
+
+function normalizedPositionDirection(side) {
+  const normalized = String(side ?? '').trim().toUpperCase();
+  if (normalized === 'BUY' || normalized === 'LONG') return 'LONG';
+  if (normalized === 'SELL' || normalized === 'SHORT') return 'SHORT';
+  return null;
+}
+
+export function shouldSuppressTrackedCoinglassZoneLifecycleStopLoss({
+  source,
+  plannedSide = null,
+  positionAmount,
+  enabled = true,
+} = {}) {
+  if (!shouldSuppressCoinglassZoneLifecycleStopLoss({ source, enabled })) return false;
+  const amount = Number(positionAmount);
+  if (!Number.isFinite(amount) || amount === 0) return false;
+  const currentDirection = amount > 0 ? 'LONG' : 'SHORT';
+  const plannedDirection = normalizedPositionDirection(plannedSide);
+  // Old tracking JSON did not persist signalSide. Preserve that fallback, but
+  // never let a stale SHORT plan suppress SL/profit-lock for a new LONG (or vice versa).
+  return plannedDirection == null || plannedDirection === currentDirection;
 }
 
 export function isKnownBotSource(source) {
@@ -59,6 +84,16 @@ export function shouldSuppressBotShortStopLoss({
   const normalizedSide = String(side ?? '').trim().toUpperCase();
   if (normalizedSide !== 'SELL' && normalizedSide !== 'SHORT') return false;
   const normalizedSource = String(source ?? '').trim().toLowerCase();
+  if([
+    'ema99-near-reject-short',
+    'ema99-observe-only',
+    'extreme-short-squeeze',
+    'htf-deep-base-ready',
+    'coin-horizon-sweep-transition',
+    'liqscan-high-score',
+    'liqscan-main-kill-sweep',
+    'coin-level-entry-watch',
+  ].includes(normalizedSource)) return false;
   const isLegacyBotSignalSource = normalizedSource === 'signal';
   // Explicit manual sources must keep their requested protection. Requiring a
   // known bot source (plus the server's legacy auto source "signal") makes
@@ -234,6 +269,7 @@ export function resolveNonLiquidFlowV2TakeProfit({
       : null;
   if (!direction || !isKnownBotSource(source) || isLiquidFlowV2Source(source)
     || isCoinglassWebQualifiedSource(source) || isCoinglassZoneLifecycleSource(source)
+    || ['ema99-near-reject-short','ema99-reclaim-long','ema99-bounce-long','ema99-observe-only','ema99-kill-reclaim','ema99-kill-reclaim-pump-dump-absorption'].includes(String(source??'').trim().toLowerCase())
     || !(entry > 0) || !(lev > 0) || !(roe > 0)) {
     return {
       applied: false,

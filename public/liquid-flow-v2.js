@@ -51,6 +51,7 @@ let paperStatsView = null;
 let paperStatsRequestSequence = 0;
 let paperStatsReloadTimer = null;
 let lastPaperStatsUpdatedAt = null;
+let lastRenderedBoardKey = '';
 const CLOSED_PAPER_PAGE_SIZE = 10;
 const binanceEntryDrafts = new Map();
 const binanceMarginDrafts = new Map();
@@ -288,6 +289,12 @@ function renderHeader(data) {
   els.readyCount.textContent = data.readyCount ?? 0;
   els.activeCount.textContent = data.activeCount ?? 0;
   els.warmupCount.textContent = data.warmupCount ?? 0;
+  if (data.initializing === true) {
+    els.socketStatus.textContent = 'ĐANG KHỞI ĐỘNG · dữ liệu scan sẽ tự cập nhật qua realtime';
+    els.socketDot.className = 'flow-v2-socket-dot is-connecting';
+    els.generatedAt.textContent = `Khởi động ${new Date(data.generatedAt).toLocaleTimeString('vi-VN')} - ${escapeHtml(data.version)}`;
+    return;
+  }
   const telemetry = data.telemetry ?? {};
   const staleDataCount = Number(data.staleDataCount ?? 0);
   const klineSocketStale = data.klineTelemetry?.m5?.isStale === true;
@@ -412,6 +419,14 @@ function evidenceHtml(rows = []) {
     'live-volume-taker': 'Volume/taker mua bùng lên',
     'live-giveback-wick': 'Đã rút khỏi đỉnh trong nến',
     'live-ema99-sweep': 'Nến live quét lên EMA99',
+    'aged-prior-pump': 'Đã có đỉnh pump cũ đủ tuổi',
+    'fade-drawdown': 'Đã xả sâu khỏi đỉnh cũ',
+    'fade-lower-highs': 'Pha xả tạo lower-high',
+    'fade-bearish-ema': 'EMA bearish trong pha xả',
+    'repump-height-atr': 'Nến repump cao so với ATR',
+    'repump-volume-taker': 'Repump kèm volume/taker mua',
+    'recent-high-sweep': 'Quét đỉnh cục bộ gần nhất',
+    'repump-rejection': 'Nến repump đã rút khỏi đỉnh',
     'day-loss': 'Ngày giảm ít nhất 5%',
     'prior-ema-compression': 'EMA nén trước tín hiệu',
     'compression-density': 'Mật độ EMA nén',
@@ -429,10 +444,14 @@ function secondaryLabelsHtml(classification = {}, features = {}) {
   const distribution = features.pumpDistribution15m ?? {};
   const postPump = features.postPumpShortSqueeze5m ?? {};
   const flagpole = features.flagpoleShortKill5m ?? {};
+  const agedRepump = features.agedPumpFadeRepump5m ?? {};
   return (classification.secondaryLabels ?? []).map((secondary) => {
     const flagpoleShortKill = secondary.labelKey === 'POST_PUMP_FLAGPOLE_SHORT_KILL_LONG_READY';
+    const agedRepumpAlert = secondary.labelKey === 'AGED_PUMP_FADE_REPUMP_SHORT_ALERT';
     const postPumpLabel = secondary.labelKey?.startsWith('POST_PUMP') && !flagpoleShortKill;
-    const stage = flagpoleShortKill
+    const stage = agedRepumpAlert
+      ? agedRepump.stage ?? secondary.phase ?? 'READY'
+      : flagpoleShortKill
       ? flagpole.stage ?? secondary.phase ?? 'WATCH'
       : postPumpLabel
         ? postPump.stage ?? secondary.phase ?? 'WATCH'
@@ -444,12 +463,14 @@ function secondaryLabelsHtml(classification = {}, features = {}) {
         <span>${escapeHtml(stage)}</span>
       </div>
       <p>${escapeHtml(secondary.reason)}</p>
-      ${flagpoleShortKill
+      ${agedRepumpAlert
+        ? `<small>Đỉnh cũ +${number(agedRepump.priorPumpPct, 1, '%')} · drawdown ${number(agedRepump.waveDrawdownPct, 1, '%')} · repump ${number(agedRepump.signalHighOpenPct, 1, '%')} · volume ${number(agedRepump.signalVolumeX, 2, 'x')} · giveback ${number(agedRepump.signalGivebackPct, 1, '%')} · OBSERVE ONLY</small>`
+        : flagpoleShortKill
         ? `<small>Pump trước ${number(flagpole.priorPumpPct, 1, '%')} · pullback ${number(flagpole.pullbackPct, 1, '%')} · flagpole ${number(flagpole.flagpoleBodyPct, 1, '%')} · volume ${number(flagpole.flagpoleVolumeX, 2, 'x')} · râu dưới ${number(Number(flagpole.confirmationLowerWickShare) * 100, 1, '%')}</small>`
         : postPumpLabel
         ? `<small>Pump ${number(postPump.pumpPct, 1, '%')} · drawdown ${number(postPump.drawdownFromPeakPct, 1, '%')} · base ${number(postPump.baseRangePct, 1, '%')} · volume fade ${number(postPump.volumeFadeRatio, 2, 'x')}</small>`
         : ''}
-      ${flagpoleShortKill || postPumpLabel ? '' : `<small>Pump ${number(distribution.pumpPct, 1, '%')} · drawdown ${number(distribution.drawdownFromPeakPct, 1, '%')} · ${escapeHtml(distribution.unwindTier ?? '--')} · peak ${number(distribution.barsSincePeak, 0, ' nến 15m trước')}</small>`}
+      ${agedRepumpAlert || flagpoleShortKill || postPumpLabel ? '' : `<small>Pump ${number(distribution.pumpPct, 1, '%')} · drawdown ${number(distribution.drawdownFromPeakPct, 1, '%')} · ${escapeHtml(distribution.unwindTier ?? '--')} · peak ${number(distribution.barsSincePeak, 0, ' nến 15m trước')}</small>`}
       <div class="flow-v2-evidence">${evidenceHtml(secondary.evidence)}</div>
     </section>
   `;
@@ -823,11 +844,18 @@ function filteredRows() {
 
 function renderSignals() {
   const rows = filteredRows();
+  if (board?.initializing === true && !rows.length) {
+    els.signalGrid.innerHTML = '<div class="flow-v2-empty">Đang khởi động dữ liệu scan; trang sẽ tự cập nhật khi snapshot đầu tiên sẵn sàng.</div>';
+    return;
+  }
   els.signalGrid.innerHTML = rows.map(signalCard).join('')
     || '<div class="flow-v2-empty">Không có symbol khớp bộ lọc ở snapshot này.</div>';
 }
 
 function render(data) {
+  const boardKey = `${data?.generatedAt ?? ''}|${data?.paper?.updatedAt ?? ''}|${data?.clientSnapshotVersion ?? ''}`;
+  if (boardKey && boardKey === lastRenderedBoardKey) return;
+  lastRenderedBoardKey = boardKey;
   board = data;
   renderHeader(data);
   renderLabelStats(data.stats);

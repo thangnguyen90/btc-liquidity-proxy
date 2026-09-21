@@ -14,6 +14,9 @@ const elements = {
   grid: document.querySelector('#grid'),
 };
 
+const secondaryStream = document.body.dataset.coinglassStream === 'secondary';
+const apiBase = secondaryStream ? '/api/coinglass-web-secondary' : '/api/coinglass-web-top20';
+
 let timer = null;
 
 function number(value, digits = 2) {
@@ -126,6 +129,8 @@ function qualificationReason(reason) {
 
 function card(row, config = {}) {
   const item = document.createElement('article');
+  const qualifiedObservationOnly = config.qualifiedObservationOnly === true
+    || config.observationOnly === true;
   const proposal = row.proposal || { action: 'NO_DATA', label: 'CHƯA ĐỦ VÙNG THANH LÝ' };
   const actionTone = proposal.action === 'WAIT_LONG_CONFIRMATION'
     ? 'long'
@@ -172,7 +177,9 @@ function card(row, config = {}) {
   badges.className = 'badges';
   const qualityBadge = document.createElement('span');
   qualityBadge.className = `quality-badge ${row.qualified ? 'pass' : 'fail'}`;
-  qualityBadge.textContent = row.qualified ? 'ĐỦ ĐIỀU KIỆN DISCORD + BINANCE' : 'CHƯA ĐỦ ĐIỀU KIỆN';
+  qualityBadge.textContent = row.qualified
+    ? qualifiedObservationOnly ? 'ĐỦ ĐIỀU KIỆN · OBSERVE ONLY' : 'ĐỦ ĐIỀU KIỆN DISCORD + BINANCE'
+    : 'CHƯA ĐỦ ĐIỀU KIỆN';
   const badge = document.createElement('span');
   badge.className = 'badge';
   badge.textContent = `${row.status || 'OK'} · ${number(row.heatmap?.liquidationCellCount, 0)} CELLS`;
@@ -187,7 +194,7 @@ function card(row, config = {}) {
   label.className = 'proposal-label';
   label.textContent = proposal.label;
   const mode = document.createElement('span');
-  mode.textContent = row.qualified ? 'MARKET KHI GIÁ > ENTRY' : 'OBSERVE ONLY';
+  mode.textContent = row.qualified && !qualifiedObservationOnly ? 'MARKET KHI GIÁ > ENTRY' : 'OBSERVE ONLY';
   proposalTop.append(label, mode);
   const proposalValues = document.createElement('div');
   proposalValues.className = 'proposal-values';
@@ -210,8 +217,8 @@ function card(row, config = {}) {
     valueBlock('Entry đề xuất / trigger', `${number(plan.entry?.price ?? proposal.referencePrice ?? row.lastPrice, 8)} / Mark > Entry`),
     valueBlock('TP1 / TP2', plan.takeProfit ? `${number(plan.takeProfit.price, 8)}${plan.takeProfit2 ? ` / ${number(plan.takeProfit2.price, 8)}` : ''}` : '—', 'target'),
     valueBlock(
-      row.qualified ? 'SL Binance mặc định' : 'SL proposal / vô hiệu',
-      row.qualified && binanceStopLoss
+      row.qualified && !qualifiedObservationOnly ? 'SL Binance mặc định' : 'SL proposal / vô hiệu',
+      row.qualified && !qualifiedObservationOnly && binanceStopLoss
         ? `${number(binanceStopLoss, 8)} · -${number(stopLossRoePct)}% ROE · ${number(stopLossPricePct)}% giá @${number(leverage, 0)}x`
         : plan.stopLoss ? `${number(plan.stopLoss.price, 8)} (${number(plan.riskPct)}%)` : '—',
       'risk',
@@ -228,7 +235,7 @@ function card(row, config = {}) {
   if (!row.qualified) {
     const rejected = document.createElement('p');
     rejected.className = 'qualification-note';
-    rejected.textContent = `Chưa gửi Discord: ${(row.qualification?.reasons || []).map(qualificationReason).join(' · ') || 'chưa đạt rule'}`;
+    rejected.textContent = `${qualifiedObservationOnly ? 'Chưa qualified' : 'Chưa gửi Discord'}: ${(row.qualification?.reasons || []).map(qualificationReason).join(' · ') || 'chưa đạt rule'}`;
     proposalPanel.append(rejected);
   }
 
@@ -251,6 +258,8 @@ function render(data) {
   const scheduler = data.scheduler || {};
   const notifications = data.notifications || {};
   const binanceExecutions = data.binanceExecutions || {};
+  const qualifiedObservationOnly = data.config?.qualifiedObservationOnly === true
+    || data.config?.observationOnly === true;
   const structured = rows.filter((row) => Number(row.heatmap?.liquidationCellCount) > 0).length;
   const qualified = rows.filter((row) => row.qualified);
   const longCount = qualified.filter((row) => row.proposal?.action === 'WAIT_LONG_CONFIRMATION').length;
@@ -267,7 +276,7 @@ function render(data) {
       : data.error
         ? `Lần đọc gần nhất lỗi: ${data.error}`
         : rows.length
-          ? `Đã quét ${rows.length}/${data.config?.limit || 40} coin · ${qualified.length} setup qualified · structured ${structured}`
+          ? `Đã quét ${rows.length}/${data.config?.limit || 40} coin hạng ${data.config?.rankFrom || 1}-${data.config?.rankTo || 40} · ${qualified.length} setup qualified · structured ${structured}`
           : 'Chưa có dữ liệu vùng thanh lý hợp lệ.';
   elements.updated.textContent = data.updatedAt
     ? `Snapshot ${time(data.updatedAt)} · CoinGlass ${data.source?.range || '48h'} · BTC + thị trường đạt chuẩn liquidity`
@@ -278,7 +287,9 @@ function render(data) {
     : auth.message || 'Chrome cá nhân và collector là hai profile khác nhau; hãy đăng nhập một lần cho collector.';
   elements.schedule.className = scheduler.enabled ? 'schedule-text ok' : 'schedule-text warn';
   elements.schedule.textContent = scheduler.enabled
-    ? `Tự quét mỗi ${number(Number(scheduler.intervalMs) / 60_000, 0)} phút · lượt kế ${time(scheduler.nextRunAt)} · Discord ${notifications.configured ? 'đã cấu hình' : 'chưa cấu hình'} · Binance ${binanceExecutions.enabled ? '$5 x5 bật' : 'tắt'}`
+    ? data.config?.lifecycleOnly
+      ? `Luồng phụ hạng ${data.config.rankFrom}-${data.config.rankTo} · mỗi ${number(Number(scheduler.intervalMs) / 60_000, 0)} phút · Qualified OBSERVE ONLY · Lifecycle Discord ${notifications.zoneLifecycleDiscordConfigured ? 'bật' : 'tắt'} · Binance ${notifications.zoneLifecycleBinanceEnabled ? `$${number(data.config.zoneLifecycleMarginUsdt)} x${number(data.config.zoneLifecycleLeverage, 0)} bật` : 'tắt'}`
+      : `Tự quét mỗi ${number(Number(scheduler.intervalMs) / 60_000, 0)} phút · lượt kế ${time(scheduler.nextRunAt)} · Discord ${notifications.configured ? 'đã cấu hình' : 'chưa cấu hình'} · Binance ${binanceExecutions.enabled ? '$5 x5 bật' : 'tắt'}`
     : 'Scheduler đang tắt.';
 
   elements.progressPanel.hidden = !data.running;
@@ -292,10 +303,10 @@ function render(data) {
 
   elements.summary.replaceChildren(
     metric('Đã quét / mục tiêu', `${rows.length} / ${data.config?.limit || 40}`),
-    metric('Qualified Discord/Binance', `${qualified.length}`),
+    metric(qualifiedObservationOnly ? 'Qualified tham khảo' : 'Qualified Discord/Binance', `${qualified.length}`),
     metric('Top tăng / giảm', `${upCount} / ${downCount}`),
     metric('Canh long / short', `${longCount} / ${shortCount}`),
-    metric('Binance đã submit', `${binanceExecutions.submitted || 0}`),
+    metric(data.config?.lifecycleOnly ? 'Lifecycle đang theo dõi' : 'Binance đã submit', data.config?.lifecycleOnly ? `${notifications.zoneLifecycleTracks || 0}` : `${binanceExecutions.submitted || 0}`),
   );
 
   elements.failures.hidden = failures.length === 0;
@@ -327,7 +338,7 @@ function render(data) {
 async function load() {
   clearTimeout(timer);
   try {
-    const response = await fetch('/api/coinglass-web-top20', { cache: 'no-store' });
+    const response = await fetch(apiBase, { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     render(data);
@@ -351,7 +362,7 @@ async function post(path, pendingMessage) {
 elements.refresh.addEventListener('click', async () => {
   elements.refresh.disabled = true;
   try {
-    await post('/api/coinglass-web-top20/refresh', 'Đang khởi động bộ đọc vùng thanh lý…');
+    await post(`${apiBase}/refresh`, 'Đang khởi động bộ đọc vùng thanh lý…');
   } catch (error) {
     elements.status.textContent = `Không thể chạy collector: ${error.message}`;
     elements.refresh.disabled = false;
@@ -361,7 +372,7 @@ elements.refresh.addEventListener('click', async () => {
 elements.login.addEventListener('click', async () => {
   elements.login.disabled = true;
   try {
-    await post('/api/coinglass-web-top20/login', 'Đang mở cửa sổ đăng nhập riêng của collector…');
+    await post(`${apiBase}/login`, 'Đang mở cửa sổ đăng nhập riêng của collector…');
   } catch (error) {
     elements.status.textContent = `Không thể mở đăng nhập: ${error.message}`;
     elements.login.disabled = false;
