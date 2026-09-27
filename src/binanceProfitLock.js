@@ -2,6 +2,10 @@ export const BINANCE_PROFIT_LOCK_VERSION = 'BINANCE_PROFIT_LOCK_V20_FAST_WAVE_RE
 export const LEGACY_TRAILING_STOP_DISABLED_VERSION = 'LEGACY_TSL_DISABLED_V1_20260809';
 export const MANUAL_BINANCE_PROFIT_LOCK_TRIGGER_ROE = 10;
 export const MANUAL_BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE = 1;
+export const MANUAL_FIVE_X_BREAK_EVEN_VERSION = 'MANUAL_5X_BREAK_EVEN_SL_V1_20260923';
+export const MANUAL_FIVE_X_BREAK_EVEN_TRIGGER_ROE = 6;
+export const MANUAL_LEVERAGE_BREAK_EVEN_VERSION = 'MANUAL_5X_10X_BREAK_EVEN_SL_V2_20260923';
+export const MANUAL_TEN_X_BREAK_EVEN_TRIGGER_ROE = 12;
 export const ORDERS_EXCLUDED_PROFIT_LOCK_TRIGGER_ROE = 10;
 export const ORDERS_EXCLUDED_PROFIT_LOCK_ROE = 1;
 export const SHORT_TP_ONLY_BREAK_EVEN_TRIGGER_ROE = 10;
@@ -96,6 +100,25 @@ export function resolveManualBinanceProfitLockRoe(roe) {
     triggerRoe: MANUAL_BINANCE_PROFIT_LOCK_TRIGGER_ROE,
     firstLockRoe: MANUAL_BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE,
   });
+}
+
+export function resolveManualFiveXBreakEvenProfitLockRoe({ isManualPosition, leverage, roe } = {}) {
+  return finite(leverage) === 5
+    ? resolveManualLeverageBreakEvenProfitLockRoe({ isManualPosition, leverage, roe })
+    : null;
+}
+
+export function resolveManualLeverageBreakEvenProfitLockRoe({ isManualPosition, leverage, roe } = {}) {
+  const currentRoe = finite(roe);
+  const actualLeverage = finite(leverage);
+  const trigger = actualLeverage === 5
+    ? MANUAL_FIVE_X_BREAK_EVEN_TRIGGER_ROE
+    : actualLeverage === 10 ? MANUAL_TEN_X_BREAK_EVEN_TRIGGER_ROE : null;
+  return isManualPosition === true
+    && trigger != null
+    && currentRoe != null
+    && currentRoe > trigger
+    ? 0 : null;
 }
 
 export function resolveShortTpOnlyBreakEvenProfitLockRoe(roe) {

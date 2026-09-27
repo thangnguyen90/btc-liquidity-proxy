@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import {
   LIQ_SCAN_LARGE_VOLUME_THRESHOLD_USDT,
+  LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT,
   LIQ_SCAN_MAIN_KILL_SWEEP_VERSION,
   LIQ_SCAN_REFERENCE_SWEEP_VERSION,
   LiqScanMainKillSweepTracker,
@@ -36,6 +37,9 @@ assert.equal(upper.version,LIQ_SCAN_MAIN_KILL_SWEEP_VERSION);
 assert.equal(upper.side,'UPPER');
 assert.equal(upper.zone.high,101);
 assert.equal(upper.crossingExtreme,101.2);
+assert.equal(upper.sweepDepthPct,0.198);
+assert.equal(upper.rejection.confirmed,false);
+assert.equal(upper.execution.binanceEligible,false,'UPPER cannot trade before returning below the swept zone');
 assert.equal(upper.scoreAtArm,77,'the score is frozen causally when the zone is armed');
 assert.equal(upper.scoreNow,61,'a recomputed score drop after arming does not erase a real sweep');
 assert.equal(upper.zone.liquidity,12_000_000);
@@ -67,10 +71,11 @@ assert.match(payload.embeds[0].title,/RẤT LỚN.*QUÉT XONG MAIN KILL TRÊN/);
 assert.match(payload.embeds[0].description,/không tự đặt lệnh Binance/);
 assert.match(payload.embeds[0].description,/12\.00M proxy/);
 assert.match(payload.embeds[0].fields[0].value,/15\.6%/);
-assert.match(payload.embeds[0].fields[2].value,/không replay râu nến cũ/);
+assert.match(payload.embeds[0].fields[3].value,/không replay râu nến cũ/);
 assert.equal(classifyMainKillSweepVolume(60_000_000,100_000_000).key,'EXTREME');
 assert.equal(classifyMainKillSweepVolume(2_000_000,10_000_000).key,'LARGE');
 assert.equal(classifyMainKillSweepVolume(500_000,10_000_000).bar,'████░░░░░░');
+assert.equal(LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT,0.1);
 assert.equal(LIQ_SCAN_LARGE_VOLUME_THRESHOLD_USDT,2_000_000);
 assert.equal(isLargeVolumeLiqScanSweepEvent(upper),true,'large/very-large MAIN KILL goes to the dedicated webhook');
 assert.equal(isLargeVolumeLiqScanSweepEvent({
@@ -79,12 +84,38 @@ assert.equal(isLargeVolumeLiqScanSweepEvent({
 }),false,'smaller MAIN KILL remains on the existing webhook');
 const extremePayload=buildLiqScanMainKillSweepPayload({
   ...upper,
+  sweepDepthPct:0.08,
+  rejection:{confirmed:true,returnedBeyondZone:true,closedBeyondZone:false,
+    confirmationType:'LIVE_MARK_BEYOND_ZONE'},
   zone:{...upper.zone,liquidity:60_000_000},
   volumeTier:classifyMainKillSweepVolume(60_000_000,77_000_000),
   binanceExecution:{status:'SUBMITTED',side:'SHORT',marginUsdt:1,leverage:5,takeProfitRoePct:10,stopLossRoePct:30},
 });
 assert.match(extremePayload.embeds[0].title,/SIÊU LỚN/);
 assert.match(extremePayload.embeds[0].description,/BINANCE THẬT.*SHORT MARKET 1 USDT margin ×5/);
+assert.match(extremePayload.embeds[0].fields[2].value,/0\.080%.*ĐÃ XÁC NHẬN/s);
+const noRejectPayload=buildLiqScanMainKillSweepPayload({
+  ...upper,
+  zone:{...upper.zone,liquidity:60_000_000},
+  volumeTier:classifyMainKillSweepVolume(60_000_000,77_000_000),
+  binanceExecution:{status:'observe-only-zone-not-rejected',recentBidirectional3d:false},
+});
+assert.match(noRejectPayload.embeds[0].description,/SHORT chưa xác nhận rút xuống dưới đáy vùng quét/);
+const deepPayload=buildLiqScanMainKillSweepPayload({
+  ...upper,sweepDepthPct:0.101,
+  zone:{...upper.zone,liquidity:60_000_000},
+  volumeTier:classifyMainKillSweepVolume(60_000_000,77_000_000),
+  rejection:{confirmed:true,confirmationType:'LIVE_MARK_BEYOND_ZONE'},
+  binanceExecution:{status:'observe-only-deep-sweep',recentBidirectional3d:false},
+});
+assert.match(deepPayload.embeds[0].description,/0\.101% vượt trần 0\.10%/);
+const twoWayPayload=buildLiqScanMainKillSweepPayload({
+  ...lower,
+  zone:{...lower.zone,liquidity:60_000_000},
+  volumeTier:classifyMainKillSweepVolume(60_000_000,77_000_000),
+  binanceExecution:{status:'observe-only-bidirectional-3d',recentBidirectional3d:true},
+});
+assert.match(twoWayPayload.embeds[0].description,/cả LONG và SHORT trong 3 ngày/);
 
 const referenceTracker=new LiqScanReferenceSweepTracker({now:()=>now,cooldownMs:60_000});
 const referenceRow=({mark=0.00970,candleHigh=0.00975,targetPrice=0.00979229,targetScore=5_400_000,score=61}={})=>({
@@ -149,7 +180,7 @@ for(const sample of [upper,lower,referenceEvent,{...referenceEvent,side:'LOWER'}
 assert.equal(sweptSideLiquidityProxy({...upper,liquidityAtSweep:undefined,liquidityAbove:1160000000}),1160000000,'old JSON compatible');
 assert.equal(sweptSideLiquidityProxy({...lower,liquidityAtSweep:undefined,liquidityBelow:281890000}),281890000);
 assert.equal(sweptSideLiquidityProxy({...upper,side:'INVALID'}),null);
-assert.equal(collectLiqScanMainKillSweepEvent(upper),upper,'raw event and Binance logic are unchanged');
+assert.equal(collectLiqScanMainKillSweepEvent(upper),upper,'raw event remains available for Discord even when Binance filter rejects it');
 assert.equal(collectLiqScanSweepDiscordEvent({...upper,version:'OLD',liquidityAbove:1e9}),null);
 // The totals at the crossing must not accidentally remain frozen at arm time.
 const currentTracker=new LiqScanMainKillSweepTracker({now:()=>now});
@@ -161,5 +192,5 @@ const currentEvent=currentTracker.observe(crossed);
 assert.equal(currentEvent.liquidityAbove,77_000_000);
 assert.equal(sweptSideLiquidityProxy(currentEvent),1_160_000_000);
 assert.equal(collectLiqScanSweepDiscordEvent(currentEvent),currentEvent);
-assert.match(buildLiqScanMainKillSweepPayload(currentEvent).embeds[0].fields[3].value,/1\.16B proxy/);
-console.log('LiqScan sweep PASS: current swept-side proxy >100M, boundaries, old JSON, no execution changes, send/ack/retry and honest units.');
+assert.match(buildLiqScanMainKillSweepPayload(currentEvent).embeds[0].fields[4].value,/1\.16B proxy/);
+console.log('LiqScan sweep PASS: current proxy, SHORT rejection/depth metadata, observe-only Discord reasons, old JSON, send/ack/retry and honest units.');

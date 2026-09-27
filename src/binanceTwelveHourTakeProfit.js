@@ -1,8 +1,47 @@
 export const BINANCE_TWELVE_HOUR_TAKE_PROFIT_VERSION = 'BINANCE_TP_AFTER_12H_DISABLED_V2_20260905';
 export const DEFAULT_BINANCE_TP_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 export const DEFAULT_BINANCE_TP_TARGET_ROE_PCT = 1;
-export const BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION = 'BINANCE_NEGATIVE_TP_TO_ENTRY_AFTER_8H_V1_20260816';
-export const DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS = 8 * 60 * 60 * 1000;
+export const BINANCE_THREE_HOUR_NEGATIVE_TP_VERSION = 'BINANCE_NEGATIVE_TP_TO_ENTRY_AFTER_3H_V3_MANUAL_SIDE_NORMALIZED_20260926';
+export const BINANCE_THREE_HOUR_POSITIVE_PNL_CLOSE_VERSION = 'BINANCE_POSITIVE_PNL_MARKET_CLOSE_AFTER_3H_V1_20260926';
+// Keep legacy exports for consumers; the default policy is now three hours.
+export const BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION = BINANCE_THREE_HOUR_NEGATIVE_TP_VERSION;
+export const DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS = 3 * 60 * 60 * 1000;
+
+export function resolveBinanceNegativeAgeTpConfig(env = {}) {
+  const rawAge = env.BINANCE_NEGATIVE_TP_AFTER_3H_MS ?? env.BINANCE_NEGATIVE_TP_AFTER_8H_MS;
+  const age = Number(rawAge ?? DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS);
+  return {
+    enabled: (env.BINANCE_NEGATIVE_TP_AFTER_3H_ENABLED
+      ?? env.BINANCE_NEGATIVE_TP_AFTER_8H_ENABLED) !== 'false',
+    maxAgeMs: Number.isFinite(age) && age > 0 ? age : DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+  };
+}
+
+export function negativeAgeTpOpenedAt(tracked, position) {
+  // Adoption/first-seen timestamps are not fills. Never use signal creation time.
+  if (!tracked || tracked.adopted === true || !tracked.entryOrderId) return null;
+  const entry = Number(position?.entry ?? position?.entryPrice);
+  const trackedEntry = Number(tracked.entry);
+  const amount = Number(position?.amt ?? position?.positionAmt);
+  if (!(entry > 0) || !(trackedEntry > 0) || !Number.isFinite(amount) || amount === 0) return null;
+  if (Math.abs(trackedEntry - entry) / entry > 0.001) return null;
+  if (tracked.signalSide
+    && normalizeBinanceTrackedPositionSide(tracked.signalSide) !== (amount > 0 ? 'LONG' : 'SHORT')) return null;
+  return parseBinancePositionOpenedAt(tracked.openedAt);
+}
+
+export function isBinancePositionTpCloseOrder(order, symbol, position) {
+  if (order.symbol !== symbol) return false;
+  const amount = Number(position.amt ?? position.positionAmt);
+  if (!Number.isFinite(amount) || amount === 0) return false;
+  if (order.side !== (amount > 0 ? 'SELL' : 'BUY')) return false;
+  const type = String(order.origType ?? order.orderType ?? order.type ?? '').toUpperCase();
+  if (!['LIMIT', 'TAKE_PROFIT', 'TAKE_PROFIT_MARKET'].includes(type)) return false;
+  const positionSide = position.positionSide ?? 'BOTH';
+  if ((order.positionSide ?? 'BOTH') !== positionSide) return false;
+  return positionSide !== 'BOTH' || order.reduceOnly === true || order.reduceOnly === 'true'
+    || order.closePosition === true || order.closePosition === 'true';
+}
 
 function finitePositive(value) {
   const numeric = Number(value);
@@ -15,6 +54,13 @@ export function parseBinancePositionOpenedAt(value) {
   if (Number.isFinite(numeric) && numeric > 0) return numeric;
   const parsed = Date.parse(String(value));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function normalizeBinanceTrackedPositionSide(value) {
+  const side = String(value ?? '').trim().toUpperCase();
+  if (side === 'LONG' || side === 'BUY') return 'LONG';
+  if (side === 'SHORT' || side === 'SELL') return 'SHORT';
+  return null;
 }
 
 export function binanceTakeProfitPriceForRoe({ entryPrice, leverage, side, targetRoePct = 1 }) {
@@ -115,13 +161,56 @@ export function evaluateBinanceEightHourNegativeTakeProfit({
   const side = amount > 0 ? 'LONG' : 'SHORT';
   return {
     eligible: true,
-    reason: 'negative_after_8h',
+    reason: 'negative_after_age_limit',
     ageMs,
     currentRoe: roe,
     side,
     closeSide: side === 'LONG' ? 'SELL' : 'BUY',
     targetPrice: entry,
     targetRoePct: 0,
+  };
+}
+
+export function evaluateBinanceThreeHourPositivePnlClose({
+  enabled = true,
+  now = Date.now(),
+  openedAt,
+  entryPrice,
+  positionAmount,
+  unrealizedPnl,
+  capTsl = false,
+  maxAgeMs = DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+} = {}) {
+  if (!enabled) return { eligible: false, reason: 'disabled' };
+  if (capTsl === true) return { eligible: false, reason: 'cap_tsl_excluded' };
+  const openedAtMs = parseBinancePositionOpenedAt(openedAt);
+  if (!openedAtMs) return { eligible: false, reason: 'missing_opened_at' };
+
+  const timestamp = Number(now);
+  const ageLimit = finitePositive(maxAgeMs);
+  if (!Number.isFinite(timestamp) || !ageLimit) return { eligible: false, reason: 'invalid_time_config' };
+  const ageMs = Math.max(0, timestamp - openedAtMs);
+  if (ageMs < ageLimit) return { eligible: false, reason: 'not_expired', ageMs };
+
+  const amount = Number(positionAmount);
+  if (!Number.isFinite(amount) || amount === 0) return { eligible: false, reason: 'position_closed', ageMs };
+  const entry = finitePositive(entryPrice);
+  if (!entry) return { eligible: false, reason: 'invalid_position', ageMs };
+  if (unrealizedPnl == null || unrealizedPnl === '') {
+    return { eligible: false, reason: 'missing_unrealized_pnl', ageMs };
+  }
+  const pnl = Number(unrealizedPnl);
+  if (!Number.isFinite(pnl)) return { eligible: false, reason: 'missing_unrealized_pnl', ageMs };
+  if (pnl <= 0) return { eligible: false, reason: 'not_positive', ageMs, unrealizedPnl: pnl };
+
+  const side = amount > 0 ? 'LONG' : 'SHORT';
+  return {
+    eligible: true,
+    reason: 'positive_after_age_limit',
+    ageMs,
+    unrealizedPnl: pnl,
+    side,
+    closeSide: side === 'LONG' ? 'SELL' : 'BUY',
   };
 }
 

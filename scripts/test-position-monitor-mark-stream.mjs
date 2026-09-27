@@ -13,6 +13,7 @@ import {
   isBinanceTradeLiteExecution,
   parsePositionMarkPriceMessage,
   resolvePositionRoeMargin,
+  waitForMatchingFullFillPosition,
 } from '../src/positionMonitor.js';
 
 assert.equal(
@@ -28,8 +29,27 @@ assert.equal(
 );
 assert.equal(
   POSITION_PROTECTION_TRIGGER_VERSION,
-  'POSITION_PROTECTION_SOCKET_FILL_V4_LISTEN_KEY_RECONNECT_20260816',
+  'POSITION_PROTECTION_SOCKET_FILL_V5_POSITION_VISIBILITY_RETRY_20260923',
 );
+let positionSyncs = 0;
+const delayedPosition = await waitForMatchingFullFillPosition({
+  symbol: 'AAVEUSDT',
+  side: 'BUY',
+  sync: async () => { positionSyncs += 1; },
+  getPosition: () => positionSyncs < 3 ? null : { amt: 2, entry: 149.98, leverage: 10 },
+  delaysMs: [0, 1, 1],
+  sleep: async () => {},
+});
+assert.equal(positionSyncs, 3);
+assert.equal(delayedPosition.entry, 149.98);
+assert.equal(await waitForMatchingFullFillPosition({
+  symbol: 'AAVEUSDT',
+  side: 'BUY',
+  sync: async () => {},
+  getPosition: () => ({ amt: -2 }),
+  delaysMs: [0, 1],
+  sleep: async () => {},
+}), null);
 assert.equal(POSITION_USER_DATA_STREAM_VERSION, 'POSITION_USER_DATA_STREAM_V2_LISTEN_KEY_RECOVERY_20260816');
 assert.equal(isBinanceListenKeyExpiredEvent({ e: 'listenKeyExpired' }), true);
 assert.equal(isBinanceListenKeyExpiredEvent({ e: 'ORDER_TRADE_UPDATE' }), false);
@@ -67,11 +87,20 @@ assert.doesNotMatch(monitorSource, /const roe = \(upnl \/ margin\) \* 100/);
 assert.match(monitorSource, /scheduleUserDataReconnect\(0, 'listen-key-expired'\)/);
 assert.match(monitorSource, /scheduleUserDataReconnect\(0, 'keepalive-listen-key-invalid'\)/);
 assert.match(monitorSource, /onUserDataReconnect\(\{/);
+assert.match(monitorSource, /scheduleFullFillRetry\(symbol, fill, error\)/);
+assert.match(monitorSource, /clearFullFillRetry\(key\)/);
+assert.match(monitorSource, /restVerifiedAt: Date\.now\(\)/);
+assert.match(monitorSource, /restVerifiedAt\) >= fillObservedAt/);
+assert.match(monitorSource, /syncPositions\(\{ forceFresh: true \}\)/);
+assert.doesNotMatch(monitorSource, /SOCKET_FULL_FILL_IGNORED/);
 
 const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
 assert.match(serverSource, /onUserDataReconnect: async \(\{ reason, reconnected \}\)/);
 assert.match(serverSource, /runMissedFillProtectionRecovery\(`USER_DATA_RECONNECT:\$\{reason\}`\)/);
 assert.match(serverSource, /missedFillProtectionRecoveryRunning/);
 assert.match(serverSource, /MISSED_FILL_RECONNECT_RECOVERY/);
+assert.match(serverSource, /fallbackLongSlExpected[\s\S]*const expectsSl = Number\(protectionPlan\?\.slPrice\) > 0 \|\| fallbackLongSlExpected/);
+assert.match(serverSource, /if \(protectionPlan\) protectionPlan\.appliedAt = null/);
+assert.match(serverSource, /slTracking\.positions\[symbol\]\.slPlaced = false/);
 
 console.log('Position monitor mark stream tests passed');

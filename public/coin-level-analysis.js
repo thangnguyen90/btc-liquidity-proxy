@@ -1,5 +1,10 @@
 import { buildCoinLevelEntryDisplay } from './coin-level-entry-preview.js';
 import { buildCoinLevelBinanceBlockStatus } from './coin-level-binance-block-status.js';
+import {
+  entryWatchTierDisplayLabel,
+  sortCoinLevelEntryWatchForDisplay,
+} from './coin-level-entry-watch-sort.js';
+import { nextObserveSort, sortCoinLevelObserveWatches } from './coin-level-observe-sort.js';
 
 const $ = (selector) => document.querySelector(selector);
 const form = $('#search-form');
@@ -19,6 +24,10 @@ let liveSocketGeneration = 0;
 let liveSocketRetryTimer = null;
 let liveSocketRetryMs = 1_000;
 let lastLiveMark = null;
+let showEarlyLongHistory = false;
+let showEarlyShortHistory = false;
+const earlyObserveSort = { LONG: {}, SHORT: {} };
+const earlyObserveShown = { LONG: [], SHORT: [] };
 
 function normalizeInput(value) {
   const clean = String(value ?? '')
@@ -126,6 +135,13 @@ function compact(value, suffix = '') {
   const number = Number(value);
   if (!Number.isFinite(number)) return '—';
   return `${Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(number)}${suffix}`;
+}
+
+function earlyObserveQuoteVolumeCell(item) {
+  const value = item?.quoteVolumeUsdt;
+  const amount = Number(value);
+  return `<td class="observe-quote-volume">${value == null || !Number.isFinite(amount) || amount < 0
+    ? '—' : compact(amount, ' USDT')}</td>`;
 }
 
 function pct(value, signed = false) {
@@ -754,23 +770,413 @@ refreshBinanceBlockStatus();
 setInterval(() => { if (!document.hidden) refreshBinanceBlockStatus(); }, 10_000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshBinanceBlockStatus(); });
 let entryWatchLoading = false;
+function renderCoinLevelMarketRegime(regime = {}) {
+  const panel = $('#market-regime-panel');
+  if (!panel) return;
+  const state = ['RISK_OFF', 'RECOVERY_TEST', 'RISK_ON', 'WAIT_DATA'].includes(regime.state)
+    ? regime.state : 'WAIT_DATA';
+  const className = state.toLowerCase().replace('_', '-');
+  panel.className = `panel market-regime-panel ${className}`;
+  const titles = {
+    RISK_OFF: 'RISK-OFF · CHẶN LONG COIN LEVEL MỚI',
+    RECOVERY_TEST: 'RECOVERY TEST · LONG CHỈ QUAN SÁT',
+    RISK_ON: 'RISK-ON · CHO PHÉP XÉT LONG MỚI',
+    WAIT_DATA: 'WAIT DATA · FAIL-CLOSED LONG MỚI',
+  };
+  $('#market-regime-title').textContent = titles[state];
+  $('#market-regime-badge').textContent = state.replace('_', ' ');
+  $('#market-regime-summary').textContent = state === 'RISK_ON'
+    ? 'Market regime đã giữ đủ điều kiện; Coin Level LONG mới vẫn phải qua toàn bộ rule nến, route và Binance hiện hữu.'
+    : state === 'RISK_OFF'
+      ? 'Thị trường đang bất lợi cho LONG; tín hiệu vẫn hiển thị/Discord nhưng executor không submit LONG mới.'
+      : state === 'RECOVERY_TEST'
+        ? 'Thị trường đang thử hồi nhưng chưa giữ đủ 15 phút hoặc chưa yên DUMP đủ 30 phút; LONG chỉ quan sát.'
+        : 'Breadth socket chưa đủ/fresh; LONG mới bị chặn an toàn.';
+  const metrics = regime.metrics ?? {};
+  $('#market-regime-context').textContent = `${metrics.context15m ?? 'UNKNOWN'} / ${metrics.context30m ?? 'UNKNOWN'}`;
+  const up = Number(metrics.upCount);
+  const down = Number(metrics.downCount);
+  const ratio = Number.isFinite(up) && Number.isFinite(down) ? up / Math.max(1, down) : null;
+  $('#market-regime-breadth').textContent = Number.isFinite(ratio)
+    ? `${up} / ${down} · ${ratio.toFixed(2)}×`
+    : '— / —';
+  const taker = Number(metrics.takerBuyRatio);
+  $('#market-regime-taker').textContent = Number.isFinite(taker) ? `${(taker * 100).toFixed(1)}%` : '—';
+  const minutes = (value) => Math.max(0, Math.ceil(Number(value ?? 0) / 60_000));
+  const timer = state === 'RISK_ON'
+    ? 'ĐÃ MỞ LONG MỚI'
+    : state === 'WAIT_DATA'
+      ? 'CHỜ BREADTH FRESH'
+      : `Ổn định ${minutes(regime.riskOnRemainingMs)}p · yên DUMP ${minutes(regime.dumpQuietRemainingMs)}p`;
+  $('#market-regime-timer').textContent = timer;
+  const reasons = Array.isArray(regime.reasons) ? regime.reasons : [];
+  $('#market-regime-reasons').innerHTML = reasons.map((reason) => `<p>⚠ ${escapeHtml(reason)}</p>`).join('');
+}
+
+function earlyLongDisplayPattern(item = {}) {
+  const gap = item.breakoutGapPct == null || item.breakoutGapPct === ''
+    ? null : Number(item.breakoutGapPct);
+  const volumeRatio = Number(item.volumeRatio);
+  const takerBuyPct = Number(item.takerBuyPct);
+  const frame15m = item.frameStates?.['15m'];
+  const frame1h = item.frameStates?.['1h'];
+  const higherLowPoints = Number(item.scoreComponents?.higherLows);
+  if (gap != null && Number.isFinite(gap) && gap <= 0.35) {
+    return { key: 'breakout', label: 'SÁT MỐC PHÁ', title: 'Giá còn cách mốc phá tối đa 0,35% hoặc vừa vượt nhẹ.' };
+  }
+  if ((Number.isFinite(volumeRatio) && volumeRatio >= 2)
+    || (Number.isFinite(takerBuyPct) && takerBuyPct >= 60)) {
+    return { key: 'flow', label: 'DÒNG TIỀN MẠNH', title: 'Volume ≥2× hoặc taker mua ≥60%.' };
+  }
+  if (frame15m === 'UP' && frame1h === 'UP') {
+    return { key: 'mtf', label: 'ĐỒNG THUẬN MTF', title: 'Cả 15m và 1h đang UP.' };
+  }
+  if (Number.isFinite(higherLowPoints) && higherLowPoints >= 10) {
+    return { key: 'higher-low', label: 'ĐÁY NÂNG', title: 'Ba đáy 5m gần nhất tạo cấu trúc nâng.' };
+  }
+  return { key: 'pressure', label: 'ÁP LỰC TĂNG', title: 'Đủ tổng điểm nhờ nhiều thành phần nhưng chưa thuộc mẫu nổi trội khác.' };
+}
+
+function earlyShortDisplayPattern(item = {}) {
+  const breakdownGapPct = item.breakdownGapPct == null || item.breakdownGapPct === ''
+    ? null : Number(item.breakdownGapPct);
+  const volumeRatio = Number(item.volumeRatio);
+  const takerSellPct = Number(item.takerSellPct);
+  const frame15m = item.frameStates?.['15m'];
+  const frame1h = item.frameStates?.['1h'];
+  const softMisses = Array.isArray(item.softMisses) ? item.softMisses : null;
+  const hasLowerHigh = softMisses
+    ? !softMisses.includes('LOWER_HIGH_MISSING')
+    : Number(item.scoreComponents?.rejection) >= 6;
+  if (item.setupMode === 'BREAKDOWN_PRESSURE'
+    && breakdownGapPct != null && Number.isFinite(breakdownGapPct)
+    && Math.abs(breakdownGapPct) <= 0.35) {
+    return { key: 'trigger', label: 'SÁT MỐC PHÁ ĐÁY', title: 'Giá cách đáy kích hoạt tối đa 0,35% theo hai phía.' };
+  }
+  if ((Number.isFinite(volumeRatio) && volumeRatio >= 2)
+    || (Number.isFinite(takerSellPct) && takerSellPct >= 60)) {
+    return { key: 'flow', label: 'DÒNG TIỀN BÁN MẠNH', title: 'Volume ≥2× hoặc taker bán ≥60%.' };
+  }
+  if (frame15m === 'DOWN' && frame1h === 'DOWN') {
+    return { key: 'mtf', label: 'ĐỒNG THUẬN MTF GIẢM', title: 'Cả 15m và 1h đang DOWN.' };
+  }
+  if (hasLowerHigh) {
+    return { key: 'lower-high', label: 'ĐỈNH THẤP DẦN', title: 'Đỉnh nến 5m mới thấp hơn đỉnh nến trước.' };
+  }
+  return { key: 'pressure', label: 'ÁP LỰC GIẢM', title: 'Đủ tổng điểm nhờ nhiều thành phần nhưng chưa thuộc mẫu nổi trội khác.' };
+}
+
+function observePatternLabel(side, item) {
+  return (side === 'LONG' ? earlyLongDisplayPattern(item) : earlyShortDisplayPattern(item)).label;
+}
+
+function sortedEarlyObserveWatches(watches, side) {
+  return sortCoinLevelObserveWatches(watches, side, earlyObserveSort[side],
+    (item) => observePatternLabel(side, item));
+}
+
+function updateEarlyObserveSortHeaders(side, table) {
+  for (const th of table.querySelectorAll('thead th')) {
+    const active = th.dataset.sortKey === earlyObserveSort[side].key;
+    const direction = active ? earlyObserveSort[side].direction : null;
+    th.setAttribute('aria-sort', direction === 'asc' ? 'ascending' : direction === 'desc' ? 'descending' : 'none');
+    th.querySelector('.observe-sort-indicator').textContent = direction === 'asc' ? '▲' : direction === 'desc' ? '▼' : '↕';
+  }
+}
+
+function initializeEarlyObserveSort(side, selector, keys) {
+  const table = $(selector);
+  if (!table) return;
+  [...table.querySelectorAll('thead th')].forEach((th, index) => {
+    const key = keys[index];
+    if (!key) return;
+    const label = th.textContent.trim();
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'observe-sort-button';
+    button.setAttribute('aria-label', `Sắp xếp theo ${label}`);
+    button.append(document.createTextNode(label));
+    const indicator = document.createElement('span');
+    indicator.className = 'observe-sort-indicator';
+    indicator.setAttribute('aria-hidden', 'true');
+    indicator.textContent = '↕';
+    button.append(indicator);
+    th.dataset.sortKey = key;
+    th.replaceChildren(button);
+    button.addEventListener('click', () => {
+      earlyObserveSort[side] = nextObserveSort(earlyObserveSort[side], key);
+      updateEarlyObserveSortHeaders(side, table);
+      const tbody = table.tBodies[0];
+      const shown = earlyObserveShown[side];
+      const rows = [...tbody.rows];
+      if (!shown.length || rows.length !== shown.length) return;
+      const rowByItem = new Map(shown.map((item, rowIndex) => [item, rows[rowIndex]]));
+      const sorted = sortedEarlyObserveWatches(shown, side);
+      tbody.append(...sorted.map((item) => rowByItem.get(item)));
+      earlyObserveShown[side] = sorted;
+    });
+  });
+  updateEarlyObserveSortHeaders(side, table);
+}
+
+const RECENT_BIDIRECTIONAL_WINDOW_MS = 30 * 60_000;
+function recentBidirectionalObserveSignals(data = {}) {
+  const evaluatedAt = Number(data.generatedAt) || Date.now();
+  const cutoff = evaluatedAt - RECENT_BIDIRECTIONAL_WINDOW_MS;
+  const bySymbol = new Map();
+  const collect = (rows, direction) => {
+    for (const item of Array.isArray(rows) ? rows : []) {
+      const symbol = String(item?.symbol ?? '').toUpperCase();
+      const observedAt = Number(item?.observedAt);
+      if (!symbol || !Number.isFinite(observedAt) || observedAt < cutoff || observedAt > evaluatedAt) continue;
+      const state = bySymbol.get(symbol) ?? { LONG: null, SHORT: null };
+      state[direction] = Math.max(Number(state[direction]) || 0, observedAt);
+      bySymbol.set(symbol, state);
+    }
+  };
+  collect(Array.isArray(data.earlyLongHistory) ? data.earlyLongHistory : data.earlyLongWatches, 'LONG');
+  collect(Array.isArray(data.earlyShortHistory) ? data.earlyShortHistory : data.earlyShortWatches, 'SHORT');
+  for (const item of Array.isArray(data.recentObserveHistory) ? data.recentObserveHistory : []) {
+    collect([item], String(item?.side ?? '').toUpperCase());
+  }
+  collect(data.earlyLongWatches, 'LONG');
+  collect(data.earlyShortWatches, 'SHORT');
+  return new Map([...bySymbol].filter(([, state]) => (
+    Number(state.LONG) > 0
+    && Number(state.SHORT) > 0
+    && Math.abs(Number(state.LONG) - Number(state.SHORT)) <= RECENT_BIDIRECTIONAL_WINDOW_MS
+  )));
+}
+
+function recentBidirectionalRowMeta(item = {}, recent = new Map()) {
+  const state = recent.get(String(item?.symbol ?? '').toUpperCase());
+  if (!state) return { className: '', title: '' };
+  const format = (value) => new Date(Number(value)).toLocaleTimeString('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh', hour12: false,
+  });
+  return {
+    className: 'observe-recent-bidirectional',
+    title: `Coin vừa xuất hiện ở cả LONG (${format(state.LONG)}) và SHORT (${format(state.SHORT)}) trong 30 phút.`,
+  };
+}
+
+function earlyManualOrderControl(item = {}, direction, data = {}) {
+  const leverage = Math.max(1, Number(data.binanceExecution?.routes?.[direction]?.leverage) || 5);
+  const active = item.liveNow !== false && item.liveState !== 'INVALIDATED';
+  const masterEnabled = data.binanceExecution?.masterEnabled === true;
+  const regimeAllowed = direction !== 'LONG' || data.marketRegime?.allowLongEntry === true;
+  const disabledReason = !active
+    ? 'Tín hiệu không còn active'
+    : !masterEnabled
+      ? 'Khóa tổng Binance đang OFF'
+      : !regimeAllowed
+        ? `Market Regime ${data.marketRegime?.state ?? 'WAIT_DATA'} chặn LONG`
+        : '';
+  const disabled = disabledReason ? ' disabled' : '';
+  const label = !active
+    ? 'HẾT HIỆU LỰC'
+    : !masterEnabled
+      ? 'BINANCE OFF'
+      : !regimeAllowed
+        ? 'RISK-OFF'
+        : direction === 'LONG' ? 'VÀO LONG' : 'VÀO SHORT';
+  return `<span class="early-manual-order" data-symbol="${escapeHtml(item.symbol)}" data-side="${direction}" data-observed-at="${Number(item.observedAt) || 0}"><label><span>SỐ TIỀN (USDT)</span><input class="early-manual-margin" type="number" min="0.01" max="100" step="0.01" value="1" inputmode="decimal" placeholder="USDT" aria-label="Số tiền margin USDT ${escapeHtml(item.symbol)} ${direction}"></label><label><span>ĐÒN BẨY (x)</span><input class="early-manual-leverage" type="number" min="1" max="125" step="1" value="${leverage}" inputmode="numeric" placeholder="x" aria-label="Đòn bẩy ${escapeHtml(item.symbol)} ${direction}"></label><button class="early-manual-submit ${direction.toLowerCase()}" type="button"${disabled} title="${escapeHtml(disabledReason || `Gửi MARKET thật ${direction} ${item.symbol}`)}">${label}</button><small class="early-manual-result ${disabledReason ? 'blocked' : ''}">${escapeHtml(disabledReason || `MARKET · mặc định ${leverage}x`)}</small></span>`;
+}
+
+async function submitEarlyManualOrder(button) {
+  const control = button.closest('.early-manual-order');
+  const resultNode = control?.querySelector('.early-manual-result');
+  const marginInput = control?.querySelector('.early-manual-margin');
+  const leverageInput = control?.querySelector('.early-manual-leverage');
+  if (!control || !resultNode || !marginInput || !leverageInput) return;
+  const symbol = control.dataset.symbol;
+  const side = control.dataset.side;
+  const observedAt = Number(control.dataset.observedAt);
+  const marginUsdt = Number(marginInput.value);
+  const leverage = Number(leverageInput.value);
+  if (!(marginUsdt >= 0.01) || marginUsdt > 100) {
+    resultNode.textContent = 'Margin phải từ 0.01–100 USDT.';
+    resultNode.className = 'early-manual-result error';
+    return;
+  }
+  if (!Number.isInteger(leverage) || leverage < 1 || leverage > 125) {
+    resultNode.textContent = 'Đòn bẩy phải là số nguyên từ 1–125x.';
+    resultNode.className = 'early-manual-result error';
+    return;
+  }
+  const token = localStorage.getItem('orders_token') ?? '';
+  if (!token) {
+    resultNode.textContent = 'Chưa đăng nhập Orders.';
+    resultNode.className = 'early-manual-result error';
+    return;
+  }
+  const confirmed = window.confirm(
+    `GỬI LỆNH THẬT BINANCE MARKET ${side} ${symbol}?\n`
+    + `Margin ${marginUsdt} USDT · đòn bẩy ${leverage}x · notional ${Number((marginUsdt * leverage).toFixed(8))} USDT.\n`
+    + 'Đây là tín hiệu quan sát sớm, chưa phải xác nhận breakout/breakdown hoàn chỉnh.',
+  );
+  if (!confirmed) return;
+  button.disabled = true;
+  marginInput.disabled = true;
+  leverageInput.disabled = true;
+  resultNode.textContent = 'Đang kiểm tra và gửi Binance…';
+  resultNode.className = 'early-manual-result pending';
+  let submitted = false;
+  try {
+    const base = location.protocol === 'file:' ? 'http://127.0.0.1:19082' : '';
+    const response = await fetch(`${base}/api/coin-level-observe-manual-order`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-orders-token': token },
+      body: JSON.stringify({ symbol, side, observedAt, marginUsdt, leverage }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) localStorage.removeItem('orders_token');
+      throw new Error(payload.error ?? `HTTP ${response.status}`);
+    }
+    submitted = true;
+    button.textContent = 'ĐÃ GỬI';
+    resultNode.textContent = `Đã gửi #${payload.orderId ?? payload.clientOrderId ?? '—'} · ${payload.marginUsdt} USDT x${payload.leverage}`;
+    resultNode.className = 'early-manual-result success';
+  } catch (error) {
+    resultNode.textContent = error.message;
+    resultNode.className = 'early-manual-result error';
+  } finally {
+    if (!submitted) {
+      button.disabled = false;
+      marginInput.disabled = false;
+      leverageInput.disabled = false;
+    }
+  }
+}
+
 async function refreshEntryWatch() {
   const health = $('#entry-watch-health'), rows = $('#entry-watch-rows');
+  const earlyLongHealth = $('#early-long-health'), earlyLongRows = $('#early-long-rows');
+  const earlyLongDiagnostics = $('#early-long-diagnostics');
+  const earlyHealth = $('#early-short-health'), earlyRows = $('#early-short-rows');
+  const earlyShortDiagnostics = $('#early-short-diagnostics');
   if (!health || !rows || entryWatchLoading) return;
   entryWatchLoading = true;
   try {
     const base = location.protocol === 'file:' ? 'http://127.0.0.1:19082' : '';
-    const response = await fetch(`${base}/api/coin-level-entry-watch`, { signal: AbortSignal.timeout(10_000), cache: 'no-store' });
+    const includeHistory = showEarlyLongHistory || showEarlyShortHistory;
+    const response = await fetch(`${base}/api/coin-level-entry-watch${includeHistory ? '?history=1' : ''}`, { signal: AbortSignal.timeout(10_000), cache: 'no-store' });
     if (!response.ok) throw new Error(response.status === 404 ? 'restart-required' : 'unavailable');
     const data = await response.json();
+    const recentBidirectional = recentBidirectionalObserveSignals(data);
+    renderCoinLevelMarketRegime(data.marketRegime);
     const at = new Date(data.generatedAt).toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
     const longRoute = data.binanceExecution?.routes?.LONG;
     const shortRoute = data.binanceExecution?.routes?.SHORT;
     const routeText = longRoute?.enabled && shortRoute?.enabled
       ? `Binance LONG/SHORT ON · ${longRoute.marginUsdt} USDT ×${longRoute.leverage}`
       : `Binance LONG ${longRoute?.enabled ? 'ON' : 'OFF'} / SHORT ${shortRoute?.enabled ? 'ON' : 'OFF'}`;
-    health.textContent = `Đã kiểm tra ${data.covered}/${data.universe} coin có đủ nến 5m/15m/1h/4h còn mới · ${data.totalCandidates} ứng viên · ${routeText} · LIMIT 3 USDT nếu giá đã qua entry, MARKET theo route sau retest · Discord ${data.discordConfigured ? 'đã cấu hình' : 'chưa cấu hình'} · cập nhật ${at} (VN). Entry Score và T1/T2/T3 chỉ đánh giá.`;
-    rows.innerHTML = (data.candidates ?? []).map((item) => {
+    health.textContent = `Đã kiểm tra ${data.covered}/${data.universe} coin có đủ nến 5m/15m/1h/4h còn mới · ${data.totalCandidates} ứng viên · ${routeText} · Regime LONG ${data.marketRegime?.state ?? 'WAIT_DATA'} · LIMIT 3 USDT nếu giá đã qua entry, MARKET theo route sau retest · Discord ${data.discordConfigured ? 'đã cấu hình' : 'chưa cấu hình'} · cập nhật ${at} (VN). Entry Score và T1/T2/T3 chỉ đánh giá.`;
+    if (earlyLongHealth && earlyLongRows) {
+      if (!Array.isArray(data.earlyLongWatches)) {
+        earlyLongHealth.textContent = 'Dịch vụ đang chạy chưa nạp logic LONG sớm; chờ lần nạp server an toàn.';
+        earlyLongRows.innerHTML = '<tr><td colspan="13">Chưa có dữ liệu LONG sớm từ server; không coi đây là kết quả quét rỗng.</td></tr>';
+        earlyObserveShown.LONG = [];
+      } else {
+        const liveWatches = data.earlyLongWatches;
+        const historyWatches = Array.isArray(data.earlyLongHistory) ? data.earlyLongHistory : liveWatches;
+        const currentWatches = Array.isArray(data.earlyLongHistory)
+          ? historyWatches.filter((item) => item.liveNow !== false)
+          : liveWatches;
+        const watches = sortedEarlyObserveWatches(showEarlyLongHistory ? historyWatches : currentWatches, 'LONG');
+        earlyObserveShown.LONG = watches;
+        earlyLongHealth.textContent = `${currentWatches.length} coin đang đạt · ${data.totalEarlyLongHistory ?? historyWatches.length} tín hiệu lưu trong ngày (VN)${showEarlyLongHistory ? ' · đang hiện cả lịch sử' : ' · mặc định chỉ hiện đang đạt'} · ${recentBidirectional.size} coin vừa có cả LONG + SHORT trong 30 phút (nền hai màu) · tự cập nhật lúc ${at}. Discord quan sát ${data.observeDiscordConfigured ? 'ON' : 'OFF'}; không tự gửi Binance, nút MARKET thủ công cần tín hiệu active và chưa phải breakout 15m xác nhận.`;
+        if (earlyLongDiagnostics) {
+          const labels = {
+            INVALID_SYMBOL: 'mã coin lỗi', MISSING_5M_DATA: 'thiếu 5m', MISSING_15M_DATA: 'thiếu 15m',
+            MISSING_1H_DATA: 'thiếu 1h', STALE_5M: '5m cũ/chưa đóng',
+            INVALID_PRICE_OR_INDICATOR: 'giá/EMA/ATR lỗi', TREND_15M_DOWN: '15m DOWN',
+            TREND_1H_DOWN: '1h DOWN', TREND_ALIGNMENT_WEAK: '15m/1h chưa đồng thuận', FAR_FROM_BREAKOUT: 'xa mốc phá',
+            EMA_MOMENTUM_WEAK: 'EMA/nến yếu', FLOW_WEAK: 'volume/taker yếu',
+            OVEREXTENDED: 'nến quá giãn', SCORE_BELOW_THRESHOLD: 'dưới ngưỡng điểm',
+          };
+          const diagnostics = data.earlyLongDiagnostics ?? {};
+          const reasons = Object.entries(diagnostics.excludedByReason ?? {})
+            .sort((left, right) => Number(right[1]) - Number(left[1]))
+            .map(([key, count]) => `${labels[key] ?? key}: ${count}`);
+          earlyLongDiagnostics.textContent = `Phủ LONG sớm 3 khung: ${diagnostics.covered3tf ?? 0}/${diagnostics.evaluated ?? data.universe}; ngưỡng ${diagnostics.minScore ?? 65}/100; bị ẩn vì đã xác nhận LONG: ${diagnostics.hiddenConfirmed ?? 0}. Lý do loại${diagnostics.reasonCountsAreNonExclusive ? ' (có thể trùng)' : ''}: ${reasons.join(' · ') || 'không có'}.`;
+        }
+        earlyLongRows.innerHTML = watches.map((item) => {
+          const time = new Date(item.observedAt).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
+          const zone = `${price(item.entryZone?.low)} – ${price(item.entryZone?.high)}`;
+          const earlyScore = Number.isFinite(Number(item.earlyScore)) ? Number(item.earlyScore).toFixed(1) : '—';
+          const liveState = item.liveState === 'INVALIDATED'
+            ? 'GIÁ LIVE ĐÃ VÔ HIỆU'
+            : item.liveNow === false ? 'Lịch sử hôm nay' : 'Nến đóng còn đạt';
+          const liveClass = item.liveState === 'INVALIDATED' ? 'observe-live-invalidated' : '';
+          const liveMove = Number(item.liveMovePct);
+          const livePrice = Number(item.livePrice);
+          const livePriceText = livePrice > 0
+            ? `<small class="observe-live-price">Live ${price(livePrice)} · ${liveMove >= 0 ? '+' : ''}${liveMove.toFixed(2)}%</small>`
+            : '<small class="observe-live-price">Live: đang chờ socket</small>';
+          const gap = Number(item.breakoutGapPct);
+          const gapText = gap >= 0 ? `Còn ${gap.toFixed(2)}%` : `Đã vượt ${Math.abs(gap).toFixed(2)}%`;
+          const pattern = earlyLongDisplayPattern(item);
+          const bidirectional = recentBidirectionalRowMeta(item, recentBidirectional);
+          return `<tr class="early-long-pattern-${pattern.key} ${liveClass} ${bidirectional.className}" title="${escapeHtml(bidirectional.title)}"><td><div class="early-coin-order-head"><a href="/coin-level-analysis?symbol=${encodeURIComponent(item.symbol)}">${escapeHtml(item.symbol)}</a>${earlyManualOrderControl(item, 'LONG', data)}</div><small>${liveState}</small></td><td><span class="early-long-pattern-badge ${pattern.key}" title="${escapeHtml(pattern.title)}">${pattern.label}</span></td><td>${price(item.priceAtWatch)}${livePriceText}</td><td>${gapText}</td><td>${Number.isFinite(Number(item.volumeRatio)) ? `${Number(item.volumeRatio).toFixed(2)}×` : '—'}</td>${earlyObserveQuoteVolumeCell(item)}<td>${Number.isFinite(Number(item.takerBuyPct)) ? `${Number(item.takerBuyPct).toFixed(1)}%` : '—'}</td><td><strong>${earlyScore}/100</strong><small>Ngưỡng ${data.earlyLongDiagnostics?.minScore ?? 65}</small></td><td>${Number.isFinite(Number(item.rangeAtr)) ? `${Number(item.rangeAtr).toFixed(2)}×` : '—'}</td><td>${price(item.breakoutLevel)}</td><td>${zone}<small>Chờ phá + retest giữ</small></td><td>${price(item.invalidationPrice)}</td><td>${escapeHtml(time)}</td></tr>`;
+        }).join('') || `<tr><td colspan="13">${showEarlyLongHistory ? 'Hôm nay chưa có tín hiệu LONG sớm trong lịch sử.' : 'Hiện không có coin LONG sớm nào còn đang đạt.'}</td></tr>`;
+      }
+    }
+    if (earlyHealth && earlyRows) {
+      if (!Array.isArray(data.earlyShortWatches)) {
+        earlyHealth.textContent = 'Dịch vụ đang chạy chưa nạp logic SHORT sớm; chờ nạp lại an toàn sau khi xử lý lệnh LIMIT đang mở.';
+        earlyRows.innerHTML = '<tr><td colspan="13">Chưa có dữ liệu SHORT sớm từ server; không coi đây là kết quả quét rỗng.</td></tr>';
+        earlyObserveShown.SHORT = [];
+      } else {
+        const liveWatches = data.earlyShortWatches;
+        const historyWatches = Array.isArray(data.earlyShortHistory) ? data.earlyShortHistory : liveWatches;
+        const currentWatches = Array.isArray(data.earlyShortHistory)
+          ? historyWatches.filter((item) => item.liveNow !== false)
+          : liveWatches;
+        const watches = sortedEarlyObserveWatches(showEarlyShortHistory ? historyWatches : currentWatches, 'SHORT');
+        earlyObserveShown.SHORT = watches;
+        earlyHealth.textContent = `${currentWatches.length} coin đang đạt · ${data.totalEarlyShortHistory ?? historyWatches.length} tín hiệu lưu trong ngày (VN)${showEarlyShortHistory ? ' · đang hiện cả lịch sử' : ' · mặc định chỉ hiện đang đạt'} · ${recentBidirectional.size} coin vừa có cả LONG + SHORT trong 30 phút (nền hai màu) · tự cập nhật lúc ${at}. Discord quan sát ${data.observeDiscordConfigured ? 'ON' : 'OFF'}; không tự gửi Binance, nút MARKET thủ công cần tín hiệu active và chưa phải breakdown 15m xác nhận.`;
+        if (earlyShortDiagnostics) {
+          const labels = {
+            INVALID_SYMBOL: 'mã coin lỗi', MISSING_5M_DATA: 'thiếu 5m', MISSING_15M_DATA: 'thiếu 15m',
+            MISSING_1H_DATA: 'thiếu 1h', STALE_5M: '5m cũ/chưa đóng',
+            INVALID_PRICE_OR_INDICATOR: 'giá/EMA/ATR lỗi', SETUP_CONTEXT_WEAK: 'thiếu bối cảnh xả/breakdown',
+            FAR_FROM_TRIGGER: 'xa vùng kích hoạt', EMA_MOMENTUM_WEAK: 'EMA/nến giảm yếu',
+            REJECTION_WEAK: 'thiếu reject/phá hỗ trợ', FLOW_WEAK: 'volume/taker bán yếu',
+            OVEREXTENDED: 'nến quá giãn', SCORE_BELOW_THRESHOLD: 'dưới ngưỡng điểm',
+          };
+          const diagnostics = data.earlyShortDiagnostics ?? {};
+          const reasons = Object.entries(diagnostics.excludedByReason ?? {})
+            .sort((left, right) => Number(right[1]) - Number(left[1]))
+            .map(([key, count]) => `${labels[key] ?? key}: ${count}`);
+          earlyShortDiagnostics.textContent = `Phủ SHORT sớm 3 khung: ${diagnostics.covered3tf ?? 0}/${diagnostics.evaluated ?? data.universe}; ngưỡng ${diagnostics.minScore ?? 65}/100; bị ẩn vì đã xác nhận SHORT: ${diagnostics.hiddenConfirmed ?? 0}. Lý do loại${diagnostics.reasonCountsAreNonExclusive ? ' (có thể trùng)' : ''}: ${reasons.join(' · ') || 'không có'}.`;
+        }
+        earlyRows.innerHTML = watches.map((item) => {
+          const time = new Date(item.observedAt).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
+          const zone = `${price(item.entryZone?.low)} – ${price(item.entryZone?.high)}`;
+          const earlyScore = Number.isFinite(Number(item.earlyScore)) ? Number(item.earlyScore).toFixed(1) : '—';
+          const liveState = item.liveState === 'INVALIDATED'
+            ? 'GIÁ LIVE ĐÃ VÔ HIỆU'
+            : item.liveNow === false ? 'Lịch sử hôm nay' : 'Nến đóng còn đạt';
+          const liveClass = item.liveState === 'INVALIDATED' ? 'observe-live-invalidated' : '';
+          const liveMove = Number(item.liveMovePct);
+          const livePrice = Number(item.livePrice);
+          const livePriceText = livePrice > 0
+            ? `<small class="observe-live-price">Live ${price(livePrice)} · ${liveMove >= 0 ? '+' : ''}${liveMove.toFixed(2)}%</small>`
+            : '<small class="observe-live-price">Live: đang chờ socket</small>';
+          const breakdown = item.setupMode === 'BREAKDOWN_PRESSURE';
+          const setup = breakdown ? 'BREAKDOWN' : 'XẢ SAU BƠM';
+          const pattern = earlyShortDisplayPattern(item);
+          const position = breakdown
+            ? `Đáy ${price(item.breakdownLevel)}<small>Lệch ${Number(item.breakdownGapPct).toFixed(2)}%</small>`
+            : `+${Number(item.pumpPct).toFixed(2)}%<small>Rời đỉnh −${Number(item.pullbackPct).toFixed(2)}%</small>`;
+          const bidirectional = recentBidirectionalRowMeta(item, recentBidirectional);
+          return `<tr class="early-short-pattern-${pattern.key} ${liveClass} ${bidirectional.className}" title="${escapeHtml(bidirectional.title)}"><td><div class="early-coin-order-head"><a href="/coin-level-analysis?symbol=${encodeURIComponent(item.symbol)}">${escapeHtml(item.symbol)}</a>${earlyManualOrderControl(item, 'SHORT', data)}</div><small>${liveState}</small></td><td><strong>${setup}</strong></td><td><span class="early-short-pattern-badge ${pattern.key}" title="${escapeHtml(pattern.title)}">${pattern.label}</span></td><td>${price(item.priceAtWatch)}${livePriceText}</td><td>${position}</td><td>${Number.isFinite(Number(item.volumeRatio)) ? `${Number(item.volumeRatio).toFixed(2)}×` : '—'}</td>${earlyObserveQuoteVolumeCell(item)}<td>${Number.isFinite(Number(item.takerSellPct)) ? `${Number(item.takerSellPct).toFixed(1)}%` : '—'}</td><td><strong>${earlyScore}/100</strong><small>Ngưỡng ${data.earlyShortDiagnostics?.minScore ?? 65}</small></td><td>${Number.isFinite(Number(item.rangeAtr)) ? `${Number(item.rangeAtr).toFixed(2)}×` : '—'}</td><td>${zone}<small>${breakdown ? 'Chờ retest không lấy lại' : 'Chờ hồi + reject 5m'}</small></td><td>${price(item.invalidationPrice)}</td><td>${escapeHtml(time)}</td></tr>`;
+        }).join('') || `<tr><td colspan="13">${showEarlyShortHistory ? 'Hôm nay chưa có tín hiệu SHORT sớm trong lịch sử.' : 'Hiện không có coin SHORT sớm nào còn đang đạt; không suy ra thị trường an toàn để SHORT.'}</td></tr>`;
+      }
+    }
+    rows.innerHTML = sortCoinLevelEntryWatchForDisplay(data.candidates).map((item) => {
       const side = item.side === 'LONG' ? 'LONG' : 'SHORT';
       const stage = item.retestAt ? '15m + retest 5m đạt · xét MARKET' : '15m đạt · có thể xét LIMIT';
       const time = new Date(item.confirmationAt).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
@@ -783,7 +1189,7 @@ async function refreshEntryWatch() {
       const components = item.entryScoreComponents ?? {};
       const scoreTitle = `Trend ${components.trend ?? '—'}/25 · breakout ${components.breakout ?? '—'}/20 · retest ${components.retest ?? '—'}/25 · flow ${components.flow ?? '—'}/15 · target ${components.targetRoom ?? '—'}/15`;
       const entryScore = Number.isFinite(score)
-        ? `<strong>${score.toFixed(1)}</strong><small>${escapeHtml(item.entryTierLabel ?? item.entryTier ?? '—')}</small>`
+        ? `<strong>${score.toFixed(1)}</strong><small>${escapeHtml(entryWatchTierDisplayLabel(item))}</small>`
         : '<strong>—</strong><small>JSON cũ</small>';
       const basisLabels = {
         TP_10_ROE_5X: 'TP +10% ROE', ATR15_1X: 'ATR15 ×1',
@@ -802,31 +1208,120 @@ async function refreshEntryWatch() {
     health.textContent = error.message === 'restart-required'
       ? 'API mới chưa có trong tiến trình server đang chạy; cần nạp lại dịch vụ khi an toàn. Không ảnh hưởng bot/lệnh hiện tại.'
       : 'Không lấy được bộ lọc lúc này; danh sách có thể đã cũ. Tự thử lại sau 30 giây.';
+    if (earlyHealth) earlyHealth.textContent = 'Không lấy được watch SHORT sớm lúc này; dữ liệu hiển thị có thể đã cũ.';
+    if (earlyRows) earlyRows.innerHTML = '<tr><td colspan="13">Chờ lượt quét tiếp theo.</td></tr>';
+    earlyObserveShown.SHORT = [];
+    if (earlyLongHealth) earlyLongHealth.textContent = 'Không lấy được watch LONG sớm lúc này; dữ liệu hiển thị có thể đã cũ.';
+    if (earlyLongDiagnostics) earlyLongDiagnostics.textContent = 'Chưa lấy được thống kê nguyên nhân bị loại.';
+    if (earlyShortDiagnostics) earlyShortDiagnostics.textContent = 'Chưa lấy được thống kê nguyên nhân bị loại.';
+    if (earlyLongRows) earlyLongRows.innerHTML = '<tr><td colspan="13">Chờ lượt quét tiếp theo.</td></tr>';
+    earlyObserveShown.LONG = [];
   } finally { entryWatchLoading = false; }
 }
+initializeEarlyObserveSort('LONG', '.early-long-panel table', [
+  'coin', 'pattern', 'price', 'distance', 'volume', 'volumeUsdt', 'taker', 'score', 'range',
+  'trigger', 'zone', 'invalidation', 'time',
+]);
+initializeEarlyObserveSort('SHORT', '.early-short-panel table', [
+  'coin', 'setup', 'pattern', 'price', 'distance', 'volume', 'volumeUsdt', 'taker', 'score',
+  'range', 'zone', 'invalidation', 'time',
+]);
 refreshEntryWatch();
 setInterval(() => { if (!document.hidden) refreshEntryWatch(); }, 30_000);
+$('#early-long-history-toggle')?.addEventListener('change', (event) => {
+  showEarlyLongHistory = event.currentTarget.checked === true;
+  refreshEntryWatch();
+});
+$('#early-short-history-toggle')?.addEventListener('change', (event) => {
+  showEarlyShortHistory = event.currentTarget.checked === true;
+  refreshEntryWatch();
+});
+for (const selector of ['#early-long-rows', '#early-short-rows']) {
+  $(selector)?.addEventListener('click', (event) => {
+    const button = event.target.closest('.early-manual-submit');
+    if (button && !button.disabled) submitEarlyManualOrder(button);
+  });
+}
 let squeezeWatchLoading = false;
+let showSqueezeHistory = false;
+const squeezeSideVisible = { SHORT: true, LONG: true };
+let lastSqueezeWatchData = null;
+
+function renderSqueezeWatch(data) {
+  const shortRows = $('#squeeze-watch-short-rows'), longRows = $('#squeeze-watch-long-rows');
+  if (!shortRows || !longRows) return;
+  const now = Date.now(), liveWindowMs = Number(data.liveWindowMs) || 900_000;
+  const all = Array.isArray(data.events) ? data.events : [];
+  const normalized = all.map(event => {
+    const explicitSide = event.squeezeSide === 'LONG' || event.squeezeSide === 'SHORT';
+    const ageMs = now - Number(event.at);
+    return {...event, squeezeSide:event.squeezeSide === 'LONG' ? 'LONG' : 'SHORT',
+      isLegacy:event.isLegacy === true || !explicitSide,
+      isLive:event.isLive === true || (event.isLive == null && explicitSide && ageMs >= 0 && ageMs <= liveWindowMs),
+      expiresAt:Number(event.expiresAt) || Number(event.at) + liveWindowMs};
+  });
+  const visible = showSqueezeHistory ? normalized : normalized.filter(event => event.isLive);
+  const delivery = { sent:'Đã gửi', rejected:'Discord từ chối', unknown:'Chưa rõ đã gửi' };
+  const time = at => at ? new Date(at).toLocaleString('vi-VN', { timeZone:'Asia/Ho_Chi_Minh', hour12:false }) : '—';
+  const rowHtml = event => {
+    const remainingMs = Math.max(0, Number(event.expiresAt) - now);
+    const remaining = Math.max(1, Math.ceil(remainingMs / 60_000));
+    const state = event.isLive
+      ? `<span class="squeeze-live-badge">LIVE · CÒN ${remaining}P</span>`
+      : event.isLegacy ? '<span class="squeeze-legacy-badge">LỊCH SỬ · LEGACY</span>' : '<span class="squeeze-history-badge">LỊCH SỬ</span>';
+    const rowClass = `${event.tier === 'RATIO_OI' ? 'squeeze-oi-row' : 'squeeze-ratio-row'}${event.isLive ? '' : ' squeeze-history-row'}`;
+    return `<tr class="${rowClass}"><td>${state}</td><td>${escapeHtml(time(Number(event.at) + 1))}</td><td><a href="/coin-level-analysis?symbol=${encodeURIComponent(event.symbol)}">${escapeHtml(event.symbol)}</a></td><td>${event.tier === 'RATIO_OI' ? '🟣 RATIO + OI' : '🟠 RATIO'}</td><td>${price(event.signalPrice)}</td><td>${Number(event.volumeX).toFixed(2)}×</td><td>${Number(event.ratio).toFixed(4)}</td><td>${pct(event.ratioDelta, true)}</td><td>${event.oiDelta == null ? 'Thiếu dữ liệu' : pct(event.oiDelta, true)}</td><td>${escapeHtml(delivery[event.delivery] ?? 'Chưa rõ')}</td></tr>`;
+  };
+  for (const side of ['SHORT', 'LONG']) {
+    const sideEvents = visible.filter(event => event.squeezeSide === side);
+    const liveCount = normalized.filter(event => event.squeezeSide === side && event.isLive).length;
+    const historyCount = normalized.filter(event => event.squeezeSide === side && !event.isLive).length;
+    const rows = side === 'SHORT' ? shortRows : longRows;
+    rows.innerHTML = sideEvents.map(rowHtml).join('') || `<tr><td colspan="10">Không có SQUEEZE ${side} ${showSqueezeHistory ? 'trong lịch sử hiện có' : 'đang còn hiệu lực'}.</td></tr>`;
+    const count = $(`#squeeze-${side.toLowerCase()}-count`);
+    if (count) count.textContent = `${liveCount} LIVE${showSqueezeHistory ? ` · ${historyCount} LỊCH SỬ` : ''}`;
+    const lane = $(`#squeeze-${side.toLowerCase()}-lane`);
+    if (lane) lane.hidden = !squeezeSideVisible[side];
+  }
+}
+
 async function refreshSqueezeWatch() {
-  const health = $('#squeeze-watch-health'), rows = $('#squeeze-watch-rows');
-  if (!health || !rows || squeezeWatchLoading) return;
+  const health = $('#squeeze-watch-health');
+  if (!health || !$('#squeeze-watch-short-rows') || !$('#squeeze-watch-long-rows') || squeezeWatchLoading) return;
   squeezeWatchLoading = true;
   try {
     const base = location.protocol === 'file:' ? 'http://127.0.0.1:19082' : '';
     const response = await fetch(`${base}/api/squeeze-ratio-watch`, { signal: AbortSignal.timeout(10_000), cache: 'no-store' });
     if (!response.ok) throw new Error('unavailable');
     const data = await response.json(), h = data.health ?? {};
+    lastSqueezeWatchData = data;
     const time = at => at ? new Date(at).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false }) : '—';
     const labels = { starting:'Đang khởi động', running:'Đang tự quét', rate_gate_paused:'Tạm chờ giới hạn Binance', scan_error:'Lượt quét lỗi; tự thử lại', not_configured:'Chưa cấu hình Discord' };
-    health.textContent = `${labels[h.status] ?? 'Đang chờ'} · cache đủ ≥120 nến: ${h.ready ?? 0}/${h.universe ?? 0} coin · ứng viên giá: ${h.candidates ?? 0} · lỗi dữ liệu: ${h.errors ?? 0} · lượt gần nhất ${time(h.lastScanAt)} (VN)`;
-    const delivery = { sent:'Đã gửi', rejected:'Discord từ chối · chờ thử lại nếu còn mới', unknown:'Chưa rõ đã gửi; không tự gửi trùng' };
-    rows.innerHTML = (data.events ?? []).map(e => `<tr class="${e.tier === 'RATIO_OI' ? 'squeeze-oi-row' : 'squeeze-ratio-row'}"><td>${escapeHtml(time(e.at + 1))}</td><td><a href="/coin-level-analysis?symbol=${encodeURIComponent(e.symbol)}">${escapeHtml(e.symbol)}</a></td><td>${e.tier === 'RATIO_OI' ? '🟣 RATIO + OI' : '🟠 RATIO'}</td><td>${price(e.signalPrice)}</td><td>${Number(e.volumeX).toFixed(2)}×</td><td>${Number(e.ratio).toFixed(4)}</td><td>${pct(e.ratioDelta, true)}</td><td>${e.oiDelta == null ? 'Thiếu dữ liệu' : pct(e.oiDelta, true)}</td><td>${escapeHtml(delivery[e.delivery] ?? 'Chưa rõ')}</td></tr>`).join('') || '<tr><td colspan="9">Chưa có cảnh báo mới đạt điều kiện. Scanner chạy nền, không cần tìm coin hoặc giữ trang mở.</td></tr>';
+    const liveWindowMs = Number(data.liveWindowMs) || 900_000;
+    const liveEvents = Array.isArray(data.liveEvents) ? data.liveEvents : (data.events ?? []).filter(event => {
+      const ageMs = Date.now() - Number(event.at);
+      return (event.squeezeSide === 'SHORT' || event.squeezeSide === 'LONG') && ageMs >= 0 && ageMs <= liveWindowMs;
+    });
+    const liveShort = liveEvents.filter(event => event.squeezeSide !== 'LONG').length;
+    const liveLong = liveEvents.filter(event => event.squeezeSide === 'LONG').length;
+    health.textContent = `${labels[h.status] ?? 'Đang chờ'} · LIVE: ${liveShort} SHORT / ${liveLong} LONG · cache đủ ≥120 nến: ${h.ready ?? 0}/${h.universe ?? 0} coin · ứng viên giá: ${h.candidates ?? 0} · lỗi dữ liệu: ${h.errors ?? 0} · lượt gần nhất ${time(h.lastScanAt)} (VN)`;
+    renderSqueezeWatch(data);
   } catch {
     health.textContent = 'Không lấy được danh sách; dữ liệu bên dưới có thể cũ. Tự thử lại sau 30 giây.';
   } finally { squeezeWatchLoading = false; }
 }
 refreshSqueezeWatch();
 setInterval(() => { if (!document.hidden) refreshSqueezeWatch(); }, 30_000);
+$('#squeeze-watch-history-toggle')?.addEventListener('change', event => {
+  showSqueezeHistory = event.currentTarget.checked === true;
+  if (lastSqueezeWatchData) renderSqueezeWatch(lastSqueezeWatchData);
+});
+for (const side of ['SHORT', 'LONG']) {
+  $(`#squeeze-watch-${side.toLowerCase()}-toggle`)?.addEventListener('change', event => {
+    squeezeSideVisible[side] = event.currentTarget.checked === true;
+    if (lastSqueezeWatchData) renderSqueezeWatch(lastSqueezeWatchData);
+  });
+}
 input.value = initial.replace(/USDT$/i, '');
 search(initial);
 

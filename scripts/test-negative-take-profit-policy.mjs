@@ -68,7 +68,7 @@ assert.match(serverSource, /fastWaveRecoveryState/);
 assert.match(serverSource, /TP_REWRITE_BLOCKED/);
 assert.match(serverSource, /FAST_WAVE_RECOVERY_NEG20_TO_ROE10_LOCK1/);
 assert.match(serverSource, /handleEightHourNegativeTakeProfit\(symbol, pos, roe\)/);
-assert.match(serverSource, /BINANCE_NEGATIVE_TP_AFTER_8H_MS/);
+assert.match(serverSource, /resolveBinanceNegativeAgeTpConfig\(process.env\)/);
 assert.match(serverSource, /BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION/);
 assert.doesNotMatch(serverSource, /NEG_TP_TIMEOUT_MS/);
 assert.doesNotMatch(serverSource, /\[NegTp\].*user\/Liquid Flow V2 keeps its own TP plan/);

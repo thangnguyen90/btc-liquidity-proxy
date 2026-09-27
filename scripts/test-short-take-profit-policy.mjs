@@ -39,7 +39,7 @@ assert.equal(shouldSuppressTrackedCoinglassZoneLifecycleStopLoss({
   source: BINANCE_MANUAL_SOCKET_SOURCE, plannedSide: 'BUY', positionAmount: 20.3,
 }), false);
 
-assert.equal(BINANCE_BOT_SHORT_TP_ONLY_VERSION, 'BINANCE_BOT_SHORT_TP_ONLY_COIN_LEVEL_EXEMPT_V6_20260920');
+assert.equal(BINANCE_BOT_SHORT_TP_ONLY_VERSION, 'BINANCE_BOT_SHORT_TP_ONLY_POST_MOVE_EXEMPT_V7_20260925');
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'coinglass-web-qualified' }), true);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SELL', source: 'live-card-whitelist-edge' }), true);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'LONG', source: 'live-card-whitelist-edge' }), false);
@@ -57,6 +57,8 @@ assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'liqscan-ma
   'LiqScan MAIN KILL reversal SHORT must retain its explicit -30% ROE stop.');
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'coin-level-entry-watch' }), false,
   'Coin Level RETEST SHORT must retain its explicit -30% ROE stop.');
+assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'post-move-ideal-entry' }), false,
+  'Post-move ideal SHORT 1h must retain its explicit -30% ROE stop.');
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: '' }), false);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'pump-order', enabled: false }), false);
 assert.equal(isManualShortProtectionSource({ side: 'SHORT', source: 'orders-manual' }), true);

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Phân tích hỗ trợ, kháng cự và kịch bản có điều kiện cho Binance Futures USDT perpetual.">
     <title>Coin Level Map · Hỗ trợ & kháng cự</title>
-    <link rel="stylesheet" href="/coin-level-analysis.css">
+    <link rel="stylesheet" href="/coin-level-analysis.css?v=20260923-squeeze-bidirectional-v2">
   </head>
   <body>
     <main class="shell">
@@ -20,8 +20,27 @@
           <a href="/binance-auto-controls">Quản lý Binance tự động</a>
           <a href="/liquid-flow-v2">Liquid Flow V2</a>
           <a href="/liquid-flow-v2-binance-stats">Binance Stats</a>
+          <a href="/post-dump-volume-recovery">Hồi sau xả MTF</a>
+          <a href="/post-pump-volume-fade">SHORT sau bơm MTF</a>
+          <a href="/btc-session-watch.html">BTC Session · giá vào</a>
         </nav>
       </header>
+
+      <section id="market-regime-panel" class="panel market-regime-panel wait-data" aria-labelledby="market-regime-title">
+        <div class="section-head">
+          <div><span class="section-kicker">MARKETBREADTHSHOCK · BỘ LỌC LONG TOÀN THỊ TRƯỜNG</span><h2 id="market-regime-title">Đang xác định trạng thái thị trường…</h2></div>
+          <span id="market-regime-badge" class="market-regime-badge">WAIT DATA</span>
+        </div>
+        <p id="market-regime-summary" class="market-regime-summary" aria-live="polite">Coin Level LONG mới đang fail-closed trong lúc chờ breadth socket.</p>
+        <div class="market-regime-grid">
+          <article><span>Bối cảnh 15m / 30m</span><strong id="market-regime-context">— / —</strong></article>
+          <article><span>Coin tăng / giảm</span><strong id="market-regime-breadth">— / —</strong></article>
+          <article><span>Taker-buy toàn mẫu</span><strong id="market-regime-taker">—</strong></article>
+          <article><span>Mở lại LONG</span><strong id="market-regime-timer">Đang chờ dữ liệu</strong></article>
+        </div>
+        <div id="market-regime-reasons" class="market-regime-reasons"></div>
+        <p class="muted">Gate này chỉ chặn <strong>lệnh Coin Level LONG mới</strong> khi chưa RISK-ON; SHORT vẫn theo rule cũ. Không hủy LIMIT/vị thế đang có và không thay đổi điểm/tín hiệu quan sát.</p>
+      </section>
 
       <section id="binance-block-panel" class="panel binance-block-panel checking" aria-labelledby="binance-block-title">
         <div class="section-head"><div><span class="section-kicker">TRẠNG THÁI BINANCE REST · ĐỌC TRỰC TIẾP TỪ RATE GATE</span><h2 id="binance-block-title">Đang kiểm tra Binance…</h2></div><span id="binance-block-badge" class="binance-block-badge">ĐANG KIỂM TRA</span></div>
@@ -30,12 +49,30 @@
         <p id="binance-block-updated" class="muted"></p>
       </section>
 
+      <section class="panel table-panel early-long-panel" aria-labelledby="early-long-title">
+        <div class="section-head"><div><span class="section-kicker">NẾN 5m ĐÃ ĐÓNG · ÁP SÁT MỐC PHÁ 15m</span><h2 id="early-long-title">LONG sớm · quan sát</h2></div><div class="observe-section-actions"><label class="history-toggle"><input id="early-long-history-toggle" type="checkbox"> Hiện lịch sử hôm nay</label><span class="observe-badge">KHÔNG TỰ ĐẶT · CÓ NÚT THỦ CÔNG</span></div></div>
+        <p id="early-long-health" class="muted" aria-live="polite">Đang kiểm tra tín hiệu LONG sớm…</p>
+        <p id="early-long-diagnostics" class="muted" aria-live="polite">Đang tổng hợp nguyên nhân bị loại…</p>
+        <div class="early-long-pattern-legend" aria-label="Màu mẫu LONG sớm"><span class="breakout">SÁT MỐC PHÁ</span><span class="flow">DÒNG TIỀN MẠNH</span><span class="mtf">ĐỒNG THUẬN MTF</span><span class="higher-low">ĐÁY NÂNG</span><span class="pressure">ÁP LỰC TĂNG</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Coin · lệnh Binance</th><th>Mẫu</th><th>Close 5m / giá live</th><th>Cách mốc phá</th><th>Volume ×</th><th>KL 5m (USDT)</th><th>Taker mua</th><th>Điểm LONG sớm</th><th>Range / ATR</th><th>Mốc cần phá</th><th>Vùng retest sau phá</th><th>Vô hiệu dưới</th><th>Nến đóng (VN)</th></tr></thead><tbody id="early-long-rows"><tr><td colspan="13">Đang tải…</td></tr></tbody></table></div>
+        <p class="muted">Bảng giữ lịch sử tín hiệu trong ngày Việt Nam. LONG sớm chỉ cần cache 5m/15m/1h đã đóng và chấm điểm 0–100; ngưỡng hiện tại ≥65. Các điều kiện EMA, đáy nâng, volume, taker mua và chống đuổi đóng góp điểm thay vì mỗi điều kiện phụ tự loại coin. Vẫn phải chờ 5m đóng vượt mốc và retest giữ vùng; không mua đuổi. Detector không tự đặt Binance. Nút thủ công chỉ hoạt động với tín hiệu đang active, cần đăng nhập Orders, khóa tổng ON và Market Regime RISK-ON.</p>
+      </section>
+
+      <section class="panel table-panel early-short-panel" aria-labelledby="early-short-title">
+        <div class="section-head"><div><span class="section-kicker">NẾN 5m ĐÃ ĐÓNG · XẢ SAU BƠM / ÁP LỰC BREAKDOWN</span><h2 id="early-short-title">SHORT sớm · quan sát</h2></div><div class="observe-section-actions"><label class="history-toggle"><input id="early-short-history-toggle" type="checkbox"> Hiện lịch sử hôm nay</label><span class="observe-badge">KHÔNG TỰ ĐẶT · CÓ NÚT THỦ CÔNG</span></div></div>
+        <p id="early-short-health" class="muted" aria-live="polite">Đang kiểm tra tín hiệu SHORT sớm…</p>
+        <p id="early-short-diagnostics" class="muted" aria-live="polite">Đang tổng hợp nguyên nhân bị loại…</p>
+        <div class="early-short-pattern-legend" aria-label="Màu mẫu SHORT sớm"><span class="trigger">SÁT MỐC PHÁ ĐÁY</span><span class="flow">DÒNG TIỀN BÁN MẠNH</span><span class="mtf">ĐỒNG THUẬN MTF GIẢM</span><span class="lower-high">ĐỈNH THẤP DẦN</span><span class="pressure">ÁP LỰC GIẢM</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Coin · lệnh Binance</th><th>Mẫu chính</th><th>Mẫu chi tiết</th><th>Close 5m / giá live</th><th>Vị trí kích hoạt</th><th>Volume ×</th><th>KL 5m (USDT)</th><th>Taker bán</th><th>Điểm SHORT sớm</th><th>Range / ATR</th><th>Vùng chờ</th><th>Vô hiệu trên</th><th>Nến đóng (VN)</th></tr></thead><tbody id="early-short-rows"><tr><td colspan="13">Đang tải…</td></tr></tbody></table></div>
+        <p class="muted">Bảng giữ lịch sử tín hiệu trong ngày Việt Nam. SHORT sớm chỉ cần cache 5m/15m/1h đã đóng và chấm điểm 0–100; ngưỡng hiện tại ≥65. `XẢ SAU BƠM` tìm mất động lượng gần đỉnh; `BREAKDOWN` tìm áp lực giảm sát đáy 15m ngay cả khi coin không vừa bơm ≥8%. EMA, lower-high/râu trên, volume, taker bán và chống đuổi đóng góp điểm. Detector không tự đặt Binance. Nút thủ công chỉ hoạt động với tín hiệu đang active, cần đăng nhập Orders và khóa tổng ON; server chặn coin đã có vị thế hoặc entry order.</p>
+      </section>
+
       <section class="panel table-panel entry-watch-panel" aria-labelledby="entry-watch-title">
         <div class="section-head"><div><span class="section-kicker">QUÉT NẾN ĐÃ ĐÓNG · LIMIT CHỜ GIÁ / MARKET SAU RETEST</span><h2 id="entry-watch-title">Coin đạt bộ lọc điểm vào</h2></div><span class="observe-badge">LIMIT 3 USDT · MARKET THEO ROUTE</span></div>
         <p id="entry-watch-health" class="muted" aria-live="polite">Đang kiểm tra dữ liệu nến trong cache…</p>
         <div class="entry-watch-legend" aria-label="Chú giải màu hàng tín hiệu"><span><i class="long" aria-hidden="true"></i>LONG: retest 5m đã xác nhận</span><span><i class="short" aria-hidden="true"></i>SHORT: retest 5m đã xác nhận</span><span>Chưa retest: nền thường. Màu hàng không xác nhận đã đặt hoặc khớp lệnh Binance.</span></div>
         <div class="table-wrap"><table><thead><tr><th>Coin</th><th>Hướng</th><th>Entry Score</th><th>Trend Score</th><th>Trạng thái nến</th><th class="entry-watch-price-heading">ENTRY DỰ KIẾN</th><th>T1 / T2 / T3 dự kiến</th><th>Mốc phá vùng</th><th>Close 5m</th><th>Xác nhận 15m (VN)</th></tr></thead><tbody id="entry-watch-rows"><tr><td colspan="10">Đang tải…</td></tr></tbody></table></div>
-        <p class="muted">Entry Score 0–100 và T1/T2/T3 chỉ đánh giá, không phải xác suất thắng hay điều kiện thêm để đặt lệnh. Lọc gốc: Trend Score ≥ +12 LONG hoặc ≤ −12 SHORT, 15m/1h đồng hướng và nến 15m đóng phá biên 12 nến trước. Khi tín hiệu mới ≤90 giây và giá đã đi qua entry dự kiến 0,15–5%, executor có thể đặt LIMIT 3 USDT margin tại entry (LONG BUY thấp hơn mark; SHORT SELL cao hơn mark), hủy lệnh chờ sau 45 phút. Nếu retest 5m đã đóng đạt, xét MARKET theo margin/leverage của route (mặc định 1 USDT ×5). Cả hai cần khóa tổng và route ON, không có vị thế/lệnh cùng coin; TP theo route, SL −30% ROE. Bảng này không chứng minh Binance đã nhận hoặc khớp lệnh.</p>
+        <p class="muted">Entry Score 0–100 và T1/T2/T3 chỉ đánh giá, không phải xác suất thắng. Lọc gốc: Trend Score ≥ +12 LONG hoặc ≤ −12 SHORT, 15m/1h đồng hướng và nến 15m đóng phá biên 12 nến trước. Khi tín hiệu mới ≤90 giây và giá đã đi qua entry dự kiến 0,15–5%, executor có thể đặt LIMIT 3 USDT margin tại entry (LONG BUY thấp hơn mark; SHORT SELL cao hơn mark), hủy lệnh chờ sau 45 phút. Nếu retest 5m đã đóng đạt, xét MARKET theo margin/leverage của route (mặc định 1 USDT ×5). LONG mới còn bắt buộc Market Regime ở đầu trang phải là RISK-ON; RISK-OFF/RECOVERY/WAIT DATA chỉ giữ cảnh báo, không submit Binance. SHORT giữ rule cũ. Cả hai cần khóa tổng và route ON, không có vị thế/lệnh cùng coin; TP theo route, SL −30% ROE. Bảng này không chứng minh Binance đã nhận hoặc khớp lệnh.</p>
       </section>
 
       <section class="search-panel" aria-label="Tìm coin">
@@ -55,11 +92,27 @@
       </section>
 
       <section class="panel table-panel squeeze-watch-panel" aria-labelledby="squeeze-watch-title">
-        <div class="section-head"><div><span class="section-kicker">TỰ QUÉT 15m + 1h · OBSERVE ONLY</span><h2 id="squeeze-watch-title">Cảnh báo nguy cơ squeeze SHORT</h2></div></div>
-        <p class="muted">🟠 Ratio đạt điều kiện · 🟣 Ratio + OI tăng ≥3%/1h. Không phải lệnh LONG/SHORT hoặc bằng chứng thanh lý. Không tự đặt Binance.</p>
+        <div class="section-head">
+          <div><span class="section-kicker">TỰ QUÉT 15m + 1h · LIVE · OBSERVE ONLY</span><h2 id="squeeze-watch-title">Cảnh báo nguy cơ squeeze SHORT / LONG</h2></div>
+          <div class="squeeze-watch-controls" aria-label="Ẩn hiện cảnh báo squeeze">
+            <label class="squeeze-filter short"><input id="squeeze-watch-short-toggle" type="checkbox" checked> SQUEEZE SHORT</label>
+            <label class="squeeze-filter long"><input id="squeeze-watch-long-toggle" type="checkbox" checked> SQUEEZE LONG</label>
+            <label class="history-toggle"><input id="squeeze-watch-history-toggle" type="checkbox"> Hiện lịch sử 7 ngày</label>
+          </div>
+        </div>
+        <p class="muted">🔺 SHORT bị squeeze: giá phá đỉnh, L/S giảm · 🔻 LONG bị squeeze: giá phá đáy, L/S tăng · 🟣 Ratio + OI tăng ≥3%/1h. Không phải lệnh LONG/SHORT hoặc bằng chứng thanh lý. Không tự đặt Binance.</p>
         <p id="squeeze-watch-health" class="muted" aria-live="polite">Đang lấy danh sách tự quét…</p>
-        <div class="table-wrap"><table><thead><tr><th>Giờ VN</th><th>Coin</th><th>Mức cảnh báo</th><th>Giá xác nhận</th><th>Volume</th><th>L/S</th><th>Δ L/S 1h</th><th>Δ OI 1h</th><th>Discord</th></tr></thead><tbody id="squeeze-watch-rows"><tr><td colspan="9">Chưa có dữ liệu.</td></tr></tbody></table></div>
-        <p class="muted">Danh sách tối đa 200 cảnh báo trong 7 ngày, độc lập coin đang tìm; cập nhật mỗi 30 giây. Chỉ ghi nhận tín hiệu mới sau khi bật scanner, không gửi lại lịch sử backtest. L/S là tỷ lệ tài khoản, không phải khối lượng vị thế.</p>
+        <div class="squeeze-direction-list">
+          <section id="squeeze-short-lane" class="squeeze-direction-lane short" aria-labelledby="squeeze-short-title">
+            <div class="squeeze-lane-title"><h3 id="squeeze-short-title">🔺 SQUEEZE SHORT · SHORT BỊ ÉP</h3><span id="squeeze-short-count">0 LIVE</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Trạng thái</th><th>Giờ VN</th><th>Coin</th><th>Mức cảnh báo</th><th>Giá xác nhận</th><th>Volume</th><th>L/S</th><th>Δ L/S 1h</th><th>Δ OI 1h</th><th>Discord</th></tr></thead><tbody id="squeeze-watch-short-rows"><tr><td colspan="10">Chưa có tín hiệu SHORT bị squeeze đang còn hiệu lực.</td></tr></tbody></table></div>
+          </section>
+          <section id="squeeze-long-lane" class="squeeze-direction-lane long" aria-labelledby="squeeze-long-title">
+            <div class="squeeze-lane-title"><h3 id="squeeze-long-title">🔻 SQUEEZE LONG · LONG BỊ ÉP</h3><span id="squeeze-long-count">0 LIVE</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Trạng thái</th><th>Giờ VN</th><th>Coin</th><th>Mức cảnh báo</th><th>Giá xác nhận</th><th>Volume</th><th>L/S</th><th>Δ L/S 1h</th><th>Δ OI 1h</th><th>Discord</th></tr></thead><tbody id="squeeze-watch-long-rows"><tr><td colspan="10">Chưa có tín hiệu LONG bị squeeze đang còn hiệu lực.</td></tr></tbody></table></div>
+          </section>
+        </div>
+        <p class="muted">Mặc định chỉ hiện tín hiệu LIVE trong 15 phút sau nến xác nhận. Bật “Hiện lịch sử 7 ngày” để audit tối đa 200 cảnh báo; bản ghi cũ thiếu chiều được đánh dấu LEGACY, không coi là tín hiệu live. Danh sách độc lập coin đang tìm và cập nhật mỗi 30 giây. L/S là tỷ lệ tài khoản, không phải khối lượng vị thế.</p>
       </section>
 
       <div id="status" class="status" role="status" aria-live="polite">Đang tải dữ liệu CYSUSDT…</div>
@@ -230,6 +283,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="/coin-level-analysis.js"></script>
+    <script type="module" src="/coin-level-analysis.js?v=20260926-live-payload-v1"></script>
   </body>
 </html>

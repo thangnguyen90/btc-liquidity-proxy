@@ -29,15 +29,19 @@ const payload = coinLevelEntryWatchDiscordPayload(candidate);
 assert.equal(payload.embeds.length, 2);
 assert.equal(payload.embeds[0].color, 0xffc857);
 assert.match(payload.embeds[0].title, /ENTRY DỰ KIẾN.*TESTUSDT.*LONG/);
+assert.match(payload.embeds[0].description, /\*\*TRẠNG THÁI NẾN\*\*/);
+assert.match(payload.embeds[0].description, /15m đã xác nhận · chưa có retest 5m/);
 assert.match(payload.embeds[0].description, /\*\*GIÁ ENTRY DỰ KIẾN: 1\.100825\*\*/);
 assert.match(payload.embeds[0].description, /không xác nhận Binance đã đặt hoặc khớp lệnh/);
 const primary = payload.embeds[1];
 assert.match(primary.title, /TESTUSDT.*ĐẠT BỘ LỌC ĐIỂM VÀO/);
 assert.match(primary.description, /LIMIT 3 USDT tại entry dự kiến/);
 assert.match(primary.fields[0].value, /16\.25/);
-assert.equal(primary.fields[2].name, '🟨 ENTRY DỰ KIẾN · LIMIT CHỜ GIÁ');
-assert.match(primary.fields[2].value, /\*\*GIÁ ENTRY DỰ KIẾN: 1\.100825\*\*/);
-assert.match(primary.fields[2].value, /1\.1 – 1\.10165/);
+const candleStatusField = primary.fields.find((field) => field.name === 'TRẠNG THÁI NẾN');
+assert.match(candleStatusField.value, /15m đã xác nhận · chưa có retest 5m/);
+const entryField = primary.fields.find((field) => field.name === '🟨 ENTRY DỰ KIẾN · LIMIT CHỜ GIÁ');
+assert.match(entryField.value, /\*\*GIÁ ENTRY DỰ KIẾN: 1\.100825\*\*/);
+assert.match(entryField.value, /1\.1 – 1\.10165/);
 const scoreField = primary.fields.find((field) => field.name.startsWith('ENTRY SCORE'));
 assert.match(scoreField.value, /78\.4 · ĐỦ TỐT/);
 assert.match(scoreField.value, /Trend 18\/25/);
@@ -46,6 +50,13 @@ assert.match(targetsField.value, /T1 1\.12/);
 assert.match(targetsField.value, /≈\+8\.7% ROE 5x/);
 assert.match(targetsField.value, /chưa hiệu chỉnh xác suất/);
 assert.match(primary.footer.text, new RegExp(COIN_LEVEL_ENTRY_WATCH_DISCORD_VERSION));
+
+const retestedPayload = coinLevelEntryWatchDiscordPayload({ ...candidate, retestAt: 1_900 });
+assert.match(retestedPayload.embeds[0].description, /retest 5m đã đạt/);
+assert.match(
+  retestedPayload.embeds[1].fields.find((field) => field.name === 'TRẠNG THÁI NẾN').value,
+  /đủ trạng thái nến để xét MARKET theo route/,
+);
 
 const directory = await mkdtemp(join(tmpdir(), 'coin-level-entry-watch-'));
 try {

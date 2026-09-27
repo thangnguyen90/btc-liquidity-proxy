@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Theo dõi coin giảm giá và tăng volume bán sau một nến bơm mạnh trên 15m, 1h và 4h.">
+    <title>SHORT sau bơm · 15m / 1h / 4h</title>
+    <link rel="stylesheet" href="/post-dump-volume-recovery.css?v=20260925-stage-v1">
+    <link rel="stylesheet" href="/post-pump-volume-fade.css?v=20260925-stage-v1">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">NẾN ĐÃ ĐÓNG · ROUTE SHORT ƯU TIÊN 15M / 1H / 4H</p>
+          <h1>Giảm giá + volume bán sau bơm mạnh</h1>
+          <p class="subtitle">Thống kê riêng ba khung khi có một nến bơm mạnh, sau đó giá rút khỏi đỉnh và dòng tiền bán xuất hiện.</p>
+        </div>
+        <nav aria-label="Điều hướng">
+          <a href="/binance-auto-controls">Quản lý Binance</a>
+          <a href="/limit-paper-lab">Limit Paper Lab</a>
+          <a href="/coin-level-analysis">Bản đồ giá</a>
+          <a href="/liquid-flow-v2">Liquid Flow V2</a>
+          <a href="/liquid-flow-v2-binance-stats">V2 Binance Stats</a>
+          <a href="/post-dump-volume-recovery">LONG sau xả MTF</a>
+          <a class="active" href="/post-pump-volume-fade" aria-current="page">SHORT sau bơm MTF</a>
+          <a href="/btc-session-watch.html">BTC Session · giá vào</a>
+          <a href="/orders">Orders</a>
+        </nav>
+      </header>
+
+      <section class="notice short-notice">
+        <strong>Binance chỉ xét case SHORT đạt loại ưu tiên.</strong>
+        Khi checkbox tương ứng đang ON, chỉ <b>SÁT ĐỈNH</b> hoặc <b>NẾN GIẢM ĐẦU TIÊN</b> mới được xét MARKET: 15m xử lý lúc stage mới đạt với 2 USDT; 1h/4h phải chạm vùng entry và dùng 10 USDT. Các case còn lại chỉ quan sát.
+      </section>
+
+      <section class="summary-grid" aria-label="Tổng quan">
+        <article><span>Tổng case 3 khung</span><strong id="total-cases">—</strong></article>
+        <article><span>Coin không trùng</span><strong id="unique-coins">—</strong></article>
+        <article class="confirmed"><span>SHORT xác nhận</span><strong id="confirmed">—</strong></article>
+        <article><span>Độ phủ từng khung</span><strong id="coverage" class="coverage-value">—</strong></article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">XẾP HẠNG SHORT THEO TRẠNG THÁI → ĐIỂM</p>
+            <h2>Ba vùng SHORT 15m · 1h · 4h</h2>
+            <p id="updated" class="muted">Đang tải dữ liệu…</p>
+            <p id="live-socket-status" class="live-socket-status connecting">○ SOCKET · đang chờ danh sách coin</p>
+          </div>
+          <div class="filters">
+            <label>Tìm coin<input id="search" type="search" placeholder="GIGGLEUSDT"></label>
+            <label>Trạng thái<select id="status"><option value="ALL">Tất cả</option><option value="CONFIRMED">SHORT xác nhận</option><option value="BUILDING">Đang giảm</option><option value="WEAKENED">SHORT yếu</option></select></label>
+            <button id="refresh" type="button">Làm mới</button>
+          </div>
+        </div>
+
+        <div class="legend">
+          <span><i class="dot confirmed-dot"></i> SHORT xác nhận: có nến giảm + volume tăng đã đóng</span>
+          <span><i class="dot building-dot"></i> Đang giảm: đã rút khỏi đỉnh nhưng chưa đủ xác nhận</span>
+          <span><i class="dot weakened-dot"></i> SHORT yếu: giá đang bật lại khỏi đáy hậu bơm</span>
+          <span><i class="dot dual-dot"></i> Hai chiều: cùng coin + cùng khung đang active ở cả LONG và SHORT</span>
+        </div>
+
+        <div id="timeframe-tabs" class="timeframe-tabs" role="tablist" aria-label="Chọn khung thời gian"></div>
+        <div id="timeframe-zones" class="timeframe-zones"><div class="empty">Đang quét ba khung SHORT…</div></div>
+        <p id="excluded" class="muted footnote"></p>
+      </section>
+    </main>
+    <script type="module" src="/post-pump-volume-fade.js?v=20260925-stage-v1"></script>
+  </body>
+</html>

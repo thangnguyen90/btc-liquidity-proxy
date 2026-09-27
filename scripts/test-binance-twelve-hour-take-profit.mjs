@@ -2,21 +2,49 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION,
+  BINANCE_THREE_HOUR_POSITIVE_PNL_CLOSE_VERSION,
   BINANCE_TWELVE_HOUR_TAKE_PROFIT_VERSION,
   DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
   DEFAULT_BINANCE_TP_MAX_AGE_MS,
   binanceTakeProfitPriceForRoe,
   evaluateBinanceEightHourNegativeTakeProfit,
+  evaluateBinanceThreeHourPositivePnlClose,
   evaluateBinanceTwelveHourTakeProfit,
   isBinanceTwelveHourTpPriceMatch,
   parseBinancePositionOpenedAt,
+  normalizeBinanceTrackedPositionSide,
   roundBinanceTakeProfitTowardProfit,
+  resolveBinanceNegativeAgeTpConfig,
+  negativeAgeTpOpenedAt,
 } from '../src/binanceTwelveHourTakeProfit.js';
 
 const now = Date.parse('2026-08-12T12:00:00.000Z');
 assert.equal(BINANCE_TWELVE_HOUR_TAKE_PROFIT_VERSION, 'BINANCE_TP_AFTER_12H_DISABLED_V2_20260905');
-assert.equal(BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION, 'BINANCE_NEGATIVE_TP_TO_ENTRY_AFTER_8H_V1_20260816');
-assert.equal(DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS, 8 * 60 * 60 * 1000);
+assert.equal(BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION, 'BINANCE_NEGATIVE_TP_TO_ENTRY_AFTER_3H_V3_MANUAL_SIDE_NORMALIZED_20260926');
+assert.equal(BINANCE_THREE_HOUR_POSITIVE_PNL_CLOSE_VERSION, 'BINANCE_POSITIVE_PNL_MARKET_CLOSE_AFTER_3H_V1_20260926');
+assert.equal(DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS, 3 * 60 * 60 * 1000);
+assert.deepEqual(resolveBinanceNegativeAgeTpConfig(), { enabled: true, maxAgeMs: 10800000 });
+assert.equal(resolveBinanceNegativeAgeTpConfig({ BINANCE_NEGATIVE_TP_AFTER_8H_ENABLED: 'false' }).enabled, false);
+assert.equal(resolveBinanceNegativeAgeTpConfig({ BINANCE_NEGATIVE_TP_AFTER_8H_MS: '28800000' }).maxAgeMs, 28800000);
+assert.equal(resolveBinanceNegativeAgeTpConfig({ BINANCE_NEGATIVE_TP_AFTER_8H_MS: '28800000', BINANCE_NEGATIVE_TP_AFTER_3H_MS: '10800000' }).maxAgeMs, 10800000);
+assert.equal(resolveBinanceNegativeAgeTpConfig({ BINANCE_NEGATIVE_TP_AFTER_3H_MS: 'bad' }).maxAgeMs, 10800000);
+const tracked = { openedAt: now - 10800000, entry: 100, entryOrderId: '123', signalSide: 'LONG' };
+const position = { entry: 100, amt: 2 };
+assert.equal(negativeAgeTpOpenedAt(tracked, position), now - 10800000);
+assert.equal(negativeAgeTpOpenedAt({ ...tracked, signalSide: 'BUY' }, position), now - 10800000);
+assert.equal(negativeAgeTpOpenedAt({ ...tracked, signalSide: 'SELL' }, { ...position, amt: -2 }), now - 10800000);
+assert.equal(negativeAgeTpOpenedAt({ ...tracked, signalSide: 'BUY' }, { ...position, amt: -2 }), null);
+assert.equal(negativeAgeTpOpenedAt({ ...tracked, signalSide: 'SIDEWAYS' }, position), null);
+assert.equal(normalizeBinanceTrackedPositionSide('buy'), 'LONG');
+assert.equal(normalizeBinanceTrackedPositionSide('SELL'), 'SHORT');
+assert.equal(normalizeBinanceTrackedPositionSide('LONG'), 'LONG');
+assert.equal(normalizeBinanceTrackedPositionSide('SHORT'), 'SHORT');
+assert.equal(normalizeBinanceTrackedPositionSide(''), null);
+assert.equal(negativeAgeTpOpenedAt({ ...tracked, adopted: true }, position), null);
+assert.equal(negativeAgeTpOpenedAt({ ...tracked, entryOrderId: null }, position), null);
+assert.equal(negativeAgeTpOpenedAt(tracked, { ...position, entry: 102 }), null);
+assert.equal(negativeAgeTpOpenedAt(tracked, { ...position, amt: -2 }), null);
+assert.equal(negativeAgeTpOpenedAt(null, position), null);
 assert.equal(parseBinancePositionOpenedAt('2026-08-12T00:00:00.000Z'), now - DEFAULT_BINANCE_TP_MAX_AGE_MS);
 
 assert.equal(evaluateBinanceTwelveHourTakeProfit({
@@ -122,6 +150,65 @@ assert.equal(evaluateBinanceEightHourNegativeTakeProfit({
   currentRoe: null,
 }).reason, 'missing_roe');
 
+assert.equal(evaluateBinanceThreeHourPositivePnlClose({
+  now,
+  openedAt: now - DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS + 1,
+  entryPrice: 100,
+  positionAmount: 2,
+  unrealizedPnl: 0.01,
+}).reason, 'not_expired');
+const positiveTimeoutLong = evaluateBinanceThreeHourPositivePnlClose({
+  now,
+  openedAt: now - DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+  entryPrice: 100,
+  positionAmount: 2,
+  unrealizedPnl: 0.000001,
+});
+assert.equal(positiveTimeoutLong.eligible, true);
+assert.equal(positiveTimeoutLong.side, 'LONG');
+assert.equal(positiveTimeoutLong.closeSide, 'SELL');
+const positiveTimeoutShort = evaluateBinanceThreeHourPositivePnlClose({
+  now,
+  openedAt: now - DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+  entryPrice: 100,
+  positionAmount: -2,
+  unrealizedPnl: 1,
+});
+assert.equal(positiveTimeoutShort.eligible, true);
+assert.equal(positiveTimeoutShort.side, 'SHORT');
+assert.equal(positiveTimeoutShort.closeSide, 'BUY');
+for (const unrealizedPnl of [-1, 0]) {
+  assert.equal(evaluateBinanceThreeHourPositivePnlClose({
+    now,
+    openedAt: now - DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+    entryPrice: 100,
+    positionAmount: 2,
+    unrealizedPnl,
+  }).reason, 'not_positive');
+}
+assert.equal(evaluateBinanceThreeHourPositivePnlClose({
+  now,
+  openedAt: now - DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+  entryPrice: 100,
+  positionAmount: 2,
+  unrealizedPnl: 1,
+  capTsl: true,
+}).reason, 'cap_tsl_excluded');
+assert.equal(evaluateBinanceThreeHourPositivePnlClose({
+  now,
+  openedAt: null,
+  entryPrice: 100,
+  positionAmount: 2,
+  unrealizedPnl: 1,
+}).reason, 'missing_opened_at');
+assert.equal(evaluateBinanceThreeHourPositivePnlClose({
+  now,
+  openedAt: now - DEFAULT_BINANCE_NEGATIVE_TP_MAX_AGE_MS,
+  entryPrice: 100,
+  positionAmount: 0,
+  unrealizedPnl: 1,
+}).reason, 'position_closed');
+
 const serverSource = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
 assert.match(
   serverSource,
@@ -129,4 +216,17 @@ assert.match(
   '12h take-profit runtime must stay explicit opt-in',
 );
 
-console.log('Binance 8h-negative and 12h take-profit policy tests passed');
+for (const currentRoe of [0, 1, 12]) {
+  assert.equal(evaluateBinanceEightHourNegativeTakeProfit({
+    now, openedAt: now - 10800001, entryPrice: 100, positionAmount: -2, currentRoe,
+  }).eligible, false, 'non-negative positions must keep their TP');
+}
+assert.equal(evaluateBinanceEightHourNegativeTakeProfit({ enabled: false }).eligible, false);
+assert.equal(evaluateBinanceEightHourNegativeTakeProfit({ now, openedAt: now - 10800000,
+  entryPrice: 100, positionAmount: 0, currentRoe: -1 }).eligible, false);
+assert.equal(evaluateBinanceEightHourNegativeTakeProfit({ now, openedAt: now + 1,
+  entryPrice: 100, positionAmount: 1, currentRoe: -1 }).eligible, false);
+assert.match(serverSource, /openedAt: negativeAgeTpOpenedAt\(slTracking.positions\?\.\[symbol\], pos\)/);
+assert.match(serverSource, /!deepLossOverridesFastWave && !ageLimitOverridesFastWave/);
+assert.match(serverSource, /isBinanceProtectionExcluded\(symbol, 'NEGATIVE_TP_MOVE'\)/);
+console.log('Binance 3h-negative and 12h take-profit policy tests passed');

@@ -2,14 +2,18 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { resolveOtherEntrySettings } from './otherEntryCatalog.js';
-import { LIQ_SCAN_MAIN_KILL_SWEEP_VERSION } from './liqScanMainKillSweep.js';
+import {
+  LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT,
+  LIQ_SCAN_MAIN_KILL_SWEEP_VERSION,
+} from './liqScanMainKillSweep.js';
 
 export const LIQ_SCAN_MAIN_KILL_SWEEP_BINANCE_VERSION =
-  'LIQSCAN_MAIN_KILL_SWEEP_EXTREME_REVERSAL_MARKET_V1_20260918';
+  'LIQSCAN_MAIN_KILL_SWEEP_SHORT_REJECTION_FILTER_V2_20260927';
 export const LIQ_SCAN_MAIN_KILL_SWEEP_MIN_ZONE_LIQUIDITY_USDT = 50_000_000;
 export const LIQ_SCAN_MAIN_KILL_SWEEP_MAX_AGE_MS = 90_000;
 export const LIQ_SCAN_MAIN_KILL_SWEEP_MAX_MARK_DRIFT = 0.005;
 export const LIQ_SCAN_MAIN_KILL_SWEEP_SYMBOL_COOLDOWN_MS = 4 * 60 * 60_000;
+export const LIQ_SCAN_MAIN_KILL_SWEEP_DIRECTION_WINDOW_MS = 3 * 24 * 60 * 60_000;
 export const LIQ_SCAN_MAIN_KILL_SWEEP_STOP_LOSS_ROE_PCT = 30;
 export const LIQ_SCAN_MAIN_KILL_SWEEP_ROUTES = Object.freeze([
   Object.freeze({
@@ -37,7 +41,7 @@ const epoch = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-export function liqScanMainKillSweepRoute(event = {}) {
+export function liqScanMainKillSweepBaseRoute(event = {}) {
   const zoneLiquidity = finite(event.zone?.liquidity, 0);
   if (event.version !== LIQ_SCAN_MAIN_KILL_SWEEP_VERSION
     || event.volumeTier?.key !== 'EXTREME'
@@ -48,14 +52,27 @@ export function liqScanMainKillSweepRoute(event = {}) {
   return LIQ_SCAN_MAIN_KILL_SWEEP_ROUTES.find((route) => route.side === expectedSide) ?? null;
 }
 
+export function liqScanMainKillSweepRoute(event = {}) {
+  const route = liqScanMainKillSweepBaseRoute(event);
+  if (!route) return null;
+  if (event.side === 'UPPER') {
+    const sweepDepthPct = finite(event.sweepDepthPct);
+    if (event.rejection?.confirmed !== true
+      || !(sweepDepthPct >= 0)
+      || sweepDepthPct > LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT) return null;
+  }
+  return route;
+}
+
 export function buildLiqScanMainKillSweepOrder(event = {}, {
   now = Date.now(),
   enabledAt,
   markPrice,
   routeState,
+  recentBidirectional3d,
 } = {}) {
   const route = liqScanMainKillSweepRoute(event);
-  if (!route) return null;
+  if (!route || recentBidirectional3d !== false) return null;
   const entrySettings = resolveOtherEntrySettings(route, routeState);
   if (!entrySettings) return null;
   const detectedAt = epoch(event.detectedAt);
@@ -119,6 +136,10 @@ export function buildLiqScanMainKillSweepOrder(event = {}, {
     preserveSignalProtection: true,
     fillAnchorEnabled: true,
     fillAnchorVersion: LIQ_SCAN_MAIN_KILL_SWEEP_BINANCE_VERSION,
+    entryFilterVersion: LIQ_SCAN_MAIN_KILL_SWEEP_BINANCE_VERSION,
+    sweepDepthPct: finite(event.sweepDepthPct, 0),
+    zoneReturnConfirmed: event.side === 'UPPER' ? event.rejection?.confirmed === true : true,
+    recentBidirectional3d: false,
     takeProfitDistanceFraction,
     stopLossDistanceFraction,
     protectionSignalEntryPrice: entry,
@@ -135,6 +156,9 @@ export function buildLiqScanMainKillSweepOrder(event = {}, {
       `zoneLiquidity=${finite(event.zone?.liquidity, 0)}`,
       `zone=${zoneLow}-${zoneHigh}`,
       `crossingExtreme=${crossingExtreme}`,
+      `sweepDepthPct=${finite(event.sweepDepthPct, 0)}`,
+      `zoneReturnConfirmed=${event.side === 'UPPER' ? event.rejection?.confirmed === true : true}`,
+      'recentBidirectional3d=false',
       `detectedAt=${new Date(detectedAt).toISOString()}`,
       `entry=${entry}`,
     ].join(' | '),
@@ -145,11 +169,80 @@ function readState(file) {
   try {
     const state = JSON.parse(readFileSync(file, 'utf8'));
     if (!state?.attempts || !state?.symbols) throw new Error('invalid');
+    if (!Array.isArray(state.directionHistory)) {
+      state.directionHistory = Object.values(state.attempts).map((attempt) => ({
+        id: `migrated|${attempt?.symbol}|${attempt?.side}|${attempt?.at}`,
+        symbol: attempt?.symbol,
+        direction: attempt?.side === 'SELL' ? 'SHORT' : attempt?.side === 'BUY' ? 'LONG' : null,
+        at: finite(attempt?.at),
+      })).filter((item) => item.symbol && item.direction && Number.isFinite(item.at));
+    }
+    if (!Array.isArray(state.filterDecisions)) state.filterDecisions = [];
     return state;
   } catch (error) {
     if (error.code !== 'ENOENT') return null;
-    return { version: LIQ_SCAN_MAIN_KILL_SWEEP_BINANCE_VERSION, attempts: {}, symbols: {} };
+    return {
+      version: LIQ_SCAN_MAIN_KILL_SWEEP_BINANCE_VERSION,
+      attempts: {},
+      symbols: {},
+      directionHistory: [],
+      filterDecisions: [],
+    };
   }
+}
+
+function eventIdentity(event = {}) {
+  return createHash('sha256').update([
+    event.symbol, event.side, event.dedupeKey, event.detectedAt,
+  ].join('|')).digest('hex').slice(0, 24);
+}
+
+function pruneForwardState(state, now) {
+  state.directionHistory = (state.directionHistory ?? []).filter((item) => (
+    item?.symbol && ['LONG', 'SHORT'].includes(item?.direction)
+    && Number.isFinite(finite(item?.at))
+    && now - finite(item.at) <= LIQ_SCAN_MAIN_KILL_SWEEP_DIRECTION_WINDOW_MS
+  ));
+  state.filterDecisions = (state.filterDecisions ?? []).filter((item) => (
+    Number.isFinite(finite(item?.at)) && now - finite(item.at) <= 30 * 24 * 60 * 60_000
+  )).slice(-5_000);
+}
+
+function recentOppositeDirection(state, event, now) {
+  const direction = event.side === 'UPPER' ? 'SHORT' : 'LONG';
+  const opposite = direction === 'SHORT' ? 'LONG' : 'SHORT';
+  return state.directionHistory.some((item) => (
+    item.symbol === event.symbol && item.direction === opposite
+    && now - finite(item.at, 0) <= LIQ_SCAN_MAIN_KILL_SWEEP_DIRECTION_WINDOW_MS
+  ));
+}
+
+function recordDirection(state, event, now) {
+  const id = eventIdentity(event);
+  if (state.directionHistory.some((item) => item.id === id)) return;
+  state.directionHistory.push({
+    id,
+    symbol: event.symbol,
+    direction: event.side === 'UPPER' ? 'SHORT' : 'LONG',
+    at: epoch(event.detectedAt) ?? now,
+  });
+}
+
+function recordFilterDecision(state, event, now, status, recentBidirectional3d) {
+  const id = eventIdentity(event);
+  const record = {
+    id,
+    symbol: event.symbol,
+    direction: event.side === 'UPPER' ? 'SHORT' : 'LONG',
+    at: epoch(event.detectedAt) ?? now,
+    status,
+    sweepDepthPct: finite(event.sweepDepthPct),
+    zoneReturnConfirmed: event.side === 'UPPER' ? event.rejection?.confirmed === true : true,
+    recentBidirectional3d,
+  };
+  const index = state.filterDecisions.findIndex((item) => item.id === id);
+  if (index >= 0) state.filterDecisions[index] = record;
+  else state.filterDecisions.push(record);
 }
 
 function saveState(file, state) {
@@ -175,19 +268,41 @@ export class LiqScanMainKillSweepBinanceRunner {
   }
 
   async handleOne(event) {
-    const routeSpec = liqScanMainKillSweepRoute(event);
+    const routeSpec = liqScanMainKillSweepBaseRoute(event);
     if (!routeSpec) return { status: 'ineligible-extreme-only' };
+    const now = this.now();
+    const state = readState(this.file);
+    if (!state) return { status: 'state-error' };
+    pruneForwardState(state, now);
+    const recentBidirectional3d = recentOppositeDirection(state, event, now);
+    recordDirection(state, event, now);
+    let filterStatus = 'eligible';
+    if (event.side === 'UPPER' && event.rejection?.confirmed !== true) {
+      filterStatus = 'observe-only-zone-not-rejected';
+    } else if (event.side === 'UPPER'
+      && (!(finite(event.sweepDepthPct) >= 0)
+        || finite(event.sweepDepthPct) > LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT)) {
+      filterStatus = 'observe-only-deep-sweep';
+    } else if (recentBidirectional3d) {
+      filterStatus = 'observe-only-bidirectional-3d';
+    }
+    recordFilterDecision(state, event, now, filterStatus, recentBidirectional3d);
+    saveState(this.file, state);
+    if (filterStatus !== 'eligible') return {
+      status: filterStatus,
+      sweepDepthPct: finite(event.sweepDepthPct),
+      zoneReturnConfirmed: event.side === 'UPPER' ? event.rejection?.confirmed === true : true,
+      recentBidirectional3d,
+    };
     const registered = this.controls.register(routeSpec);
     const controls = this.controls.read();
     const routeState = controls.routes[registered.key];
     if (!controls.enabled || routeState?.enabled !== true) return { status: 'off' };
     let plan = buildLiqScanMainKillSweepOrder(event, {
-      now: this.now(), enabledAt: routeState.enabledAt, markPrice: event.markNow, routeState,
+      now, enabledAt: routeState.enabledAt, markPrice: event.markNow, routeState,
+      recentBidirectional3d,
     });
     if (!plan) return { status: 'ineligible' };
-
-    const state = readState(this.file);
-    if (!state) return { status: 'state-error' };
     const previousSymbolAt = finite(state.symbols[plan.symbol]);
     if (state.attempts[plan.clientOrderId]
       || (previousSymbolAt != null
@@ -211,7 +326,7 @@ export class LiqScanMainKillSweepBinanceRunner {
     if (!latest.enabled || latestRoute?.enabled !== true) return { status: 'control-changed' };
     plan = buildLiqScanMainKillSweepOrder(event, {
       now: this.now(), enabledAt: latestRoute.enabledAt, markPrice: context.markPrice,
-      routeState: latestRoute,
+      routeState: latestRoute, recentBidirectional3d,
     });
     if (!plan) return { status: 'price-or-age-blocked' };
     this.controls.assertEntry(plan);

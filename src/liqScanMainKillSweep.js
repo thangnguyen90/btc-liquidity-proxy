@@ -1,5 +1,5 @@
 export const LIQ_SCAN_MAIN_KILL_SWEEP_VERSION =
-  'LIQSCAN_MAIN_KILL_SWEEP_DISCORD_V2_VOLUME_EMPHASIS_20260918';
+  'LIQSCAN_MAIN_KILL_SWEEP_DISCORD_V3_SHORT_REJECTION_FILTER_20260927';
 export const LIQ_SCAN_REFERENCE_SWEEP_VERSION =
   'LIQSCAN_REFERENCE_SWEEP_DISCORD_V1_LARGE_VOLUME_20260918';
 export const LIQ_SCAN_SWEEP_WEBHOOK_ROUTING_VERSION =
@@ -9,6 +9,7 @@ export const LIQ_SCAN_SWEEP_DISCORD_MIN_SIDE_PROXY = 100_000_000;
 
 export const LIQ_SCAN_MAIN_KILL_SWEEP_MIN_SCORE = 65;
 export const LIQ_SCAN_LARGE_VOLUME_THRESHOLD_USDT = 2_000_000;
+export const LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT = 0.1;
 
 const finite = (value, fallback = null) => {
   const number = Number(value);
@@ -79,9 +80,11 @@ function candidateFromAnalysis(analysis) {
   const candle = analysis?.backgroundCandle ?? {};
   const candleHigh = finite(candle.high, mark);
   const candleLow = finite(candle.low, mark);
+  const candleClose = finite(candle.close, mark);
+  const candleCloseTime = finite(candle.closeTime);
   const observedAt = Date.parse(analysis?.generatedAt ?? '') || Date.now();
   if (!symbol || score == null || !(mark > 0) || !side || !(low > 0) || !(high >= low)
-    || !(candleHigh > 0) || !(candleLow > 0)) return null;
+    || !(candleHigh > 0) || !(candleLow > 0) || !(candleClose > 0)) return null;
   return {
     symbol,
     side,
@@ -92,6 +95,8 @@ function candidateFromAnalysis(analysis) {
     zoneLiquidity,
     candleHigh,
     candleLow,
+    candleClose,
+    candleCloseTime,
     candleOpenTime: finite(candle.openTime),
     observedAt,
     liquidityAbove: finite(analysis?.liqScan?.liquidityAbove, 0),
@@ -153,6 +158,22 @@ function buildEvent(state, candidate, now) {
     ? state.liquidityAbove
     : state.liquidityBelow;
   const volumeTier = classifyMainKillSweepVolume(state.zoneLiquidity, sideLiquidity);
+  const sweepDepthPct = state.side === 'UPPER'
+    ? Math.max(0, (crossingExtreme / state.high - 1) * 100)
+    : Math.max(0, (state.low / crossingExtreme - 1) * 100);
+  const returnedBeyondZone = state.side === 'UPPER'
+    ? candidate.mark < state.low
+    : candidate.mark > state.high;
+  const closedCandle = Number.isFinite(candidate.candleCloseTime)
+    && candidate.candleCloseTime < now;
+  const closedBeyondZone = closedCandle && (state.side === 'UPPER'
+    ? candidate.candleClose < state.low
+    : candidate.candleClose > state.high);
+  const rejectionConfirmed = returnedBeyondZone || closedBeyondZone;
+  const shortFilterPassed = state.side !== 'UPPER' || (
+    rejectionConfirmed
+    && sweepDepthPct <= LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT
+  );
   return {
     version: LIQ_SCAN_MAIN_KILL_SWEEP_VERSION,
     symbol: state.symbol,
@@ -166,6 +187,16 @@ function buildEvent(state, candidate, now) {
     markAtArm: state.markAtArm,
     markNow: candidate.mark,
     crossingExtreme,
+    sweepDepthPct: Number(sweepDepthPct.toFixed(4)),
+    rejection: {
+      confirmed: rejectionConfirmed,
+      returnedBeyondZone,
+      closedBeyondZone,
+      confirmationPrice: candidate.mark,
+      confirmationType: closedBeyondZone
+        ? 'CLOSED_15M_BEYOND_ZONE'
+        : returnedBeyondZone ? 'LIVE_MARK_BEYOND_ZONE' : 'NOT_CONFIRMED',
+    },
     zone: { low: state.low, high: state.high, liquidity: state.zoneLiquidity },
     sideLiquidity,
     zoneSharePct: volumeTier.sharePct,
@@ -180,13 +211,15 @@ function buildEvent(state, candidate, now) {
       unit: 'WEIGHTED_QUOTE_VOLUME_PROXY',
     },
     execution: {
-      binanceEligible: volumeTier.key === 'EXTREME',
+      binanceEligible: volumeTier.key === 'EXTREME' && shortFilterPassed,
       extremeOnly: true,
       minimumZoneLiquidityUsdt: 50_000_000,
-      affectsEntry: volumeTier.key === 'EXTREME',
-      affectsSize: volumeTier.key === 'EXTREME',
-      affectsStopLoss: volumeTier.key === 'EXTREME',
-      affectsTakeProfit: volumeTier.key === 'EXTREME',
+      shortMaxSweepDepthPct: LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT,
+      shortRejectionRequired: true,
+      affectsEntry: volumeTier.key === 'EXTREME' && shortFilterPassed,
+      affectsSize: volumeTier.key === 'EXTREME' && shortFilterPassed,
+      affectsStopLoss: volumeTier.key === 'EXTREME' && shortFilterPassed,
+      affectsTakeProfit: volumeTier.key === 'EXTREME' && shortFilterPassed,
     },
   };
 }
@@ -385,7 +418,13 @@ export function buildLiqScanMainKillSweepPayload(event) {
     ? '**OBSERVE ONLY — quét vùng proxy tham khảo không tự đặt lệnh Binance.**'
     : volumeTier.key !== 'EXTREME'
     ? '**OBSERVE ONLY — tier chưa đạt đỏ SIÊU LỚN 50M, không tự đặt lệnh Binance.**'
-    : submitted
+    : executionStatus === 'OBSERVE-ONLY-ZONE-NOT-REJECTED'
+      ? '**OBSERVE ONLY · SHORT chưa xác nhận rút xuống dưới đáy vùng quét, không gửi Binance.**'
+      : executionStatus === 'OBSERVE-ONLY-DEEP-SWEEP'
+        ? `**OBSERVE ONLY · độ xuyên vùng ${Number(event.sweepDepthPct).toFixed(3)}% vượt trần ${LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT.toFixed(2)}%, không SHORT đuổi.**`
+        : executionStatus === 'OBSERVE-ONLY-BIDIRECTIONAL-3D'
+          ? '**OBSERVE ONLY · coin đã phát cả LONG và SHORT trong 3 ngày gần nhất, không gửi Binance.**'
+          : submitted
       ? `**BINANCE THẬT · ${executionStatus} · ${tradeSide} MARKET ${event.binanceExecution?.marginUsdt ?? 1} USDT margin ×${event.binanceExecution?.leverage ?? 5} · TP +${event.binanceExecution?.takeProfitRoePct ?? 10}% · SL −${event.binanceExecution?.stopLossRoePct ?? 30}% ROE.**`
       : executionStatus === 'OFF'
         ? `**BINANCE OFF · ${tradeSide} MARKET chưa gửi vì route/master đang tắt.**`
@@ -421,6 +460,12 @@ export function buildLiqScanMainKillSweepPayload(event) {
           name: `🎯 ${referenceProxy ? 'VÙNG PROXY THAM KHẢO' : 'MAIN KILL'} ĐÃ QUÉT`,
           value: `Vùng **${zoneText}**\n${upper ? 'Đỉnh mới' : 'Đáy mới'} **${formatPrice(event.crossingExtreme)}** · mark **${formatPrice(event.markNow)}**`,
         },
+        ...(referenceProxy ? [] : [{
+          name: upper ? '🛡️ BỘ LỌC SHORT SAU QUÉT' : '↔️ BỘ LỌC HAI CHIỀU 3 NGÀY',
+          value: upper
+            ? `Độ xuyên **${Number.isFinite(Number(event.sweepDepthPct)) ? Number(event.sweepDepthPct).toFixed(3) : 'N/A'}%** / tối đa **${LIQ_SCAN_MAIN_KILL_SHORT_MAX_SWEEP_DEPTH_PCT.toFixed(2)}%**\nRút xuống dưới đáy vùng: **${event.rejection?.confirmed === true ? 'ĐÃ XÁC NHẬN' : 'CHƯA XÁC NHẬN'}** · ${event.rejection?.confirmationType ?? 'N/A'}\nHai chiều trong 3 ngày: **${event.binanceExecution?.recentBidirectional3d === true ? 'CÓ · OBSERVE ONLY' : 'KHÔNG'}**`
+            : `Hai chiều trong 3 ngày: **${event.binanceExecution?.recentBidirectional3d === true ? 'CÓ · OBSERVE ONLY' : 'KHÔNG'}**\nLONG dưới vẫn giữ logic quét vùng hiện hữu; chỉ thêm khóa hai chiều.`,
+        }]),
         {
           name: '🧭 XÁC NHẬN NHÂN QUẢ',
           value: `Bắt đầu theo dõi ${localTime(event.armedAt)} khi mark **${formatPrice(event.markAtArm)}** còn ở ngoài vùng.\nXác nhận quét ${localTime(event.detectedAt)} từ dữ liệu 15m đang chạy; không replay râu nến cũ.`,

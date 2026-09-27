@@ -4,7 +4,13 @@ import {
   scanCoinLevelEntryWatch,
   COIN_LEVEL_ENTRY_SCORE_VERSION,
   COIN_LEVEL_ENTRY_WATCH_VERSION,
+  advanceCoinLevelLimitInvalidation,
+  evaluateCoinLevelPendingLimit,
 } from '../src/coinLevelEntryWatch.js';
+import {
+  entryWatchTierDisplayLabel,
+  sortCoinLevelEntryWatchForDisplay,
+} from '../public/coin-level-entry-watch-sort.js';
 
 const now = Date.UTC(2026, 8, 20, 12, 27);
 const durations = { '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000 };
@@ -103,6 +109,63 @@ future['15m'].at(-1).closeTime = now + 1;
 assert.equal(scan({ symbols: ['LONGUSDT'], getKlines: (_, interval) => future[interval] }).totalCandidates, 0);
 assert.equal(scan({ analyze: () => ({ recommendation: { trendScore: 4 }, trend: { frames: [] } }) }).totalCandidates, 0);
 
+const tierSorted = sortCoinLevelEntryWatchForDisplay([
+  { symbol: 'WATCHUSDT', entryTier: 'WATCH', entryScore: 69, retestAt: 9, confirmationAt: 9 },
+  { symbol: 'GOODLOWUSDT', entryTier: 'GOOD', entryScore: 72, retestAt: null, confirmationAt: 5 },
+  { symbol: 'VERYUSDT', entryTier: 'VERY_STRONG', entryScore: 81, retestAt: null, confirmationAt: 4 },
+  { symbol: 'GOODHIGHUSDT', entryTier: 'GOOD', entryScore: 79, retestAt: null, confirmationAt: 3 },
+  { symbol: 'WEAKUSDT', entryTier: 'WEAK', entryScore: 59, retestAt: 10, confirmationAt: 10 },
+]);
+assert.deepEqual(tierSorted.map((row) => row.symbol), [
+  'VERYUSDT', 'GOODHIGHUSDT', 'GOODLOWUSDT', 'WATCHUSDT', 'WEAKUSDT',
+], 'display must sort tier first, then Entry Score; retest does not move a weaker tier above a stronger tier');
+assert.equal(entryWatchTierDisplayLabel({ entryTier: 'GOOD', entryTierLabel: 'ĐỦ TỐT' }), 'MẠNH');
+assert.equal(entryWatchTierDisplayLabel({ entryTier: 'VERY_STRONG' }), 'RẤT MẠNH');
+
+const pendingInput = {
+  symbol: 'LONGUSDT', side: 'LONG',
+  confirmationAt: cache.LONGUSDT['15m'].at(-1).closeTime,
+  referenceLevel: 102,
+  submittedAt: cache.LONGUSDT['5m'].at(-2).closeTime + 1,
+  now, analyze,
+  getKlines: (symbol, interval) => cache[symbol]?.[interval],
+};
+const validPending = evaluateCoinLevelPendingLimit(pendingInput);
+assert.equal(validPending.status, 'VALID');
+assert.equal(evaluateCoinLevelPendingLimit({
+  ...pendingInput, symbol: 'SHORTUSDT', side: 'SHORT', referenceLevel: 108,
+}).status, 'VALID');
+assert.equal(evaluateCoinLevelPendingLimit({
+  ...pendingInput, submittedAt: now,
+}).status, 'UNKNOWN', 'do not cancel before a post-submit 5m candle closes');
+assert.equal(evaluateCoinLevelPendingLimit({
+  ...pendingInput, getKlines: () => null,
+}).status, 'UNKNOWN', 'missing cache must not invalidate a live order');
+assert.equal(evaluateCoinLevelPendingLimit({
+  ...pendingInput, analyze: () => { throw new Error('temporary analysis failure'); },
+}).status, 'UNKNOWN');
+const invalidClosed5m = fixture('LONG');
+invalidClosed5m['5m'].at(-1).close = 101;
+const invalidAssessment = evaluateCoinLevelPendingLimit({
+  ...pendingInput, getKlines: (_, interval) => invalidClosed5m[interval],
+});
+assert.equal(invalidAssessment.reason, 'CLOSED_5M_INVALIDATED_LEVEL');
+const firstInvalid = advanceCoinLevelLimitInvalidation(null, invalidAssessment);
+assert.equal(firstInvalid.cancel, false);
+assert.equal(advanceCoinLevelLimitInvalidation(firstInvalid, invalidAssessment).cancel, true);
+assert.equal(advanceCoinLevelLimitInvalidation(firstInvalid, validPending), null);
+assert.equal(evaluateCoinLevelPendingLimit({
+  ...pendingInput, analyze: ({ symbol, klinesByInterval }) => ({
+    ...analyze({ symbol, klinesByInterval }), recommendation: { trendScore: 4 },
+  }),
+}).reason, 'TREND_SCORE_LOST');
+assert.equal(evaluateCoinLevelPendingLimit({
+  ...pendingInput, analyze: () => ({ recommendation: { trendScore: 4 }, trend: { frames: [] } }),
+}).status, 'UNKNOWN', 'incomplete analysis must not cancel');
+assert.equal(evaluateCoinLevelPendingLimit({
+  ...pendingInput, referenceLevel: 103,
+}).reason, 'BREAKOUT_EXPIRED_OR_REPLACED');
+
 const [server, html, client, css] = await Promise.all([
   readFile(new URL('../src/server.js', import.meta.url), 'utf8'),
   readFile(new URL('../public/coin-level-analysis.html', import.meta.url), 'utf8'),
@@ -110,6 +173,8 @@ const [server, html, client, css] = await Promise.all([
   readFile(new URL('../public/coin-level-analysis.css', import.meta.url), 'utf8'),
 ]);
 assert.match(server, /\/api\/coin-level-entry-watch/);
+assert.match(server, /evaluateCoinLevelPendingLimit\(/);
+assert.match(server, /coinLevelEntryWatchBinanceRunner\.pendingLimitSignal\(order\)/);
 assert.match(html, /id="entry-watch-rows"/);
 assert.match(html, /class="entry-watch-price-heading">ENTRY DỰ KIẾN</);
 assert.match(html, /Entry Score/);
@@ -117,6 +182,8 @@ assert.match(html, /T1 \/ T2 \/ T3 dự kiến/);
 assert.match(client, /refreshEntryWatch\(\)/);
 assert.match(client, /item\.entryPrice/);
 assert.match(client, /item\.entryScore/);
+assert.match(client, /sortCoinLevelEntryWatchForDisplay\(data\.candidates\)/);
+assert.match(client, /entryWatchTierDisplayLabel\(item\)/);
 assert.match(client, /item\.targetPlan\?\.targets/);
 assert.match(client, /item\.retestAt \? 'entry-watch-retested'/,
   'only a confirmed closed 5m retest should color a signal row');

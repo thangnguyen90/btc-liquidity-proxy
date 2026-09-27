@@ -1,5 +1,13 @@
 export const OTHER_ENTRY_SETTINGS_VERSION =
-  'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V5_COIN_LEVEL_RETEST_20260920';
+  'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V14_POST_MOVE_IMPULSE_8USDT_20260927';
+
+export const LIMIT_PAPER_FILL_SOURCE = 'limit-paper-fill';
+export const LIMIT_PAPER_FILL_STREAM = 'ema99-retest-shallow';
+export const LIMIT_PAPER_FILL_LABELS = Object.freeze([
+  'NEAR_EMA_LONG_WATCH',
+  'NEAR_RECLAIM_LONG_WATCH',
+  'TOUCH_EMA_LONG_WATCH',
+]);
 
 const profile = ({ source, streamId, signalLabel, side, marginUsdt, leverage,
   takeProfitRoePct = null, takeProfitMode = 'FIXED_ROE' }) => Object.freeze({
@@ -8,6 +16,15 @@ const profile = ({ source, streamId, signalLabel, side, marginUsdt, leverage,
 });
 
 export const OTHER_ENTRY_CATALOG = Object.freeze([
+  ...LIMIT_PAPER_FILL_LABELS.map((signalLabel) => profile({
+    source: LIMIT_PAPER_FILL_SOURCE,
+    streamId: LIMIT_PAPER_FILL_STREAM,
+    signalLabel,
+    side: 'LONG',
+    marginUsdt: 1,
+    leverage: 5,
+    takeProfitRoePct: 10,
+  })),
   profile({ source: 'liqscan-main-kill-sweep', streamId: 'background-top400',
     signalLabel: 'LIQSCAN_MAIN_KILL_UPPER_SWEEP_SHORT', side: 'SHORT', marginUsdt: 1, leverage: 5,
     takeProfitRoePct: 10 }),
@@ -20,6 +37,12 @@ export const OTHER_ENTRY_CATALOG = Object.freeze([
   profile({ source: 'coin-level-entry-watch', streamId: 'closed-mtf-retest',
     signalLabel: 'RETEST_SHORT_READY', side: 'SHORT', marginUsdt: 1, leverage: 5,
     takeProfitRoePct: 10 }),
+  profile({ source: 'post-move-impulse', streamId: 'post-dump-no-sell-5m',
+    signalLabel: 'POST_DUMP_NO_SELL_BUY_IMPULSE_LONG', side: 'LONG', marginUsdt: 8, leverage: 5,
+    takeProfitRoePct: 10 }),
+  profile({ source: 'post-move-impulse', streamId: 'post-pump-no-buy-5m',
+    signalLabel: 'POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT', side: 'SHORT', marginUsdt: 8, leverage: 5,
+    takeProfitRoePct: 10 }),
   profile({ source: 'liqscan-high-score', streamId: 'coin-level-analysis',
     signalLabel: 'LIQSCAN_HIGH_SCORE_ABOVE_LONG', side: 'LONG', marginUsdt: 5, leverage: 5,
     takeProfitRoePct: 15 }),
@@ -29,6 +52,24 @@ export const OTHER_ENTRY_CATALOG = Object.freeze([
   profile({ source: 'big-candle-pump-15m', streamId: 'volume-dump-scanner',
     signalLabel: 'BIG_CANDLE_PUMP_LONG', side: 'LONG', marginUsdt: 10, leverage: 5,
     takeProfitRoePct: 15 }),
+  profile({ source: 'post-move-ideal-entry', streamId: 'post-pump-volume-fade-1h',
+    signalLabel: 'SHORT_IDEAL_ENTRY_TOUCH', side: 'SHORT', marginUsdt: 10, leverage: 5,
+    takeProfitRoePct: 6 }),
+  profile({ source: 'post-move-ideal-entry', streamId: 'post-dump-volume-recovery-1h',
+    signalLabel: 'LONG_IDEAL_ENTRY_TOUCH', side: 'LONG', marginUsdt: 5, leverage: 5,
+    takeProfitRoePct: 10 }),
+  profile({ source: 'post-move-ideal-entry', streamId: 'post-dump-volume-recovery-4h',
+    signalLabel: 'LONG_IDEAL_ENTRY_TOUCH', side: 'LONG', marginUsdt: 10, leverage: 5,
+    takeProfitRoePct: 10 }),
+  profile({ source: 'post-move-ideal-entry', streamId: 'post-pump-volume-fade-4h',
+    signalLabel: 'SHORT_IDEAL_ENTRY_TOUCH', side: 'SHORT', marginUsdt: 10, leverage: 5,
+    takeProfitRoePct: 6 }),
+  profile({ source: 'post-move-ideal-entry', streamId: 'post-dump-volume-recovery-15m',
+    signalLabel: 'LONG_PRIORITY_STAGE_15M', side: 'LONG', marginUsdt: 2, leverage: 5,
+    takeProfitRoePct: 10 }),
+  profile({ source: 'post-move-ideal-entry', streamId: 'post-pump-volume-fade-15m',
+    signalLabel: 'SHORT_PRIORITY_STAGE_15M', side: 'SHORT', marginUsdt: 2, leverage: 5,
+    takeProfitRoePct: 6 }),
   profile({ source: 'extreme-short-squeeze', streamId: 'extreme-short-squeeze',
     signalLabel: 'EXTREME_PUMP_CLOSED', side: 'SHORT', marginUsdt: 1, leverage: 5,
     takeProfitRoePct: 15 }),
@@ -37,6 +78,9 @@ export const OTHER_ENTRY_CATALOG = Object.freeze([
     takeProfitRoePct: 15 }),
   profile({ source: 'extreme-short-squeeze', streamId: 'extreme-short-squeeze',
     signalLabel: 'PEAK_ZONE_SHORT_WATCH', side: 'SHORT', marginUsdt: 2, leverage: 5,
+    takeProfitRoePct: 15 }),
+  profile({ source: 'extreme-short-squeeze', streamId: 'extreme-short-squeeze-saga-15m',
+    signalLabel: 'FOLLOW_REJECTION_CLOSED', side: 'SHORT', marginUsdt: 6, leverage: 5,
     takeProfitRoePct: 15 }),
   profile({ source: 'htf-deep-base-ready', streamId: 'htf-deep-base-15m',
     signalLabel: 'RETEST_LONG_READY', side: 'LONG', marginUsdt: 5, leverage: 5,

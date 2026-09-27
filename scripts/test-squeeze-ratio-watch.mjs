@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { squeezePriceCandidate, derivativeAsOf, qualifySqueeze, squeezeDiscordPayload, SqueezeRatioWatch } from '../src/squeezeRatioWatch.js';
+import { squeezePriceCandidate, squeezeLongPriceCandidate, derivativeAsOf, qualifySqueeze, squeezeDiscordPayload, SqueezeRatioWatch, SQUEEZE_RATIO_LIVE_WINDOW_MS } from '../src/squeezeRatioWatch.js';
 const Q=900_000,H=3600_000,start=Date.UTC(2026,8,1);
 const bars=Array.from({length:160},(_,i)=>{
   const o=100+i*0.1,c=o+0.09;
@@ -27,6 +27,14 @@ assert.equal(qualifySqueeze(candidate,[],interests),null);
 assert.equal(qualifySqueeze(candidate,ratios.map(r=>({...r,longShortRatio:1.2})),interests),null);
 assert.notEqual(squeezeDiscordPayload(qualifySqueeze(candidate,ratios,[])).embeds[0].color,
   squeezeDiscordPayload(qualifySqueeze(candidate,ratios,interests)).embeds[0].color);
+const fallingBars=Array.from({length:160},(_,i)=>{
+  const o=140-i*0.1,c=o-0.09;
+  return {openTime:start+i*Q,closeTime:start+(i+1)*Q-1,open:o,close:c,high:o+0.01,low:c-0.01,quoteVolume:i===159?300:100};
+});
+const longCandidate=squeezeLongPriceCandidate('DOWNUSDT',fallingBars,now);
+assert.equal(longCandidate?.squeezeSide,'LONG');
+const longRatios=ratios.map((row,index)=>({...row,longShortRatio:index===0?1.0:index===1?1.2:2}));
+assert.equal(qualifySqueeze(longCandidate,longRatios,interests)?.squeezeSide,'LONG');
 const dir=await mkdtemp(join(tmpdir(),'squeeze-ratio-test-'));
 try {
   let clock=now-2*Q,posts=0;
@@ -39,6 +47,8 @@ try {
   await watcher.deliver(event);await watcher.deliver(event);assert.equal(posts,1);
   await watcher.deliver({...event,tier:'RATIO'});assert.equal(posts,1,'strong covers weak');
   assert.equal((await watcher.snapshot()).events[0].delivery,'sent');
+  assert.equal((await watcher.snapshot()).liveEvents.length,1,'fresh explicit-side event is live');
+  assert.equal((await watcher.snapshot()).health.liveShort,1);
   assert(!JSON.stringify(await watcher.snapshot()).includes('example.invalid'));
   const restarted=new SqueezeRatioWatch(config);
   await restarted.deliver(event);assert.equal(posts,1);
@@ -62,11 +72,19 @@ try {
   assert.equal((await scanning.snapshot()).events[0].tier,'RATIO_OI');
   const apiOnly=new SqueezeRatioWatch({...config,stateFile:join(dir,'api.json'),getSymbols:()=>{throw new Error('GET must not scan');}});
   assert.deepEqual((await apiOnly.snapshot()).events,[]);
+  const legacyFile=join(dir,'legacy.json');
+  await writeFile(legacyFile,JSON.stringify({events:[{symbol:'OLDUSDT',at:clock-SQUEEZE_RATIO_LIVE_WINDOW_MS-1,tier:'RATIO'}]}));
+  const legacy=new SqueezeRatioWatch({...config,stateFile:legacyFile});
+  const legacySnapshot=await legacy.snapshot();
+  assert.equal(legacySnapshot.liveEvents.length,0);
+  assert.equal(legacySnapshot.historyEvents[0].isLegacy,true);
   const server=await readFile(new URL('../src/server.js',import.meta.url),'utf8');
   assert(server.includes("requestUrl.pathname === '/api/squeeze-ratio-watch'"));
   assert(server.includes('squeezeRatioWatch.start();'));
   const page=await readFile(new URL('../public/coin-level-analysis.html',import.meta.url),'utf8');
-  assert(page.indexOf('squeeze-watch-rows')<page.indexOf('id="result"'),'feed independent search result visibility');
+  assert(page.indexOf('squeeze-watch-short-rows')<page.indexOf('id="result"'),'feed independent search result visibility');
+  assert(page.includes('squeeze-watch-history-toggle'));
+  assert(page.includes('squeeze-watch-short-rows')&&page.includes('squeeze-watch-long-rows'));
   assert(!page.includes('1551011831487799297'),'no webhook secret in UI');
   console.log('PASS squeeze ratio: causal candles/asof, missing data, tiers, persisted dedupe, no replay, rate retry, scanner, read-only API/UI');
 } finally {await rm(dir,{recursive:true,force:true});}

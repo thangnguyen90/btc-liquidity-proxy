@@ -1033,9 +1033,9 @@ function scheduleCapPaperPoll() {
   clearTimeout(_capPaperPollTimer);
   const hasOpen = capPaperTradesCache.some((t) => t.status === 'OPEN');
   _capPaperPollTimer = setTimeout(async () => {
-    await loadCapPaperTrades();
+    if (!document.hidden) await loadCapPaperTrades();
     scheduleCapPaperPoll();
-  }, hasOpen ? 3_000 : 15_000);
+  }, document.hidden ? 30_000 : hasOpen ? 10_000 : 15_000);
 }
 
 window.enterCapPaperTrade = async function(btn, signalKey) {
@@ -1155,5 +1155,12 @@ async function fetchAndApply(attempt = 0) {
   await loadCapPaperTrades();
   scheduleCapPaperPoll();
   loadCapOpenLimitOrders();
-  setInterval(loadCapOpenLimitOrders, 30_000);
+  setInterval(() => { if (!document.hidden) loadCapOpenLimitOrders(); }, 30_000);
 })();
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  void loadCapPaperTrades();
+  void loadCapOpenLimitOrders();
+  scheduleCapPaperPoll();
+});

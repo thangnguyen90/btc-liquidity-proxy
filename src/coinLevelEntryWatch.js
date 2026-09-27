@@ -1,7 +1,26 @@
 import { buildCoinLevelAnalysis } from './coinLevelAnalysis.js';
+import {
+  COIN_LEVEL_EARLY_LONG_MIN_SCORE,
+  COIN_LEVEL_EARLY_LONG_WATCH_VERSION,
+  evaluateCoinLevelEarlyLongWatch,
+} from './coinLevelEarlyLongWatch.js';
+import {
+  COIN_LEVEL_EARLY_SHORT_MIN_SCORE,
+  COIN_LEVEL_EARLY_SHORT_WATCH_VERSION,
+  evaluateCoinLevelEarlyShortWatch,
+} from './coinLevelEarlyShortWatch.js';
+import {
+  POST_PUMP_NO_BUY_WATCH_VERSION,
+  evaluatePostPumpNoBuyWatch,
+} from './postPumpNoBuyWatch.js';
+import {
+  POST_DUMP_NO_SELL_WATCH_VERSION,
+  evaluatePostDumpNoSellWatch,
+} from './postDumpNoSellWatch.js';
 
 export const COIN_LEVEL_ENTRY_WATCH_VERSION = 'COIN_LEVEL_ENTRY_WATCH_V3_ENTRY_SCORE_TARGETS_20260920';
 export const COIN_LEVEL_ENTRY_SCORE_VERSION = 'COIN_LEVEL_ENTRY_SCORE_V1_CAUSAL_TARGETS_20260920';
+export const COIN_LEVEL_PENDING_LIMIT_INVALIDATION_VERSION = 'COIN_LEVEL_PENDING_LIMIT_INVALIDATION_V1_20260921';
 
 const INTERVAL_MS = Object.freeze({ '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000 });
 const MIN_CLOSED_BARS = 100;
@@ -240,19 +259,144 @@ function recentBreak(rows15m, side, now) {
   return null;
 }
 
+// Evaluate the exact breakout that created a pending LIMIT, independently of the
+// UI's top-30 candidate list. Missing/stale cache or analysis errors must never
+// be interpreted as an invalid signal.
+export function evaluateCoinLevelPendingLimit({
+  symbol, side, confirmationAt, referenceLevel, submittedAt,
+  getKlines, now = Date.now(), analyze = buildCoinLevelAnalysis,
+} = {}) {
+  const unknown = (reason) => ({ status: 'UNKNOWN', reason });
+  const invalid = (reason, lastClosed5mAt) => ({ status: 'INVALID', reason, lastClosed5mAt });
+  const confirmedAt = finite(confirmationAt);
+  const submittedAtMs = finite(submittedAt);
+  const level = finite(referenceLevel);
+  if (!/^[A-Z0-9]{2,40}USDT$/.test(String(symbol ?? ''))
+    || !['LONG', 'SHORT'].includes(side)
+    || !(confirmedAt > 0) || !(submittedAtMs > 0) || !(level > 0)
+    || typeof getKlines !== 'function') return unknown('MISSING_ORDER_METADATA');
+  const klinesByInterval = {};
+  for (const interval of Object.keys(INTERVAL_MS)) {
+    let rows;
+    try { rows = closedFreshRows(getKlines(symbol, interval, 142), interval, now); }
+    catch { return unknown('KLINE_CACHE_ERROR'); }
+    if (!rows) return unknown(`MISSING_FRESH_${interval.toUpperCase()}`);
+    klinesByInterval[interval] = rows;
+  }
+  const last5m = klinesByInterval['5m'].at(-1);
+  const lastClosed5mAt = Number(last5m.closeTime);
+  if (lastClosed5mAt <= submittedAtMs || lastClosed5mAt < confirmedAt) {
+    return unknown('WAIT_NEXT_CLOSED_5M');
+  }
+  let analysis;
+  try {
+    const lastPrice = Number(last5m.close);
+    if (!(lastPrice > 0)) return unknown('INVALID_LAST_PRICE');
+    analysis = analyze({
+      symbol, klinesByInterval, now,
+      premiumIndex: { markPrice: lastPrice }, ticker24h: { lastPrice },
+    });
+  } catch { return unknown('ANALYSIS_ERROR'); }
+  const score = Number(analysis?.recommendation?.trendScore);
+  const frames = analysis?.trend?.frames;
+  if (!Number.isFinite(score) || !Array.isArray(frames)) return unknown('INCOMPLETE_ANALYSIS');
+  const frameStates = Object.fromEntries(frames.map((frame) => [frame.interval, frame.state]));
+  if (!['UP', 'DOWN'].includes(frameStates['15m']) || !['UP', 'DOWN'].includes(frameStates['1h'])) {
+    return unknown('INCOMPLETE_TREND_FRAMES');
+  }
+  if (side === 'LONG' ? score < MIN_DIRECTIONAL_SCORE : score > -MIN_DIRECTIONAL_SCORE) {
+    return invalid('TREND_SCORE_LOST', lastClosed5mAt);
+  }
+  const expectedState = side === 'LONG' ? 'UP' : 'DOWN';
+  if (frameStates['15m'] !== expectedState || frameStates['1h'] !== expectedState) {
+    return invalid('MTF_DIRECTION_LOST', lastClosed5mAt);
+  }
+  const event = recentBreak(klinesByInterval['15m'], side, now);
+  if (!event || event.at !== confirmedAt
+    || Math.abs(event.level / level - 1) > 1e-8) {
+    return invalid('BREAKOUT_EXPIRED_OR_REPLACED', lastClosed5mAt);
+  }
+  const wrongSide = klinesByInterval['5m'].some((row) => Number(row.closeTime) > confirmedAt
+    && (side === 'LONG' ? Number(row.close) < level : Number(row.close) > level));
+  if (wrongSide) return invalid('CLOSED_5M_INVALIDATED_LEVEL', lastClosed5mAt);
+  return { status: 'VALID', reason: 'ORIGINAL_BREAKOUT_STILL_VALID', lastClosed5mAt };
+}
+
+export function advanceCoinLevelLimitInvalidation(previous, assessment) {
+  if (assessment?.status !== 'INVALID' || !(Number(assessment.lastClosed5mAt) > 0)) return null;
+  const sameObservation = previous?.reason === assessment.reason
+    && previous?.lastClosed5mAt === assessment.lastClosed5mAt;
+  const count = sameObservation ? Math.min(2, Number(previous.count || 0) + 1) : 1;
+  return { reason: assessment.reason, lastClosed5mAt: assessment.lastClosed5mAt, count,
+    cancel: count >= 2 };
+}
+
 export function scanCoinLevelEntryWatch({ symbols, getKlines, now = Date.now(), analyze = buildCoinLevelAnalysis } = {}) {
   const candidates = [];
+  const earlyLongWatches = [];
+  const earlyShortWatches = [];
+  const postPumpNoBuyWatches = [];
+  const postDumpNoSellWatches = [];
+  const earlyLongExcludedByReason = {};
+  const earlyShortExcludedByReason = {};
+  const postPumpNoBuyExcludedByReason = {};
+  const postDumpNoSellExcludedByReason = {};
+  let earlyLongCovered = 0;
+  let earlyLongEvaluated = 0;
+  let earlyShortCovered = 0;
+  let earlyShortEvaluated = 0;
   let covered = 0;
   for (const item of Array.isArray(symbols) ? symbols : []) {
     const symbol = typeof item === 'string' ? item : item?.symbol;
     if (!/^[A-Z0-9]{2,40}USDT$/.test(String(symbol ?? ''))) continue;
+    earlyLongEvaluated += 1;
     const klinesByInterval = {};
-    for (const interval of Object.keys(INTERVAL_MS)) {
+    for (const interval of ['5m', '15m', '1h']) {
       const rows = closedFreshRows(getKlines(symbol, interval, 142), interval, now);
-      if (!rows) break;
-      klinesByInterval[interval] = rows;
+      if (rows) klinesByInterval[interval] = rows;
     }
-    if (Object.keys(klinesByInterval).length !== 4) continue;
+    const earlyLongEvaluation = evaluateCoinLevelEarlyLongWatch({ symbol, klinesByInterval, now });
+    if (earlyLongEvaluation.watch) earlyLongWatches.push(earlyLongEvaluation.watch);
+    else for (const reason of earlyLongEvaluation.reasons) {
+      earlyLongExcludedByReason[reason] = (earlyLongExcludedByReason[reason] ?? 0) + 1;
+    }
+    earlyShortEvaluated += 1;
+    const earlyShortEvaluation = evaluateCoinLevelEarlyShortWatch({ symbol, klinesByInterval, now });
+    if (earlyShortEvaluation.watch) earlyShortWatches.push(earlyShortEvaluation.watch);
+    else for (const reason of earlyShortEvaluation.reasons) {
+      earlyShortExcludedByReason[reason] = (earlyShortExcludedByReason[reason] ?? 0) + 1;
+    }
+    if (klinesByInterval['5m'] && klinesByInterval['15m']) {
+      const postPumpNoBuyEvaluation = evaluatePostPumpNoBuyWatch({
+        symbol,
+        rows5m: klinesByInterval['5m'],
+        rows15m: klinesByInterval['15m'],
+      });
+      if (postPumpNoBuyEvaluation.watch) postPumpNoBuyWatches.push(postPumpNoBuyEvaluation.watch);
+      else {
+        const reason = postPumpNoBuyEvaluation.reason ?? 'UNKNOWN';
+        postPumpNoBuyExcludedByReason[reason] = (postPumpNoBuyExcludedByReason[reason] ?? 0) + 1;
+      }
+      const postDumpNoSellEvaluation = evaluatePostDumpNoSellWatch({
+        symbol,
+        rows5m: klinesByInterval['5m'],
+        rows15m: klinesByInterval['15m'],
+      });
+      if (postDumpNoSellEvaluation.watch) postDumpNoSellWatches.push(postDumpNoSellEvaluation.watch);
+      else {
+        const reason = postDumpNoSellEvaluation.reason ?? 'UNKNOWN';
+        postDumpNoSellExcludedByReason[reason] = (postDumpNoSellExcludedByReason[reason] ?? 0) + 1;
+      }
+    } else {
+      postPumpNoBuyExcludedByReason.INSUFFICIENT_DATA = (postPumpNoBuyExcludedByReason.INSUFFICIENT_DATA ?? 0) + 1;
+      postDumpNoSellExcludedByReason.INSUFFICIENT_DATA = (postDumpNoSellExcludedByReason.INSUFFICIENT_DATA ?? 0) + 1;
+    }
+    if (Object.keys(klinesByInterval).length !== 3) continue;
+    earlyLongCovered += 1;
+    earlyShortCovered += 1;
+    const rows4h = closedFreshRows(getKlines(symbol, '4h', 142), '4h', now);
+    if (!rows4h) continue;
+    klinesByInterval['4h'] = rows4h;
     covered += 1;
     const last5m = klinesByInterval['5m'].at(-1);
     const lastPrice = Number(last5m.close);
@@ -262,9 +406,9 @@ export function scanCoinLevelEntryWatch({ symbols, getKlines, now = Date.now(), 
       analysis = analyze({ symbol, klinesByInterval, now, premiumIndex: { markPrice: lastPrice }, ticker24h: { lastPrice } });
     } catch { continue; }
     const score = Number(analysis?.recommendation?.trendScore);
+    const frameStates = Object.fromEntries((analysis?.trend?.frames ?? []).map((frame) => [frame.interval, frame.state]));
     const side = score >= MIN_DIRECTIONAL_SCORE ? 'LONG' : score <= -MIN_DIRECTIONAL_SCORE ? 'SHORT' : null;
     if (!side) continue;
-    const frameStates = Object.fromEntries((analysis?.trend?.frames ?? []).map((frame) => [frame.interval, frame.state]));
     const requiredState = side === 'LONG' ? 'UP' : 'DOWN';
     if (frameStates['15m'] !== requiredState || frameStates['1h'] !== requiredState) continue;
     const event = recentBreak(klinesByInterval['15m'], side, now);
@@ -305,11 +449,71 @@ export function scanCoinLevelEntryWatch({ symbols, getKlines, now = Date.now(), 
   }
   candidates.sort((a, b) => Number(Boolean(b.retestAt)) - Number(Boolean(a.retestAt))
     || b.confirmationAt - a.confirmationAt || Math.abs(b.score) - Math.abs(a.score));
+  const confirmedLongSymbols = new Set(candidates
+    .filter((candidate) => candidate.side === 'LONG').map((candidate) => candidate.symbol));
+  const confirmedShortSymbols = new Set(candidates
+    .filter((candidate) => candidate.side === 'SHORT').map((candidate) => candidate.symbol));
+  const eligibleEarlyLongWatches = earlyLongWatches
+    .filter((watch) => !confirmedLongSymbols.has(watch.symbol))
+    .sort((a, b) => b.observedAt - a.observedAt || b.volumeRatio - a.volumeRatio);
+  const eligibleEarlyShortWatches = earlyShortWatches
+    .filter((watch) => !confirmedShortSymbols.has(watch.symbol))
+    .sort((a, b) => b.observedAt - a.observedAt || b.volumeRatio - a.volumeRatio);
+  postPumpNoBuyWatches.sort((a, b) => b.observedAt - a.observedAt || b.score - a.score);
+  postDumpNoSellWatches.sort((a, b) => b.observedAt - a.observedAt || b.score - a.score);
   return {
     version: COIN_LEVEL_ENTRY_WATCH_VERSION,
     entryScoreVersion: COIN_LEVEL_ENTRY_SCORE_VERSION,
     generatedAt: now, observeOnly: true,
     minDirectionalScore: MIN_DIRECTIONAL_SCORE, universe: Array.isArray(symbols) ? symbols.length : 0,
     covered, candidates: candidates.slice(0, 30), totalCandidates: candidates.length,
+    earlyLongHistoryEvents: eligibleEarlyLongWatches,
+    earlyLongWatches: eligibleEarlyLongWatches.slice(0, 30),
+    totalEarlyLongWatches: eligibleEarlyLongWatches.length,
+    earlyLongDiagnostics: {
+      version: COIN_LEVEL_EARLY_LONG_WATCH_VERSION,
+      minScore: COIN_LEVEL_EARLY_LONG_MIN_SCORE,
+      evaluated: earlyLongEvaluated,
+      covered3tf: earlyLongCovered,
+      detectedBeforeConfirmedFilter: earlyLongWatches.length,
+      hiddenConfirmed: earlyLongWatches.length - eligibleEarlyLongWatches.length,
+      accepted: eligibleEarlyLongWatches.length,
+      reasonCountsAreNonExclusive: true,
+      excludedByReason: earlyLongExcludedByReason,
+    },
+    earlyShortHistoryEvents: eligibleEarlyShortWatches,
+    earlyShortWatches: eligibleEarlyShortWatches.slice(0, 30),
+    totalEarlyShortWatches: eligibleEarlyShortWatches.length,
+    earlyShortDiagnostics: {
+      version: COIN_LEVEL_EARLY_SHORT_WATCH_VERSION,
+      minScore: COIN_LEVEL_EARLY_SHORT_MIN_SCORE,
+      evaluated: earlyShortEvaluated,
+      covered3tf: earlyShortCovered,
+      detectedBeforeConfirmedFilter: earlyShortWatches.length,
+      hiddenConfirmed: earlyShortWatches.length - eligibleEarlyShortWatches.length,
+      accepted: eligibleEarlyShortWatches.length,
+      reasonCountsAreNonExclusive: true,
+      excludedByReason: earlyShortExcludedByReason,
+    },
+    postPumpNoBuyWatches: postPumpNoBuyWatches.slice(0, 30),
+    totalPostPumpNoBuyWatches: postPumpNoBuyWatches.length,
+    postPumpNoBuyDiagnostics: {
+      version: POST_PUMP_NO_BUY_WATCH_VERSION,
+      observeOnly: true,
+      binanceEligible: false,
+      evaluated: earlyLongEvaluated,
+      accepted: postPumpNoBuyWatches.length,
+      excludedByReason: postPumpNoBuyExcludedByReason,
+    },
+    postDumpNoSellWatches: postDumpNoSellWatches.slice(0, 30),
+    totalPostDumpNoSellWatches: postDumpNoSellWatches.length,
+    postDumpNoSellDiagnostics: {
+      version: POST_DUMP_NO_SELL_WATCH_VERSION,
+      observeOnly: true,
+      binanceEligible: false,
+      evaluated: earlyLongEvaluated,
+      accepted: postDumpNoSellWatches.length,
+      excludedByReason: postDumpNoSellExcludedByReason,
+    },
   };
 }

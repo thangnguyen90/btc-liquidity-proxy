@@ -6,6 +6,7 @@ import {
   EMA_FAN_LONG_ENTRY_CONFIRMATION_VERSION,
   LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_VERSION,
   LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_VERSION,
+  LIQUID_FLOW_V2_PAPER_SNAPSHOT_PERF_VERSION,
   LIQUID_FLOW_V2_PAPER_VERSION,
   LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION,
   LIQUID_FLOW_V2_PRIMARY_POST_PUMP_BINANCE_VERSION,
@@ -62,6 +63,8 @@ assert.equal(LIQUID_FLOW_V2_PAPER_LABEL_DATE_STATS_VERSION, 'LIQUID_FLOW_V2_PAPE
 assert.equal(LIQUID_FLOW_V2_SWEEP_ENTRY_POLICY_VERSION, 'LIQUID_FLOW_V2_SWEEP_ENTRY_GUARD_V1_20260816');
 assert.equal(LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_VERSION,
   'LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_V1_ACTIVE_ONLY_20260831');
+assert.equal(LIQUID_FLOW_V2_PAPER_SNAPSHOT_PERF_VERSION,
+  'LIQUID_FLOW_V2_PAPER_SNAPSHOT_BOUNDED_CACHE_V2_20260926');
 const compactSnapshot = compactLiquidFlowV2PaperSnapshot({
   total: 3,
   closed: 1,
@@ -602,6 +605,45 @@ assert.equal(summary.closed, 1);
 assert.equal(summary.wins, 1);
 assert.equal(summary.losses, 0);
 assert.equal(summary.winRate, 100);
+assert.equal(summary.historyOmitted, false);
+assert.equal(summary.returnedTrades, 2);
+
+const boundedSummary = summarizeLiquidFlowV2Paper([
+  {
+    ...shortTrade,
+    id: 'closed-old',
+    status: 'CLOSED',
+    outcome: 'SL',
+    entryAt: 500,
+    exitPrice: shortPlan.stopLoss,
+    exitAt: 600,
+  },
+  {
+    ...shortTrade,
+    id: 'closed-new',
+    status: 'CLOSED',
+    outcome: 'TP',
+    entryAt: 2_000,
+    exitPrice: shortPlan.takeProfit,
+    exitAt: 2_100,
+  },
+  {
+    ...shortTrade,
+    id: 'active-always-returned',
+    symbol: 'ACTIVEUSDT',
+    status: 'OPEN',
+    entryAt: 1_500,
+  },
+], new Map([['ACTIVEUSDT', 0.99]]), 3_000, { tradeLimit: 1 });
+assert.equal(boundedSummary.total, 3);
+assert.equal(boundedSummary.closed, 2);
+assert.equal(boundedSummary.open, 1);
+assert.equal(boundedSummary.historyOmitted, true);
+assert.equal(boundedSummary.returnedTrades, 2);
+assert.deepEqual(
+  boundedSummary.trades.map((trade) => trade.id),
+  ['closed-new', 'active-always-returned'],
+);
 
 const skyaiRow = {
   symbol: 'SKYAIUSDT',
@@ -623,6 +665,39 @@ const skyaiRow = {
 };
 const tempRoot = await mkdtemp(join(tmpdir(), 'liquid-flow-v2-paper-'));
 try {
+  const snapshotCacheFile = join(tempRoot, 'snapshot-cache-paper.json');
+  await writeFile(snapshotCacheFile, JSON.stringify({
+    version: LIQUID_FLOW_V2_PAPER_VERSION,
+    settings,
+    trades: [
+      { ...shortTrade, id: 'cache-open', symbol: 'CACHEUSDT', status: 'OPEN' },
+      {
+        ...shortTrade,
+        id: 'cache-closed',
+        status: 'CLOSED',
+        exitPrice: shortPlan.takeProfit,
+        netPnl: 0.9,
+        netRoe: 9,
+        grossPnl: 1,
+        grossRoe: 10,
+        estimatedFee: 0.1,
+      },
+    ],
+  }));
+  const snapshotCacheManager = new LiquidFlowV2PaperManager({
+    file: snapshotCacheFile,
+    settings,
+    now: () => 3_000,
+  });
+  await snapshotCacheManager.init();
+  snapshotCacheManager.marks.set('CACHEUSDT', 0.99);
+  const cachedFirst = snapshotCacheManager.snapshot();
+  snapshotCacheManager.marks.set('CACHEUSDT', 0.98);
+  const cachedSecond = snapshotCacheManager.snapshot();
+  assert.equal(cachedSecond.total, cachedFirst.total);
+  assert.equal(cachedSecond.closed, cachedFirst.closed);
+  assert(cachedSecond.openPnl > cachedFirst.openPnl);
+
   const manager = new LiquidFlowV2PaperManager({
     file: join(tempRoot, 'paper.json'),
     settings,

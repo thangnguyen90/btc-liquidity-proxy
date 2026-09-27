@@ -57,6 +57,38 @@ for (const interval of ['5m','15m']) {
     assert.equal(buildExtremeShortSqueezeOrder({...liveFollow,liveUpdatedAt:followLiveNow-30_001},{now:followLiveNow,
       enabledAt:new Date(now-30_000).toISOString(),markPrice:liveFollow.price}),null,'stale live tick blocked');
   } else assert.equal(liveFollowPlan,null,'15m live follow remains observe-only');
+  const closedFollowNow=now+d;
+  const closedFollow=detect([...rows,followReject],{
+    ...opts,symbol:interval==='15m'?'SAGAUSDT':opts.symbol,now:closedFollowNow,
+  }).find(e=>e.stage==='FOLLOW_REJECTION_CLOSED');
+  assert.ok(closedFollow,'closed follow rejection remains detectable');
+  if(interval==='15m') {
+    assert.equal(closedFollow.binanceEligible,true);
+    assert.equal(closedFollow.observeOnly,false);
+    assert.ok(extremeShortSqueezeEvent(closedFollow,closedFollowNow));
+    const closedFollowPlan=buildExtremeShortSqueezeOrder(closedFollow,{now:closedFollowNow,
+      enabledAt:new Date(now-1).toISOString(),markPrice:closedFollow.price});
+    assert.equal(closedFollowPlan.streamId,'extreme-short-squeeze-saga-15m');
+    assert.equal(closedFollowPlan.signalLabel,'FOLLOW_REJECTION_CLOSED');
+    assert.equal(closedFollowPlan.signalInterval,'15m');
+    assert.equal(closedFollowPlan.side,'SELL');
+    assert.equal(closedFollowPlan.orderType,'MARKET');
+    assert.equal(closedFollowPlan.marginUsdt,6);
+    assert.equal(closedFollowPlan.leverage,5);
+    assert.equal(closedFollowPlan.notionalUsdt,30);
+    assert.equal(closedFollowPlan.takeProfitRoePct,15);
+    assert.equal(closedFollowPlan.takeProfitDistanceFraction,.03);
+    assert.equal(closedFollowPlan.stopLossDistanceFraction,.06);
+    assert.equal(buildExtremeShortSqueezeOrder(closedFollow,{now:closedFollowNow,
+      enabledAt:new Date(closedFollow.evaluatedCloseAt+1).toISOString(),markPrice:closedFollow.price}),null,
+    'SAGA closed follow from before enabledAt must never replay');
+    assert.match(extremeShortSqueezePayload(closedFollow).embeds[0].description,/\$6 margin × 5x/);
+    const otherSymbol=detect([...rows,followReject],{...opts,symbol:'OTHERUSDT',now:closedFollowNow})
+      .find(e=>e.stage==='FOLLOW_REJECTION_CLOSED');
+    assert.equal(otherSymbol.binanceEligible,false,'closed 15m follow stays observe-only outside SAGAUSDT');
+    assert.equal(buildExtremeShortSqueezeOrder(otherSymbol,{now:closedFollowNow,
+      enabledAt:new Date(now-1).toISOString(),markPrice:otherSymbol.price}),null);
+  }
   const extended=[...rows,follow,{...follow,openTime:now+d,closeTime:now+2*d-1}];
   assert.equal(detect(extended,{...opts,now:now+2*d}).length,0,'never renew old follow confirmation');
   const continuing={...follow,high:140,low:100,close:103};
@@ -105,6 +137,20 @@ for (const interval of ['5m','15m']) {
     const placed=await runner.handle(event);assert.equal(placed.status,'placed');assert.equal(placed.orderId,123);
     assert.equal(asserted,1);assert.equal(submitted.signalEntryPrice,event.price);
     assert.equal((await runner.handle(event)).status,'deduped','same event is never submitted twice');
+  } else {
+    const sagaFollow=detect([...rows,followReject],{...opts,symbol:'SAGAUSDT',now:now+d})
+      .find(e=>e.stage==='FOLLOW_REJECTION_CLOSED');
+    const route={key:JSON.stringify(['extreme-short-squeeze','extreme-short-squeeze-saga-15m','FOLLOW_REJECTION_CLOSED','SHORT'])};
+    const controlState={enabled:true,routes:{[route.key]:{enabled:true,enabledAt:new Date(now-1).toISOString(),
+      marginUsdt:6,leverage:5,takeProfitRoePct:15}}};
+    let submitted=null,asserted=0;
+    const runner=new ExtremeShortSqueezeBinanceRunner({file:join(dir,'saga-binance.json'),now:()=>now+d,
+      controls:{register:()=>route,read:()=>controlState,assertEntry:p=>{asserted++;assert.equal(p.notionalUsdt,30);}},
+      getContext:async()=>({enabled:true,positions:[],openOrders:[],markPrice:sagaFollow.price}),
+      submit:async p=>{submitted=p;return {status:'placed',orderResult:{orderId:456}};}});
+    const placed=await runner.handle(sagaFollow);assert.equal(placed.status,'placed');assert.equal(placed.orderId,456);
+    assert.equal(asserted,1);assert.equal(submitted.marginUsdt,6);assert.equal(submitted.side,'SELL');
+    assert.equal((await runner.handle(sagaFollow)).status,'deduped','same SAGA 15m closed follow is never submitted twice');
   }
   let clock=now,sends=0;
   const create=(fetchImpl=async()=>{sends++;return {ok:true};})=>new CoinHorizonDiscordNotifier({
@@ -174,4 +220,4 @@ for (const interval of ['5m','15m']) {
   assert.deepEqual(stages,['FIRST_PUMP_FLUSH_RECLAIM_LONG_CLOSED']);
 }
 
-console.log('Extreme squeeze: closed pump, live follow and stable near-peak 5m SHORT routes plus cyan first-pump flush/reclaim LONG Discord-only alert; freshness, dedupe and 429 passed; mock only.');
+console.log('Extreme squeeze: 5m SHORT routes plus SAGAUSDT 15m closed-follow $6 SHORT and cyan first-pump LONG observe-only; freshness, dedupe and 429 passed; mock only.');

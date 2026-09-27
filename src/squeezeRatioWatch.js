@@ -1,8 +1,9 @@
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export const SQUEEZE_RATIO_VERSION = 'SQUEEZE_RATIO_WATCH_V1_20260920';
+export const SQUEEZE_RATIO_VERSION = 'SQUEEZE_RATIO_LIVE_VIEW_V3_20260926';
 const Q = 900_000, H = 3600_000;
+export const SQUEEZE_RATIO_LIVE_WINDOW_MS = Q;
 const pct = (a, b) => a > 0 && b > 0 ? (b / a - 1) * 100 : null;
 const median = values => { const a = [...values].sort((a,b)=>a-b), i = a.length >> 1; return a.length % 2 ? a[i] : (a[i-1]+a[i])/2; };
 function ema(values, period) {
@@ -15,7 +16,7 @@ function ema(values, period) {
 }
 
 // No open candles, partial hours or future derivatives samples may enter a decision.
-export function squeezePriceCandidate(symbol, rows, now = Date.now()) {
+function squeezePriceCandidateForSide(symbol, rows, now, squeezeSide) {
   const bars = [...new Map((rows ?? []).filter(b => Number(b.closeTime) < now)
     .map(b => [Number(b.openTime), b])).values()].sort((a,b)=>a.openTime-b.openTime);
   const b = bars.at(-1);
@@ -26,8 +27,11 @@ export function squeezePriceCandidate(symbol, rows, now = Date.now()) {
   if (prior.some((x,i)=>x.openTime !== b.openTime-(20-i)*Q)) return null;
   const volumeBase = median(prior.map(x=>Number(x.quoteVolume)));
   const volumeX = volumeBase>0 ? b.quoteVolume/volumeBase : 0;
-  if (!(b.close>b.open && b.close>Math.max(...prior.map(x=>x.high)) && volumeX>=2
-    && b.high>b.low && (b.close-b.low)/(b.high-b.low)>=0.75)) return null;
+  const rangePosition=b.high>b.low?(b.close-b.low)/(b.high-b.low):null;
+  const priceQualified=squeezeSide==='LONG'
+    ? b.close<b.open && b.close<Math.min(...prior.map(x=>x.low)) && rangePosition<=0.25
+    : b.close>b.open && b.close>Math.max(...prior.map(x=>x.high)) && rangePosition>=0.75;
+  if (!(priceQualified && volumeX>=2 && b.high>b.low)) return null;
   const groups = new Map();
   for (const row of bars) { const t=Math.floor(row.openTime/H)*H; const a=groups.get(t)??[];a.push(row);groups.set(t,a); }
   const hours = [...groups].filter(([t,a])=>a.length===4&&a.every((x,i)=>x.openTime===t+i*Q))
@@ -35,8 +39,20 @@ export function squeezePriceCandidate(symbol, rows, now = Date.now()) {
   if (hours.length<29 || b.closeTime-hours.at(-1).end>H
     || hours.slice(-29).some((x,i,a)=>i && x.t-a[i-1].t!==H)) return null;
   const e13=ema(hours.map(x=>x.close),13), e25=ema(hours.map(x=>x.close),25);
-  if (!(hours.at(-1).close>e13.at(-1) && e13.at(-1)>e25.at(-1) && e25.at(-1)>e25.at(-5))) return null;
-  return {symbol,at:Number(b.closeTime),signalPrice:Number(b.close),volumeX,ema13h:e13.at(-1),ema25h:e25.at(-1)};
+  const trendQualified=squeezeSide==='LONG'
+    ? hours.at(-1).close<e13.at(-1) && e13.at(-1)<e25.at(-1) && e25.at(-1)<e25.at(-5)
+    : hours.at(-1).close>e13.at(-1) && e13.at(-1)>e25.at(-1) && e25.at(-1)>e25.at(-5);
+  if (!trendQualified) return null;
+  return {symbol,at:Number(b.closeTime),signalPrice:Number(b.close),volumeX,
+    ema13h:e13.at(-1),ema25h:e25.at(-1),squeezeSide,priceDirection:squeezeSide==='LONG'?'DOWN':'UP'};
+}
+
+export function squeezePriceCandidate(symbol, rows, now = Date.now()) {
+  return squeezePriceCandidateForSide(symbol,rows,now,'SHORT');
+}
+
+export function squeezeLongPriceCandidate(symbol, rows, now = Date.now()) {
+  return squeezePriceCandidateForSide(symbol,rows,now,'LONG');
 }
 
 export function derivativeAsOf(rows, at) {
@@ -48,21 +64,26 @@ export function derivativeAsOf(rows, at) {
 export function qualifySqueeze(candidate, ratios, interests) {
   const current=derivativeAsOf(ratios,candidate.at), previous=derivativeAsOf(ratios,candidate.at-H);
   const ratio=Number(current?.longShortRatio), ratioDelta=pct(Number(previous?.longShortRatio),ratio);
-  if (!(ratio>0 && ratio<1 && ratioDelta!==null && ratioDelta<=-10)) return null;
+  const squeezeSide=candidate.squeezeSide==='LONG'?'LONG':'SHORT';
+  const ratioQualified=squeezeSide==='LONG'
+    ? ratio>1 && ratioDelta!==null && ratioDelta>=10
+    : ratio>0 && ratio<1 && ratioDelta!==null && ratioDelta<=-10;
+  if (!ratioQualified) return null;
   const oi=derivativeAsOf(interests,candidate.at), old=derivativeAsOf(interests,candidate.at-H);
   const oiDelta=pct(Number(old?.sumOpenInterest),Number(oi?.sumOpenInterest));
-  return {...candidate,version:SQUEEZE_RATIO_VERSION,observeOnly:true,ratio,ratioDelta,oiDelta,
+  return {...candidate,squeezeSide,version:SQUEEZE_RATIO_VERSION,observeOnly:true,ratio,ratioDelta,oiDelta,
     ratioAt:Number(current.timestamp),oiAt:oi?Number(oi.timestamp):null,
     tier:oiDelta!==null && oiDelta>=3?'RATIO_OI':'RATIO'};
 }
 
 export function squeezeDiscordPayload(e) {
-  const strong=e.tier==='RATIO_OI', num=v=>Number.isFinite(v)?v.toFixed(2):'thiếu dữ liệu';
+  const strong=e.tier==='RATIO_OI', squeezeSide=e.squeezeSide==='LONG'?'LONG':'SHORT';
+  const isLongSqueeze=squeezeSide==='LONG', num=v=>Number.isFinite(v)?v.toFixed(2):'thiếu dữ liệu';
   return {username:'Squeeze Ratio Watch',allowed_mentions:{parse:[]},embeds:[{
-    title:`${strong?'🟣':'🟠'} ${e.symbol} · NGUY CƠ SQUEEZE SHORT · ${strong?'RATIO + OI':'RATIO'}`,
-    color:strong?0xa855f7:0xf59e0b,
-    description:'**OBSERVE ONLY — KHÔNG TỰ VÀO BINANCE**\nGiá phá đỉnh nhưng tỷ lệ tài khoản long/short giảm. Không phải xác nhận đảo chiều hay bằng chứng thanh lý thực tế.',
-    fields:[{name:'NẾN ĐÓNG 15m + XU HƯỚNG 1h',value:`Giá xác nhận ${e.signalPrice}\nVolume ${num(e.volumeX)}× median 20 nến trước\n1h close > EMA13 > EMA25; EMA25 tăng so với 4h trước.`},
+    title:`${strong?'🟣':isLongSqueeze?'🔴':'🟠'} ${e.symbol} · NGUY CƠ SQUEEZE ${squeezeSide} · ${strong?'RATIO + OI':'RATIO'}`,
+    color:strong?0xa855f7:isLongSqueeze?0xf43f5e:0xf59e0b,
+    description:`**OBSERVE ONLY — KHÔNG TỰ VÀO BINANCE**\n${isLongSqueeze?'Giá phá đáy nhưng tỷ lệ tài khoản long/short tăng.':'Giá phá đỉnh nhưng tỷ lệ tài khoản long/short giảm.'} Không phải xác nhận đảo chiều hay bằng chứng thanh lý thực tế.`,
+    fields:[{name:'NẾN ĐÓNG 15m + XU HƯỚNG 1h',value:`Giá xác nhận ${e.signalPrice}\nVolume ${num(e.volumeX)}× median 20 nến trước\n${isLongSqueeze?'1h close < EMA13 < EMA25; EMA25 giảm so với 4h trước.':'1h close > EMA13 > EMA25; EMA25 tăng so với 4h trước.'}`},
       {name:'LONG / SHORT RATIO · OI',value:`Account L/S ${num(e.ratio)} · thay đổi 1h ${num(e.ratioDelta)}%\nOI số lượng thay đổi 1h ${num(e.oiDelta)}${e.oiDelta===null?'':'%'}\nDữ liệu 15m được lùi 15 phút; account ratio không phản ánh quy mô vị thế.`},
       {name:'THỜI ĐIỂM VIỆT NAM',value:new Date(e.at+1).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false})},
       {name:'BIỂU ĐỒ',value:`[Binance](https://www.binance.com/en/futures/${encodeURIComponent(e.symbol)})`}],
@@ -84,7 +105,8 @@ export class SqueezeRatioWatch {
       try { state=JSON.parse(await readFile(this.stateFile,'utf8')); }
       catch(e) { if(e.code!=='ENOENT') throw new Error('Squeeze state unreadable'); state={events:[]}; }
       if (!Array.isArray(state.events)) throw new Error('Squeeze state invalid');
-      state.anchors ??= Object.fromEntries(state.events.filter(e=>e.delivery!=='rejected').map(e=>[`${e.symbol}:${e.tier}`,e.at]));
+      state.anchors ??= Object.fromEntries(state.events.filter(e=>e.delivery!=='rejected')
+        .map(e=>[`${e.symbol}:${e.squeezeSide==='LONG'?'LONG':'SHORT'}:${e.tier}`,e.at]));
       this.state=state;
     })();
     try {await this.loading;} finally {this.loading=null;}
@@ -99,19 +121,40 @@ export class SqueezeRatioWatch {
   }
   async snapshot() {
     await this.load();
+    const now=this.now();
+    const events=[...this.state.events].reverse().map(e=>{
+      const hasExplicitSide=e.squeezeSide==='LONG'||e.squeezeSide==='SHORT';
+      const squeezeSide=e.squeezeSide==='LONG'?'LONG':'SHORT';
+      const ageMs=now-Number(e.at);
+      const isLive=hasExplicitSide&&ageMs>=0&&ageMs<=SQUEEZE_RATIO_LIVE_WINDOW_MS;
+      return {...e,squeezeSide,isLegacy:!hasExplicitSide,isLive,ageMs,
+        expiresAt:Number(e.at)+SQUEEZE_RATIO_LIVE_WINDOW_MS};
+    });
+    const liveEvents=events.filter(e=>e.isLive);
     return {version:SQUEEZE_RATIO_VERSION,observeOnly:true,configured:!!this.webhookUrl(),
-      health:{...this.health},events:[...this.state.events].reverse()};
+      liveWindowMs:SQUEEZE_RATIO_LIVE_WINDOW_MS,health:{...this.health,
+        liveShort:liveEvents.filter(e=>e.squeezeSide==='SHORT').length,
+        liveLong:liveEvents.filter(e=>e.squeezeSide==='LONG').length},
+      liveEvents,historyEvents:events.filter(e=>!e.isLive),events};
   }
   async deliver(event) {
     await this.load();
     if (event.at<this.startedAt || event.at>=this.now() || this.now()-event.at>Q || !this.webhookUrl() || this.now()<this.retryAfter) return;
     // A stronger tier may follow a ratio-only alert. A strong alert also covers ratio-only for six hours.
-    const anchorKey=`${event.symbol}:${event.tier}`;
-    if ([this.state.anchors[anchorKey],event.tier==='RATIO'?this.state.anchors[`${event.symbol}:RATIO_OI`]:null]
+    const squeezeSide=event.squeezeSide==='LONG'?'LONG':'SHORT';
+    const anchorKey=`${event.symbol}:${squeezeSide}:${event.tier}`;
+    const coveringKeys=[anchorKey,event.tier==='RATIO'?`${event.symbol}:${squeezeSide}:RATIO_OI`:null];
+    if (squeezeSide==='SHORT') coveringKeys.push(
+      `${event.symbol}:${event.tier}`,
+      event.tier==='RATIO'?`${event.symbol}:RATIO_OI`:null,
+    );
+    if (coveringKeys.map(key=>key?this.state.anchors[key]:null)
       .some(at=>Number.isFinite(at)&&event.at-at<6*H)) return;
-    const existing=this.state.events.find(e=>e.id===`${event.symbol}:${event.at}:${event.tier}`);
+    const eventId=`${event.symbol}:${squeezeSide}:${event.at}:${event.tier}`;
+    const legacyId=squeezeSide==='SHORT'?`${event.symbol}:${event.at}:${event.tier}`:null;
+    const existing=this.state.events.find(e=>e.id===eventId||(legacyId&&e.id===legacyId));
     if (existing && existing.retryAt>this.now()) return;
-    const record=existing??{...event,id:`${event.symbol}:${event.at}:${event.tier}`,detectedAt:this.now()};
+    const record=existing??{...event,squeezeSide,id:eventId,detectedAt:this.now()};
     if (!existing) this.state.events.push(record);
     // Durable intent BEFORE POST: crash/timeout is unknown, not safe to auto-replay a webhook.
     record.delivery='unknown'; delete record.retryAt;
@@ -147,28 +190,34 @@ export class SqueezeRatioWatch {
         if (this.isBusy()) break;
         const rows=this.cache.getIfCached(symbol,'15m',500)??[];
         if (rows.length>=120) ready++;
-        const candidate=squeezePriceCandidate(symbol,rows,this.now());
-        if (!candidate || candidate.at<this.startedAt) continue;
-        candidates++;
-        const key=`${symbol}:${candidate.at}`;
-        if (this.checked.has(key) || requests>=12) continue;
-        requests++;
-        try {
-          const options={priority:8,dropOnCongestion:true,source:'SqueezeRatioWatch'};
-          const ratios=await this.client.getGlobalLongShortRatio(symbol,'15m',12,options);
-          if (!derivativeAsOf(ratios,candidate.at) || !derivativeAsOf(ratios,candidate.at-H)) continue;
-          const basic=qualifySqueeze(candidate,ratios,[]);
-          if (!basic) {this.checked.set(key,candidate.at);continue;}
-          let interests=[];
-          try {interests=await this.client.get('/futures/data/openInterestHist',{symbol,period:'15m',limit:12},options);}
-          catch {errors++;}
-          const event=qualifySqueeze(candidate,ratios,interests);
-          await this.deliver(event);
-          const completeOi=derivativeAsOf(interests,candidate.at)&&derivativeAsOf(interests,candidate.at-H);
-          const delivered=this.state.events.some(e=>e.symbol===symbol&&candidate.at-e.at<6*H
-            && e.delivery!=='rejected' && (e.tier===event.tier || event.tier==='RATIO'));
-          if (completeOi && delivered) this.checked.set(key,candidate.at);
-        } catch {errors++;}
+        const priceCandidates=[
+          squeezePriceCandidate(symbol,rows,this.now()),
+          squeezeLongPriceCandidate(symbol,rows,this.now()),
+        ].filter(candidate=>candidate&&candidate.at>=this.startedAt);
+        candidates+=priceCandidates.length;
+        for (const candidate of priceCandidates) {
+          const key=`${symbol}:${candidate.squeezeSide}:${candidate.at}`;
+          if (this.checked.has(key) || requests>=12) continue;
+          requests++;
+          try {
+            const options={priority:8,dropOnCongestion:true,source:'SqueezeRatioWatch'};
+            const ratios=await this.client.getGlobalLongShortRatio(symbol,'15m',12,options);
+            if (!derivativeAsOf(ratios,candidate.at) || !derivativeAsOf(ratios,candidate.at-H)) continue;
+            const basic=qualifySqueeze(candidate,ratios,[]);
+            if (!basic) {this.checked.set(key,candidate.at);continue;}
+            let interests=[];
+            try {interests=await this.client.get('/futures/data/openInterestHist',{symbol,period:'15m',limit:12},options);}
+            catch {errors++;}
+            const event=qualifySqueeze(candidate,ratios,interests);
+            await this.deliver(event);
+            const completeOi=derivativeAsOf(interests,candidate.at)&&derivativeAsOf(interests,candidate.at-H);
+            const delivered=this.state.events.some(e=>e.symbol===symbol
+              && (e.squeezeSide==='LONG'?'LONG':'SHORT')===candidate.squeezeSide
+              && candidate.at-e.at<6*H && e.delivery!=='rejected'
+              && (e.tier===event.tier || event.tier==='RATIO'));
+            if (completeOi && delivered) this.checked.set(key,candidate.at);
+          } catch {errors++;}
+        }
       }
       this.checked=new Map([...this.checked].filter(([,at])=>this.now()-at<2*Q));
       Object.assign(this.health,{status:this.isBusy()?'rate_gate_paused':'running',lastScanAt:this.now(),universe:symbols.length,ready,candidates,errors});

@@ -43,7 +43,7 @@ export function normalizeCoinHorizonSweepWebhookUrl(value) {
 }
 
 export function collectCoinHorizonSweepState(analysis = {}, now = Date.now()) {
-  const horizon = buildCoinHorizonAnalysis(analysis, now);
+  const horizon = analysis?.horizonAnalysis ?? buildCoinHorizonAnalysis(analysis, now);
   const symbol = String(analysis?.symbol ?? '').trim().toUpperCase();
   if (!symbol || !horizon.available || horizon.stale) return null;
   const directions = [...new Set((horizon.scenarios ?? []).map((scenario) => scenario.direction))];

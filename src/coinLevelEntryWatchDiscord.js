@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export const COIN_LEVEL_ENTRY_WATCH_DISCORD_VERSION = 'COIN_LEVEL_ENTRY_WATCH_DISCORD_V6_ENTRY_HIGHLIGHT_20260920';
+export const COIN_LEVEL_ENTRY_WATCH_DISCORD_VERSION = 'COIN_LEVEL_ENTRY_WATCH_DISCORD_V7_CANDLE_STATUS_20260921';
 const MAX_SIGNAL_AGE_MS = 45 * 60_000;
 const RETRY_MIN_MS = 60_000;
 const RETRY_MAX_MS = 60 * 60_000;
@@ -9,6 +9,12 @@ const RETRY_MAX_MS = 60 * 60_000;
 function number(value, digits = 8) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed.toFixed(digits).replace(/\.?0+$/, '') : '—';
+}
+
+function candleStatus(candidate) {
+  return Number(candidate?.retestAt) > 0
+    ? '✅ 15m đã xác nhận · retest 5m đã đạt · đủ trạng thái nến để xét MARKET theo route'
+    : '⏳ 15m đã xác nhận · chưa có retest 5m · có thể xét LIMIT tại entry dự kiến';
 }
 
 export function coinLevelEntryWatchDiscordPayload(candidate) {
@@ -25,7 +31,7 @@ export function coinLevelEntryWatchDiscordPayload(candidate) {
     embeds: [{
       title: `🟨 ENTRY DỰ KIẾN · ${candidate.symbol} · ${candidate.side}`,
       color: 0xffc857,
-      description: `**GIÁ ENTRY DỰ KIẾN: ${number(candidate.entryPrice)}**\nVÙNG THAM KHẢO: **${number(candidate.entryZone?.low)} – ${number(candidate.entryZone?.high)}**\n*Chỉ là mốc chờ; tin Discord không xác nhận Binance đã đặt hoặc khớp lệnh.*`,
+      description: `**TRẠNG THÁI NẾN**\n${candleStatus(candidate)}\n\n**GIÁ ENTRY DỰ KIẾN: ${number(candidate.entryPrice)}**\nVÙNG THAM KHẢO: **${number(candidate.entryZone?.low)} – ${number(candidate.entryZone?.high)}**\n*Chỉ là mốc chờ; tin Discord không xác nhận Binance đã đặt hoặc khớp lệnh.*`,
     }, {
       title: `${direction} · ${candidate.symbol} · ĐẠT BỘ LỌC ĐIỂM VÀO`,
       color: isLong ? 0x35f3b0 : 0xff6e87,
@@ -34,6 +40,10 @@ export function coinLevelEntryWatchDiscordPayload(candidate) {
         {
           name: 'ĐIỀU KIỆN ĐÃ ĐẠT',
           value: `Hướng **${candidate.side}** · Trend Score **${number(candidate.score, 2)}**\n15m đã đóng ${isLong ? 'vượt đỉnh' : 'thủng đáy'} 12 nến trước; 15m và 1h đồng hướng.`,
+        },
+        {
+          name: 'TRẠNG THÁI NẾN',
+          value: candleStatus(candidate),
         },
         {
           name: 'MỐC / GIÁ NẾN ĐÓNG',

@@ -1,7 +1,13 @@
 import crypto from "node:crypto";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
 import { dirname, join } from "node:path";
+import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import {
+  applyPaperHotStorePartition,
+  partitionPaperHotRows,
+} from "./paperHotStore.js";
 import {
   RECOMMENDED_DAY_REGIME_VERSION,
   RECOMMENDED_DAY_SELECTION_VERSION,
@@ -36,6 +42,11 @@ import { liveCardKeysFromRows } from "./liquidLiveCardWhitelist.js";
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const recommendationFile = join(rootDir, "data", "recommended-signals.json");
 const paperFile = join(rootDir, "data", "recommended-paper-trades.json");
+const recommendedPaperArchiveFile = join(rootDir, "data", "archive", "recommended-paper-trades.ndjson");
+const RECOMMENDED_PAPER_MAX_HOT_ROWS = Math.max(
+  100,
+  Number(process.env.RECOMMENDED_PAPER_MAX_HOT_ROWS ?? 500),
+);
 const sourceFiles = {
   pump: [join(rootDir, "data", "pump-paper-trades.json")],
   ema: [
@@ -56,6 +67,11 @@ const SOURCE_SYNC_INTERVAL_MS = Math.max(
   60_000,
   Number(process.env.RECOMMENDED_SOURCE_SYNC_INTERVAL_MS ?? 5 * 60_000),
 );
+// Direct source-open events are durable and are the normal live path. Loading
+// every large paper source at startup duplicates the server's hot-store caches
+// and can exhaust the heap before live scanners are ready. Keep the historical
+// reconciliation path opt-in for an explicit maintenance run.
+const SOURCE_FILE_SYNC_ENABLED = process.env.RECOMMENDED_SOURCE_FILE_SYNC_ENABLED === "true";
 const RECOMMENDED_TEST_MARGIN_USDT = 1;
 const RECOMMENDED_CLUSTER_WINDOW_MS = 15 * 60_000;
 const RECOMMENDED_CLUSTER_FULL_SIZE_LIMIT = 3;
@@ -63,6 +79,8 @@ const RECOMMENDED_DEFAULT_SL_ROE = 16;
 const RECOMMENDED_DEFAULT_TP_ROE = 15;
 const RECOMMENDED_PAPER_MODE = "INDEPENDENT_SOCKET_V2";
 const RECOMMENDED_DIRECT_EVENT_MODE = "SOURCE_OPEN_EVENT_V3";
+export const RECOMMENDED_PAPER_SOCKET_PERF_VERSION =
+  "RECOMMENDED_PAPER_SOCKET_ACTIVE_INDEX_V1_20260926";
 const RECOMMENDED_TWO_LAYER_VERSION = "recommended-clone-shadow-v1";
 const RECOMMENDED_MARKET_FIT_VERSION = "recommended-market-fit-shadow-v1";
 const RECOMMENDED_MARKET_FIT_MIN_SAMPLE = 10;
@@ -70,6 +88,25 @@ const RECOMMENDED_MARKET_FIT_DECISION_SAMPLE = 30;
 const RECOMMENDED_CLONE_GOOD_DRIFT_PCT = 0.08;
 const RECOMMENDED_CLONE_RISK_DRIFT_PCT = 0.3;
 const socketProcessAtBySymbol = new Map();
+let recommendedOpenTradeIndexCache = null;
+
+function recommendedOpenTradesForSymbol(store, symbol) {
+  const trades = Array.isArray(store?.trades) ? store.trades : [];
+  if (recommendedOpenTradeIndexCache?.trades !== trades) {
+    const bySymbol = new Map();
+    for (let index = 0; index < trades.length; index += 1) {
+      const trade = trades[index];
+      if (trade?.paperMode !== RECOMMENDED_PAPER_MODE
+        || normalizePart(trade?.status) !== "OPEN") continue;
+      const normalizedSymbol = String(trade?.symbol ?? "").trim().toUpperCase();
+      if (!normalizedSymbol) continue;
+      if (!bySymbol.has(normalizedSymbol)) bySymbol.set(normalizedSymbol, []);
+      bySymbol.get(normalizedSymbol).push({ index, trade });
+    }
+    recommendedOpenTradeIndexCache = { trades, bySymbol };
+  }
+  return recommendedOpenTradeIndexCache.bySymbol.get(symbol) ?? [];
+}
 
 function number(value, fallback = null) {
   const parsed = Number(value);
@@ -691,21 +728,24 @@ export async function processRecommendedPaperSocketPrice(
   const closedTrades = [];
   writeLock = writeLock.then(async () => {
     const store = await readJsonCached(paperFile, { version: 2, trades: [] });
-    const nextTrades = (store.trades ?? []).map((row) => {
-      if (row?.paperMode !== RECOMMENDED_PAPER_MODE
-          || normalizePart(row?.status) !== "OPEN"
-          || String(row?.symbol ?? "").trim().toUpperCase() !== normalizedSymbol) return row;
+    const candidates = recommendedOpenTradesForSymbol(store, normalizedSymbol);
+    if (!candidates.length) return;
+    const replacements = [];
+    const closedAt = new Date(eventTime).toISOString();
+    for (const { index, trade: row } of candidates) {
       const evaluated = applyRecommendedDefaultSlLiveClose(
         { ...row, markPrice: mark },
-        new Date(eventTime).toISOString(),
+        closedAt,
       );
       if (normalizePart(evaluated?.status) === "CLOSED") {
         closed += 1;
         closedTrades.push(evaluated);
+        replacements.push({ index, trade: evaluated });
       }
-      return evaluated;
-    });
+    }
     if (!closed) return;
+    const nextTrades = [...(store.trades ?? [])];
+    for (const replacement of replacements) nextTrades[replacement.index] = replacement.trade;
     await writeJsonAtomic(paperFile, {
       ...store,
       version: 2,
@@ -847,7 +887,9 @@ async function readJsonCached(file, fallback) {
     if (cached?.mtimeMs === info.mtimeMs && cached?.size === info.size)
       return cached.value;
     const value = JSON.parse(await readFile(file, "utf8"));
-    jsonCache.set(file, { mtimeMs: info.mtimeMs, size: info.size, value });
+    if (file === paperFile) await compactRecommendedPaperStore(value);
+    const currentInfo = await stat(file);
+    jsonCache.set(file, { mtimeMs: currentInfo.mtimeMs, size: currentInfo.size, value });
     return value;
   } catch {
     return fallback;
@@ -855,11 +897,71 @@ async function readJsonCached(file, fallback) {
 }
 
 async function writeJsonAtomic(file, value) {
+  if (file === paperFile) await compactRecommendedPaperStore(value);
   await mkdir(dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, JSON.stringify(value));
   await rename(tmp, file);
   jsonCache.delete(file);
+}
+
+let recommendedArchiveWrite = Promise.resolve();
+
+async function appendRecommendedArchive(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  recommendedArchiveWrite = recommendedArchiveWrite.catch(() => {}).then(async () => {
+    await mkdir(dirname(recommendedPaperArchiveFile), { recursive: true });
+    const output = createWriteStream(recommendedPaperArchiveFile, { encoding: "utf8", flags: "a" });
+    try {
+      for (let index = 0; index < rows.length; index += 25) {
+        const chunk = `${rows.slice(index, index + 25).map((row) => JSON.stringify(row)).join("\n")}\n`;
+        if (!output.write(chunk)) {
+          await new Promise((resolve, reject) => {
+            const cleanup = () => {
+              output.off("drain", onDrain);
+              output.off("error", onError);
+            };
+            const onDrain = () => {
+              cleanup();
+              resolve();
+            };
+            const onError = (error) => {
+              cleanup();
+              reject(error);
+            };
+            output.once("drain", onDrain);
+            output.once("error", onError);
+          });
+        }
+      }
+      output.end();
+      await finished(output);
+    } catch (error) {
+      output.destroy(error);
+      throw error;
+    }
+  });
+  await recommendedArchiveWrite;
+}
+
+async function compactRecommendedPaperStore(store) {
+  if (!store || !Array.isArray(store.trades)) return false;
+  const partition = partitionPaperHotRows(store.trades, RECOMMENDED_PAPER_MAX_HOT_ROWS);
+  if (!partition.archiveRows.length) return false;
+  await appendRecommendedArchive(partition.archiveRows);
+  applyPaperHotStorePartition(store, partition, {
+    archiveFile: "data/archive/recommended-paper-trades.ndjson",
+  });
+  const tmp = `${paperFile}.${process.pid}.v2-hot-store.tmp`;
+  await mkdir(dirname(paperFile), { recursive: true });
+  await writeFile(tmp, JSON.stringify(store));
+  await rename(tmp, paperFile);
+  jsonCache.delete(paperFile);
+  console.log(
+    `[RecommendedPaper] V2 runtime hot store kept=${partition.hotRows.length}`
+      + ` protected=${partition.protectedRows} archived=${partition.archiveRows.length}`,
+  );
+  return true;
 }
 
 function tradeId(page, trade) {
@@ -3377,7 +3479,7 @@ export async function getRecommendedPaper({
   // Historical range searches are read-only. Scanning the large source stores
   // for an old recommendation day can block the page for a minute and cannot
   // create a legitimate live clone for that day anyway.
-  if (catalog.selectedDay && catalog.selectedDay === latestCatalogDay) {
+  if (SOURCE_FILE_SYNC_ENABLED && catalog.selectedDay && catalog.selectedDay === latestCatalogDay) {
     await syncDay(
       catalog.selectedDay,
       catalog.recommendations ?? [],

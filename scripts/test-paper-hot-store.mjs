@@ -4,8 +4,10 @@ import assert from 'node:assert/strict';
 import {
   PAPER_HOT_STORE_VERSION,
   applyPaperHotStorePartition,
+  isTerminalPaperTrade,
   partitionPaperHotRows,
 } from '../src/paperHotStore.js';
+import { readFile } from 'node:fs/promises';
 
 const rows = [
   { id: 'closed-new-1', status: 'CLOSED' },
@@ -46,5 +48,23 @@ applyPaperHotStorePartition(store, partition, {
 assert.equal(store.trades.length, 5);
 assert.equal(store.hotStore.archivedRows, 10);
 assert.equal(store.hotStore.archiveFile, 'archive/test.ndjson');
+
+assert.equal(isTerminalPaperTrade({ status: 'CANCELLED' }), true);
+assert.equal(isTerminalPaperTrade({ status: 'EXPIRED' }), true);
+assert.equal(isTerminalPaperTrade({ status: 'REJECTED' }), true);
+const terminalRows = partitionPaperHotRows([
+  { id: 'open', status: 'OPEN' },
+  { id: 'cancelled', status: 'CANCELLED' },
+  { id: 'expired', status: 'EXPIRED' },
+  { id: 'rejected', status: 'REJECTED' },
+], 2);
+assert.deepEqual(terminalRows.hotRows.map((row) => row.id), ['open', 'cancelled']);
+assert.deepEqual(terminalRows.archiveRows.map((row) => row.id), ['expired', 'rejected']);
+
+const server = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
+assert(server.includes('CAP_PAPER_MAX_HOT_ROWS'));
+assert(server.includes('SHAKEOUT_PAPER_MAX_HOT_ROWS'));
+const recommended = await readFile(new URL('../src/recommendedSignals.js', import.meta.url), 'utf8');
+assert(recommended.includes('RECOMMENDED_PAPER_MAX_HOT_ROWS'));
 
 console.log('paper hot-store tests passed');

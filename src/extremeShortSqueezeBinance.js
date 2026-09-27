@@ -4,7 +4,7 @@ import {dirname} from 'node:path';
 import {EXTREME_SHORT_SQUEEZE_VERSION} from './extremeShortSqueeze.js';
 import {resolveOtherEntrySettings} from './otherEntryCatalog.js';
 
-export const EXTREME_SHORT_SQUEEZE_BINANCE_VERSION='EXTREME_SHORT_SQUEEZE_EDITABLE_ENTRY_SETTINGS_V4_20260914';
+export const EXTREME_SHORT_SQUEEZE_BINANCE_VERSION='EXTREME_SHORT_SQUEEZE_SAGA_15M_CLOSED_FOLLOW_6USDT_V5_20260926';
 export const EXTREME_SHORT_SQUEEZE_ROUTE=Object.freeze({
   source:'extreme-short-squeeze',streamId:'extreme-short-squeeze',signalLabel:'EXTREME_PUMP_CLOSED',side:'SHORT',
 });
@@ -14,8 +14,13 @@ export const EXTREME_SHORT_SQUEEZE_LIVE_FOLLOW_ROUTE=Object.freeze({
 export const EXTREME_SHORT_SQUEEZE_PEAK_ZONE_ROUTE=Object.freeze({
   source:'extreme-short-squeeze',streamId:'extreme-short-squeeze',signalLabel:'PEAK_ZONE_SHORT_WATCH',side:'SHORT',
 });
+export const EXTREME_SHORT_SQUEEZE_SAGA_15M_CLOSED_FOLLOW_ROUTE=Object.freeze({
+  source:'extreme-short-squeeze',streamId:'extreme-short-squeeze-saga-15m',
+  signalLabel:'FOLLOW_REJECTION_CLOSED',side:'SHORT',
+});
 export const EXTREME_SHORT_SQUEEZE_ROUTES=Object.freeze([
   EXTREME_SHORT_SQUEEZE_ROUTE,EXTREME_SHORT_SQUEEZE_LIVE_FOLLOW_ROUTE,EXTREME_SHORT_SQUEEZE_PEAK_ZONE_ROUTE,
+  EXTREME_SHORT_SQUEEZE_SAGA_15M_CLOSED_FOLLOW_ROUTE,
 ]);
 export const EXTREME_SHORT_SQUEEZE_MARGIN_USDT=1;
 export const EXTREME_SHORT_SQUEEZE_PEAK_MARGIN_USDT=2;
@@ -24,7 +29,12 @@ export const EXTREME_SHORT_SQUEEZE_TP_ROE=.15;
 export const EXTREME_SHORT_SQUEEZE_SL_ROE=.30;
 
 export function extremeShortSqueezeRoute(event) {
-  if(event?.interval!=='5m'||event?.binanceEligible!==true||event?.observeOnly!==false)return null;
+  if(event?.binanceEligible!==true||event?.observeOnly!==false)return null;
+  if(event.symbol==='SAGAUSDT'&&event.interval==='15m'&&event.kind==='FOLLOW_REJECTION'
+    &&event.stage==='FOLLOW_REJECTION_CLOSED'&&event.closed===true) {
+    return EXTREME_SHORT_SQUEEZE_SAGA_15M_CLOSED_FOLLOW_ROUTE;
+  }
+  if(event.interval!=='5m')return null;
   if(event.kind==='EXTREME_PUMP'&&event.stage==='EXTREME_PUMP_CLOSED'&&event.closed===true)return EXTREME_SHORT_SQUEEZE_ROUTE;
   if(event.kind==='FOLLOW_REJECTION'&&event.stage==='FOLLOW_REJECTION_LIVE'&&event.closed===false)return EXTREME_SHORT_SQUEEZE_LIVE_FOLLOW_ROUTE;
   if(event.kind==='PEAK_ZONE_SHORT_WATCH'&&event.stage==='PEAK_ZONE_SHORT_WATCH_LIVE'&&event.closed===false)return EXTREME_SHORT_SQUEEZE_PEAK_ZONE_ROUTE;

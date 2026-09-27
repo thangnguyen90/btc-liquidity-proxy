@@ -17,6 +17,10 @@ import {
   LEGACY_TRAILING_STOP_DISABLED_VERSION,
   MANUAL_BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE,
   MANUAL_BINANCE_PROFIT_LOCK_TRIGGER_ROE,
+  MANUAL_FIVE_X_BREAK_EVEN_TRIGGER_ROE,
+  MANUAL_FIVE_X_BREAK_EVEN_VERSION,
+  MANUAL_LEVERAGE_BREAK_EVEN_VERSION,
+  MANUAL_TEN_X_BREAK_EVEN_TRIGGER_ROE,
   ORDERS_EXCLUDED_PROFIT_LOCK_ROE,
   ORDERS_EXCLUDED_PROFIT_LOCK_TRIGGER_ROE,
   SHORT_TP_ONLY_BREAK_EVEN_LOCK_ROE,
@@ -36,6 +40,8 @@ import {
   resolveBinanceFastWaveProfitLockRoe,
   resolveBinanceProfitLockRoe,
   resolveManualBinanceProfitLockRoe,
+  resolveManualFiveXBreakEvenProfitLockRoe,
+  resolveManualLeverageBreakEvenProfitLockRoe,
   resolveOrdersExcludedBinanceProfitLockRoe,
   resolveShortTpOnlyBreakEvenProfitLockRoe,
   summarizeBinanceCandleVolatility,
@@ -45,6 +51,10 @@ assert.equal(BINANCE_PROFIT_LOCK_VERSION, 'BINANCE_PROFIT_LOCK_V20_FAST_WAVE_REC
 assert.equal(LEGACY_TRAILING_STOP_DISABLED_VERSION, 'LEGACY_TSL_DISABLED_V1_20260809');
 assert.equal(MANUAL_BINANCE_PROFIT_LOCK_TRIGGER_ROE, 10);
 assert.equal(MANUAL_BINANCE_PROFIT_LOCK_FIRST_LOCK_ROE, 1);
+assert.equal(MANUAL_FIVE_X_BREAK_EVEN_TRIGGER_ROE, 6);
+assert.match(MANUAL_FIVE_X_BREAK_EVEN_VERSION, /MANUAL_5X_BREAK_EVEN_SL_V1/);
+assert.equal(MANUAL_TEN_X_BREAK_EVEN_TRIGGER_ROE, 12);
+assert.match(MANUAL_LEVERAGE_BREAK_EVEN_VERSION, /MANUAL_5X_10X_BREAK_EVEN_SL_V2/);
 assert.equal(ORDERS_EXCLUDED_PROFIT_LOCK_TRIGGER_ROE, 10);
 assert.equal(ORDERS_EXCLUDED_PROFIT_LOCK_ROE, 1);
 assert.equal(SHORT_TP_ONLY_BREAK_EVEN_TRIGGER_ROE, 10);
@@ -112,6 +122,18 @@ assert.equal(resolveManualBinanceProfitLockRoe(9.99), null);
 assert.equal(resolveManualBinanceProfitLockRoe(10), 1);
 assert.equal(resolveManualBinanceProfitLockRoe(14.99), 1);
 assert.equal(resolveManualBinanceProfitLockRoe(15), 5);
+assert.equal(resolveManualFiveXBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 5, roe: 6 }), null);
+assert.equal(resolveManualFiveXBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 5, roe: 6.01 }), 0);
+assert.equal(resolveManualFiveXBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 5, roe: 10 }), 0);
+assert.equal(resolveManualFiveXBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 4, roe: 20 }), null);
+assert.equal(resolveManualFiveXBreakEvenProfitLockRoe({ isManualPosition: false, leverage: 5, roe: 20 }), null);
+assert.equal(resolveManualFiveXBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 5, roe: NaN }), null);
+assert.equal(resolveManualLeverageBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 10, roe: 12 }), null);
+assert.equal(resolveManualLeverageBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 10, roe: 12.01 }), 0);
+assert.equal(resolveManualLeverageBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 10, roe: 15 }), 0);
+assert.equal(resolveManualLeverageBreakEvenProfitLockRoe({ isManualPosition: false, leverage: 10, roe: 20 }), null);
+assert.equal(resolveManualLeverageBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 20, roe: 20 }), null);
+assert.equal(resolveManualFiveXBreakEvenProfitLockRoe({ isManualPosition: true, leverage: 10, roe: 20 }), null);
 assert.equal(resolveOrdersExcludedBinanceProfitLockRoe(9.99), null);
 assert.equal(resolveOrdersExcludedBinanceProfitLockRoe(10), 1);
 assert.equal(resolveOrdersExcludedBinanceProfitLockRoe(15), 1);
@@ -328,6 +350,11 @@ assert.match(serverSource, /restored old SL/);
 assert.match(serverSource, /FAST_WAVE_WICK_OR_REVERSAL_ROE30_GAP25/);
 assert.match(serverSource, /const isShortTpOnlyBreakEven = isBotShortTpOnlyPosition \|\| isManualShortTpOnlyPosition/);
 assert.match(serverSource, /resolveShortTpOnlyBreakEvenProfitLockRoe\(effectiveRoe\)/);
+assert.match(serverSource, /resolveManualLeverageBreakEvenProfitLockRoe\(\{/);
+assert.match(serverSource, /manualTenXBeforeFirstLock\) return/);
+assert.match(serverSource, /Math\.max\(manualBaseLockRoe \?\? -Infinity, manualBreakEvenRoe\)/);
+assert.match(serverSource, /matchesPositionSide\(o\)/);
+assert.match(serverSource, /closingSide && \(t === 'STOP_MARKET' \|\| t === 'STOP'\)/);
 assert.match(serverSource, /SHORT_TP_ONLY_ROE10_BREAK_EVEN/);
 assert.doesNotMatch(serverSource, /if \(isTrackedBotShortTpOnlyPosition\(symbol, pos\) \|\| isTrackedManualShortTpOnlyPosition\(symbol, pos\)\) return/);
 assert.doesNotMatch(serverSource, /recentSameSideDca:/);

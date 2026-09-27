@@ -5,7 +5,7 @@ import { COIN_LEVEL_ENTRY_WATCH_VERSION } from './coinLevelEntryWatch.js';
 import { resolveOtherEntrySettings } from './otherEntryCatalog.js';
 
 export const COIN_LEVEL_ENTRY_WATCH_BINANCE_VERSION =
-  'COIN_LEVEL_ENTRY_WATCH_LIMIT_3USDT_V2_20260920';
+  'COIN_LEVEL_ENTRY_WATCH_LIMIT_3USDT_V4_MARKET_REGIME_20260922';
 export const COIN_LEVEL_ENTRY_WATCH_MAX_AGE_MS = 90_000;
 export const COIN_LEVEL_ENTRY_WATCH_MAX_MARK_DRIFT = 0.005;
 export const COIN_LEVEL_ENTRY_WATCH_LIMIT_MARGIN_USDT = 3;
@@ -237,8 +237,9 @@ function saveState(file, state) {
 }
 
 export class CoinLevelEntryWatchBinanceRunner {
-  constructor({ file, controls, now = () => Date.now(), getContext, submit, limitStartedAt = now() }) {
-    Object.assign(this, { file, controls, now, getContext, submit });
+  constructor({ file, controls, now = () => Date.now(), getContext, getMarketRegime = null,
+    submit, limitStartedAt = now() }) {
+    Object.assign(this, { file, controls, now, getContext, getMarketRegime, submit });
     this.limitStartedAt = limitStartedAt;
     this.queue = Promise.resolve();
   }
@@ -249,6 +250,38 @@ export class CoinLevelEntryWatchBinanceRunner {
     return task;
   }
 
+  pendingLimitSignal(order) {
+    const clientOrderId = String(order?.clientOrderId ?? '');
+    if (!/^clel_[0-9a-f]{24}$/.test(clientOrderId)) return null;
+    const attempt = readState(this.file)?.attempts?.[clientOrderId];
+    if (!attempt || attempt.orderType !== 'LIMIT'
+      || attempt.symbol !== order?.symbol
+      || !['LONG', 'SHORT'].includes(attempt.direction)
+      || (attempt.direction === 'LONG' ? order?.side !== 'BUY' : order?.side !== 'SELL')
+      || (attempt.orderId != null && order?.orderId != null
+        && String(attempt.orderId) !== String(order.orderId))
+      || !(finite(attempt.confirmationAt) > 0)
+      || !(finite(attempt.referenceLevel) > 0)
+      || !(finite(attempt.at) > 0)) return null;
+    return {
+      symbol: attempt.symbol, side: attempt.direction,
+      confirmationAt: attempt.confirmationAt,
+      referenceLevel: attempt.referenceLevel,
+      submittedAt: attempt.at,
+    };
+  }
+
+  markLimitInvalidated(clientOrderId, reason) {
+    const state = readState(this.file);
+    const attempt = state?.attempts?.[clientOrderId];
+    if (!attempt || attempt.orderType !== 'LIMIT') return false;
+    attempt.status = 'CANCELLED_SIGNAL_INVALID';
+    attempt.cancelReason = String(reason ?? '').slice(0, 100);
+    attempt.cancelledAt = this.now();
+    saveState(this.file, state);
+    return true;
+  }
+
   async handleOne(candidate) {
     const isLimit = !(epoch(candidate.retestAt) > 0);
     const routeSpec = isLimit ? coinLevelSignalRoute(candidate) : coinLevelEntryWatchRoute(candidate);
@@ -257,6 +290,16 @@ export class CoinLevelEntryWatchBinanceRunner {
     const controls = this.controls.read();
     const routeState = controls.routes[registered.key];
     if (!controls.enabled || routeState?.enabled !== true) return { status: 'off' };
+    let marketRegime = routeSpec.side === 'LONG' && typeof this.getMarketRegime === 'function'
+      ? this.getMarketRegime()
+      : null;
+    if (routeSpec.side === 'LONG' && marketRegime && marketRegime.allowLongEntry !== true) {
+      return {
+        status: 'market-regime-blocked',
+        marketRegime: marketRegime.state ?? 'WAIT_DATA',
+        reason: marketRegime.reasons?.[0] ?? 'Coin Level LONG market-regime guard is not RISK_ON.',
+      };
+    }
     const buildPlan = isLimit ? buildCoinLevelEntryWatchLimitOrder : buildCoinLevelEntryWatchOrder;
     let plan = buildPlan(candidate, {
       now: this.now(), enabledAt: routeState.enabledAt,
@@ -287,15 +330,39 @@ export class CoinLevelEntryWatchBinanceRunner {
     const latest = this.controls.read();
     const latestRoute = latest.routes[registered.key];
     if (!latest.enabled || latestRoute?.enabled !== true) return { status: 'control-changed' };
+    marketRegime = routeSpec.side === 'LONG' && typeof this.getMarketRegime === 'function'
+      ? this.getMarketRegime()
+      : marketRegime;
+    if (routeSpec.side === 'LONG' && marketRegime && marketRegime.allowLongEntry !== true) {
+      return {
+        status: 'market-regime-blocked',
+        marketRegime: marketRegime.state ?? 'WAIT_DATA',
+        reason: marketRegime.reasons?.[0] ?? 'Coin Level LONG market-regime guard changed before submit.',
+      };
+    }
     plan = buildPlan(candidate, {
       now: this.now(), enabledAt: latestRoute.enabledAt,
       startedAt: this.limitStartedAt, markPrice: context.markPrice, routeState: latestRoute,
     });
     if (!plan) return { status: 'price-or-age-blocked' };
+    if (routeSpec.side === 'LONG' && marketRegime?.state) {
+      plan.signalReason = `${plan.signalReason} | marketRegime=${marketRegime.state}`;
+    }
     this.controls.assertEntry(plan);
 
     state.attempts[plan.clientOrderId] = {
-      symbol: plan.symbol, side: plan.side, at: this.now(), status: 'SUBMITTING',
+      symbol: plan.symbol, side: plan.side, direction: routeSpec.side,
+      at: this.now(), status: 'SUBMITTING',
+      orderType: plan.orderType,
+      ...(isLimit ? {
+        confirmationAt: epoch(candidate.confirmationAt),
+        referenceLevel: finite(candidate.referenceLevel),
+      } : {}),
+      ...(routeSpec.side === 'LONG' && marketRegime ? {
+        marketRegimeVersion: marketRegime.version ?? null,
+        marketRegimeState: marketRegime.state ?? null,
+        marketRegimeEvaluatedAt: finite(marketRegime.evaluatedAt),
+      } : {}),
     };
     state.symbols[plan.symbol] = this.now();
     saveState(this.file, state);

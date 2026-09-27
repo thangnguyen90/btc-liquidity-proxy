@@ -15,7 +15,7 @@ import WebSocket from 'ws';
 import { binancePositionPriceRoe } from './binanceProfitLock.js';
 
 export const POSITION_MONITOR_MARK_STREAM_VERSION = 'POSITION_MONITOR_PER_SYMBOL_MARK_STREAM_V5_PRICE_ROE_20260831';
-export const POSITION_PROTECTION_TRIGGER_VERSION = 'POSITION_PROTECTION_SOCKET_FILL_V4_LISTEN_KEY_RECONNECT_20260816';
+export const POSITION_PROTECTION_TRIGGER_VERSION = 'POSITION_PROTECTION_SOCKET_FILL_V5_POSITION_VISIBILITY_RETRY_20260923';
 export const POSITION_USER_DATA_STREAM_VERSION = 'POSITION_USER_DATA_STREAM_V2_LISTEN_KEY_RECOVERY_20260816';
 export const POSITION_MONITOR_MARK_STREAM_URL = 'wss://fstream.binance.com/market/stream';
 export const POSITION_MONITOR_MARK_STREAM_STALE_MS = 15_000;
@@ -42,6 +42,27 @@ export function isBinanceTradeLiteExecution(message = {}) {
     && Boolean(String(message?.s ?? '').trim())
     && message?.i != null
     && Number(message?.l) > 0;
+}
+
+export async function waitForMatchingFullFillPosition({
+  symbol,
+  side,
+  sync,
+  getPosition,
+  delaysMs = [0, 200, 500, 1_000, 2_000],
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  const fillSide = String(side ?? '').toUpperCase();
+  for (const delayMs of delaysMs) {
+    if (delayMs > 0) await sleep(delayMs);
+    await sync();
+    const position = getPosition(symbol);
+    const amount = Number(position?.amt);
+    if (position && ((fillSide === 'BUY' && amount > 0) || (fillSide === 'SELL' && amount < 0))) {
+      return position;
+    }
+  }
+  return null;
 }
 
 export function parsePositionMarkPriceMessage(message) {
@@ -127,9 +148,16 @@ export function startPositionMonitor({
 
   // ── REST position sync ─────────────────────────────────────────────────────
   let restSyncRunning = false;
-  async function syncPositions() {
-    if (restSyncRunning) return;
+  let restSyncDone = null;
+  async function syncPositions({ forceFresh = false } = {}) {
+    if (restSyncRunning) {
+      await restSyncDone;
+      if (forceFresh) return syncPositions();
+      return;
+    }
     restSyncRunning = true;
+    let resolveRestSync;
+    restSyncDone = new Promise((resolve) => { resolveRestSync = resolve; });
     try {
       const { apiKey, apiSecret } = resolveCredentials();
       const positions = await client.getPositions({ apiKey, apiSecret });
@@ -151,6 +179,7 @@ export function startPositionMonitor({
           marginType: p.marginType ?? null,
           updateTime: Number(p.updateTime) || null,
           positionSide: p.positionSide ?? 'BOTH',
+          restVerifiedAt: Date.now(),
         };
         // REST sync only refreshes the position/ROE cache. It must never emulate
         // an entry fill or place protection; only Binance ORDER_TRADE_UPDATE may.
@@ -186,6 +215,8 @@ export function startPositionMonitor({
       console.warn('[PosMonitor] REST sync failed:', err.message);
     } finally {
       restSyncRunning = false;
+      resolveRestSync();
+      restSyncDone = null;
     }
   }
 
@@ -200,6 +231,8 @@ export function startPositionMonitor({
   const fullFillDeliveryRunning = new Map();
   const deliveredFullFills = new Map();
   const tradeLiteVerificationRunning = new Map();
+  const pendingFullFillRetries = new Map();
+  const fullFillRetryLifetimeMs = 90_000;
 
   function fillKey(symbol, orderId) {
     return `${String(symbol ?? '').toUpperCase()}:${String(orderId ?? '')}`;
@@ -212,6 +245,34 @@ export function startPositionMonitor({
     }
   }
 
+  function clearFullFillRetry(key) {
+    const pending = pendingFullFillRetries.get(key);
+    if (pending?.timer) clearTimeout(pending.timer);
+    pendingFullFillRetries.delete(key);
+  }
+
+  function scheduleFullFillRetry(symbol, fill, error) {
+    const key = fillKey(symbol, fill.orderId ?? fill.clientOrderId);
+    if (deliveredFullFills.has(key)) return;
+    const pending = pendingFullFillRetries.get(key) ?? { firstAt: Date.now(), attempts: 0, timer: null };
+    if (pending.timer) return;
+    if (Date.now() - pending.firstAt >= fullFillRetryLifetimeMs) {
+      console.error(`[PosMonitor] SOCKET_FULL_FILL_RETRY_EXHAUSTED ${symbol} orderId=${fill.orderId ?? '-'}: ${error.message}`);
+      pendingFullFillRetries.delete(key);
+      return;
+    }
+    pending.attempts += 1;
+    const delayMs = Math.min(10_000, 500 * 2 ** Math.min(pending.attempts - 1, 5));
+    pending.timer = setTimeout(() => {
+      pending.timer = null;
+      deliverSocketFullFill(symbol, fill).catch((retryError) => {
+        console.warn(`[PosMonitor] SOCKET_FULL_FILL_RETRY ${symbol} orderId=${fill.orderId ?? '-'} attempt=${pending.attempts}: ${retryError.message}`);
+      });
+    }, delayMs);
+    pending.timer.unref?.();
+    pendingFullFillRetries.set(key, pending);
+  }
+
   async function deliverSocketFullFill(symbol, fill) {
     if (!onOrderFill) return;
     const key = fillKey(symbol, fill.orderId ?? fill.clientOrderId);
@@ -220,15 +281,19 @@ export function startPositionMonitor({
     if (fullFillDeliveryRunning.has(key)) return fullFillDeliveryRunning.get(key);
 
     const delivery = (async () => {
-      await syncPositions();
-      const current = posCache.get(symbol);
-      const fillSide = String(fill.side ?? '').toUpperCase();
+      const fillObservedAt = Date.now();
+      const current = await waitForMatchingFullFillPosition({
+        symbol,
+        side: fill.side,
+        sync: () => syncPositions({ forceFresh: true }),
+        getPosition: (candidate) => {
+          const position = posCache.get(candidate);
+          return Number(position?.restVerifiedAt) >= fillObservedAt ? position : null;
+        },
+      });
       const currentAmount = Number(current?.amt);
-      const opensCurrentDirection = current
-        && ((fillSide === 'BUY' && currentAmount > 0) || (fillSide === 'SELL' && currentAmount < 0));
-      if (!opensCurrentDirection) {
-        console.log(`[PosMonitor] SOCKET_FULL_FILL_IGNORED ${symbol} orderId=${fill.orderId ?? '-'}: no matching open position after fill`);
-        return;
+      if (!current) {
+        throw new Error(`matching open position not visible after full fill orderId=${fill.orderId ?? '-'}`);
       }
       const deliveryResult = await onOrderFill(symbol, {
         ...fill,
@@ -252,7 +317,11 @@ export function startPositionMonitor({
       // In-memory dedupe is committed only after the durable watermark write.
       // If persistence fails, TRADE_LITE or a later startup must still retry.
       deliveredFullFills.set(key, Date.now());
-    })().finally(() => fullFillDeliveryRunning.delete(key));
+      clearFullFillRetry(key);
+    })().catch((error) => {
+      scheduleFullFillRetry(symbol, fill, error);
+      throw error;
+    }).finally(() => fullFillDeliveryRunning.delete(key));
     fullFillDeliveryRunning.set(key, delivery);
     return delivery;
   }

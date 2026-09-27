@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { createWriteStream } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { finished } from 'node:stream/promises';
 import { LIQUID_FLOW_V2_BINANCE_LEVERAGE } from './autoBinancePolicy.js';
 import { evaluateLiquidFlowV2ShortEma99EntryGate } from './liquidHeatmapFlowV2.js';
+import { applyPaperHotStorePartition, partitionPaperHotRows } from './paperHotStore.js';
 
 export const LIQUID_FLOW_V2_PAPER_VERSION = 'LIQUID_FLOW_V2_PAPER_V32_SHORT_EMA99_CONFIRMATION_GATE_20260830';
 export const EMA_FAN_LONG_ENTRY_CONFIRMATION_VERSION = 'EMA_FAN_LONG_RETEST_CONFIRM_V1_20260816';
@@ -13,6 +16,8 @@ export const LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_VERSION =
   'LIQUID_FLOW_V2_FADING_WAVE_LIVE_PUMP_BINANCE_V1_1USDT_20260818';
 export const LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_VERSION =
   'LIQUID_FLOW_V2_PAPER_LIVE_SNAPSHOT_V1_ACTIVE_ONLY_20260831';
+export const LIQUID_FLOW_V2_RUNTIME_HOT_STORE_VERSION =
+  'LIQUID_FLOW_V2_RUNTIME_HOT_STORE_V1_20260926';
 
 function finite(value, fallback = null) {
   if (value == null || value === '') return fallback;
@@ -481,51 +486,128 @@ export function evaluateEmaFanLongRetestConfirmation(trade = {}, row = {}, evalu
     : { decision: 'WAIT_CONFIRMATION', reason: 'closed-5m-confirmation-not-complete', snapshot };
 }
 
-export function summarizeLiquidFlowV2Paper(trades = [], marks = new Map(), now = Date.now()) {
-  const decorated = trades.map((trade) => {
-    const mark = ['OPEN', 'PENDING_ENTRY'].includes(trade.status)
-      ? finite(marks.get(trade.symbol), finite(trade.entryPrice, 0))
-      : finite(trade.exitPrice, finite(trade.entryPrice, 0));
-    if (trade.status === 'PENDING_ENTRY') {
-      return {
-        ...trade,
-        markPrice: mark,
-        rawReturnPct: 0,
-        grossRoe: 0,
-        grossPnl: 0,
-        estimatedFee: 0,
-        netPnl: 0,
-        netRoe: 0,
-        ageMs: Math.max(0, now - finite(trade.pendingSince, now)),
-      };
+export const LIQUID_FLOW_V2_PAPER_SNAPSHOT_PERF_VERSION =
+  'LIQUID_FLOW_V2_PAPER_SNAPSHOT_BOUNDED_CACHE_V2_20260926';
+
+function liquidFlowV2PaperDisplayTimestamp(trade = {}) {
+  return finite(trade.entryAt, finite(trade.pendingSince, 0));
+}
+
+function liquidFlowV2PaperTradeMetrics(trade, marks, now) {
+  const mark = ['OPEN', 'PENDING_ENTRY'].includes(trade.status)
+    ? finite(marks.get(trade.symbol), finite(trade.entryPrice, 0))
+    : finite(trade.exitPrice, finite(trade.entryPrice, 0));
+  if (trade.status === 'CLOSED'
+    && finite(trade.netPnl, null) != null
+    && finite(trade.netRoe, null) != null) {
+    return {
+      markPrice: finite(trade.markPrice, mark),
+      rawReturnPct: finite(trade.rawReturnPct, 0),
+      grossRoe: finite(trade.grossRoe, 0),
+      grossPnl: finite(trade.grossPnl, 0),
+      estimatedFee: finite(trade.estimatedFee, 0),
+      netPnl: finite(trade.netPnl, 0),
+      netRoe: finite(trade.netRoe, 0),
+      ageMs: finite(trade.ageMs, Math.max(0, finite(trade.exitAt, now) - finite(trade.entryAt, now))),
+    };
+  }
+  if (trade.status === 'PENDING_ENTRY') {
+    return {
+      markPrice: mark,
+      rawReturnPct: 0,
+      grossRoe: 0,
+      grossPnl: 0,
+      estimatedFee: 0,
+      netPnl: 0,
+      netRoe: 0,
+      ageMs: Math.max(0, now - finite(trade.pendingSince, now)),
+    };
+  }
+  return liquidFlowV2PaperMetrics(trade, mark, now);
+}
+
+export function summarizeLiquidFlowV2Paper(
+  trades = [],
+  marks = new Map(),
+  now = Date.now(),
+  { tradeLimit = null } = {},
+) {
+  const source = Array.isArray(trades) ? trades : [];
+  const normalizedLimit = tradeLimit != null && Number.isFinite(Number(tradeLimit))
+    ? Math.max(0, Math.trunc(Number(tradeLimit)))
+    : null;
+  let selectedTrades = null;
+  if (normalizedLimit != null) {
+    const active = source.filter((trade) => ['OPEN', 'PENDING_ENTRY'].includes(trade.status));
+    const recent = source
+      .filter((trade) => !['OPEN', 'PENDING_ENTRY'].includes(trade.status))
+      .sort((left, right) => liquidFlowV2PaperDisplayTimestamp(right) - liquidFlowV2PaperDisplayTimestamp(left))
+      .slice(0, normalizedLimit);
+    selectedTrades = new Set([...active, ...recent]);
+  }
+
+  const decorated = [];
+  let open = 0;
+  let pending = 0;
+  let cancelled = 0;
+  let closed = 0;
+  let wins = 0;
+  let losses = 0;
+  let netPnl = 0;
+  let netRoe = 0;
+  let grossProfit = 0;
+  let grossLoss = 0;
+  let openPnl = 0;
+  for (const trade of source) {
+    const status = String(trade?.status ?? '');
+    const selected = selectedTrades == null || selectedTrades.has(trade);
+    const storedClosedNetPnl = status === 'CLOSED' ? finite(trade.netPnl, null) : null;
+    const storedClosedNetRoe = status === 'CLOSED' ? finite(trade.netRoe, null) : null;
+    const hasStoredClosedMetrics = storedClosedNetPnl != null && storedClosedNetRoe != null;
+    const needsMetrics = status === 'OPEN' || selected || (status === 'CLOSED' && !hasStoredClosedMetrics);
+    const metrics = needsMetrics ? liquidFlowV2PaperTradeMetrics(trade, marks, now) : null;
+    if (status === 'OPEN') {
+      open += 1;
+      openPnl += finite(metrics?.netPnl, 0);
+    } else if (status === 'PENDING_ENTRY') {
+      pending += 1;
+    } else if (status === 'CANCELLED') {
+      cancelled += 1;
+    } else if (status === 'CLOSED') {
+      closed += 1;
+      const pnl = hasStoredClosedMetrics ? storedClosedNetPnl : finite(metrics?.netPnl, 0);
+      const roe = hasStoredClosedMetrics ? storedClosedNetRoe : finite(metrics?.netRoe, 0);
+      netPnl += pnl;
+      netRoe += roe;
+      if (pnl > 0) {
+        wins += 1;
+        grossProfit += pnl;
+      } else {
+        losses += 1;
+        if (pnl < 0) grossLoss += Math.abs(pnl);
+      }
     }
-    return { ...trade, ...liquidFlowV2PaperMetrics(trade, mark, now) };
-  });
-  const closed = decorated.filter((trade) => trade.status === 'CLOSED');
-  const open = decorated.filter((trade) => trade.status === 'OPEN');
-  const pending = decorated.filter((trade) => trade.status === 'PENDING_ENTRY');
-  const cancelled = decorated.filter((trade) => trade.status === 'CANCELLED');
-  const wins = closed.filter((trade) => trade.netPnl > 0).length;
-  const losses = closed.filter((trade) => trade.netPnl <= 0).length;
-  const netPnl = closed.reduce((sum, trade) => sum + finite(trade.netPnl, 0), 0);
-  const avgRoe = closed.length ? closed.reduce((sum, trade) => sum + finite(trade.netRoe, 0), 0) / closed.length : 0;
-  const grossProfit = closed.filter((trade) => trade.netPnl > 0).reduce((sum, trade) => sum + trade.netPnl, 0);
-  const grossLoss = Math.abs(closed.filter((trade) => trade.netPnl < 0).reduce((sum, trade) => sum + trade.netPnl, 0));
+    if (selected) {
+      decorated.push({ ...trade, ...metrics });
+    }
+  }
   return {
-    total: decorated.length,
-    open: open.length,
-    pending: pending.length,
-    cancelled: cancelled.length,
-    closed: closed.length,
+    total: source.length,
+    open,
+    pending,
+    cancelled,
+    closed,
     wins,
     losses,
-    winRate: closed.length ? wins / closed.length * 100 : 0,
+    winRate: closed ? wins / closed * 100 : 0,
     netPnl: round(netPnl, 6),
-    avgRoe: round(avgRoe, 3),
+    avgRoe: round(closed ? netRoe / closed : 0, 3),
     profitFactor: grossLoss > 0 ? round(grossProfit / grossLoss, 3) : grossProfit > 0 ? null : 0,
-    openPnl: round(open.reduce((sum, trade) => sum + finite(trade.netPnl, 0), 0), 6),
+    openPnl: round(openPnl, 6),
+    historyOmitted: selectedTrades != null && decorated.length < source.length,
+    returnedTrades: decorated.length,
     trades: decorated.sort((a, b) => (
-      finite(b.entryAt, finite(b.pendingSince, 0)) - finite(a.entryAt, finite(a.pendingSince, 0))
+      liquidFlowV2PaperDisplayTimestamp(b) - liquidFlowV2PaperDisplayTimestamp(a)
     )),
   };
 }
@@ -677,6 +759,11 @@ export class LiquidFlowV2PaperManager {
     this.initialized = false;
     this.initPromise = null;
     this.saveLock = Promise.resolve();
+    this.summaryRevision = 0;
+    this.summaryCache = null;
+    this.maxHotRows = Math.max(100, Number(process.env.LIQUID_FLOW_V2_PAPER_MAX_HOT_ROWS ?? 300));
+    this.archiveFile = join(dirname(this.file), 'archive', 'liquid-flow-v2-paper.ndjson');
+    this.archiveWrite = Promise.resolve();
   }
 
   async init() {
@@ -730,11 +817,14 @@ export class LiquidFlowV2PaperManager {
           trades: Array.isArray(parsed?.trades) ? parsed.trades : Array.isArray(parsed) ? parsed : [],
           version: LIQUID_FLOW_V2_PAPER_VERSION,
         };
+        if (await this._compactRuntimeHistory()) await this._writeCurrentState();
       } catch (error) {
         if (error?.code !== 'ENOENT') console.warn(`[LiquidFlowV2Paper] load failed: ${error.message}`);
       }
       this.initialized = true;
       this.initPromise = null;
+      this.summaryRevision += 1;
+      this.summaryCache = null;
       this._notify('init');
       return this.state;
     })();
@@ -1122,9 +1212,32 @@ export class LiquidFlowV2PaperManager {
   }
 
   snapshot() {
-    const summary = summarizeLiquidFlowV2Paper(this.state.trades, this.marks, this.now());
+    const now = this.now();
+    let summary;
+    if (this.summaryCache?.revision === this.summaryRevision) {
+      const activeById = new Map();
+      let openPnl = 0;
+      for (const trade of this.summaryCache.activeTrades) {
+        const decorated = { ...trade, ...liquidFlowV2PaperTradeMetrics(trade, this.marks, now) };
+        activeById.set(trade.id, decorated);
+        if (trade.status === 'OPEN') openPnl += finite(decorated.netPnl, 0);
+      }
+      summary = {
+        ...this.summaryCache.summary,
+        openPnl: round(openPnl, 6),
+        trades: this.summaryCache.summary.trades.map((trade) => activeById.get(trade.id) ?? trade),
+      };
+    } else {
+      summary = summarizeLiquidFlowV2Paper(this.state.trades, this.marks, now, { tradeLimit: 300 });
+      this.summaryCache = {
+        revision: this.summaryRevision,
+        summary,
+        activeTrades: this.state.trades.filter((trade) => ['OPEN', 'PENDING_ENTRY'].includes(trade.status)),
+      };
+    }
     return {
       version: LIQUID_FLOW_V2_PAPER_VERSION,
+      snapshotPerformanceVersion: LIQUID_FLOW_V2_PAPER_SNAPSHOT_PERF_VERSION,
       observationOnly: !this.state.settings.baseBinanceEnabled
         && !this.state.settings.htfBinanceEnabled
         && !this.state.settings.emaFanBinanceEnabled
@@ -1143,7 +1256,7 @@ export class LiquidFlowV2PaperManager {
       settings: { ...this.state.settings },
       updatedAt: this.state.updatedAt,
       ...summary,
-      trades: summary.trades.slice(0, 300),
+      trades: summary.trades,
     };
   }
 
@@ -1178,6 +1291,64 @@ export class LiquidFlowV2PaperManager {
 
   async _save(reason) {
     this.state.updatedAt = new Date(this.now()).toISOString();
+    this.summaryRevision += 1;
+    this.summaryCache = null;
+    await this._compactRuntimeHistory();
+    await this._writeCurrentState();
+    this._notify(reason);
+  }
+
+  async _archiveTerminalRows(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return;
+    this.archiveWrite = this.archiveWrite.catch(() => {}).then(async () => {
+      await mkdir(dirname(this.archiveFile), { recursive: true });
+      const output = createWriteStream(this.archiveFile, { encoding: 'utf8', flags: 'a' });
+      try {
+        for (let index = 0; index < rows.length; index += 50) {
+          const chunk = `${rows.slice(index, index + 50).map((row) => JSON.stringify(row)).join('\n')}\n`;
+          if (!output.write(chunk)) await new Promise((resolve, reject) => {
+            const cleanup = () => {
+              output.off('drain', onDrain);
+              output.off('error', onError);
+            };
+            const onDrain = () => {
+              cleanup();
+              resolve();
+            };
+            const onError = (error) => {
+              cleanup();
+              reject(error);
+            };
+            output.once('drain', onDrain);
+            output.once('error', onError);
+          });
+        }
+        output.end();
+        await finished(output);
+      } catch (error) {
+        output.destroy(error);
+        throw error;
+      }
+    });
+    await this.archiveWrite;
+  }
+
+  async _compactRuntimeHistory() {
+    const partition = partitionPaperHotRows(this.state.trades, this.maxHotRows);
+    if (!partition.archiveRows.length) return false;
+    await this._archiveTerminalRows(partition.archiveRows);
+    applyPaperHotStorePartition(this.state, partition, {
+      archiveFile: 'data/archive/liquid-flow-v2-paper.ndjson',
+    });
+    console.log(
+      `[LiquidFlowV2Paper] Runtime hot store kept=${partition.hotRows.length}`
+        + ` protected=${partition.protectedRows} archived=${partition.archiveRows.length}`
+        + ` version=${LIQUID_FLOW_V2_RUNTIME_HOT_STORE_VERSION}`,
+    );
+    return true;
+  }
+
+  async _writeCurrentState() {
     const payload = JSON.stringify(this.state, null, 2);
     this.saveLock = this.saveLock.catch(() => {}).then(async () => {
       await mkdir(dirname(this.file), { recursive: true });
@@ -1186,7 +1357,6 @@ export class LiquidFlowV2PaperManager {
       await rename(tempFile, this.file);
     });
     await this.saveLock;
-    this._notify(reason);
   }
 
   _notify(reason) {

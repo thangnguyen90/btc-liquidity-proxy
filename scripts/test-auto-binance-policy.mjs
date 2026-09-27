@@ -13,13 +13,20 @@ import {
   authorizeLiqScanHighScoreOrder,
   authorizeLiqScanMainKillSweepOrder,
   authorizeCoinLevelEntryWatchOrder,
+  authorizeLimitPaperFillOrder,
+  authorizePostMoveIdealLong1hOrder,
+  authorizePostMoveIdealLong4hOrder,
+  authorizePostMoveIdealShort1hOrder,
+  authorizePostMoveIdealShort4hOrder,
+  authorizePostMovePriority15mOrder,
+  authorizePostMoveImpulse5mOrder,
   evaluateAutoBinanceEntryPolicy,
   liveCardOnlyAutoBinanceEnabled,
 } from '../src/autoBinancePolicy.js';
 import { ceilQuantityAtMinimumNotional } from '../src/orderQuantityPolicy.js';
 
 const exclusiveEnv = {};
-assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'LIVE_CARD_LIQ_FLOW_COIN_LEVEL_LIMIT_V30_20260920');
+assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'LIVE_CARD_POST_MOVE_IMPULSE_MAX50_V41_20260927');
 assert.equal(LIQUID_FLOW_V2_BINANCE_LEVERAGE, 5);
 assert.equal(liveCardOnlyAutoBinanceEnabled(exclusiveEnv), true);
 assert.equal(liveCardOnlyAutoBinanceEnabled({ LIVE_CARD_WHITELIST_ONLY_AUTO_BINANCE: 'false' }), false);
@@ -46,6 +53,204 @@ assert.equal(evaluateAutoBinanceEntryPolicy({
   orderEnabled: true,
   env: exclusiveEnv,
 }).allowed, false);
+
+const postMoveShort1hBase = {
+  symbol: 'TESTUSDT', dryRun: false,
+  source: 'post-move-ideal-entry', streamId: 'post-pump-volume-fade-1h',
+  signalLabel: 'SHORT_IDEAL_ENTRY_TOUCH', signalInterval: '1h',
+  signalStageKey: 'SHORT_NEAR_TOP',
+  side: 'SELL', orderType: 'MARKET', marginUsdt: 10, leverage: 5,
+  notionalUsdt: 50, takeProfitRoePct: 6, stopLossRoePct: 30,
+};
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: postMoveShort1hBase, orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'visible post-move fields alone cannot authorize an order');
+const postMoveShort1h = authorizePostMoveIdealShort1hOrder(postMoveShort1hBase);
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: postMoveShort1h, orderEnabled: true, env: exclusiveEnv,
+}).reason, 'POST_MOVE_IDEAL_SHORT_1H_TOUCH_CONFIGURED_ENTRY');
+for (const patch of [{ signalInterval: '15m' }, { side: 'BUY' }, { stopLossRoePct: 20 },
+  { notionalUsdt: 10 }, { signalStageKey: 'SHORT_FADING' }]) {
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: authorizePostMoveIdealShort1hOrder({ ...postMoveShort1hBase, ...patch }),
+    orderEnabled: true, env: exclusiveEnv,
+  }).allowed, false);
+}
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: { ...postMoveShort1h }, orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'post-move authorization must not survive a payload copy');
+
+const postMoveLong1hBase = {
+  symbol: 'TESTUSDT', dryRun: false,
+  source: 'post-move-ideal-entry', streamId: 'post-dump-volume-recovery-1h',
+  signalLabel: 'LONG_IDEAL_ENTRY_TOUCH', signalInterval: '1h',
+  signalStageKey: 'LONG_FRESH_REVERSAL',
+  side: 'BUY', orderType: 'MARKET', marginUsdt: 5, leverage: 5,
+  notionalUsdt: 25, takeProfitRoePct: 10, stopLossRoePct: 20,
+};
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: postMoveLong1hBase, orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'visible post-move LONG fields alone cannot authorize an order');
+const postMoveLong1h = authorizePostMoveIdealLong1hOrder(postMoveLong1hBase);
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: postMoveLong1h, orderEnabled: true, env: exclusiveEnv,
+}).reason, 'POST_MOVE_IDEAL_LONG_1H_TOUCH_CONFIGURED_ENTRY');
+for (const patch of [{ signalInterval: '15m' }, { side: 'SELL' },
+  { stopLossRoePct: 30 }, { notionalUsdt: 10 }, { signalStageKey: 'LONG_RECOVERING' }]) {
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: authorizePostMoveIdealLong1hOrder({ ...postMoveLong1hBase, ...patch }),
+    orderEnabled: true, env: exclusiveEnv,
+  }).allowed, false);
+}
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: { ...postMoveLong1h }, orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'post-move LONG authorization must not survive a payload copy');
+
+const postMoveLong4hBase = {
+  symbol: 'NEARUSDT', dryRun: false,
+  source: 'post-move-ideal-entry', streamId: 'post-dump-volume-recovery-4h',
+  signalLabel: 'LONG_IDEAL_ENTRY_TOUCH', signalInterval: '4h',
+  signalStageKey: 'LONG_FIRST_STRONG_CANDLE',
+  side: 'BUY', orderType: 'MARKET', marginUsdt: 10, leverage: 5,
+  notionalUsdt: 50, takeProfitRoePct: 10, stopLossRoePct: 20,
+};
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: postMoveLong4hBase, orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'visible post-move LONG 4h fields alone cannot authorize an order');
+const postMoveLong4h = authorizePostMoveIdealLong4hOrder(postMoveLong4hBase);
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: postMoveLong4h, orderEnabled: true, env: exclusiveEnv,
+}).reason, 'POST_MOVE_IDEAL_LONG_4H_TOUCH_CONFIGURED_ENTRY');
+for (const patch of [{ signalInterval: '1h' }, { side: 'SELL' },
+  { stopLossRoePct: 30 }, { notionalUsdt: 25 }, { signalStageKey: 'LONG_EXTENDED' }]) {
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: authorizePostMoveIdealLong4hOrder({ ...postMoveLong4hBase, ...patch }),
+    orderEnabled: true, env: exclusiveEnv,
+  }).allowed, false);
+}
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: { ...postMoveLong4h }, orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'post-move LONG 4h authorization must not survive a payload copy');
+
+const postMoveShort4hBase = {
+  symbol: 'SHORT4HUSDT', dryRun: false,
+  source: 'post-move-ideal-entry', streamId: 'post-pump-volume-fade-4h',
+  signalLabel: 'SHORT_IDEAL_ENTRY_TOUCH', signalInterval: '4h',
+  signalStageKey: 'SHORT_FIRST_STRONG_CANDLE',
+  side: 'SELL', orderType: 'MARKET', marginUsdt: 10, leverage: 5,
+  notionalUsdt: 50, takeProfitRoePct: 6, stopLossRoePct: 30,
+};
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: postMoveShort4hBase, orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'visible post-move SHORT 4h fields alone cannot authorize an order');
+const postMoveShort4h = authorizePostMoveIdealShort4hOrder(postMoveShort4hBase);
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: postMoveShort4h, orderEnabled: true, env: exclusiveEnv,
+}).reason, 'POST_MOVE_IDEAL_SHORT_4H_TOUCH_CONFIGURED_ENTRY');
+for (const patch of [{ signalInterval: '1h' }, { side: 'BUY' },
+  { stopLossRoePct: 20 }, { signalStageKey: 'SHORT_EXTENDED' }]) {
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: authorizePostMoveIdealShort4hOrder({ ...postMoveShort4hBase, ...patch }),
+    orderEnabled: true, env: exclusiveEnv,
+  }).allowed, false);
+}
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: { ...postMoveShort4h }, orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'post-move SHORT 4h authorization must not survive a payload copy');
+
+for (const priority of [
+  {
+    source: 'post-move-ideal-entry', streamId: 'post-dump-volume-recovery-15m',
+    signalLabel: 'LONG_PRIORITY_STAGE_15M', signalStageKey: 'LONG_FRESH_REVERSAL',
+    signalInterval: '15m', side: 'BUY', orderType: 'MARKET', marginUsdt: 2,
+    leverage: 5, notionalUsdt: 10, takeProfitRoePct: 10, stopLossRoePct: 20,
+    maxOpenPositions: 15, dryRun: false,
+  },
+  {
+    source: 'post-move-ideal-entry', streamId: 'post-pump-volume-fade-15m',
+    signalLabel: 'SHORT_PRIORITY_STAGE_15M', signalStageKey: 'SHORT_NEAR_TOP',
+    signalInterval: '15m', side: 'SELL', orderType: 'MARKET', marginUsdt: 2,
+    leverage: 5, notionalUsdt: 10, takeProfitRoePct: 6, stopLossRoePct: 30,
+    maxOpenPositions: 15, dryRun: false,
+  },
+]) {
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: priority, orderEnabled: true, env: exclusiveEnv,
+  }).allowed, false, 'visible priority-stage fields alone cannot authorize an order');
+  const authorized = authorizePostMovePriority15mOrder(priority);
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: authorized, orderEnabled: true, env: exclusiveEnv,
+  }).reason, 'POST_MOVE_PRIORITY_STAGE_15M_CONFIGURED_ENTRY_MAX15');
+  for (const invalid of [
+    { signalInterval: '1h' }, { maxOpenPositions: 30 }, { signalStageKey: 'LONG_EXTENDED' },
+  ]) {
+    assert.equal(evaluateAutoBinanceEntryPolicy({
+      payload: authorizePostMovePriority15mOrder({ ...priority, ...invalid }),
+      orderEnabled: true, env: exclusiveEnv,
+    }).allowed, false);
+  }
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: { ...authorized }, orderEnabled: true, env: exclusiveEnv,
+  }).allowed, false, 'priority-stage authorization must not survive a payload copy');
+}
+
+for (const impulse of [
+  {
+    source: 'post-move-impulse', streamId: 'post-dump-no-sell-5m',
+    signalLabel: 'POST_DUMP_NO_SELL_BUY_IMPULSE_LONG', signalInterval: '5m',
+    signalStageKey: 'BUY_IMPULSE', side: 'BUY', stopLossRoePct: 20,
+  },
+  {
+    source: 'post-move-impulse', streamId: 'post-pump-no-buy-5m',
+    signalLabel: 'POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT', signalInterval: '5m',
+    signalStageKey: 'SELL_IMPULSE', side: 'SELL', stopLossRoePct: 30,
+  },
+]) {
+  const base = {
+    symbol: 'TESTUSDT', dryRun: false, orderType: 'MARKET',
+    marginUsdt: 8, leverage: 5, notionalUsdt: 40,
+    takeProfitRoePct: 10, maxOpenPositions: 50,
+    ...impulse,
+  };
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: base, orderEnabled: true, env: exclusiveEnv,
+  }).allowed, false, 'visible impulse fields alone cannot authorize an order');
+  const authorized = authorizePostMoveImpulse5mOrder(base);
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: authorized, orderEnabled: true, env: exclusiveEnv,
+  }).reason, 'POST_MOVE_IMPULSE_5M_MARKET_8USDT_MAX50');
+  for (const invalid of [
+    { signalInterval: '15m' }, { marginUsdt: 2 }, { leverage: 10 },
+    { takeProfitRoePct: 11 }, { maxOpenPositions: 30 },
+    { signalStageKey: impulse.side === 'BUY' ? 'NO_SELL_CONFIRMATION' : 'NO_BUY_CONFIRMATION' },
+  ]) {
+    assert.equal(evaluateAutoBinanceEntryPolicy({
+      payload: authorizePostMoveImpulse5mOrder({ ...base, ...invalid }),
+      orderEnabled: true, env: exclusiveEnv,
+    }).allowed, false);
+  }
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload: { ...authorized }, orderEnabled: true, env: exclusiveEnv,
+  }).allowed, false, 'impulse authorization must not survive a payload copy');
+}
+
+const limitPaperFillPayload = authorizeLimitPaperFillOrder({
+  symbol: 'TESTUSDT', dryRun: false,
+  source: 'limit-paper-fill', streamId: 'ema99-retest-shallow',
+  signalLabel: 'NEAR_EMA_LONG_WATCH', signalInterval: '15m',
+  side: 'BUY', orderType: 'MARKET', marginUsdt: 1, leverage: 5,
+  notionalUsdt: 5, takeProfitRoePct: 10, stopLossRoePct: 20,
+});
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: limitPaperFillPayload, orderEnabled: true, env: exclusiveEnv,
+}).reason, 'LIMIT_PAPER_SHALLOW_FILL_RISK_ON_MARKET');
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: { ...limitPaperFillPayload }, orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'copying the visible payload must lose the private authorization symbol');
+assert.equal(evaluateAutoBinanceEntryPolicy({
+  payload: authorizeLimitPaperFillOrder({ ...limitPaperFillPayload, stopLossRoePct: 30 }),
+  orderEnabled: true, env: exclusiveEnv,
+}).allowed, false, 'selected fill orders require exact SL -20% ROE');
 
 assert.equal(evaluateAutoBinanceEntryPolicy({
   payload: { ...realLegacyPayload, liveCardAuthorization: true },
@@ -136,6 +341,14 @@ assert.equal(evaluateAutoBinanceEntryPolicy({payload:{...extremeShortPayload},or
   'Extreme SHORT authorization must not survive a forged payload copy.');
 assert.equal(evaluateAutoBinanceEntryPolicy({payload:authorizeExtremeShortSqueezeOrder({...extremeShortPayload,signalInterval:'15m'}),orderEnabled:true,env:exclusiveEnv}).allowed,false,
   '15m extreme pump remains observe-only.');
+const sagaClosedFollowPayload=authorizeExtremeShortSqueezeOrder({...extremeShortPayload,
+  symbol:'SAGAUSDT',streamId:'extreme-short-squeeze-saga-15m',signalLabel:'FOLLOW_REJECTION_CLOSED',
+  signalInterval:'15m',marginUsdt:6,notionalUsdt:30});
+assert.equal(evaluateAutoBinanceEntryPolicy({payload:sagaClosedFollowPayload,orderEnabled:true,env:exclusiveEnv}).reason,
+  'FOLLOW_REJECTION_CLOSED_15M_SHORT_CONFIGURED_ENTRY');
+assert.equal(evaluateAutoBinanceEntryPolicy({payload:authorizeExtremeShortSqueezeOrder({...sagaClosedFollowPayload,
+  symbol:'NOTSAGAUSDT'}),orderEnabled:true,env:exclusiveEnv}).allowed,false,
+  'The closed 15m follow route is scoped to SAGAUSDT only.');
 const peakShortPayload=authorizeExtremeShortSqueezeOrder({...extremeShortPayload,
   signalLabel:'PEAK_ZONE_SHORT_WATCH',marginUsdt:2,notionalUsdt:10});
 assert.equal(evaluateAutoBinanceEntryPolicy({payload:peakShortPayload,orderEnabled:true,env:exclusiveEnv}).reason,
@@ -183,16 +396,20 @@ assert.equal(evaluateAutoBinanceEntryPolicy({payload:{...liqScanLong},orderEnabl
 
 const mainKillShortBase={source:'liqscan-main-kill-sweep',streamId:'background-top400',
   signalLabel:'LIQSCAN_MAIN_KILL_UPPER_SWEEP_SHORT',signalInterval:'15m',side:'SELL',orderType:'MARKET',
-  marginUsdt:1,leverage:5,notionalUsdt:5,takeProfitRoePct:10,stopLossRoePct:30,dryRun:false};
+  marginUsdt:1,leverage:5,notionalUsdt:5,takeProfitRoePct:10,stopLossRoePct:30,dryRun:false,
+  entryFilterVersion:'LIQSCAN_MAIN_KILL_SWEEP_SHORT_REJECTION_FILTER_V2_20260927',
+  zoneReturnConfirmed:true,sweepDepthPct:0.08,recentBidirectional3d:false};
 assert.equal(evaluateAutoBinanceEntryPolicy({payload:mainKillShortBase,orderEnabled:true,env:exclusiveEnv}).allowed,false,
   'MAIN KILL source strings without the private authorization token must fail closed.');
 const mainKillShort=authorizeLiqScanMainKillSweepOrder(mainKillShortBase);
 assert.equal(evaluateAutoBinanceEntryPolicy({payload:mainKillShort,orderEnabled:true,env:exclusiveEnv}).reason,
-  'LIQSCAN_MAIN_KILL_EXTREME_REVERSAL_CONFIGURED_ENTRY');
+  'LIQSCAN_MAIN_KILL_FILTERED_REVERSAL_CONFIGURED_ENTRY');
 const mainKillLong=authorizeLiqScanMainKillSweepOrder({...mainKillShortBase,
   signalLabel:'LIQSCAN_MAIN_KILL_LOWER_SWEEP_LONG',side:'BUY'});
 assert.equal(evaluateAutoBinanceEntryPolicy({payload:mainKillLong,orderEnabled:true,env:exclusiveEnv}).allowed,true);
-for(const change of [{side:'BUY'},{signalInterval:'5m'},{stopLossRoePct:25},{notionalUsdt:6}])
+for(const change of [{side:'BUY'},{signalInterval:'5m'},{stopLossRoePct:25},{notionalUsdt:6},
+  {zoneReturnConfirmed:false},{sweepDepthPct:0.1001},{recentBidirectional3d:true},
+  {entryFilterVersion:'OLD'}])
   assert.equal(evaluateAutoBinanceEntryPolicy({payload:authorizeLiqScanMainKillSweepOrder({...mainKillShortBase,...change}),
     orderEnabled:true,env:exclusiveEnv}).allowed,false);
 assert.equal(evaluateAutoBinanceEntryPolicy({payload:{...mainKillShort},orderEnabled:true,env:exclusiveEnv}).allowed,false,
@@ -270,6 +487,7 @@ assert.match(serverSource, /authorizeExtremeShortSqueezeOrder\(plan\)/);
 assert.match(serverSource, /authorizeLiqScanHighScoreOrder\(plan\)/);
 assert.match(serverSource, /authorizeLiqScanMainKillSweepOrder\(plan\)/);
 assert.match(serverSource, /authorizeCoinLevelEntryWatchOrder\(plan\)/);
+assert.match(serverSource, /authorizeLimitPaperFillOrder\(plan\)/);
 const ppksHandlerStart = serverSource.indexOf('async function handlePostPumpKillShortRealOrder');
 const ppksHandlerEnd = serverSource.indexOf('let _pumpIgnitionDebounce', ppksHandlerStart);
 const ppksHandlerSource = serverSource.slice(ppksHandlerStart, ppksHandlerEnd);

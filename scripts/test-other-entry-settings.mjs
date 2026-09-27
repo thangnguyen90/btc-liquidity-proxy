@@ -10,8 +10,8 @@ import {
   resolveOtherEntrySettings,
 } from '../src/otherEntryCatalog.js';
 
-assert.equal(OTHER_ENTRY_SETTINGS_VERSION, 'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V5_COIN_LEVEL_RETEST_20260920');
-assert.equal(OTHER_ENTRY_CATALOG.length, 18);
+assert.equal(OTHER_ENTRY_SETTINGS_VERSION, 'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V14_POST_MOVE_IMPULSE_8USDT_20260927');
+assert.equal(OTHER_ENTRY_CATALOG.length, 30);
 assert.ok(OTHER_ENTRY_CATALOG.every((route) => otherRouteMeta(route)));
 
 const dir = await mkdtemp(join(tmpdir(), 'other-entry-settings-'));
@@ -63,6 +63,21 @@ try {
   assert.throws(() => controls.assertEntry({ ...hybridPayload, notionalUsdt: 8 }), /size\/leverage/);
   assert.throws(() => controls.assertEntry({ ...hybridPayload, takeProfitRoePct: 10 }), /TP changed/);
 
+  const sagaClosedFollow = OTHER_ENTRY_CATALOG.find((route) => (
+    route.streamId === 'extreme-short-squeeze-saga-15m'
+    && route.signalLabel === 'FOLLOW_REJECTION_CLOSED'
+  ));
+  const sagaClosedFollowKey = entryRoute(sagaClosedFollow).key;
+  controls.update({ action: 'route', key: sagaClosedFollowKey, enabled: true });
+  assert.doesNotThrow(() => controls.assertEntry({ ...sagaClosedFollow,
+    symbol: 'SAGAUSDT', signalInterval: '15m', side: 'SELL', orderType: 'MARKET',
+    marginUsdt: 6, leverage: 5, notionalUsdt: 30, takeProfitRoePct: 15,
+  }));
+  assert.throws(() => controls.assertEntry({ ...sagaClosedFollow,
+    symbol: 'SAGAUSDT', signalInterval: '15m', side: 'SELL', orderType: 'MARKET',
+    marginUsdt: 5, leverage: 5, notionalUsdt: 25, takeProfitRoePct: 15,
+  }), /size\/leverage/);
+
   const horizon = OTHER_ENTRY_CATALOG.find((route) => route.signalLabel === 'UPPER');
   const horizonKey = entryRoute(horizon).key;
   controls.update({ action: 'margin', key: horizonKey, marginUsdt: 6, expectedMarginUsdt: 5 });
@@ -91,4 +106,4 @@ try {
   await rm(dir, { recursive: true, force: true });
 }
 
-console.log('Other entry settings PASS: 18 exact routes, editable margin/leverage/fixed TP, dynamic Horizon TP, stale-save, fail-closed and restart.');
+console.log('Other entry settings PASS: 30 exact routes, editable margin/leverage/fixed TP, dynamic Horizon TP, stale-save, fail-closed and restart.');

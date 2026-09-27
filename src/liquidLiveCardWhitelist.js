@@ -1,4 +1,5 @@
-export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V17_SHORT_EMA99_WATCH_20260830';
+import { sessionTradeKey } from '../public/btc-session-model.js';
+export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V18_BTC_SESSION_OBSERVE_20260926';
 export const LIVE_CARD_COMBO_ENTRY_MATCH_VERSION = 'LIVE_CARD_COMBO_ENTRY_MATCH_V1_20260804';
 
 const ALLOWED_PREFIXES = [
@@ -44,6 +45,7 @@ function addTierKey(keys, prefix, ...parts) {
 export function normalizeLiquidLiveCardKey(value) {
   const key = String(value ?? '').trim();
   if (!key || key.length > 1000 || /[\u0000-\u001f\u007f]/.test(key)) return null;
+  if (/^btc-session:(LONG|SHORT):(NIGHT|MORNING|OTHER)$/.test(key)) return key;
   return ALLOWED_PREFIXES.some((prefix) => key.startsWith(prefix)) ? key : null;
 }
 
@@ -116,6 +118,8 @@ export function liquidLiveComboCycleKey(trade = {}) {
 
 export function liquidLiveCardKeysOfTrade(trade = {}) {
   const keys = new Set(['overview:all']);
+  const sessionKey = sessionTradeKey(trade);
+  if (sessionKey) keys.add(sessionKey);
   const margin = Number(trade.marginUsdt);
   keys.add(margin >= 9.5 && margin <= 10.5
     ? 'overview:margin:test10'

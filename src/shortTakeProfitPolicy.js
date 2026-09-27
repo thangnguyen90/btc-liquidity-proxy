@@ -5,7 +5,7 @@ export const NON_LIQUID_FLOW_V2_LONG_TP_ROE = 10;
 export const ORDERS_MANUAL_TP_VERSION = 'MANUAL_SOCKET_TP_ROE30_V2_20260812';
 export const ORDERS_MANUAL_TP_ROE = 30;
 export const BINANCE_MANUAL_SOCKET_SOURCE = 'binance-manual-socket';
-export const BINANCE_BOT_SHORT_TP_ONLY_VERSION = 'BINANCE_BOT_SHORT_TP_ONLY_COIN_LEVEL_EXEMPT_V6_20260920';
+export const BINANCE_BOT_SHORT_TP_ONLY_VERSION = 'BINANCE_BOT_SHORT_TP_ONLY_POST_MOVE_EXEMPT_V7_20260925';
 export const BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION = 'BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_V1_20260824';
 export const COINGLASS_ZONE_LIFECYCLE_TP_ONLY_VERSION =
   'COINGLASS_ZONE_LIFECYCLE_TP_ONLY_NO_SL_V1_20260828';
@@ -93,6 +93,7 @@ export function shouldSuppressBotShortStopLoss({
     'liqscan-high-score',
     'liqscan-main-kill-sweep',
     'coin-level-entry-watch',
+    'post-move-ideal-entry',
   ].includes(normalizedSource)) return false;
   const isLegacyBotSignalSource = normalizedSource === 'signal';
   // Explicit manual sources must keep their requested protection. Requiring a

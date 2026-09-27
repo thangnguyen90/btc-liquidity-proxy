@@ -1,4 +1,4 @@
-export const EXTREME_SHORT_SQUEEZE_VERSION = 'EXTREME_SQUEEZE_FIRST_PUMP_FLUSH_LONG_V5_20260918';
+export const EXTREME_SHORT_SQUEEZE_VERSION = 'EXTREME_SQUEEZE_SAGA_15M_CLOSED_FOLLOW_SHORT_V6_20260926';
 export const EXTREME_SHORT_SQUEEZE_RULE = Object.freeze({
   minPumpPct: 8, minSpikeAtr: 4, minVolumeRatio: 3, minQuoteVolume: 100000,
   breakoutPct: 1, rejectionRetracePct: 50, rejectionWickPct: 40, lowerSweepPct: 3,
@@ -174,10 +174,12 @@ export function detectExtremeShortSqueeze(rows, {symbol, interval, now=Date.now(
     const emit=(kind,bar,followBars=0)=>{
       if (!fresh(bar)) return;
       const closed=bar.closeTime<now, stage=`${kind}_${closed?'CLOSED':'LIVE'}`;
-      const binanceEligible=interval==='5m'&&(
+      const sagaClosedFollowEligible=symbol==='SAGAUSDT'&&interval==='15m'
+        &&kind==='FOLLOW_REJECTION'&&closed;
+      const binanceEligible=(interval==='5m'&&(
         (kind==='EXTREME_PUMP'&&closed)||(kind==='FOLLOW_REJECTION'&&!closed)
         ||(kind==='PEAK_ZONE_SHORT_WATCH'&&!closed)
-      );
+      ))||sagaClosedFollowEligible;
       events.push({version:EXTREME_SHORT_SQUEEZE_VERSION,observeOnly:!binanceEligible,binanceEligible,symbol,interval,
         side:'UPWARD_SPIKE',stage,kind,closed,followBars,
         generatedAt:new Date(now).toISOString(),observedAt:now,liveUpdatedAt:closed?null:liveUpdatedAt,
@@ -224,7 +226,9 @@ export function extremeShortSqueezeEvent(event,now=Date.now()) {
     (event?.kind==='EXTREME_PUMP'&&event?.closed===true)
     ||(event?.kind==='FOLLOW_REJECTION'&&event?.closed===false)
     ||(event?.kind==='PEAK_ZONE_SHORT_WATCH'&&event?.closed===false)
-  );
+  )||event?.symbol==='SAGAUSDT'&&event?.interval==='15m'
+    &&event?.kind==='FOLLOW_REJECTION'&&event?.stage==='FOLLOW_REJECTION_CLOSED'
+    &&event?.closed===true&&event?.binanceEligible===true&&event?.observeOnly===false;
   const validMode=event?.observeOnly===true||executable;
   if (event?.version!==EXTREME_SHORT_SQUEEZE_VERSION || !validMode || !validSide
     || !durationOf(event.interval) || !STYLES[event.kind] || event.stage!==`${event.kind}_${event.closed?'CLOSED':'LIVE'}`
@@ -260,7 +264,9 @@ export function extremeShortSqueezePayload(e) {
     }]};
   }
   const execution=e.binanceExecution;
-  const margin=e.kind==='PEAK_ZONE_SHORT_WATCH'?2:1;
+  const sagaClosedFollow=e.symbol==='SAGAUSDT'&&e.interval==='15m'
+    &&e.stage==='FOLLOW_REJECTION_CLOSED'&&e.closed===true;
+  const margin=sagaClosedFollow?6:e.kind==='PEAK_ZONE_SHORT_WATCH'?2:1;
   const executionText=e.binanceEligible===true
     ? `SHORT thử nghiệm Binance: **$${margin} margin × 5x** khi route đang ON, tín hiệu còn mới và mark còn sát giá đánh giá.${execution?` Kết quả: **${String(execution.status??'unknown').toUpperCase()}**${execution.code?` · ${execution.code}`:''}.`:''}`
     : 'Cảnh báo quan sát; không tự đặt lệnh Binance.';

@@ -1,0 +1,9 @@
+:root{--mint:#ff6688;--cyan:#ff9d66;--amber:#ffd166}
+body{background:radial-gradient(circle at 20% -10%,#421c2a 0,transparent 36%),#10070b}
+.hero,.panel,.notice,.summary-grid article{background:rgba(31,12,19,.94);border-color:#603047}
+nav a,button{border-color:#7e3e5b;background:#30131f}.hero nav a.active{border-color:#ff6688;color:#ff8eaa;background:#481a2a}
+.short-notice{border-color:#a45b34;color:#f7c9b4}.short-notice strong{color:#ff9d66}
+.summary-grid .confirmed{border-color:#d74369}.summary-grid .confirmed strong{color:#ff6688}
+.timeframe-tabs{border-color:#603047;background:#180a10}.timeframe-tab{background:#281019}.timeframe-tab.active{border-color:#ff6688;background:#481a2a;box-shadow:0 0 0 1px rgba(255,102,136,.18)}.timeframe-tab.active span,.timeframe-tab.active small{color:#ff9db3}
+.timeframe-zone{background:#170a0f}.timeframe-zone[data-interval="15m"]{border-color:#b34464}.timeframe-zone[data-interval="1h"]{border-color:#8951a4}.timeframe-zone[data-interval="4h"]{border-color:#aa6b35}.zone-head{background:#281019}.timeframe-zone th{background:#210d15}
+.zone-counts .confirm-count,.positive{color:#ff8eaa}.entry-price{color:#ffd166}.entry-state.in-zone{color:#ff8eaa}

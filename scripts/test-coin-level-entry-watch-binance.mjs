@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoEntryControls, entryRoute } from '../src/autoEntryControls.js';
@@ -16,7 +16,7 @@ import {
   coinLevelEntryWatchRoute,
 } from '../src/coinLevelEntryWatchBinance.js';
 
-assert.match(COIN_LEVEL_ENTRY_WATCH_BINANCE_VERSION, /LIMIT_3USDT_V2_20260920$/);
+assert.match(COIN_LEVEL_ENTRY_WATCH_BINANCE_VERSION, /LIMIT_3USDT_V4_MARKET_REGIME_20260922$/);
 assert.equal(COIN_LEVEL_ENTRY_WATCH_LIMIT_MARGIN_USDT, 3);
 assert.equal(COIN_LEVEL_ENTRY_WATCH_ROUTES.length, 2);
 
@@ -87,7 +87,9 @@ try {
   controls.seed(COIN_LEVEL_ENTRY_WATCH_ROUTES);
   controls.update({ action: 'master', enabled: true });
   const longRoute = COIN_LEVEL_ENTRY_WATCH_ROUTES.find((route) => route.side === 'LONG');
+  const shortRoute = COIN_LEVEL_ENTRY_WATCH_ROUTES.find((route) => route.side === 'SHORT');
   controls.update({ action: 'route', key: entryRoute(longRoute).key, enabled: true });
+  controls.update({ action: 'route', key: entryRoute(shortRoute).key, enabled: true });
   const routeEnabledAt = Date.parse(controls.read().routes[entryRoute(longRoute).key].enabledAt);
   let clock = routeEnabledAt + 20_000;
   const live = candidate({ retestAt: routeEnabledAt + 10_000 });
@@ -149,6 +151,22 @@ try {
   });
   assert.equal((await limitRunner.handle(limitCandidate)).status, 'SUBMITTED');
   assert.equal((await limitRunner.handle(limitCandidate)).status, 'deduped');
+  const pendingOrder = {
+    symbol: limitCandidate.symbol, side: 'BUY', type: 'LIMIT',
+    orderId: 772, clientOrderId: limitPlan.clientOrderId,
+  };
+  assert.deepEqual(limitRunner.pendingLimitSignal(pendingOrder), {
+    symbol: 'LIMITUSDT', side: 'LONG',
+    confirmationAt: limitCandidate.confirmationAt,
+    referenceLevel: limitCandidate.referenceLevel,
+    submittedAt: clock,
+  });
+  assert.equal(limitRunner.pendingLimitSignal({ ...pendingOrder, orderId: 773 }), null);
+  assert.equal(limitRunner.pendingLimitSignal({ ...pendingOrder, clientOrderId: 'clel_legacy' }), null);
+  assert.equal(limitRunner.markLimitInvalidated(pendingOrder.clientOrderId, 'CLOSED_5M_INVALIDATED_LEVEL'), true);
+  const cancelledState = JSON.parse(await readFile(join(directory, 'limit-attempts.json'), 'utf8'));
+  assert.equal(cancelledState.attempts[pendingOrder.clientOrderId].status, 'CANCELLED_SIGNAL_INVALID');
+  assert.equal(cancelledState.attempts[pendingOrder.clientOrderId].cancelReason, 'CLOSED_5M_INVALIDATED_LEVEL');
   const shortLimit = {
     ...candidate({ side: 'SHORT', symbol: 'SHORTLIMITUSDT', retestAt: null }),
     confirmationAt: routeEnabledAt + 10_000,
@@ -170,6 +188,41 @@ try {
     submit: async () => { throw new Error('must not submit'); },
   });
   assert.equal((await occupied.handle({ ...live, symbol: 'BUSYUSDT' })).status, 'existing-position');
+
+  let blockedContextCalls = 0;
+  const riskOffRunner = new CoinLevelEntryWatchBinanceRunner({
+    file: join(directory, 'risk-off.json'), controls, now: () => clock,
+    getMarketRegime: () => ({
+      version: 'TEST_REGIME', state: 'RISK_OFF', allowLongEntry: false,
+      evaluatedAt: clock, reasons: ['test dump'],
+    }),
+    getContext: async () => { blockedContextCalls += 1; return { enabled: true }; },
+    submit: async () => { throw new Error('must not submit'); },
+  });
+  const blockedLong = await riskOffRunner.handle({ ...live, symbol: 'BLOCKEDLONGUSDT' });
+  assert.equal(blockedLong.status, 'market-regime-blocked');
+  assert.equal(blockedLong.marketRegime, 'RISK_OFF');
+  assert.equal(blockedContextCalls, 0, 'RISK-OFF LONG must stop before signed Binance context');
+
+  let shortSubmitted = 0;
+  const shortDuringRiskOff = new CoinLevelEntryWatchBinanceRunner({
+    file: join(directory, 'short-risk-off.json'), controls, now: () => clock,
+    getMarketRegime: () => ({ state: 'RISK_OFF', allowLongEntry: false }),
+    getContext: async () => ({ enabled: true, positions: [], openOrders: [], markPrice: short.entryPrice }),
+    submit: async () => {
+      shortSubmitted += 1;
+      return { status: 'SUBMITTED', orderResult: { orderId: 990 } };
+    },
+  });
+  const shortResult = await shortDuringRiskOff.handle({
+    ...short,
+    symbol: 'SHORTUNCHANGEDUSDT',
+    confirmationAt: routeEnabledAt + 5_000,
+    retestAt: routeEnabledAt + 10_000,
+    lastClosed5mAt: routeEnabledAt + 10_000,
+  });
+  assert.equal(shortResult.status, 'SUBMITTED');
+  assert.equal(shortSubmitted, 1, 'SHORT route remains unchanged by LONG-only market guard');
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

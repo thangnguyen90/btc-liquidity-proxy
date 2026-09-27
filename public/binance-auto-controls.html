@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Quản lý Binance tự động</title><link rel="stylesheet" href="/binance-auto-controls.css?v=20260917-protection-exclusions"></head>
+<title>Quản lý Binance tự động</title><link rel="stylesheet" href="/binance-auto-controls.css?v=20260926-auto-resume15-neg25"></head>
 <body><main><header><div><p class="eyebrow">BINANCE · ENTRY CONTROLS</p><h1>Quản lý tín hiệu tự động</h1></div>
-<nav aria-label="Điều hướng"><a href="/orders">Orders</a><a class="active" href="/binance-auto-controls" aria-current="page">Quản lý Binance tự động</a><a href="/limit-paper-lab">Limit Paper Lab</a><a href="/coin-level-analysis">Bản đồ giá</a><a href="/liquid-flow-v2">Liquid Flow V2</a><a href="/liquid-flow-v2-binance-stats">Binance Stats</a></nav></header>
+<nav aria-label="Điều hướng"><a href="/orders">Orders</a><a class="active" href="/binance-auto-controls" aria-current="page">Quản lý Binance tự động</a><a href="/limit-paper-lab">Limit Paper Lab</a><a href="/coin-level-analysis">Bản đồ giá</a><a href="/liquid-flow-v2">Liquid Flow V2</a><a href="/liquid-flow-v2-binance-stats">Binance Stats</a><a href="/post-dump-volume-recovery">Hồi sau xả MTF</a><a href="/post-pump-volume-fade">SHORT sau bơm MTF</a><a href="/btc-session-watch.html">BTC Session · giá vào</a></nav></header>
 <section class="master"><div><h2 id="master-status">Đang đọc trạng thái…</h2><p id="summary"></p></div><div class="actions">
 <button id="pause" class="danger">TẮT TẤT CẢ</button><button id="master" disabled>Bật khóa tổng</button></div></section>
 <section class="daily" aria-labelledby="daily-heading"><div><p class="eyebrow">BINANCE FILLS · NGÀY VIỆT NAM</p><h2 id="daily-heading">Lệnh thật hôm nay</h2><p id="daily-scope" class="muted">Đang đọc audit Binance…</p></div>
@@ -16,7 +16,7 @@
 <p id="auth"></p><button id="unlock" type="button">Mở quyền chỉnh sửa trên máy này</button></section>
 <section class="protection-exclusions" aria-labelledby="protection-exclusions-heading">
 <div><p class="eyebrow">THEO COIN · QUẢN LÝ PROTECTION</p><h2 id="protection-exclusions-heading">Bỏ qua TP / SL tự động trong một vòng vị thế</h2>
-<p class="warning"><strong>Cảnh báo:</strong> coin trong danh sách vẫn có thể được vào lệnh, nhưng bot sẽ không tạo/bù/đổi TP hoặc SL, không dời SL và không chạy Fast Wave. TP/SL đang có trên Binance được giữ nguyên. Ngoại lệ tự xóa khi Binance xác nhận vị thế đã đóng hẳn hoặc đảo chiều; giảm vị thế/DCA không làm reset.</p></div>
+<p class="warning"><strong>Cảnh báo:</strong> coin trong danh sách vẫn có thể được vào lệnh, nhưng bot sẽ không tạo/bù/đổi TP hoặc SL, không dời SL và không chạy Fast Wave. TP/SL đang có trên Binance được giữ nguyên. Ngoại lệ tự xóa khi ROE vị thế đạt từ +15% hoặc giảm tới −25%, hoặc khi Binance xác nhận vị thế đã đóng hẳn/đảo chiều; giảm vị thế/DCA không làm reset.</p></div>
 <form id="protection-exclusion-form"><label for="protection-exclusion-symbol">Mã altcoin</label><div class="protection-input-row"><input id="protection-exclusion-symbol" autocomplete="off" placeholder="AIN hoặc AINUSDT" maxlength="50"><button id="protection-exclusion-add" type="submit" class="danger">Bỏ qua coin này</button></div></form>
 <div><strong id="protection-exclusion-count">0 coin đang bỏ qua</strong><div id="protection-exclusion-list" class="protection-exclusion-list"></div></div>
 </section><p id="status" role="status" aria-live="polite"></p>
@@ -29,4 +29,4 @@
 <section class="route-group" aria-labelledby="other-heading"><h2 id="other-heading">Các luồng khác</h2><p class="muted">Hybrid được ghép theo từng stream: UPPER_FIRST LONG và LOWER_FIRST SHORT nằm cạnh nhau cho primary, sau đó đến cặp secondary.</p>
 <div class="table-wrap"><table><thead><tr><th>Loại tín hiệu</th><th>Luồng / nguồn</th><th>Hướng</th><th>Công tắc loại</th><th>Khóa trang này</th><th>Ký quỹ lệnh thật</th><th>Đòn bẩy lệnh mới</th><th>TP lệnh mới · % ROE</th><th>Binance hôm nay</th></tr></thead><tbody id="routes"></tbody></table></div></section>
 <p class="muted">Số “đã vào” chỉ đếm entry fill thật không phải DCA. PnL là net realized PnL được audit khi vị thế đóng trong ngày Việt Nam, gồm phí/funding đã ghi nhận; không cộng unrealized PnL. Input chỉ sửa cấu hình entry tương lai của đúng route; các route chưa nối executor vẫn theo rule gốc và không hiện input giả.</p>
-</main><script src="/binance-auto-controls.js?v=20260917-position-scoped-protection-exclusions" defer></script></body></html>
+</main><script src="/binance-auto-controls.js?v=20260926-auto-resume15-neg25" defer></script></body></html>

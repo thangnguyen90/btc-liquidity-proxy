@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Theo dõi coin hồi giá và tăng volume sau một nến xả mạnh trên 15m, 1h và 4h.">
+    <title>Hồi giá sau xả · 15m / 1h / 4h</title>
+    <link rel="stylesheet" href="/post-dump-volume-recovery.css?v=20260925-stage-v1">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">NẾN ĐÃ ĐÓNG · ROUTE ƯU TIÊN 15M / 1H / 4H</p>
+          <h1>Hồi giá + volume sau xả mạnh</h1>
+          <p class="subtitle">Thống kê riêng ba khung 15m, 1h và 4h khi có một nến xả sâu, sau đó giá hồi và dòng tiền quay lại.</p>
+        </div>
+        <nav aria-label="Điều hướng">
+          <a href="/binance-auto-controls">Quản lý Binance</a>
+          <a href="/limit-paper-lab">Limit Paper Lab</a>
+          <a href="/coin-level-analysis">Bản đồ giá</a>
+          <a href="/liquid-flow-v2">Liquid Flow V2</a>
+          <a href="/liquid-flow-v2-binance-stats">V2 Binance Stats</a>
+          <a class="active" href="/post-dump-volume-recovery" aria-current="page">Hồi sau xả MTF</a>
+          <a href="/post-pump-volume-fade">SHORT sau bơm MTF</a>
+          <a href="/btc-session-watch.html">BTC Session · giá vào</a>
+          <a href="/orders">Orders</a>
+        </nav>
+      </header>
+
+      <section class="notice">
+        <strong>Binance chỉ xét case LONG đạt loại ưu tiên.</strong>
+        Khi checkbox tương ứng đang ON, chỉ <b>VỪA SẬP · ĐANG RÚT CHÂN</b> hoặc <b>NẾN HỒI ĐẦU TIÊN</b> mới được xét MARKET: 15m xử lý lúc stage mới đạt với 2 USDT; 1h/4h phải chạm vùng entry, lần lượt dùng 5/10 USDT. Các case còn lại chỉ quan sát.
+      </section>
+
+      <section class="summary-grid" aria-label="Tổng quan">
+        <article><span>Tổng case 3 khung</span><strong id="total-cases">—</strong></article>
+        <article><span>Coin không trùng</span><strong id="unique-coins">—</strong></article>
+        <article class="confirmed"><span>Đã xác nhận</span><strong id="confirmed">—</strong></article>
+        <article><span>Độ phủ từng khung</span><strong id="coverage" class="coverage-value">—</strong></article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">XẾP HẠNG THEO TRẠNG THÁI → ĐIỂM</p>
+            <h2>Ba vùng thống kê 15m · 1h · 4h</h2>
+            <p id="updated" class="muted">Đang tải dữ liệu…</p>
+            <p id="live-socket-status" class="live-socket-status connecting">○ SOCKET · đang chờ danh sách coin</p>
+          </div>
+          <div class="filters">
+            <label>Tìm coin<input id="search" type="search" placeholder="GIGGLEUSDT"></label>
+            <label>Trạng thái<select id="status"><option value="ALL">Tất cả</option><option value="CONFIRMED">Đã xác nhận</option><option value="BUILDING">Đang hồi</option><option value="WEAKENED">Yếu lại</option></select></label>
+            <button id="refresh" type="button">Làm mới</button>
+          </div>
+        </div>
+
+        <div class="legend">
+          <span><i class="dot confirmed-dot"></i> Đã xác nhận: có nến giá tăng + volume tăng đã đóng</span>
+          <span><i class="dot building-dot"></i> Đang hồi: đã rời đáy nhưng chưa đủ xác nhận</span>
+          <span><i class="dot weakened-dot"></i> Yếu lại: từng hồi nhưng đang trả giá</span>
+          <span><i class="dot dual-dot"></i> Hai chiều: cùng coin + cùng khung đang active ở cả LONG và SHORT</span>
+        </div>
+
+        <div id="timeframe-tabs" class="timeframe-tabs" role="tablist" aria-label="Chọn khung thời gian"></div>
+        <div id="timeframe-zones" class="timeframe-zones"><div class="empty">Đang quét ba khung thời gian…</div></div>
+        <p id="excluded" class="muted footnote"></p>
+      </section>
+    </main>
+    <script type="module" src="/post-dump-volume-recovery.js?v=20260925-stage-v1"></script>
+  </body>
+</html>

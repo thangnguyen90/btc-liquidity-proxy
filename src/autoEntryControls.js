@@ -2,8 +2,29 @@ import {readFileSync,writeFileSync,renameSync,mkdirSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {ema99RouteMeta,ema99Margin,ema99Leverage,ema99TakeProfitRoe,validEma99Margin,validEma99Leverage,validEma99TakeProfitRoe,EMA99_ENTRY_INTERVALS,EMA99_ENTRY_SETTINGS_VERSION} from './ema99EntryCatalog.js';
 import {otherRouteMeta,resolveOtherEntrySettings,validOtherMargin,validOtherLeverage,validOtherTakeProfitRoe,OTHER_ENTRY_SETTINGS_VERSION} from './otherEntryCatalog.js';
-export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V15_COIN_LEVEL_RETEST_MARKET_20260920';
-export const BINANCE_PROTECTION_EXCLUSION_VERSION='BINANCE_SYMBOL_PROTECTION_EXCLUSION_V2_AUTO_RESET_ON_CLOSE_20260917';
+export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V25_POST_MOVE_IMPULSE_8USDT_20260927';
+export const BINANCE_PROTECTION_EXCLUSION_VERSION='BINANCE_SYMBOL_PROTECTION_EXCLUSION_V4_AUTO_RESUME_ROE15_OR_NEG25_20260926';
+export const DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE=15;
+export const DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE=-25;
+export function protectionExclusionAutoResumeRoe(value=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE){
+  const roe=Number(value);
+  return Number.isFinite(roe)&&roe>0?roe:DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE;
+}
+export function protectionExclusionAutoResumeLossRoe(value=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE){
+  const roe=Number(value);
+  return Number.isFinite(roe)&&roe<0?roe:DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE;
+}
+export function shouldAutoResumeProtectionExclusion({
+  excluded=false,
+  roe,
+  thresholdRoe=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE,
+  lossThresholdRoe=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE,
+}={}){
+  const current=Number(roe),profitThreshold=protectionExclusionAutoResumeRoe(thresholdRoe);
+  const lossThreshold=protectionExclusionAutoResumeLossRoe(lossThresholdRoe);
+  return excluded===true&&Number.isFinite(current)
+    &&(current>=profitThreshold||current<=lossThreshold);
+}
 const OLD_NEAR_REJECT={source:'ema99-near-reject-short',stream:'ema99-retest',label:'NEAR_REJECT_SHORT_WATCH',side:'SHORT'};
 const REBOUND_NEAR_REJECT={...OLD_NEAR_REJECT,label:'REBOUND_PUMP_NEAR_REJECT_SHORT_WATCH'};
 const isOldNearReject=r=>r?.source===OLD_NEAR_REJECT.source&&r?.stream===OLD_NEAR_REJECT.stream
@@ -210,6 +231,11 @@ export class AutoEntryControls {
   isProtectionExcluded(symbol){
     try{return this.protectionExclusions.has(normalizeProtectionExclusionSymbol(symbol));}
     catch{return false;}
+  }
+  autoResumeProtectionExclusion(symbol,roe,thresholdRoe=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE,
+    lossThresholdRoe=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE){
+    if(!shouldAutoResumeProtectionExclusion({excluded:this.isProtectionExcluded(symbol),roe,thresholdRoe,lossThresholdRoe}))return false;
+    return this.clearProtectionExclusion(symbol);
   }
   clearProtectionExclusion(symbol){
     const normalized=normalizeProtectionExclusionSymbol(symbol),s=this.read();

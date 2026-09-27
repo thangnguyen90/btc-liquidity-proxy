@@ -4,27 +4,32 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Limit Paper Lab</title>
-  <link rel="stylesheet" href="/limit-paper-lab.css?v=20260913-v1">
+  <link rel="stylesheet" href="/limit-paper-lab.css?v=20260923-v2">
 </head>
 <body>
 <main>
   <header>
     <div>
-      <p class="eyebrow">RESEARCH ONLY · KHÔNG GỬI LỆNH BINANCE</p>
+      <p class="eyebrow">PAPER LAB · 3 ROUTE LONG ĐƯỢC PHÉP MARKET SAU KHI LIMIT KHỚP</p>
       <h1>Limit Paper Lab</h1>
-      <p class="lead">Đo giá chờ hồi phù hợp cho những tín hiệu không vào MARKET thật.</p>
+      <p class="lead">Đo giá chờ hồi; tín hiệu đầu không vào Binance, chỉ ba route được chọn mới xét MARKET khi LIMIT nông thật sự khớp.</p>
     </div>
     <nav aria-label="Điều hướng">
       <a href="/orders">Orders</a>
       <a href="/binance-auto-controls">Quản lý Binance tự động</a>
       <a class="active" href="/limit-paper-lab" aria-current="page">Limit Paper Lab</a>
       <a href="/coin-level-analysis">Bản đồ giá</a>
+      <a href="/liquid-flow-v2">Liquid Flow V2</a>
+      <a href="/liquid-flow-v2-binance-stats">V2 Binance Stats</a>
+      <a href="/post-dump-volume-recovery">Hồi sau xả MTF</a>
+      <a href="/post-pump-volume-fade">SHORT sau bơm MTF</a>
+      <a href="/btc-session-watch.html">BTC Session · giá vào</a>
     </nav>
   </header>
 
   <section class="guardrail">
-    <strong>Trang này chỉ mô phỏng.</strong>
-    <span>Không bật route, không đặt LIMIT/MARKET, không sửa size/đòn bẩy/TP/SL Binance. V1 nhận EMA99, HTF Deep Base, Extreme, CoinGlass Zone Lifecycle và Hybrid khi kết quả không phải <code>submitted</code>.</span>
+    <strong>Mặc định vẫn là paper.</strong>
+    <span>Riêng LIMIT <code>SHALLOW</code> của NEAR EMA LONG, NEAR RECLAIM LONG và TOUCH EMA LONG 15m: khi chuyển PENDING → OPEN sau lúc route được bật, hệ thống mới xét MARKET Binance 1 USDT ×5, TP +10% / SL −20% ROE và chỉ khi thị trường RISK_ON. Không đặt Binance lúc tín hiệu phát lần đầu.</span>
   </section>
 
   <section id="summary" class="summary" aria-label="Tổng quan"></section>
@@ -68,6 +73,6 @@
     </div>
   </section>
 </main>
-<script src="/limit-paper-lab.js?v=20260913-v1" defer></script>
+<script src="/limit-paper-lab.js?v=20260923-v2" defer></script>
 </body>
 </html>

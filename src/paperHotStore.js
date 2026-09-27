@@ -4,17 +4,23 @@ export function isClosedPaperTrade(trade) {
   return String(trade?.status ?? '').toUpperCase() === 'CLOSED';
 }
 
+export function isTerminalPaperTrade(trade) {
+  return ['CLOSED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(
+    String(trade?.status ?? '').toUpperCase(),
+  );
+}
+
 export function partitionPaperHotRows(trades = [], maxRows = 1_000) {
   const rows = Array.isArray(trades) ? trades : [];
   const limit = Math.max(1, Math.floor(Number(maxRows) || 1_000));
-  const protectedRows = rows.reduce((count, trade) => count + (isClosedPaperTrade(trade) ? 0 : 1), 0);
+  const protectedRows = rows.reduce((count, trade) => count + (isTerminalPaperTrade(trade) ? 0 : 1), 0);
   const closedBudget = Math.max(0, limit - protectedRows);
   let keptClosed = 0;
   const hotRows = [];
   const archiveRows = [];
 
   for (const trade of rows) {
-    if (!isClosedPaperTrade(trade)) {
+    if (!isTerminalPaperTrade(trade)) {
       hotRows.push(trade);
       continue;
     }

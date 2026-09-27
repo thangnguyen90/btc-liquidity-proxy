@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export const LIMIT_PAPER_LAB_VERSION = 'LIMIT_PAPER_LAB_V1_CAUSAL_MULTI_DEPTH_20260913';
+export const LIMIT_PAPER_LAB_VERSION = 'LIMIT_PAPER_LAB_V2_SELECTED_SHALLOW_FILL_BINANCE_20260923';
 
 const DEFAULT_ATR_PCT = Object.freeze({
   '5m': 1,
@@ -207,6 +207,7 @@ export class LimitPaperLab {
     now = () => Date.now(),
     getPrice = () => null,
     onSymbolsChanged = () => {},
+    onCandidateFilled = async () => ({ status: 'observe-only' }),
     leverage = 5,
     takeProfitRoePct = 10,
     stopLossRoePct = 20,
@@ -214,7 +215,7 @@ export class LimitPaperLab {
   } = {}) {
     if (!file) throw new Error('LimitPaperLab file is required');
     Object.assign(this, {
-      file, now, getPrice, onSymbolsChanged, leverage,
+      file, now, getPrice, onSymbolsChanged, onCandidateFilled, leverage,
       takeProfitRoePct, stopLossRoePct, maxRecords,
     });
     this.state = null;
@@ -257,10 +258,11 @@ export class LimitPaperLab {
 
   async observe(input = {}) {
     await this.init();
-    const symbol = safeText(input.symbol, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const symbol = safeText(input.symbol, '').toUpperCase().replace(/[-/_\s]/gu, '');
     const side = normalizeSide(input.side);
     const signalPrice = finite(input.signalPrice ?? input.price);
-    if (!symbol || !side || !(signalPrice > 0)) return { status: 'ineligible' };
+    if (symbol === 'USDT' || symbol.length > 50 || !/^[\p{L}\p{N}]+USDT$/u.test(symbol)
+      || !side || !(signalPrice > 0)) return { status: 'ineligible' };
     const interval = normalizeInterval(input.interval);
     const signalAt = finite(input.signalAt, this.now());
     const normalized = {
@@ -335,6 +337,7 @@ export class LimitPaperLab {
     const now = finite(eventTime, this.now());
     if (!normalizedSymbol || !(mark > 0) || !Number.isFinite(now)) return { changed: 0 };
     let changed = 0;
+    const newlyFilled = [];
     for (const record of this.state.records) {
       if (record.symbol !== normalizedSymbol) continue;
       for (const candidate of record.candidates) {
@@ -364,6 +367,16 @@ export class LimitPaperLab {
             record.leverage,
             -record.stopLossRoePct,
           ), 12);
+          newlyFilled.push({
+            record,
+            candidate,
+            event: {
+              record: JSON.parse(JSON.stringify(record)),
+              candidate: JSON.parse(JSON.stringify(candidate)),
+              markPrice: mark,
+              eventTime: now,
+            },
+          });
           changed += 1;
         }
         if (candidate.status !== 'OPEN') continue;
@@ -389,7 +402,38 @@ export class LimitPaperLab {
       this.syncSymbols();
       await this.persist();
     }
-    return { changed };
+    const binanceTriggers = [];
+    if (newlyFilled.length) {
+      for (const filled of newlyFilled) {
+        try {
+          const result = await this.onCandidateFilled(filled.event);
+          if (result == null) continue;
+          const audit = {
+            status: safeText(result?.status, 'UNKNOWN'),
+            orderId: result?.orderId ?? null,
+            attemptedAt: this.now(),
+            signalLabel: result?.signalLabel ?? null,
+            marginUsdt: finite(result?.marginUsdt),
+            leverage: finite(result?.leverage),
+            takeProfitRoePct: finite(result?.takeProfitRoePct),
+            stopLossRoePct: finite(result?.stopLossRoePct),
+          };
+          filled.candidate.binanceExecution = audit;
+          binanceTriggers.push({ recordId: filled.record.id, candidate: filled.candidate.key, ...audit });
+        } catch (error) {
+          const audit = {
+            status: 'ERROR_OR_UNKNOWN',
+            attemptedAt: this.now(),
+            errorCode: error?.code ?? null,
+            error: safeText(error?.message, 'Unknown Binance submission error').slice(0, 300),
+          };
+          filled.candidate.binanceExecution = audit;
+          binanceTriggers.push({ recordId: filled.record.id, candidate: filled.candidate.key, ...audit });
+        }
+      }
+      await this.persist();
+    }
+    return { changed, binanceTriggers };
   }
 
   async snapshot() {
@@ -434,7 +478,7 @@ export class LimitPaperLab {
     return {
       version: LIMIT_PAPER_LAB_VERSION,
       updatedAt: this.state.updatedAt,
-      researchOnly: true,
+      researchOnly: false,
       methodology: {
         entryCandidates: ['0.35 ATR', '0.70 ATR', '1.00 ATR', 'EMA/cấu trúc khi nằm phía chờ hồi'],
         leverage: this.leverage,
@@ -442,6 +486,12 @@ export class LimitPaperLab {
         stopLossRoePct: this.stopLossRoePct,
         qualifiedMinimum: '20 tín hiệu + 12 lệnh đóng + fill-rate ≥25%',
         causality: 'Chỉ dùng snapshot tín hiệu và tick giá đến sau thời điểm phát.',
+        liveExecution: {
+          scope: 'Chỉ LIMIT SHALLOW của 3 nhãn LONG 15m được chọn; mọi candidate/nhóm khác vẫn paper.',
+          labels: ['NEAR_EMA_LONG_WATCH', 'NEAR_RECLAIM_LONG_WATCH', 'TOUCH_EMA_LONG_WATCH'],
+          trigger: 'Chỉ khi paper LIMIT chuyển PENDING → OPEN sau lúc route được bật; không đặt khi tín hiệu phát lần đầu.',
+          action: 'MARKET Binance 1 USDT ×5, TP +10% ROE, SL −20% ROE; yêu cầu RISK_ON.',
+        },
       },
       summary: {
         signals: this.state.records.length,

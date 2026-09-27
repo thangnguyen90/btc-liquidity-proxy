@@ -3,13 +3,14 @@ import { dirname } from 'node:path';
 import { buildCoinHorizonAnalysis } from './coinHorizonAnalysis.js';
 
 export const COIN_HORIZON_DISCORD_VERSION = 'COIN_HORIZON_DIRECTION_DISCORD_V1_20260906';
+export const COIN_HORIZON_ANALYSIS_REUSE_VERSION = 'COIN_HORIZON_ANALYSIS_REUSE_V1_20260926';
 const FOUR_HOURS = 4 * 3600_000;
 const n = value => Number.isFinite(value) ? Number(value.toFixed(8)).toString() : '—';
 const zone = value => value ? `${n(value.low ?? value.bandLow)}–${n(value.high ?? value.bandHigh)}` : 'Chưa có vùng hợp lệ';
 const localTime = value => new Date(value).toLocaleString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh',hour12:false});
 
 export function collectHorizonDirectionEvent(analysis, now = Date.now()) {
-  const horizon = buildCoinHorizonAnalysis(analysis, now);
+  const horizon = analysis?.horizonAnalysis ?? buildCoinHorizonAnalysis(analysis, now);
   if (!horizon.available || horizon.stale || !analysis?.symbol) return null;
   const frames = horizon.scenarios.filter(s=>['UPPER','LOWER'].includes(s.direction));
   if (!frames.length) return null;
