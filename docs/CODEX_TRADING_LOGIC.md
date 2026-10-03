@@ -5638,3 +5638,11 @@ Before major edits:
 - Các bộ đếm là telemetry vận hành, không phải WinRate, PF, AvgROE hoặc xác suất. Không thêm nguồn hậu nghiệm, PnL/outcome hay điều kiện phân loại mới. Mapping vẫn ABOVE + BID dưới lớn → SHORT; BELOW + ASK trên lớn → LONG.
 - Trang/API không có mutation: không bật/tắt route, không đặt/hủy lệnh và không đổi entry, size `4 USDT ×5`, TP `+10% ROE`, LONG SL `-20% ROE`, SHORT TP-only, protection hoặc vị thế. Auto Controls vẫn là nơi duy nhất thay đổi quyền chạy.
 - JSON/state cũ không migration; snapshot/API chỉ additive và client cũ bỏ qua được. Không thêm label/card hiệu suất/matcher, nên không có checkbox WHITELIST mới; exact route vẫn seed OFF và policy chỉ hiện khi CLOSED `AvgROE >4%` không đổi.
+
+## 2026-10-03 — Toast toàn website cho riêng thanh khoản ngược chiều
+
+- Thêm `OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V1_QUALIFIED_EVENT_20261003`, nâng notifier additive lên `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V5_SITEWIDE_BROWSER_TOAST_20261003`. Mọi trang HTML nhận client toast, nhưng client chỉ poll `browserNotifications` từ API quản lý thanh khoản ngược; không nghe BTC, AI PRIORITY, sweep-reject hoặc loại tín hiệu khác.
+- Event dùng đúng dữ liệu causal V4 đã qualified sau priority selection: nến 5m/15m đóng vượt MAIN KILL và Binance visible depth phía ngược lớn hơn. Toast hiển thị coin, LONG/SHORT, vùng, tỷ lệ depth, trạng thái Binance và Discord. Discord lỗi vẫn ghi event toast để kênh UI không phụ thuộc webhook.
+- Dedupe theo eventId trong localStorage, tối đa bốn toast chi tiết mỗi lượt và tự đóng sau 15 giây. Lần đầu chỉ hiện event không quá 2 phút; state giữ tối đa 100 event/7 ngày, trình duyệt nhớ 200 ID. Đây là audit delivery, không phải thống kê hiệu quả/xác suất.
+- Không đổi phân loại, Binance entry, route, size `4 USDT ×5`, leverage, TP/SL/protection hoặc position; không tạo API ghi. JSON cũ mặc định `browserNotifications=[]`, `recent` vẫn giữ nghĩa Discord gửi thành công và không migration/replay.
+- Không thêm label/card/matcher mới nên không thêm checkbox WHITELIST; exact Auto Controls và policy CLOSED `AvgROE >4%` giữ nguyên.

@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { normalizeLiqScanSweepAlert } from './localAiLiquiditySweepRejectDiscord.js';
 
 export const LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_VERSION =
-  'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V4_BATCHED_ALL_BREAKOUTS_PRIORITY_20261003';
+  'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V5_SITEWIDE_BROWSER_TOAST_20261003';
 
 const TRACK_MS = 6 * 60 * 60_000;
 const RETAIN_MS = 7 * 24 * 60 * 60_000;
@@ -222,6 +222,7 @@ function freshState(now) {
     sent: {},
     lastByRoute: {},
     recent: [],
+    browserNotifications: [],
   };
 }
 
@@ -345,6 +346,10 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
       .sort((left, right) => finite(right?.sentAt, 0) - finite(left?.sentAt, 0))
       .slice(0, Math.max(1, Math.min(200, Math.trunc(finite(recentLimit, 50)))))
       .map((event) => ({ ...event }));
+    const browserNotifications = [...(state.browserNotifications ?? [])]
+      .sort((left, right) => finite(right?.notifiedAt, 0) - finite(left?.notifiedAt, 0))
+      .slice(0, Math.max(1, Math.min(200, Math.trunc(finite(recentLimit, 50)))))
+      .map((event) => ({ ...event }));
     return {
       ...this.snapshot(),
       generatedAt: now,
@@ -356,6 +361,7 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
       belowTracks: tracks.filter((track) => track.direction === 'BELOW').length,
       tracks,
       recent,
+      browserNotifications,
     };
   }
 
@@ -371,6 +377,8 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
         sent: parsed?.sent && typeof parsed.sent === 'object' ? parsed.sent : {},
         lastByRoute: parsed?.lastByRoute && typeof parsed.lastByRoute === 'object' ? parsed.lastByRoute : {},
         recent: Array.isArray(parsed?.recent) ? parsed.recent : [],
+        browserNotifications: Array.isArray(parsed?.browserNotifications)
+          ? parsed.browserNotifications : [],
       };
     } catch (error) {
       if (error?.code !== 'ENOENT') console.warn(`[LocalAiLiqBreakoutDepth] state reset: ${error.message}`);
@@ -442,6 +450,9 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
       .filter(([, track]) => now - finite(track?.lastSeenAt, track?.alertAt) <= TRACK_MS));
     state.sent = Object.fromEntries(Object.entries(state.sent)
       .filter(([, sentAt]) => now - finite(sentAt, 0) <= RETAIN_MS));
+    state.browserNotifications = (state.browserNotifications ?? [])
+      .filter((event) => now - finite(event?.notifiedAt, 0) <= RETAIN_MS)
+      .slice(0, 100);
     const breakouts = Object.values(state.tracks)
       .flatMap(track => Object.keys(CLOSED_CANDLE_INTERVALS)
         .filter(interval => !track?.completedIntervals?.[interval])
@@ -514,6 +525,16 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
         }
       }
       const result = await this.#post(buildLiquidityBreakoutOppositeDepthDiscordPayload(event, this.baseUrl?.()));
+      const notificationIndex = state.browserNotifications
+        .findIndex((notification) => notification?.eventId === event.eventId);
+      const browserNotification = {
+        ...event,
+        notifiedAt: notificationIndex >= 0
+          ? state.browserNotifications[notificationIndex].notifiedAt : now,
+        discordDelivery: result,
+      };
+      if (notificationIndex >= 0) state.browserNotifications[notificationIndex] = browserNotification;
+      else state.browserNotifications = [browserNotification, ...state.browserNotifications].slice(0, 100);
       if (result.sent) {
         state.sent[event.eventId] = now;
         state.lastByRoute[event.routeKey] = now;

@@ -713,6 +713,7 @@ import { LocalAiOllamaProcessGuard } from './localAiOllamaProcessGuard.js';
 import { LocalAiTrendChat, extractRequestedMarketSymbols, resolveLocalAiChatIntent, normalizeLocalAiChatMode } from './localAiTrendChat.js';
 import { buildLocalAiMainKillGapWatchSnapshot, resolveMainKillGapCandidateSource } from './localAiMainKillGapWatch.js';
 import { injectLocalAiNavigation } from './localAiNavigation.js';
+import { injectOppositeLiquidityToast } from './oppositeLiquidityToast.js';
 import { injectToxicTwoSideNavigation } from './toxicTwoSideNavigation.js';
 import { LocalAiTrendDiscordNotifier } from './localAiTrendDiscord.js';
 import { LocalAiSignalReview } from './localAiSignalReview.js';
@@ -44185,6 +44186,7 @@ async function sendStatic(pathname, response) {
       }
       html = injectLocalAiNavigation(html);
       html = injectToxicTwoSideNavigation(html);
+      html = injectOppositeLiquidityToast(html);
       const hasDedicatedLoader = staticPath === '/recommended-signals.html';
       if (!hasDedicatedLoader && !html.includes('/global-loading.js')) {
         const loaderScript = '<script src="/global-loading.js"></script>';

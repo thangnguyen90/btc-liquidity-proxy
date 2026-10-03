@@ -163,6 +163,7 @@ try {
   assert.equal(notifier.snapshot().tracked, 0);
   const deliveredManagement = await notifier.managementSnapshot();
   assert.equal(deliveredManagement.recent.length, 2);
+  assert.equal(deliveredManagement.browserNotifications.length, 2);
   assert.equal(deliveredManagement.tracks.length, 0);
   assert.equal(deliveredManagement.lastScan.sent, 2);
   assert.equal(deliveredManagement.lastScan.analyzedSymbols, 1);
@@ -235,6 +236,25 @@ try {
   assert.equal(batchManagement.lastScan.deferredQualified, 0);
   assert.equal(batchManagement.pending15m, 6);
   assert.equal(batchManagement.tracks.length, 6);
+
+  const toastWithoutDiscord = new LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier({
+    stateFile: join(directory, 'toast-without-discord-state.json'),
+    enabled: true,
+    webhookUrl: 'https://discord.com/api/webhooks/123/token',
+    now: () => now,
+    fetchImpl: async () => ({ ok: false, status: 503 }),
+  });
+  await toastWithoutDiscord.arm(lowerAlert);
+  const failedDiscord = await toastWithoutDiscord.scan({
+    getRows: (_symbol, interval) => interval === '5m' ? lowerBars : [],
+    getAnalysis: () => analysis('LOWERUSDT', 350_000, 700_000),
+  });
+  assert.equal(failedDiscord.sent, 0);
+  const toastManagement = await toastWithoutDiscord.managementSnapshot();
+  assert.equal(toastManagement.recent.length, 0, 'Discord recent remains delivery-only');
+  assert.equal(toastManagement.browserNotifications.length, 1,
+    'qualified browser toast is retained even if Discord delivery fails');
+  assert.equal(toastManagement.browserNotifications[0].discordDelivery.error, 'HTTP_503');
 
   const disabled = new LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier({
     stateFile: join(directory, 'disabled.json'),
