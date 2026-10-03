@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 
 export const LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_BINANCE_VERSION =
-  'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_BINANCE_V2_REVERSED_SIDE_MARKET_4USDT_20261003';
+  'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_BINANCE_V3_UPPER_LONG_LOWER_SHORT_MARKET_4USDT_20261003';
 export const LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SOURCE =
   'local-ai-liquidity-breakout-opposite-depth';
 export const LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_STREAM =
@@ -62,7 +62,7 @@ export function buildLocalAiLiquidityBreakoutOppositeDepthMarketOrder(event = {}
   const startMs = epoch(startedAt);
   const enabledMs = epoch(enabledAt);
   const mark = finite(markPrice);
-  const expectedDirection = route?.side === 'LONG' ? 'BELOW' : 'ABOVE';
+  const expectedDirection = route?.side === 'LONG' ? 'ABOVE' : 'BELOW';
   const marginUsdt = finite(routeState?.marginUsdt, LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MARGIN_USDT);
   const leverage = finite(routeState?.leverage, LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LEVERAGE);
   const takeProfitRoePct = finite(routeState?.takeProfitRoePct, LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_TP_ROE_PCT);

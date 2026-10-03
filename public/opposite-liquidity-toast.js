@@ -1,4 +1,4 @@
-const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V2_NATIVE_PUSH_20261003';
+const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V3_UPPER_LONG_RED_LOWER_SHORT_GREEN_20261003';
 const STORAGE_KEY = 'opposite-liquidity-toast:seen-event-ids:v1';
 const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261003-1';
 const FIRST_LOAD_RECENT_MS = 2 * 60_000;
@@ -97,7 +97,7 @@ async function showPushNotification(event) {
     const side = event.side === 'LONG' ? 'LONG' : 'SHORT';
     const ratio = finite(event.depth?.oppositeRatio);
     const execution = String(event.binanceExecution?.status ?? 'NO_BINANCE_CALLBACK').toUpperCase();
-    await registration.showNotification(`${side === 'LONG' ? '🟢' : '🔴'} ${side} · ${event.symbol}`, {
+    await registration.showNotification(`${side === 'LONG' ? '🔴' : '🟢'} ${side} · ${event.symbol}`, {
       body: `${event.interval} · vùng ${price(event.zone?.low)} – ${price(event.zone?.high)} · depth ngược ${ratio == null ? '—' : ratio.toFixed(3)}x · Binance ${execution}`,
       tag: `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH:${event.eventId}`,
       renotify: false,
@@ -124,7 +124,7 @@ function showToast(event) {
   node.dataset.eventId = event.eventId ?? '';
   node.innerHTML = `<button class="opposite-liquidity-toast-close" type="button" aria-label="Đóng">×</button>
     <p class="opposite-liquidity-toast-kicker">THANH KHOẢN NGƯỢC · ${escape(event.interval)}</p>
-    <h2>${side === 'LONG' ? '🟢' : '🔴'} ${escape(side)} · ${escape(event.symbol)}</h2>
+    <h2>${side === 'LONG' ? '🔴' : '🟢'} ${escape(side)} · ${escape(event.symbol)}</h2>
     <p>Giá đã ${event.direction === 'ABOVE' ? 'vượt vùng trên' : 'xuyên vùng dưới'} <b>${price(event.zone?.low)} – ${price(event.zone?.high)}</b>.</p>
     <p>Depth ngược <b>${escape(event.depth?.oppositeSide)} · ${finite(event.depth?.oppositeRatio)?.toFixed(3) ?? '—'}x</b></p>
     <p class="opposite-liquidity-toast-meta">Binance: ${escape(status)} · ${escape(discord)}</p>

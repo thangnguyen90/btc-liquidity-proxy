@@ -20,11 +20,16 @@ assert.match(html, /id="recentRows"/);
 assert.match(html, /id="attemptRows"/);
 assert.match(html, /READ ONLY/);
 assert.match(html, /data-opposite-liquidity-push/);
+assert.match(html, /OPPOSITE_LIQUIDITY_MANAGER_UI_V2_UPPER_LONG_LOWER_SHORT_20261003/);
+assert.match(client, /Vượt trên → LONG/);
+assert.match(client, /Vượt dưới → SHORT/);
 assert.match(client, /fetch\('\/api\/opposite-liquidity-manager'/);
 assert.match(client, /pendingIntervals/);
 assert.match(client, /binanceExecution/);
 assert.match(client, /setInterval/);
 assert.match(css, /\.route-grid/);
+assert.match(css, /\.long\s*\{\s*color:\s*var\(--red\)/);
+assert.match(css, /\.short\s*\{\s*color:\s*var\(--green\)/);
 assert.match(navigation, /OPPOSITE_LIQUIDITY_MANAGER_HREF/);
 
 console.log('opposite liquidity manager page tests: OK');

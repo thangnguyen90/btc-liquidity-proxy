@@ -1,5 +1,12 @@
 # Codex Trading Logic Map
 
+### 2026-10-03 — Sửa hướng thanh khoản ngược: đỏ LONG, xanh SHORT
+
+- Nâng detector/Discord lên `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V6_UPPER_LONG_LOWER_SHORT_20261003`, executor lên `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_BINANCE_V3_UPPER_LONG_LOWER_SHORT_MARKET_4USDT_20261003`, toast/push V3 và manager UI V2. Từ deploy này, nến đóng vượt MAIN KILL phía trên + BID dưới lớn hơn ASK trên tạo **LONG màu đỏ**; nến đóng dưới vùng + ASK trên lớn hơn BID dưới tạo **SHORT màu xanh**. Mapping phản chiều trước đó bị thay thế cho event mới.
+- Input causal không đổi: LiqScan MAIN KILL, nến Futures 5m/15m đã đóng, Binance visible depth NEAR+WIDE, MARK/position/open-order ngay trước submit. Batch phân tích toàn bộ breakout, priority, cooldown/dedupe và guard freshness giữ nguyên; điểm/depth không phải xác suất.
+- Ảnh hưởng Binance chỉ là hướng của entry mới; MARKET vẫn `4 USDT margin ×5`, TP +10%, max50, LONG SL -20%, SHORT TP-only. Không tự đảo/đóng hoặc sửa protection của lệnh/vị thế đã tồn tại. Discord, manager, toast và native push dùng cùng quy ước đỏ LONG/xanh SHORT.
+- EventId/routeKey và JSON cũ giữ tương thích; lịch sử/attempt cũ giữ side đã thực thi, không migration/replay. Không thêm label/card/matcher nên không thêm WHITELIST; exact route giữ trạng thái hiện tại, catalog mặc định OFF và CLOSED AvgROE `>4%` không đổi.
+
 ### 2026-10-03 — Không cắt mất breakout thứ 6+ của nhóm thanh khoản ngược chiều
 
 - Nâng detector/Discord lên `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V4_BATCHED_ALL_BREAKOUTS_PRIORITY_20261003`. V3 từng sort theo breach rồi `slice(0, maxPerScan=5)` trước khi lấy Coin Level; năm breakout không đạt opposite depth có thể chiếm đầu danh sách và làm case tốt phía sau không được đọc order book.

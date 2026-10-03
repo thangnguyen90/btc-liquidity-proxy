@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { normalizeLiqScanSweepAlert } from './localAiLiquiditySweepRejectDiscord.js';
 
 export const LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_VERSION =
-  'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V5_SITEWIDE_BROWSER_TOAST_20261003';
+  'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V6_UPPER_LONG_LOWER_SHORT_20261003';
 
 const TRACK_MS = 6 * 60 * 60_000;
 const RETAIN_MS = 7 * 24 * 60 * 60_000;
@@ -11,6 +11,9 @@ const CLOSED_CANDLE_INTERVALS = Object.freeze({
   '5m': 5 * 60_000,
   '15m': 15 * 60_000,
 });
+
+const breakoutTradeSide = direction => String(direction ?? '').toUpperCase() === 'ABOVE'
+  ? 'LONG' : String(direction ?? '').toUpperCase() === 'BELOW' ? 'SHORT' : '';
 
 const finite = (value, fallback = null) => {
   const parsed = Number(value);
@@ -98,7 +101,7 @@ export function detectLiquidityZoneBreakout({
     symbol: track.symbol,
     interval: normalizedInterval,
     direction,
-    side: direction === 'ABOVE' ? 'SHORT' : 'LONG',
+    side: breakoutTradeSide(direction),
     state: direction === 'ABOVE' ? 'CLOSED_ABOVE_UPPER_ZONE' : 'CLOSED_BELOW_LOWER_ZONE',
     alertAt: track.alertAt,
     breachAt: breach.closeTime,
@@ -188,8 +191,8 @@ export function buildLiquidityBreakoutOppositeDepthDiscordPayload(event = {}, ba
         {
           name: 'Ý NGHĨA',
           value: upper
-            ? 'Giá đã chạy lên vượt vùng trên nhưng tổng BID còn nằm dưới lại lớn hơn ASK phía trên: **SHORT phản chiều** theo rule đã chọn.'
-            : 'Giá đã chạy xuống xuyên vùng dưới nhưng tổng ASK còn nằm trên lại lớn hơn BID phía dưới: **LONG phản chiều** theo rule đã chọn.',
+            ? 'Giá đã chạy lên vượt vùng trên và tổng BID bên dưới lớn hơn ASK phía trên: **LONG theo hướng breakout** theo rule đã chọn.'
+            : 'Giá đã chạy xuống xuyên vùng dưới và tổng ASK bên trên lớn hơn BID phía dưới: **SHORT theo hướng breakdown** theo rule đã chọn.',
           inline: false,
         },
         {
@@ -330,7 +333,7 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
         key,
         symbol: track?.symbol ?? '',
         direction: track?.direction ?? '',
-        side: track?.side ?? (track?.direction === 'ABOVE' ? 'SHORT' : 'LONG'),
+        side: breakoutTradeSide(track?.direction),
         zone: track?.zone ?? null,
         markPriceAtAlert: finite(track?.markPriceAtAlert),
         dominantPct: finite(track?.dominantPct),
@@ -392,6 +395,7 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
       if (!this.enabled()) return { armed: false, reason: 'DISABLED' };
       const normalized = normalizeLiqScanSweepAlert(alert);
       if (!normalized) return { armed: false, reason: 'INVALID_ALERT' };
+      normalized.side = breakoutTradeSide(normalized.direction);
       const state = await this.load();
       const key = `${normalized.symbol}|${normalized.direction}`;
       const previous = state.tracks[key];

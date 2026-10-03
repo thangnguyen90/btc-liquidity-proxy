@@ -53,7 +53,7 @@ const upperBars = [
   candle(25, 108, 109, 107, 108),
 ];
 const upperBreakout = detectLiquidityZoneBreakout({ track: upperTrack, candles: upperBars, interval: '5m', now });
-assert.equal(upperBreakout.side, 'SHORT');
+assert.equal(upperBreakout.side, 'LONG');
 assert.equal(upperBreakout.interval, '5m');
 assert.equal(upperBreakout.state, 'CLOSED_ABOVE_UPPER_ZONE');
 const upperEvent = assessLiquidityBreakoutOppositeDepth({
@@ -71,7 +71,7 @@ assert.equal(upperPayload.embeds[0].color, 0xf43f5e);
 assert.match(upperPayload.embeds[0].title, /VƯỢT VÙNG TRÊN.*BID BÊN DƯỚI LỚN HƠN/);
 assert.match(upperPayload.embeds[0].description, /NẾN 5M ĐÃ ĐÓNG/);
 assert.match(upperPayload.embeds[0].fields[1].name, /TỔNG BÊN/);
-assert.match(upperPayload.embeds[0].fields[2].value, /SHORT phản chiều/);
+assert.match(upperPayload.embeds[0].fields[2].value, /LONG theo hướng breakout/);
 
 const upperBars15m = [
   candle(0, 100, 105, 99, 104, 15),
@@ -83,7 +83,7 @@ const upperBreakout15m = detectLiquidityZoneBreakout({
   interval: '15m',
   now,
 });
-assert.equal(upperBreakout15m.side, 'SHORT');
+assert.equal(upperBreakout15m.side, 'LONG');
 assert.equal(upperBreakout15m.interval, '15m');
 const upperEvent15m = assessLiquidityBreakoutOppositeDepth({
   breakout: upperBreakout15m,
@@ -116,13 +116,13 @@ const lowerEvent = assessLiquidityBreakoutOppositeDepth({
   breakout: lowerBreakout,
   analysis: { ...analysis('LOWERUSDT', 350_000, 700_000), market: { markPrice: 93.5 } },
 });
-assert.equal(lowerBreakout.side, 'LONG');
+assert.equal(lowerBreakout.side, 'SHORT');
 assert.equal(lowerEvent.depth.oppositeSide, 'ASK_ABOVE');
 assert.equal(lowerEvent.depth.oppositeRatio, 2);
 const lowerPayload = buildLiquidityBreakoutOppositeDepthDiscordPayload(lowerEvent, 'http://127.0.0.1:19082');
 assert.equal(lowerPayload.embeds[0].color, 0x16c784);
 assert.match(lowerPayload.embeds[0].title, /VƯỢT VÙNG DƯỚI.*ASK BÊN TRÊN LỚN HƠN/);
-assert.match(lowerPayload.embeds[0].fields[2].value, /LONG phản chiều/);
+assert.match(lowerPayload.embeds[0].fields[2].value, /SHORT theo hướng breakdown/);
 
 const directory = await mkdtemp(join(tmpdir(), 'local-ai-liq-breakout-depth-'));
 const requests = [];
@@ -158,7 +158,7 @@ try {
   assert.equal(requests.length, 2);
   assert.equal(executions.length, 2);
   assert.match(requests[0].embeds[0].fields.find((field) => field.name.includes('BINANCE MARKET')).value,
-    /ĐÃ GỬI SHORT/);
+    /ĐÃ GỬI LONG/);
   assert.equal(analysisCalls, 1, 'Coin Level analysis is shared by simultaneous 5m and 15m events');
   assert.equal(notifier.snapshot().tracked, 0);
   const deliveredManagement = await notifier.managementSnapshot();

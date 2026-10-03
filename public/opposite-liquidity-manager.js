@@ -39,7 +39,7 @@ function trackHtml(track) {
   const isLong = track.side === 'LONG';
   const pending = track.pendingIntervals ?? [];
   const completed = track.completedIntervals ?? {};
-  return `<tr><td><a href="/coin-level-analysis?symbol=${encodeURIComponent(track.symbol)}">${escape(track.symbol)}</a><br><span class="pill ${isLong ? 'long' : 'short'}">${escape(track.side)}</span><small>${track.direction === 'ABOVE' ? 'Vượt trên → SHORT' : 'Vượt dưới → LONG'}</small></td>
+  return `<tr><td><a href="/coin-level-analysis?symbol=${encodeURIComponent(track.symbol)}">${escape(track.symbol)}</a><br><span class="pill ${isLong ? 'long' : 'short'}">${escape(track.side)}</span><small>${track.direction === 'ABOVE' ? 'Vượt trên → LONG' : 'Vượt dưới → SHORT'}</small></td>
     <td><b>${price(track.zone?.low)} – ${price(track.zone?.high)}</b><small>Giữa ${price(track.zone?.mid)}</small></td>
     <td>${price(track.markPriceAtAlert)}<small>${track.direction === 'ABOVE' ? 'vùng nằm phía trên MARK' : 'vùng nằm phía dưới MARK'}</small></td>
     <td><span class="progress ${pending.includes('5m') ? 'wait' : 'done'}">5m ${pending.includes('5m') ? 'đang chờ' : `✓ ${time(completed['5m'])}`}</span><span class="progress ${pending.includes('15m') ? 'wait' : 'done'}">15m ${pending.includes('15m') ? 'đang chờ' : `✓ ${time(completed['15m'])}`}</span></td>

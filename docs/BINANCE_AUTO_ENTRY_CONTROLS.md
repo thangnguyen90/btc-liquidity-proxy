@@ -807,10 +807,11 @@ dùng mocks/fixture, không gửi lệnh hoặc Discord thật.
 - Khi exact symbol đang ở một trong hai mode exclusion, stage `COIN_LEVEL_OBSERVE_FLIP` dừng trước mọi cancel/read-position/MARKET close/TP move. `handleNegativeTimeoutTp` có thêm stage `NEGATIVE_TP_MOVE` ngay mutation boundary, trước đọc/hủy TP và đặt LIMIT, kể cả caller dùng `force=true`.
 - Đây là control protection thật: ngăn mutation Binance mới do direction-flip trên coin bị bypass. Không tự cancel lệnh đã tồn tại trước deploy, không đổi entry/size/leverage hoặc rule coin không bypass. Dữ liệu/audit chỉ dùng exact symbol, mode và lifecycle hiện hành; không dùng outcome tương lai hay tạo thống kê hiệu quả.
 - JSON V7/cũ đọc nguyên trạng; không thêm field/migration, chỉ nâng version string. Không thêm signal/tier/card/matcher, vì vậy không có WHITELIST mới; default OFF và điều kiện CLOSED `AvgROE >4%` giữ nguyên.
-# Vượt MAIN KILL + opposite depth phản chiều — MARKET 4 USDT (2026-10-03)
+# Vượt MAIN KILL + opposite depth — MARKET 4 USDT (2026-10-03)
 
 - Exact routes: `local-ai-liquidity-breakout-opposite-depth / closed-main-kill-opposite-depth / LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LONG|SHORT / LONG|SHORT`.
-- Mặc định catalog OFF; bật riêng từng hướng. Khi ON, event mới 5m/15m tối đa 2 phút vào MARKET `4 USDT margin ×5`, TP `+10% ROE`, max50. LONG có SL `-20% ROE`; SHORT áp policy bot SHORT TP-only. **ABOVE + BID dưới lớn → SHORT; BELOW + ASK trên lớn → LONG**; payload lệch source/stream/label/stage/hướng/size/protection bị policy V50 chặn.
+- Mặc định catalog OFF; bật riêng từng hướng. Khi ON, event mới 5m/15m tối đa 2 phút vào MARKET `4 USDT margin ×5`, TP `+10% ROE`, max50. LONG có SL `-20% ROE`; SHORT áp policy bot SHORT TP-only. Từ V3/V6: **ABOVE + BID dưới lớn → LONG màu đỏ; BELOW + ASK trên lớn → SHORT màu xanh**; payload lệch source/stream/label/stage/hướng/size/protection bị policy hiện hành chặn.
 - Detector V4 không còn cắt 5 breakout đầu trước khi đọc depth. Mọi symbol breakout đều được phân tích theo batch 5; event đạt xếp theo opposite ratio, coverage và notional. Giới hạn tối đa 5 delivery/executor mỗi vòng là hàng đợi riêng; event đạt dư giữ lại cho vòng 30 giây tiếp theo thay vì bị bỏ qua.
 - Dedupe theo eventId, không vào khi có position hoặc open entry order cùng symbol, không replay event trước process start/`enabledAt`. Discord vẫn được gửi và hiển thị kết quả executor.
+- Mapping V2 phản chiều đã bị thay thế cho event mới. Vị thế/lệnh cũ không bị tự đóng, đảo hướng hoặc sửa protection; history/attempt cũ giữ side thật đã thực thi để audit.
 - Đây là exact Auto Controls route thật, không phải live-card WHITELIST. Không có card thống kê mới; cohort CLOSED chưa đạt/không có AvgROE `>4%` nên không hiện checkbox WHITELIST thống kê.
