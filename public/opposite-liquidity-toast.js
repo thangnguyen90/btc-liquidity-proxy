@@ -1,6 +1,8 @@
-const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V3_UPPER_LONG_RED_LOWER_SHORT_GREEN_20261003';
+const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V4_TRUE_WEB_PUSH_PWA_20261004';
 const STORAGE_KEY = 'opposite-liquidity-toast:seen-event-ids:v1';
-const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261003-1';
+const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261004-2';
+const PUSH_CONFIG_URL = '/api/opposite-liquidity-web-push/config';
+const PUSH_SUBSCRIPTIONS_URL = '/api/opposite-liquidity-web-push/subscriptions';
 const FIRST_LOAD_RECENT_MS = 2 * 60_000;
 const POLL_MS = 10_000;
 const MAX_SEEN = 200;
@@ -50,50 +52,160 @@ function removeToast(node) {
   setTimeout(() => node.remove(), 260);
 }
 
-function pushSupported() {
+function isIosWithoutHomeScreen() {
+  const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const standalone = window.matchMedia?.('(display-mode: standalone)').matches
+    || navigator.standalone === true;
+  return ios && !standalone;
+}
+
+function nativeNotificationSupported() {
   return window.isSecureContext && 'Notification' in window && 'serviceWorker' in navigator;
 }
 
-function updatePushControls(message = '') {
+function pushSupported() {
+  return nativeNotificationSupported() && 'PushManager' in window;
+}
+
+function updatePushControls({ message = '', subscribed = false, busy = false } = {}) {
   for (const button of document.querySelectorAll('[data-opposite-liquidity-push]')) {
+    const installRequired = isIosWithoutHomeScreen();
     const permission = pushSupported() ? Notification.permission : 'unsupported';
     button.dataset.permission = permission;
-    button.disabled = permission === 'granted' || permission === 'unsupported';
-    button.textContent = message || (permission === 'granted' ? 'Push thanh khoản ngược: ON'
+    button.dataset.subscribed = String(subscribed);
+    button.disabled = busy || installRequired || permission === 'unsupported' || permission === 'denied';
+    button.textContent = message || (installRequired ? 'iPhone: thêm vào Màn hình chính trước'
       : permission === 'denied' ? 'Push bị trình duyệt chặn'
-        : permission === 'unsupported' ? 'Trình duyệt không hỗ trợ Push'
-          : 'Bật Push thanh khoản ngược');
+        : permission === 'unsupported' ? 'Trình duyệt không hỗ trợ Web Push'
+          : subscribed ? 'Push như app: ON · bấm để tắt'
+            : 'Bật Push như app');
+  }
+  for (const help of document.querySelectorAll('[data-opposite-liquidity-push-help]')) {
+    help.textContent = isIosWithoutHomeScreen()
+      ? 'iPhone/iPad: Safari → Chia sẻ → Thêm vào Màn hình chính; mở lại từ icon rồi bật Push.'
+      : subscribed
+        ? 'Đã đăng ký Web Push server-side; có thể đóng trang và vẫn nhận tín hiệu.'
+        : 'Android: bật trực tiếp. iPhone/iPad: mở web app từ icon Màn hình chính rồi bật.';
   }
 }
 
 async function pushRegistration() {
-  if (!pushSupported()) return null;
-  return navigator.serviceWorker.register(SERVICE_WORKER_URL, {
+  if (!nativeNotificationSupported()) return null;
+  const registration = await navigator.serviceWorker.register(SERVICE_WORKER_URL, {
     scope: '/',
     updateViaCache: 'none',
   });
+  await navigator.serviceWorker.ready;
+  return registration;
 }
 
-async function requestPushPermission() {
+function applicationServerKey(value) {
+  const padding = '='.repeat((4 - (value.length % 4)) % 4);
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(char => char.charCodeAt(0)));
+}
+
+async function pushConfig() {
+  const response = await fetch(PUSH_CONFIG_URL, { cache: 'no-store', signal: AbortSignal.timeout(8_000) });
+  if (!response.ok) throw new Error(`PUSH_CONFIG_HTTP_${response.status}`);
+  const config = await response.json();
+  if (!config?.publicKey) throw new Error('PUSH_PUBLIC_KEY_MISSING');
+  return config;
+}
+
+async function syncSubscription(subscription) {
+  const response = await fetch(PUSH_SUBSCRIPTIONS_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      subscription: subscription.toJSON(),
+      deviceLabel: navigator.userAgentData?.platform || navigator.platform || 'mobile-web',
+    }),
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!response.ok) throw new Error(`PUSH_SUBSCRIBE_HTTP_${response.status}`);
+  return response.json();
+}
+
+async function disableWebPush(subscription) {
+  updatePushControls({ message: 'Đang tắt Push…', subscribed: true, busy: true });
+  try {
+    await fetch(PUSH_SUBSCRIPTIONS_URL, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ endpoint: subscription.endpoint }),
+      signal: AbortSignal.timeout(8_000),
+    });
+    await subscription.unsubscribe();
+    updatePushControls({ subscribed: false });
+  } catch {
+    updatePushControls({ message: 'Không tắt được Push · thử lại', subscribed: true });
+  }
+}
+
+async function toggleWebPush() {
+  if (isIosWithoutHomeScreen()) {
+    updatePushControls();
+    return;
+  }
   if (!pushSupported()) {
-    updatePushControls('Trình duyệt không hỗ trợ Push');
+    updatePushControls({ message: 'Trình duyệt không hỗ trợ Web Push' });
+    return;
+  }
+  const shouldDisable = [...document.querySelectorAll('[data-opposite-liquidity-push]')]
+    .some(button => button.dataset.subscribed === 'true');
+  updatePushControls({ message: shouldDisable ? 'Đang tắt Push…' : 'Đang đăng ký Web Push…', busy: true });
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      updatePushControls({ message: permission === 'denied' ? 'Push bị trình duyệt chặn' : 'Chưa cấp quyền Push' });
+      return;
+    }
+    const registration = await pushRegistration();
+    const existing = await registration.pushManager.getSubscription();
+    if (existing) {
+      if (shouldDisable) await disableWebPush(existing);
+      else {
+        await syncSubscription(existing);
+        updatePushControls({ subscribed: true });
+      }
+      return;
+    }
+    const config = await pushConfig();
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: applicationServerKey(config.publicKey),
+    });
+    await syncSubscription(subscription);
+    updatePushControls({ subscribed: true });
+  } catch {
+    updatePushControls({ message: 'Không bật được Web Push · thử lại' });
+  }
+}
+
+async function refreshWebPushState() {
+  if (isIosWithoutHomeScreen() || !pushSupported()) {
+    updatePushControls();
     return;
   }
   try {
-    const permission = await Notification.requestPermission();
-    if (permission === 'granted') await pushRegistration();
-    updatePushControls(permission === 'granted' ? 'Push thanh khoản ngược: ON'
-      : permission === 'denied' ? 'Push bị trình duyệt chặn' : 'Chưa cấp quyền Push');
+    const registration = await pushRegistration();
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) await syncSubscription(subscription);
+    updatePushControls({ subscribed: Boolean(subscription) });
   } catch {
-    updatePushControls('Không bật được Push');
+    updatePushControls({ message: 'Chưa đọc được trạng thái Web Push' });
   }
 }
 
 async function showPushNotification(event) {
-  if (!pushSupported() || Notification.permission !== 'granted') return;
+  if (!nativeNotificationSupported() || Notification.permission !== 'granted') return;
   try {
     const registration = await pushRegistration();
     if (!registration) return;
+    if (registration.pushManager && await registration.pushManager.getSubscription()) return;
     const side = event.side === 'LONG' ? 'LONG' : 'SHORT';
     const ratio = finite(event.depth?.oppositeRatio);
     const execution = String(event.binanceExecution?.status ?? 'NO_BINANCE_CALLBACK').toUpperCase();
@@ -179,10 +291,10 @@ async function poll() {
 if (!globalThis.__oppositeLiquidityToastLoaded) {
   globalThis.__oppositeLiquidityToastLoaded = VERSION;
   document.addEventListener('click', (event) => {
-    if (event.target.closest('[data-opposite-liquidity-push]')) void requestPushPermission();
+    if (event.target.closest('[data-opposite-liquidity-push]')) void toggleWebPush();
   });
   updatePushControls();
-  if (pushSupported() && Notification.permission === 'granted') void pushRegistration();
+  void refreshWebPushState();
   void poll();
   setInterval(poll, POLL_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void poll(); });

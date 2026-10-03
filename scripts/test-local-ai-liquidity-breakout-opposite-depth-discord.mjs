@@ -128,6 +128,7 @@ const directory = await mkdtemp(join(tmpdir(), 'local-ai-liq-breakout-depth-'));
 const requests = [];
 try {
   const executions = [];
+  const pushDeliveries = [];
   const notifier = new LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier({
     stateFile: join(directory, 'state.json'),
     enabled: true,
@@ -141,6 +142,10 @@ try {
     onQualified: async (event) => {
       executions.push(event.eventId);
       return { status: 'submitted', orderId: 77, takeProfitPrice: 110, stopLossPrice: 95 };
+    },
+    onNotification: async (event) => {
+      pushDeliveries.push(event.eventId);
+      return { attempted:1, sent:1, removed:0, failed:0 };
     },
   });
   assert.equal((await notifier.arm(upperAlert)).armed, true);
@@ -157,6 +162,7 @@ try {
   assert.equal(first.sent, 2);
   assert.equal(requests.length, 2);
   assert.equal(executions.length, 2);
+  assert.equal(pushDeliveries.length, 2);
   assert.match(requests[0].embeds[0].fields.find((field) => field.name.includes('BINANCE MARKET')).value,
     /ĐÃ GỬI LONG/);
   assert.equal(analysisCalls, 1, 'Coin Level analysis is shared by simultaneous 5m and 15m events');
@@ -164,6 +170,7 @@ try {
   const deliveredManagement = await notifier.managementSnapshot();
   assert.equal(deliveredManagement.recent.length, 2);
   assert.equal(deliveredManagement.browserNotifications.length, 2);
+  assert.equal(deliveredManagement.browserNotifications[0].webPushDelivery.sent, 1);
   assert.equal(deliveredManagement.tracks.length, 0);
   assert.equal(deliveredManagement.lastScan.sent, 2);
   assert.equal(deliveredManagement.lastScan.analyzedSymbols, 1);
@@ -176,6 +183,7 @@ try {
   assert.equal(duplicate.sent, 0, 'same symbol/direction stays deduped during cooldown');
   assert.equal(requests.length, 2);
   assert.equal(executions.length, 2, 'Discord cooldown must also prevent a duplicate Binance callback');
+  assert.equal(pushDeliveries.length, 2, 'Web Push callback must not replay a duplicate event');
 
   const batchRequests = [];
   const batchExecutions = [];

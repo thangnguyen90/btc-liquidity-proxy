@@ -1,5 +1,13 @@
 # Logic hiện tại: Decision Paper, Recommended Paper và EMA Paper
 
+### 2026-10-04 — OPPOSITE_LIQUIDITY_WEB_PUSH_V1_SERVER_VAPID
+
+- **Version/phạm vi:** server `OPPOSITE_LIQUIDITY_WEB_PUSH_V1_SERVER_VAPID_20261004`, sitewide client `OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V4_TRUE_WEB_PUSH_PWA_20261004`, manager UI `OPPOSITE_LIQUIDITY_MANAGER_UI_V3_TRUE_WEB_PUSH_20261004`, Service Worker v2 và PWA manifest v1. Nút trên `/opposite-liquidity-manager` tạo Push subscription thật; server gửi notification qua Web Push nên không cần giữ tab dashboard mở. Android bật trực tiếp; iPhone/iPad cần iOS/iPadOS 16.4+ và mở trang từ icon đã thêm vào Màn hình chính.
+- **Dữ liệu dùng trước notification:** chỉ dùng immutable event `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH` vừa được detector chọn: symbol, LONG/SHORT, khung 5m/15m, vùng MAIN KILL, opposite-depth ratio, thời điểm và kết quả callback Binance đã biết tại lúc phát. Không gọi thêm Ollama/CoinGlass, không dùng nến/outcome tương lai và không thay dữ liệu trước entry.
+- **Điều kiện phân loại/thống kê:** không đổi detector V6: ABOVE+BID dưới lớn hơn vẫn LONG đỏ; BELOW+ASK trên lớn hơn vẫn SHORT xanh. Web Push chỉ là delivery channel mới. State riêng ghi số subscription, eventId đã gửi 7 ngày, lần delivery gần nhất và `attempted/sent/removed/failed`; đây là telemetry vận hành, không phải WinRate, PF, AvgROE hay xác suất. EventId chống gửi trùng; endpoint trả 404/410 bị tự xóa.
+- **Ảnh hưởng Binance/entry/size/SL/TP:** không ảnh hưởng Binance, route, entry, size `4 USDT ×5`, leverage, TP, SL, DCA, protection hoặc Discord. Push được gọi sau callback Binance và chỉ thông báo kết quả đã có; không có quyền đặt/hủy/sửa lệnh.
+- **Tương thích JSON/WHITELIST:** state/VAPID được tách thành hai JSON runtime mới mode 0600; VAPID có thể lấy từ env hoặc tự sinh một lần, private key không gửi ra browser. JSON scanner/browserNotifications cũ giữ nguyên; browser đã đăng ký notification cục bộ tiếp tục có fallback khi còn tab mở, browser hỗ trợ PushManager dùng server push để tránh báo native trùng. API/manifest chỉ additive. Không thêm signal label/card/matcher nên không có checkbox `WHITELIST` mới; exact Auto Controls và policy CLOSED `AvgROE >4%` không đổi.
+
 ### 2026-10-04 — LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V6_TOUCH_TOGGLE_TOOLTIP
 
 - **Version/phạm vi:** `LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V6_TOUCH_TOGGLE_TOOLTIP_20261004`, UI JS v41/CSS v13. Trên thiết bị cảm ứng, chạm một điểm giá trên chart order book sẽ ghim cùng tooltip giá, vùng MAIN/FAR KILL, USD proxy và tỷ trọng thanh khoản như hover desktop; chạm lần nữa trên chart đó sẽ đóng. Khi chuyển sang chart khác, tooltip ghim cũ được đóng trước. Hover chuột desktop giữ hành vi cũ.

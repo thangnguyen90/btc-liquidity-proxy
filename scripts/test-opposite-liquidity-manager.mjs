@@ -20,7 +20,7 @@ assert.match(html, /id="recentRows"/);
 assert.match(html, /id="attemptRows"/);
 assert.match(html, /READ ONLY/);
 assert.match(html, /data-opposite-liquidity-push/);
-assert.match(html, /OPPOSITE_LIQUIDITY_MANAGER_UI_V2_UPPER_LONG_LOWER_SHORT_20261003/);
+assert.match(html, /OPPOSITE_LIQUIDITY_MANAGER_UI_V3_TRUE_WEB_PUSH_20261004/);
 assert.match(client, /Vượt trên → LONG/);
 assert.match(client, /Vượt dưới → SHORT/);
 assert.match(client, /fetch\('\/api\/opposite-liquidity-manager'/);

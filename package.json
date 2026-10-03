@@ -69,7 +69,7 @@
     "test:local-ai-liquidity-breakout-opposite-depth-discord": "node scripts/test-local-ai-liquidity-breakout-opposite-depth-discord.mjs",
     "test:local-ai-liquidity-breakout-opposite-depth-binance": "node scripts/test-local-ai-liquidity-breakout-opposite-depth-binance.mjs",
     "test:opposite-liquidity-manager": "node scripts/test-opposite-liquidity-manager.mjs",
-    "test:opposite-liquidity-toast": "node scripts/test-opposite-liquidity-toast.mjs",
+    "test:opposite-liquidity-toast": "node scripts/test-opposite-liquidity-toast.mjs && node scripts/test-opposite-liquidity-web-push.mjs",
     "test:local-ai-signal-review-discord": "node scripts/test-local-ai-signal-review-discord.mjs",
     "test:local-ai-trend-chat": "node scripts/test-local-ai-trend-chat.mjs",
     "test:local-ai-navigation": "node scripts/test-local-ai-navigation.mjs",
@@ -175,6 +175,7 @@
   },
   "dependencies": {
     "playwright": "1.57.0",
+    "web-push": "^3.6.7",
     "ws": "^8.20.1"
   }
 }

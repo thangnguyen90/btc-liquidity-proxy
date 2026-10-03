@@ -1,8 +1,9 @@
 export const OPPOSITE_LIQUIDITY_TOAST_VERSION =
-  'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V3_UPPER_LONG_RED_LOWER_SHORT_GREEN_20261003';
+  'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V4_TRUE_WEB_PUSH_PWA_20261004';
 
-const STYLE_HREF = '/opposite-liquidity-toast.css?v=20261003-3';
-const SCRIPT_SRC = '/opposite-liquidity-toast.js?v=20261003-3';
+const STYLE_HREF = '/opposite-liquidity-toast.css?v=20261004-4';
+const SCRIPT_SRC = '/opposite-liquidity-toast.js?v=20261004-4';
+const MANIFEST_HREF = '/opposite-liquidity.webmanifest?v=20261004-1';
 
 export function injectOppositeLiquidityToast(value) {
   let html = String(value ?? '');
@@ -10,6 +11,14 @@ export function injectOppositeLiquidityToast(value) {
   if (!html.includes(STYLE_HREF)) {
     const style = `<link rel="stylesheet" href="${STYLE_HREF}">`;
     if (html.includes('</head>')) html = html.replace('</head>', `  ${style}\n</head>`);
+  }
+  if (!html.includes(MANIFEST_HREF)) {
+    const pwa = `<link rel="manifest" href="${MANIFEST_HREF}">
+  <meta name="theme-color" content="#06241a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="AI Liquidity">
+  <link rel="icon" href="/opposite-liquidity-icon.svg" type="image/svg+xml">`;
+    if (html.includes('</head>')) html = html.replace('</head>', `  ${pwa}\n</head>`);
   }
   if (!html.includes(SCRIPT_SRC)) {
     const script = `<script type="module" src="${SCRIPT_SRC}"></script>`;

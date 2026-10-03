@@ -285,6 +285,7 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
     maxPerScan = 5,
     analysisBatchSize = 5,
     onQualified,
+    onNotification,
   } = {}) {
     this.stateFile = stateFile;
     this.enabledFlag = typeof enabled === 'function' ? enabled : () => enabled;
@@ -297,6 +298,7 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
     this.analysisBatchSize = Math.max(1, Math.min(10,
       Math.trunc(finite(analysisBatchSize, 5))));
     this.onQualified = onQualified;
+    this.onNotification = onNotification;
     this.state = null;
     this.lastScan = null;
     this.queue = Promise.resolve();
@@ -537,6 +539,18 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
           ? state.browserNotifications[notificationIndex].notifiedAt : now,
         discordDelivery: result,
       };
+      if (notificationIndex < 0 && typeof this.onNotification === 'function') {
+        try {
+          browserNotification.webPushDelivery = await this.onNotification(browserNotification);
+        } catch (error) {
+          browserNotification.webPushDelivery = {
+            attempted: 0,
+            sent: 0,
+            failed: 1,
+            error: error?.message ?? 'WEB_PUSH_DELIVERY_FAILED',
+          };
+        }
+      }
       if (notificationIndex >= 0) state.browserNotifications[notificationIndex] = browserNotification;
       else state.browserNotifications = [browserNotification, ...state.browserNotifications].slice(0, 100);
       if (result.sent) {

@@ -714,6 +714,7 @@ import { LocalAiTrendChat, extractRequestedMarketSymbols, resolveLocalAiChatInte
 import { buildLocalAiMainKillGapWatchSnapshot, resolveMainKillGapCandidateSource } from './localAiMainKillGapWatch.js';
 import { injectLocalAiNavigation } from './localAiNavigation.js';
 import { injectOppositeLiquidityToast } from './oppositeLiquidityToast.js';
+import { OppositeLiquidityWebPushService } from './oppositeLiquidityWebPush.js';
 import { injectToxicTwoSideNavigation } from './toxicTwoSideNavigation.js';
 import { LocalAiTrendDiscordNotifier } from './localAiTrendDiscord.js';
 import { LocalAiSignalReview } from './localAiSignalReview.js';
@@ -2075,6 +2076,21 @@ const localAiLiquidityBreakoutOppositeDepthBinanceRunner =
   });
 void localAiLiquidityBreakoutOppositeDepthBinanceRunner.load()
   .catch((error) => console.warn(`[LocalAiLiqBreakoutDepthBinance] state init failed: ${error.message}`));
+const oppositeLiquidityWebPush = new OppositeLiquidityWebPushService({
+  stateFile: join(rootDir, 'data', 'opposite-liquidity-web-push-subscriptions.json'),
+  vapidFile: join(rootDir, 'data', 'opposite-liquidity-web-push-vapid.json'),
+  vapidSubject: String(
+    process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_SUBJECT
+      ?? process.env.LIQUIDITY_BASE_URL
+      ?? 'https://liquidity.nhathadev.trade',
+  ).trim(),
+  vapidPublicKey: String(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_PUBLIC_KEY ?? '').trim(),
+  vapidPrivateKey: String(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_PRIVATE_KEY ?? '').trim(),
+  maxSubscriptions: Number(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_MAX_SUBSCRIPTIONS ?? 50),
+});
+void oppositeLiquidityWebPush.initialize()
+  .then((snapshot) => console.log(`[OppositeWebPush] ready · ${snapshot.subscriptionCount} subscription(s)`))
+  .catch((error) => console.warn(`[OppositeWebPush] init failed: ${error.message}`));
 const localAiLiquidityBreakoutOppositeDepthDiscord =
   new LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier({
     stateFile: join(rootDir, 'data', 'local-ai-liquidity-breakout-opposite-depth-discord.json'),
@@ -2096,6 +2112,7 @@ const localAiLiquidityBreakoutOppositeDepthDiscord =
       process.env.LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_ANALYSIS_BATCH_SIZE ?? 5,
     ),
     onQualified: (event) => localAiLiquidityBreakoutOppositeDepthBinanceRunner.process(event),
+    onNotification: (event) => oppositeLiquidityWebPush.send(event),
   });
 const coinLevelObserveManualOrderInflight = new Set();
 const coinLevelObserveDirectionFlipTracker = new CoinLevelObserveDirectionFlipTracker();
@@ -14340,9 +14357,10 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/opposite-liquidity-manager' && request.method === 'GET') {
       response.setHeader('Cache-Control', 'no-store');
-      const [scanner, execution] = await Promise.all([
+      const [scanner, execution, webPush] = await Promise.all([
         localAiLiquidityBreakoutOppositeDepthDiscord.managementSnapshot({ recentLimit: 100 }),
         localAiLiquidityBreakoutOppositeDepthBinanceRunner.managementSnapshot({ attemptLimit: 200 }),
+        oppositeLiquidityWebPush.publicConfig(),
       ]);
       await sendJson(response, {
         version: 'OPPOSITE_LIQUIDITY_MANAGER_V1_READ_ONLY_20261003',
@@ -14350,7 +14368,40 @@ const server = createServer(async (request, response) => {
         readOnly: true,
         scanner,
         execution,
+        webPush: {
+          version: webPush.version,
+          configured: webPush.configured,
+          subscriptionCount: webPush.subscriptionCount,
+          lastDelivery: webPush.lastDelivery,
+        },
       });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/opposite-liquidity-web-push/config'
+      && request.method === 'GET') {
+      await sendJson(response, await oppositeLiquidityWebPush.publicConfig());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/opposite-liquidity-web-push/subscriptions'
+      && ['POST', 'DELETE'].includes(request.method)) {
+      if (!isSameOriginWriteRequest(request)) {
+        await sendJson(response, { error: 'Cross-origin push subscription refused.' }, 403);
+        return;
+      }
+      try {
+        const body = await readJsonBody(request);
+        const result = request.method === 'POST'
+          ? await oppositeLiquidityWebPush.subscribe(body.subscription, {
+            userAgent: request.headers['user-agent'],
+            deviceLabel: body.deviceLabel,
+          })
+          : await oppositeLiquidityWebPush.unsubscribe(body.endpoint);
+        await sendJson(response, result);
+      } catch (error) {
+        await sendJson(response, { error: error?.message ?? 'WEB_PUSH_SUBSCRIPTION_FAILED' }, 400);
+      }
       return;
     }
 
@@ -44218,6 +44269,8 @@ function contentTypeFor(filePath) {
     '.css': 'text/css; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
     '.png': 'image/png',
+    '.svg': 'image/svg+xml; charset=utf-8',
+    '.webmanifest': 'application/manifest+json; charset=utf-8',
   };
 
   return types[extname(filePath)] ?? 'application/octet-stream';

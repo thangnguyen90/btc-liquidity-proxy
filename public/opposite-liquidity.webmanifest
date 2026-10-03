@@ -1,0 +1,19 @@
+{
+  "id": "/opposite-liquidity-manager",
+  "name": "AI Local · Thanh khoản ngược",
+  "short_name": "AI Liquidity",
+  "description": "Thông báo tín hiệu LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH.",
+  "start_url": "/opposite-liquidity-manager",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#04100c",
+  "theme_color": "#06241a",
+  "icons": [
+    {
+      "src": "/opposite-liquidity-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -5665,3 +5665,8 @@ Before major edits:
 
 - `LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V6_TOUCH_TOGGLE_TOOLTIP_20261004` (UI JS v41/CSS v13): chạm vào vùng giá sẽ ghim tooltip giống hover web; chạm lần nữa đóng, chuyển chart tự đóng tooltip cũ. Hover desktop không đổi.
 - Chỉ dùng tọa độ chạm và snapshot chart sẵn có; không phân loại/tính thống kê mới, không gọi thêm nguồn dữ liệu và không ảnh hưởng Binance/entry/size/SL/TP/Discord. API/JSON cũ tương thích; không tạo label/card/matcher nên không thêm WHITELIST.
+
+### 2026-10-04 — Web Push thật cho thanh khoản ngược chiều
+
+- `OPPOSITE_LIQUIDITY_WEB_PUSH_V1_SERVER_VAPID_20261004` + sitewide V4/PWA: điện thoại đăng ký PushManager/VAPID với server; event `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH` mới được server gửi qua Service Worker ngay cả khi trang đã đóng. iPhone/iPad yêu cầu mở web app từ icon Màn hình chính; Android bật trực tiếp. Poll/toast 10 giây vẫn là fallback và không tạo native notification trùng khi đã có true subscription.
+- Payload chỉ dùng event causal vừa phát và trạng thái callback Binance đã biết. Không thay LONG/SHORT, gate, thống kê hiệu suất, Binance/entry/size/SL/TP/DCA/protection/Discord. State subscription và VAPID tách riêng, eventId dedupe 7 ngày, endpoint hết hạn tự dọn; JSON cũ tương thích. Không thêm label/card/matcher nên không thêm WHITELIST.
