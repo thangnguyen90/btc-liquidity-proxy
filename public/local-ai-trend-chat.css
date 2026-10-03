@@ -78,7 +78,7 @@
 .orderbook-mark line { stroke: #ffe366; stroke-width: 2; }
 .orderbook-mark text { fill: #fff29d; font-size: 10px; font-weight: 950; }
 .orderbook-hover-layer { opacity: 0; pointer-events: none; transition: opacity .08s ease; }
-.orderbook-chart.hovering .orderbook-hover-layer { opacity: 1; }
+.orderbook-chart.hovering .orderbook-hover-layer,.orderbook-chart[data-tooltip-pinned="true"] .orderbook-hover-layer { opacity: 1; }
 .orderbook-hover-line { stroke: #f6fffbd9; stroke-width: 1.2; stroke-dasharray: 4 3; }
 .orderbook-hover-tooltip rect { fill: #020b08f2; stroke: #9fe8ce; stroke-width: 1; }
 .orderbook-hover-tooltip text { fill: #effff9; font-size: 11px; font-weight: 950; letter-spacing: .035em; }
@@ -119,4 +119,7 @@
   .book-panel > div { grid-template-columns: 1fr; }
   .book-side-totals { grid-template-columns: 1fr; }
   .kill-zone-notes { grid-template-columns: 1fr; min-width: 300px; }
+}
+@media (hover: none), (pointer: coarse) {
+  .orderbook-chart { cursor: pointer; touch-action: manipulation; }
 }

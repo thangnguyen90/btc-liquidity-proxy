@@ -343,14 +343,14 @@ function renderOrderBookChart(coin) {
     direction: scenario.proxyDirection, dominantPct: scenario.proxyDominantPct,
     main: mainKill, far: farKill,
   }));
-  return `<section class="orderbook-chart-panel" data-version="LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V5_HOVER_LIQUIDATION_USD_20261002" data-hover-context="${hoverContext}">
+  return `<section class="orderbook-chart-panel" data-version="LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V6_TOUCH_TOGGLE_TOOLTIP_20261004" data-hover-context="${hoverContext}">
     <header><div><b>BIỂU ĐỒ ORDER BOOK · ${esc(coin.symbol)}</b><small>Thanh BID/ASK = Binance Futures depth; vùng kill = Binance LiqScan 15m proxy.</small></div><span>OBSERVE ONLY</span></header>
     <div class="orderbook-chart-legend"><span class="bid">BID</span><span class="ask">ASK</span><span class="main">MAIN KILL trong khung giá gần</span><span class="far">FAR KILL chỉ báo ngoài khung</span><span class="mark">MARK</span></div>
     <svg class="orderbook-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Biểu đồ order book Binance Futures với vùng Main Kill và Far Kill của ${esc(coin.symbol)}" data-price-min="${minPrice}" data-price-max="${maxPrice}" data-plot-top="${plotTop}" data-plot-bottom="${plotBottom}" data-view-height="${height}">
       <text class="orderbook-side-title bid" x="165" y="22">BID · HỖ TRỢ</text><text class="orderbook-side-title ask" x="695" y="22" text-anchor="end">ASK · KHÁNG CỰ</text>
       ${grids}<line class="orderbook-chart-center" x1="${center}" y1="${plotTop}" x2="${center}" y2="${plotBottom}"></line>${bars}${killBand(mainKill, 'main')}${markLine}${farGuide}
       <g class="orderbook-hover-layer" aria-hidden="true"><line class="orderbook-hover-line" x1="55" y1="0" x2="805" y2="0"></line><g class="orderbook-hover-tooltip"><rect x="350" y="0" width="455" height="112" rx="7"></rect><text class="hover-price" x="362" y="18">GIÁ —</text><text class="hover-zone" x="362" y="36"></text><text class="hover-liquidation-usd" x="362" y="55"></text><text class="hover-liquidity" x="362" y="74"></text><text class="hover-probability" x="362" y="94">Proxy ước tính, không phải vị thế thanh lý xác thực</text></g></g>
-      <text class="orderbook-chart-foot" x="55" y="325">NEAR sáng · WIDE mờ · độ dài thanh theo USDT; rê chuột để xem giá/notional</text>
+      <text class="orderbook-chart-foot" x="55" y="325">NEAR sáng · WIDE mờ · rê chuột hoặc chạm để xem; chạm lần nữa để đóng</text>
     </svg>
     <div class="kill-zone-notes">${killNotes}</div>
     <small class="orderbook-chart-caveat">MAIN/FAR KILL là vùng proxy 15m để quan sát hướng hút/thanh khoản; không phải lệnh treo xác thực, không phải xác suất và không tự tạo entry Binance.</small>
@@ -393,6 +393,7 @@ function orderBookHoverDetails(context, hoveredPrice, farGuide = false) {
 function updateOrderBookHover(event) {
   const chart = event.target?.closest?.('svg.orderbook-chart');
   if (!chart) return;
+  if (event.type === 'pointermove' && chart.dataset.tooltipPinned === 'true') return;
   const rect = chart.getBoundingClientRect();
   if (!(rect.height > 0)) return;
   const plotTop = Number(chart.dataset.plotTop);
@@ -420,12 +421,35 @@ function updateOrderBookHover(event) {
   chart.querySelector('.hover-liquidation-usd').textContent = details.liquidationUsd;
   chart.querySelector('.hover-liquidity').textContent = details.liquidity;
   chart.classList.add('hovering');
+  layer.setAttribute('aria-hidden', 'false');
+}
+
+function closeOrderBookTooltip(chart) {
+  if (!chart) return;
+  chart.classList.remove('hovering');
+  chart.dataset.tooltipPinned = 'false';
+  chart.querySelector('.orderbook-hover-layer')?.setAttribute('aria-hidden', 'true');
+}
+
+function isTouchOrderBookInteraction(event) {
+  if (event?.pointerType === 'touch' || event?.pointerType === 'pen') return true;
+  return Boolean(globalThis.matchMedia?.('(hover: none), (pointer: coarse)').matches);
 }
 
 document.addEventListener('pointermove', updateOrderBookHover);
 document.addEventListener('pointerout', (event) => {
   const chart = event.target?.closest?.('svg.orderbook-chart');
-  if (chart && !chart.contains(event.relatedTarget)) chart.classList.remove('hovering');
+  if (chart && !chart.contains(event.relatedTarget) && chart.dataset.tooltipPinned !== 'true') closeOrderBookTooltip(chart);
+});
+document.addEventListener('click', (event) => {
+  const chart = event.target?.closest?.('svg.orderbook-chart');
+  if (!chart || !isTouchOrderBookInteraction(event)) return;
+  event.preventDefault();
+  const wasPinned = chart.dataset.tooltipPinned === 'true';
+  document.querySelectorAll('svg.orderbook-chart[data-tooltip-pinned="true"]').forEach(closeOrderBookTooltip);
+  if (wasPinned) return;
+  updateOrderBookHover(event);
+  if (chart.classList.contains('hovering')) chart.dataset.tooltipPinned = 'true';
 });
 
 function renderChatDetails(answer) {

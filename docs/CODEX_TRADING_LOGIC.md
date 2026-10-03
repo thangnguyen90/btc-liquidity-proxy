@@ -5660,3 +5660,8 @@ Before major edits:
 - Push chỉ đọc event unseen từ `scanner.browserNotifications` và khóa `data.signalType=LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH`. Nội dung gồm LONG/SHORT, coin, 5m/15m, vùng, depth ratio và kết quả Binance. Tag signal type + eventId chống notification lặp; bấm notification mở/focus màn hình quản lý.
 - Không đổi detector/classification, thống kê hiệu suất, Discord, Binance route/entry, size `4 USDT ×5`, leverage, TP/SL/protection hoặc position. Không lưu subscription/market state mới và không đổi JSON/API.
 - Không thêm label/card/matcher nên không có checkbox WHITELIST mới; exact Auto Controls và policy CLOSED `AvgROE >4%` giữ nguyên.
+
+### 2026-10-04 — Chart AI chạm để ghim/đóng tooltip trên điện thoại
+
+- `LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V6_TOUCH_TOGGLE_TOOLTIP_20261004` (UI JS v41/CSS v13): chạm vào vùng giá sẽ ghim tooltip giống hover web; chạm lần nữa đóng, chuyển chart tự đóng tooltip cũ. Hover desktop không đổi.
+- Chỉ dùng tọa độ chạm và snapshot chart sẵn có; không phân loại/tính thống kê mới, không gọi thêm nguồn dữ liệu và không ảnh hưởng Binance/entry/size/SL/TP/Discord. API/JSON cũ tương thích; không tạo label/card/matcher nên không thêm WHITELIST.

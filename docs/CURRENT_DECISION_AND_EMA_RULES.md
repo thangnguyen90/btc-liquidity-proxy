@@ -1,5 +1,13 @@
 # Logic hiện tại: Decision Paper, Recommended Paper và EMA Paper
 
+### 2026-10-04 — LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V6_TOUCH_TOGGLE_TOOLTIP
+
+- **Version/phạm vi:** `LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V6_TOUCH_TOGGLE_TOOLTIP_20261004`, UI JS v41/CSS v13. Trên thiết bị cảm ứng, chạm một điểm giá trên chart order book sẽ ghim cùng tooltip giá, vùng MAIN/FAR KILL, USD proxy và tỷ trọng thanh khoản như hover desktop; chạm lần nữa trên chart đó sẽ đóng. Khi chuyển sang chart khác, tooltip ghim cũ được đóng trước. Hover chuột desktop giữ hành vi cũ.
+- **Dữ liệu dùng trước hiển thị:** chỉ dùng tọa độ chạm hiện tại, thang giá SVG và snapshot order book/MAIN-FAR KILL đã có trong card. Không gọi thêm Binance, Ollama, CoinGlass hoặc dùng outcome/nến tương lai.
+- **Điều kiện phân loại/thống kê:** không thêm nhãn, tier, gate, score, xác suất hoặc phép thống kê; đây chỉ là trạng thái UI `data-tooltip-pinned` trên chart. Tooltip vẫn hiển thị lifecycle và giá trị proxy theo rule V5 hiện hữu.
+- **Ảnh hưởng Binance/entry/size/SL/TP:** không ảnh hưởng Binance, entry, size, leverage, SL, TP, DCA, protection, Discord hoặc push notification; chart vẫn `OBSERVE ONLY`.
+- **Tương thích JSON/WHITELIST:** không đổi API/JSON/state và không migration; browser cũ không có PointerEvent vẫn dùng click kết hợp media coarse-pointer. Không thêm label/card/matcher runtime nên không có checkbox `WHITELIST` mới; default OFF và policy chỉ hiện matcher khi CLOSED `AvgROE >4%` giữ nguyên.
+
 ### 2026-10-03 — LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_V6/V3 — đỏ LONG, xanh SHORT
 
 - **Version/phạm vi:** detector/Discord `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V6_UPPER_LONG_LOWER_SHORT_20261003`; executor `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_BINANCE_V3_UPPER_LONG_LOWER_SHORT_MARKET_4USDT_20261003`; toast/push `OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V3_UPPER_LONG_RED_LOWER_SHORT_GREEN_20261003`; manager UI `OPPOSITE_LIQUIDITY_MANAGER_UI_V2_UPPER_LONG_LOWER_SHORT_20261003`. Mục này thay mapping phản chiều V2/V4/V5 trước đó cho **event mới**.
