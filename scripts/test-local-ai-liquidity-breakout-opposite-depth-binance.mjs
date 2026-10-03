@@ -79,6 +79,14 @@ try {
   assert.equal(submissions.length, 1);
   assert.equal((await runner.process(event)).status, 'deduped');
   assert.equal(submissions.length, 1);
+  const management = await runner.managementSnapshot();
+  assert.equal(management.masterEnabled, true);
+  assert.equal(management.routes.length, 2);
+  assert(management.routes.every((route) => route.enabled === true));
+  assert.equal(management.attempts.length, 1);
+  assert.equal(management.submittedAttempts, 1);
+  assert.equal(management.errorAttempts, 0);
+  assert.equal(management.attempts[0].orderId, 456);
 
   const longRouteState = state.routes[entryRoute(LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_ROUTES[0]).key];
   const longEvent = { ...event, eventId: 'TEST2USDT|BELOW|15m|BREAKOUT_OPPOSITE_DEPTH|1|2',

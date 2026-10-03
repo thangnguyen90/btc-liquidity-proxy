@@ -173,6 +173,40 @@ export class LocalAiLiquidityBreakoutOppositeDepthBinanceRunner {
       attempts: Object.keys(this.state?.attempts ?? {}).length,
       updatedAt: this.state?.updatedAt ?? null };
   }
+  async managementSnapshot({ attemptLimit = 200 } = {}) {
+    await this.load();
+    const controls = this.controls.read();
+    const routes = LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_ROUTES.map((route) => {
+      const key = JSON.stringify([route.source, route.streamId, route.signalLabel, route.side]);
+      const state = controls.routes?.[key] ?? null;
+      return {
+        key,
+        side: route.side,
+        signalLabel: route.signalLabel,
+        enabled: controls.enabled === true && state?.enabled === true,
+        routeEnabled: state?.enabled === true,
+        enabledAt: state?.enabledAt ?? null,
+        marginUsdt: finite(state?.marginUsdt, LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MARGIN_USDT),
+        leverage: finite(state?.leverage, LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LEVERAGE),
+        takeProfitRoePct: finite(state?.takeProfitRoePct, LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_TP_ROE_PCT),
+      };
+    });
+    const attempts = Object.values(this.state.attempts ?? {})
+      .sort((left, right) => epoch(right?.at, 0) - epoch(left?.at, 0))
+      .slice(0, Math.max(1, Math.min(500, Math.trunc(finite(attemptLimit, 200)))))
+      .map((attempt) => ({ ...attempt }));
+    const submittedStatuses = new Set(['SUBMITTED', 'FILLED', 'NEW']);
+    return {
+      ...this.snapshot(),
+      generatedAt: this.now(),
+      masterEnabled: controls.enabled === true,
+      failClosed: controls.failClosed === true,
+      routes,
+      attempts,
+      submittedAttempts: attempts.filter((attempt) => submittedStatuses.has(String(attempt.status).toUpperCase())).length,
+      errorAttempts: attempts.filter((attempt) => String(attempt.status).toUpperCase().includes('ERROR')).length,
+    };
+  }
   process(event = {}) {
     const task = this.queue.catch(() => {}).then(() => this.#process(event));
     this.queue = task.catch(() => {});

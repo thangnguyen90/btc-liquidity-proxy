@@ -14337,6 +14337,22 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/opposite-liquidity-manager' && request.method === 'GET') {
+      response.setHeader('Cache-Control', 'no-store');
+      const [scanner, execution] = await Promise.all([
+        localAiLiquidityBreakoutOppositeDepthDiscord.managementSnapshot({ recentLimit: 100 }),
+        localAiLiquidityBreakoutOppositeDepthBinanceRunner.managementSnapshot({ attemptLimit: 200 }),
+      ]);
+      await sendJson(response, {
+        version: 'OPPOSITE_LIQUIDITY_MANAGER_V1_READ_ONLY_20261003',
+        generatedAt: Date.now(),
+        readOnly: true,
+        scanner,
+        execution,
+      });
+      return;
+    }
+
     if (requestUrl.pathname === '/api/logout' && request.method === 'POST') {
       const token = request.headers['x-orders-token'] ?? '';
       ordersTokens.delete(token);
@@ -44123,6 +44139,8 @@ async function sendStatic(pathname, response) {
                   ? '/ai-signal-review.html'
                 : pathname === '/binance-signal-orders'
                   ? '/binance-signal-orders.html'
+                : pathname === '/opposite-liquidity-manager'
+                  ? '/opposite-liquidity-manager.html'
                   : pathname === '/main-kill-gap-watch'
                     ? '/main-kill-gap-watch.html'
               : pathname;

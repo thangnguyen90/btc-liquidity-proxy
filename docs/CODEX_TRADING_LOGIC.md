@@ -5630,3 +5630,11 @@ Before major edits:
 - Trước entry dùng event causal mới, MARK/position/open-order Binance kiểm tra lại; yêu cầu signal sau process start + `enabledAt`, tuổi không quá 2 phút, exact route ON, không có vị thế/lệnh entry cùng coin và chưa dedupe. Không dùng outcome tương lai.
 - Lệnh thật là MARKET `4 USDT margin ×5` (20 USDT notional), TP `+10% ROE`, max50 và fill-anchor protection. LONG có SL `-20% ROE`; SHORT giữ policy bot SHORT TP-only, không SL gốc. Discord ghi `ĐÃ GỬI`, protection thực tế hoặc lý do không vào. Không DCA/replay/sửa lệnh cũ.
 - Audit lưu attempt/orderId/TP/SL, không phải thống kê hiệu suất. Snapshot ghi `observeOnly=false`, `binanceEligible=true` và yêu cầu exact route. JSON cũ additive. Route seed OFF và được bật explicit trong lượt này. Không thêm card thống kê/live-card matcher; vì chưa có CLOSED AvgROE `>4%`, không tạo WHITELIST thống kê mới; exact Auto Controls là checkbox quyền chạy.
+
+## 2026-10-03 — Màn hình quản lý thanh khoản ngược chiều
+
+- Thêm `OPPOSITE_LIQUIDITY_MANAGER_V1_READ_ONLY_20261003` tại `/opposite-liquidity-manager`, API read-only và mục `Thanh khoản ngược` vào toàn bộ menu qua navigation V6. Trang gom trạng thái scanner, exact route LONG/SHORT, vùng đang arm, tiến độ nến đóng 5m/15m, tín hiệu Discord gần đây và attempt/order ID/lỗi Binance.
+- Dữ liệu trước entry không đổi: trang chỉ đọc state Binance LiqScan/MAIN KILL, nến đóng, visible depth và executor audit đã được V4/V2 tạo. Bộ lọc coin/hướng/khung chỉ thay đổi bảng hiển thị. `lastScan` trong RAM ghi detected/analyzed/qualified/selected/deferred/sent của vòng gần nhất để thấy có bỏ sót do batch hay không; sau restart chờ vòng quét mới.
+- Các bộ đếm là telemetry vận hành, không phải WinRate, PF, AvgROE hoặc xác suất. Không thêm nguồn hậu nghiệm, PnL/outcome hay điều kiện phân loại mới. Mapping vẫn ABOVE + BID dưới lớn → SHORT; BELOW + ASK trên lớn → LONG.
+- Trang/API không có mutation: không bật/tắt route, không đặt/hủy lệnh và không đổi entry, size `4 USDT ×5`, TP `+10% ROE`, LONG SL `-20% ROE`, SHORT TP-only, protection hoặc vị thế. Auto Controls vẫn là nơi duy nhất thay đổi quyền chạy.
+- JSON/state cũ không migration; snapshot/API chỉ additive và client cũ bỏ qua được. Không thêm label/card hiệu suất/matcher, nên không có checkbox WHITELIST mới; exact route vẫn seed OFF và policy chỉ hiện khi CLOSED `AvgROE >4%` không đổi.

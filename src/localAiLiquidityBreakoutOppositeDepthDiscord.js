@@ -294,6 +294,7 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
       Math.trunc(finite(analysisBatchSize, 5))));
     this.onQualified = onQualified;
     this.state = null;
+    this.lastScan = null;
     this.queue = Promise.resolve();
   }
 
@@ -312,6 +313,49 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
       maxDeliveriesPerScan: this.maxPerScan,
       tracked: Object.keys(this.state?.tracks ?? {}).length,
       updatedAt: this.state?.updatedAt ?? null,
+      lastScan: this.lastScan,
+    };
+  }
+
+  async managementSnapshot({ recentLimit = 50 } = {}) {
+    const state = await this.load();
+    const now = this.now();
+    const tracks = Object.entries(state.tracks ?? {}).map(([key, track]) => {
+      const completedIntervals = track?.completedIntervals ?? {};
+      const pendingIntervals = Object.keys(CLOSED_CANDLE_INTERVALS)
+        .filter((interval) => !completedIntervals[interval]);
+      const lastSeenAt = finite(track?.lastSeenAt, track?.alertAt);
+      return {
+        key,
+        symbol: track?.symbol ?? '',
+        direction: track?.direction ?? '',
+        side: track?.side ?? (track?.direction === 'ABOVE' ? 'SHORT' : 'LONG'),
+        zone: track?.zone ?? null,
+        markPriceAtAlert: finite(track?.markPriceAtAlert),
+        dominantPct: finite(track?.dominantPct),
+        imbalanceScore: finite(track?.imbalanceScore),
+        alertAt: finite(track?.alertAt),
+        lastSeenAt,
+        expiresAt: lastSeenAt == null ? null : lastSeenAt + TRACK_MS,
+        completedIntervals,
+        pendingIntervals,
+      };
+    }).sort((left, right) => finite(right.lastSeenAt, 0) - finite(left.lastSeenAt, 0));
+    const recent = [...(state.recent ?? [])]
+      .sort((left, right) => finite(right?.sentAt, 0) - finite(left?.sentAt, 0))
+      .slice(0, Math.max(1, Math.min(200, Math.trunc(finite(recentLimit, 50)))))
+      .map((event) => ({ ...event }));
+    return {
+      ...this.snapshot(),
+      generatedAt: now,
+      trackRetentionMs: TRACK_MS,
+      trackedSymbols: new Set(tracks.map((track) => track.symbol)).size,
+      pending5m: tracks.filter((track) => track.pendingIntervals.includes('5m')).length,
+      pending15m: tracks.filter((track) => track.pendingIntervals.includes('15m')).length,
+      aboveTracks: tracks.filter((track) => track.direction === 'ABOVE').length,
+      belowTracks: tracks.filter((track) => track.direction === 'BELOW').length,
+      tracks,
+      recent,
     };
   }
 
@@ -358,7 +402,11 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
   }
 
   scan({ getRows, getAnalysis } = {}) {
-    this.queue = this.queue.catch(() => {}).then(() => this.#scan({ getRows, getAnalysis }));
+    this.queue = this.queue.catch(() => {}).then(() => this.#scan({ getRows, getAnalysis }))
+      .then((result) => {
+        this.lastScan = { ...result, completedAt: this.now() };
+        return result;
+      });
     return this.queue;
   }
 

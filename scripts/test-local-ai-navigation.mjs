@@ -14,11 +14,14 @@ for (const name of files) {
   const matches = rendered.match(/href=["']\/local-ai-trend-evaluation["']/g) ?? [];
   const gapMatches = rendered.match(/href=["']\/main-kill-gap-watch["']/g) ?? [];
   const orderMatches = rendered.match(/href=["']\/binance-signal-orders["']/g) ?? [];
+  const oppositeLiquidityMatches = rendered.match(/href=["']\/opposite-liquidity-manager["']/g) ?? [];
   if (hasMenu) {
     menuPages += 1;
     assert.equal(matches.length, 1, `${name} must contain exactly one AI Local menu link`);
     assert.equal(gapMatches.length, 1, `${name} must contain exactly one Main Kill Gap menu link`);
     assert.equal(orderMatches.length, 1, `${name} must contain exactly one Binance signal orders menu link`);
+    assert.equal(oppositeLiquidityMatches.length, 1,
+      `${name} must contain exactly one opposite liquidity manager menu link`);
     assert.equal((rendered.match(/href=["']\/ai-signal-review["']/g) ?? []).length, 1,
       `${name} must contain exactly one signal review menu link`);
     assert.equal(injectLocalAiNavigation(rendered), rendered, `${name} injection must be idempotent`);

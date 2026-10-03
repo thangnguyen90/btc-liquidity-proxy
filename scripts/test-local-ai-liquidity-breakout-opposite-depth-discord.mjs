@@ -161,6 +161,11 @@ try {
     /ĐÃ GỬI SHORT/);
   assert.equal(analysisCalls, 1, 'Coin Level analysis is shared by simultaneous 5m and 15m events');
   assert.equal(notifier.snapshot().tracked, 0);
+  const deliveredManagement = await notifier.managementSnapshot();
+  assert.equal(deliveredManagement.recent.length, 2);
+  assert.equal(deliveredManagement.tracks.length, 0);
+  assert.equal(deliveredManagement.lastScan.sent, 2);
+  assert.equal(deliveredManagement.lastScan.analyzedSymbols, 1);
 
   await notifier.arm(upperAlert);
   const duplicate = await notifier.scan({
@@ -226,6 +231,10 @@ try {
   assert.equal(batchRequests.length, 2);
   assert.equal(batchNotifier.snapshot().analysisBatchSize, 2);
   assert.equal(batchNotifier.snapshot().maxDeliveriesPerScan, 1);
+  const batchManagement = await batchNotifier.managementSnapshot();
+  assert.equal(batchManagement.lastScan.deferredQualified, 0);
+  assert.equal(batchManagement.pending15m, 6);
+  assert.equal(batchManagement.tracks.length, 6);
 
   const disabled = new LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier({
     stateFile: join(directory, 'disabled.json'),

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Quản lý thanh khoản ngược chiều</title>
+  <link rel="stylesheet" href="/opposite-liquidity-manager.css?v=20261003-1">
+</head>
+<body><main>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">CLOSED 5M / 15M · OPPOSITE DEPTH · BINANCE ROUTE</p>
+      <h1>Quản lý thanh khoản<br>ngược chiều</h1>
+      <p>Theo dõi vùng đang chờ, tiến độ nến đóng, tín hiệu Discord đã phát và kết quả gửi lệnh Binance của rule vượt vùng nhưng tổng thanh khoản phía ngược lại lớn hơn.</p>
+    </div>
+    <nav aria-label="Điều hướng">
+      <a href="/local-ai-trend-evaluation">AI Local</a>
+      <a href="/ai-signal-review">Đánh giá tín hiệu</a>
+      <a href="/opposite-liquidity-manager" aria-current="page">Thanh khoản ngược</a>
+      <a href="/binance-auto-controls">Quản lý Binance</a>
+    </nav>
+  </header>
+
+  <aside class="notice"><strong>READ ONLY.</strong> Trang này không bật/tắt route và không đặt lệnh. Quyền LONG/SHORT vẫn chỉ thay đổi tại Quản lý Binance.</aside>
+
+  <section class="panel status-bar">
+    <div><strong id="status" role="status">Đang tải trạng thái scanner…</strong><p id="scanDetail" class="muted"></p></div>
+    <div class="actions"><a class="button-link" href="/binance-auto-controls">Mở Auto Controls</a><button id="refresh" type="button">Làm mới</button></div>
+  </section>
+
+  <section class="summary-grid" aria-label="Tóm tắt vận hành">
+    <article><span>Vùng đang theo dõi</span><strong id="tracked">—</strong><small id="trackedSymbols">— coin</small></article>
+    <article><span>Chờ nến 5m</span><strong id="pending5m">—</strong><small>chưa hoàn tất lifecycle 5m</small></article>
+    <article><span>Chờ nến 15m</span><strong id="pending15m">—</strong><small>chưa hoàn tất lifecycle 15m</small></article>
+    <article><span>Phát gần đây</span><strong id="recentCount">—</strong><small>Discord + callback Binance</small></article>
+    <article><span>Đã submit Binance</span><strong id="submitted">—</strong><small>trong attempt còn lưu</small></article>
+    <article><span>Lỗi executor</span><strong id="errors">—</strong><small>cần kiểm tra nguyên nhân</small></article>
+  </section>
+
+  <section class="panel route-panel">
+    <div class="section-heading"><div><p class="eyebrow">QUYỀN CHẠY HIỆN TẠI</p><h2>Route LONG / SHORT</h2></div><p id="masterState" class="route-master">—</p></div>
+    <div id="routes" class="route-grid"></div>
+  </section>
+
+  <section class="panel filters" aria-label="Bộ lọc quản lý">
+    <label class="search-field">Tìm coin, event ID, order ID hoặc lỗi
+      <input id="search" placeholder="OPUSDT, 15m, error, order 123…" autocomplete="off">
+    </label>
+    <label>Hướng lệnh<select id="side"><option value="">LONG + SHORT</option><option>LONG</option><option>SHORT</option></select></label>
+    <label>Khung<select id="interval"><option value="">5m + 15m</option><option value="5m">5m</option><option value="15m">15m</option></select></label>
+    <label>Trạng thái track<select id="trackState"><option value="">Tất cả</option><option value="5m">Còn chờ 5m</option><option value="15m">Còn chờ 15m</option></select></label>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading"><div><p class="eyebrow">ARMED BY BINANCE LIQSCAN</p><h2>Vùng đang chờ nến vượt</h2></div><p id="trackCount" class="muted">—</p></div>
+    <div class="table-wrap track-table"><table>
+      <thead><tr><th>Coin / hướng phản chiều</th><th>Vùng MAIN KILL</th><th>MARK lúc arm</th><th>Tiến độ nến</th><th>LiqScan</th><th>Thời gian</th><th>Mở</th></tr></thead>
+      <tbody id="trackRows"><tr><td colspan="7" class="empty">Đang tải…</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading"><div><p class="eyebrow">DISCORD DELIVERED</p><h2>Tín hiệu đã phát gần đây</h2></div><p id="recentLabel" class="muted">—</p></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Coin / tín hiệu</th><th>Nến đóng</th><th>Vùng / giá vượt</th><th>Opposite depth</th><th>Binance</th><th>Thời gian phát</th><th>Mở</th></tr></thead>
+      <tbody id="recentRows"><tr><td colspan="7" class="empty">Đang tải…</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading"><div><p class="eyebrow">BINANCE EXECUTION AUDIT</p><h2>Attempt vào lệnh</h2></div><p id="attemptLabel" class="muted">—</p></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Coin / hướng</th><th>Trạng thái</th><th>Khung / thời gian</th><th>Quy mô</th><th>TP / SL</th><th>Order / lỗi</th></tr></thead>
+      <tbody id="attemptRows"><tr><td colspan="6" class="empty">Đang tải…</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <details class="panel method">
+    <summary>Cách đọc màn hình</summary>
+    <p><b>Track:</b> vùng LiqScan còn hiệu lực tối đa 6 giờ. Mỗi vùng theo dõi độc lập nến đóng 5m và 15m; khung đã hoàn tất sẽ có dấu ✓, khung chưa hoàn tất vẫn ở trạng thái chờ.</p>
+    <p><b>Route:</b> ABOVE + BID dưới lớn hơn tạo SHORT phản chiều; BELOW + ASK trên lớn hơn tạo LONG phản chiều. Discord có thể phát nhưng Binance vẫn từ chối nếu route OFF, có vị thế/lệnh cùng coin, quá tuổi, chạm giới hạn vị thế hoặc lỗi API.</p>
+    <p><b>Số liệu:</b> đây là telemetry vận hành, không phải xác suất thắng, WinRate hoặc khuyến nghị giao dịch.</p>
+  </details>
+  <footer>OPPOSITE_LIQUIDITY_MANAGER_V1_READ_ONLY_20261003 · tự làm mới mỗi 30 giây</footer>
+</main><script type="module" src="/opposite-liquidity-manager.js?v=20261003-1"></script></body>
+</html>
