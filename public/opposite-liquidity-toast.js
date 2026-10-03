@@ -1,5 +1,6 @@
-const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V1_QUALIFIED_EVENT_20261003';
+const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V2_NATIVE_PUSH_20261003';
 const STORAGE_KEY = 'opposite-liquidity-toast:seen-event-ids:v1';
+const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261003-1';
 const FIRST_LOAD_RECENT_MS = 2 * 60_000;
 const POLL_MS = 10_000;
 const MAX_SEEN = 200;
@@ -49,6 +50,69 @@ function removeToast(node) {
   setTimeout(() => node.remove(), 260);
 }
 
+function pushSupported() {
+  return window.isSecureContext && 'Notification' in window && 'serviceWorker' in navigator;
+}
+
+function updatePushControls(message = '') {
+  for (const button of document.querySelectorAll('[data-opposite-liquidity-push]')) {
+    const permission = pushSupported() ? Notification.permission : 'unsupported';
+    button.dataset.permission = permission;
+    button.disabled = permission === 'granted' || permission === 'unsupported';
+    button.textContent = message || (permission === 'granted' ? 'Push thanh khoản ngược: ON'
+      : permission === 'denied' ? 'Push bị trình duyệt chặn'
+        : permission === 'unsupported' ? 'Trình duyệt không hỗ trợ Push'
+          : 'Bật Push thanh khoản ngược');
+  }
+}
+
+async function pushRegistration() {
+  if (!pushSupported()) return null;
+  return navigator.serviceWorker.register(SERVICE_WORKER_URL, {
+    scope: '/',
+    updateViaCache: 'none',
+  });
+}
+
+async function requestPushPermission() {
+  if (!pushSupported()) {
+    updatePushControls('Trình duyệt không hỗ trợ Push');
+    return;
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') await pushRegistration();
+    updatePushControls(permission === 'granted' ? 'Push thanh khoản ngược: ON'
+      : permission === 'denied' ? 'Push bị trình duyệt chặn' : 'Chưa cấp quyền Push');
+  } catch {
+    updatePushControls('Không bật được Push');
+  }
+}
+
+async function showPushNotification(event) {
+  if (!pushSupported() || Notification.permission !== 'granted') return;
+  try {
+    const registration = await pushRegistration();
+    if (!registration) return;
+    const side = event.side === 'LONG' ? 'LONG' : 'SHORT';
+    const ratio = finite(event.depth?.oppositeRatio);
+    const execution = String(event.binanceExecution?.status ?? 'NO_BINANCE_CALLBACK').toUpperCase();
+    await registration.showNotification(`${side === 'LONG' ? '🟢' : '🔴'} ${side} · ${event.symbol}`, {
+      body: `${event.interval} · vùng ${price(event.zone?.low)} – ${price(event.zone?.high)} · depth ngược ${ratio == null ? '—' : ratio.toFixed(3)}x · Binance ${execution}`,
+      tag: `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH:${event.eventId}`,
+      renotify: false,
+      requireInteraction: false,
+      data: {
+        signalType: 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH',
+        eventId: event.eventId,
+        url: `/opposite-liquidity-manager?symbol=${encodeURIComponent(event.symbol ?? '')}`,
+      },
+    });
+  } catch {
+    // Native notification failure must not suppress the in-page toast.
+  }
+}
+
 function showToast(event) {
   const side = event.side === 'LONG' ? 'LONG' : 'SHORT';
   const execution = event.binanceExecution ?? {};
@@ -85,6 +149,7 @@ function handleNotifications(items) {
   ]);
   writeSeen(merged);
   const display = unseen.slice(-4);
+  for (const event of unseen) void showPushNotification(event);
   for (const event of display) showToast(event);
   if (unseen.length > display.length) {
     const node = document.createElement('article');
@@ -97,7 +162,6 @@ function handleNotifications(items) {
 }
 
 async function poll() {
-  if (document.hidden) return;
   try {
     const response = await fetch('/api/opposite-liquidity-manager', {
       cache: 'no-store',
@@ -114,6 +178,11 @@ async function poll() {
 
 if (!globalThis.__oppositeLiquidityToastLoaded) {
   globalThis.__oppositeLiquidityToastLoaded = VERSION;
+  document.addEventListener('click', (event) => {
+    if (event.target.closest('[data-opposite-liquidity-push]')) void requestPushPermission();
+  });
+  updatePushControls();
+  if (pushSupported() && Notification.permission === 'granted') void pushRegistration();
   void poll();
   setInterval(poll, POLL_MS);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void poll(); });

@@ -19,6 +19,7 @@ assert.match(html, /id="trackRows"/);
 assert.match(html, /id="recentRows"/);
 assert.match(html, /id="attemptRows"/);
 assert.match(html, /READ ONLY/);
+assert.match(html, /data-opposite-liquidity-push/);
 assert.match(client, /fetch\('\/api\/opposite-liquidity-manager'/);
 assert.match(client, /pendingIntervals/);
 assert.match(client, /binanceExecution/);

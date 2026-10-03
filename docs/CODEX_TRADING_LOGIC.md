@@ -5646,3 +5646,10 @@ Before major edits:
 - Dedupe theo eventId trong localStorage, tối đa bốn toast chi tiết mỗi lượt và tự đóng sau 15 giây. Lần đầu chỉ hiện event không quá 2 phút; state giữ tối đa 100 event/7 ngày, trình duyệt nhớ 200 ID. Đây là audit delivery, không phải thống kê hiệu quả/xác suất.
 - Không đổi phân loại, Binance entry, route, size `4 USDT ×5`, leverage, TP/SL/protection hoặc position; không tạo API ghi. JSON cũ mặc định `browserNotifications=[]`, `recent` vẫn giữ nghĩa Discord gửi thành công và không migration/replay.
 - Không thêm label/card/matcher mới nên không thêm checkbox WHITELIST; exact Auto Controls và policy CLOSED `AvgROE >4%` giữ nguyên.
+
+## 2026-10-03 — Native push riêng cho `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH`
+
+- Nâng UI delivery lên `OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V2_NATIVE_PUSH_20261003`, thêm service worker và nút `Bật Push thanh khoản ngược` trên trang quản lý. Permission chỉ xin sau click người dùng; khi đã cấp, tab nền vẫn poll 10 giây và Windows/browser hiện native notification. Cần còn ít nhất một tab dashboard mở; chưa gửi được khi đóng toàn bộ trình duyệt.
+- Push chỉ đọc event unseen từ `scanner.browserNotifications` và khóa `data.signalType=LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH`. Nội dung gồm LONG/SHORT, coin, 5m/15m, vùng, depth ratio và kết quả Binance. Tag signal type + eventId chống notification lặp; bấm notification mở/focus màn hình quản lý.
+- Không đổi detector/classification, thống kê hiệu suất, Discord, Binance route/entry, size `4 USDT ×5`, leverage, TP/SL/protection hoặc position. Không lưu subscription/market state mới và không đổi JSON/API.
+- Không thêm label/card/matcher nên không có checkbox WHITELIST mới; exact Auto Controls và policy CLOSED `AvgROE >4%` giữ nguyên.
