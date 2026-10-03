@@ -1,4 +1,4 @@
-export const POST_DUMP_NO_SELL_WATCH_VERSION = 'POST_DUMP_NO_SELL_WATCH_V1_CLOSED_5M_24H_20260926';
+export const POST_DUMP_NO_SELL_WATCH_VERSION = 'POST_DUMP_NO_SELL_WATCH_V3_LONG_IMPULSE_ENTRY_20260927';
 
 export const POST_DUMP_NO_SELL_STAGE = Object.freeze({
   BUY_IMPULSE: 'BUY_IMPULSE',
@@ -195,7 +195,11 @@ function scoreCandidate(candidate, confirmed) {
   return clamp(round(dumpScore + rangeScore + volumeScore + buyScore + confirmationScore, 1), 0, 100);
 }
 
-/** Closed-candle, causal, observe-only inverse of the post-pump no-buy watch. */
+/**
+ * Closed-candle, causal inverse of the post-pump no-buy watch. LONG keeps its
+ * original behavior: the first qualified buy impulse can execute; confirmation
+ * remains a Discord update and never creates a second entry.
+ */
 export function evaluatePostDumpNoSellWatch({ symbol, rows5m = [], rows15m = [] } = {}) {
   const clean5m = rows5m.filter((row) => closeTime(row) != null).sort((a, b) => closeTime(a) - closeTime(b));
   const clean15m = rows15m.filter((row) => closeTime(row) != null).sort((a, b) => closeTime(a) - closeTime(b));

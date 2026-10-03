@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Thống kê market cap và cung lưu hành của Binance USDT perpetual.">
+    <title>Thị trường cung thấp · Binance Futures</title>
+    <link rel="stylesheet" href="/low-supply-market.css?v=20260928-v2">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero panel">
+        <div>
+          <p class="eyebrow">BINANCE USDT PERPETUAL × COINGECKO · OBSERVE ONLY</p>
+          <h1>Thị trường cung thấp</h1>
+          <p>Theo dõi coin có market cap lớn nhưng số token lưu hành thấp. Mặc định xếp cung lưu hành từ thấp lên cao.</p>
+        </div>
+        <nav aria-label="Điều hướng">
+          <a href="/coin-level-analysis">Coin Level</a>
+          <a href="/liquid-flow-v2">Liquid Flow V2</a>
+          <a href="/pump-base-recovery">LONG sau bơm</a>
+          <a href="/dump-cap-rejection">SHORT sau xả</a>
+          <a class="active" href="/low-supply-market">Cung thấp</a><a href="/very-strong-entry-watch">Entry rất mạnh</a><a href="/btc-relative-strength-watch">Ngược BTC</a>
+        </nav>
+      </header>
+
+      <section class="filter-panel panel" aria-labelledby="filters-title">
+        <div>
+          <p class="eyebrow">BỘ LỌC</p>
+          <h2 id="filters-title">Điều kiện đang xem</h2>
+        </div>
+        <label><span>Market cap tối thiểu (tỷ USD)</span><input id="minimum-cap" type="number" min="0" step="0.1" value="4"></label>
+        <label><span>Cung lưu hành tối đa (triệu token)</span><input id="maximum-supply" type="number" min="0" step="0.1" value="15"></label>
+        <label><span>Tìm coin</span><input id="coin-query" type="search" placeholder="QNT, ORCA..."></label>
+        <label><span>Sắp xếp</span><select id="sort-key"><option value="circulating-asc">Cung lưu hành tăng dần</option><option value="float-pct-asc">Lưu hành / max tăng dần</option><option value="market-cap-desc">Market cap giảm dần</option><option value="turnover-desc">Volume / cap giảm dần</option><option value="change-desc">Tăng giá 24h giảm dần</option></select></label>
+        <button id="refresh" type="button">Cập nhật</button>
+      </section>
+
+      <div id="status" class="status panel" role="status" aria-live="polite">Đang tổng hợp danh sách Binance Futures…</div>
+
+      <section class="summary" aria-label="Tổng quan dữ liệu">
+        <article class="panel match"><span>Đạt bộ lọc hiện tại</span><strong id="match-count">—</strong><small id="match-rule">Cap ≥4B · cung &lt;15M</small></article>
+        <article class="panel"><span>Binance USDT perpetual</span><strong id="universe-count">—</strong><small>hợp đồng đang giao dịch</small></article>
+        <article class="panel"><span>Có dữ liệu cung</span><strong id="coverage-count">—</strong><small id="coverage-pct">—</small></article>
+        <article class="panel"><span>Thiếu dữ liệu nguồn</span><strong id="missing-count">—</strong><small>không tự suy đoán</small></article>
+      </section>
+
+      <section class="table-panel panel" aria-labelledby="table-title">
+        <div class="section-head">
+          <div><p class="eyebrow">DANH SÁCH ĐÃ GIAO CẮT VỚI BINANCE FUTURES</p><h2 id="table-title">Cung lưu hành thấp → cao</h2></div>
+          <span id="source-state" class="source-state">CHỜ DỮ LIỆU</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th scope="col">#</th>
+              <th scope="col" data-sort-column="symbol" aria-sort="none"><button type="button" class="sort-button">Coin <span class="sort-indicator">↕</span></button></th>
+              <th scope="col" data-sort-column="severity" aria-sort="none"><button type="button" class="sort-button">Phân loại <span class="sort-indicator">↕</span></button></th>
+              <th scope="col" data-sort-column="market-cap" aria-sort="none"><button type="button" class="sort-button" data-default-direction="desc">Market cap <span class="sort-indicator">↕</span></button></th>
+              <th scope="col" data-sort-column="circulating" aria-sort="ascending"><button type="button" class="sort-button active">Cung lưu hành <span class="sort-indicator">↑</span></button></th>
+              <th scope="col" data-sort-column="total-supply" aria-sort="none"><button type="button" class="sort-button">Tổng cung <span class="sort-indicator">↕</span></button></th>
+              <th scope="col" data-sort-column="max-supply" aria-sort="none"><button type="button" class="sort-button">Max supply <span class="sort-indicator">↕</span></button></th>
+              <th scope="col" data-sort-column="float-pct" aria-sort="none"><button type="button" class="sort-button">Lưu hành / max <span class="sort-indicator">↕</span></button></th>
+              <th scope="col" data-sort-column="volume" aria-sort="none"><button type="button" class="sort-button" data-default-direction="desc">Volume 24h <span class="sort-indicator">↕</span></button></th>
+              <th scope="col" data-sort-column="turnover" aria-sort="none"><button type="button" class="sort-button" data-default-direction="desc">Volume / cap <span class="sort-indicator">↕</span></button></th>
+              <th scope="col" data-sort-column="change" aria-sort="none"><button type="button" class="sort-button" data-default-direction="desc">24h <span class="sort-indicator">↕</span></button></th>
+              <th scope="col" data-sort-column="updated" aria-sort="none"><button type="button" class="sort-button" data-default-direction="desc">Nguồn cập nhật <span class="sort-indicator">↕</span></button></th>
+            </tr></thead>
+            <tbody id="rows"><tr><td colspan="12">Đang tải…</td></tr></tbody>
+          </table>
+        </div>
+        <p class="note">Số token lưu hành thấp không đồng nghĩa order book chắc chắn mỏng. Market cap và supply lấy từ CoinGecko; hãy mở Coin Level để đối chiếu MARK, volume và depth Binance trước khi đánh giá cú quét.</p>
+      </section>
+    </main>
+    <script type="module" src="/low-supply-market.js?v=20260928-v2"></script>
+  </body>
+</html>

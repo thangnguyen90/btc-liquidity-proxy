@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bơm · Trả chân · Hồi volume | V2</title>
+  <link rel="stylesheet" href="/post-dump-volume-recovery.css">
+  <link rel="stylesheet" href="/pump-base-recovery.css?v=20260927-v1">
+</head>
+<body><main class="shell">
+  <header class="hero">
+    <div><p class="eyebrow">V2 · NẾN ĐÃ ĐÓNG · OBSERVE ONLY</p><h1>Bơm → Trả chân → Hồi volume</h1>
+      <p class="subtitle">Theo dõi nhịp hồi sau một nến bơm lớn bị trả về chân hoặc quét thấp hơn chân nến.</p></div>
+    <nav aria-label="Điều hướng">
+      <a href="/liquid-flow-v2">Liquid Flow V2</a><a href="/coin-level-analysis">Bản đồ giá</a>
+      <a href="/post-dump-volume-recovery">LONG sau xả</a><a href="/post-pump-volume-fade">SHORT sau bơm</a>
+      <a href="/btc-session-watch.html">BTC Session</a><a href="/binance-auto-controls">Quản lý Binance</a>
+      <a href="/pump-base-recovery" class="active" aria-current="page">Bơm · trả chân · hồi</a><a href="/dump-cap-rejection">Xả · hồi đỉnh · từ chối</a><a href="/low-supply-market">Thị trường cung thấp</a><a href="/very-strong-entry-watch">Entry rất mạnh</a>
+    </nav>
+  </header>
+  <section class="notice"><strong>Mẫu quan sát, không phải khuyến nghị mua.</strong> Chân nến = giá mở cửa của nến bơm; đỉnh = râu cao nhất. Nến dài có râu trên vẫn được xét. Bắt buộc có nến sau đó trả về chân, rồi mới xét nhịp hồi. Khi entry live thật sự pass sẽ gửi Discord; không đặt Binance và không thay đổi SL/TP.</section>
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">5 KHUNG ĐỘC LẬP</p><h2>Danh sách theo dõi</h2><p id="scan-status" class="muted" role="status">Đang tải…</p><p id="socket-status" class="muted">Giá MARK: đang chờ</p></div>
+      <div class="filters"><label>Tìm coin<input id="search" type="search" placeholder="TRIAUSDT"></label>
+        <label>Giai đoạn<select id="stage"><option value="ALL">Tất cả</option></select></label>
+        <label>Trả chân<select id="sweep"><option value="ALL">Tất cả</option><option value="BELOW">Quét thấp hơn chân</option><option value="FOOT">Về quanh chân</option></select></label>
+        <button id="refresh" type="button">Làm mới</button></div>
+    </div>
+    <div id="frame-tabs" class="timeframe-tabs" role="tablist" aria-label="Khung nến"></div>
+    <div id="frame-panel" role="tabpanel">
+      <div id="stage-cards" class="summary-grid"></div>
+      <p id="coverage" class="muted"></p>
+      <p id="support-summary" class="support-summary" role="status">Đang kiểm tra hỗ trợ LONG…</p>
+      <details><summary>Phân nhóm hỗ trợ · chỉ thống kê 50 dòng đang xem</summary><div id="support-cards" class="summary-grid support-cards"></div></details>
+      <div class="table-wrap"><table><thead><tr>
+        <th><button data-sort="symbol">Coin ↕</button></th><th>Hỗ trợ LONG</th><th>Entry tham khảo</th><th>Vô hiệu / kháng cự / R:R</th><th><button data-sort="stage">Giai đoạn ↕</button></th>
+        <th><button data-sort="close">Giá đóng / MARK ↕</button></th><th><button data-sort="pumpAt">Nến bơm ↕</button></th>
+        <th><button data-sort="pumpRangeAtr">Độ lớn nến ↕</button></th><th>Chân / đỉnh nến</th>
+        <th><button data-sort="retracePct">Trả chân ↕</button></th><th><button data-sort="reboundPct">Hồi từ đáy ↕</button></th>
+        <th><button data-sort="volumeRatio">Volume hồi ↕</button></th><th><button data-sort="ageBars">Tuổi mẫu ↕</button></th>
+      </tr></thead><tbody id="rows"></tbody></table></div>
+      <div class="pagination"><button id="prev" type="button">← Trước</button><span id="page-status"></span><button id="next" type="button">Sau →</button></div>
+      <p id="exclusions" class="muted"></p>
+    </div>
+  </section>
+  <section class="panel rules"><h2>Cách nhận diện V1</h2>
+    <p><b>Hỗ trợ LONG thử nghiệm:</b> xét chân nến bơm đã lấy lại, đáy hồi pivot đã có 2 nến xác nhận bên phải, hoặc đỉnh nền 3 nến đã phá. Vùng rộng ±0,15 ATR. Nến retest có râu dưới ≥25% biên độ, đóng trên vùng; volume ≤80% nến tăng mạnh nhất trong 6 nến trước. Nến tiếp theo đóng vượt đỉnh retest với volume tăng mới xác nhận.</p>
+    <p><b>Chỉ tô xanh khi còn điểm vào:</b> nến xác nhận trong 3 nến gần nhất, giá MARK mới ≤15 giây và snapshot ≤90 giây; giá vẫn trên mốc vượt retest, cách hỗ trợ ≤1 ATR, nằm gần entry xác nhận (−0,25 / +0,35 ATR) và R:R ≥1,5 sau chi phí giả định 0,12%. Entry không chạy theo MARK. Mất mốc vô hiệu sẽ bỏ màu xanh; giá chạy xa báo chờ retest. Đây là entry quan sát, không đặt Binance. Ngưỡng chưa được backtest.</p>
+    <ol>
+      <li><b>Nến bơm cao:</b> cao–thấp ≥2,5 ATR; mở–đỉnh ≥1,8 ATR; volume ≥2× trung vị 20 nến trước; đóng ≥mở. ATR dùng 19 true-range trước nến bơm, không lấy chính nến bơm để nâng nền.</li>
+      <li><b>Trả chân:</b> một nến sau có đáy ≤mở nến bơm +0,15 ATR. Quét dưới chân khi đáy thấp hơn mở −0,15 ATR. Râu ngay trong nến bơm không được tính thành bước trả chân.</li>
+      <li><b>Đang hồi:</b> nến sau lần trả chân đóng tăng so với nến trước và hồi ≥0,5 ATR từ đáy sau trả chân.</li>
+      <li><b>Hồi · volume tăng dần:</b> 3 nến đã đóng sau trả chân có giá đóng và volume cùng tăng liên tiếp; volume cuối ≥1,2× nền trước bơm; lấy lại giá mở nến bơm.</li>
+      <li><b>Yếu lại:</b> đóng dưới đáy nến trả chân −0,15 ATR, hoặc 2 nến đóng giảm liên tiếp. Có thể hồi phục lại ở lần quét sau; đây là trạng thái hiện tại, không phải lịch sử lệnh.</li>
+    </ol>
+    <p class="muted">Quét tối đa 128 nến đóng, theo dõi tối đa 96 nến sau bơm trong mỗi khung (15m: 24 giờ; 1d: 96 ngày). Một coin có thể có nhiều nến bơm gốc: số case không bằng số coin. Nến 1d theo UTC Binance (đóng lúc 07:00 VN); thời gian hiển thị theo Việt Nam. Chỉ gộp nến đủ và liên tục; thiếu/cũ được thống kê riêng, không coi là không có mẫu.</p>
+    <p class="muted">Dữ liệu dùng cache chung; mỗi khung lưu kết quả 30 giây. Bổ sung cache chậm tối đa 1 request/15 giây dùng chung toàn trang, chỉ khi có người xem, dừng khi rate gate đang chặn/nghẽn. Giá MARK qua socket chỉ để đối chiếu, không biến nến chưa đóng thành xác nhận.</p>
+    <p class="muted">WHITELIST mặc định OFF; checkbox chỉ hiện khi có lệnh đóng đúng nhóm với AvgROE &gt;4%. Hiện chưa có thống kê lệnh đóng hoặc quyền Binance cho mẫu này. Các ngưỡng V1 chưa được backtest chứng minh hiệu quả.</p>
+  </section>
+</main><script type="module" src="/pump-base-recovery.js?v=20260927-support-v1"></script></body>
+</html>

@@ -1,4 +1,4 @@
-export const POST_PUMP_NO_BUY_WATCH_VERSION = 'POST_PUMP_NO_BUY_WATCH_V1_CLOSED_5M_24H_20260926';
+export const POST_PUMP_NO_BUY_WATCH_VERSION = 'POST_PUMP_NO_BUY_WATCH_V2_CONFIRMATION_ENTRY_20260927';
 
 export const POST_PUMP_NO_BUY_STAGE = Object.freeze({
   SELL_IMPULSE: 'SELL_IMPULSE',
@@ -198,9 +198,9 @@ function scoreCandidate(candidate, confirmed) {
 }
 
 /**
- * Causal, closed-candle, observe-only detector for a sell impulse after a recent pump.
- * It never authorizes Binance entry. Stage two only says buy force stayed weak for 2-3
- * closed 5m candles; traders still wait for a retest instead of chasing the dump.
+ * Causal, closed-candle detector for a sell impulse after a recent pump.
+ * Stage one is observe-only. Stage two becomes an execution candidate only after buy
+ * force stays weak for 2-3 closed 5m candles; late/overextended cases never execute.
  */
 export function evaluatePostPumpNoBuyWatch({ symbol, rows5m = [], rows15m = [] } = {}) {
   const clean5m = rows5m.filter((row) => closeTime(row) != null).sort((a, b) => closeTime(a) - closeTime(b));
@@ -296,7 +296,7 @@ export function evaluatePostPumpNoBuyWatch({ symbol, rows5m = [], rows15m = [] }
       label,
       watchOnly: true,
       binanceEligible: false,
-      executionCandidate: stage === POST_PUMP_NO_BUY_STAGE.SELL_IMPULSE,
+      executionCandidate: stage === POST_PUMP_NO_BUY_STAGE.NO_BUY_CONFIRMATION,
       observedAt,
       priceAtWatch: round(latestClose, 10),
       score: scoreCandidate(candidate, noBuyConfirmed),

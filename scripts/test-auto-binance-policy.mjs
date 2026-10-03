@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { impulseSizing } from '../src/postMoveImpulseSizing.js';
 import { readFile } from 'node:fs/promises';
 import {
   AUTO_BINANCE_ENTRY_POLICY_VERSION,
@@ -20,13 +21,15 @@ import {
   authorizePostMoveIdealShort4hOrder,
   authorizePostMovePriority15mOrder,
   authorizePostMoveImpulse5mOrder,
+  authorizeBtcRelativeStrengthOrder,
+  authorizeLocalAiPassMidpointOrder,
   evaluateAutoBinanceEntryPolicy,
   liveCardOnlyAutoBinanceEnabled,
 } from '../src/autoBinancePolicy.js';
 import { ceilQuantityAtMinimumNotional } from '../src/orderQuantityPolicy.js';
 
 const exclusiveEnv = {};
-assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'LIVE_CARD_POST_MOVE_IMPULSE_MAX50_V41_20260927');
+assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'LOCAL_AI_PRIORITY_ZONE_1USDT_V51_20261003');
 assert.equal(LIQUID_FLOW_V2_BINANCE_LEVERAGE, 5);
 assert.equal(liveCardOnlyAutoBinanceEnabled(exclusiveEnv), true);
 assert.equal(liveCardOnlyAutoBinanceEnabled({ LIVE_CARD_WHITELIST_ONLY_AUTO_BINANCE: 'false' }), false);
@@ -203,13 +206,14 @@ for (const impulse of [
   {
     source: 'post-move-impulse', streamId: 'post-pump-no-buy-5m',
     signalLabel: 'POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT', signalInterval: '5m',
-    signalStageKey: 'SELL_IMPULSE', side: 'SELL', stopLossRoePct: 30,
+    signalStageKey: 'NO_BUY_CONFIRMATION', side: 'SELL', stopLossRoePct: 30,
   },
 ]) {
   const base = {
     symbol: 'TESTUSDT', dryRun: false, orderType: 'MARKET',
-    marginUsdt: 8, leverage: 5, notionalUsdt: 40,
+    marginUsdt: 5, leverage: 5, notionalUsdt: 25,
     takeProfitRoePct: 10, maxOpenPositions: 50,
+    impulseSizing: impulseSizing({side:impulse.side,now:Date.parse('2026-10-01T20:00:00Z')}),
     ...impulse,
   };
   assert.equal(evaluateAutoBinanceEntryPolicy({
@@ -218,11 +222,11 @@ for (const impulse of [
   const authorized = authorizePostMoveImpulse5mOrder(base);
   assert.equal(evaluateAutoBinanceEntryPolicy({
     payload: authorized, orderEnabled: true, env: exclusiveEnv,
-  }).reason, 'POST_MOVE_IMPULSE_5M_MARKET_8USDT_MAX50');
+  }).reason, 'POST_MOVE_IMPULSE_TIME_OR_BTC_MARGIN5_ELSE1_MAX50');
   for (const invalid of [
-    { signalInterval: '15m' }, { marginUsdt: 2 }, { leverage: 10 },
+    { signalInterval: '15m' }, { marginUsdt: 8, notionalUsdt: 40 }, { leverage: 10 },
     { takeProfitRoePct: 11 }, { maxOpenPositions: 30 },
-    { signalStageKey: impulse.side === 'BUY' ? 'NO_SELL_CONFIRMATION' : 'NO_BUY_CONFIRMATION' },
+    { signalStageKey: impulse.side === 'BUY' ? 'NO_SELL_CONFIRMATION' : 'SELL_IMPULSE' },
   ]) {
     assert.equal(evaluateAutoBinanceEntryPolicy({
       payload: authorizePostMoveImpulse5mOrder({ ...base, ...invalid }),
@@ -232,6 +236,81 @@ for (const impulse of [
   assert.equal(evaluateAutoBinanceEntryPolicy({
     payload: { ...authorized }, orderEnabled: true, env: exclusiveEnv,
   }).allowed, false, 'impulse authorization must not survive a payload copy');
+}
+
+for (const side of ['BUY', 'SELL']) {
+  const relative = {
+    symbol:'TESTUSDT', dryRun:false,
+    source:'btc-relative-strength-watch', streamId:'opposite-btc-5m',
+    signalLabel:'RELATIVE_ENTRY_READY', signalStageKey:'RELATIVE_ENTRY_READY',
+    signalInterval:'5m', side, orderType:'MARKET', marginUsdt:2, leverage:5,
+    notionalUsdt:10, takeProfitRoePct:10,
+    stopLossRoePct:null, stopLossPrice:null, stopLossDistanceFraction:null,
+    protectionSignalStopLossPrice:null,
+    maxOpenPositions:50,
+  };
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload:relative, orderEnabled:true, env:exclusiveEnv,
+  }).allowed, false, 'visible BTC-relative fields alone cannot authorize an order');
+  const authorized = authorizeBtcRelativeStrengthOrder(relative);
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload:authorized, orderEnabled:true, env:exclusiveEnv,
+  }).reason, 'BTC_RELATIVE_STRENGTH_READY_MARKET_2USDT_TP_ONLY_MAX50');
+  for (const invalid of [
+    { marginUsdt:3, notionalUsdt:15 }, { leverage:10, notionalUsdt:20 },
+    { signalStageKey:'WAIT_5M_CONFIRM' }, { maxOpenPositions:30 },
+    { stopLossRoePct:side === 'BUY' ? 20 : 30 },
+    { stopLossPrice:side === 'BUY' ? 0.9 : 1.1 },
+    { stopLossDistanceFraction:0.04 },
+    { protectionSignalStopLossPrice:side === 'BUY' ? 0.9 : 1.1 },
+  ]) {
+    assert.equal(evaluateAutoBinanceEntryPolicy({
+      payload:authorizeBtcRelativeStrengthOrder({ ...relative, ...invalid }),
+      orderEnabled:true, env:exclusiveEnv,
+    }).allowed, false);
+  }
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload:{ ...authorized }, orderEnabled:true, env:exclusiveEnv,
+  }).allowed, false, 'BTC-relative authorization must not survive payload copy');
+}
+
+for (const side of ['BUY', 'SELL']) {
+  const entry = 0.3466598;
+  const localAi = {
+    symbol:'TESTUSDT', dryRun:false,
+    source:'local-ai-trend-evaluation', streamId:'priority-engine-zone',
+    signalLabel:'LOCAL_AI_PRIORITY_ENGINE_ZONE_TOUCH', signalStageKey:'AI_PRIORITY_ENGINE_ZONE_TOUCH',
+    signalInterval:'1h', side, orderType:'MARKET', marginUsdt:1, leverage:5,
+    notionalUsdt:5, takeProfitRoePct:10, maxOpenPositions:50,
+    signalEntryPrice:entry,
+    takeProfitPrice:side === 'BUY' ? entry * 1.02 : entry * 0.98,
+    stopLossPrice:side === 'BUY' ? 0.33 : 0.36,
+    stopLossRoePct:20,
+    protectionOnFill:true,
+    fillAnchorEnabled:true,
+    fillAnchorVersion:'LOCAL_AI_PRIORITY_ENGINE_ZONE_ENTRY_V2_MARKET_1USDT_20261003',
+  };
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload:localAi, orderEnabled:true, env:exclusiveEnv,
+  }).allowed, false, 'visible AI midpoint fields alone cannot authorize an order');
+  const authorized = authorizeLocalAiPassMidpointOrder(localAi);
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload:authorized, orderEnabled:true, env:exclusiveEnv,
+  }).reason, 'LOCAL_AI_PRIORITY_ENGINE_ZONE_MARKET_1USDT');
+  for (const invalid of [
+    { marginUsdt:3, notionalUsdt:15 }, { signalStageKey:'AI_PASS' },
+    { signalInterval:'5m' }, { maxOpenPositions:30 },
+    { stopLossPrice:side === 'BUY' ? 0.36 : 0.33 },
+    { fillAnchorVersion:'FORGED' },
+  ]) {
+    assert.equal(evaluateAutoBinanceEntryPolicy({
+      payload:authorizeLocalAiPassMidpointOrder({ ...localAi, ...invalid }),
+      orderEnabled:true, env:exclusiveEnv,
+    }).allowed, false);
+  }
+  assert.equal(evaluateAutoBinanceEntryPolicy({
+    payload:{ ...authorized }, orderEnabled:true, env:exclusiveEnv,
+  }).allowed, false, 'AI midpoint authorization must not survive payload copy');
 }
 
 const limitPaperFillPayload = authorizeLimitPaperFillOrder({

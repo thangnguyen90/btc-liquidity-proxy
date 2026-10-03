@@ -1,5 +1,12 @@
-import { sessionTradeKey } from '../public/btc-session-model.js';
-export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V18_BTC_SESSION_OBSERVE_20260926';
+import { impulseRegimeTradeKey, sessionTradeKey } from '../public/btc-session-model.js';
+import { impulseEntryTradeKey } from '../public/impulse-entry-model.js';
+import { pumpBaseTradeKey } from '../public/pump-base-recovery-model.js';
+import { pumpSupportTradeKey } from '../public/pump-support-model.js';
+import { dumpCapTradeKey } from '../public/dump-cap-rejection-model.js';
+import { dumpResistanceTradeKey } from '../public/dump-resistance-model.js';
+import { toxicTwoSideTradeKey } from '../public/toxic-two-side-model.js';
+import { btcHourlyEntryForecastTradeKey } from '../public/btc-hourly-entry-forecast-model.js';
+export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V21_BTC_HOURLY_FORECAST_OBSERVE_20261001';
 export const LIVE_CARD_COMBO_ENTRY_MATCH_VERSION = 'LIVE_CARD_COMBO_ENTRY_MATCH_V1_20260804';
 
 const ALLOWED_PREFIXES = [
@@ -46,6 +53,14 @@ export function normalizeLiquidLiveCardKey(value) {
   const key = String(value ?? '').trim();
   if (!key || key.length > 1000 || /[\u0000-\u001f\u007f]/.test(key)) return null;
   if (/^btc-session:(LONG|SHORT):(NIGHT|MORNING|OTHER)$/.test(key)) return key;
+  if (/^btc-session:IMPULSE:(SW_UP|SW_DOWN|NEUTRAL|SHOCK|STALE)$/.test(key)) return key;
+  if (/^btc-session:ENTRY:(LONG|SHORT):(RETEST|BASE_BREAK)$/.test(key)) return key;
+  if (/^pump-base:(5m|15m|1h|4h|1d):(AT_BASE|RECOVERING|VOLUME_RECOVERY|WEAKENED)$/.test(key)) return key;
+  if (/^pump-support:(5m|15m|1h|4h|1d):(READY|WAIT_RETEST|WAIT_CONFIRM|BROKEN|NO_ROOM|WAIT_LIVE|STALE|NO_SUPPORT)$/.test(key)) return key;
+  if (/^dump-cap:(5m|15m|1h|4h|1d):(AT_CAP|REJECTING|VOLUME_REJECTION|INVALIDATED)$/.test(key)) return key;
+  if (/^dump-resistance:(5m|15m|1h|4h|1d):(READY|WAIT_RETEST|WAIT_CONFIRM|BROKEN|NO_ROOM|WAIT_LIVE|STALE|NO_RESISTANCE)$/.test(key)) return key;
+  if (/^toxic-two-side:(EXTREME|HIGH|WATCH|NORMAL)$/.test(key)) return key;
+  if (/^btc-hourly-forecast:(LONG|SHORT|NEUTRAL)$/.test(key)) return key;
   return ALLOWED_PREFIXES.some((prefix) => key.startsWith(prefix)) ? key : null;
 }
 
@@ -120,6 +135,22 @@ export function liquidLiveCardKeysOfTrade(trade = {}) {
   const keys = new Set(['overview:all']);
   const sessionKey = sessionTradeKey(trade);
   if (sessionKey) keys.add(sessionKey);
+  const impulseRegimeKey = impulseRegimeTradeKey(trade);
+  if (impulseRegimeKey) keys.add(impulseRegimeKey);
+  const impulseEntryKey = impulseEntryTradeKey(trade);
+  if (impulseEntryKey) keys.add(impulseEntryKey);
+  const pumpBaseKey = pumpBaseTradeKey(trade);
+  if (pumpBaseKey) keys.add(pumpBaseKey);
+  const pumpSupportKey = pumpSupportTradeKey(trade);
+  if (pumpSupportKey) keys.add(pumpSupportKey);
+  const dumpCapKey = dumpCapTradeKey(trade);
+  if (dumpCapKey) keys.add(dumpCapKey);
+  const dumpResistanceKey = dumpResistanceTradeKey(trade);
+  if (dumpResistanceKey) keys.add(dumpResistanceKey);
+  const toxicKey = toxicTwoSideTradeKey(trade);
+  if (toxicKey) keys.add(toxicKey);
+  const hourlyForecastKey = btcHourlyEntryForecastTradeKey(trade);
+  if (hourlyForecastKey) keys.add(hourlyForecastKey);
   const margin = Number(trade.marginUsdt);
   keys.add(margin >= 9.5 && margin <= 10.5
     ? 'overview:margin:test10'

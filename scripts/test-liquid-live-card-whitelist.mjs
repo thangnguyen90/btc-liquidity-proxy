@@ -15,7 +15,7 @@ import {
 
 assert.equal(
   LIQUID_LIVE_CARD_WHITELIST_VERSION,
-  'LIVE_CARD_WHITELIST_V18_BTC_SESSION_OBSERVE_20260926',
+  'LIVE_CARD_WHITELIST_V21_BTC_HOURLY_FORECAST_OBSERVE_20261001',
 );
 
 const trade = {
@@ -74,6 +74,41 @@ assert.equal(
   'spring-reversal:LONG_SPRING',
 );
 assert.equal(normalizeLiquidLiveCardKey('stage2:A\nB'), null);
+for (const tier of ['EXTREME', 'HIGH', 'WATCH', 'NORMAL']) {
+  const key = `toxic-two-side:${tier}`;
+  assert.equal(normalizeLiquidLiveCardKey(key), key);
+  assert.equal(matchLiveCardWhitelistKeys([key], []).allowed, false);
+  assert.equal(matchLiveCardWhitelistKeys([key], [key]).allowed, true);
+}
+const toxicTrade = {
+  toxicTwoSideObservation: {
+    version: 'TOXIC_TWO_SIDE_MARKET_V1_20261001',
+    tier: 'EXTREME',
+    score: 95,
+  },
+};
+assert(liquidLiveCardKeysOfTrade(toxicTrade).includes('toxic-two-side:EXTREME'));
+assert.equal(matchLiquidLiveCardWhitelist(toxicTrade, []).allowed, false);
+assert.equal(matchLiquidLiveCardWhitelist(toxicTrade, ['toxic-two-side:EXTREME']).allowed, true);
+assert.equal(liquidLiveCardKeysOfTrade({
+  toxicTwoSideObservation: { version: 'OLD', tier: 'EXTREME' },
+}).includes('toxic-two-side:EXTREME'), false);
+for (const direction of ['LONG', 'SHORT', 'NEUTRAL']) {
+  const key = `btc-hourly-forecast:${direction}`;
+  const forecastTrade = {
+    btcHourlyEntryForecastObservation: {
+      version: 'BTC_HOURLY_ENTRY_FORECAST_V1_DAILY_CAUSAL_20261001',
+      direction,
+    },
+  };
+  assert.equal(normalizeLiquidLiveCardKey(key), key);
+  assert(liquidLiveCardKeysOfTrade(forecastTrade).includes(key));
+  assert.equal(matchLiquidLiveCardWhitelist(forecastTrade, []).allowed, false);
+  assert.equal(matchLiquidLiveCardWhitelist(forecastTrade, [key]).allowed, true);
+}
+assert.equal(liquidLiveCardKeysOfTrade({
+  btcHourlyEntryForecastObservation: { version: 'OLD', direction: 'LONG' },
+}).includes('btc-hourly-forecast:LONG'), false);
 
 const emaKey = liveCardKey('ema', 'combo', 'SQUEEZE | LONG | 15m');
 const edgeKey = liveCardKey('edge', 'tier', 'SE_TIER_A');
@@ -169,5 +204,19 @@ assert.equal(
 assert.equal(matchLiveCardWhitelistKeys([openEdgeComboKey], [openEdgeComboKey]).allowed, true);
 assert.equal(liveCardComboKeyAtEntry('edge', '-'), null);
 assert.equal(liveCardComboKeyAtEntry('edge', 'NO_DATA'), null);
+
+const [localAiPage, localAiUi] = await Promise.all([
+  readFile(new URL('../public/local-ai-trend-evaluation.html', import.meta.url), 'utf8'),
+  readFile(new URL('../public/local-ai-trend-evaluation.js', import.meta.url), 'utf8'),
+]);
+assert.match(localAiPage, /data-live-card-status="btc-hourly-forecast"/);
+assert.match(localAiPage, /type="module" src="\/local-ai-trend-evaluation\.js/);
+assert.match(localAiUi, /installLiveCardWhitelistUi/);
+assert.match(localAiUi, /page: 'btc-hourly-forecast'/);
+assert.match(localAiUi, /root\.dataset\.liveCardKey = whitelistKey/);
+assert.match(localAiUi, /root\.dataset\.binanceCardAvgRoe =/);
+assert.match(localAiUi, /selectedAvgRoe > 4/);
+assert.match(localAiUi, /hourlyForecastWhitelistUi\.decorate\(\)/);
+assert.match(localAiUi, /btcHourlyEntryForecastTradeKey/);
 
 console.log('liquid live card whitelist tests passed');

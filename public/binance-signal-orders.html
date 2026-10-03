@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Lệnh Binance theo tín hiệu</title>
+  <link rel="stylesheet" href="/binance-signal-orders.css?v=20261003-1">
+</head>
+<body><main>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">BINANCE FILLED AUDIT · PNL THẬT · GIỜ VIỆT NAM</p>
+      <h1>Lệnh Binance<br>theo tín hiệu</h1>
+      <p>Tra cứu lệnh đã khớp, loại tín hiệu, lý do vào và lãi/lỗ của từng fill. Lệnh đã đóng dùng net PnL Binance; lệnh đang mở hiển thị unrealized PnL phân bổ.</p>
+    </div>
+    <nav aria-label="Điều hướng">
+      <a href="/local-ai-trend-evaluation">AI Local</a>
+      <a href="/ai-signal-review">Đánh giá tín hiệu</a>
+      <a href="/binance-signal-orders" aria-current="page">Lệnh theo tín hiệu</a>
+      <a href="/binance-auto-controls">Quản lý Binance</a>
+    </nav>
+  </header>
+
+  <section class="panel status-bar">
+    <div><strong id="status" role="status">Đang tải audit Binance…</strong><p id="coverage" class="muted"></p></div>
+    <button id="refresh" type="button">Làm mới</button>
+  </section>
+
+  <section class="summary-grid" aria-label="Tóm tắt lệnh">
+    <article><span>Kết quả lọc</span><strong id="totalRecords">—</strong><small>fill Binance đã audit</small></article>
+    <article class="active-card"><span>Đang active</span><strong id="activeCount">—</strong><small id="activeSymbols">— vị thế coin/hướng</small></article>
+    <article><span>Unrealized phân bổ</span><strong id="openPnl">—</strong><small>theo tỷ trọng notional fill</small></article>
+    <article><span>Đã đóng</span><strong id="closedCount">—</strong><small id="closedRecords">— fill đã đóng</small></article>
+    <article><span>Net realized</span><strong id="closedPnl">—</strong><small>gross − phí + funding</small></article>
+    <article><span>Win rate lifecycle</span><strong id="winRate">—</strong><small id="winLoss">—</small></article>
+  </section>
+
+  <section class="panel filters" aria-label="Bộ lọc lệnh">
+    <label class="search-field">Tìm coin, loại tín hiệu, lý do, order ID
+      <input id="search" placeholder="QNT, PRIORITY, EMA99, order id, 龙虾…" autocomplete="off">
+    </label>
+    <label>Trạng thái<select id="statusFilter"><option value="">Tất cả</option><option value="ACTIVE">Đang có vị thế</option><option value="CLOSED">Đã đóng</option><option value="OPEN_UNCONFIRMED">Audit mở, không thấy vị thế</option></select></label>
+    <label>Hướng<select id="direction"><option value="">LONG + SHORT</option><option>LONG</option><option>SHORT</option></select></label>
+    <label>Kết quả<select id="outcome"><option value="">Tất cả</option><option>WIN</option><option>LOSS</option><option>BREAKEVEN</option></select></label>
+    <label>Loại tín hiệu<select id="signalType"><option value="">Tất cả loại tín hiệu</option></select></label>
+    <label>Từ ngày<input id="from" type="date"></label>
+    <label>Đến ngày<input id="to" type="date"></label>
+    <label>Sắp xếp<select id="sort"><option value="newest">Mới vào gần nhất</option><option value="pnl_high">PnL cao nhất</option><option value="pnl_low">PnL thấp nhất</option><option value="roe_high">ROE cao nhất</option></select></label>
+    <label>Số dòng<select id="pageSize"><option>25</option><option selected>50</option><option>100</option></select></label>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading"><div><p class="eyebrow">ENTRY FILL → POSITION → CLOSE</p><h2>Từng lệnh đã vào Binance</h2></div><p class="muted">Bấm “Chi tiết” để xem lý do vào, combo, TP/SL, nguồn và thông tin đóng lệnh.</p></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Coin / trạng thái</th><th>Thời gian</th><th>Loại tín hiệu</th><th>Giá entry / hiện tại</th><th>Margin / quy mô</th><th>Lãi lỗ</th><th>Order</th><th></th></tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="empty">Đang tải…</td></tr></tbody>
+    </table></div>
+    <div class="pager"><button id="previous" type="button">← Trước</button><span id="pageInfo">Trang 1/1</span><button id="next" type="button">Sau →</button></div>
+  </section>
+
+  <details class="panel method">
+    <summary>Cách hiểu PnL và giới hạn dữ liệu</summary>
+    <p><b>Lệnh đã đóng:</b> dùng kết quả lifecycle do Binance trả về: gross realized PnL trừ commission và cộng/trừ funding. Nếu một vị thế có nhiều fill/DCA, PnL được phân bổ theo filled notional; Win rate chỉ đếm một lần theo <code>close_group_id</code>.</p>
+    <p><b>Lệnh đang mở:</b> Binance chỉ cung cấp unrealized PnL cho vị thế tổng của coin/hướng. Trang phân bổ số này cho các fill audit đang mở theo filled notional, vì vậy dùng để truy dấu đóng góp tương đối, không phải PnL độc lập chính xác của từng fill.</p>
+    <p><b>Audit mở, không thấy vị thế:</b> record chưa nhận được close lifecycle nhưng snapshot Binance không còn position cùng coin/hướng. Trang không tự gán thắng/thua hoặc suy diễn PnL.</p>
+  </details>
+  <footer>READ ONLY · Không đặt, đóng hoặc thay đổi lệnh từ trang này</footer>
+</main><script type="module" src="/binance-signal-orders.js?v=20261003-1"></script></body>
+</html>

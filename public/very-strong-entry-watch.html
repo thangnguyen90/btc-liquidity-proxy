@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Pool coin từng có xu hướng rất mạnh và volume tốt, chờ điểm vào theo sóng BTC.">
+    <title>Entry rất mạnh · Chờ BTC</title>
+    <link rel="stylesheet" href="/very-strong-entry-watch.css?v=20260928-v2">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero panel">
+        <div><p class="eyebrow">COIN LEVEL · TREND MẠNH + VOLUME · OBSERVE ONLY</p><h1>Entry rất mạnh theo BTC</h1><p>Giữ tối đa 24 giờ các coin từng có Trend Score rất mạnh và volume breakout tốt. BTC ngược hướng thì chỉ theo dõi; vùng entry chỉ sáng khi BTC quay thuận, coin còn cấu trúc và giá retest hỗ trợ/kháng cự động.</p></div>
+        <nav aria-label="Điều hướng"><a href="/coin-level-analysis">Coin Level</a><a href="/liquid-flow-v2">Liquid Flow V2</a><a href="/low-supply-market">Cung thấp</a><a class="active" href="/very-strong-entry-watch">Entry rất mạnh</a><a href="/btc-relative-strength-watch">Ngược BTC</a><a href="/btc-session-watch">BTC Session</a><a href="/binance-auto-controls">Quản lý Binance</a></nav>
+      </header>
+
+      <section id="btc-context" class="btc-context panel wait" aria-labelledby="btc-context-title">
+        <div><p class="eyebrow">BTC TIMING CONTEXT</p><h2 id="btc-context-title">Đang đọc BTC…</h2><p id="btc-context-reason">Chỉ tô trạng thái khi BTC health và Market Regime cùng đủ dữ liệu.</p></div>
+        <span id="btc-context-badge">WAIT DATA</span>
+      </section>
+
+      <section class="summary" aria-label="Tổng quan">
+        <article class="panel"><span>Coin còn xu hướng + volume</span><strong id="active-count">—</strong><small>Nguồn lịch sử tối đa 24 giờ</small></article>
+        <article class="panel ready"><span>BTC đã thuận hướng</span><strong id="context-count">—</strong><small>Vẫn phải chờ giá và nến 5m</small></article>
+        <article class="panel"><span>Chờ BTC đúng hướng</span><strong id="waiting-count">—</strong><small>Không vào khi BTC đang đi ngược</small></article>
+        <article class="panel ready"><span>Điểm vào đã đủ</span><strong id="ready-count">—</strong><small>OBSERVE ONLY · không tự đặt lệnh</small></article>
+      </section>
+
+      <section class="toolbar panel" aria-label="Bộ lọc">
+        <label><span>Hướng</span><select id="side"><option value="ALL">LONG + SHORT</option><option value="SHORT">SHORT</option><option value="LONG">LONG</option></select></label>
+        <label><span>Trạng thái</span><select id="context-filter"><option value="ALL">Tất cả còn xu hướng</option><option value="READY">Đủ điểm vào theo BTC</option><option value="CONTEXT">BTC đã thuận hướng</option><option value="WAIT_BTC">Đang chờ BTC</option></select></label>
+        <label><span>Sắp xếp</span><select id="sort"><option value="priority">Ưu tiên bối cảnh</option><option value="score">Điểm cao trước</option><option value="newest">Mới nhất trước</option><option value="distance">Gần entry trước</option></select></label>
+        <button id="refresh" type="button">Làm mới</button>
+      </section>
+
+      <p id="status" class="status panel" role="status" aria-live="polite">Đang tải danh sách RẤT MẠNH…</p>
+
+      <section class="table-panel panel" aria-labelledby="list-title">
+        <div class="section-head"><div><p class="eyebrow">POOL XU HƯỚNG 24H · ENTRY ĐỘNG THEO SÓNG BTC</p><h2 id="list-title">Coin từng rất mạnh còn giữ cấu trúc</h2></div><span class="observe-badge">KHÔNG TỰ ĐẶT BINANCE</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Coin / hướng</th><th>Trạng thái BTC</th><th>Nguồn mạnh</th><th>Xu hướng hiện tại</th><th>Vùng vào động</th><th>Giá live / lệch vùng</th><th>Volume / xác nhận 5m</th><th>Còn theo dõi</th><th>Mở</th></tr></thead><tbody id="rows"><tr><td colspan="9">Đang tải…</td></tr></tbody></table></div>
+        <p class="note"><strong>Pool mạnh không đồng nghĩa vào ngay.</strong> Nguồn phải từng có |Trend Score| ≥24 và volume breakout ≥1x (hoặc tier Entry Score hiện hữu là VERY_STRONG). LONG chỉ được tô “điểm vào” khi cấu trúc 4h còn UP, 1h chưa DOWN, volume 15m còn đủ, BTC đã quay sang nhịp thuận LONG, giá chạm vùng EMA/cấu trúc động và nến 5m xác nhận. SHORT dùng điều kiện đối xứng. Đây là OBSERVE ONLY; không đổi route, size, entry, SL hoặc TP Binance.</p>
+      </section>
+    </main>
+    <script type="module" src="/very-strong-entry-watch.js?v=20260928-v2"></script>
+  </body>
+</html>

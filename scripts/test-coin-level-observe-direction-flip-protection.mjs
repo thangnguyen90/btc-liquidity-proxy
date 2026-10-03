@@ -75,4 +75,24 @@ assert.match(server, /MOVE_TP_TO_ENTRY/);
 assert.match(server, /handleNegativeTimeoutTp\([\s\S]*force: true/);
 assert.match(server, /isEntryOrderAgainstCoinLevelFlip/);
 
+const reconcileStart = server.indexOf('async function reconcileCoinLevelObserveDirectionFlips');
+const reconcileEnd = server.indexOf('\nlet localAiTrendAutoEvaluationRunning', reconcileStart);
+const reconcileSource = server.slice(reconcileStart, reconcileEnd);
+const flipGuard = reconcileSource.indexOf("isBinanceProtectionExcluded(flip.symbol, 'COIN_LEVEL_OBSERVE_FLIP')");
+const firstFlipMutation = reconcileSource.indexOf('client.cancelOrder');
+assert.ok(flipGuard >= 0, 'direction-flip has an explicit protection-exclusion guard');
+assert.ok(flipGuard < firstFlipMutation, 'direction-flip exclusion is checked before any Binance mutation');
+
+const negativeTpStart = server.indexOf('async function handleNegativeTimeoutTp');
+const negativeTpEnd = server.indexOf('\nconst negTpLastRun', negativeTpStart);
+const negativeTpSource = server.slice(negativeTpStart, negativeTpEnd);
+const negativeTpGuard = negativeTpSource.indexOf("isBinanceProtectionExcluded(symbol, 'NEGATIVE_TP_MOVE')");
+const negativeTpRestRead = negativeTpSource.indexOf('client.getOpenOrders');
+const negativeTpCancel = negativeTpSource.indexOf('client.cancelOrder');
+const negativeTpPlace = negativeTpSource.indexOf('client.placeFuturesOrder');
+assert.ok(negativeTpGuard >= 0, 'direct TP-at-entry helper has a final exclusion guard');
+assert.ok(negativeTpGuard < negativeTpRestRead, 'TP-at-entry exclusion is checked before REST reads');
+assert.ok(negativeTpGuard < negativeTpCancel, 'TP-at-entry exclusion is checked before stale TP cancellation');
+assert.ok(negativeTpGuard < negativeTpPlace, 'TP-at-entry exclusion is checked before LIMIT placement');
+
 console.log('coin-level observe direction flip protection tests passed');

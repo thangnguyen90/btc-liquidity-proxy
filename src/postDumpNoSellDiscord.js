@@ -1,9 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { POST_DUMP_NO_SELL_STAGE } from './postDumpNoSellWatch.js';
+import { impulseSizingDiscordField } from './postMoveImpulseSizing.js';
 
 export const POST_DUMP_NO_SELL_DISCORD_VERSION =
-  'POST_DUMP_NO_SELL_DISCORD_V3_IMPULSE_MARKET8_20260927';
+  'POST_DUMP_NO_SELL_DISCORD_V7_DYNAMIC_SIZE_20261001';
 
 const MAX_SIGNAL_AGE_MS = 12 * 60_000;
 const RETRY_MIN_MS = 60_000;
@@ -41,19 +42,21 @@ function validDiscordWebhook(value) {
 export function postDumpNoSellDiscordPayload(watch) {
   const confirmed = watch?.stage === POST_DUMP_NO_SELL_STAGE.NO_SELL_CONFIRMATION;
   const late = watch?.stage === POST_DUMP_NO_SELL_STAGE.LATE_NO_CHASE;
+  const size = watch?.impulseSizing?.marginUsdt ?? '1 hoặc 5';
   return {
     username: 'Post-dump Buy Watch',
     allowed_mentions: { parse: [] },
     embeds: [{
-      title: `${late ? '⚪ HỒI MẠNH SAU XẢ · ĐÃ BƠM QUÁ XA · KHÔNG LONG ĐUỔI' : confirmed ? '🟢 HỒI MẠNH SAU XẢ · KHÔNG CÒN LỰC BÁN' : '🟡 HỒI MẠNH SAU XẢ · CẢNH BÁO SỚM'} · ${watch.symbol}`,
-      color: late ? 0x95a5a6 : confirmed ? 0x20e6a8 : 0xf1c40f,
+      title: `${late ? '⚪ HỒI MẠNH SAU XẢ · ĐÃ BƠM QUÁ XA · KHÔNG LONG ĐUỔI' : confirmed ? '🟢 HỒI MẠNH SAU XẢ · ĐÃ XÁC NHẬN LONG' : '🟡 HỒI MẠNH SAU XẢ · CẢNH BÁO SỚM'} · ${watch.symbol}`,
+      color: late ? 0x95a5a6 : confirmed ? 0x2ecc71 : 0xf1c40f,
       description: late
         ? '**OBSERVE ONLY · KHÔNG PHẢI ĐIỂM VÀO**\nĐã nhận ra cây hồi nhưng giá/RSI hiện quá giãn. **Không LONG đuổi và không tự đặt Binance.**'
         : confirmed
-          ? '**OBSERVE ONLY · 2–3 NẾN 5m ĐÃ ĐÓNG**\nLực bán sau cây hồi vẫn yếu. **Chỉ cập nhật xác nhận; không vào thêm lần hai và không LONG đuổi.**'
-          : '**MARKET LONG 8 USDT · NẾN 5m ĐÃ ĐÓNG**\nCây hồi đầu tiên sau nhịp xả vừa đạt ngưỡng. **Binance chỉ được xét khi khóa tổng + route LONG đang ON; Discord không xác nhận lệnh đã khớp.**',
+          ? '**XÁC NHẬN LONG · 2–3 NẾN 5m ĐÃ ĐÓNG**\nLực bán sau cây hồi vẫn yếu. **Chỉ cập nhật xác nhận trên Discord; không vào thêm lần hai và không LONG đuổi.**'
+          : `**MARKET LONG ${size} USDT · NẾN 5m ĐÃ ĐÓNG**\nCây hồi đầu tiên sau nhịp xả vừa đạt ngưỡng. **Binance được xét ngay khi khóa tổng + route LONG đang ON; Discord không xác nhận lệnh đã khớp.**`,
       fields: [
         { name: 'PHÂN LOẠI', value: '**HỒI MẠNH SAU XẢ**' },
+        ...(!late && !confirmed ? [impulseSizingDiscordField(watch)] : []),
         {
           name: 'NHỊP XẢ / ĐỈNH TÍCH LŨY',
           value: `Xả **${number(watch.dumpPct, 2)}%** · đáy **${number(watch.dumpPrice)}**\nĐáy vùng **${number(watch.accumulationBaseLow)}** · đỉnh vùng **${number(watch.accumulationBaseHigh)}**`,
@@ -81,7 +84,7 @@ export function postDumpNoSellDiscordPayload(watch) {
         { name: 'MỞ MÀN HÌNH', value: chartLinks(watch.symbol) },
       ],
       footer: {
-        text: `${POST_DUMP_NO_SELL_DISCORD_VERSION} · ${late || confirmed ? 'không vào thêm' : 'route MARKET LONG 8 USDT'}`,
+        text: `${POST_DUMP_NO_SELL_DISCORD_VERSION} · ${late ? 'không vào' : confirmed ? 'xác nhận Discord · không vào lần hai' : `route MARKET LONG ${size} USDT`}`,
       },
       timestamp: new Date(watch.observedAt).toISOString(),
     }],

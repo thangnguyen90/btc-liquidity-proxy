@@ -73,6 +73,11 @@ function applyLiveMark({ symbol, markPrice, eventAt }) {
     const node = $(selector);
     if (node) node.textContent = formatted;
   }
+  const circulatingSupply = Number(activeData?.supplyProfile?.circulatingSupply);
+  const supplyMarketCap = $('#supply-market-cap');
+  if (supplyMarketCap && circulatingSupply > 0) {
+    supplyMarketCap.textContent = compact(circulatingSupply * mark, ' USD');
+  }
   const target = activeData?.liqScan?.current?.sweepTarget;
   const targetDistance = $('#liq-scan-target-distance');
   if (targetDistance && Number(target?.price) > 0) {
@@ -571,6 +576,47 @@ function showCoinBinanceIssue(symbol, reason, stale = false) {
     : '';
 }
 
+function renderSupplyProfile(profile) {
+  const panel = $('#supply-profile');
+  if (!panel) return;
+  if (!profile?.available) {
+    panel.className = 'supply-profile panel unknown';
+    $('#supply-profile-title').textContent = 'Chưa lấy được dữ liệu tổng cung';
+    $('#supply-profile-badge').textContent = 'KHÔNG CÓ DỮ LIỆU';
+    for (const selector of [
+      '#supply-market-cap', '#supply-circulating', '#supply-total', '#supply-max',
+      '#supply-float-pct', '#supply-turnover',
+    ]) $(selector).textContent = '—';
+    $('#supply-profile-note').textContent = 'Coin Level vẫn hoạt động bình thường; lỗi nguồn cung không chặn trang và không tác động Binance.';
+    $('#supply-profile-source').textContent = `Nguồn CoinGecko tạm thiếu · ${profile?.reason ?? 'không rõ nguyên nhân'} · OBSERVE ONLY`;
+    return;
+  }
+  const classification = profile.classification ?? {};
+  const severity = ['critical', 'warning', 'watch', 'normal'].includes(classification.severity)
+    ? classification.severity
+    : 'unknown';
+  panel.className = `supply-profile panel ${severity}`;
+  $('#supply-profile-title').textContent = `${profile.name || profile.providerSymbol || 'Coin'} · hồ sơ cung`;
+  $('#supply-profile-badge').textContent = classification.label || 'ĐÃ CÓ DỮ LIỆU';
+  $('#supply-market-cap').textContent = compact(profile.marketCapUsd, ' USD');
+  $('#supply-circulating').textContent = compact(profile.circulatingSupply, ' token');
+  $('#supply-total').textContent = compact(profile.totalSupply, ' token');
+  $('#supply-max').textContent = compact(profile.maxSupply, ' token');
+  $('#supply-float-pct').textContent = pct(profile.circulatingPctOfMax);
+  $('#supply-turnover').textContent = pct(profile.providerTurnoverPct);
+  const lowSupply = classification.highlighted
+    ? 'LÀM NỔI BẬT: số token lưu hành thấp, giá theo đơn vị có thể biến động mạnh khi lệnh dồn vào một phía.'
+    : 'Số token lưu hành không thuộc nhóm thấp theo ngưỡng hiển thị.';
+  $('#supply-profile-note').textContent = `${lowSupply} ${profile.caveat || ''}`.trim();
+  const updated = profile.sourceUpdatedAt
+    ? new Date(profile.sourceUpdatedAt).toLocaleString('vi-VN')
+    : 'không rõ thời điểm';
+  const ambiguity = Number(profile.ambiguousMatches) > 0
+    ? ` · đã chọn market cap lớn nhất trong ${Number(profile.ambiguousMatches) + 1} mã trùng symbol`
+    : '';
+  $('#supply-profile-source').textContent = `Nguồn: ${profile.source || 'CoinGecko'} · cập nhật ${updated}${ambiguity} · OBSERVE ONLY`;
+}
+
 function render(data) {
   activeData = data;
   const market = data.market;
@@ -601,6 +647,7 @@ function render(data) {
   $('#range-pct').textContent = pct(market.range24hPct);
   $('#funding').textContent = pct(market.fundingRatePct, true);
   $('#volume').textContent = compact(market.quoteVolume24h, ' USDT');
+  renderSupplyProfile(data.supplyProfile);
 
   const decision = $('#decision');
   decision.className = `decision panel ${biasClass}`;

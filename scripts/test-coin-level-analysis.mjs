@@ -11,6 +11,7 @@ import {
   attachCoinGlassLiquidationAnalysis,
   evaluateCoinGlass24hTrial,
   COIN_LEVEL_ANALYSIS_VERSION,
+  BINANCE_ORDER_BOOK_RANGE_PROFILE_VERSION,
   COIN_LEVEL_COINGLASS_VERSION,
   COIN_LEVEL_SECOND_REJECTION_VERSION,
   buildCoinLevelAnalysis,
@@ -181,6 +182,37 @@ assert.ok(result.zones.supports.length > 0);
 assert.ok(result.zones.resistances.length > 0);
 assert.ok(result.zones.supports.every((zone) => zone.mid < result.market.markPrice));
 assert.ok(result.zones.resistances.every((zone) => zone.mid > result.market.markPrice));
+assert.equal(result.orderBookProfile.version, BINANCE_ORDER_BOOK_RANGE_PROFILE_VERSION);
+assert.equal(result.orderBookProfile.requestedLimit, 1000);
+assert.ok(result.orderBookProfile.near.bidZones.length > 0);
+assert.ok(result.orderBookProfile.near.askZones.length > 0);
+assert.ok(result.orderBookProfile.wide.bidZones.length > 0);
+assert.ok(result.orderBookProfile.wide.askZones.length > 0);
+assert.ok(result.orderBookProfile.totals.bidNotional > 0);
+assert.ok(result.orderBookProfile.totals.askNotional > 0);
+assert.equal(
+  result.orderBookProfile.totals.bidNotional,
+  Number((result.orderBookProfile.near.totals.bidNotional + result.orderBookProfile.wide.totals.bidNotional).toFixed(2)),
+);
+assert.equal(
+  result.orderBookProfile.totals.askNotional,
+  Number((result.orderBookProfile.near.totals.askNotional + result.orderBookProfile.wide.totals.askNotional).toFixed(2)),
+);
+assert.equal(
+  result.orderBookProfile.totals.bidLevelCount,
+  result.orderBookProfile.near.totals.bidLevelCount + result.orderBookProfile.wide.totals.bidLevelCount,
+);
+assert.equal(
+  result.orderBookProfile.totals.askLevelCount,
+  result.orderBookProfile.near.totals.askLevelCount + result.orderBookProfile.wide.totals.askLevelCount,
+);
+assert.equal(result.orderBookProfile.coverage.bid.reachesNearEdge, true);
+assert.equal(result.orderBookProfile.coverage.ask.reachesNearEdge, true);
+assert.equal(result.orderBookProfile.coverage.bid.reachesWideEdge, false);
+assert.equal(result.orderBookProfile.coverage.ask.reachesWideEdge, false);
+assert.ok(result.orderBookProfile.near.bidZones.every((zone) => Math.abs(zone.distancePct) <= 3));
+assert.ok(result.orderBookProfile.wide.askZones.every((zone) => Math.abs(zone.distancePct) > 3
+  && Math.abs(zone.distancePct) <= 20));
 assert.equal(result.recommendation.confirmation.requiredInterval, '15m');
 assert.equal(result.recommendation.confirmation.retestInterval, '5m');
 assert.match(result.recommendation.longPlan.trigger, /Nến 15m.*retest 5m/);

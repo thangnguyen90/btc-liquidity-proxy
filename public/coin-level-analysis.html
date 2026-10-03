@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Phân tích hỗ trợ, kháng cự và kịch bản có điều kiện cho Binance Futures USDT perpetual.">
     <title>Coin Level Map · Hỗ trợ & kháng cự</title>
-    <link rel="stylesheet" href="/coin-level-analysis.css?v=20260923-squeeze-bidirectional-v2">
+    <link rel="stylesheet" href="/coin-level-analysis.css?v=20260928-supply-profile-v1">
   </head>
   <body>
     <main class="shell">
@@ -21,7 +21,7 @@
           <a href="/liquid-flow-v2">Liquid Flow V2</a>
           <a href="/liquid-flow-v2-binance-stats">Binance Stats</a>
           <a href="/post-dump-volume-recovery">Hồi sau xả MTF</a>
-          <a href="/post-pump-volume-fade">SHORT sau bơm MTF</a>
+          <a href="/post-pump-volume-fade">SHORT sau bơm MTF</a><a href="/pump-base-recovery">Bơm · trả chân · hồi</a><a href="/dump-cap-rejection">Xả · hồi đỉnh · từ chối</a><a href="/low-supply-market">Thị trường cung thấp</a><a href="/very-strong-entry-watch">Entry rất mạnh</a><a href="/btc-relative-strength-watch">Ngược BTC</a>
           <a href="/btc-session-watch.html">BTC Session · giá vào</a>
         </nav>
       </header>
@@ -146,6 +146,26 @@
           <article class="metric"><span>Funding</span><strong id="funding">—</strong></article>
           <article class="metric"><span>Volume 24h</span><strong id="volume">—</strong></article>
         </div>
+
+        <section id="supply-profile" class="supply-profile panel unknown" aria-labelledby="supply-profile-title">
+          <div class="supply-profile-head">
+            <div>
+              <span class="section-kicker">CUNG TOKEN · MARKET CAP · THANH KHOẢN THAM CHIẾU</span>
+              <h2 id="supply-profile-title">Đang đọc dữ liệu tổng cung…</h2>
+            </div>
+            <span id="supply-profile-badge" class="supply-profile-badge">CHỜ DỮ LIỆU</span>
+          </div>
+          <div class="supply-profile-grid">
+            <article><span>Market cap ước tính</span><strong id="supply-market-cap">—</strong><small>MARK Binance × cung lưu hành</small></article>
+            <article><span>Cung lưu hành</span><strong id="supply-circulating">—</strong><small>token đang lưu hành</small></article>
+            <article><span>Tổng cung</span><strong id="supply-total">—</strong><small>total supply</small></article>
+            <article><span>Cung tối đa</span><strong id="supply-max">—</strong><small>max supply</small></article>
+            <article><span>Lưu hành / max</span><strong id="supply-float-pct">—</strong><small>không phải free-float order book</small></article>
+            <article><span>Volume / cap 24h</span><strong id="supply-turnover">—</strong><small>nguồn CoinGecko</small></article>
+          </div>
+          <p id="supply-profile-note" class="supply-profile-note">Dữ liệu này chỉ để nhận diện coin có số token lưu hành thấp; không tự suy ra thanh khoản sổ lệnh.</p>
+          <p id="supply-profile-source" class="muted">Nguồn: CoinGecko · OBSERVE ONLY</p>
+        </section>
 
         <section id="decision" class="decision panel">
           <div class="decision-kicker">ĐÁNH GIÁ HIỆN TẠI</div>
@@ -283,6 +303,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="/coin-level-analysis.js?v=20260926-live-payload-v1"></script>
+    <script type="module" src="/coin-level-analysis.js?v=20260928-supply-profile-v1"></script>
   </body>
 </html>

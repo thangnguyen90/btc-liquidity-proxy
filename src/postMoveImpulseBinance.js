@@ -4,9 +4,10 @@ import { dirname } from 'node:path';
 import { resolveOtherEntrySettings } from './otherEntryCatalog.js';
 import { POST_DUMP_NO_SELL_STAGE, POST_DUMP_NO_SELL_WATCH_VERSION } from './postDumpNoSellWatch.js';
 import { POST_PUMP_NO_BUY_STAGE, POST_PUMP_NO_BUY_WATCH_VERSION } from './postPumpNoBuyWatch.js';
+import { impulseSizing } from './postMoveImpulseSizing.js';
 
 export const POST_MOVE_IMPULSE_BINANCE_VERSION =
-  'POST_MOVE_IMPULSE_5M_MARKET_8USDT_MAX50_V3_20260927';
+  'POST_MOVE_IMPULSE_DYNAMIC_MARGIN5_OR1_V7_20261001';
 export const POST_MOVE_IMPULSE_MAX_SIGNAL_AGE_MS = 90_000;
 export const POST_MOVE_IMPULSE_MAX_MARK_DRIFT = 0.005;
 export const POST_MOVE_IMPULSE_MAX_OPEN_POSITIONS = 50;
@@ -53,12 +54,12 @@ export function postMoveImpulseRoute(watch = {}) {
     && watch?.stage === POST_DUMP_NO_SELL_STAGE.BUY_IMPULSE) return POST_MOVE_IMPULSE_LONG_ROUTE;
   if (watch?.side === 'SHORT'
     && watch?.version === POST_PUMP_NO_BUY_WATCH_VERSION
-    && watch?.stage === POST_PUMP_NO_BUY_STAGE.SELL_IMPULSE) return POST_MOVE_IMPULSE_SHORT_ROUTE;
+    && watch?.stage === POST_PUMP_NO_BUY_STAGE.NO_BUY_CONFIRMATION) return POST_MOVE_IMPULSE_SHORT_ROUTE;
   return null;
 }
 
 export function buildPostMoveImpulseMarketOrder(watch = {}, {
-  now = Date.now(), enabledAt, startedAt, markPrice, routeState,
+  now = Date.now(), enabledAt, startedAt, markPrice, routeState, market,
 } = {}) {
   const route = postMoveImpulseRoute(watch);
   if (!route || watch.watchOnly !== true || watch.binanceEligible !== false
@@ -72,14 +73,17 @@ export function buildPostMoveImpulseMarketOrder(watch = {}, {
   const mark = finite(markPrice);
   if (!settings || !/^[A-Z0-9]{2,40}USDT$/.test(String(watch.symbol ?? ''))
     || ![observedAt, impulseAt, enabledAtMs, startedAtMs, signalPrice, mark].every(Number.isFinite)
-    || observedAt !== impulseAt
+    || observedAt < impulseAt
+    || impulseAt < enabledAtMs || impulseAt < startedAtMs
     || observedAt < enabledAtMs || observedAt < startedAtMs
     || observedAt > now || now - observedAt > POST_MOVE_IMPULSE_MAX_SIGNAL_AGE_MS
     || signalPrice <= 0 || mark <= 0
     || Math.abs(mark / signalPrice - 1) > POST_MOVE_IMPULSE_MAX_MARK_DRIFT) return null;
 
   const isLong = route.side === 'LONG';
-  const { marginUsdt, leverage, takeProfitRoePct } = settings;
+  const { leverage, takeProfitRoePct } = settings;
+  const sizing = impulseSizing({ side: route.side, now, market });
+  const { marginUsdt } = sizing;
   const stopLossRoePct = isLong
     ? POST_MOVE_IMPULSE_LONG_STOP_LOSS_ROE_PCT
     : POST_MOVE_IMPULSE_SHORT_STOP_LOSS_ROE_PCT;
@@ -99,6 +103,7 @@ export function buildPostMoveImpulseMarketOrder(watch = {}, {
     symbol: watch.symbol,
     orderType: 'MARKET',
     marginUsdt,
+    impulseSizing: sizing,
     notionalUsdt: marginUsdt * leverage,
     leverage,
     signalEntryPrice: mark,
@@ -116,7 +121,7 @@ export function buildPostMoveImpulseMarketOrder(watch = {}, {
     protectionSignalEntryPrice: mark,
     protectionSignalTakeProfitPrice: takeProfitPrice,
     protectionSignalStopLossPrice: stopLossPrice,
-    allowMinNotionalCeil: false,
+    allowMinNotionalCeil: true,
     dryRun: false,
     maxOpenPositions: POST_MOVE_IMPULSE_MAX_OPEN_POSITIONS,
     clientOrderId: `${prefix}_${createHash('sha256').update(key).digest('hex').slice(0, 24)}`,
@@ -129,6 +134,15 @@ export function buildPostMoveImpulseMarketOrder(watch = {}, {
       `score=${watch.score ?? '-'}`,
       `signalPrice=${signalPrice}`,
       `mark=${mark}`,
+      `sizing=${sizing.version}`,
+      `margin=${marginUsdt}`,
+      `sizeReason=${sizing.reason}`,
+      `hourVN=${sizing.hourVn}`,
+      `btc=${sizing.btcContext.btc.trend}`,
+      `btcAt=${sizing.btcContext.evaluatedAt ?? '-'}`,
+      `btc1h=${sizing.btcContext.btc.ret1h ?? '-'}`,
+      `btc15m=${sizing.btcContext.btc.ret15m ?? '-'}`,
+      `btcFresh=${sizing.btcFresh}`,
     ].join(' | '),
   };
 }
@@ -138,8 +152,8 @@ function freshState(now) {
 }
 
 export class PostMoveImpulseBinanceRunner {
-  constructor({ file, controls, getContext, submit, now = () => Date.now(), startedAt = now() } = {}) {
-    Object.assign(this, { file, controls, getContext, submit, now, startedAt });
+  constructor({ file, controls, getContext, getSizingMarket = () => null, submit, now = () => Date.now(), startedAt = now() } = {}) {
+    Object.assign(this, { file, controls, getContext, getSizingMarket, submit, now, startedAt });
     this.state = null;
     this.queue = Promise.resolve();
   }
@@ -185,7 +199,9 @@ export class PostMoveImpulseBinanceRunner {
     for (const watch of Array.isArray(watches) ? watches : []) {
       const route = postMoveImpulseRoute(watch);
       if (!route) continue;
-      results.push(await this.#handle(watch, route));
+      const result = await this.#handle(watch, route);
+      watch.impulseExecutionStatus = result.status;
+      results.push(result);
     }
     return {
       status: 'scanned',
@@ -196,13 +212,17 @@ export class PostMoveImpulseBinanceRunner {
   }
 
   async #handle(watch, route) {
+    watch.impulseSizing = impulseSizing({ side: route.side, now: this.now(), market: this.getSizingMarket() });
     const registered = this.controls.register(route);
     const controlSnapshot = this.controls.read();
     const routeState = controlSnapshot.routes?.[registered.key];
     if (!controlSnapshot.enabled || routeState?.enabled !== true) return { status: 'off', symbol: watch.symbol };
 
     const attemptId = `${watch.symbol}|${route.side}|${watch.impulseAt}|${route.signalLabel}`;
-    if (this.state.attempts[attemptId]) return { status: 'deduped', symbol: watch.symbol };
+    if (this.state.attempts[attemptId]) {
+      watch.impulseSizing = this.state.attempts[attemptId].impulseSizing ?? null;
+      return { status: `deduped:${this.state.attempts[attemptId].status}`, symbol: watch.symbol };
+    }
     const attempt = {
       id: attemptId,
       symbol: watch.symbol,
@@ -234,9 +254,13 @@ export class PostMoveImpulseBinanceRunner {
       }
       const plan = buildPostMoveImpulseMarketOrder(watch, {
         now: this.now(), enabledAt: latestRoute.enabledAt, startedAt: this.startedAt,
-        markPrice: context.markPrice, routeState: latestRoute,
+        markPrice: context.markPrice, routeState: latestRoute, market: this.getSizingMarket(),
       });
       if (!plan) return await this.#finish(attemptId, 'PRICE_OR_AGE_BLOCKED');
+      watch.impulseSizing = plan.impulseSizing;
+      attempt.impulseSizing = plan.impulseSizing;
+      attempt.marginUsdt = plan.marginUsdt;
+      attempt.leverage = plan.leverage;
       this.controls.assertEntry(plan);
       attempt.status = 'SUBMITTING';
       attempt.clientOrderId = plan.clientOrderId;

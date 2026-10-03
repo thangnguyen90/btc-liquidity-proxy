@@ -50,6 +50,7 @@ import {
   BINANCE_FILLED_SIGNAL_AUDIT_VERSION,
   BinanceFilledSignalAudit,
 } from './binanceFilledSignalAudit.js';
+import { buildBinanceSignalOrderManagerSnapshot } from './binanceSignalOrderManager.js';
 import { BINANCE_SCIENTIFIC_STEP_PRECISION_VERSION, decimalsFromStep } from './binancePrecision.js';
 import { BinanceRateGate, binanceRateGate } from './binanceRateGate.js';
 import { loadEnv } from './env.js';
@@ -61,6 +62,15 @@ import {
   markCoinLevelAnalysisStale,
 } from './coinLevelAnalysis.js';
 import {
+  CoinSupplyProfileService,
+  buildCoinSupplySnapshot,
+} from './coinSupplyProfile.js';
+import { CoinSupplyMarketService } from './coinSupplyMarket.js';
+import {
+  buildToxicTwoSideMarketSnapshot,
+  selectToxicTwoSideSupplyFallbackMarkets,
+} from './toxicTwoSideMarket.js';
+import {
   COIN_LEVEL_PENDING_LIMIT_INVALIDATION_VERSION,
   advanceCoinLevelLimitInvalidation,
   evaluateCoinLevelPendingLimit,
@@ -69,14 +79,24 @@ import {
 import { CoinLevelEntryWatchDiscordNotifier } from './coinLevelEntryWatchDiscord.js';
 import { CoinLevelObserveWatchDiscordNotifier } from './coinLevelObserveWatchDiscord.js';
 import { BtcSessionWatchDiscordNotifier } from './btcSessionWatchDiscord.js';
+import { BtcRelativeStrengthDiscordNotifier } from './btcRelativeStrengthDiscord.js';
+import {
+  BTC_RELATIVE_STRENGTH_ROUTES,
+  BtcRelativeStrengthBinanceRunner,
+} from './btcRelativeStrengthBinance.js';
+import { analyzeBtcDowntrendPullback5m } from './btcRelativeBtcPullback.js';
 import { PostPumpNoBuyDiscordNotifier } from './postPumpNoBuyDiscord.js';
 import { PostDumpNoSellDiscordNotifier } from './postDumpNoSellDiscord.js';
+import { selectPostMoveImpulseConfirmationWatches } from './postMoveImpulseConfirmationDiscord.js';
+import { selectPostMoveImpulseCandleWatches } from './postMoveImpulseCandleDiscord.js';
+import { PostMoveImpulseEntryTracker } from './postMoveImpulseEntryTracker.js';
 import {
   POST_MOVE_IMPULSE_ROUTES,
   PostMoveImpulseBinanceRunner,
 } from './postMoveImpulseBinance.js';
 import { CoinLevelEarlyLongHistory } from './coinLevelEarlyLongHistory.js';
 import { CoinLevelEarlyShortHistory } from './coinLevelEarlyShortHistory.js';
+import { VeryStrongTrendPool } from './veryStrongTrendPool.js';
 import { buildCoinLevelObserveLiveStatus } from './coinLevelObserveLiveStatus.js';
 import {
   COIN_LEVEL_OBSERVE_MANUAL_ORDER_VERSION,
@@ -100,6 +120,7 @@ import {
   assessSweepDirection,
 } from './liqScanSnapshot.js';
 import { assessLiqScanSweepRejectShort } from './liqScanSweepRejectShort.js';
+import { assessLiqScanSweepRejectLong } from './liqScanSweepRejectLong.js';
 import { buildCoinHorizonAnalysis } from './coinHorizonAnalysis.js';
 import { CoinHorizonDiscordNotifier } from './coinHorizonDiscord.js';
 import { CoinHorizonSweepTransitionNotifier } from './coinHorizonSweepTransitionDiscord.js';
@@ -160,8 +181,15 @@ import {
 import { startDiscordScanner, startLiqImbalanceScanner, startVolumeDumpScanner, getVolDumpFlags, getHighVolData, isDiscordCoolingDown, tryNotifySignal, sendSignalDetected, sendOrderPlaced, sendOrderBlocked, summarizeTopTraderTrend, formatTopTraderTrend } from './discordNotifier.js';
 import { KLINE_CACHE_MANAGED_LIVE_GROUP_VERSION, KlineCache } from './klineCache.js';
 import { buildPostDumpVolumeRecoverySnapshot } from './postDumpVolumeRecovery.js';
+import { PumpBaseScanner, PumpBaseWarmup } from './pumpBaseRecovery.js';
+import { PUMP_BASE_FRAMES } from '../public/pump-base-recovery-model.js';
+import { PumpBaseSupportDiscordNotifier } from './pumpBaseSupportDiscord.js';
+import { DumpCapScanner } from './dumpCapRejection.js';
+import { DUMP_CAP_FRAMES } from '../public/dump-cap-rejection-model.js';
+import { DumpCapResistanceDiscordNotifier } from './dumpCapResistanceDiscord.js';
 import { buildPostPumpVolumeFadeSnapshot } from './postPumpVolumeFade.js';
 import { buildSessionRows } from '../public/btc-session-model.js';
+import { buildBtcRelativeStrengthRows } from '../public/btc-relative-strength-model.js';
 import { PostMoveIdealEntryDiscordNotifier } from './postMoveIdealEntryDiscord.js';
 import {
   POST_MOVE_IDEAL_LONG_1H_ROUTE,
@@ -288,6 +316,9 @@ import {
   authorizePostMoveIdealShort4hOrder,
   authorizePostMovePriority15mOrder,
   authorizePostMoveImpulse5mOrder,
+  authorizeBtcRelativeStrengthOrder,
+  authorizeLocalAiPassMidpointOrder,
+  authorizeLocalAiLiquidityBreakoutOppositeDepthOrder,
   evaluateAutoBinanceEntryPolicy,
   liveCardOnlyAutoBinanceEnabled,
 } from './autoBinancePolicy.js';
@@ -353,6 +384,12 @@ import {
   localEnvAuthFailure,
   localEnvOrdersCredentials,
 } from './ordersLocalEnvAutoLogin.js';
+import {
+  ORDERS_PASSWORD_AUTH_VERSION,
+  isSameOriginWriteRequest,
+  ordersPasswordConfigured,
+  verifyOrdersPassword,
+} from './ordersPasswordAuth.js';
 import {
   BINANCE_BOT_SHORT_TP_ONLY_VERSION,
   BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION,
@@ -671,6 +708,29 @@ import {
   collectMarketBreadthShockMetrics,
 } from './marketBreadthShock.js';
 import { CoinLevelMarketRegimeGuard } from './coinLevelMarketRegimeGuard.js';
+import { LocalAiTrendEvaluator, buildLocalAiTrendInput } from './localAiTrendEvaluator.js';
+import { LocalAiOllamaProcessGuard } from './localAiOllamaProcessGuard.js';
+import { LocalAiTrendChat, extractRequestedMarketSymbols, resolveLocalAiChatIntent, normalizeLocalAiChatMode } from './localAiTrendChat.js';
+import { buildLocalAiMainKillGapWatchSnapshot, resolveMainKillGapCandidateSource } from './localAiMainKillGapWatch.js';
+import { injectLocalAiNavigation } from './localAiNavigation.js';
+import { injectToxicTwoSideNavigation } from './toxicTwoSideNavigation.js';
+import { LocalAiTrendDiscordNotifier } from './localAiTrendDiscord.js';
+import { LocalAiSignalReview } from './localAiSignalReview.js';
+import {
+  BtcExtremeMoveDiscordNotifier,
+  LocalAiSignalReviewDiscordNotifier,
+} from './localAiSignalReviewDiscord.js';
+import { LocalAiLiquiditySweepRejectDiscordNotifier } from './localAiLiquiditySweepRejectDiscord.js';
+import { LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier } from './localAiLiquidityBreakoutOppositeDepthDiscord.js';
+import {
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_ROUTES,
+  LocalAiLiquidityBreakoutOppositeDepthBinanceRunner,
+} from './localAiLiquidityBreakoutOppositeDepthBinance.js';
+import { BtcHourlyEntryForecastService } from './btcHourlyEntryForecast.js';
+import {
+  LOCAL_AI_PASS_MIDPOINT_ROUTES,
+  LocalAiPassMidpointBinanceRunner,
+} from './localAiPassMidpointBinance.js';
 import {
   EMA99_MARKET_BREADTH_15M_VERSION,
   Ema99MarketBreadth15mDetector,
@@ -1338,22 +1398,25 @@ const protectionExclusionLastLogAt = new Map();
 function isBinanceProtectionExcluded(symbol, stage = 'AUTO_PROTECTION') {
   if (!autoEntryControls.isProtectionExcluded(symbol)) return false;
   const normalizedSymbol = normalizeSymbol(symbol);
+  const mode = autoEntryControls.protectionExclusionMode(normalizedSymbol);
   const key = `${normalizedSymbol}|${stage}`;
   const now = Date.now();
   if (now - Number(protectionExclusionLastLogAt.get(key) ?? 0) >= 60_000) {
     protectionExclusionLastLogAt.set(key, now);
     console.warn(
       `[ProtectionExclusion] ${normalizedSymbol} skip ${stage}; giữ nguyên mọi TP/SL đang có,`
-      + ` không tạo/bù/đổi TP/SL và không chạy Fast Wave; version=${BINANCE_PROTECTION_EXCLUSION_VERSION}`,
+      + ` không tạo/bù/đổi TP/SL và không chạy Fast Wave; mode=${mode ?? 'UNKNOWN'};`
+      + ` version=${BINANCE_PROTECTION_EXCLUSION_VERSION}`,
     );
   }
   return true;
 }
 function resetBinanceProtectionExclusionAfterClose(symbol, reason = 'POSITION_CLOSED') {
   const normalizedSymbol = normalizeSymbol(symbol);
+  const mode = autoEntryControls.protectionExclusionMode(normalizedSymbol);
   let removed = false;
   try {
-    removed = autoEntryControls.clearProtectionExclusion(normalizedSymbol);
+    removed = autoEntryControls.clearProtectionExclusion(normalizedSymbol, reason);
   } catch (error) {
     console.warn(
       `[ProtectionExclusion] ${normalizedSymbol} auto reset failed after ${reason};`
@@ -1361,7 +1424,21 @@ function resetBinanceProtectionExclusionAfterClose(symbol, reason = 'POSITION_CL
     );
     return false;
   }
-  if (!removed) return false;
+  if (!removed) {
+    if (mode === 'FULL_POSITION_BYPASS' && !autoEntryControls.fullBypassPositionBound(normalizedSymbol)) {
+      const key = `${normalizedSymbol}|FULL_BYPASS_WAITING_FOR_POSITION`;
+      const now = Date.now();
+      if (now - Number(protectionExclusionLastLogAt.get(key) ?? 0) >= 60_000) {
+        protectionExclusionLastLogAt.set(key, now);
+        console.warn(
+          `[ProtectionExclusion] ${normalizedSymbol} retain FULL BYPASS after ${reason};`
+          + ` chưa từng thấy vị thế active kể từ lúc người dùng bật, nên đang gài cho vòng vị thế kế tiếp;`
+          + ` version=${BINANCE_PROTECTION_EXCLUSION_VERSION}`,
+        );
+      }
+    }
+    return false;
+  }
   for (const key of protectionExclusionLastLogAt.keys()) {
     if (key.startsWith(`${normalizedSymbol}|`)) protectionExclusionLastLogAt.delete(key);
   }
@@ -1373,6 +1450,7 @@ function resetBinanceProtectionExclusionAfterClose(symbol, reason = 'POSITION_CL
 }
 function autoResumeBinanceProtectionExclusionAtRoeBoundary(symbol, roe) {
   const normalizedSymbol = normalizeSymbol(symbol);
+  if (autoEntryControls.protectionExclusionMode(normalizedSymbol) === 'FULL_POSITION_BYPASS') return false;
   const thresholdRoe = protectionExclusionAutoResumeRoe(DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE);
   const lossThresholdRoe = protectionExclusionAutoResumeLossRoe(DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE);
   let removed = false;
@@ -1422,6 +1500,9 @@ autoEntryControls.seed([
   POST_MOVE_PRIORITY_LONG_15M_ROUTE,
   POST_MOVE_PRIORITY_SHORT_15M_ROUTE,
   ...POST_MOVE_IMPULSE_ROUTES,
+  ...BTC_RELATIVE_STRENGTH_ROUTES,
+  ...LOCAL_AI_PASS_MIDPOINT_ROUTES,
+  ...LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_ROUTES,
 ]);
 autoEntryControls.guardClient(client);
 const ema99NearRejectRunner=new Ema99NearRejectRunner({
@@ -1564,10 +1645,26 @@ const coinLevelEntryWatchBinanceRunner = new CoinLevelEntryWatchBinanceRunner({
 const postMoveImpulseBinanceRunner = new PostMoveImpulseBinanceRunner({
   file: join(rootDir, 'data', 'post-move-impulse-binance.json'),
   controls: autoEntryControls,
+  getSizingMarket: () => liquidMarketDirectionCache.data,
   getContext: ema99NearRejectRunner.getContext,
   submit: async (plan, context) => {
     const result = await placeOrder(
       authorizePostMoveImpulse5mOrder(plan),
+      null,
+      context.credentials,
+      { positions: context.positions, openOrders: context.openOrders },
+    );
+    invalidateOpenOrdersCache();
+    return result;
+  },
+});
+const btcRelativeStrengthBinanceRunner = new BtcRelativeStrengthBinanceRunner({
+  file: join(rootDir, 'data', 'btc-relative-strength-binance.json'),
+  controls: autoEntryControls,
+  getContext: ema99NearRejectRunner.getContext,
+  submit: async (plan, context) => {
+    const result = await placeOrder(
+      authorizeBtcRelativeStrengthOrder(plan),
       null,
       context.credentials,
       { positions: context.positions, openOrders: context.openOrders },
@@ -1631,6 +1728,92 @@ const ordersAuthClient = new BinanceClient({
   rateGate: ordersAuthRateGate,
 });
 const klineCache = new KlineCache({ client, maxKlines: 500 });
+const pumpBaseScanner = new PumpBaseScanner({
+  getSymbols: () => [...new Set(_klineWarmupSymbols)],
+  getRows: (symbol, interval, limit) => klineCache.getIfCached(symbol, interval, limit),
+});
+const pumpBaseWarmup = new PumpBaseWarmup({
+  scanner: pumpBaseScanner,
+  blocked: () => binanceRateGate.isBlocked?.() || isBinanceRestCongested(),
+  seed: (symbol, interval) => klineCache.seed([symbol], interval, 160, {
+    batchSize: 1, batchDelayMs: 0, subscribe: false, force: true,
+  }),
+});
+setInterval(() => pumpBaseWarmup.tick().catch(error => console.warn('[PumpBaseRecovery]', error.message)), 15000).unref();
+const pumpBaseSupportDiscord = new PumpBaseSupportDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'pump-base-support-discord.json'),
+  webhookUrl: () => String(process.env.PUMP_BASE_SUPPORT_DISCORD_WEBHOOK_URL ?? '').trim(),
+  baseUrl: () => String(process.env.LIQUIDITY_BASE_URL ?? 'http://127.0.0.1:19082').trim(),
+  maxPerScan: Number(process.env.PUMP_BASE_SUPPORT_DISCORD_MAX_PER_SCAN ?? 5),
+});
+sharedMarkTicker.register('pumpBaseSupportDiscord', tick => pumpBaseSupportDiscord.onMark(tick));
+let pumpBaseSupportDiscordRunning = false;
+async function scanPumpBaseSupportDiscord() {
+  if (pumpBaseSupportDiscordRunning) return;
+  pumpBaseSupportDiscordRunning = true;
+  try {
+    const snapshots = [];
+    for (const interval of Object.keys(PUMP_BASE_FRAMES)) {
+      // The notifier is server-side: keep a slow cache interest even when no browser tab is open.
+      pumpBaseWarmup.touch(interval);
+      snapshots.push(await pumpBaseScanner.snapshot(interval));
+    }
+    sharedMarkTicker.setSymbols('pumpBaseSupportDiscord', pumpBaseSupportDiscord.candidateSymbols(snapshots));
+    const result = await pumpBaseSupportDiscord.process({
+      snapshots,
+      getQuote: symbol => {
+        const quote = sharedMarkTicker.getPriceInfo?.(symbol);
+        return quote ? { markPrice: Number(quote.markPrice), eventAt: Number(quote.at) } : null;
+      },
+    });
+    if (result.sent > 0) console.log(`[PumpBaseSupportDiscord] sent ${result.sent}`);
+  } catch (error) {
+    console.warn(`[PumpBaseSupportDiscord] ${error.message}`);
+  } finally {
+    pumpBaseSupportDiscordRunning = false;
+  }
+}
+setInterval(scanPumpBaseSupportDiscord, 30000).unref();
+setTimeout(scanPumpBaseSupportDiscord, 45000).unref();
+const dumpCapScanner = new DumpCapScanner({
+  getSymbols: () => [...new Set(_klineWarmupSymbols)],
+  getRows: (symbol, interval, limit) => klineCache.getIfCached(symbol, interval, limit),
+});
+const dumpCapResistanceDiscord = new DumpCapResistanceDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'dump-cap-resistance-discord.json'),
+  webhookUrl: () => String(process.env.DUMP_CAP_RESISTANCE_DISCORD_WEBHOOK_URL ?? '').trim(),
+  baseUrl: () => String(process.env.LIQUIDITY_BASE_URL ?? 'http://127.0.0.1:19082').trim(),
+  maxPerScan: Number(process.env.DUMP_CAP_RESISTANCE_DISCORD_MAX_PER_SCAN ?? 5),
+});
+sharedMarkTicker.register('dumpCapResistanceDiscord', tick => dumpCapResistanceDiscord.onMark(tick));
+let dumpCapResistanceDiscordRunning = false;
+async function scanDumpCapResistanceDiscord() {
+  if (dumpCapResistanceDiscordRunning) return;
+  dumpCapResistanceDiscordRunning = true;
+  try {
+    const snapshots = [];
+    for (const interval of Object.keys(DUMP_CAP_FRAMES)) {
+      // Reuse the pump-base cache warmer: both pages read the same closed OHLCV cache.
+      pumpBaseWarmup.touch(interval);
+      snapshots.push(await dumpCapScanner.snapshot(interval));
+    }
+    sharedMarkTicker.setSymbols('dumpCapResistanceDiscord', dumpCapResistanceDiscord.candidateSymbols(snapshots));
+    const result = await dumpCapResistanceDiscord.process({
+      snapshots,
+      getQuote: symbol => {
+        const quote = sharedMarkTicker.getPriceInfo?.(symbol);
+        return quote ? { markPrice: Number(quote.markPrice), eventAt: Number(quote.at) } : null;
+      },
+    });
+    if (result.sent > 0) console.log(`[DumpCapResistanceDiscord] sent ${result.sent}`);
+  } catch (error) {
+    console.warn(`[DumpCapResistanceDiscord] ${error.message}`);
+  } finally {
+    dumpCapResistanceDiscordRunning = false;
+  }
+}
+setInterval(scanDumpCapResistanceDiscord, 33000).unref();
+setTimeout(scanDumpCapResistanceDiscord, 52000).unref();
 const postMoveIdealEntryDiscord = new PostMoveIdealEntryDiscordNotifier({
   stateFile: join(rootDir, 'data', 'post-move-ideal-entry-discord.json'),
   webhookUrl: () => String(process.env.POST_MOVE_IDEAL_ENTRY_DISCORD_WEBHOOK_URL ?? '').trim(),
@@ -1769,7 +1952,147 @@ const topReversalScanCache = { data: null, expiresAt: 0 };
 const liquidScanCache = { data: null, expiresAt: 0, key: '' };
 const liquidFlowV2Cache = { data: null, expiresAt: 0, inflight: null };
 const coinLevelAnalysisCache = new Map();
+const coinSupplyProfileService = new CoinSupplyProfileService();
+const coinSupplyMarketService = new CoinSupplyMarketService({
+  file: join(rootDir, 'data', 'coin-supply-market.json'),
+});
+const toxicTwoSideMarketCache = { data: null, expiresAt: 0, inflight: null };
 const coinLevelEntryWatchCache = { data: null, expiresAt: 0, inflight: null };
+const localAiTrendEvaluator = new LocalAiTrendEvaluator();
+const localAiOllamaProcessGuard = new LocalAiOllamaProcessGuard();
+const localAiTrendChat = new LocalAiTrendChat({ evaluator: localAiTrendEvaluator });
+const btcHourlyEntryForecast = new BtcHourlyEntryForecastService({
+  file: join(rootDir, 'data', 'btc-hourly-entry-forecast.json'),
+  script: join(rootDir, 'scripts', 'analyze-margin5-entry-btc.py'),
+});
+void btcHourlyEntryForecast.load().catch((error) => {
+  console.warn(`[BtcHourlyEntryForecast] cache init failed: ${error.message}`);
+});
+const localAiPassMidpointBinanceRunner = new LocalAiPassMidpointBinanceRunner({
+  file: join(rootDir, 'data', 'local-ai-priority-engine-zone-binance.json'),
+  controls: autoEntryControls,
+  getContext: ema99NearRejectRunner.getContext,
+  onSymbolsChanged: (symbols) => sharedMarkTicker.setSymbols('localAiPassMidpointBinance', symbols),
+  submit: async (plan, context) => {
+    const result = await placeOrder(
+      authorizeLocalAiPassMidpointOrder(plan),
+      null,
+      context.credentials,
+      { positions: context.positions, openOrders: context.openOrders },
+    );
+    invalidateOpenOrdersCache();
+    return result;
+  },
+});
+sharedMarkTicker.register('localAiPassMidpointBinance', (tick) => {
+  void localAiPassMidpointBinanceRunner.onMark(tick).then((result) => {
+    for (const item of result?.results ?? []) {
+      if (!['waiting-engine-zone', 'off', 'pre-enable-signal'].includes(item.status)) {
+        console.log(
+          `[LocalAiPriorityZone] ${item.symbol} ${item.side}: ${item.status}`
+          + `${item.orderId ? ` orderId=${item.orderId}` : ''}`,
+        );
+      }
+    }
+  }).catch((error) => console.warn(`[LocalAiPriorityZone] mark tick failed: ${error.message}`));
+});
+void localAiPassMidpointBinanceRunner.load().then(() => {
+  sharedMarkTicker.setSymbols(
+    'localAiPassMidpointBinance',
+    localAiPassMidpointBinanceRunner.symbols(),
+  );
+}).catch((error) => console.warn(`[LocalAiPriorityZone] state init failed: ${error.message}`));
+const localAiTrendDiscord = new LocalAiTrendDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'local-ai-trend-discord.json'),
+  historyFile: join(rootDir, 'data', 'local-ai-trend-discord-history.ndjson'),
+  webhookUrl: () => String(process.env.LOCAL_AI_TREND_DISCORD_WEBHOOK_URL ?? '').trim(),
+  baseUrl: () => String(process.env.LIQUIDITY_BASE_URL ?? 'http://127.0.0.1:19082').trim(),
+  signalCooldownMs: Number(process.env.LOCAL_AI_TREND_DISCORD_SIGNAL_COOLDOWN_MS ?? 30 * 60_000),
+  btcCooldownMs: Number(process.env.LOCAL_AI_TREND_DISCORD_BTC_COOLDOWN_MS ?? 15 * 60_000),
+  minBtc15mPct: Number(process.env.LOCAL_AI_TREND_DISCORD_BTC_15M_PCT ?? 0.25),
+  minBtc1hPct: Number(process.env.LOCAL_AI_TREND_DISCORD_BTC_1H_PCT ?? 0.55),
+  maxPerEvaluation: Number(process.env.LOCAL_AI_TREND_DISCORD_MAX_PER_EVALUATION ?? 3),
+  forecastRefreshMs: Number(process.env.LOCAL_AI_TREND_DISCORD_FORECAST_REFRESH_MS ?? 60 * 60_000),
+});
+const localAiSignalReviewDiscord = new LocalAiSignalReviewDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'local-ai-signal-review-discord.json'),
+  webhookUrl: () => String(process.env.LOCAL_AI_SIGNAL_REVIEW_DISCORD_WEBHOOK_URL ?? '').trim(),
+  baseUrl: () => String(process.env.LIQUIDITY_BASE_URL ?? 'http://127.0.0.1:19082').trim(),
+  maxPerRun: Number(process.env.LOCAL_AI_SIGNAL_REVIEW_DISCORD_MAX_PER_RUN ?? 10),
+});
+const btcExtremeMoveDiscord = new BtcExtremeMoveDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'btc-extreme-move-discord.json'),
+  webhookUrl: () => String(process.env.LOCAL_AI_SIGNAL_REVIEW_DISCORD_WEBHOOK_URL ?? '').trim(),
+  baseUrl: () => String(process.env.LIQUIDITY_BASE_URL ?? 'http://127.0.0.1:19082').trim(),
+  min15mPct: Number(process.env.BTC_EXTREME_DISCORD_MIN_15M_PCT ?? 0.75),
+  min1hPct: Number(process.env.BTC_EXTREME_DISCORD_MIN_1H_PCT ?? 1.50),
+  min4hPct: Number(process.env.BTC_EXTREME_DISCORD_MIN_4H_PCT ?? 3.00),
+  cooldownMs: Number(process.env.BTC_EXTREME_DISCORD_COOLDOWN_MS ?? 60 * 60_000),
+});
+const localAiSignalReview = new LocalAiSignalReview({
+  dataDir: join(rootDir, 'data'),
+  getCandles: (symbol, startTime, endTime) => client.get('/fapi/v1/klines', {
+    symbol, interval: '15m', startTime, endTime, limit: 499,
+  }, { priority: 9, dropOnCongestion: true, source: 'AiSignalReview.history' }),
+  onCompleted: async (report) => {
+    const delivery = await localAiSignalReviewDiscord.evaluate(report);
+    if (delivery.sent > 0) console.log(`[AiSignalReviewDiscord] sent ${delivery.sent}/${delivery.pass} review passes`);
+    if (delivery.baselined > 0) console.log(`[AiSignalReviewDiscord] baselined ${delivery.baselined} existing review passes`);
+  },
+});
+void localAiSignalReview.snapshot().then(({ report }) => {
+  if (!report || report.partial === true) return null;
+  return localAiSignalReviewDiscord.evaluate(report);
+}).then((delivery) => {
+  if (delivery?.baselined > 0) {
+    console.log(`[AiSignalReviewDiscord] baselined ${delivery.baselined} existing cached review passes`);
+  }
+}).catch((error) => console.warn(`[AiSignalReviewDiscord] cached report init failed: ${error.message}`));
+const localAiLiquiditySweepRejectDiscord = new LocalAiLiquiditySweepRejectDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'local-ai-liquidity-sweep-reject-discord.json'),
+  enabled: () => String(process.env.LOCAL_AI_LIQUIDITY_SWEEP_REJECT_DISCORD_ENABLED ?? '').trim().toLowerCase() === 'true',
+  webhookUrl: () => String(process.env.LOCAL_AI_LIQUIDITY_SWEEP_REJECT_DISCORD_WEBHOOK_URL ?? '').trim(),
+  baseUrl: () => String(process.env.LIQUIDITY_BASE_URL ?? 'http://127.0.0.1:19082').trim(),
+  cooldownMs: Number(process.env.LOCAL_AI_LIQUIDITY_SWEEP_REJECT_DISCORD_COOLDOWN_MS ?? 4 * 60 * 60_000),
+  maxPerScan: Number(process.env.LOCAL_AI_LIQUIDITY_SWEEP_REJECT_DISCORD_MAX_PER_SCAN ?? 5),
+});
+const localAiLiquidityBreakoutOppositeDepthBinanceRunner =
+  new LocalAiLiquidityBreakoutOppositeDepthBinanceRunner({
+    file: join(rootDir, 'data', 'local-ai-liquidity-breakout-opposite-depth-binance.json'),
+    controls: autoEntryControls,
+    getContext: ema99NearRejectRunner.getContext,
+    submit: async (plan, context) => {
+      const result = await placeOrder(
+        authorizeLocalAiLiquidityBreakoutOppositeDepthOrder(plan),
+        null,
+        context.credentials,
+        { positions: context.positions, openOrders: context.openOrders },
+      );
+      invalidateOpenOrdersCache();
+      return result;
+    },
+  });
+void localAiLiquidityBreakoutOppositeDepthBinanceRunner.load()
+  .catch((error) => console.warn(`[LocalAiLiqBreakoutDepthBinance] state init failed: ${error.message}`));
+const localAiLiquidityBreakoutOppositeDepthDiscord =
+  new LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier({
+    stateFile: join(rootDir, 'data', 'local-ai-liquidity-breakout-opposite-depth-discord.json'),
+    enabled: () => String(
+      process.env.LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_ENABLED ?? '',
+    ).trim().toLowerCase() === 'true',
+    webhookUrl: () => String(
+      process.env.LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_WEBHOOK_URL ?? '',
+    ).trim(),
+    baseUrl: () => String(process.env.LIQUIDITY_BASE_URL ?? 'http://127.0.0.1:19082').trim(),
+    cooldownMs: Number(
+      process.env.LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_COOLDOWN_MS
+        ?? 4 * 60 * 60_000,
+    ),
+    maxPerScan: Number(
+      process.env.LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_MAX_PER_SCAN ?? 5,
+    ),
+    onQualified: (event) => localAiLiquidityBreakoutOppositeDepthBinanceRunner.process(event),
+  });
 const coinLevelObserveManualOrderInflight = new Set();
 const coinLevelObserveDirectionFlipTracker = new CoinLevelObserveDirectionFlipTracker();
 const coinLevelObserveDirectionFlipPending = new Map();
@@ -1780,6 +2103,39 @@ const coinLevelEarlyLongHistory = new CoinLevelEarlyLongHistory({
 const coinLevelEarlyShortHistory = new CoinLevelEarlyShortHistory({
   file: join(rootDir, 'data', 'coin-level-early-short-history.json'),
 });
+const veryStrongTrendPool = new VeryStrongTrendPool({
+  file: join(rootDir, 'data', 'very-strong-trend-pool.json'),
+  seedFile: join(rootDir, 'data', 'coin-level-entry-watch-discord.json'),
+});
+let veryStrongTrendWarmupRunning = false;
+const veryStrongTrendWarmupAttemptAt = new Map();
+function scheduleVeryStrongTrendWarmup(records = []) {
+  if (veryStrongTrendWarmupRunning || binanceRateGate.isBlocked?.() || isBinanceRestCongested()) return;
+  const now = Date.now();
+  const candidates = records
+    .filter((record) => record.trendState === 'DATA_STALE'
+      && now - Number(veryStrongTrendWarmupAttemptAt.get(record.symbol) ?? 0) >= 10 * 60_000)
+    .sort((left, right) => Number(right.confirmationAt) - Number(left.confirmationAt))
+    .slice(0, 2);
+  if (!candidates.length) return;
+  veryStrongTrendWarmupRunning = true;
+  for (const record of candidates) veryStrongTrendWarmupAttemptAt.set(record.symbol, now);
+  void (async () => {
+    try {
+      for (const record of candidates) {
+        for (const interval of ['5m', '15m', '1h', '4h']) {
+          if (binanceRateGate.isBlocked?.() || isBinanceRestCongested()) return;
+          await klineCache.seed([record.symbol], interval, 100, {
+            batchSize: 1, batchDelayMs: 0, subscribe: false,
+          });
+        }
+      }
+      coinLevelEntryWatchCache.expiresAt = 0;
+    } finally {
+      veryStrongTrendWarmupRunning = false;
+    }
+  })();
+}
 sharedMarkTicker.register('coinLevelObserveLive', () => {});
 const coinLevelEntryWatchDiscord = new CoinLevelEntryWatchDiscordNotifier({
   stateFile: join(rootDir, 'data', 'coin-level-entry-watch-discord.json'),
@@ -1794,15 +2150,33 @@ const btcSessionWatchDiscord = new BtcSessionWatchDiscordNotifier({
   webhookUrl: () => String(process.env.BTC_SESSION_WATCH_DISCORD_WEBHOOK_URL ?? '').trim(),
   baseUrl: () => String(process.env.LIQUIDITY_BASE_URL ?? 'http://127.0.0.1:19082').trim(),
 });
+const btcRelativeStrengthDiscord = new BtcRelativeStrengthDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'btc-relative-strength-discord.json'),
+  webhookUrl: () => String(process.env.BTC_RELATIVE_STRENGTH_DISCORD_WEBHOOK_URL ?? '').trim(),
+  baseUrl: () => String(process.env.LIQUIDITY_BASE_URL ?? 'http://127.0.0.1:19082').trim(),
+  maxPerScan: Number(process.env.BTC_RELATIVE_STRENGTH_DISCORD_MAX_PER_SCAN ?? 5),
+});
 const postPumpNoBuyDiscord = new PostPumpNoBuyDiscordNotifier({
   stateFile: join(rootDir, 'data', 'post-pump-no-buy-discord.json'),
-  // Reuse the newest BTC Session webhook requested by the operator. Discord is
-  // delivery only; the exact SELL_IMPULSE route has its own gated executor below.
+  // Reuse the newest BTC Session webhook requested by the operator. Discord sends
+  // both early and confirmed stages; only NO_BUY_CONFIRMATION reaches the executor.
   webhookUrl: () => String(process.env.BTC_SESSION_WATCH_DISCORD_WEBHOOK_URL ?? '').trim(),
 });
 const postDumpNoSellDiscord = new PostDumpNoSellDiscordNotifier({
   stateFile: join(rootDir, 'data', 'post-dump-no-sell-discord.json'),
   webhookUrl: () => String(process.env.BTC_SESSION_WATCH_DISCORD_WEBHOOK_URL ?? '').trim(),
+});
+const postMoveImpulseConfirmationLongDiscord = new PostDumpNoSellDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'post-move-impulse-confirmation-long-discord.json'),
+  webhookUrl: () => String(process.env.POST_MOVE_IMPULSE_CONFIRMATION_DISCORD_WEBHOOK_URL ?? '').trim(),
+});
+const postMoveImpulseConfirmationShortDiscord = new PostPumpNoBuyDiscordNotifier({
+  stateFile: join(rootDir, 'data', 'post-move-impulse-confirmation-short-discord.json'),
+  webhookUrl: () => String(process.env.POST_MOVE_IMPULSE_CONFIRMATION_DISCORD_WEBHOOK_URL ?? '').trim(),
+});
+const postMoveImpulseEntryTracker = new PostMoveImpulseEntryTracker({
+  stateFile: join(rootDir, 'data', 'post-move-impulse-entry.json'),
+  webhookUrl: () => String(process.env.POST_MOVE_IMPULSE_CANDLE_DISCORD_WEBHOOK_URL ?? '').trim(),
 });
 let coinLevelEntryWatchDiscordRunning = false;
 let liquidFlowV2PostPumpSeedPromise = null;
@@ -6864,6 +7238,7 @@ function buildBtcHealthSnapshot(health = btcHealthCache.data) {
     btcTrendDir4h: health.btcTrendDir4h ?? null,
     pct24h: health.pct24h ?? null,
     btcCandle1hPct: health.btcCandle1hPct ?? null,
+    btcPullback5m: health.btcPullback5m ?? null,
     btcSpikeAlert: health.btcSpikeAlert ?? null,
     btcSpike: health.btcSpike ?? null,
     macroShock: health.macroShock ?? getBtcMacroShockGuard(),
@@ -11832,12 +12207,41 @@ if (liveCardOnlyAutoBinanceEnabled()) {
     `[AutoBinancePolicy] ${AUTO_BINANCE_ENTRY_POLICY_VERSION} active:`
     + ' checked Orders cards, Liquid Flow V2 READY, CoinGlass qualified, pump-dump absorption'
     + ' confirmed Post Pump Kill Short, HTF base, Hybrid Liquidity, Big Candle 15m, LiqScan >80'
-    + ' and LiqScan MAIN KILL red >=50M reversal routes may auto-enter.',
+    + ' LiqScan MAIN KILL red >=50M reversal, and Local AI MAIN KILL breakout + opposite-depth'
+    + ' exact routes may auto-enter.',
   );
 }
 const sessionCredentials = new Map(); // token → { apiKey, apiSecret }
 const ordersSessionSnapshots = new Map(); // token → Binance-verified balance/positions
 const rejectedOrdersCredentials = new Map(); // fingerprint → retryAfter epoch ms
+const ordersPasswordFailures = new Map(); // remote → { count, blockedUntil }
+
+function ordersPasswordRemote(request = {}) {
+  return String(request.headers?.['cf-connecting-ip']
+    ?? request.headers?.['x-forwarded-for']
+    ?? request.socket?.remoteAddress
+    ?? 'unknown').split(',')[0].trim();
+}
+
+function ordersPasswordAttemptState(request, now = Date.now()) {
+  const key = ordersPasswordRemote(request);
+  const current = ordersPasswordFailures.get(key);
+  if (!current) return { key, blocked: false, retryAfterSeconds: 0 };
+  if (Number(current.blockedUntil) > now) {
+    return { key, blocked: true, retryAfterSeconds: Math.ceil((current.blockedUntil - now) / 1000) };
+  }
+  if (now - Number(current.windowStartedAt) > 10 * 60_000) ordersPasswordFailures.delete(key);
+  return { key, blocked: false, retryAfterSeconds: 0 };
+}
+
+function recordOrdersPasswordFailure(key, now = Date.now()) {
+  const previous = ordersPasswordFailures.get(key);
+  const withinWindow = previous && now - Number(previous.windowStartedAt) <= 10 * 60_000;
+  const count = (withinWindow ? Math.max(0, Number(previous.count) || 0) : 0) + 1;
+  const windowStartedAt = withinWindow ? previous.windowStartedAt : now;
+  const blockedUntil = count >= 5 ? now + 10 * 60_000 : 0;
+  ordersPasswordFailures.set(key, { count, windowStartedAt, blockedUntil });
+}
 
 function ordersCredentialFingerprint(apiKey, apiSecret) {
   return crypto.createHash('sha256')
@@ -12298,6 +12702,7 @@ function startPositionSocketMonitor() {
         console.warn(`[Protection] ${symbol} ignored source=${source} status=${orderStatus ?? '-'}; ${POSITION_PROTECTION_TRIGGER_VERSION}`);
         return;
       }
+      autoEntryControls.markProtectionPositionActive(symbol, fillTime ?? Date.now());
       const protectionExcluded = isBinanceProtectionExcluded(symbol, 'SOCKET_FULL_FILL');
       const sameSideDcaFill = isBinanceSameSideDcaFill({
         side,
@@ -13837,12 +14242,22 @@ const server = createServer(async (request, response) => {
         await sendJson(response,{...controls,dailyStats:cachedAutoEntryDailyStats(auditState,controls),canEdit:authorized});return;
       }
       if(request.method==='POST') {
-        const origin=request.headers.origin;
-        if(origin&&origin!==requestUrl.origin){await sendJson(response,{error:'Cross-origin write refused'},403);return;}
+        if(!isSameOriginWriteRequest(request)){await sendJson(response,{error:'Cross-origin write refused'},403);return;}
         const body=await readJsonBody(request);
         const local=['127.0.0.1','::1','::ffff:127.0.0.1'].includes(request.socket.remoteAddress);
         if(!authorized&&!(body.action==='pauseAll'&&local)) {await sendJson(response,{error:'Đăng nhập /orders để thay đổi công tắc.'},401);return;}
-        try {const controls=autoEntryControls.update(body),auditState=await binanceFilledSignalAudit.init();
+        try {
+          let controls=autoEntryControls.update(body);
+          if(body.action==='protection-full-bypass-add') {
+            const symbol=normalizeSymbol(body.symbol);
+            const positions=await getPositions().catch(()=>[]);
+            const active=positions.find(position=>position.symbol===symbol&&Number(position.positionAmt)!==0);
+            if(active) {
+              autoEntryControls.markProtectionPositionActive(symbol,Date.now());
+              controls=autoEntryControls.read();
+            }
+          }
+          const auditState=await binanceFilledSignalAudit.init();
           await sendJson(response,{...controls,dailyStats:cachedAutoEntryDailyStats(auditState,controls),canEdit:authorized});}
         catch(error){await sendJson(response,{error:error.message},400);}return;
       }
@@ -13889,12 +14304,83 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/binance-signal-orders' && request.method === 'GET') {
+      response.setHeader('Cache-Control', 'no-store');
+      const auditState = await binanceFilledSignalAudit.init();
+      let positions = [];
+      let positionsError = null;
+      try {
+        positions = await getPositions();
+      } catch (error) {
+        positionsError = error?.message ?? 'Không tải được vị thế Binance hiện tại.';
+      }
+      await sendJson(response, buildBinanceSignalOrderManagerSnapshot({
+        auditState,
+        positions,
+        positionsError,
+        query: {
+          search: requestUrl.searchParams.get('search') ?? '',
+          status: requestUrl.searchParams.get('status') ?? '',
+          direction: requestUrl.searchParams.get('direction') ?? '',
+          outcome: requestUrl.searchParams.get('outcome') ?? '',
+          signalType: requestUrl.searchParams.get('signalType') ?? '',
+          from: requestUrl.searchParams.get('from') ?? '',
+          to: requestUrl.searchParams.get('to') ?? '',
+          sort: requestUrl.searchParams.get('sort') ?? 'newest',
+          page: requestUrl.searchParams.get('page') ?? 1,
+          pageSize: requestUrl.searchParams.get('pageSize') ?? 50,
+        },
+      }));
+      return;
+    }
+
     if (requestUrl.pathname === '/api/logout' && request.method === 'POST') {
       const token = request.headers['x-orders-token'] ?? '';
       ordersTokens.delete(token);
       sessionCredentials.delete(token);
       ordersSessionSnapshots.delete(token);
       await sendJson(response, { ok: true });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/auth/orders-password' && request.method === 'POST') {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!isSameOriginWriteRequest(request)) {
+        await sendJson(response, { error: 'Cross-origin auth refused.' }, 403);
+        return;
+      }
+      if (!ordersPasswordConfigured()) {
+        await sendJson(response, { error: 'ORDERS_PASSWORD chưa được cấu hình.' }, 503);
+        return;
+      }
+      const attempt = ordersPasswordAttemptState(request);
+      if (attempt.blocked) {
+        response.setHeader('Retry-After', String(attempt.retryAfterSeconds));
+        await sendJson(response, { error: `Sai mật khẩu quá nhiều lần. Thử lại sau ${attempt.retryAfterSeconds}s.` }, 429);
+        return;
+      }
+      const body = await readJsonBody(request);
+      if (!verifyOrdersPassword(body.password)) {
+        recordOrdersPasswordFailure(attempt.key);
+        await sendJson(response, { error: 'Mật khẩu Orders không đúng.' }, 401);
+        return;
+      }
+      const credentials = localEnvOrdersCredentials();
+      if (!credentials) {
+        await sendJson(response, { error: 'BINANCE_API_KEY/BINANCE_API_SECRET bị thiếu trong .env.' }, 503);
+        return;
+      }
+      let snapshot;
+      try {
+        snapshot = await verifyOrdersBinanceSession(credentials);
+      } catch (error) {
+        const failure = localEnvAuthFailure(error);
+        await sendJson(response, { error: failure.error, code: failure.code }, failure.status);
+        return;
+      }
+      ordersPasswordFailures.delete(attempt.key);
+      const session = createVerifiedOrdersSession(credentials, snapshot, 'orders-password');
+      await sendJson(response, { ...session, version: ORDERS_PASSWORD_AUTH_VERSION });
       return;
     }
 
@@ -14009,12 +14495,257 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/post-move-impulse-entry' && request.method === 'GET') {
+      await sendJson(response, postMoveImpulseEntryTracker.snapshot());
+      return;
+    }
+
     if (requestUrl.pathname === '/api/coin-level-entry-watch' && request.method === 'GET') {
       const includeHistory = requestUrl.searchParams.get('history') === '1';
       await sendJson(
         response,
         buildCoinLevelEntryWatchHttpResponse(await getCoinLevelEntryWatchSnapshot(), { includeHistory }),
       );
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/ai-signal-review') {
+      response.setHeader('Cache-Control', 'no-store');
+      if (request.method === 'GET') {
+        await sendJson(response, {
+          ...await localAiSignalReview.snapshot(),
+          discord: {
+            ...localAiSignalReviewDiscord.snapshot(),
+            btcExtreme: btcExtremeMoveDiscord.snapshot(),
+          },
+        });
+      } else if (request.method === 'POST') {
+        if (!isSameOriginWriteRequest(request)) {
+          await sendJson(response, { error: 'Cross-origin write refused' }, 403);
+          return;
+        }
+        localAiSignalReview.refresh();
+        await sendJson(response, { accepted: true, progress: localAiSignalReview.progress }, 202);
+      } else await sendJson(response, { error: 'Method not allowed' }, 405);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/local-ai-trend-evaluation') {
+      response.setHeader('Cache-Control', 'no-store');
+      if (request.method === 'GET') {
+        const btcHealth = await getBtcHealth();
+        await sendJson(response, {
+          ...localAiTrendEvaluator.snapshot(),
+          ollama: await localAiTrendEvaluator.health(),
+          ollamaProcessGuard: localAiOllamaProcessGuard.snapshot(),
+          discord: localAiTrendDiscord.snapshot(),
+          liquiditySweepRejectDiscord: localAiLiquiditySweepRejectDiscord.snapshot(),
+          liquidityBreakoutOppositeDepthDiscord:
+            localAiLiquidityBreakoutOppositeDepthDiscord.snapshot(),
+          liquidityBreakoutOppositeDepthExecution:
+            localAiLiquidityBreakoutOppositeDepthBinanceRunner.snapshot(),
+          priorityZoneExecution: localAiPassMidpointBinanceRunner.snapshot(),
+          hourlyEntryForecast: await btcHourlyEntryForecast.snapshot({ btcHealth }),
+        });
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        const ollama = await localAiTrendEvaluator.ensureAvailable();
+        try {
+          const [entrySnapshot, btcHealth] = await Promise.all([
+            getCoinLevelEntryWatchSnapshot(),
+            getBtcHealth(),
+          ]);
+          const evaluation = await localAiTrendEvaluator.evaluateResilient({
+            entrySnapshot,
+            btcHealth,
+            force: body.force === true,
+            ollamaHealth: ollama,
+          });
+          const priorityZoneExecution = await localAiPassMidpointBinanceRunner.syncEvaluation(evaluation);
+          let discordDelivery = null;
+          try {
+            discordDelivery = await localAiTrendDiscord.deliverEvaluation(evaluation);
+          } catch (error) {
+            console.warn(`[LocalAiDiscord] manual evaluation delivery failed: ${error.message}`);
+          }
+          await sendJson(response, {
+            ...localAiTrendEvaluator.snapshot(),
+            ollama,
+            evaluation,
+            priorityZoneExecution,
+            discord: { ...localAiTrendDiscord.snapshot(), lastDelivery: discordDelivery },
+            hourlyEntryForecast: await btcHourlyEntryForecast.snapshot({ btcHealth }),
+          });
+        } catch (error) {
+          await sendJson(response, {
+            error: error.message,
+            code: error.code ?? 'LOCAL_AI_EVALUATION_FAILED',
+            ollama,
+          }, 503);
+        }
+        return;
+      }
+      await sendJson(response, { error: 'Method not allowed' }, 405);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/btc-hourly-entry-forecast' && request.method === 'GET') {
+      response.setHeader('Cache-Control', 'no-store');
+      await sendJson(response, await btcHourlyEntryForecast.snapshot({ btcHealth: await getBtcHealth() }));
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/local-ai-trend-chat') {
+      response.setHeader('Cache-Control', 'no-store');
+      if (request.method === 'GET') {
+        await sendJson(response, {
+          ...localAiTrendChat.snapshot(),
+          btcContextReady: (klineCache.getIfCached('BTCUSDT', '1h', 200)?.length ?? 0) >= 28
+            && (klineCache.getIfCached('BTCUSDT', '4h', 100)?.length ?? 0) >= 28,
+          model: localAiTrendEvaluator.model,
+          ollama: await localAiTrendEvaluator.health(),
+        });
+        return;
+      }
+      if (request.method === 'POST') {
+        const body = await readJsonBody(request);
+        let ollama = null;
+        try {
+          const [symbols, entrySnapshot, btcHealth] = await Promise.all([
+            getSymbols(),
+            getCoinLevelEntryWatchSnapshot(),
+            getBtcHealth(),
+          ]);
+          const requestedSymbols = extractRequestedMarketSymbols(body.question, symbols);
+          const questionIntent = resolveLocalAiChatIntent(body.question, symbols);
+          const analysisMode = normalizeLocalAiChatMode(body.analysisMode);
+          const directResults = await Promise.allSettled(
+            requestedSymbols.map(async (symbol) => attachLatestLiqScanAlert(await getCoinLevelAnalysis(symbol))),
+          );
+          const directAnalyses = directResults
+            .filter((result) => result.status === 'fulfilled')
+            .map((result) => result.value);
+          if (requestedSymbols.length && !directAnalyses.length) {
+            const reason = directResults.find((result) => result.status === 'rejected')?.reason;
+            const error = new Error(reason?.message ?? `Chưa tải được Coin Level cho ${requestedSymbols.join(', ')}.`);
+            error.code = 'LOCAL_AI_DIRECT_COIN_UNAVAILABLE';
+            throw error;
+          }
+          ollama = directAnalyses.length
+            ? await localAiTrendEvaluator.health()
+            : await localAiTrendEvaluator.ensureAvailable();
+          if (!directAnalyses.length && (!ollama.online || !ollama.modelReady)) {
+            await sendJson(response, {
+              error: ollama.online
+                ? `Ollama chưa có model ${localAiTrendEvaluator.model}.`
+                : 'Ollama local chưa sẵn sàng.',
+              code: 'LOCAL_AI_MODEL_NOT_READY',
+              ollama,
+            }, 503);
+            return;
+          }
+          const answer = await localAiTrendChat.ask({
+            question: body.question,
+            questionIntent,
+            analysisMode,
+            history: body.history,
+            entrySnapshot,
+            btcHealth: { ...btcHealth,
+              chatTrendReady: (klineCache.getIfCached('BTCUSDT', '1h', 200)?.length ?? 0) >= 28
+                && (klineCache.getIfCached('BTCUSDT', '4h', 100)?.length ?? 0) >= 28,
+            },
+            evaluation: localAiTrendEvaluator.snapshot().evaluation,
+            directAnalyses,
+          });
+          await sendJson(response, {
+            ...localAiTrendChat.snapshot(),
+            model: localAiTrendEvaluator.model,
+            ollama,
+            answer,
+          });
+        } catch (error) {
+          const statusCode = error.code === 'LOCAL_AI_CHAT_INVALID_QUESTION'
+            ? 400
+            : error.code === 'LOCAL_AI_CHAT_BUSY'
+              ? 409
+              : 503;
+          await sendJson(response, {
+            error: error.message,
+            code: error.code ?? 'LOCAL_AI_CHAT_FAILED',
+            retryAfterMs: error.retryAfterMs ?? null,
+            ollama,
+          }, statusCode);
+        }
+        return;
+      }
+      await sendJson(response, { error: 'Method not allowed' }, 405);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/local-ai-main-kill-gap-watch' && request.method === 'GET') {
+      response.setHeader('Cache-Control', 'no-store');
+      const cachedEvaluation = localAiTrendEvaluator.snapshot().evaluation ?? null;
+      let evaluation = cachedEvaluation;
+      if (!(cachedEvaluation?.candidates ?? []).length) {
+        const [entrySnapshot, btcHealth] = await Promise.all([
+          getCoinLevelEntryWatchSnapshot(),
+          getBtcHealth(),
+        ]);
+        evaluation = resolveMainKillGapCandidateSource({
+          evaluation: cachedEvaluation,
+          input: buildLocalAiTrendInput({ entrySnapshot, btcHealth }),
+        });
+      } else {
+        evaluation = resolveMainKillGapCandidateSource({ evaluation: cachedEvaluation });
+      }
+      const symbols = [...new Set((evaluation?.candidates ?? [])
+        .slice(0, 10)
+        .map((candidate) => String(candidate?.symbol ?? '').trim().toUpperCase())
+        .filter(Boolean))];
+      const settled = await Promise.allSettled(symbols.map(async (symbol) => (
+        attachLatestLiqScanAlert(await getCoinLevelAnalysis(symbol))
+      )));
+      const analyses = settled
+        .filter((result) => result.status === 'fulfilled')
+        .map((result) => result.value);
+      await sendJson(response, {
+        ...buildLocalAiMainKillGapWatchSnapshot({ evaluation, analyses }),
+        errors: settled.flatMap((result, index) => result.status === 'rejected'
+          ? [{ symbol: symbols[index], message: String(result.reason?.message ?? result.reason).slice(0, 240) }]
+          : []),
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/pump-base-recovery' && request.method === 'GET') {
+      const interval = requestUrl.searchParams.get('interval') ?? '15m';
+      if (!Object.hasOwn(PUMP_BASE_FRAMES, interval)) {
+        await sendJson(response, { error: 'Khung hợp lệ: 5m, 15m, 1h, 4h, 1d' }, 400);
+        return;
+      }
+      pumpBaseWarmup.touch(interval);
+      await sendJson(response, {
+        ...await pumpBaseScanner.snapshot(interval),
+        warmup: pumpBaseWarmup.status,
+        supportDiscord: pumpBaseSupportDiscord.snapshot(),
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/dump-cap-rejection' && request.method === 'GET') {
+      const interval = requestUrl.searchParams.get('interval') ?? '15m';
+      if (!Object.hasOwn(DUMP_CAP_FRAMES, interval)) {
+        await sendJson(response, { error: 'Khung hợp lệ: 5m, 15m, 1h, 4h, 1d' }, 400);
+        return;
+      }
+      pumpBaseWarmup.touch(interval);
+      await sendJson(response, {
+        ...await dumpCapScanner.snapshot(interval),
+        warmup: pumpBaseWarmup.status,
+        resistanceDiscord: dumpCapResistanceDiscord.snapshot(),
+      });
       return;
     }
 
@@ -14055,6 +14786,29 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (requestUrl.pathname === '/api/low-supply-market' && request.method === 'GET') {
+      try {
+        const symbols = await getSymbols();
+        await sendJson(response, await coinSupplyMarketService.getSnapshot(symbols));
+      } catch (error) {
+        await sendJson(response, {
+          error: error?.message ?? 'Khong the tong hop thi truong cung thap luc nay.',
+        }, 502);
+      }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/toxic-two-side-market' && request.method === 'GET') {
+      try {
+        await sendJson(response, await getToxicTwoSideMarketSnapshot());
+      } catch (error) {
+        await sendJson(response, {
+          error: error?.message ?? 'Khong the xep hang coin quet hai dau luc nay.',
+        }, 502);
+      }
+      return;
+    }
+
     if (requestUrl.pathname === '/api/coin-level-analysis' && request.method === 'GET') {
       const rawSymbol = requestUrl.searchParams.get('symbol') ?? requestUrl.searchParams.get('coin');
       if (!rawSymbol) {
@@ -14062,9 +14816,22 @@ const server = createServer(async (request, response) => {
         return;
       }
       try {
-        const analysis = await getCoinLevelAnalysis(rawSymbol, {
-          coinGlassOnly: requestUrl.searchParams.has('coinglassPoll'),
+        const [baseAnalysis, rawSupplyProfile] = await Promise.all([
+          getCoinLevelAnalysis(rawSymbol, {
+            coinGlassOnly: requestUrl.searchParams.has('coinglassPoll'),
+          }),
+          coinSupplyProfileService.get(rawSymbol),
+        ]);
+        let analysis = baseAnalysis;
+        const supplyProfile = buildCoinSupplySnapshot({
+          profile: rawSupplyProfile,
+          markPrice: analysis?.market?.markPrice,
+          binanceQuoteVolume24h: analysis?.market?.quoteVolume24h,
         });
+        analysis = {
+          ...analysis,
+          supplyProfile,
+        };
         await sendJson(response, await attachLatestLiqScanAlert(analysis));
       } catch (error) {
         const status = Number(error?.statusCode)
@@ -16644,6 +17411,7 @@ server.listen(port, host, async () => {
   startWeekLongPostPumpEma99SlopeScheduler();
   squeezeRatioWatch.start();
   startCoinLevelEntryWatchScheduler();
+  startLocalAiTrendSchedulers();
   startLiquidScanAutoPaperScheduler();
   intradayDecisionPaper = createIntradayDecisionPaper();
   intradayDecisionPaper.init().catch((err) => console.warn('[DecisionPaper] Init failed:', err.message));
@@ -16793,6 +17561,15 @@ function klineNum(k, key, idx) {
   return Number.isFinite(n) ? n : null;
 }
 
+function closedKlineReturnPct(rows = [], candleCount, now = Date.now()) {
+  const closed = (Array.isArray(rows) ? rows : [])
+    .filter((row) => klineNum(row, 'closeTime', 6) <= now);
+  if (closed.length <= candleCount) return null;
+  const current = klineNum(closed.at(-1), 'close', 4);
+  const previous = klineNum(closed.at(-(candleCount + 1)), 'close', 4);
+  return current > 0 && previous > 0 ? (current / previous - 1) * 100 : null;
+}
+
 function analyzeBtcMacroShockKlines(interval, rows = []) {
   const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
   if (list.length < 12) return null;
@@ -16873,6 +17650,7 @@ async function _fetchBtcHealth() {
     const klines4h = klineCache.getIfCached('BTCUSDT', '4h', 100);
     const klines1d = klineCache.getIfCached('BTCUSDT', '1d', 50);
     const klines1h = klineCache.getIfCached('BTCUSDT', '1h', 200);
+    const klines5m = klineCache.getIfCached('BTCUSDT', '5m', 120);
     if (!klines4h || !klines1h || !klines1d) {
       // Klines chưa seed xong — trả stale nếu có, không treo request
       if (btcHealthCache.data) return btcHealthCache.data;
@@ -16921,6 +17699,13 @@ async function _fetchBtcHealth() {
     const btcCandle1hPct = k1hLast
       ? ((Number(k1hLast[4]) - Number(k1hLast[1])) / Number(k1hLast[1])) * 100
       : null;
+    const btcPullback5m = analyzeBtcDowntrendPullback5m(klines5m, Date.now());
+    const closedBtc5m = (Array.isArray(klines5m) ? klines5m : [])
+      .filter((row) => klineNum(row, 'closeTime', 6) <= Date.now());
+    const btcRelativeReturnClosedAt = klineNum(closedBtc5m.at(-1), 'closeTime', 6);
+    const btcRelativeReturn15mPct = closedKlineReturnPct(klines5m, 3);
+    const btcRelativeReturn1hPct = closedKlineReturnPct(klines5m, 12);
+    const btcRelativeReturn4hPct = closedKlineReturnPct(klines5m, 48);
 
     // BTC spike candle detection — vol > 2.5x avg + move > 1% trên 1h
     // Sau nến spike, correction thường xảy ra → EMA_PB LONG trên alt bị block 2 nến tiếp
@@ -17068,6 +17853,14 @@ async function _fetchBtcHealth() {
       btcSpikeAlert,
       macroShock,
       btcCandle1hPct: btcCandle1hPct != null ? +btcCandle1hPct.toFixed(3) : null,
+      btcPullback5m,
+      btcRelativeReturnClosedAt,
+      btcRelativeReturn15mPct: btcRelativeReturn15mPct != null
+        ? +btcRelativeReturn15mPct.toFixed(3) : null,
+      btcRelativeReturn1hPct: btcRelativeReturn1hPct != null
+        ? +btcRelativeReturn1hPct.toFixed(3) : null,
+      btcRelativeReturn4hPct: btcRelativeReturn4hPct != null
+        ? +btcRelativeReturn4hPct.toFixed(3) : null,
       btcTrendScore,
       btcTrendDir,
       btcTrendScore4h,
@@ -17200,6 +17993,63 @@ async function getSymbols() {
   }
 }
 
+async function getToxicTwoSideMarketSnapshot() {
+  const now = Date.now();
+  if (toxicTwoSideMarketCache.data && now < toxicTwoSideMarketCache.expiresAt) {
+    return toxicTwoSideMarketCache.data;
+  }
+  if (toxicTwoSideMarketCache.inflight) return toxicTwoSideMarketCache.inflight;
+  const promise = (async () => {
+    const symbols = await getSymbols();
+    const [marketRows, supplySnapshot] = await Promise.all([
+      getSharedSnapshot(),
+      coinSupplyMarketService.getSnapshot(symbols),
+    ]);
+    const supplyRows = [...supplySnapshot.rows];
+    const fallbackMarkets = selectToxicTwoSideSupplyFallbackMarkets({
+      marketRows,
+      supplyRows,
+      limit: 12,
+    });
+    const fallbackRows = await mapConcurrent(fallbackMarkets, 2, async (market) => {
+      const profile = await coinSupplyProfileService.get(market.symbol);
+      const supply = buildCoinSupplySnapshot({
+        profile,
+        markPrice: market.markPrice,
+        binanceQuoteVolume24h: market.quoteVolume,
+      });
+      return supply.available ? {
+        symbol: market.symbol,
+        marketCapUsd: supply.marketCapUsd,
+        supplyFallback: true,
+      } : null;
+    });
+    supplyRows.push(...fallbackRows.filter(Boolean));
+    const snapshot = buildToxicTwoSideMarketSnapshot({
+      marketRows,
+      supplyRows,
+      getKlines: (symbol, interval, limit) => klineCache.getIfCached(symbol, interval, limit) ?? [],
+      now,
+    });
+    toxicTwoSideMarketCache.data = {
+      ...snapshot,
+      sources: {
+        market: 'BINANCE_SHARED_SNAPSHOT',
+        candles: 'KLINE_CACHE_CLOSED_ONLY',
+        cap: supplySnapshot.source,
+        capFetchedAt: supplySnapshot.sourceFetchedAt,
+        capTargetedFallbackCount: fallbackRows.filter(Boolean).length,
+      },
+    };
+    toxicTwoSideMarketCache.expiresAt = Date.now() + 60_000;
+    return toxicTwoSideMarketCache.data;
+  })();
+  toxicTwoSideMarketCache.inflight = promise.finally(() => {
+    toxicTwoSideMarketCache.inflight = null;
+  });
+  return toxicTwoSideMarketCache.inflight;
+}
+
 async function getCoinLevelEntryWatchSnapshot() {
   if (coinLevelEntryWatchCache.data && Date.now() < coinLevelEntryWatchCache.expiresAt) {
     return coinLevelEntryWatchCache.data;
@@ -17230,6 +18080,22 @@ async function getCoinLevelEntryWatchSnapshot() {
     } catch (error) {
       console.warn(`[CoinLevelEarlyShortHistory] ${error.message}`);
     }
+    let veryStrongTrendPoolSnapshot = {
+      records: [], activeRecords: [], totalRecords: 0, totalActive: 0,
+      observeOnly: true, binanceEligible: false,
+    };
+    try {
+      veryStrongTrendPoolSnapshot = await veryStrongTrendPool.update(
+        data.veryStrongTrendSources ?? data.veryStrongCandidates ?? [],
+        {
+          getKlines: (symbol, interval, limit) => klineCache.getIfCached(symbol, interval, limit),
+          at: data.generatedAt,
+        },
+      );
+    } catch (error) {
+      console.warn(`[VeryStrongTrendPool] ${error.message}`);
+    }
+    scheduleVeryStrongTrendWarmup(veryStrongTrendPoolSnapshot.records);
     const liveEarlyLongIds = new Set(data.earlyLongWatches
       .map((watch) => `${watch.symbol}:LONG:${Number(watch.observedAt) || 0}`));
     const liveEarlyShortIds = new Set(data.earlyShortWatches
@@ -17240,6 +18106,7 @@ async function getCoinLevelEntryWatchSnapshot() {
       ...data.earlyLongWatches.map((watch) => watch.symbol),
       ...data.earlyShortWatches.map((watch) => watch.symbol),
       ...(data.candidates ?? []).map((candidate) => candidate.symbol),
+      ...(veryStrongTrendPoolSnapshot.records ?? []).map((record) => record.symbol),
     ].map((symbol) => String(symbol ?? '').toUpperCase()).filter(Boolean))];
     sharedMarkTicker.setSymbols('coinLevelObserveLive', observeLiveSymbols);
     const observeLiveQuote = (symbol) => {
@@ -17281,6 +18148,18 @@ async function getCoinLevelEntryWatchSnapshot() {
         takeProfitRoePct: state?.takeProfitRoePct ?? null,
       }];
     }));
+    const btcRelativeStrengthBinanceRoutes = Object.fromEntries(
+      BTC_RELATIVE_STRENGTH_ROUTES.map((spec) => {
+        const route = autoEntryControls.register(spec);
+        const state = controlState.routes[route.key];
+        return [spec.side, {
+          enabled: controlState.enabled === true && state?.enabled === true,
+          marginUsdt: state?.marginUsdt ?? null,
+          leverage: state?.leverage ?? null,
+          takeProfitRoePct: state?.takeProfitRoePct ?? null,
+        }];
+      }),
+    );
     const snapshot = {
       ...data,
       earlyLongHistory: earlyLongHistory.map((watch) => ({
@@ -17301,14 +18180,43 @@ async function getCoinLevelEntryWatchSnapshot() {
         }),
       })),
       totalEarlyShortHistory: earlyShortHistory.length,
+      veryStrongTrendPool: {
+        ...veryStrongTrendPoolSnapshot,
+        records: (veryStrongTrendPoolSnapshot.records ?? []).map((record) => {
+          const quote = observeLiveQuote(record.symbol);
+          const livePrice = Number(quote?.price) > 0 ? Number(quote.price) : record.livePrice;
+          const zoneMid = Number(record.entryZone?.mid);
+          return {
+            ...record,
+            livePrice,
+            livePriceAt: quote?.at ?? record.livePriceAt,
+            livePriceSource: quote?.source ?? 'CLOSED_5M',
+            entryDistancePct: livePrice > 0 && zoneMid > 0
+              ? Number(((livePrice / zoneMid - 1) * 100).toFixed(3)) : null,
+          };
+        }),
+      },
       marketRegime: coinLevelMarketRegimeGuard.snapshot(data.generatedAt),
       discordConfigured: Boolean(String(process.env.COIN_LEVEL_ENTRY_WATCH_DISCORD_WEBHOOK_URL ?? '').trim()),
       observeDiscordConfigured: Boolean(String(
         process.env.COIN_LEVEL_OBSERVE_WATCH_DISCORD_WEBHOOK_URL ?? '',
       ).trim()),
       btcSessionDiscordConfigured: btcSessionWatchDiscord.configured(),
+      btcRelativeStrengthDiscordConfigured: btcRelativeStrengthDiscord.configured(),
+      btcRelativeStrengthBinanceExecution: {
+        mode: 'RELATIVE_ENTRY_READY_CAUSAL_ALPHA_IN_ZONE_ONE_SETUP_MARKET_2USDT',
+        masterEnabled: controlState.enabled === true,
+        maxOpenPositions: 50,
+        routes: btcRelativeStrengthBinanceRoutes,
+      },
       postPumpNoBuyDiscordConfigured: postPumpNoBuyDiscord.configured(),
       postDumpNoSellDiscordConfigured: postDumpNoSellDiscord.configured(),
+      postMoveImpulseConfirmationDiscordConfigured:
+        postMoveImpulseConfirmationLongDiscord.configured()
+        && postMoveImpulseConfirmationShortDiscord.configured(),
+      postMoveImpulseCandleDiscordConfigured:
+        postMoveImpulseEntryTracker.configured(),
+      postMoveImpulseCandleDiscordMode: 'ENTRY_PASS_ONLY',
       binanceExecution: {
         mode: 'LIMIT_3USDT_PRE_RETEST_OR_MARKET_AFTER_CLOSED_5M_RETEST',
         limitMarginUsdt: 3,
@@ -17421,6 +18329,13 @@ async function reconcileCoinLevelObserveDirectionFlips(snapshot) {
     });
     for (const [id, flip] of coinLevelObserveDirectionFlipPending) {
       try {
+        // FULL BYPASS / temporary exclusion owns the whole protection lifecycle.
+        // Fail closed before cancelling entries, closing a profitable position or
+        // calling the forced TP-at-entry helper for a losing position.
+        if (isBinanceProtectionExcluded(flip.symbol, 'COIN_LEVEL_OBSERVE_FLIP')) {
+          coinLevelObserveDirectionFlipPending.delete(id);
+          continue;
+        }
         const staleEntries = (Array.isArray(openOrders) ? openOrders : [])
           .filter((order) => isEntryOrderAgainstCoinLevelFlip(order, flip));
         for (const order of staleEntries) {
@@ -17516,12 +18431,214 @@ async function reconcileCoinLevelObserveDirectionFlips(snapshot) {
   }
 }
 
+let localAiTrendAutoEvaluationRunning = false;
+
+function startLocalAiTrendSchedulers() {
+  const evaluateTick = async () => {
+    if (localAiTrendAutoEvaluationRunning || localAiTrendEvaluator.snapshot().running) return;
+    localAiTrendAutoEvaluationRunning = true;
+    try {
+      const ollama = await localAiTrendEvaluator.ensureAvailable();
+      const [entrySnapshot, btcHealth] = await Promise.all([
+        getCoinLevelEntryWatchSnapshot(),
+        getBtcHealth(),
+      ]);
+      const evaluation = await localAiTrendEvaluator.evaluateResilient({
+        entrySnapshot,
+        btcHealth,
+        ollamaHealth: ollama,
+      });
+      if (evaluation.deterministicFallback) {
+        console.warn(
+          `[LocalAiDiscord] deterministic fallback active: ${evaluation.fallback?.reasonCode ?? 'OLLAMA_FAILED'}`,
+        );
+      }
+      const priorityZoneExecution = await localAiPassMidpointBinanceRunner.syncEvaluation(evaluation);
+      if (priorityZoneExecution.active > 0) {
+        console.log(
+          `[LocalAiPriorityZone] armed ${priorityZoneExecution.active} setup(s):`
+          + ` ${priorityZoneExecution.symbols.join(', ')}`,
+        );
+      }
+      const delivery = await localAiTrendDiscord.deliverEvaluation(evaluation);
+      if (delivery.sent > 0) {
+        console.log(`[LocalAiDiscord] auto evaluation sent ${delivery.sent}/${delivery.candidates}`);
+      }
+      if (delivery.forecastSent > 0) {
+        console.log(`[LocalAiDiscord] BTC AI forecast sent: ${delivery.forecast}`);
+      }
+      if (delivery.errors?.length > 0) {
+        console.warn(`[LocalAiDiscord] ${delivery.errors.join('; ')}`);
+      }
+    } catch (error) {
+      if (!['LOCAL_AI_BTC_CONTEXT_NOT_READY', 'LOCAL_AI_NO_CANDIDATES'].includes(error.code)) {
+        console.warn(`[LocalAiDiscord] auto evaluation failed: ${error.message}`);
+      }
+    } finally {
+      localAiTrendAutoEvaluationRunning = false;
+    }
+  };
+
+  const btcTick = async () => {
+    try {
+      const health = await getBtcHealth();
+      const [delivery, extremeDelivery] = await Promise.all([
+        localAiTrendDiscord.deliverBtcHealth(health),
+        btcExtremeMoveDiscord.deliver(health),
+      ]);
+      if (delivery.sent > 0) {
+        console.log(
+          delivery.recovery
+            ? `[LocalAiDiscord] BTC recovery sent: ${delivery.previousDirection}->${delivery.direction}`
+            : `[LocalAiDiscord] BTC sudden shift sent: ${delivery.direction}`,
+        );
+      }
+      if (delivery.error && delivery.error !== 'WEBHOOK_NOT_CONFIGURED') {
+        console.warn(`[LocalAiDiscord] BTC delivery failed: ${delivery.error}`);
+      }
+      if (extremeDelivery.sent > 0) {
+        console.log(`[BtcExtremeDiscord] sent ${extremeDelivery.direction} level ${extremeDelivery.level}`);
+      }
+      if (extremeDelivery.error && extremeDelivery.error !== 'WEBHOOK_NOT_CONFIGURED') {
+        console.warn(`[BtcExtremeDiscord] delivery failed: ${extremeDelivery.error}`);
+      }
+    } catch (error) {
+      console.warn(`[LocalAiDiscord] BTC context scan failed: ${error.message}`);
+    }
+  };
+
+  const ollamaTick = async () => {
+    try {
+      const cleanup = await localAiOllamaProcessGuard.cleanup();
+      if (cleanup.killed.length > 0) {
+        console.warn(`[LocalAiOllamaProcessGuard] removed orphan llama-server PIDs: ${cleanup.killed.join(',')}`);
+      }
+    } catch (error) {
+      console.warn(`[LocalAiOllamaProcessGuard] cleanup failed: ${error.message}`);
+    }
+    try {
+      const health = await localAiTrendEvaluator.ensureAvailable();
+      if (health.restarted) {
+        console.log(`[LocalAiOllamaWatchdog] service restored; model=${localAiTrendEvaluator.model}`);
+      } else if (!health.online || !health.modelReady) {
+        console.warn(`[LocalAiOllamaWatchdog] unavailable: ${health.restartError ?? health.error ?? 'model not ready'}`);
+      }
+    } catch (error) {
+      console.warn(`[LocalAiOllamaWatchdog] recovery failed: ${error.message}`);
+    }
+  };
+
+  const liquiditySweepRejectTick = async () => {
+    try {
+      const delivery = await localAiLiquiditySweepRejectDiscord.scan({
+        getRows: symbol => klineCache.getIfCached(symbol, '5m', 160) ?? [],
+        getMark: symbol => sharedLastTicker.getPrice(symbol),
+      });
+      if (delivery.sent > 0) {
+        console.log(`[LocalAiLiqSweepReject] sent ${delivery.sent}/${delivery.detected}; tracked=${delivery.tracked}`);
+      }
+      if (delivery.errors?.length > 0) {
+        console.warn(`[LocalAiLiqSweepReject] ${delivery.errors.join('; ')}`);
+      }
+    } catch (error) {
+      console.warn(`[LocalAiLiqSweepReject] scan failed: ${error.message}`);
+    }
+  };
+
+  const liquidityBreakoutOppositeDepthTick = async () => {
+    try {
+      const delivery = await localAiLiquidityBreakoutOppositeDepthDiscord.scan({
+        getRows: (symbol, interval) => klineCache.getIfCached(symbol, interval, 160) ?? [],
+        getAnalysis: symbol => getCoinLevelAnalysis(symbol),
+      });
+      if (delivery.sent > 0) {
+        console.log(
+          `[LocalAiLiqBreakoutDepth] sent ${delivery.sent}/${delivery.qualified}`
+          + ` qualified; detected=${delivery.detected}; tracked=${delivery.tracked}`,
+        );
+      }
+      if (delivery.errors?.length > 0) {
+        console.warn(`[LocalAiLiqBreakoutDepth] ${delivery.errors.join('; ')}`);
+      }
+    } catch (error) {
+      console.warn(`[LocalAiLiqBreakoutDepth] scan failed: ${error.message}`);
+    }
+  };
+
+  const hourlyForecastTick = async () => {
+    try {
+      const result = await btcHourlyEntryForecast.rebuild();
+      if (result.rebuilt) {
+        console.log(`[BtcHourlyEntryForecast] rebuilt daily cache: ${result.generatedAt ?? 'ready'}`);
+      }
+    } catch (error) {
+      console.warn(`[BtcHourlyEntryForecast] daily rebuild failed: ${error.message}`);
+    }
+  };
+
+  const signalReviewTick = () => {
+    try { localAiSignalReview.refresh(); }
+    catch (error) { console.warn(`[AiSignalReview] scheduled refresh failed: ${error.message}`); }
+  };
+
+  const evaluationIntervalMs = Math.max(
+    5 * 60_000,
+    Number(process.env.LOCAL_AI_TREND_AUTO_EVALUATE_MS ?? 10 * 60_000),
+  );
+  const evaluationStartDelayMs = Math.max(
+    60_000,
+    Number(process.env.LOCAL_AI_TREND_AUTO_START_DELAY_MS ?? 2 * 60_000),
+  );
+  const btcPollMs = Math.max(
+    30_000,
+    Number(process.env.LOCAL_AI_TREND_DISCORD_BTC_POLL_MS ?? 30_000),
+  );
+  setTimeout(evaluateTick, evaluationStartDelayMs).unref?.();
+  setInterval(evaluateTick, evaluationIntervalMs).unref?.();
+  setTimeout(ollamaTick, 10_000).unref?.();
+  setInterval(ollamaTick, 60_000).unref?.();
+  setTimeout(liquiditySweepRejectTick, 45_000).unref?.();
+  setInterval(liquiditySweepRejectTick, 30_000).unref?.();
+  setTimeout(liquidityBreakoutOppositeDepthTick, 50_000).unref?.();
+  setInterval(liquidityBreakoutOppositeDepthTick, 30_000).unref?.();
+  setTimeout(btcTick, 75_000).unref?.();
+  setInterval(btcTick, btcPollMs).unref?.();
+  const signalReviewRefreshMs = Math.max(
+    15 * 60_000,
+    Number(process.env.LOCAL_AI_SIGNAL_REVIEW_REFRESH_MS ?? 30 * 60_000),
+  );
+  setTimeout(signalReviewTick, 90_000).unref?.();
+  setInterval(signalReviewTick, signalReviewRefreshMs).unref?.();
+  const hourlyForecastRefreshMs = Math.max(
+    60 * 60_000,
+    Number(process.env.BTC_HOURLY_ENTRY_FORECAST_REFRESH_MS ?? 6 * 60 * 60_000),
+  );
+  setTimeout(hourlyForecastTick, 3 * 60_000).unref?.();
+  setInterval(hourlyForecastTick, hourlyForecastRefreshMs).unref?.();
+}
+
 function startCoinLevelEntryWatchScheduler() {
   const tick = async () => {
     if (coinLevelEntryWatchDiscordRunning) return;
     coinLevelEntryWatchDiscordRunning = true;
     try {
       const snapshot = await getCoinLevelEntryWatchSnapshot();
+      try {
+        const selected = selectPostMoveImpulseCandleWatches(snapshot);
+        const entryResult = await postMoveImpulseEntryTracker.process({
+          watches: [...selected.long, ...selected.short],
+          getRows: symbol => klineCache.getIfCached(symbol, '5m', 160) ?? [],
+          getQuote: symbol => {
+            const tick = sharedMarkTicker.getPriceInfo?.(symbol);
+            return { price: tick?.markPrice, at: tick?.at };
+          },
+          btcRows: klineCache.getIfCached('BTCUSDT', '5m', 20) ?? [],
+        });
+        sharedMarkTicker.setSymbols('postMoveImpulseEntry', postMoveImpulseEntryTracker.symbols());
+        if (entryResult.sent > 0) console.log(`[PostMoveImpulseEntry] sent ${entryResult.sent}`);
+      } catch (error) {
+        console.warn(`[PostMoveImpulseEntry] ${error.message}`);
+      }
       await reconcileCoinLevelObserveDirectionFlips(snapshot);
       const impulseExecution = await postMoveImpulseBinanceRunner.processWatches([
         ...snapshot.postDumpNoSellWatches,
@@ -17562,6 +18679,44 @@ function startCoinLevelEntryWatchScheduler() {
       } catch (error) {
         console.warn(`[BtcSessionDiscord] scan failed: ${error.message}`);
       }
+      try {
+        const now = Date.now();
+        const health = await getBtcHealth();
+        const longView = buildBtcRelativeStrengthRows(snapshot, health, {
+          now, tab:'STRONG_WHILE_BTC_DOWN', status:'ALL', sort:'priority',
+        });
+        const shortView = buildBtcRelativeStrengthRows(snapshot, health, {
+          now, tab:'WEAK_WHILE_BTC_UP', status:'ALL', sort:'priority',
+        });
+        const relativeRows = [...longView.rows, ...shortView.rows];
+        const delivery = await btcRelativeStrengthDiscord.process({
+          rows:relativeRows,
+          btc:longView.btc,
+        });
+        if (delivery.sent > 0) {
+          console.log(`[BtcRelativeStrengthDiscord] sent ${delivery.sent}/${delivery.candidates}`);
+        }
+        if (delivery.errors.length > 0 && !delivery.errors.includes('WEBHOOK_NOT_CONFIGURED')) {
+          console.warn(`[BtcRelativeStrengthDiscord] ${delivery.errors.join('; ')}`);
+        }
+        const execution = await btcRelativeStrengthBinanceRunner.process({
+          rows:relativeRows,
+          btc:longView.btc,
+        });
+        if (execution.submitted > 0) {
+          console.log(
+            `[BtcRelativeStrengthBinance] submitted ${execution.submitted}/${execution.candidates}`,
+          );
+        }
+        for (const result of execution.results.filter((item) => item.status === 'error')) {
+          console.warn(
+            `[BtcRelativeStrengthBinance] ${result.symbol} ${result.side} failed:`
+            + ` ${result.errorCode ?? result.error}`,
+          );
+        }
+      } catch (error) {
+        console.warn(`[BtcRelativeStrength] scan failed: ${error.message}`);
+      }
       for (const candidate of snapshot.candidates) {
         try {
           const execution = await coinLevelEntryWatchBinanceRunner.handle(candidate);
@@ -17587,6 +18742,22 @@ function startCoinLevelEntryWatchScheduler() {
       );
       if (postDumpNoSellSent > 0) {
         console.log(`[PostDumpNoSellDiscord] sent ${postDumpNoSellSent}/${snapshot.postDumpNoSellWatches.length}`);
+      }
+      const dedicatedConfirmations = selectPostMoveImpulseConfirmationWatches({
+        postDumpNoSellWatches: snapshot.postDumpNoSellWatches,
+        postPumpNoBuyWatches: snapshot.postPumpNoBuyWatches,
+      });
+      const dedicatedLongSent = await postMoveImpulseConfirmationLongDiscord.deliverWatches(
+        dedicatedConfirmations.long,
+      );
+      const dedicatedShortSent = await postMoveImpulseConfirmationShortDiscord.deliverWatches(
+        dedicatedConfirmations.short,
+      );
+      if (dedicatedLongSent + dedicatedShortSent > 0) {
+        console.log(
+          `[PostMoveImpulseConfirmationDiscord] sent LONG ${dedicatedLongSent}/${dedicatedConfirmations.long.length}`
+          + ` · SHORT ${dedicatedShortSent}/${dedicatedConfirmations.short.length}`,
+        );
       }
     } catch (error) {
       console.warn(`[CoinLevelEntryWatchDiscord] scan failed: ${error.message}`);
@@ -17724,6 +18895,12 @@ async function retainLatestLiqScanAlert(alert = {}) {
   if (!symbol) return;
   await loadLiqScanLatestAlerts();
   liqScanLatestAlerts.set(symbol, alert);
+  await localAiLiquiditySweepRejectDiscord.arm(alert).catch((error) => {
+    console.warn(`[LocalAiLiqSweepReject] arm ${symbol} failed: ${error.message}`);
+  });
+  await localAiLiquidityBreakoutOppositeDepthDiscord.arm(alert).catch((error) => {
+    console.warn(`[LocalAiLiqBreakoutDepth] arm ${symbol} failed: ${error.message}`);
+  });
   pruneLiqScanLatestAlerts();
   const payload = `${JSON.stringify({
     version: LIQ_SCAN_LATEST_ALERTS_STORE_VERSION,
@@ -17749,6 +18926,23 @@ async function attachLatestLiqScanAlert(analysis = {}) {
   } : null;
   const lastAlert = liqScanLatestAlerts.get(String(analysis?.symbol ?? '').toUpperCase()) ?? null;
   const alertAt = Date.parse(lastAlert?.evaluatedAt ?? 0);
+  const snapshotAt = Date.parse(analysis?.generatedAt ?? 0);
+  const sweepRejectShort = assessLiqScanSweepRejectShort(analysis, lastAlert);
+  const sweepRejectLong = assessLiqScanSweepRejectLong(analysis, lastAlert);
+  // Preserve the causal lifecycle visible at the snapshot time even when a later
+  // request reads that snapshot after its live-freshness window has elapsed.
+  const sweepRejectShortAtSnapshot = Number.isFinite(snapshotAt)
+    ? assessLiqScanSweepRejectShort({
+      ...analysis,
+      freshness: { ...(analysis?.freshness ?? {}), stale: false },
+    }, lastAlert, snapshotAt)
+    : null;
+  const sweepRejectLongAtSnapshot = Number.isFinite(snapshotAt)
+    ? assessLiqScanSweepRejectLong({
+      ...analysis,
+      freshness: { ...(analysis?.freshness ?? {}), stale: false },
+    }, lastAlert, snapshotAt)
+    : null;
   return {
     ...analysis,
     horizonAnalysis: analysis?.horizonAnalysis ?? buildCoinHorizonAnalysis(analysis),
@@ -17757,7 +18951,10 @@ async function attachLatestLiqScanAlert(analysis = {}) {
       current,
       directionAssessment: assessSweepDirection(analysis, current),
       alertTier: classifyLiqScanTier(analysis),
-      sweepRejectShort: assessLiqScanSweepRejectShort(analysis, lastAlert),
+      sweepRejectShort,
+      sweepRejectShortAtSnapshot,
+      sweepRejectLong,
+      sweepRejectLongAtSnapshot,
       lastAlert: lastAlert ? {
         ...lastAlert,
         ageMs: Number.isFinite(alertAt) ? Math.max(0, Date.now() - alertAt) : null,
@@ -17906,7 +19103,7 @@ async function getCoinLevelAnalysis(rawSymbol, { coinGlassOnly = false } = {}) {
       ['premiumIndex', () => analyzeClient.getPremiumIndex(symbol, requestOptions)],
       ['ticker24h', () => analyzeClient.getTicker24hrSymbol(symbol, requestOptions)],
       ['openInterest', () => analyzeClient.getOpenInterest(symbol, requestOptions)],
-      ['depth', () => analyzeClient.getDepth(symbol, 500, requestOptions)],
+      ['depth', () => analyzeClient.getDepth(symbol, 1000, requestOptions)],
       ['klines5m', () => analyzeClient.getKlines(symbol, '5m', 240, requestOptions)],
       ['klines15m', () => analyzeClient.getKlines(symbol, '15m', 240, requestOptions)],
       ['klines1h', () => analyzeClient.getKlines(symbol, '1h', 240, requestOptions)],
@@ -17949,6 +19146,7 @@ async function getCoinLevelAnalysis(rawSymbol, { coinGlassOnly = false } = {}) {
       ticker24h: value('ticker24h'),
       openInterest: value('openInterest'),
       depth: value('depth', { bids: [], asks: [] }),
+      depthLimit: 1000,
       klinesByInterval: {
         '5m': value('klines5m'),
         '15m': value('klines15m'),
@@ -21140,12 +22338,18 @@ async function _fetchMarketSnapshot() {
       const premium = premiumBySymbol.get(item.symbol);
       const lsr = longShortCache.get(item.symbol);
       const tp = topPositionCache.get(item.symbol);
+      const high24h = Number(item.highPrice);
+      const low24h = Number(item.lowPrice);
       return {
         symbol: item.symbol,
+        lastPrice: Number(item.lastPrice),
         markPrice: Number(premium?.markPrice ?? item.lastPrice),
         indexPrice: Number(premium?.indexPrice ?? item.weightedAvgPrice),
         fundingRate: Number(premium?.lastFundingRate ?? 0),
         change24hPct: Number(item.priceChangePercent),
+        high24h,
+        low24h,
+        range24hPct: low24h > 0 ? ((high24h - low24h) / low24h) * 100 : null,
         quoteVolume: Number(item.quoteVolume),
         longShortRatio: lsr?.longShortRatio ?? null,
         longAccount: lsr?.longAccount ?? null,
@@ -36528,6 +37732,7 @@ function getTopReversalBtcLog(signal = {}, health = btcHealthCache.data) {
       btcTrendScore: health.btcTrendScore ?? null,
       btcTrendDir: health.btcTrendDir ?? null,
       btcCandle1hPct: health.btcCandle1hPct ?? null,
+      btcPullback5m: health.btcPullback5m ?? null,
       at: health.at ?? null,
     } : null,
     relation,
@@ -38672,8 +39877,12 @@ async function getSharedPositionData({ bypassAlgoRestDefer = false } = {}) {
       ]);
       const algoOrders = Array.isArray(algoResult?.orders) ? algoResult.orders
         : Array.isArray(algoResult) ? algoResult : [];
+      const activePositions = positions.filter((p) => Number(p.positionAmt) !== 0);
+      for (const position of activePositions) {
+        autoEntryControls.markProtectionPositionActive(position.symbol, Date.now());
+      }
       _posStore = {
-        positions: positions.filter((p) => Number(p.positionAmt) !== 0),
+        positions: activePositions,
         openOrders: Array.isArray(openOrders) ? openOrders : [],
         algoOrders,
         fetchedAt: Date.now(),
@@ -42553,6 +43762,13 @@ async function handleNegativeTimeoutTp(symbol, pos, {
   triggerRoe = null,
   force = false,
 } = {}) {
+  // Some protection paths (notably Coin Level direction-flip) call this helper
+  // directly with force=true instead of going through routeNegativeTakeProfit.
+  // Guard here as the final mutation boundary, before cooldown state, REST reads,
+  // stale-TP cancellation or creation of the reduce-only LIMIT at entry.
+  if (isBinanceProtectionExcluded(symbol, 'NEGATIVE_TP_MOVE')) {
+    return { status: 'protection-excluded', entryPrice: Number(pos?.entry) || null };
+  }
   const entry = pos.entry;
   const ageRule = triggerVersion === BINANCE_EIGHT_HOUR_NEGATIVE_TP_VERSION;
   // Dedup: already set TP to entry for this position
@@ -42866,6 +44082,18 @@ async function sendStatic(pathname, response) {
                   ? '/liquid-scan.html'
                 : pathname === '/coin-level-analysis'
                   ? '/coin-level-analysis.html'
+                : pathname === '/low-supply-market'
+                  ? '/low-supply-market.html'
+                : pathname === '/toxic-two-side-market'
+                  ? '/toxic-two-side-market.html'
+                : pathname === '/very-strong-entry-watch'
+                  ? '/very-strong-entry-watch.html'
+                : pathname === '/btc-relative-strength-watch'
+                  ? '/btc-relative-strength-watch.html'
+                : pathname === '/pump-base-recovery'
+                  ? '/pump-base-recovery.html'
+                : pathname === '/dump-cap-rejection'
+                  ? '/dump-cap-rejection.html'
                 : pathname === '/post-dump-volume-recovery'
                   ? '/post-dump-volume-recovery.html'
                 : pathname === '/post-pump-volume-fade'
@@ -42884,6 +44112,14 @@ async function sendStatic(pathname, response) {
                   ? '/coinglass-web-top20.html'
                 : pathname === '/coinglass-web-secondary'
                   ? '/coinglass-web-secondary.html'
+                : pathname === '/local-ai-trend-evaluation'
+                  ? '/local-ai-trend-evaluation.html'
+                : pathname === '/ai-signal-review'
+                  ? '/ai-signal-review.html'
+                : pathname === '/binance-signal-orders'
+                  ? '/binance-signal-orders.html'
+                  : pathname === '/main-kill-gap-watch'
+                    ? '/main-kill-gap-watch.html'
               : pathname;
   const safePath = normalize(staticPath).replace(/^(\.\.[/\\])+/, '');
   const filePath = join(publicDir, safePath);
@@ -42924,6 +44160,8 @@ async function sendStatic(pathname, response) {
           ? html.replace('</head>', '  <script src="/paper-learning-columns.js"></script>\n</head>')
           : html;
       }
+      html = injectLocalAiNavigation(html);
+      html = injectToxicTwoSideNavigation(html);
       const hasDedicatedLoader = staticPath === '/recommended-signals.html';
       if (!hasDedicatedLoader && !html.includes('/global-loading.js')) {
         const loaderScript = '<script src="/global-loading.js"></script>';

@@ -1,0 +1,9 @@
+.stage-AT_CAP{--stage:#ffd45e}.stage-REJECTING{--stage:#ff9b42}.stage-VOLUME_REJECTION{--stage:#ff5d78}.stage-INVALIDATED{--stage:#b68cff}
+.stage-VOLUME_REJECTION{background:rgba(255,93,120,.055)}
+.resistance-summary{color:#ff9aae;font-weight:700}
+.resistance-cell{min-width:235px;max-width:270px;white-space:normal}
+.resistance-entry{min-width:230px}.resistance-entry strong{font-size:20px;color:var(--muted)}
+.resistance-ready{background:rgba(255,67,101,.15)!important;box-shadow:inset 5px 0 #ff496c!important}
+.resistance-ready .resistance-entry strong,.resistance-ready [data-resistance-status]{color:#ff7891}
+.resistance-broken [data-resistance-status]{color:#c8a5ff}.resistance-broken{box-shadow:inset 5px 0 #a979ff!important}
+.resistance-cards{font-size:11px}.resistance-cards article{border:1px solid #55303b}.resistance-cards strong{font-size:22px}

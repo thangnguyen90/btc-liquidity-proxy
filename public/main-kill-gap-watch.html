@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI · Khoảng trống tới Main Kill</title>
+  <link rel="stylesheet" href="/main-kill-gap-watch.css?v=20261002-v2-price-forecast">
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <p class="eyebrow">AI TOP 10 · COIN LEVEL · BINANCE FUTURES</p>
+        <h1>Khoảng trống tới MAIN KILL</h1>
+        <p>Xác nhận MARK → MAIN KILL và dự báo vùng giá kiểm tra tiếp theo từ nến 5m/15m, xu hướng 1h, BTC và depth Binance.</p>
+      </div>
+      <nav aria-label="Điều hướng">
+        <a href="/local-ai-trend-evaluation">AI Local</a>
+        <a class="active" href="/main-kill-gap-watch" aria-current="page">Main Kill Gap</a>
+        <a href="/coin-level-analysis">Coin Level</a>
+        <a href="/liquid-scan">Liquid Scan</a>
+        <a href="/binance-auto-controls">Quản lý Binance</a>
+      </nav>
+    </header>
+
+    <section class="notice">
+      <b>OBSERVE ONLY</b>
+      <span>Dự báo giá là kịch bản có điều kiện theo dõi 15m–1h. Xem vùng kiểm tra đầu, điều kiện đi tiếp và mốc vô hiệu ở từng coin. USD MAIN KILL là proxy LiqScan; trang chỉ quan sát.</span>
+    </section>
+
+    <section class="context-grid">
+      <article><span>AI / BTC</span><strong id="ai-context">—</strong><small id="ai-time">—</small></article>
+      <article><span>Candidate AI</span><strong id="count-candidates">0</strong><small>Top tổng thể hiện tại</small></article>
+      <article class="wide"><span>Gap rộng</span><strong id="count-wide">0</strong><small>≥1.2% và ≥2 ATR15</small></article>
+      <article class="vacuum"><span>Vacuum xác nhận</span><strong id="count-vacuum">0</strong><small>Depth phủ đủ · trung gian ≤25%</small></article>
+      <article class="unknown"><span>Thiếu coverage</span><strong id="count-unconfirmed">0</strong><small>Không suy đoán khi depth chưa phủ</small></article>
+    </section>
+
+    <section class="toolbar">
+      <label>Trạng thái
+        <select id="status-filter">
+          <option value="ALL">Tất cả</option>
+          <option value="VACUUM">Gap rộng + vacuum</option>
+          <option value="WIDE">Tất cả gap rộng</option>
+          <option value="ACTIVE">MAIN còn active</option>
+        </select>
+      </label>
+      <button id="refresh" type="button">Làm mới</button>
+      <span id="status">Đang tải snapshot AI…</span>
+    </section>
+
+    <section class="table-card">
+      <table>
+        <thead><tr>
+          <th>Coin / AI</th><th>MARK → MAIN KILL</th><th>Khoảng cách</th><th>ATR15</th>
+          <th>Depth trung gian</th><th>Coverage</th><th>Kết luận</th><th>Dự báo giá · 15m–1h</th><th>Mở</th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="9" class="empty">Đang tải…</td></tr></tbody>
+      </table>
+    </section>
+
+    <footer>Version <span id="version">—</span> · Không tác động Binance/entry/size/SL/TP.</footer>
+  </main>
+  <script type="module" src="/main-kill-gap-watch.js?v=20261002-v2-price-forecast"></script>
+</body>
+</html>

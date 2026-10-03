@@ -1,9 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { POST_PUMP_NO_BUY_STAGE } from './postPumpNoBuyWatch.js';
+import { impulseSizingDiscordField } from './postMoveImpulseSizing.js';
 
 export const POST_PUMP_NO_BUY_DISCORD_VERSION =
-  'POST_PUMP_NO_BUY_DISCORD_V3_IMPULSE_MARKET8_20260927';
+  'POST_PUMP_NO_BUY_DISCORD_V6_DYNAMIC_SIZE_20261001';
 
 const MAX_SIGNAL_AGE_MS = 12 * 60_000;
 const RETRY_MIN_MS = 60_000;
@@ -41,22 +42,24 @@ function validDiscordWebhook(value) {
 export function postPumpNoBuyDiscordPayload(watch) {
   const confirmed = watch?.stage === POST_PUMP_NO_BUY_STAGE.NO_BUY_CONFIRMATION;
   const late = watch?.stage === POST_PUMP_NO_BUY_STAGE.LATE_NO_CHASE;
+  const size = watch?.impulseSizing?.marginUsdt ?? '1 hoặc 5';
   return {
     username: 'Post-pump Sell Watch',
     allowed_mentions: { parse: [] },
     embeds: [{
-      title: `${late ? '⚪ XẢ MẠNH SAU BƠM · ĐÃ XẢ QUÁ XA · KHÔNG SHORT ĐUỔI' : confirmed ? '🔴 XẢ MẠNH SAU BƠM · KHÔNG CÓ LỰC MUA' : '🟠 XẢ MẠNH SAU BƠM · CẢNH BÁO SỚM'} · ${watch.symbol}`,
-      color: late ? 0x95a5a6 : confirmed ? 0xff4567 : 0xff9f43,
+      title: `${late ? '⚪ XẢ MẠNH SAU BƠM · ĐÃ XẢ QUÁ XA · KHÔNG SHORT ĐUỔI' : confirmed ? '🔴 XẢ MẠNH SAU BƠM · ĐÃ XÁC NHẬN SHORT' : '🟠 XẢ MẠNH SAU BƠM · CẢNH BÁO SỚM'} · ${watch.symbol}`,
+      color: late ? 0x95a5a6 : confirmed ? 0xe74c3c : 0xff9f43,
       description: late
         ? '**OBSERVE ONLY · KHÔNG PHẢI ĐIỂM VÀO**\nĐã nhận ra cây xả nhưng giá/RSI hiện quá giãn. **Không SHORT đuổi và không tự đặt Binance.**'
         : confirmed
-          ? '**OBSERVE ONLY · 2–3 NẾN 5m ĐÃ ĐÓNG**\nLực mua sau cây xả vẫn yếu. **Chỉ cập nhật xác nhận; không vào thêm lần hai và không SHORT đuổi.**'
-          : '**MARKET SHORT 8 USDT · NẾN 5m ĐÃ ĐÓNG**\nCây xả đầu tiên sau nhịp bơm vừa đạt ngưỡng. **Binance chỉ được xét khi khóa tổng + route SHORT đang ON; Discord không xác nhận lệnh đã khớp.**',
+          ? `**MARKET SHORT ${size} USDT · XÁC NHẬN 2–3 NẾN 5m ĐÃ ĐÓNG**\nLực mua sau cây xả vẫn yếu. **Binance chỉ được xét ở bước xác nhận này khi khóa tổng + route SHORT đang ON; không SHORT đuổi và Discord không xác nhận lệnh đã khớp.**`
+          : '**OBSERVE ONLY · CHỜ XÁC NHẬN 2–3 NẾN 5m**\nCây xả đầu tiên sau nhịp bơm vừa đạt ngưỡng. **Vẫn gửi Discord nhưng chưa đặt Binance.**',
       fields: [
         {
           name: 'PHÂN LOẠI',
           value: '**XẢ MẠNH SAU BƠM**',
         },
+        ...(confirmed ? [impulseSizingDiscordField(watch)] : []),
         {
           name: 'NHỊP BƠM / ĐÁY PHÂN PHỐI',
           value: `Bơm **+${number(watch.pumpPct, 2)}%** · đỉnh **${number(watch.pumpPrice)}**\nĐáy vùng **${number(watch.distributionBaseLow)}** · đỉnh vùng **${number(watch.distributionBaseHigh)}**`,
@@ -84,7 +87,7 @@ export function postPumpNoBuyDiscordPayload(watch) {
         { name: 'MỞ MÀN HÌNH', value: chartLinks(watch.symbol) },
       ],
       footer: {
-        text: `${POST_PUMP_NO_BUY_DISCORD_VERSION} · ${late || confirmed ? 'không vào thêm' : 'route MARKET SHORT 8 USDT'}`,
+        text: `${POST_PUMP_NO_BUY_DISCORD_VERSION} · ${late ? 'không vào' : confirmed ? `route MARKET SHORT ${size} USDT sau xác nhận` : 'chờ xác nhận · không đặt Binance'}`,
       },
       timestamp: new Date(watch.observedAt).toISOString(),
     }],

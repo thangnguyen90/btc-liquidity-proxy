@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Xả · Hồi đỉnh · Từ chối | V2</title>
+  <link rel="stylesheet" href="/post-dump-volume-recovery.css">
+  <link rel="stylesheet" href="/pump-base-recovery.css?v=20260927-v1">
+  <link rel="stylesheet" href="/dump-cap-rejection.css?v=20260927-v1">
+</head>
+<body><main class="shell">
+  <header class="hero">
+    <div><p class="eyebrow">V2 · NẾN ĐÃ ĐÓNG · OBSERVE ONLY</p><h1>Xả → Hồi đỉnh → Từ chối</h1>
+      <p class="subtitle">Case đối xứng SHORT: theo dõi nhịp giảm sau một nến xả lớn được hồi về đỉnh hoặc quét cao hơn đỉnh nến.</p></div>
+    <nav aria-label="Điều hướng">
+      <a href="/liquid-flow-v2">Liquid Flow V2</a><a href="/coin-level-analysis">Bản đồ giá</a>
+      <a href="/post-dump-volume-recovery">LONG sau xả</a><a href="/post-pump-volume-fade">SHORT sau bơm</a>
+      <a href="/btc-session-watch.html">BTC Session</a><a href="/binance-auto-controls">Quản lý Binance</a>
+      <a href="/pump-base-recovery">Bơm · trả chân · hồi</a>
+      <a href="/dump-cap-rejection" class="active" aria-current="page">Xả · hồi đỉnh · từ chối</a><a href="/low-supply-market">Thị trường cung thấp</a><a href="/very-strong-entry-watch">Entry rất mạnh</a>
+    </nav>
+  </header>
+  <section class="notice"><strong>Mẫu quan sát SHORT, không phải khuyến nghị bán.</strong> Đỉnh nến = giá mở cửa của nến xả; đáy = râu thấp nhất. Bắt buộc có nến sau đó hồi về đỉnh, rồi mới xét nhịp từ chối. Khi entry live thật sự pass sẽ gửi Discord; không đặt Binance và không thay đổi SL/TP.</section>
+  <section class="panel">
+    <div class="panel-head"><div><p class="eyebrow">5 KHUNG ĐỘC LẬP</p><h2>Danh sách theo dõi SHORT</h2><p id="scan-status" class="muted" role="status">Đang tải…</p><p id="socket-status" class="muted">Giá MARK: đang chờ</p></div>
+      <div class="filters"><label>Tìm coin<input id="search" type="search" placeholder="TRIAUSDT"></label>
+        <label>Giai đoạn<select id="stage"><option value="ALL">Tất cả</option></select></label>
+        <label>Hồi đỉnh<select id="sweep"><option value="ALL">Tất cả</option><option value="ABOVE">Quét cao hơn đỉnh</option><option value="CAP">Về quanh đỉnh</option></select></label>
+        <button id="refresh" type="button">Làm mới</button></div>
+    </div>
+    <div id="frame-tabs" class="timeframe-tabs" role="tablist" aria-label="Khung nến"></div>
+    <div id="frame-panel" role="tabpanel">
+      <div id="stage-cards" class="summary-grid"></div>
+      <p id="coverage" class="muted"></p>
+      <p id="resistance-summary" class="resistance-summary" role="status">Đang kiểm tra kháng cự SHORT…</p>
+      <details><summary>Phân nhóm kháng cự · chỉ thống kê 50 dòng đang xem</summary><div id="resistance-cards" class="summary-grid resistance-cards"></div></details>
+      <div class="table-wrap"><table><thead><tr>
+        <th><button data-sort="symbol">Coin ↕</button></th><th>Kháng cự SHORT</th><th>Entry tham khảo</th><th>Vô hiệu / hỗ trợ / R:R</th><th><button data-sort="stage">Giai đoạn ↕</button></th>
+        <th><button data-sort="close">Giá đóng / MARK ↕</button></th><th><button data-sort="dumpAt">Nến xả ↕</button></th>
+        <th><button data-sort="dumpRangeAtr">Độ lớn nến ↕</button></th><th>Đỉnh / đáy nến</th>
+        <th><button data-sort="retracePct">Hồi đỉnh ↕</button></th><th><button data-sort="rejectionPct">Giảm từ đỉnh ↕</button></th>
+        <th><button data-sort="volumeRatio">Volume bán ↕</button></th><th><button data-sort="ageBars">Tuổi mẫu ↕</button></th>
+      </tr></thead><tbody id="rows"></tbody></table></div>
+      <div class="pagination"><button id="prev" type="button">← Trước</button><span id="page-status"></span><button id="next" type="button">Sau →</button></div>
+      <p id="exclusions" class="muted"></p>
+    </div>
+  </section>
+  <section class="panel rules"><h2>Cách nhận diện V1</h2>
+    <p><b>Kháng cự SHORT thử nghiệm:</b> xét đỉnh nến xả đã bị từ chối, đỉnh hồi pivot đã có 2 nến xác nhận bên phải, hoặc đáy nền 3 nến đã phá. Vùng rộng ±0,15 ATR. Nến retest có râu trên ≥25% biên độ, đóng dưới vùng; volume ≤80% nến giảm mạnh nhất trong 6 nến trước. Nến tiếp theo đóng phá đáy retest với volume tăng mới xác nhận.</p>
+    <p><b>Chỉ tô đỏ khi còn điểm vào:</b> nến xác nhận trong 3 nến gần nhất, MARK mới ≤15 giây và snapshot ≤90 giây; giá vẫn dưới mốc phá đáy retest, cách kháng cự ≤1 ATR, nằm gần entry xác nhận (−0,35 / +0,25 ATR) và R:R ≥1,5 sau chi phí giả định 0,12%. Entry không chạy theo MARK. Vượt mốc vô hiệu sẽ bỏ màu; giá đã rơi xa báo chờ retest.</p>
+    <ol>
+      <li><b>Nến xả sâu:</b> cao–thấp ≥2,5 ATR; mở–đáy ≥1,8 ATR; volume ≥2× trung vị 20 nến trước; đóng ≤mở.</li>
+      <li><b>Hồi đỉnh:</b> một nến sau có đỉnh ≥mở nến xả −0,15 ATR. Quét trên đỉnh khi high cao hơn mở +0,15 ATR. Râu trong chính nến xả không được tính.</li>
+      <li><b>Đang bị từ chối:</b> nến sau lần hồi đỉnh đóng giảm so với nến trước và giảm ≥0,5 ATR từ đỉnh sau hồi.</li>
+      <li><b>Giảm · volume tăng dần:</b> 3 nến đã đóng sau hồi đỉnh có close giảm và volume tăng liên tiếp; volume cuối ≥1,2× nền trước xả; rơi lại dưới giá mở nến xả.</li>
+      <li><b>Vô hiệu:</b> đóng trên đỉnh nến hồi +0,15 ATR, hoặc 2 nến đóng tăng liên tiếp. Đây là trạng thái hiện tại, không phải lịch sử lệnh.</li>
+    </ol>
+    <p class="muted">Quét tối đa 128 nến đóng, theo dõi tối đa 96 nến sau xả. Một coin có thể có nhiều nến xả gốc nên số case không bằng số coin. Nến 1d đóng 07:00 VN. Chỉ gộp nến đủ và liên tục; thiếu/cũ được thống kê riêng.</p>
+    <p class="muted">WHITELIST mặc định OFF; checkbox chỉ hiện khi có lệnh đóng đúng nhóm với AvgROE &gt;4%. Hiện chưa có thống kê lệnh đóng hoặc quyền Binance cho mẫu này. Các ngưỡng V1 chưa được backtest chứng minh hiệu quả.</p>
+  </section>
+</main><script type="module" src="/dump-cap-rejection.js?v=20260927-v1"></script></body>
+</html>

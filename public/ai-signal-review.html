@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Đánh giá tín hiệu AI · Hướng & điểm vào</title>
+  <link rel="stylesheet" href="/ai-signal-review.css?v=20261003-2">
+</head>
+<body><main>
+  <header class="hero">
+    <div><p class="eyebrow">LỊCH SỬ DISCORD · GIỜ VIỆT NAM</p><h1>Tín hiệu đúng.<br>Điểm vào đã tốt?</h1>
+      <p>Đối chiếu từng coin với diễn biến giá, BTC và thị trường tại thời điểm phát tín hiệu.</p></div>
+    <nav aria-label="Điều hướng"><a href="/local-ai-trend-evaluation">AI Local</a><a href="/ai-signal-review" aria-current="page">Đánh giá tín hiệu</a><a href="/binance-auto-controls">Quản lý Binance</a></nav>
+  </header>
+  <section class="panel status-bar"><div><strong id="status" role="status">Đang tải lịch sử…</strong><p id="coverage" class="muted"></p></div><button id="refresh">Cập nhật phân tích</button></section>
+  <section class="panel filters" aria-label="Bộ lọc">
+    <label>Coin<input id="symbol" placeholder="BTC, QNT, 龙虾…" autocomplete="off"></label>
+    <label>Hướng<select id="side"><option value="">LONG + SHORT</option><option>LONG</option><option>SHORT</option></select></label>
+    <label>Đánh giá sau<select id="hours"><option value="1">1 giờ</option><option value="4" selected>4 giờ</option><option value="24">24 giờ</option></select></label>
+    <label>Nhóm điểm<select id="band"><option value="">Tất cả điểm</option><option value="00_49">0 đến &lt;50</option><option value="50_64">50 đến &lt;65</option><option value="65_74">65 đến &lt;75</option><option value="75_84">75 đến &lt;85</option><option value="85_100">85–100</option><option value="UNKNOWN">Chưa lưu điểm</option></select></label>
+    <label>Verdict<select id="verdict"><option value="">Tất cả</option><option>PRIORITY</option><option>WATCH</option></select></label>
+    <label>BTC trước tín hiệu<select id="btc"><option value="">Tất cả</option><option value="ALIGNED">Đồng hướng</option><option value="OPPOSED">Ngược hướng</option><option value="FLAT">Đi ngang</option><option value="UNKNOWN">Thiếu nến</option></select></label>
+    <label>Thị trường đã lưu<select id="market"><option value="">Tất cả</option><option>UP_STRONG</option><option>SW_UP</option><option>DOWN_STRONG</option><option>SW_DOWN</option><option>RANGE</option><option>UNCLEAR</option><option value="UNKNOWN">Chưa lưu</option></select></label>
+    <label>Nguồn đánh giá<select id="source"><option value="">Tất cả</option><option value="MODEL">Ollama</option><option value="FALLBACK">Fallback</option><option value="UNKNOWN">Chưa lưu nguồn</option></select></label>
+    <label>Từ ngày<input type="date" id="from"></label><label>Đến ngày<input type="date" id="to"></label>
+    <label>Phí + trượt giá hai chiều (%)<input id="cost" type="number" min="0" max="5" step="0.01" value="0.12"></label>
+    <label class="check"><input id="independent" type="checkbox" checked>Loại tín hiệu lặp coin/hướng trong 4h</label>
+  </section>
+  <section class="panel"><h2>Kết quả theo bộ lọc</h2><p id="insight" class="insight">Chưa có báo cáo. Bấm “Cập nhật phân tích” để gom lịch sử.</p>
+    <div class="table-wrap"><table class="comparison"><thead><tr><th>Cách vào giả định</th><th>Đủ dữ liệu</th><th>Chạm / tổng có thể xét</th><th>Có lời sau chi phí</th><th>TB sau chi phí</th><th>Trung vị</th><th>Đi thuận / đi ngược TB</th><th>Chênh với vào ngay<br>trên cùng mẫu</th><th>TB / cơ hội<br>không chạm = 0</th></tr></thead><tbody id="comparison"></tbody></table></div>
+    <p class="muted">Cùng giá đóng cuối kỳ cho cả ba cách. Chờ giữa vùng hoặc hồi 0,5% tối đa 4h; cửa sổ 1h chỉ chờ 1h. Chạm OHLC là khớp giả định, chưa chứng minh khớp Binance. Không dùng đòn bẩy, TP/SL, funding hay DCA.</p>
+  </section>
+  <section class="panel"><div class="section-heading"><h2>Coin, thời điểm và bối cảnh nào có kết quả tốt hơn?</h2><label>Gom theo<select id="group"><option value="hour_btc">Giờ + hướng + BTC</option><option value="coin">Coin + hướng</option><option value="hour">Giờ + hướng</option><option value="band">Nhóm điểm + hướng</option><option value="market">Thị trường + hướng</option><option value="breadth">Breadth + hướng</option></select></label></div>
+    <p class="muted">Thứ tự theo kết quả lịch sử sau chi phí của “vào ngay”. Nhóm dưới 20 mẫu ghi rõ mẫu nhỏ; không coi xếp hạng này là khuyến nghị vào lệnh.</p>
+    <div class="table-wrap"><table><thead><tr><th>Nhóm</th><th>Tín hiệu</th><th>Mẫu đủ kỳ</th><th>Vào ngay: tỷ lệ lời</th><th>Vào ngay: TB</th><th>Giữa vùng: TB / số chạm</th><th>Hồi 0,5%: TB / số chạm</th></tr></thead><tbody id="groups"></tbody></table></div>
+  </section>
+  <section class="panel"><div class="section-heading"><h2>Từng tín hiệu đã gửi</h2><label>Sắp xếp<select id="sort"><option value="newest">Mới nhất</option><option value="return">Lợi nhuận vào ngay cao nhất</option><option value="adverse">Đi ngược nhiều nhất</option><option value="entry_delta">Entry giữa vùng cải thiện nhiều nhất</option></select></label></div>
+    <p class="muted">Mở “Chi tiết” để xem vùng entry gốc, thời gian chạm, kết quả từng cách và mức độ thiếu dữ liệu.</p>
+    <div class="table-wrap"><table class="signals"><thead><tr><th>Coin / tín hiệu</th><th>Giờ gửi (VN)</th><th>BTC khi phát</th><th>Thị trường / breadth</th><th>Giá vào ngay / vùng gốc</th><th>Vào ngay</th><th>Chờ giữa vùng</th><th>Chờ hồi 0,5%</th><th>Chi tiết</th></tr></thead><tbody id="signals"></tbody></table></div>
+    <div class="pager"><button id="previous">← Trước</button><span id="page"></span><button id="next">Sau →</button></div>
+  </section>
+  <details class="panel method"><summary>Cách tính và giới hạn dữ liệu</summary>
+    <p>Giá “vào ngay” là giá mở nến 15m kế tiếp sau thời điểm gửi Discord. Lợi nhuận LONG = (giá thoát − giá vào) / giá vào; SHORT = (giá vào − giá thoát) / giá vào. Chi phí hai chiều mặc định 0,12% có thể thay ở bộ lọc. Giá thoát là đóng nến sau 1h/4h/24h tính từ mốc này.</p>
+    <p>Vùng gốc chỉ lấy từ bản ghi lúc gửi. Thiếu vùng, điểm hoặc nguồn model được ghi “chưa lưu”; không lấy snapshot hiện tại thay cho lịch sử. Nến thiếu không bị tính thành lệnh thua. Nến chạm entry bị loại khỏi tính đi thuận/đi ngược vì OHLC không xác định thứ tự trong nến.</p>
+    <p>BTC tái dựng dùng các nến 15m đã đóng trước lúc phát: động lượng 1h &gt;0,1% là tăng, &lt;−0,1% là giảm, còn lại đi ngang. Đây là động lượng tái dựng; trend 1h/4h và regime/breadth gốc được hiển thị riêng khi đã lưu. Bản ghi cũ không đủ để tái dựng breadth toàn thị trường.</p>
+    <p>Đây là đánh giá các tín hiệu đã gửi, có thiên lệch chọn mẫu bởi top 3 và cooldown. Loại lặp 4h không loại hết tương quan giữa coin. Dữ liệu giới hạn 30 ngày gần nhất, tối đa 20.000 mẫu; kho sự kiện được giữ để đánh giá tiếp. Thống kê mô phỏng chưa phải closed AvgROE của lệnh thật và không cấp quyền WHITELIST.</p>
+  </details>
+  <footer>OBSERVE ONLY · Phân tích lịch sử · Không đặt lệnh từ trang này</footer>
+</main><script type="module" src="/ai-signal-review.js?v=20261003-4"></script></body></html>

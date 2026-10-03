@@ -17,8 +17,10 @@ controls.update({action:'route',key:r.key,enabled:true});assert.throws(()=>contr
 controls.update({action:'master',enabled:true});assert.doesNotThrow(()=>controls.assertEntry(payload));
 controls=new AutoEntryControls(file);assert.doesNotThrow(()=>controls.assertEntry(payload),'restart retains choices');
 assert.deepEqual(controls.read().protectionExclusions,[],'old JSON without exclusions defaults to an empty list');
+assert.deepEqual(controls.read().protectionFullBypasses,[],'old JSON without full bypass defaults to an empty list');
+assert.deepEqual(controls.read().protectionExclusionEvents,[],'old JSON without lifecycle events stays compatible');
 assert.equal(normalizeProtectionExclusionSymbol(' ain/usdt '),'AINUSDT');
-assert.equal(BINANCE_PROTECTION_EXCLUSION_VERSION,'BINANCE_SYMBOL_PROTECTION_EXCLUSION_V4_AUTO_RESUME_ROE15_OR_NEG25_20260926');
+assert.equal(BINANCE_PROTECTION_EXCLUSION_VERSION,'BINANCE_SYMBOL_PROTECTION_EXCLUSION_V8_DIRECTION_FLIP_FAIL_CLOSED_20261003');
 assert.equal(DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE,15);
 assert.equal(DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE,-25);
 assert.equal(protectionExclusionAutoResumeRoe('15'),15);
@@ -40,6 +42,31 @@ assert.equal(controls.isProtectionExcluded('ain'),true);
 assert.equal(controls.isProtectionExcluded('ONEUSDT'),false);
 controls=new AutoEntryControls(file);assert.equal(controls.isProtectionExcluded('AIN/USDT'),true,'protection exclusion survives restart');
 assert.equal(controls.read().protectionExclusionVersion,BINANCE_PROTECTION_EXCLUSION_VERSION);
+controls.update({action:'protection-full-bypass-add',symbol:'FULL'});
+assert.deepEqual(controls.read().protectionFullBypasses,['FULLUSDT'],'full bypass is persisted separately');
+assert.deepEqual(controls.read().protectionExclusionEvents.at(-1),{
+  symbol:'FULLUSDT',mode:'FULL_POSITION_BYPASS',event:'ENABLED',reason:'USER_REQUEST',at:controls.read().protectionExclusionEvents.at(-1).at,
+},'full bypass save is visible in lifecycle audit');
+assert.equal(controls.protectionExclusionMode('FULLUSDT'),'FULL_POSITION_BYPASS');
+assert.equal(controls.isProtectionExcluded('FULLUSDT'),true);
+assert.equal(controls.autoResumeProtectionExclusion('FULLUSDT',99,15,-25),false,'full bypass never resumes at profit boundary');
+assert.equal(controls.autoResumeProtectionExclusion('FULLUSDT',-99,15,-25),false,'full bypass never resumes at loss boundary');
+controls=new AutoEntryControls(file);assert.equal(controls.protectionExclusionMode('FULL'),'FULL_POSITION_BYPASS','full bypass survives restart');
+controls.update({action:'protection-full-bypass-add',symbol:'LATCH'});
+assert.equal(controls.fullBypassPositionBound('LATCH'),false,'full bypass starts armed but unbound when no active position was observed');
+assert.equal(controls.clearProtectionExclusion('LATCH','POSITION_CLOSED_REST_RECONCILE'),false,'a stale close snapshot cannot clear an unbound full bypass');
+assert.equal(controls.isProtectionExcluded('LATCH'),true,'unbound full bypass stays armed for the next position');
+assert.equal(controls.markProtectionPositionActive('LATCH',Date.now()),true,'first active position observation binds the armed bypass');
+assert.equal(controls.fullBypassPositionBound('LATCH'),true,'bound state is persisted');
+assert.equal(controls.read().protectionExclusionEvents.at(-1).event,'POSITION_BOUND');
+assert.equal(controls.clearProtectionExclusion('LATCH','POSITION_CLOSED_REST_RECONCILE'),true,'the bound bypass clears after that position closes');
+controls=new AutoEntryControls(file);assert.equal(controls.isProtectionExcluded('LATCH'),false,'bound close clear survives restart');
+controls.update({action:'protection-exclusion-add',symbol:'FULL'});
+assert.equal(controls.protectionExclusionMode('FULL'),'AUTO_RESUME_ROE_BOUNDARY','switching to temporary mode removes full bypass atomically');
+controls.update({action:'protection-full-bypass-add',symbol:'FULL'});
+assert.deepEqual(controls.read().protectionExclusions,['AINUSDT'],'switching back to full mode removes temporary duplicate');
+controls.update({action:'protection-full-bypass-remove',symbol:'FULL'});
+assert.equal(controls.isProtectionExcluded('FULL'),false,'manual full-bypass removal resumes automatic protection');
 controls.update({action:'protection-exclusion-add',symbol:'PROFIT'});
 assert.equal(controls.autoResumeProtectionExclusion('PROFITUSDT',14.999,15),false,'below +15% keeps exclusion');
 assert.equal(controls.isProtectionExcluded('PROFITUSDT'),true);
@@ -50,7 +77,9 @@ assert.equal(controls.autoResumeProtectionExclusion('LOSSUSDT',-24.999,15,-25),f
 assert.equal(controls.isProtectionExcluded('LOSSUSDT'),true);
 assert.equal(controls.autoResumeProtectionExclusion('LOSSUSDT',-25,15,-25),true,'exact -25% clears exclusion');
 controls=new AutoEntryControls(file);assert.equal(controls.isProtectionExcluded('LOSSUSDT'),false,'loss auto-resume persists after restart');
-assert.equal(controls.clearProtectionExclusion('AIN'),true,'confirmed close can atomically reset the lifecycle exclusion');
+assert.equal(controls.clearProtectionExclusion('AIN','POSITION_CLOSED_REST_RECONCILE'),true,'confirmed close can atomically reset the lifecycle exclusion');
+assert.equal(controls.read().protectionExclusionEvents.at(-1).event,'AUTO_CLEARED');
+assert.equal(controls.read().protectionExclusionEvents.at(-1).reason,'POSITION_CLOSED_REST_RECONCILE');
 assert.equal(controls.clearProtectionExclusion('AINUSDT'),false,'close reset is idempotent');
 controls=new AutoEntryControls(file);assert.equal(controls.isProtectionExcluded('AINUSDT'),false,'closed lifecycle exclusion stays cleared after restart');
 assert.throws(()=>controls.update({action:'protection-exclusion-add',symbol:'$bad'}),/không hợp lệ/);
@@ -62,6 +91,13 @@ assert.throws(()=>controls.assertEntry({...payload,signalLabel:'NEW',protectionM
 assert.equal(evaluateAutoBinanceEntryPolicy({payload:{...payload,dryRun:false},orderEnabled:true,env:{LIVE_CARD_WHITELIST_ONLY_AUTO_BINANCE:'true'}}).allowed,false,'control ON never grants old whitelist authorization');
 let calls=0;const client={placeFuturesOrder:async()=>{calls++;return {ok:true};},placeAlgoOrder:async()=>{calls++;return {ok:true};}};
 controls.guardClient(client);
+controls.update({action:'protection-full-bypass-add',symbol:'BLOCK'});
+assert.throws(()=>client.placeAlgoOrder({params:{symbol:'BLOCKUSDT',type:'STOP_MARKET',side:'SELL',closePosition:'true'}}),/Tắt toàn bộ/,'low-level fence blocks a missed SL placement path');
+assert.throws(()=>client.placeFuturesOrder({params:{symbol:'BLOCKUSDT',type:'TAKE_PROFIT_MARKET',side:'SELL',closePosition:'true'}}),/Tắt toàn bộ/,'low-level fence blocks conditional protection on regular endpoint');
+await client.placeFuturesOrder({params:{symbol:'BLOCKUSDT',type:'MARKET',side:'SELL',reduceOnly:true}});
+assert.equal(calls,1,'manual/explicit market close remains possible while protection is bypassed');
+controls.update({action:'protection-full-bypass-remove',symbol:'BLOCK'});
+calls=0;
 await client.placeFuturesOrder({params:{type:'MARKET',side:'BUY'},entryControl:{payload}});assert.equal(calls,1);
 controls.update({action:'pauseAll'});
 assert.ok(Object.values(controls.read().routes).every(r=>!r.enabled));assert.equal(controls.read().enabled,false);
@@ -97,12 +133,19 @@ assert.ok(server.includes('autoEntryControls.guardClient(client)'));
 assert.ok(server.includes('autoEntryControls.assertEntry(payload,entryControl.manual)'));
 assert.ok(server.includes('params: marketParams, apiKey, apiSecret, entryControl'));
 assert.ok(server.includes("requestUrl.pathname==='/api/auto-entry-controls'"));
-for(const guard of ['SOCKET_FULL_FILL','SIGNAL_PROTECTION','ORDER_PROTECTION','SET_TP_SL','SL_TRAIL_FAST_WAVE','MISSING_SL_SCAN','MISSING_TP_SCAN','NEGATIVE_TP_MOVE','TWELVE_HOUR_TP_MOVE','STARTUP_TP_SCAN','PUMP_FILL_TP','PUMP_AUTO_SL']) {
-  assert.ok(server.includes(`isBinanceProtectionExcluded(symbol, '${guard}')`)||server.includes(`isBinanceProtectionExcluded(o.symbol, '${guard}')`),`runtime exclusion guard ${guard}`);
+for(const guard of ['SOCKET_FULL_FILL','SIGNAL_PROTECTION','ORDER_PROTECTION','SET_TP_SL','SL_TRAIL_FAST_WAVE','MISSING_SL_SCAN','MISSING_TP_SCAN','NEGATIVE_TP_MOVE','TWELVE_HOUR_TP_MOVE','STARTUP_TP_SCAN','PUMP_FILL_TP','PUMP_AUTO_SL','COIN_LEVEL_OBSERVE_FLIP']) {
+  assert.ok(
+    server.includes(`isBinanceProtectionExcluded(symbol, '${guard}')`)
+      || server.includes(`isBinanceProtectionExcluded(o.symbol, '${guard}')`)
+      || server.includes(`isBinanceProtectionExcluded(flip.symbol, '${guard}')`),
+    `runtime exclusion guard ${guard}`,
+  );
 }
 assert.ok(server.includes("resetBinanceProtectionExclusionAfterClose(symbol, 'POSITION_CLOSED')"),'confirmed socket close resets the exclusion');
 assert.ok(server.includes("resetBinanceProtectionExclusionAfterClose(sym, 'POSITION_CLOSED_REST_RECONCILE')"),'confirmed REST close resets the exclusion');
 assert.ok(server.includes("resetBinanceProtectionExclusionAfterClose(symbol, 'POSITION_REVERSED')"),'one-way reversal resets the previous lifecycle exclusion');
+assert.ok(server.includes('autoEntryControls.markProtectionPositionActive(symbol, fillTime ?? Date.now())'),'a full fill binds an armed bypass to the new position before protection runs');
+assert.ok(server.includes('autoEntryControls.markProtectionPositionActive(position.symbol, Date.now())'),'authoritative REST positions bind bypasses after restart');
 assert.ok(server.includes('autoResumeBinanceProtectionExclusionAtRoeBoundary(symbol, roe)'),'live ROE stream auto-resumes protection at either boundary');
 assert.ok(server.indexOf('autoResumeBinanceProtectionExclusionAtRoeBoundary(symbol, roe);')<server.indexOf('handleSlTrailByProfit(symbol, pos, roe, markPrice)'),'exclusion clears before same-tick protection handling');
 assert.ok(server.includes('pendingLiqTp.delete(symbol)'),'closed lifecycle cannot leak an old pending Liq TP into the next entry');
@@ -111,6 +154,22 @@ const controlsJs=await readFile(new URL('../public/binance-auto-controls.js',imp
 assert.ok(controlsHtml.includes('protection-exclusion-form'));
 assert.ok(controlsJs.includes("action:'protection-exclusion-add'"));
 assert.ok(controlsJs.includes("action:'protection-exclusion-remove'"));
-assert.ok(controlsHtml.includes('ROE vị thế đạt từ +15% hoặc giảm tới −25%'));
-assert.ok(controlsJs.includes('tự gỡ khi ROE ≥ +15%, ROE ≤ −25%'));
-console.log('Auto entry controls passed: pause-all, per-type/stream/side, restart, fail-closed, manual, protection exclusions with close/+15%/-25% ROE reset (mock orders only).');
+assert.ok(controlsHtml.includes('protection-full-bypass-form'));
+assert.ok(controlsHtml.includes('protection-lifecycle-list'));
+assert.ok(controlsHtml.includes('orders-password-unlock'));
+assert.ok(controlsJs.includes("action:'protection-full-bypass-add'"));
+assert.ok(controlsJs.includes("action:'protection-full-bypass-remove'"));
+assert.ok(controlsJs.includes('ĐÃ TỰ GỠ'));
+assert.ok(controlsJs.includes('Binance xác nhận vị thế đã đóng'));
+assert.ok(controlsHtml.includes('Không tự gỡ theo ROE'));
+assert.ok(controlsHtml.includes('gài cho vị thế kế tiếp'));
+assert.ok(controlsHtml.includes('Tự gỡ tại <strong>+15%</strong>, <strong>−25% ROE</strong>'));
+assert.ok(controlsJs.includes('tự gỡ tại +15% / −25% ROE'));
+assert.ok(controlsJs.includes('ĐÃ GÀI CHỜ VỊ THẾ'));
+assert.ok(controlsJs.includes('ĐÃ GẮN VỊ THẾ'));
+assert.ok(controlsJs.includes("localStorage.getItem('orders_creds')"),'public controls can recover a stale Orders session from saved credentials');
+assert.ok(controlsJs.includes('if(r.status===401&&allowRecover)'),'a rejected controls request gets one authenticated retry');
+assert.ok(controlsJs.includes("if(await change({action:'protection-exclusion-add',symbol}))input.value=''"),'temporary input clears only after confirmed save');
+assert.ok(controlsJs.includes("if(await change({action:'protection-full-bypass-add',symbol}))input.value=''"),'full-bypass input clears only after confirmed save');
+assert.ok(controlsJs.includes("requestSession('/api/auth/orders-password'"),'public controls can unlock with ORDERS_PASSWORD without exposing the Binance key in this page');
+console.log('Auto entry controls passed: pause-all, per-type/stream/side, restart, fail-closed, manual, temporary and full-position protection bypasses (mock orders only).');

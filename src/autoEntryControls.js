@@ -1,9 +1,10 @@
 import {readFileSync,writeFileSync,renameSync,mkdirSync} from 'node:fs';
 import {dirname} from 'node:path';
+import {validImpulseSizing} from './postMoveImpulseSizing.js';
 import {ema99RouteMeta,ema99Margin,ema99Leverage,ema99TakeProfitRoe,validEma99Margin,validEma99Leverage,validEma99TakeProfitRoe,EMA99_ENTRY_INTERVALS,EMA99_ENTRY_SETTINGS_VERSION} from './ema99EntryCatalog.js';
 import {otherRouteMeta,resolveOtherEntrySettings,validOtherMargin,validOtherLeverage,validOtherTakeProfitRoe,OTHER_ENTRY_SETTINGS_VERSION} from './otherEntryCatalog.js';
-export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V25_POST_MOVE_IMPULSE_8USDT_20260927';
-export const BINANCE_PROTECTION_EXCLUSION_VERSION='BINANCE_SYMBOL_PROTECTION_EXCLUSION_V4_AUTO_RESUME_ROE15_OR_NEG25_20260926';
+export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V36_LOCAL_AI_PRIORITY_ZONE_1USDT_20261003';
+export const BINANCE_PROTECTION_EXCLUSION_VERSION='BINANCE_SYMBOL_PROTECTION_EXCLUSION_V8_DIRECTION_FLIP_FAIL_CLOSED_20261003';
 export const DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE=15;
 export const DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE=-25;
 export function protectionExclusionAutoResumeRoe(value=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE){
@@ -29,6 +30,12 @@ const OLD_NEAR_REJECT={source:'ema99-near-reject-short',stream:'ema99-retest',la
 const REBOUND_NEAR_REJECT={...OLD_NEAR_REJECT,label:'REBOUND_PUMP_NEAR_REJECT_SHORT_WATCH'};
 const isOldNearReject=r=>r?.source===OLD_NEAR_REJECT.source&&r?.stream===OLD_NEAR_REJECT.stream
   &&r?.label===OLD_NEAR_REJECT.label&&r?.side===OLD_NEAR_REJECT.side;
+const isPostMoveImpulseRoute=r=>r?.source==='post-move-impulse'
+  &&['POST_DUMP_NO_SELL_BUY_IMPULSE_LONG','POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT'].includes(r?.label);
+const isLocalAiPriorityEngineZoneRoute=r=>r?.source==='local-ai-trend-evaluation'
+  &&r?.stream==='priority-engine-zone'
+  &&r?.label==='LOCAL_AI_PRIORITY_ENGINE_ZONE_TOUCH'
+  &&['LONG','SHORT'].includes(r?.side);
 const clean=v=>String(v??'').trim().slice(0,200);
 export function normalizeProtectionExclusionSymbol(value) {
   const compact=String(value??'').normalize('NFKC').trim().toUpperCase().replace(/[\s/_-]+/g,'');
@@ -44,6 +51,37 @@ function normalizeProtectionExclusions(value) {
     try {symbols.push(normalizeProtectionExclusionSymbol(raw));} catch {}
   }
   return [...new Set(symbols)].sort((a,b)=>a.localeCompare(b));
+}
+function normalizeProtectionExclusionEvents(value) {
+  return (Array.isArray(value)?value:[]).filter(item=>item&&typeof item==='object').map(item=>{
+    let symbol;
+    try {symbol=normalizeProtectionExclusionSymbol(item.symbol);} catch {return null;}
+    const at=new Date(item.at);
+    if(!Number.isFinite(at.getTime()))return null;
+    return {symbol,mode:clean(item.mode),event:clean(item.event),reason:clean(item.reason),at:at.toISOString()};
+  }).filter(Boolean).slice(-20);
+}
+function normalizeProtectionFullBypassLifecycles(value,fullBypasses=[],events=[]) {
+  const source=value&&typeof value==='object'&&!Array.isArray(value)?value:{};
+  const result={};
+  for(const symbol of normalizeProtectionExclusions(fullBypasses)) {
+    const raw=source[symbol]??{};
+    const armedDate=raw.armedAt?new Date(raw.armedAt):null;
+    const activeDate=raw.activeSeenAt?new Date(raw.activeSeenAt):null;
+    const latestEnable=[...normalizeProtectionExclusionEvents(events)].reverse()
+      .find(event=>event.symbol===symbol&&event.mode==='FULL_POSITION_BYPASS'&&event.event==='ENABLED');
+    result[symbol]={
+      armedAt:Number.isFinite(armedDate?.getTime())?armedDate.toISOString():latestEnable?.at??new Date().toISOString(),
+      activeSeenAt:Number.isFinite(activeDate?.getTime())?activeDate.toISOString():null,
+    };
+  }
+  return result;
+}
+function appendProtectionExclusionEvent(state,event) {
+  state.protectionExclusionEvents=normalizeProtectionExclusionEvents([
+    ...(state.protectionExclusionEvents??[]),
+    {...event,at:new Date().toISOString()},
+  ]);
 }
 export function entryRoute(payload={}) {
   const source=clean(payload.source??payload.signalSource)||'UNCLASSIFIED';
@@ -101,13 +139,26 @@ export function buildAutoEntryDailyStats(fills={},routes={},options={}){
     scope:'Real Binance fills matched to control routes; entries exclude DCA, realized PnL uses positions closed during this local day.'};
 }
 export class AutoEntryControls {
-  constructor(file){this.file=file;this.protectionExclusions=new Set();this.read();}
+  constructor(file){this.file=file;this.protectionExclusions=new Set();this.protectionFullBypasses=new Set();this.read();}
   read(){
     let protectionExclusions=[...this.protectionExclusions];
+    let protectionFullBypasses=[...this.protectionFullBypasses];
     try {
       const s=JSON.parse(readFileSync(this.file,'utf8'));
       protectionExclusions=normalizeProtectionExclusions(s.protectionExclusions);
+      protectionFullBypasses=normalizeProtectionExclusions(s.protectionFullBypasses);
+      s.protectionExclusionEvents=normalizeProtectionExclusionEvents(s.protectionExclusionEvents);
+      s.protectionFullBypassLifecycles=normalizeProtectionFullBypassLifecycles(
+        s.protectionFullBypassLifecycles,
+        protectionFullBypasses,
+        s.protectionExclusionEvents,
+      );
+      // A symbol can only have one mode. FULL bypass is stricter and wins if
+      // an old/manual JSON edit accidentally puts it in both arrays.
+      const fullSet=new Set(protectionFullBypasses);
+      protectionExclusions=protectionExclusions.filter(symbol=>!fullSet.has(symbol));
       this.protectionExclusions=new Set(protectionExclusions);
+      this.protectionFullBypasses=new Set(protectionFullBypasses);
       if(typeof s.enabled!=='boolean'||!s.routes||typeof s.routes!=='object'||Array.isArray(s.routes)
         ||Object.entries(s.routes).some(([key,r])=>!r||r.key!==key||typeof r.enabled!=='boolean'||!['source','stream','label','side'].every(k=>typeof r[k]==='string')))throw new Error('invalid');
       // V2 label meant the rebound-after-dump case. Rename it without granting
@@ -136,6 +187,10 @@ export class AutoEntryControls {
           ||key!==JSON.stringify([r.source,r.stream,r.label,r.side,r.interval]))throw new Error('invalid EMA99 timeframe');
       }
       for(const r of Object.values(s.routes)) {
+        if(s.otherEntrySettingsVersion!==OTHER_ENTRY_SETTINGS_VERSION
+          &&isPostMoveImpulseRoute(r)&&Number(r.marginUsdt)===8)r.marginUsdt=5;
+        if(s.otherEntrySettingsVersion!==OTHER_ENTRY_SETTINGS_VERSION
+          &&isLocalAiPriorityEngineZoneRoute(r)&&Number(r.marginUsdt)===3)r.marginUsdt=1;
         const meta=ema99RouteMeta(r);
         r.ema99SettingsEditable=meta?.executable===true;
         if(meta){if(r.executable===false&&r.marginUsdt===null){r.marginUsdt=5;delete r.leverage;r.enabled=false;delete r.enabledAt;}
@@ -156,10 +211,11 @@ export class AutoEntryControls {
         }
       }
       s.protectionExclusions=protectionExclusions;
+      s.protectionFullBypasses=protectionFullBypasses;
       return {...s,version:AUTO_ENTRY_CONTROLS_VERSION,protectionExclusionVersion:BINANCE_PROTECTION_EXCLUSION_VERSION};
-    } catch {this.protectionExclusions=new Set(protectionExclusions);return {version:AUTO_ENTRY_CONTROLS_VERSION,protectionExclusionVersion:BINANCE_PROTECTION_EXCLUSION_VERSION,enabled:false,routes:{},protectionExclusions,failClosed:true};}
+    } catch {this.protectionExclusions=new Set(protectionExclusions);this.protectionFullBypasses=new Set(protectionFullBypasses);return {version:AUTO_ENTRY_CONTROLS_VERSION,protectionExclusionVersion:BINANCE_PROTECTION_EXCLUSION_VERSION,enabled:false,routes:{},protectionExclusions,protectionFullBypasses,protectionFullBypassLifecycles:normalizeProtectionFullBypassLifecycles({},protectionFullBypasses),protectionExclusionEvents:[],failClosed:true};}
   }
-  save(s){const protectionExclusions=normalizeProtectionExclusions(s.protectionExclusions);mkdirSync(dirname(this.file),{recursive:true});writeFileSync(`${this.file}.tmp`,JSON.stringify({...s,protectionExclusions,version:AUTO_ENTRY_CONTROLS_VERSION,protectionExclusionVersion:BINANCE_PROTECTION_EXCLUSION_VERSION,ema99TimeframeVersion:EMA99_ENTRY_SETTINGS_VERSION,otherEntrySettingsVersion:OTHER_ENTRY_SETTINGS_VERSION,updatedAt:new Date().toISOString()},null,2));renameSync(`${this.file}.tmp`,this.file);this.protectionExclusions=new Set(protectionExclusions);}
+  save(s){let protectionExclusions=normalizeProtectionExclusions(s.protectionExclusions);const protectionFullBypasses=normalizeProtectionExclusions(s.protectionFullBypasses);const protectionExclusionEvents=normalizeProtectionExclusionEvents(s.protectionExclusionEvents);const protectionFullBypassLifecycles=normalizeProtectionFullBypassLifecycles(s.protectionFullBypassLifecycles,protectionFullBypasses,protectionExclusionEvents);const fullSet=new Set(protectionFullBypasses);protectionExclusions=protectionExclusions.filter(symbol=>!fullSet.has(symbol));mkdirSync(dirname(this.file),{recursive:true});writeFileSync(`${this.file}.tmp`,JSON.stringify({...s,protectionExclusions,protectionFullBypasses,protectionFullBypassLifecycles,protectionExclusionEvents,version:AUTO_ENTRY_CONTROLS_VERSION,protectionExclusionVersion:BINANCE_PROTECTION_EXCLUSION_VERSION,ema99TimeframeVersion:EMA99_ENTRY_SETTINGS_VERSION,otherEntrySettingsVersion:OTHER_ENTRY_SETTINGS_VERSION,updatedAt:new Date().toISOString()},null,2));renameSync(`${this.file}.tmp`,this.file);this.protectionExclusions=new Set(protectionExclusions);this.protectionFullBypasses=new Set(protectionFullBypasses);}
   register(payload){
     const r=entryRoute(payload),s=this.read();
     if(isOldNearReject(r))return r;
@@ -186,13 +242,34 @@ export class AutoEntryControls {
     else if(body.action==='protection-exclusion-add'){
       const symbol=normalizeProtectionExclusionSymbol(body.symbol);
       s.protectionExclusions=normalizeProtectionExclusions([...(s.protectionExclusions??[]),symbol]);
+      s.protectionFullBypasses=normalizeProtectionExclusions(s.protectionFullBypasses).filter(item=>item!==symbol);
+      if(s.protectionFullBypassLifecycles)delete s.protectionFullBypassLifecycles[symbol];
+      appendProtectionExclusionEvent(s,{symbol,mode:'AUTO_RESUME_ROE_BOUNDARY',event:'ENABLED',reason:'USER_REQUEST'});
     }
     else if(body.action==='protection-exclusion-remove'){
       const symbol=normalizeProtectionExclusionSymbol(body.symbol);
       s.protectionExclusions=normalizeProtectionExclusions(s.protectionExclusions).filter(item=>item!==symbol);
+      appendProtectionExclusionEvent(s,{symbol,mode:'AUTO_RESUME_ROE_BOUNDARY',event:'CLEARED',reason:'USER_REQUEST'});
+    }
+    else if(body.action==='protection-full-bypass-add'){
+      const symbol=normalizeProtectionExclusionSymbol(body.symbol);
+      s.protectionFullBypasses=normalizeProtectionExclusions([...(s.protectionFullBypasses??[]),symbol]);
+      s.protectionExclusions=normalizeProtectionExclusions(s.protectionExclusions).filter(item=>item!==symbol);
+      s.protectionFullBypassLifecycles={
+        ...normalizeProtectionFullBypassLifecycles(s.protectionFullBypassLifecycles,s.protectionFullBypasses,s.protectionExclusionEvents),
+        [symbol]:{armedAt:new Date().toISOString(),activeSeenAt:null},
+      };
+      appendProtectionExclusionEvent(s,{symbol,mode:'FULL_POSITION_BYPASS',event:'ENABLED',reason:'USER_REQUEST'});
+    }
+    else if(body.action==='protection-full-bypass-remove'){
+      const symbol=normalizeProtectionExclusionSymbol(body.symbol);
+      s.protectionFullBypasses=normalizeProtectionExclusions(s.protectionFullBypasses).filter(item=>item!==symbol);
+      if(s.protectionFullBypassLifecycles)delete s.protectionFullBypassLifecycles[symbol];
+      appendProtectionExclusionEvent(s,{symbol,mode:'FULL_POSITION_BYPASS',event:'CLEARED',reason:'USER_REQUEST'});
     }
     else if(body.action==='margin'&&s.routes[body.key]) {
       const r=s.routes[body.key];
+      if(isPostMoveImpulseRoute(r))throw new Error('IMPULSE dùng size tự động 5/1 USDT theo giờ hoặc BTC; không dùng margin cố định.');
       const emaEditable=ema99RouteMeta(r)?.executable===true,otherEditable=otherRouteMeta(r)!==null;
       if((!emaEditable&&!otherEditable)||!(emaEditable?validEma99Margin(body.marginUsdt):validOtherMargin(body.marginUsdt)))
         throw new Error('Margin phải từ 1–100 USDT, tối đa 2 số lẻ.');
@@ -229,19 +306,61 @@ export class AutoEntryControls {
     this.save(s);return this.read();
   }
   isProtectionExcluded(symbol){
-    try{return this.protectionExclusions.has(normalizeProtectionExclusionSymbol(symbol));}
+    try{const normalized=normalizeProtectionExclusionSymbol(symbol);return this.protectionExclusions.has(normalized)||this.protectionFullBypasses.has(normalized);}
     catch{return false;}
+  }
+  protectionExclusionMode(symbol){
+    try{const normalized=normalizeProtectionExclusionSymbol(symbol);return this.protectionFullBypasses.has(normalized)?'FULL_POSITION_BYPASS':this.protectionExclusions.has(normalized)?'AUTO_RESUME_ROE_BOUNDARY':null;}
+    catch{return null;}
   }
   autoResumeProtectionExclusion(symbol,roe,thresholdRoe=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE,
     lossThresholdRoe=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE){
-    if(!shouldAutoResumeProtectionExclusion({excluded:this.isProtectionExcluded(symbol),roe,thresholdRoe,lossThresholdRoe}))return false;
-    return this.clearProtectionExclusion(symbol);
+    if(this.protectionExclusionMode(symbol)!=='AUTO_RESUME_ROE_BOUNDARY'
+      ||!shouldAutoResumeProtectionExclusion({excluded:true,roe,thresholdRoe,lossThresholdRoe}))return false;
+    return this.clearProtectionExclusion(symbol,'ROE_BOUNDARY');
   }
-  clearProtectionExclusion(symbol){
+  markProtectionPositionActive(symbol,observedAt=Date.now()){
+    const normalized=normalizeProtectionExclusionSymbol(symbol);
+    if(!this.protectionFullBypasses.has(normalized))return false;
+    const s=this.read();
+    const full=normalizeProtectionExclusions(s.protectionFullBypasses);
+    if(!full.includes(normalized))return false;
+    const lifecycles=normalizeProtectionFullBypassLifecycles(s.protectionFullBypassLifecycles,full,s.protectionExclusionEvents);
+    const lifecycle=lifecycles[normalized];
+    if(lifecycle?.activeSeenAt)return false;
+    const observedDate=new Date(observedAt);
+    if(!Number.isFinite(observedDate.getTime())||observedDate.getTime()<Date.parse(lifecycle.armedAt))return false;
+    lifecycle.activeSeenAt=observedDate.toISOString();
+    s.protectionFullBypassLifecycles=lifecycles;
+    appendProtectionExclusionEvent(s,{symbol:normalized,mode:'FULL_POSITION_BYPASS',event:'POSITION_BOUND',reason:'ACTIVE_POSITION_OBSERVED'});
+    this.save(s);return true;
+  }
+  fullBypassPositionBound(symbol){
+    const normalized=normalizeProtectionExclusionSymbol(symbol);
+    if(!this.protectionFullBypasses.has(normalized))return false;
+    const s=this.read();
+    const full=normalizeProtectionExclusions(s.protectionFullBypasses);
+    if(!full.includes(normalized))return false;
+    return Boolean(normalizeProtectionFullBypassLifecycles(
+      s.protectionFullBypassLifecycles,
+      full,
+      s.protectionExclusionEvents,
+    )[normalized]?.activeSeenAt);
+  }
+  clearProtectionExclusion(symbol,reason='POSITION_CLOSED'){
     const normalized=normalizeProtectionExclusionSymbol(symbol),s=this.read();
     const current=normalizeProtectionExclusions(s.protectionExclusions);
-    if(!current.includes(normalized))return false;
+    const full=normalizeProtectionExclusions(s.protectionFullBypasses);
+    if(!current.includes(normalized)&&!full.includes(normalized))return false;
+    const mode=full.includes(normalized)?'FULL_POSITION_BYPASS':'AUTO_RESUME_ROE_BOUNDARY';
+    if(mode==='FULL_POSITION_BYPASS'&&String(reason).startsWith('POSITION_')){
+      const lifecycles=normalizeProtectionFullBypassLifecycles(s.protectionFullBypassLifecycles,full,s.protectionExclusionEvents);
+      if(!lifecycles[normalized]?.activeSeenAt)return false;
+    }
     s.protectionExclusions=current.filter(item=>item!==normalized);
+    s.protectionFullBypasses=full.filter(item=>item!==normalized);
+    if(s.protectionFullBypassLifecycles)delete s.protectionFullBypassLifecycles[normalized];
+    appendProtectionExclusionEvent(s,{symbol:normalized,mode,event:'AUTO_CLEARED',reason});
     this.save(s);return true;
   }
   assertEntry(payload={},manual=false){
@@ -254,7 +373,8 @@ export class AutoEntryControls {
       if(Number(payload.takeProfitRoePct??15)!==takeProfitRoePct)throw new Error('EMA99 TP changed; entry blocked until next scan.');}
     if(otherRouteMeta(r)){const routeState=s.routes[r.key],settings=resolveOtherEntrySettings(r,routeState);
       const coinLevelLimit=r.source==='coin-level-entry-watch'&&payload.orderType==='LIMIT';
-      const margin=coinLevelLimit?3:settings?.marginUsdt;
+      if(isPostMoveImpulseRoute(r)&&!validImpulseSizing(payload))throw new Error('IMPULSE thiếu hoặc sai quyết định size 5/1 USDT.');
+      const margin=isPostMoveImpulseRoute(r)?payload.impulseSizing.marginUsdt:coinLevelLimit?3:settings?.marginUsdt;
       if(!settings||Number(payload.marginUsdt)!==margin||Number(payload.leverage)!==settings.leverage
         ||!Number.isFinite(Number(payload.notionalUsdt))||Math.abs(Number(payload.notionalUsdt)-margin*settings.leverage)>1e-8)
         throw new Error('Other-route size/leverage changed; entry blocked until next scan.');
@@ -265,7 +385,16 @@ export class AutoEntryControls {
     for(const method of ['placeFuturesOrder','placeAlgoOrder']) {
       const original=client[method].bind(client);
       client[method]=args=>{
-        if(!isReducingOrder(args.params))this.assertEntry(args.entryControl?.payload??legacyRoute(args.params),args.entryControl?.manual===true);
+        const params=args.params??{};
+        const type=String(params.type??'').toUpperCase();
+        const isConditionalProtection=method==='placeAlgoOrder'
+          ||type.includes('STOP')||type.includes('TAKE_PROFIT')||type.includes('TRAILING');
+        if(isReducingOrder(params)&&isConditionalProtection&&this.isProtectionExcluded(params.symbol)){
+          const error=new Error(`${normalizeProtectionExclusionSymbol(params.symbol)} đang Tắt toàn bộ: từ chối tạo hoặc dời TP/SL.`);
+          error.code='BINANCE_PROTECTION_EXCLUDED';
+          throw error;
+        }
+        if(!isReducingOrder(params))this.assertEntry(args.entryControl?.payload??legacyRoute(params),args.entryControl?.manual===true);
         return original(args);
       };
     }

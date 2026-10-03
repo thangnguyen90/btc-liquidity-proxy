@@ -1,4 +1,6 @@
-export const COIN_LEVEL_ANALYSIS_VERSION = 'COIN_LEVEL_ANALYSIS_V9_UNICODE_SYMBOL_INPUT_20260902';
+export const COIN_LEVEL_ANALYSIS_VERSION = 'COIN_LEVEL_ANALYSIS_V11_ORDER_BOOK_SIDE_TOTALS_20261002';
+export const BINANCE_ORDER_BOOK_RANGE_PROFILE_VERSION =
+  'BINANCE_ORDER_BOOK_RANGE_PROFILE_V2_SIDE_TOTALS_20261002';
 export const COIN_LEVEL_DATA_FRESHNESS_VERSION = 'COIN_LEVEL_DATA_FRESHNESS_V1_20260901';
 export const COIN_LEVEL_COINGLASS_VERSION = 'COIN_LEVEL_COINGLASS_V3_REJECTED_REVERSE_PRESSURE_20260901';
 export const COIN_LEVEL_SECOND_REJECTION_VERSION = 'COIN_LEVEL_SECOND_REJECTION_V2_TWO_SIDED_15M_COINGLASS_20260901';
@@ -461,6 +463,113 @@ function depthCandidates(depth, markPrice) {
   return output;
 }
 
+function orderBookSideRows(rows, side, markPrice) {
+  return (Array.isArray(rows) ? rows : []).flatMap((raw) => {
+    const price = finite(raw?.[0]);
+    const quantity = finite(raw?.[1]);
+    if (!(price > 0) || !(quantity > 0)) return [];
+    const signedDistancePct = percentDistance(price, markPrice);
+    if (!Number.isFinite(signedDistancePct)) return [];
+    if ((side === 'BID' && signedDistancePct >= 0) || (side === 'ASK' && signedDistancePct <= 0)) return [];
+    return [{ price, quantity, notional: price * quantity, distancePct: Math.abs(signedDistancePct) }];
+  });
+}
+
+function inOrderBookBand(row, minDistancePct, maxDistancePct) {
+  return minDistancePct === 0
+    ? row.distancePct >= 0 && row.distancePct <= maxDistancePct
+    : row.distancePct > minDistancePct && row.distancePct <= maxDistancePct;
+}
+
+function orderBookBandTotals(rows, minDistancePct, maxDistancePct) {
+  const selected = rows.filter((row) => inOrderBookBand(row, minDistancePct, maxDistancePct));
+  return {
+    notional: round(selected.reduce((sum, row) => sum + row.notional, 0), 2),
+    levelCount: selected.length,
+  };
+}
+
+function orderBookBandZones(rows, side, { layer, minDistancePct, maxDistancePct, bucketPct, limit }) {
+  const buckets = new Map();
+  for (const row of rows) {
+    if (!inOrderBookBand(row, minDistancePct, maxDistancePct)) continue;
+    const bucket = Math.floor(Math.max(0, row.distancePct - minDistancePct - Number.EPSILON) / bucketPct);
+    const current = buckets.get(bucket) ?? {
+      notional: 0, weightedPrice: 0, minPrice: Infinity, maxPrice: -Infinity,
+      minDistancePct: Infinity, maxDistancePct: -Infinity, levelCount: 0,
+    };
+    current.notional += row.notional;
+    current.weightedPrice += row.price * row.notional;
+    current.minPrice = Math.min(current.minPrice, row.price);
+    current.maxPrice = Math.max(current.maxPrice, row.price);
+    current.minDistancePct = Math.min(current.minDistancePct, row.distancePct);
+    current.maxDistancePct = Math.max(current.maxDistancePct, row.distancePct);
+    current.levelCount += 1;
+    buckets.set(bucket, current);
+  }
+  return [...buckets.values()]
+    .sort((left, right) => right.notional - left.notional)
+    .slice(0, limit)
+    .map((bucket) => ({
+      layer,
+      side,
+      low: round(bucket.minPrice),
+      high: round(bucket.maxPrice),
+      mid: round(bucket.weightedPrice / bucket.notional),
+      distancePct: round(((bucket.minDistancePct + bucket.maxDistancePct) / 2) * (side === 'BID' ? -1 : 1), 3),
+      distancePctLow: round(bucket.minDistancePct, 3),
+      distancePctHigh: round(bucket.maxDistancePct, 3),
+      orderBookNotional: round(bucket.notional, 2),
+      levelCount: bucket.levelCount,
+      source: 'BINANCE_FUTURES_DEPTH',
+    }));
+}
+
+export function buildOrderBookRangeProfile(depth, markPrice, { requestedLimit = 1000 } = {}) {
+  const bidRows = orderBookSideRows(depth?.bids, 'BID', markPrice);
+  const askRows = orderBookSideRows(depth?.asks, 'ASK', markPrice);
+  const coverage = (rows) => ({
+    levelCount: rows.length,
+    farthestDistancePct: round(Math.max(0, ...rows.map((row) => row.distancePct)), 3),
+    reachesNearEdge: rows.some((row) => row.distancePct >= 3),
+    reachesWideEdge: rows.some((row) => row.distancePct >= 20),
+  });
+  const band = (layer, minDistancePct, maxDistancePct, bucketPct, limit) => {
+    const bidTotals = orderBookBandTotals(bidRows, minDistancePct, maxDistancePct);
+    const askTotals = orderBookBandTotals(askRows, minDistancePct, maxDistancePct);
+    return {
+      minDistancePct,
+      maxDistancePct,
+      bucketPct,
+      totals: {
+        bidNotional: bidTotals.notional,
+        askNotional: askTotals.notional,
+        bidLevelCount: bidTotals.levelCount,
+        askLevelCount: askTotals.levelCount,
+      },
+      bidZones: orderBookBandZones(bidRows, 'BID', { layer, minDistancePct, maxDistancePct, bucketPct, limit }),
+      askZones: orderBookBandZones(askRows, 'ASK', { layer, minDistancePct, maxDistancePct, bucketPct, limit }),
+    };
+  };
+  const near = band('NEAR', 0, 3, 0.25, 4);
+  const wide = band('WIDE', 3, 20, 1, 6);
+  return {
+    version: BINANCE_ORDER_BOOK_RANGE_PROFILE_VERSION,
+    source: 'BINANCE_FUTURES_DEPTH',
+    requestedLimit,
+    coverage: { bid: coverage(bidRows), ask: coverage(askRows) },
+    totals: {
+      bidNotional: round(near.totals.bidNotional + wide.totals.bidNotional, 2),
+      askNotional: round(near.totals.askNotional + wide.totals.askNotional, 2),
+      bidLevelCount: near.totals.bidLevelCount + wide.totals.bidLevelCount,
+      askLevelCount: near.totals.askLevelCount + wide.totals.askLevelCount,
+    },
+    near,
+    wide,
+    caveat: '500/1000 level có thể không chạm biên 20%; vùng WIDE rỗng khi depth Binance chưa phủ tới đó.',
+  };
+}
+
 function clusteredZones(candidates, markPrice, atr5m) {
   const tolerance = Math.max(markPrice * 0.004, (atr5m || 0) * 0.28);
   const halfBand = Math.max(markPrice * 0.0022, (atr5m || 0) * 0.12);
@@ -626,6 +735,7 @@ export function buildCoinLevelAnalysis({
   ticker24h,
   openInterest,
   depth,
+  depthLimit = 1000,
   klinesByInterval,
   now = Date.now(),
 } = {}) {
@@ -637,6 +747,7 @@ export function buildCoinLevelAnalysis({
     interval,
     frameAnalysis(klinesByInterval?.[interval], interval, now),
   ]));
+  const orderBookProfile = buildOrderBookRangeProfile(depth, markPrice, { requestedLimit: depthLimit });
   const candidates = Object.values(frames).flatMap(swingCandidates);
   candidates.push(...depthCandidates(depth, markPrice));
   const zones = clusteredZones(candidates, markPrice, frames['5m'].atr14);
@@ -713,6 +824,7 @@ export function buildCoinLevelAnalysis({
       '15m': frames['15m'].source.filter(b=>b.closeTime<now).slice(-32),
     },
     zones: { supports, resistances },
+    orderBookProfile,
     recommendation,
     execution: {
       binanceEnabled: false,

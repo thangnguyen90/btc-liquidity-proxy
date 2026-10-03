@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { impulseSizing } from '../src/postMoveImpulseSizing.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -50,13 +51,15 @@ try {
   assert.equal(requests.length, 1);
   assert.match(requests[0].body.embeds[0].title, /XẢ MẠNH SAU BƠM/);
   assert.equal(requests[0].body.embeds[0].fields[0].value, '**XẢ MẠNH SAU BƠM**');
-  assert.match(requests[0].body.embeds[0].description, /MARKET SHORT 8 USDT/i);
-  assert.match(requests[0].body.embeds[0].footer.text, /route MARKET SHORT 8 USDT/i);
+  assert.match(requests[0].body.embeds[0].description, /OBSERVE ONLY/i);
+  assert.match(requests[0].body.embeds[0].description, /chưa đặt Binance/i);
+  assert.match(requests[0].body.embeds[0].footer.text, /chờ xác nhận/i);
 
   clock += 10 * 60_000;
   const stageTwo = {
     ...common,
     stage: POST_PUMP_NO_BUY_STAGE.NO_BUY_CONFIRMATION,
+    impulseSizing: impulseSizing({side:'SHORT',now:clock,market:{evaluatedAt:clock,btc:{trend:'DOWN'}}}),
     observedAt: clock - 10_000,
     followBars: 2,
     reboundPct: 22,
@@ -65,9 +68,10 @@ try {
   };
   assert.equal(await notifier.deliver(stageTwo), true);
   assert.equal(requests.length, 2);
-  assert.match(requests[1].body.embeds[0].title, /KHÔNG CÓ LỰC MUA/);
+  assert.match(requests[1].body.embeds[0].title, /ĐÃ XÁC NHẬN SHORT/);
   assert.match(requests[1].body.embeds[0].title, /XẢ MẠNH SAU BƠM/);
-  assert.match(requests[1].body.embeds[0].description, /không vào thêm lần hai/i);
+  assert.match(requests[1].body.embeds[0].description, /MARKET SHORT 5 USDT/i);
+  assert.notEqual(requests[1].body.embeds[0].color, requests[0].body.embeds[0].color);
 
   clock += 60_000;
   const late = {
@@ -91,7 +95,7 @@ try {
 
   const payload = postPumpNoBuyDiscordPayload(stageTwo);
   assert.equal(payload.allowed_mentions.parse.length, 0);
-  assert.match(payload.embeds[0].footer.text, /không vào thêm/i);
+  assert.match(payload.embeds[0].footer.text, /route MARKET SHORT 5 USDT sau xác nhận/i);
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

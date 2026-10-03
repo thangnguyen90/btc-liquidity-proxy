@@ -1,5 +1,23 @@
+import {
+  LOCAL_AI_PASS_MIDPOINT_LEVERAGE,
+  LOCAL_AI_PASS_MIDPOINT_MARGIN_USDT,
+  LOCAL_AI_PASS_MIDPOINT_SIGNAL_LABEL,
+  LOCAL_AI_PASS_MIDPOINT_SOURCE,
+  LOCAL_AI_PASS_MIDPOINT_STREAM,
+  LOCAL_AI_PASS_MIDPOINT_TAKE_PROFIT_ROE_PCT,
+} from './localAiPassMidpointContract.js';
+import {
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LEVERAGE,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LONG_LABEL,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MARGIN_USDT,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SHORT_LABEL,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SOURCE,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_STREAM,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_TP_ROE_PCT,
+} from './localAiLiquidityBreakoutOppositeDepthBinance.js';
+
 export const OTHER_ENTRY_SETTINGS_VERSION =
-  'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V14_POST_MOVE_IMPULSE_8USDT_20260927';
+  'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V19_LOCAL_AI_PRIORITY_ZONE_1USDT_20261003';
 
 export const LIMIT_PAPER_FILL_SOURCE = 'limit-paper-fill';
 export const LIMIT_PAPER_FILL_STREAM = 'ema99-retest-shallow';
@@ -37,11 +55,37 @@ export const OTHER_ENTRY_CATALOG = Object.freeze([
   profile({ source: 'coin-level-entry-watch', streamId: 'closed-mtf-retest',
     signalLabel: 'RETEST_SHORT_READY', side: 'SHORT', marginUsdt: 1, leverage: 5,
     takeProfitRoePct: 10 }),
+  profile({ source: 'btc-relative-strength-watch', streamId: 'opposite-btc-5m',
+    signalLabel: 'RELATIVE_ENTRY_READY', side: 'LONG', marginUsdt: 2, leverage: 5,
+    takeProfitRoePct: 10 }),
+  profile({ source: 'btc-relative-strength-watch', streamId: 'opposite-btc-5m',
+    signalLabel: 'RELATIVE_ENTRY_READY', side: 'SHORT', marginUsdt: 2, leverage: 5,
+    takeProfitRoePct: 10 }),
+  profile({ source: LOCAL_AI_PASS_MIDPOINT_SOURCE, streamId: LOCAL_AI_PASS_MIDPOINT_STREAM,
+    signalLabel: LOCAL_AI_PASS_MIDPOINT_SIGNAL_LABEL, side: 'LONG',
+    marginUsdt: LOCAL_AI_PASS_MIDPOINT_MARGIN_USDT, leverage: LOCAL_AI_PASS_MIDPOINT_LEVERAGE,
+    takeProfitRoePct: LOCAL_AI_PASS_MIDPOINT_TAKE_PROFIT_ROE_PCT }),
+  profile({ source: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SOURCE,
+    streamId: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_STREAM,
+    signalLabel: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LONG_LABEL, side: 'LONG',
+    marginUsdt: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MARGIN_USDT,
+    leverage: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LEVERAGE,
+    takeProfitRoePct: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_TP_ROE_PCT }),
+  profile({ source: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SOURCE,
+    streamId: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_STREAM,
+    signalLabel: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SHORT_LABEL, side: 'SHORT',
+    marginUsdt: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MARGIN_USDT,
+    leverage: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LEVERAGE,
+    takeProfitRoePct: LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_TP_ROE_PCT }),
+  profile({ source: LOCAL_AI_PASS_MIDPOINT_SOURCE, streamId: LOCAL_AI_PASS_MIDPOINT_STREAM,
+    signalLabel: LOCAL_AI_PASS_MIDPOINT_SIGNAL_LABEL, side: 'SHORT',
+    marginUsdt: LOCAL_AI_PASS_MIDPOINT_MARGIN_USDT, leverage: LOCAL_AI_PASS_MIDPOINT_LEVERAGE,
+    takeProfitRoePct: LOCAL_AI_PASS_MIDPOINT_TAKE_PROFIT_ROE_PCT }),
   profile({ source: 'post-move-impulse', streamId: 'post-dump-no-sell-5m',
-    signalLabel: 'POST_DUMP_NO_SELL_BUY_IMPULSE_LONG', side: 'LONG', marginUsdt: 8, leverage: 5,
+    signalLabel: 'POST_DUMP_NO_SELL_BUY_IMPULSE_LONG', side: 'LONG', marginUsdt: 5, leverage: 5,
     takeProfitRoePct: 10 }),
   profile({ source: 'post-move-impulse', streamId: 'post-pump-no-buy-5m',
-    signalLabel: 'POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT', side: 'SHORT', marginUsdt: 8, leverage: 5,
+    signalLabel: 'POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT', side: 'SHORT', marginUsdt: 5, leverage: 5,
     takeProfitRoePct: 10 }),
   profile({ source: 'liqscan-high-score', streamId: 'coin-level-analysis',
     signalLabel: 'LIQSCAN_HIGH_SCORE_ABOVE_LONG', side: 'LONG', marginUsdt: 5, leverage: 5,

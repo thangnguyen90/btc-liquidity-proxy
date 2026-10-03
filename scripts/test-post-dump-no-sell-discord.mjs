@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { impulseSizing } from '../src/postMoveImpulseSizing.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -44,14 +45,15 @@ try {
     invalidationPrice: 0.092,
     rsi14: 64,
   };
-  const stageOne = { ...common, stage: POST_DUMP_NO_SELL_STAGE.BUY_IMPULSE };
+  const stageOne = { ...common, stage: POST_DUMP_NO_SELL_STAGE.BUY_IMPULSE,
+    impulseSizing: impulseSizing({side:'LONG',now:clock,market:{evaluatedAt:clock,btc:{trend:'UP'}}}) };
   assert.equal(await notifier.deliver(stageOne), true);
   assert.equal(await notifier.deliver(stageOne), false);
   assert.equal(requests.length, 1);
   assert.match(requests[0].body.embeds[0].title, /HỒI MẠNH SAU XẢ/);
   assert.equal(requests[0].body.embeds[0].fields[0].value, '**HỒI MẠNH SAU XẢ**');
-  assert.match(requests[0].body.embeds[0].description, /MARKET LONG 8 USDT/i);
-  assert.match(requests[0].body.embeds[0].footer.text, /route MARKET LONG 8 USDT/i);
+  assert.match(requests[0].body.embeds[0].description, /MARKET LONG 5 USDT/i);
+  assert.match(requests[0].body.embeds[0].footer.text, /route MARKET LONG 5 USDT/i);
 
   clock += 10 * 60_000;
   const stageTwo = {
@@ -65,8 +67,10 @@ try {
   };
   assert.equal(await notifier.deliver(stageTwo), true);
   assert.equal(requests.length, 2);
-  assert.match(requests[1].body.embeds[0].title, /KHÔNG CÒN LỰC BÁN/);
+  assert.match(requests[1].body.embeds[0].title, /ĐÃ XÁC NHẬN LONG/);
   assert.match(requests[1].body.embeds[0].title, /HỒI MẠNH SAU XẢ/);
+  assert.match(requests[1].body.embeds[0].description, /không vào thêm lần hai/i);
+  assert.notEqual(requests[1].body.embeds[0].color, requests[0].body.embeds[0].color);
 
   clock += 60_000;
   const late = {
@@ -89,7 +93,7 @@ try {
 
   const payload = postDumpNoSellDiscordPayload(stageTwo);
   assert.equal(payload.allowed_mentions.parse.length, 0);
-  assert.match(payload.embeds[0].footer.text, /không vào thêm/i);
+  assert.match(payload.embeds[0].footer.text, /xác nhận Discord · không vào lần hai/i);
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

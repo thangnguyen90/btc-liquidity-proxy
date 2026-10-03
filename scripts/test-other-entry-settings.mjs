@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoEntryControls, entryRoute } from '../src/autoEntryControls.js';
@@ -10,9 +10,24 @@ import {
   resolveOtherEntrySettings,
 } from '../src/otherEntryCatalog.js';
 
-assert.equal(OTHER_ENTRY_SETTINGS_VERSION, 'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V14_POST_MOVE_IMPULSE_8USDT_20260927');
-assert.equal(OTHER_ENTRY_CATALOG.length, 30);
+assert.equal(OTHER_ENTRY_SETTINGS_VERSION, 'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V19_LOCAL_AI_PRIORITY_ZONE_1USDT_20261003');
+assert.equal(OTHER_ENTRY_CATALOG.length, 36);
 assert.ok(OTHER_ENTRY_CATALOG.every((route) => otherRouteMeta(route)));
+assert.deepEqual(OTHER_ENTRY_CATALOG
+  .filter((route) => route.source === 'post-move-impulse')
+  .map((route) => route.marginUsdt), [5, 5]);
+assert.deepEqual(OTHER_ENTRY_CATALOG
+  .filter((route) => route.source === 'btc-relative-strength-watch')
+  .map((route) => [route.side, route.marginUsdt, route.leverage, route.takeProfitRoePct]),
+[['LONG', 2, 5, 10], ['SHORT', 2, 5, 10]]);
+assert.deepEqual(OTHER_ENTRY_CATALOG
+  .filter((route) => route.source === 'local-ai-trend-evaluation')
+  .map((route) => [route.side, route.marginUsdt, route.leverage, route.takeProfitRoePct]),
+[['LONG', 1, 5, 10], ['SHORT', 1, 5, 10]]);
+assert.deepEqual(OTHER_ENTRY_CATALOG
+  .filter((route) => route.source === 'local-ai-liquidity-breakout-opposite-depth')
+  .map((route) => [route.side, route.marginUsdt, route.leverage, route.takeProfitRoePct]),
+[['LONG', 4, 5, 10], ['SHORT', 4, 5, 10]]);
 
 const dir = await mkdtemp(join(tmpdir(), 'other-entry-settings-'));
 try {
@@ -102,8 +117,41 @@ try {
     [6, 7, null, true],
     'dynamic TP remains structural while margin/leverage survive restart',
   );
+
+  const postMove = OTHER_ENTRY_CATALOG.find((route) => route.source === 'post-move-impulse');
+  const postMoveKey = entryRoute(postMove).key;
+  assert.throws(()=>controls.update({ action: 'margin', key: postMoveKey, marginUsdt: 8, expectedMarginUsdt: 5 }), /size tự động/);
+  controls.update({ action: 'route', key: postMoveKey, enabled: true });
+  const legacyEnabledAt = controls.read().routes[postMoveKey].enabledAt;
+  const legacyState = JSON.parse(await readFile(file, 'utf8'));
+  legacyState.routes[postMoveKey].marginUsdt = 8;
+  legacyState.otherEntrySettingsVersion = 'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V14_POST_MOVE_IMPULSE_8USDT_20260927';
+  await writeFile(file, JSON.stringify(legacyState, null, 2));
+  controls = new AutoEntryControls(file);
+  controls.seed(OTHER_ENTRY_CATALOG);
+  state = controls.read();
+  assert.equal(state.routes[postMoveKey].marginUsdt, 5, 'legacy 8 USDT route migrates to 5');
+  assert.equal(state.routes[postMoveKey].enabled, true, 'size migration preserves route switch');
+  assert.equal(state.routes[postMoveKey].enabledAt, legacyEnabledAt, 'size migration preserves enabledAt');
+
+  const localAiPriority = OTHER_ENTRY_CATALOG.find((route) => (
+    route.source === 'local-ai-trend-evaluation' && route.side === 'LONG'
+  ));
+  const localAiPriorityKey = entryRoute(localAiPriority).key;
+  controls.update({ action: 'route', key: localAiPriorityKey, enabled: true });
+  const localAiEnabledAt = controls.read().routes[localAiPriorityKey].enabledAt;
+  const legacyLocalAiState = JSON.parse(await readFile(file, 'utf8'));
+  legacyLocalAiState.routes[localAiPriorityKey].marginUsdt = 3;
+  legacyLocalAiState.otherEntrySettingsVersion = 'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V18_LIQUIDITY_BREAKOUT_DEPTH_4USDT_20261003';
+  await writeFile(file, JSON.stringify(legacyLocalAiState, null, 2));
+  controls = new AutoEntryControls(file);
+  controls.seed(OTHER_ENTRY_CATALOG);
+  state = controls.read();
+  assert.equal(state.routes[localAiPriorityKey].marginUsdt, 1, 'legacy AI PRIORITY 3 USDT route migrates to 1');
+  assert.equal(state.routes[localAiPriorityKey].enabled, true, 'AI size migration preserves route switch');
+  assert.equal(state.routes[localAiPriorityKey].enabledAt, localAiEnabledAt, 'AI size migration preserves enabledAt');
 } finally {
   await rm(dir, { recursive: true, force: true });
 }
 
-console.log('Other entry settings PASS: 30 exact routes, editable margin/leverage/fixed TP, dynamic Horizon TP, stale-save, fail-closed and restart.');
+console.log('Other entry settings PASS: 36 exact routes, editable margin/leverage/fixed TP, dynamic Horizon TP, stale-save, fail-closed and restart.');

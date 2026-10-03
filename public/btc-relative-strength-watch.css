@@ -1,0 +1,21 @@
+.relative-tabs { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:10px; padding:9px; }
+.relative-tab { display:grid; gap:3px; min-height:92px; border-color:var(--line); background:#07110f; color:var(--text); text-align:left; }
+.relative-tab span,.relative-tab small { color:var(--muted); font-size:10px; font-weight:900; text-transform:uppercase; }
+.relative-tab strong { font-size:18px; }
+.relative-tab.long.active { border-color:var(--mint); box-shadow:inset 4px 0 var(--mint); color:var(--mint); }
+.relative-tab.short.active { border-color:var(--red); box-shadow:inset 4px 0 var(--red); color:var(--red); }
+tr.relative-entry-ready { background:linear-gradient(90deg,rgba(53,243,176,.2),transparent 62%); box-shadow:inset 3px 0 var(--mint); }
+tr.wait-5m-confirm { background:linear-gradient(90deg,rgba(88,216,230,.11),transparent 58%); }
+tr.move-extended { background:linear-gradient(90deg,rgba(255,189,89,.10),transparent 55%); }
+tr.wait-reclaim,tr.wait-btc-opposite { opacity:.72; }
+tr.data-warmup { opacity:.62; }
+.relative-entry-ready .state { color:var(--mint); }
+.binance-route { display:inline-block; margin:5px 0 0; padding:3px 7px; border:1px solid currentColor; border-radius:999px; font-size:9px; font-weight:950; }
+.binance-route.on { color:var(--mint); background:rgba(53,243,176,.12); }
+.binance-route.off { color:var(--red); background:rgba(255,71,111,.10); }
+.wait-5m-confirm .state { color:var(--cyan); }
+.move-extended .state { color:var(--amber); }
+.data-warmup .state { color:var(--violet); }
+.relative-score { color:var(--violet); font-size:20px; font-weight:950; }
+.btc-opposite { color:var(--red); font-weight:900; }
+@media(max-width:700px){.relative-tabs{grid-template-columns:1fr}}

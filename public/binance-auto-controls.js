@@ -1,14 +1,38 @@
 const $=id=>document.getElementById(id);
 let state=null,busy=false;
-let authAttempted=false,authFailure='';
+let authAttempted=false,authFailure='',sessionRestorePromise=null;
+async function requestSession(url,options={}){
+  const res=await fetch(url,{method:'POST',cache:'no-store',...options});
+  const data=await res.json();
+  if(!res.ok||!data.token){const error=new Error(data.error??'Không tạo được phiên Orders.');error.status=res.status;error.code=data.code??null;throw error;}
+  localStorage.setItem('orders_token',data.token);authFailure='';return true;
+}
 async function restoreSession(){
   authAttempted=true;
-  try{
-    const res=await fetch('/api/auth/env',{method:'POST',cache:'no-store'});
-    const data=await res.json();
-    if(!res.ok||!data.token)throw new Error(data.error??'Không tạo được phiên Orders.');
-    localStorage.setItem('orders_token',data.token);authFailure='';return true;
-  }catch(error){authFailure=error.message;return false;}
+  if(sessionRestorePromise)return sessionRestorePromise;
+  sessionRestorePromise=(async()=>{
+    const errors=[];
+    try{return await requestSession('/api/auth/env');}catch(error){errors.push(error.message);}
+    const raw=localStorage.getItem('orders_creds');
+    if(raw){
+      try{
+        const credentials=JSON.parse(raw);
+        if(credentials?.apiKey&&credentials?.apiSecret)return await requestSession('/api/auth',{headers:{'content-type':'application/json'},body:JSON.stringify(credentials)});
+      }catch(error){
+        errors.push(error.message);
+        if(error.status===401||error.code==='BINANCE_AUTH_REJECTED')localStorage.removeItem('orders_creds');
+      }
+    }
+    authFailure=`${errors.filter(Boolean).join(' · ')||'Không có phiên Orders đã lưu.'} Mở /orders và đăng nhập một lần.`;
+    return false;
+  })().finally(()=>{sessionRestorePromise=null;});
+  return sessionRestorePromise;
+}
+async function unlockWithOrdersPassword(){
+  const password=window.prompt('Nhập ORDERS_PASSWORD để mở quyền chỉnh sửa trên domain này. Mật khẩu chỉ gửi về máy chủ hiện tại và không được lưu trong trình duyệt.');
+  if(password===null)return false;
+  try{return await requestSession('/api/auth/orders-password',{headers:{'content-type':'application/json'},body:JSON.stringify({password})});}
+  catch(error){authFailure=error.message;return false;}
 }
 const drafts=new Map(),leverageDrafts=new Map(),tpDrafts=new Map();
 // Display guidance only; never used as an entry gate or authorization.
@@ -41,11 +65,14 @@ const otherRouteNotes={
   HYBRID_UPPER_FIRST_SHORT_SQUEEZE_READY:'HYBRID LIQUIDITY · UPPER FIRST — CoinGlass có cụm hai phía; Binance 5m xác nhận impulse tăng còn giữ giá. LONG MARKET theo ký quỹ, đòn bẩy và TP đang lưu. Chỉ tín hiệu mới ≤7 phút, không DCA.',
   HYBRID_LOWER_FIRST_LONG_FLUSH_READY:'HYBRID LIQUIDITY · LOWER FIRST — CoinGlass có cụm hai phía; Binance 5m xác nhận impulse giảm còn giữ giá. SHORT MARKET theo ký quỹ, đòn bẩy và TP đang lưu. Chỉ tín hiệu mới ≤7 phút, không DCA.',
   BIG_CANDLE_PUMP_LONG:'TĂNG MẠNH · NẾN 15m ĐÃ ĐÓNG — thân nến tăng ít nhất 8%. LONG MARKET theo ký quỹ, đòn bẩy và TP đang lưu; SL cố định −20% ROE. Chỉ nhận nến đóng mới ≤90 giây, mark lệch giá phát tối đa 0,5%, không replay/DCA.',
+  POST_DUMP_NO_SELL_BUY_IMPULSE_LONG:'HỒI MẠNH SAU XẢ — LONG giữ cách cũ: cây BUY_IMPULSE 5m đã đóng màu vàng được xét MARKET ngay theo cấu hình route. Xác nhận 2–3 nến màu xanh vẫn gửi Discord nhưng không vào lần hai; tuổi ≤90 giây, không replay/DCA.',
+  POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT:'XẢ MẠNH SAU BƠM — cảnh báo sớm màu cam chỉ gửi Discord. SHORT MARKET theo cấu hình route chỉ được xét khi 2–3 nến 5m đã đóng xác nhận lực mua yếu; xác nhận Discord màu đỏ, tuổi ≤90 giây, không replay/DCA.',
+  RELATIVE_ENTRY_READY:'SỨC MẠNH TƯƠNG ĐỐI VỚI BTC V4 — LONG chỉ khi BTC DOWN_STRONG và coin hơn BTC thật ≥0,25 điểm %/15m + ≥0,50 điểm %/1h trên cùng dữ liệu nến đóng. READY bắt buộc MARK nằm trong biên entry thật; mỗi setup nguồn chỉ xét một lệnh. SHORT pullback giữ bộ lọc xả mạnh hơn BTC. Mặc định 2 USDT margin ×5, TP +10% ROE, KHÔNG SL gốc, tối đa 50 vị thế; không replay, không DCA. Profit-lock chung khi có lãi vẫn hoạt động.',
 };
 const otherRouteProfile=r=>r.otherSettingsEditable===true?{
   margin:r.marginUsdt,leverage:r.leverage,tp:r.takeProfitRoePct,
   dynamic:r.takeProfitMode==='DYNAMIC_LIQUIDITY_TARGET',
-  sl:r.source==='coin-horizon-sweep-transition'?25:r.source==='coinglass-hybrid-liquidity'?null:r.source==='big-candle-pump-15m'?20:r.source==='liqscan-high-score'&&r.side==='LONG'?20:30,
+  sl:r.source==='coin-horizon-sweep-transition'?25:r.source==='coinglass-hybrid-liquidity'?null:r.source==='btc-relative-strength-watch'&&r.side==='LONG'?20:r.source==='big-candle-pump-15m'?20:r.source==='liqscan-high-score'&&r.side==='LONG'?20:30,
 }:null;
 const otherRouteNote=r=>r.otherSettingsEditable!==true?null:r.source==='coin-horizon-sweep-transition'
   ?r.label==='UPPER'
@@ -63,17 +90,28 @@ const watchGuidance={
  CLOSED_BELOW_EMA_LONG_WAIT:'Đóng dưới EMA99, chưa xác nhận bật. Nếu bật vẫn vào LONG theo nhóm — không tự đổi SHORT.',TOUCH_EMA_LONG_WATCH:'Kiểm tra EMA99, chưa đủ xác nhận reclaim.'
 };
 for(const [key,value] of Object.entries(watchGuidance))ema99Notes[key]=`${value} Có quyền tick và lưu ký quỹ riêng. ON cho phép MARKET theo hướng nhóm sau nến đóng, còn phải đạt tuổi≤90s, giá/TP/SL và không có vị thế. WATCH không phải xác nhận đảo chiều.`;
-async function api(body){
+async function api(body,allowRecover=true){
   const r=await fetch('/api/auto-entry-controls',{method:body?'POST':'GET',cache:'no-store',headers:{'Content-Type':'application/json','x-orders-token':localStorage.getItem('orders_token')??''},...(body?{body:JSON.stringify(body)}:{})});
-  const data=await r.json();if(!r.ok)throw new Error(data.error??`HTTP ${r.status}`);return data;
+  const data=await r.json();
+  if(r.status===401&&allowRecover){
+    localStorage.removeItem('orders_token');
+    if(await restoreSession())return api(body,false);
+  }
+  if(!r.ok){const error=new Error(data.error??`HTTP ${r.status}`);error.status=r.status;throw error;}return data;
 }
 function renderProtectionExclusions(){
   const symbols=Array.isArray(state?.protectionExclusions)?state.protectionExclusions:[];
-  $('protection-exclusion-count').textContent=`${symbols.length} coin đang bỏ qua · tự gỡ khi ROE ≥ +15%, ROE ≤ −25% hoặc vị thế đóng`;
+  const fullBypasses=Array.isArray(state?.protectionFullBypasses)?state.protectionFullBypasses:[];
+  const fullBypassLifecycles=state?.protectionFullBypassLifecycles&&typeof state.protectionFullBypassLifecycles==='object'?state.protectionFullBypassLifecycles:{};
+  const events=Array.isArray(state?.protectionExclusionEvents)?state.protectionExclusionEvents:[];
+  $('protection-exclusion-count').textContent=`${symbols.length} coin đang bỏ qua tạm · tự gỡ tại +15% / −25% ROE hoặc khi đóng`;
+  $('protection-full-bypass-count').textContent=`${fullBypasses.length} coin đang tắt toàn bộ · không tự gỡ theo ROE`;
   $('protection-exclusion-add').disabled=busy||!state?.canEdit;
   $('protection-exclusion-symbol').disabled=busy||!state?.canEdit;
+  $('protection-full-bypass-add').disabled=busy||!state?.canEdit;
+  $('protection-full-bypass-symbol').disabled=busy||!state?.canEdit;
   const list=$('protection-exclusion-list');list.replaceChildren();
-  if(!symbols.length){const empty=document.createElement('span');empty.className='muted';empty.textContent='Chưa có coin nào. Ngoại lệ mới tự gỡ khi ROE đạt +15%, giảm tới −25% hoặc vòng vị thế kết thúc.';list.append(empty);return;}
+  if(!symbols.length){const empty=document.createElement('span');empty.className='muted';empty.textContent='Chưa có coin nào. Ngoại lệ mới tự gỡ khi ROE đạt +15%, giảm tới −25% hoặc vòng vị thế kết thúc.';list.append(empty);}
   for(const symbol of symbols){
     const chip=document.createElement('span');chip.className='protection-chip';
     const name=document.createElement('strong');name.textContent=`${symbol} · tự gỡ tại +15% / −25% ROE / khi đóng`;
@@ -81,6 +119,28 @@ function renderProtectionExclusions(){
     remove.setAttribute('aria-label',`Dùng lại quản lý TP SL tự động cho ${symbol}`);
     remove.onclick=()=>{if(!confirm(`Cho ${symbol} dùng lại TP/SL và dời SL tự động? Bot không hủy lệnh đang có, nhưng các scanner có thể đặt bù protection còn thiếu ở lượt kế tiếp.`))return;void change({action:'protection-exclusion-remove',symbol});};
     chip.append(name,remove);list.append(chip);
+  }
+  const fullList=$('protection-full-bypass-list');fullList.replaceChildren();
+  if(!fullBypasses.length){const empty=document.createElement('span');empty.className='muted';empty.textContent='Chưa có coin nào tắt toàn bộ quản lý tự động.';fullList.append(empty);}
+  for(const symbol of fullBypasses){
+    const chip=document.createElement('span');chip.className='protection-chip';
+    const bound=Boolean(fullBypassLifecycles[symbol]?.activeSeenAt);
+    const name=document.createElement('strong');name.textContent=`${symbol} · FULL BYPASS · ${bound?'ĐÃ GẮN VỊ THẾ':'ĐÃ GÀI CHỜ VỊ THẾ'}`;
+    const remove=document.createElement('button');remove.type='button';remove.textContent='Dùng lại tự động';remove.disabled=busy||!state.canEdit;
+    remove.setAttribute('aria-label',`Dùng lại toàn bộ quản lý TP SL tự động cho ${symbol}`);
+    remove.onclick=()=>{if(!confirm(`Cho ${symbol} dùng lại TP/SL, profit-lock và dời SL tự động ngay? Bot không hủy lệnh đang có; scanner có thể đặt bù protection còn thiếu ở lượt kế tiếp.`))return;void change({action:'protection-full-bypass-remove',symbol});};
+    chip.append(name,remove);fullList.append(chip);
+  }
+  const lifecycle=$('protection-lifecycle-list');lifecycle.replaceChildren();
+  if(!events.length){const empty=document.createElement('span');empty.className='muted';empty.textContent='Chưa có lịch sử thay đổi protection.';lifecycle.append(empty);}
+  const reasonText={USER_REQUEST:'thao tác trên trang',ACTIVE_POSITION_OBSERVED:'đã thấy vị thế active sau lúc bật',POSITION_CLOSED:'Binance xác nhận vị thế đã đóng',POSITION_REVERSED:'Binance xác nhận vị thế đã đảo chiều',POSITION_CLOSED_REST_RECONCILE:'REST xác nhận vị thế đã đóng',ROE_BOUNDARY:'ROE đạt ngưỡng tự gỡ'};
+  for(const item of [...events].reverse().slice(0,6)){
+    const active=['ENABLED','POSITION_BOUND'].includes(item.event);const row=document.createElement('span');row.className=`protection-lifecycle-event ${active?'active':'cleared'}`;
+    const eventText=item.event==='ENABLED'?'ĐÃ LƯU':item.event==='POSITION_BOUND'?'ĐÃ GẮN VỊ THẾ':item.event==='AUTO_CLEARED'?'ĐÃ TỰ GỠ':'ĐÃ GỠ TAY';
+    const label=document.createElement('b');label.textContent=`${item.symbol} · ${eventText}`;
+    const detail=document.createElement('small');const mode=item.mode==='FULL_POSITION_BYPASS'?'TẮT TOÀN BỘ':'BỎ QUA TẠM';const at=new Date(item.at);
+    detail.textContent=`${mode} · ${reasonText[item.reason]??item.reason??'không rõ lý do'}${Number.isFinite(at.getTime())?` · ${at.toLocaleString('vi-VN')}`:''}`;
+    row.append(label,detail);lifecycle.append(row);
   }
 }
 function render(){
@@ -90,8 +150,8 @@ function render(){
   const all=Object.values(state.routes);
   $('summary').textContent=`${all.filter(r=>r.enabled).length}/${all.length} loại bật ở trang này · ${state.enabled?'Vẫn phải đạt rule gốc':'Tất cả bị khóa bởi công tắc tổng'}`;
   $('master').textContent=state.enabled?'Tắt khóa tổng':'Bật khóa tổng';$('master').disabled=busy||!state.canEdit;
-  $('auth').textContent=state.canEdit?'Đã xác thực Orders. Thay đổi được lưu qua restart.':'Chế độ xem. Đăng nhập tại Orders để bật/tắt từng loại; không nhập API key tại trang này.';
-  if(!state.canEdit)$('auth').textContent=authFailure?`Chưa mở được quyền: ${authFailure} Bạn có thể thử lại hoặc đăng nhập Orders.`:'Phiên chỉnh sửa chưa có hoặc đã hết hạn. Bấm Mở quyền chỉnh sửa; không cần nhập API key tại đây.';
+  $('auth').textContent=state.canEdit?'Đã xác thực Orders. Thay đổi được lưu qua restart.':'Chế độ xem. Bấm Mở quyền chỉnh sửa và nhập ORDERS_PASSWORD; không nhập API key tại trang này.';
+  if(!state.canEdit)$('auth').textContent=authFailure?`Chưa tự khôi phục được phiên: ${authFailure} Bấm Mở quyền chỉnh sửa để dùng ORDERS_PASSWORD.`:'Phiên chỉnh sửa chưa có hoặc đã hết hạn. Bấm Mở quyền chỉnh sửa và nhập ORDERS_PASSWORD; không cần nhập API key.';
   $('unlock').hidden=state.canEdit;$('unlock').disabled=busy;
   const daily=state.dailyStats?.totals;
   $('daily-entries').textContent=daily?.entries??'—';$('daily-open').textContent=daily?.openEntries??'—';$('daily-closed').textContent=daily?.closedPositions??'—';
@@ -118,7 +178,10 @@ function render(){
     const settingsEditable=r.ema99SettingsEditable===true||r.otherSettingsEditable===true;
     const settingsScope=r.ema99SettingsEditable===true?'EMA99':'luồng này';
     const size=document.createElement('td');
-    if(settingsEditable){
+    const impulseDynamic=r.source==='post-move-impulse'&&['POST_DUMP_NO_SELL_BUY_IMPULSE_LONG','POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT'].includes(r.label);
+    if(impulseDynamic){
+      size.textContent=`Tự động 5 / 1 USDT · 5 nếu giờ tốt HOẶC BTC cùng hướng. ${r.side==='LONG'?'LONG: 03–06h, 12–15h':'SHORT: 00–09h, 18–21h'} VN; còn lại 1 USDT.`;
+    }else if(settingsEditable){
       const leverage=Number(r.leverage)||5;
       const saved=document.createElement('small');saved.textContent=`Đã lưu: ${r.marginUsdt??'LỖI'} USDT margin × ${leverage}x · notional ${r.marginUsdt===null?'—':Number((r.marginUsdt*leverage).toFixed(2))} USDT`;
       const input=document.createElement('input');input.type='number';input.min='1';input.max='100';input.step='0.01';input.value=drafts.get(r.key)?.value??r.marginUsdt??'';input.disabled=busy||!state.canEdit;
@@ -164,6 +227,7 @@ function render(){
     tr.append(today);
     check.addEventListener('change',()=>{const enabled=check.checked;const detail=r.source==='coin-horizon-sweep-transition'
       ?`Coin Horizon dùng ${r.marginUsdt} USDT margin ×${r.leverage}, TP động theo vùng thanh khoản hợp lệ gần nhất, R:R ≥1 và SL −25% ROE từ full-fill.`
+      :impulseDynamic?'IMPULSE tự động 5 USDT nếu giờ tốt HOẶC BTC cùng hướng, còn lại 1 USDT. Chỉ lệnh mới, điều kiện entry/TP/SL giữ nguyên.'
       :r.otherSettingsEditable===true
         ?`Luồng này dùng ${r.marginUsdt} USDT margin ×${r.leverage}, TP +${r.takeProfitRoePct}% ROE đang lưu; rule SL gốc không đổi.`
         :'EMA99 dùng margin, đòn bẩy và TP% đang lưu của đúng route; SL LONG −20% / SHORT −30% ROE từ giá khớp.';
@@ -173,12 +237,14 @@ function render(){
   for(const id of ['ema99-5m-routes','ema99-15m-routes','routes'])if(!$(id).children.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=9;td.textContent='Không có loại phù hợp với bộ lọc trong nhóm này.';tr.append(td);$(id).append(tr);}
 }
 async function refresh(){if(busy||document.querySelector('.route-group input:focus,.protection-exclusions input:focus'))return;try{state=await api();if(!state.canEdit&&!authAttempted){busy=true;render();$('status').textContent='Đang xác thực phiên chỉnh sửa trên máy này…';try{if(await restoreSession())state=await api();}finally{busy=false;}}render();$('status').textContent=`Cập nhật ${new Date().toLocaleTimeString('vi-VN')}${drafts.size||leverageDrafts.size||tpDrafts.size?' · Có cấu hình chưa lưu':''}`;}catch(e){$('status').textContent=`Không đọc được trạng thái: ${e.message}`;}}
-async function change(body){busy=true;render();try{state=await api(body);if(body.action==='margin')drafts.delete(body.key);if(body.action==='leverage')leverageDrafts.delete(body.key);if(body.action==='takeProfit')tpDrafts.delete(body.key);$('status').textContent=body.action==='protection-exclusion-add'?`Đã bỏ qua ${body.symbol.toUpperCase()} trong vòng vị thế này. Bot không hủy TP/SL hiện có; ngoại lệ tự xóa tại +15% hoặc −25% ROE, hoặc khi vị thế đóng.`:body.action==='protection-exclusion-remove'?`Đã cho ${body.symbol.toUpperCase()} dùng lại quản lý protection tự động ngay.`:body.action==='takeProfit'?'Đã lưu TP%. Chỉ lệnh mới của đúng route dùng giá trị này; không sửa lệnh đang mở.':body.action==='leverage'?'Đã lưu đòn bẩy. Chỉ lệnh mới của đúng route dùng giá trị này; không sửa vị thế, TP hoặc SL đang mở.':'Đã lưu. Chỉ áp dụng yêu cầu mở lệnh mới; không sửa vị thế đang mở.';}catch(e){$('status').textContent=e.message;}finally{busy=false;render();}}
+async function change(body){busy=true;render();try{state=await api(body);if(body.action==='margin')drafts.delete(body.key);if(body.action==='leverage')leverageDrafts.delete(body.key);if(body.action==='takeProfit')tpDrafts.delete(body.key);$('status').textContent=body.action==='protection-exclusion-add'?`Đã bỏ qua tạm ${body.symbol.toUpperCase()}. Bot giữ TP/SL hiện có và tự dùng lại protection tại +15% / −25% ROE hoặc khi vị thế đóng.`:body.action==='protection-full-bypass-add'?`Đã tắt toàn bộ quản lý TP/SL tự động cho ${body.symbol.toUpperCase()}. Không tự bật lại theo ROE; chỉ gỡ tay hoặc khi vị thế đóng/đảo chiều.`:['protection-exclusion-remove','protection-full-bypass-remove'].includes(body.action)?`Đã cho ${body.symbol.toUpperCase()} dùng lại quản lý protection tự động ngay.`:body.action==='takeProfit'?'Đã lưu TP%. Chỉ lệnh mới của đúng route dùng giá trị này; không sửa lệnh đang mở.':body.action==='leverage'?'Đã lưu đòn bẩy. Chỉ lệnh mới của đúng route dùng giá trị này; không sửa vị thế, TP hoặc SL đang mở.':'Đã lưu. Chỉ áp dụng yêu cầu mở lệnh mới; không sửa vị thế đang mở.';return true;}catch(e){$('status').textContent=`KHÔNG LƯU: ${e.message}`;if(e.status===401&&state)state.canEdit=false;return false;}finally{busy=false;render();}}
 $('pause').onclick=()=>change({action:'pauseAll'});
-$('unlock').onclick=async()=>{if(busy)return;busy=true;render();$('status').textContent='Đang xác thực…';try{if(await restoreSession())state=await api();}catch(e){authFailure=e.message;}finally{busy=false;render();$('status').textContent=state?.canEdit?'Đã mở quyền tick và Lưu. Không bật thêm loại nào.':'Chưa xác thực được. Xem lý do phía trên.';}};
+$('unlock').onclick=async()=>{if(busy)return;busy=true;render();$('status').textContent='Đang xác thực…';try{let restored=await restoreSession();if(!restored)restored=await unlockWithOrdersPassword();if(restored)state=await api(null,false);}catch(e){authFailure=e.message;}finally{busy=false;render();$('status').textContent=state?.canEdit?'Đã mở quyền tick và Lưu. Không bật thêm loại nào.':'Chưa xác thực được. Xem lý do phía trên.';}};
 $('master').onclick=()=>{if(!state)return;if(!state.enabled&&!confirm('Bật khóa tổng? Chỉ các loại ON mới được đi tiếp qua rule gốc. Không bật lại các loại OFF.'))return;void change({action:'master',enabled:!state.enabled});};
-$('protection-exclusion-form').onsubmit=event=>{event.preventDefault();const symbol=$('protection-exclusion-symbol').value.trim();if(!symbol)return;if(!confirm(`Bỏ qua quản lý TP/SL tự động cho ${symbol.toUpperCase()} trong một vòng vị thế?\n\nEntry vẫn có thể được mở. Bot không hủy TP/SL đang có, nhưng sẽ không tạo/bù/đổi TP/SL, không dời SL và không dùng Fast Wave. Ngoại lệ tự xóa khi ROE đạt +15%, giảm tới −25%, hoặc Binance xác nhận vị thế đóng hẳn/đảo chiều.`))return;$('protection-exclusion-symbol').value='';void change({action:'protection-exclusion-add',symbol});};
+$('protection-exclusion-form').onsubmit=async event=>{event.preventDefault();const input=$('protection-exclusion-symbol'),symbol=input.value.trim();if(!symbol)return;if(!confirm(`Bỏ qua quản lý TP/SL tự động cho ${symbol.toUpperCase()} trong một vòng vị thế?\n\nEntry vẫn có thể được mở. Bot không hủy TP/SL đang có, nhưng sẽ không tạo/bù/đổi TP/SL, không dời SL và không dùng Fast Wave. Ngoại lệ tự xóa khi ROE đạt +15%, giảm tới −25%, hoặc Binance xác nhận vị thế đóng hẳn/đảo chiều.`))return;if(await change({action:'protection-exclusion-add',symbol}))input.value='';};
 $('protection-exclusion-symbol').oninput=()=>{$('protection-exclusion-symbol').value=$('protection-exclusion-symbol').value.toUpperCase();};
+$('protection-full-bypass-form').onsubmit=async event=>{event.preventDefault();const input=$('protection-full-bypass-symbol'),symbol=input.value.trim();if(!symbol)return;if(!confirm(`TẮT TOÀN BỘ quản lý protection tự động cho ${symbol.toUpperCase()} đến khi vị thế đóng?\n\nEntry vẫn có thể được mở. Bot không hủy TP/SL đang có, nhưng sẽ bỏ qua mọi tạo/bù/đổi TP/SL, dời SL/TP, profit-lock và Fast Wave. Chế độ KHÔNG tự gỡ ở +15% hoặc −25% ROE; chỉ gỡ tay hoặc khi Binance xác nhận vị thế đóng hẳn/đảo chiều.`))return;if(await change({action:'protection-full-bypass-add',symbol}))input.value='';};
+$('protection-full-bypass-symbol').oninput=()=>{$('protection-full-bypass-symbol').value=$('protection-full-bypass-symbol').value.toUpperCase();};
 $('search').oninput=render;$('side').onchange=render;$('refresh').onclick=refresh;
 void refresh();setInterval(()=>{if(!document.hidden)void refresh();},10000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)void refresh();});

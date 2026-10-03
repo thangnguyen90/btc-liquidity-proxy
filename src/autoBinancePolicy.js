@@ -1,4 +1,5 @@
-export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'LIVE_CARD_POST_MOVE_IMPULSE_MAX50_V41_20260927';
+export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'LOCAL_AI_PRIORITY_ZONE_1USDT_V51_20261003';
+import { validImpulseSizing } from './postMoveImpulseSizing.js';
 import {validEma99OrderSize,EMA99_ENTRY_CATALOG} from './ema99EntryCatalog.js';
 import {
   LIMIT_PAPER_FILL_LABELS,
@@ -7,6 +8,31 @@ import {
   validOtherOrderSize,
   validOtherTakeProfitRoe,
 } from './otherEntryCatalog.js';
+import {
+  LOCAL_AI_PASS_MIDPOINT_ENTRY_VERSION,
+  LOCAL_AI_PASS_MIDPOINT_LEVERAGE,
+  LOCAL_AI_PASS_MIDPOINT_MARGIN_USDT,
+  LOCAL_AI_PASS_MIDPOINT_MAX_OPEN_POSITIONS,
+  LOCAL_AI_PASS_MIDPOINT_MAX_STRUCTURAL_SL_ROE_PCT,
+  LOCAL_AI_PASS_MIDPOINT_SIGNAL_LABEL,
+  LOCAL_AI_PASS_MIDPOINT_SIGNAL_STAGE,
+  LOCAL_AI_PASS_MIDPOINT_SOURCE,
+  LOCAL_AI_PASS_MIDPOINT_STREAM,
+  LOCAL_AI_PASS_MIDPOINT_TAKE_PROFIT_ROE_PCT,
+} from './localAiPassMidpointContract.js';
+import {
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_BINANCE_VERSION,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LEVERAGE,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LONG_LABEL,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MARGIN_USDT,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MAX_OPEN_POSITIONS,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SHORT_LABEL,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SL_ROE_PCT,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SOURCE,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_STAGE,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_STREAM,
+  LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_TP_ROE_PCT,
+} from './localAiLiquidityBreakoutOppositeDepthBinance.js';
 const EMA99_WATCH_AUTH=Symbol('ema99-watch-optin');
 export function authorizeEma99WatchOrder(payload={}){const p={...payload};Object.defineProperty(p,EMA99_WATCH_AUTH,{value:true});return p;}
 export const LIQUID_FLOW_V2_BINANCE_LEVERAGE = 5;
@@ -34,11 +60,36 @@ const POST_MOVE_IDEAL_LONG_4H_AUTHORIZATION = Symbol('post-move-ideal-long-4h-au
 const POST_MOVE_IDEAL_SHORT_4H_AUTHORIZATION = Symbol('post-move-ideal-short-4h-authorization');
 const POST_MOVE_PRIORITY_15M_AUTHORIZATION = Symbol('post-move-priority-15m-authorization');
 const POST_MOVE_IMPULSE_5M_AUTHORIZATION = Symbol('post-move-impulse-5m-authorization');
+const BTC_RELATIVE_STRENGTH_AUTHORIZATION = Symbol('btc-relative-strength-authorization');
+const LOCAL_AI_PASS_MIDPOINT_AUTHORIZATION = Symbol('local-ai-pass-midpoint-authorization');
+const LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_AUTHORIZATION =
+  Symbol('local-ai-liquidity-breakout-opposite-depth-authorization');
 const LIQ_SCAN_MAIN_KILL_FILTER_VERSION =
   'LIQSCAN_MAIN_KILL_SWEEP_SHORT_REJECTION_FILTER_V2_20260927';
 export function authorizePostMoveImpulse5mOrder(payload = {}) {
   const authorized = { ...payload };
   Object.defineProperty(authorized, POST_MOVE_IMPULSE_5M_AUTHORIZATION, {
+    value: true, enumerable: false, configurable: false, writable: false,
+  });
+  return authorized;
+}
+export function authorizeBtcRelativeStrengthOrder(payload = {}) {
+  const authorized = { ...payload };
+  Object.defineProperty(authorized, BTC_RELATIVE_STRENGTH_AUTHORIZATION, {
+    value: true, enumerable: false, configurable: false, writable: false,
+  });
+  return authorized;
+}
+export function authorizeLocalAiPassMidpointOrder(payload = {}) {
+  const authorized = { ...payload };
+  Object.defineProperty(authorized, LOCAL_AI_PASS_MIDPOINT_AUTHORIZATION, {
+    value: true, enumerable: false, configurable: false, writable: false,
+  });
+  return authorized;
+}
+export function authorizeLocalAiLiquidityBreakoutOppositeDepthOrder(payload = {}) {
+  const authorized = { ...payload };
+  Object.defineProperty(authorized, LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_AUTHORIZATION, {
     value: true, enumerable: false, configurable: false, writable: false,
   });
   return authorized;
@@ -334,9 +385,9 @@ export function evaluateAutoBinanceEntryPolicy({
     && payload.source === 'post-move-impulse'
     && payload.signalInterval === '5m'
     && payload.orderType === 'MARKET'
-    && Number(payload.marginUsdt) === 8
+    && validImpulseSizing(payload)
     && Number(payload.leverage) === 5
-    && Number(payload.notionalUsdt) === 40
+    && Number(payload.notionalUsdt) === Number(payload.marginUsdt) * 5
     && Number(payload.takeProfitRoePct) === 10
     && Number(payload.maxOpenPositions) === 50
     && (((payload.streamId === 'post-dump-no-sell-5m'
@@ -345,11 +396,95 @@ export function evaluateAutoBinanceEntryPolicy({
       && payload.side === 'BUY' && Number(payload.stopLossRoePct) === 20))
       || (payload.streamId === 'post-pump-no-buy-5m'
         && payload.signalLabel === 'POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT'
-        && payload.signalStageKey === 'SELL_IMPULSE'
+        && payload.signalStageKey === 'NO_BUY_CONFIRMATION'
         && payload.side === 'SELL' && Number(payload.stopLossRoePct) === 30))
     && validOtherOrderSize(payload)
     && validOtherTakeProfitRoe(payload.takeProfitRoePct)) {
-    return { allowed: true, exclusive: true, reason: 'POST_MOVE_IMPULSE_5M_MARKET_8USDT_MAX50' };
+    return { allowed: true, exclusive: true, reason: 'POST_MOVE_IMPULSE_TIME_OR_BTC_MARGIN5_ELSE1_MAX50' };
+  }
+  if (payload?.[BTC_RELATIVE_STRENGTH_AUTHORIZATION] === true
+    && payload.source === 'btc-relative-strength-watch'
+    && payload.streamId === 'opposite-btc-5m'
+    && payload.signalLabel === 'RELATIVE_ENTRY_READY'
+    && payload.signalStageKey === 'RELATIVE_ENTRY_READY'
+    && payload.signalInterval === '5m'
+    && payload.orderType === 'MARKET'
+    && Number(payload.marginUsdt) === 2
+    && Number(payload.leverage) === 5
+    && Number(payload.notionalUsdt) === 10
+    && Number(payload.takeProfitRoePct) === 10
+    && Number(payload.maxOpenPositions) === 50
+    && ['BUY', 'SELL'].includes(payload.side)
+    && payload.stopLossRoePct == null
+    && payload.stopLossPrice == null
+    && payload.stopLossDistanceFraction == null
+    && payload.protectionSignalStopLossPrice == null
+    && validOtherOrderSize(payload)
+    && validOtherTakeProfitRoe(payload.takeProfitRoePct)) {
+    return { allowed: true, exclusive: true, reason: 'BTC_RELATIVE_STRENGTH_READY_MARKET_2USDT_TP_ONLY_MAX50' };
+  }
+  if (payload?.[LOCAL_AI_PASS_MIDPOINT_AUTHORIZATION] === true
+    && payload.source === LOCAL_AI_PASS_MIDPOINT_SOURCE
+    && payload.streamId === LOCAL_AI_PASS_MIDPOINT_STREAM
+    && payload.signalLabel === LOCAL_AI_PASS_MIDPOINT_SIGNAL_LABEL
+    && payload.signalStageKey === LOCAL_AI_PASS_MIDPOINT_SIGNAL_STAGE
+    && ['15m', '1h', '4h'].includes(payload.signalInterval)
+    && ['BUY', 'SELL'].includes(payload.side)
+    && payload.orderType === 'MARKET'
+    && Number(payload.marginUsdt) === LOCAL_AI_PASS_MIDPOINT_MARGIN_USDT
+    && Number(payload.leverage) === LOCAL_AI_PASS_MIDPOINT_LEVERAGE
+    && Number(payload.notionalUsdt)
+      === LOCAL_AI_PASS_MIDPOINT_MARGIN_USDT * LOCAL_AI_PASS_MIDPOINT_LEVERAGE
+    && Number(payload.takeProfitRoePct) === LOCAL_AI_PASS_MIDPOINT_TAKE_PROFIT_ROE_PCT
+    && Number(payload.maxOpenPositions) === LOCAL_AI_PASS_MIDPOINT_MAX_OPEN_POSITIONS
+    && Number(payload.signalEntryPrice) > 0
+    && Number(payload.takeProfitPrice) > 0
+    && Number(payload.stopLossPrice) > 0
+    && Number(payload.stopLossRoePct) > 0
+    && Number(payload.stopLossRoePct) <= LOCAL_AI_PASS_MIDPOINT_MAX_STRUCTURAL_SL_ROE_PCT
+    && (payload.side === 'BUY'
+      ? Number(payload.stopLossPrice) < Number(payload.signalEntryPrice)
+        && Number(payload.takeProfitPrice) > Number(payload.signalEntryPrice)
+      : Number(payload.stopLossPrice) > Number(payload.signalEntryPrice)
+        && Number(payload.takeProfitPrice) < Number(payload.signalEntryPrice))
+    && payload.protectionOnFill === true
+    && payload.fillAnchorEnabled === true
+    && payload.fillAnchorVersion === LOCAL_AI_PASS_MIDPOINT_ENTRY_VERSION
+    && validOtherOrderSize(payload)
+    && validOtherTakeProfitRoe(payload.takeProfitRoePct)) {
+    return { allowed: true, exclusive: true, reason: 'LOCAL_AI_PRIORITY_ENGINE_ZONE_MARKET_1USDT' };
+  }
+  if (payload?.[LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_AUTHORIZATION] === true
+    && payload.source === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SOURCE
+    && payload.streamId === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_STREAM
+    && [LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LONG_LABEL,
+      LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SHORT_LABEL].includes(payload.signalLabel)
+    && payload.signalStageKey === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_STAGE
+    && ['5m', '15m'].includes(payload.signalInterval)
+    && ((payload.side === 'BUY'
+      && payload.signalLabel === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LONG_LABEL)
+      || (payload.side === 'SELL'
+        && payload.signalLabel === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SHORT_LABEL))
+    && payload.orderType === 'MARKET'
+    && Number(payload.marginUsdt) === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MARGIN_USDT
+    && Number(payload.leverage) === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LEVERAGE
+    && Number(payload.notionalUsdt) === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MARGIN_USDT
+      * LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LEVERAGE
+    && Number(payload.takeProfitRoePct) === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_TP_ROE_PCT
+    && Number(payload.stopLossRoePct) === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SL_ROE_PCT
+    && Number(payload.maxOpenPositions) === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MAX_OPEN_POSITIONS
+    && Number(payload.signalEntryPrice) > 0 && Number(payload.takeProfitPrice) > 0
+    && Number(payload.stopLossPrice) > 0
+    && (payload.side === 'BUY'
+      ? Number(payload.stopLossPrice) < Number(payload.signalEntryPrice)
+        && Number(payload.takeProfitPrice) > Number(payload.signalEntryPrice)
+      : Number(payload.stopLossPrice) > Number(payload.signalEntryPrice)
+        && Number(payload.takeProfitPrice) < Number(payload.signalEntryPrice))
+    && payload.protectionOnFill === true && payload.fillAnchorEnabled === true
+    && payload.fillAnchorVersion === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_BINANCE_VERSION
+    && validOtherOrderSize(payload) && validOtherTakeProfitRoe(payload.takeProfitRoePct)) {
+    return { allowed: true, exclusive: true,
+      reason: 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_MARKET_4USDT_5X_TP10_LONG_SL20_SHORT_TP_ONLY' };
   }
   if(payload?.[EMA99_WATCH_AUTH]===true&&payload.orderType==='MARKET'&&validEma99OrderSize(payload)
     &&EMA99_ENTRY_CATALOG.some(r=>r.source==='ema99-observe-only'&&payload.source===r.source&&payload.streamId===r.streamId

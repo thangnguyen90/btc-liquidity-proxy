@@ -107,7 +107,7 @@ assert.equal(stageOne.reason, 'ACCEPTED');
 assert.equal(stageOne.watch.stage, POST_PUMP_NO_BUY_STAGE.SELL_IMPULSE);
 assert.equal(stageOne.watch.watchOnly, true);
 assert.equal(stageOne.watch.binanceEligible, false);
-assert.equal(stageOne.watch.executionCandidate, true);
+assert.equal(stageOne.watch.executionCandidate, false);
 
 const confirmedRows = [...fiveMinute];
 confirmedRows.push(weakFollow(confirmedRows.at(-1).closeTime + 1, 0));
@@ -119,7 +119,7 @@ const stageTwo = evaluatePostPumpNoBuyWatch({
 });
 assert.equal(stageTwo.reason, 'ACCEPTED');
 assert.equal(stageTwo.watch.stage, POST_PUMP_NO_BUY_STAGE.NO_BUY_CONFIRMATION);
-assert.equal(stageTwo.watch.executionCandidate, false);
+assert.equal(stageTwo.watch.executionCandidate, true);
 assert.equal(stageTwo.watch.followBars, 2);
 assert.ok(stageTwo.watch.followVolumeRatio <= 0.6);
 assert.ok(stageTwo.watch.followTakerBuyPct <= 45);

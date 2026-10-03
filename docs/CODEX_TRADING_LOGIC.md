@@ -1,5 +1,383 @@
 # Codex Trading Logic Map
 
+### 2026-10-03 — AI PRIORITY engine-zone giảm size còn 1 USDT
+
+- Nâng executor lên `LOCAL_AI_PRIORITY_ENGINE_ZONE_ENTRY_V2_MARKET_1USDT_20261003`, policy `LOCAL_AI_PRIORITY_ZONE_1USDT_V51_20261003`, controls V36 và catalog V19. Dữ liệu trước entry/điều kiện không đổi: chỉ candidate Ollama `PRIORITY`, vùng/invalidation causal của engine và Binance MARK live; qualification 3/6–6/6 chỉ giải thích, không phải gate.
+- Chỉ thay size lệnh mới của exact route `LOCAL_AI_PRIORITY_ENGINE_ZONE_TOUCH` LONG/SHORT từ `3 USDT margin ×5 = 15 USDT notional` xuống `1 USDT margin ×5 = 5 USDT notional`. MARKET, max50, TP +10% ROE, structural SL/fallback -20% ROE, protection, Discord và logic touch vùng giữ nguyên; lệnh/vị thế hiện có không bị sửa.
+- Migration chỉ nhận đúng source/stream/label/side và margin cũ bằng 3, giữ nguyên switch cùng `enabledAt`; route khác không đổi. State/API/UI chỉ cập nhật version/size, JSON cũ tương thích. Đây không phải nhãn/card thống kê mới nên không thêm WHITELIST; exact Auto Controls route giữ trạng thái hiện hành, route mới vẫn mặc định OFF và policy CLOSED AvgROE `>4%` không đổi.
+
+### 2026-10-03 — Trang quản lý lệnh Binance theo tín hiệu
+
+- Thêm `BINANCE_SIGNAL_ORDER_MANAGER_V1_AUDIT_LIFECYCLE_LIVE_PNL_20261003`, trang `/binance-signal-orders` và API read-only có search/filter/sort/phân trang. Navigation V5 phủ 48/48 menu. Dữ liệu loại tín hiệu, source/label/reason/combo, entry/TP/SL, margin/leverage, DCA và order ID lấy nguyên từ common filled audit lúc entry; hỗ trợ symbol Unicode và link Coin Level/Binance.
+- CLOSED dùng net Binance đã đối soát `gross − commission + funding`; DCA cùng `close_group_id` chỉ tính một lifecycle cho W/L. ACTIVE ghép exact symbol+hướng với Position Monitor/REST rồi phân bổ unrealized PnL tổng theo filled notional của các fill audit đang mở. Audit còn OPEN nhưng không thấy position được ghi `OPEN_UNCONFIRMED`, không tự gán thắng/thua/PnL. Đây là thống kê vận hành trên bộ lọc, không phải xác suất hay backtest.
+- API không ghi Binance: không đặt/hủy/đóng lệnh, không đổi entry/size/leverage/SL/TP/DCA/protection. State audit V1/V2 được đọc nguyên, response additive và field thiếu giữ null; không migration/backfill. Các summary chỉ là telemetry quản lý, không tạo signal label/card/matcher WHITELIST; default OFF/CLOSED AvgROE `>4%` không đổi.
+
+### 2026-10-03 — Discord vượt MAIN KILL 5m/15m · entry phản chiều
+
+- Nâng lên `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V3_REVERSED_ENTRY_SIDE_20261003`. Alert LiqScan mới arm MAIN KILL tối đa 6 giờ; không replay lịch sử. Giữ 5m/15m đã đóng quét độc lập trên cùng vùng.
+- Với từng khung, UPPER pass khi nến Futures đóng trên toàn vùng, close mới nhất vẫn trên vùng và tổng BID bên dưới trong Binance depth NEAR 0–3% + WIDE 3–20% lớn hơn tổng ASK bên trên. LOWER đối xứng khi đóng dưới vùng và tổng ASK bên trên lớn hơn BID bên dưới. Nến mới nhất quá 6m/16m, chuỗi nến đứt, analysis stale, thiếu total hoặc total không dương đều fail-closed. Dedupe/cooldown coin+hướng 4 giờ tách theo timeframe; 5m không chặn 15m. Một snapshot Coin Level được dùng chung khi hai khung cùng pass trong một vòng.
+- Discord ghi rõ khung, vùng, close/MARK, hai tổng USDT, tỷ lệ và coverage. UPPER + BID dưới lớn hơn phát SHORT màu đỏ; LOWER + ASK trên lớn hơn phát LONG màu xanh. Đây là rule phản chiều theo yêu cầu, không phải xác suất. State delivery không tính WinRate/PF/AvgROE.
+- Executor V2 dùng exact Auto Controls: MARKET 4 USDT margin ×5, TP +10%; LONG SL -20%, SHORT TP-only. Event cũ đã gửi/attempt không replay; chỉ event mới sau reload dùng hướng đảo. JSON additive; route keys giữ nguyên và máy hiện tại vẫn ON. Không có card thống kê/WHITELIST mới khi chưa có CLOSED AvgROE `>4%`.
+
+### 2026-10-03 — FULL BYPASS chặn fail-closed Coin Level direction-flip
+
+- Nâng controls lên `AUTO_ENTRY_CONTROLS_V35_DIRECTION_FLIP_FAIL_CLOSED_20261003` và runtime lên `BINANCE_SYMBOL_PROTECTION_EXCLUSION_V8_DIRECTION_FLIP_FAIL_CLOSED_20261003`. Log MAGMAUSDT xác nhận FULL BYPASS đã gắn vị thế lúc 13:09:35, nhưng lúc 14:10:17 direction-flip SHORT→LONG gọi trực tiếp `handleNegativeTimeoutTp(force=true)`, hủy Algo TP cũ và đặt LIMIT reduce-only tại entry; đây là nhánh lọt hàng rào, không phải người dùng bật sai.
+- Runtime nay kiểm tra exact symbol/exclusion ngay đầu mỗi pending direction-flip, trước cancel entry, Position Risk, MARKET close hay TP-at-entry. Helper TP-at-entry có guard thứ hai trước cooldown/API read/cancel/place, nên mọi caller trực tiếp cũng fail-closed. Coin không exclusion vẫn chạy rule V1 như cũ.
+- Thay đổi thật trên Binance chỉ ngăn mutation mới cho coin đang bypass; không tự xóa lệnh entry-LIMIT đã tạo trước bản sửa, không đổi entry route, margin, leverage, TP/SL thủ công hoặc coin khác. Log skip là audit vận hành, không phải signal/tier/gate hay thống kê hiệu quả.
+- JSON/state giữ nguyên schema và đọc tương thích V7; chỉ version string nâng. Không thêm label/card/matcher nên không có checkbox WHITELIST mới; mặc định OFF và policy CLOSED `AvgROE >4%` giữ nguyên.
+
+### 2026-10-03 — Cảnh báo BTC sập sâu hoặc tăng nóng vào Discord hậu kiểm
+
+- `BTC_EXTREME_MOVE_DISCORD_V2_CLOSED_15M_1H_4H_20261003` dùng cùng webhook AI Signal Review. Nến BTC Futures đã đóng đạt giảm `-0,75%/15m`, `-1,50%/1h` hoặc `-3,00%/4h` gửi cảnh báo đỏ; tăng đối xứng gửi xanh. Khung ngắn còn lại không được đi ngược mạnh.
+- Dedupe theo closedAt, cooldown cùng hướng/level 60 phút; severity tăng, đổi hướng hoặc đã neutral rồi cực đoan lại được gửi ngay. Baseline lúc restart tránh bắn trạng thái cũ; không gửi recovery.
+- Chỉ là BTC context `OBSERVE ONLY`; không gọi model/signed REST, không thay Binance/entry/size/SL/TP/DCA/protection và không có runtime matcher/WHITELIST. State/API chỉ additive, JSON cũ tương thích.
+
+### 2026-10-03 — Discord hậu kiểm song song 1h và 4h
+
+- `AI_SIGNAL_REVIEW_DISCORD_V2_DUAL_1H_4H_ENTRY_IMPROVEMENT_20261003`: báo cáo hoàn tất của `/ai-signal-review` chạy nền 30 phút/lần và xét hai horizon 1h/4h; kết quả tạm không gửi, mỗi horizon baseline pass cũ để tránh flood.
+- Cùng rule phí+trượt0,12%: immutable sent snapshot, mẫu độc lập coin/hướng4h, vào ngay net dương, midpoint gốc chạm trong horizon và net dương, vùng cải thiện ít nhất0,10 điểm phần trăm, có follow-through sau nến chạm. Dedupe `eventId|1H`/`eventId|4H`, nên 1h báo sớm và 4h có thể xác nhận thêm. Discord hiển thị horizon, return, improvement, wait, MFE/MAE và BTC/regime/breadth gốc; LONG xanh/SHORT đỏ.
+- Đây là outcome nhìn sau, `OBSERVE ONLY`, không phải entry mới hay xác suất. Không ảnh hưởng Binance/route/size/leverage/SL/TP/DCA/protection và không tạo runtime matcher/WHITELIST. API chỉ thêm `discord`, state dedupe mới additive; JSON cũ thiếu dữ liệu fail-closed.
+
+### 2026-10-03 — Đưa Đánh giá tín hiệu vào toàn bộ menu
+
+- `LOCAL_AI_NAVIGATION_ALL_MENUS_V4_SIGNAL_REVIEW_20261003`: ba trang legacy `decision-paper`, `intraday-combos`, `recommended-signals` nay có semantic nav, để injector chung phủ đủ 47/47 trang HTML và giữ đúng một link `/ai-signal-review` trên mỗi menu.
+- Chỉ thay điều hướng. Không thay dữ liệu trước entry, phân loại, thống kê, Binance/entry/size/SL/TP, Discord hay WHITELIST; JSON/API cũ không đổi.
+
+### 2026-10-03 — Trang đánh giá thời điểm và entry từ tín hiệu AI đã gửi
+
+- Xuất báo cáo tạm mỗi10 coin để xem ngay khi backfill; nêu rõ số đã xử lý/tổng và chưa kết luận từ xếp hạng tạm. Cờ `partial` additive, report cũ không có cờ vẫn đọc được. Phân tích trên snapshot trước entry và nến outcome; không thay giao dịch.
+- `AI_SIGNAL_REVIEW_V1_CAUSAL_ENTRY_COMPARISON_20261003`: `/ai-signal-review` có menu chung, filter coin/hướng/điểm/giờ/BTC/regime/breadth/model; gom state sent cũ và journal thành kho event lưu lâu dài. Báo cáo 30 ngày/20.000 mẫu, nến 15m tải qua shared Binance rate gate và cache, cập nhật nền khi bấm nút.
+- Entry giả định dùng dữ liệu biết trước: baseline mở nến kế tiếp, midpoint đã lưu, hồi 0,5% từ baseline; chờ tối đa4h. Đánh giá với cùng giá thoát +1h/4h/24h; chi phí giả định0,12%, LONG `(exit-entry)/entry`, SHORT `(entry-exit)/entry`, chưa leverage/funding/TP/SL. Không tối ưu bằng đáy/đỉnh nhìn sau. So sánh paired, chạm/bỏ lỡ, TB mỗi cơ hội, MFE/MAE (loại nến chạm) và tách thiếu/chưa đủ kỳ; default dedupe coin+hướng4h, nhóm<20 mẫu ghi rõ.
+- BTC động lượng tái dựng từ nến đóng trước giờ phát (1h ±0,1%) được phân biệt với BTC trend/regime/breadth gốc; missing không suy đoán. Journal V2 giữ bất biến snapshot của event đã gửi, thêm frames/targetPlan; V1/JSON cũ tương thích, state.sample cũ không dùng làm chứng cứ điểm gốc.
+- Không ảnh hưởng Binance entry/size/SL/TP/Discord threshold. Không thêm label/card/runtime matcher giao dịch; bảng nghiên cứu OBSERVE ONLY không cấp WHITELIST và không chuyển lợi nhuận mô phỏng thành closed AvgROE. Policy default OFF, closed AvgROE>4% giữ nguyên; tài liệu chi tiết `docs/AI_SIGNAL_REVIEW.md`.
+
+### 2026-10-03 — Tạm gỡ ngưỡng 65 Discord, thu thập cohort theo điểm
+
+- Nâng notifier lên `LOCAL_AI_TREND_DISCORD_V7_NO_STRENGTH_GATE_HISTORY_20261003`: Discord trở lại nhận tất cả `PRIORITY/WATCH`, không loại `strength <=65`. Giới hạn top 3/vòng, dedupe, cooldown 30 phút, màu LONG xanh/SHORT đỏ và các thông báo BTC không đổi. Qualification 6/6 vẫn hiển tiêu chí 65 như thông tin chất lượng, không còn chặn webhook.
+- Mỗi candidate post Discord thành công được ghi append-only vào `data/local-ai-trend-discord-history.ndjson` với nhóm `00_49/50_64/65_74/75_84/85_100/UNKNOWN`, giá live, vùng engine, timestamp, LONG/SHORT, verdict, BTC/breadth và Ollama/Fallback. Dữ liệu này dùng cho backtest causal sau; chưa được gọi là xác suất, WinRate hay edge.
+- Không thay Binance route, entry, size, leverage, SL/TP/protection. JSON state cũ đọc nguyên, field sample mới và journal là additive; lịch sử cũ thiếu strength không được suy diễn. Không có card/matcher UI mới nên không thêm WHITELIST; default OFF/CLOSED `AvgROE >4%` giữ nguyên.
+
+### 2026-10-03 — Discord candidate AI chỉ gửi khi độ rõ >65
+
+- **Trạng thái:** logic này đã được V7 bên trên thay thế; giữ lại chỉ để audit thay đổi.
+- Nâng notifier lên `LOCAL_AI_TREND_DISCORD_V6_CANDIDATE_STRENGTH_GT65_20261003`. Mỗi evaluation chỉ chọn candidate có verdict `PRIORITY/WATCH` và strength lớn hơn 65; đúng 65 bị loại. Sau filter mới lấy tối đa 3 dòng, giữ dedupe theo symbol+hướng+verdict+nến nguồn và cooldown 30 phút.
+- Input vẫn là evaluation causal hiện tại với vùng engine và BTC/breadth; không dùng outcome hoặc chạy thêm inference. `strength` chỉ là điểm độ rõ, không phải xác suất. Dự báo BTC và cảnh báo BTC tăng/giảm/dừng mạnh không đi qua filter này.
+- Đây chỉ là điều kiện gửi webhook; không thay signal/tier/gate Binance, entry, size, leverage, SL, TP hoặc protection. State JSON cũ tương thích, snapshot thêm rule audit. Không thêm label/card/matcher mới nên không thêm WHITELIST; default OFF và CLOSED AvgROE `>4%` giữ nguyên.
+
+### 2026-10-02 — Dự báo vùng giá trên Main Kill Gap
+
+- `MAIN_KILL_PRICE_FORECAST_V1_CONDITIONAL_20261002`, page/API V2: thêm cột hướng, vùng kiểm tra đầu, MAIN tiếp theo nếu đủ điều kiện, trigger và mốc vô hiệu. Dùng snapshot <=5 phút, nến đóng 5m/15m cùng hướng còn mới, cấu trúc và depth Binance; 1h/BTC giải thích xung đột, BTC evaluation >20 phút không được xem là hiện tại. Không inference mới hay dữ liệu tương lai.
+- Vùng đầu chọn gần nhất đúng hướng nến, MAIN chỉ được dùng khi active và còn ở phía trước; MAIN ngược hướng/consumed không được dùng làm mục tiêu. Nến xung đột/thiếu/cũ không cấp dự báo giá. Theo dõi 15m–1h, không cam kết ETA hay xác suất. Mốc vô hiệu từ mép cấu trúc đối diện là tham khảo.
+- Không thay thống kê/counts/sort hay gate, không ảnh hưởng Binance/entry/size/SL/TP/Discord. Chỉ thêm JSON `priceForecast`, thiếu field render an toàn, không migration. Cột giải thích không phải card thống kê/nhãn matcher nên không có WHITELIST mới; default OFF và closed AvgROE >4% hiện hữu giữ nguyên.
+
+### 2026-10-02 — Cộng tổng thanh khoản order book phía trên và phía dưới
+
+- Nâng Coin Level/profile/chatbot lên `COIN_LEVEL_ANALYSIS_V11_ORDER_BOOK_SIDE_TOTALS_20261002`, `BINANCE_ORDER_BOOK_RANGE_PROFILE_V2_SIDE_TOTALS_20261002` và `LOCAL_AI_TREND_CHAT_V16_ORDER_BOOK_SIDE_TOTALS_20261002`. Kết quả hỏi một coin có thêm hai dòng màu: tổng BID bên dưới MARK và tổng ASK bên trên MARK, kèm USDT và tỷ trọng hai phía.
+- Phép tổng dùng toàn bộ level Binance Futures depth hợp lệ trong NEAR `0–3%` cộng WIDE `>3–20%` thực sự được response phủ tới, không chỉ top bucket được vẽ. Hai band không chồng nhau nên không cộng trùng. Cache/JSON cũ thiếu totals vẫn hiển thị bằng tổng các zone nhìn thấy và giữ caveat coverage.
+- Đây là snapshot quote-notional order book có thể bị rút, không phải liquidation proxy, xác suất, WinRate hay kết luận LONG/SHORT. Không đổi signal/tier/gate, Ollama verdict, Discord hoặc Binance entry/size/leverage/SL/TP/protection. JSON chỉ thêm field, không migration; không phải card/matcher hiệu quả nên không thêm WHITELIST, default OFF/CLOSED AvgROE `>4%` giữ nguyên.
+
+### 2026-10-02 — FULL BYPASS được gài đúng vòng vị thế kế tiếp
+
+- Nâng Auto Controls lên V34/runtime V7. Điều tra `龙虾USDT` xác nhận lần bật 19:39:56 rơi đúng sau vòng vị thế cũ đã đóng, nên REST reconcile V6 tự gỡ 6 giây sau; vị thế mới lúc 19:40:12 vì vậy nhận TP/SL tự động. Đây là lỗi gắn lifecycle, không phải scanner cố tình bỏ qua danh sách.
+- FULL BYPASS nay lưu `armedAt/activeSeenAt`: chưa thấy vị thế active sau lúc bật thì giữ `ĐÃ GÀI CHỜ VỊ THẾ`, không cho close snapshot cũ tự gỡ. Khi vị thế đang mở hoặc full-fill mới được thấy, state chuyển `ĐÃ GẮN VỊ THẾ`; chỉ close/reversal của chính vòng đó mới tự gỡ. JSON cũ thiếu metadata được đọc tương thích và bind ở quan sát vị thế thật đầu tiên.
+- Thêm hàng rào tại Binance client: conditional reducing order (STOP/TAKE_PROFIT/TRAILING hoặc Algo) bị từ chối khi symbol đang exclusion, nên nhánh protection quên high-level guard cũng không thể tạo/dời SL/TP. Market close tay vẫn được phép; entry, size và leverage không đổi; TP/SL đã có không bị hủy khi bật.
+- State/event chỉ là audit vận hành, không tạo signal/tier/gate hay thống kê hiệu quả. Không thêm matcher/card/WHITELIST; default OFF và policy CLOSED `AvgROE >4%` giữ nguyên. Test bao phủ stale close trước vị thế, bind sau full-fill/REST, clear sau close và low-level protection fence.
+
+### 2026-10-02 — Trang AI xác nhận khoảng trống MARK → MAIN KILL
+
+- Thêm `/main-kill-gap-watch`, version `LOCAL_AI_MAIN_KILL_GAP_WATCH_V1_ATR_DEPTH_VACUUM_20261002`, vào menu toàn hệ thống. Trang lấy top 10 evaluation AI hiện tại và ghép dữ liệu Coin Level/LiqScan/order book Binance đang xử lý, không chạy thêm inference. Nếu cache model chưa có sau restart, dùng đúng shortlist deterministic đầu vào AI với nhãn `UNRATED/PENDING_MODEL`, không hiện 0 giả và không giả kết quả model.
+- Khoảng rộng chỉ đạt khi mép MAIN còn active, cách MARK ít nhất `1,2%` và `2 ATR15`. Vacuum chỉ xác nhận nếu Binance depth đã phủ tới MAIN và top depth trung gian chiếm tối đa `25%` tổng top depth đúng phía; thiếu ATR/coverage không suy đoán. MAIN consumed giữ trạng thái consumed.
+- Card đếm chỉ là snapshot vận hành, không phải probability/WinRate. Toàn trang OBSERVE ONLY, không thay signal/gate/tier giao dịch, Discord, Binance entry/size/leverage/SL/TP/protection hoặc JSON cũ. Không tạo runtime matcher/card hiệu quả nên không thêm WHITELIST; default OFF/CLOSED AvgROE `>4%` giữ nguyên.
+
+### 2026-10-02 — Hover chart AI hiện USD thanh lý proxy theo vùng
+
+- Nâng chart lên `LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V5_HOVER_LIQUIDATION_USD_20261002` (UI v38/CSS v11). Hover MAIN/FAR hiển thị giá, lifecycle, giá trị thanh lý proxy rút gọn K/M/B USD và tỷ trọng phía TRÊN/DƯỚI; vùng consumed ghi rõ giá trị snapshot đã quét.
+- Dữ liệu dùng trước entry là score vùng Binance LiqScan 15m đã có, được mô hình hóa từ quote-volume, pressure, tuổi nến và leverage weight. Đây là ước tính proxy, không phải số vị thế thanh lý thật; tooltip luôn có cảnh báo. Thiếu score giữ thiếu, score `0` không bị đổi thành null.
+- Không thay phân loại signal/gate/tier hoặc thống kê hiệu quả; không gọi thêm Binance/Ollama khi hover. Không đổi JSON/state, Discord, Binance entry/size/leverage/SL/TP/protection. Không thêm card/matcher/WHITELIST; default OFF/CLOSED AvgROE `>4%` không đổi.
+
+### 2026-10-02 — Khôi phục phiên lưu cho hai input protection
+
+- Sửa Auto Controls để token Orders hết hạn sau restart không làm thao tác im lặng thất bại: request `401` được xác thực lại bằng `.env` local hoặc `orders_creds` đã lưu, sau đó retry write đúng một lần. Trên domain public, nhánh `.env` bị từ chối như cũ và mới fallback an toàn sang phiên người dùng đã lưu.
+- Nếu browser public không còn credential, nút Mở quyền dùng `ORDERS_PASSWORD`; password không được lưu, server chỉ cấp session sau khi signed REST Binance từ `.env` xác minh thành công. Có giới hạn 5 lần sai/khóa 10 phút và kiểm tra same-origin hiểu đúng HTTPS reverse proxy.
+- Hai form tạm bỏ qua và FULL BYPASS không còn xóa `US/USUSDT` trước khi server xác nhận. Thành công mới xóa; thất bại giữ input và hiện `KHÔNG LƯU`. Normalizer/runtime vẫn lưu `USUSDT`, không thay lifecycle mode.
+- Không đổi dữ liệu trước entry, phân loại, thống kê, Binance entry/size/leverage/SL/TP/Discord hoặc JSON cũ. Không thêm card/matcher/WHITELIST; default OFF và CLOSED AvgROE >4% giữ nguyên. Có browser test mock stale-token, password unlock và cả hai input.
+
+### 2026-10-02 — Hiện lịch sử lưu/tự gỡ protection theo coin
+
+- Log xác nhận `US` đã được chuẩn hóa thành `USUSDT`, FULL BYPASS hoạt động từ 13:16 và tự gỡ lúc 13:18 khi Binance xác nhận `POSITION_CLOSED`; vì danh sách active chỉ hiện rule còn hiệu lực nên trước đây trông giống chưa lưu.
+- Nâng controls lên V33/runtime V6. Mỗi thao tác bật/gỡ và mỗi lần tự gỡ do ROE, đóng hoặc đảo chiều được lưu tối đa 20 event; trang hiển thị 6 event gần nhất gồm symbol, mode, trạng thái, lý do và thời gian. Dữ liệu chỉ dùng exact symbol, mode và lifecycle Binance hiện hữu; không dùng outcome tương lai.
+- Đây là audit vận hành, không đổi phân loại tín hiệu, thống kê hiệu quả, entry, size, leverage, TP/SL/protection đang chạy hoặc Discord. JSON thêm `protectionExclusionEvents` tùy chọn; file cũ mặc định rỗng. Không thêm card/matcher/WHITELIST; policy OFF/CLOSED AvgROE >4% giữ nguyên.
+
+### 2026-10-02 — Hover vùng quét và tỷ trọng thanh khoản
+
+- Version `LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V4_HOVER_LIQUIDITY_20261002` (UI v37/CSS v10): tooltip giá kèm MAIN/FAR KILL, score proxy và tỷ trọng phía thanh khoản từ snapshot đã có trước trả lời/entry; không tải thêm API/model và không dùng outcome.
+- Phân loại theo biên vùng và lifecycle: vùng đã tiêu thụ không trình bày là mục tiêu active; FAR ngoài scale xem qua chỉ báo riêng. Null không biến thành 0, thiếu lifecycle ghi chưa rõ. Tỷ trọng toàn snapshot không phải xác suất vùng sẽ bị quét; tooltip ghi chưa có dữ liệu hiệu chuẩn.
+- Không thống kê hiệu quả mới, không thay đổi JSON/state, Binance entry/size/SL/TP hoặc Discord. Tooltip OBSERVE ONLY, không card/matcher/WHITELIST mới; policy OFF/CLOSED AvgROE >4% không đổi. Kiểm thử gồm MAIN, FAR, ngoài vùng, consumed, thiếu tỷ trọng và giá trị 0 hợp lệ.
+
+### 2026-10-02 — LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V2_NO_OVERLAP
+
+- Khi chatbot order-book trả đúng một coin, UI vẽ chart SVG từ Binance Futures
+  depth snapshot: BID/ASK, NEAR/WIDE, MARK và overlay LiqScan 15m `MAIN KILL`/
+  `FAR KILL`. MAIN/FAR có range, khoảng cách, score proxy và trạng thái lifecycle;
+  vùng consumed/swept/rejected bị làm mờ. Depth là order book thật tại snapshot,
+  còn kill zone chỉ là proxy, không được trình bày như lệnh treo xác thực.
+- V2 chỉ sửa trình bày: thanh depth không còn chữ chồng; MAIN/MARK nằm trên scale
+  giá gần, FAR có đường chỉ báo ngoài scale và card riêng để vùng xa không nén
+  toàn bộ chart. Pill order book/sweep dùng lưới hai cột, mỗi giá ở dòng riêng.
+- Dữ liệu hoàn toàn causal tại lúc hỏi, không CoinGlass/PnL/nến tương lai. Đây là
+  OBSERVE ONLY; không đổi Discord/Binance/entry/size/leverage/SL/TP, không tạo
+  thống kê/ranking và không thêm signal/card/key WHITELIST. Default OFF cùng điều
+  kiện checkbox CLOSED AvgROE>4% không đổi.
+- JSON V14 chỉ thêm `farKillZone`, score/distance bounds và scenario mark/main/far;
+  response cũ thiếu field vẫn chạy, UI ẩn phần không có dữ liệu, không migrate.
+
+### 2026-10-01 — LOCAL_AI_TREND_INFERENCE_PROFILE_V3_INDEXED_RATINGS
+
+- Giữ `qwen3:8b` và Top 10 causal nhưng dùng context4096, output384, batch128.
+  Model chỉ sinh 10 rating theo index gồm verdict/strength/path; server ghép lại
+  symbol/side, horizon, lý do/rủi ro và vùng deterministic. Input trước entry, 6
+  check và tập verdict không đổi; fallback vẫn được ghi rõ và không giả Ollama.
+- Ranking/strength không phải xác suất hoặc trade stats. UI phân biệt model online
+  với inference thành công: nếu lần gọi gần nhất timeout/lỗi thì status hiện lỗi,
+  thay vì chấm xanh theo riêng `/api/tags`.
+- Không đổi Discord/Binance/entry/size/leverage/SL/TP. PRIORITY model hợp lệ vẫn
+  theo route zone 3USDT×5 hiện hữu; fallback luôn fail-closed. JSON chỉ thêm
+  `usage.inferenceProfile`/snapshot `inferenceProfile`, legacy vẫn đọc và không
+  rewrite. Không có card/key WHITELIST mới; default OFF và CLOSED AvgROE>4% giữ
+  nguyên.
+
+### 2026-10-01 — LOCAL_AI_HOURLY_BTC_GUIDANCE_V1
+
+- Thêm banner màu trên trang AI, kết hợp direction của forecast giờ VN/BTC hiện
+  tại với Top 10 AI. Xanh=nghiêng LONG, đỏ=nghiêng SHORT, vàng=NEUTRAL; lý do ghi
+  BTC 1h/4h, giờ và quality lịch sử.
+- List hai phía chỉ gồm `PRIORITY/WATCH`, xếp verdict rồi strength; `WAIT/AVOID`
+  không được gọi là điểm vào. Đây là danh sách snapshot quan sát, không phải số
+  lệnh, WinRate hay dự báo bảo đảm.
+- OBSERVE ONLY: không đổi Discord/Binance/entry/size/leverage/SL/TP. Banner dùng
+  exact key `btc-hourly-forecast:{LONG|SHORT|NEUTRAL}` hiện hữu; default OFF và
+  chỉ hiện checkbox khi CLOSED AvgROE>4%. Snapshot thêm key/observation additive,
+  cache/trade JSON cũ vẫn đọc được và không rewrite.
+
+### 2026-10-01 — BTC_HOURLY_ENTRY_FORECAST_V3_ALL_SIZES_CLEAR_BEST_HOURS
+
+- Mở thống kê từ riêng margin5 sang mọi entry bot margin dương, vẫn loại DCA và
+  `binance-manual-socket`. Join BTC causal trước fill tối đa600s; phân nhóm giờ VN,
+  LONG/SHORT, margin, BTC trend1h, dấu momentum15m và band return1h ±0,3%.
+- Chấm ưu tiên exact `giờ + BTC trend + momentum15m + move1h` mẫu>=4, lùi về
+  `giờ + BTC trend` mẫu>=6 rồi riêng giờ mẫu>=12. Quality dùng AvgROE và ROE-PF
+  để size lớn không chi phối; net/PF USDT chỉ mô tả. Cache rebuild có 2.014 close,
+  1.965 BTC-match; UI công bố breakdown size
+  và profile BTC hiện tại.
+- UI trong chính card hiện hữu liệt kê riêng top giờ LONG và SHORT; mỗi dòng ghi
+  rõ giờ VN, hướng, BTC UP/DOWN/FLAT, điểm và cỡ mẫu. Chỉ tổ hợp hour×BTC-trend
+  đủ >=6 close mới được liệt kê; không thêm nhãn giao dịch hoặc card mới.
+- Hoàn toàn OBSERVE ONLY: không gate/entry/size/leverage/SL/TP/Discord. JSON V3
+  thêm profile/margin/best-hour rows nhưng giữ field V1/V2; runtime vẫn đọc cả
+  V1/V2 và fallback.
+  Không thêm signal/card key WHITELIST; default OFF, CLOSED AvgROE>4% giữ nguyên.
+  Tests bao phủ exact profile, fallback tầng, all-size filter, UI và legacy cache.
+
+### 2026-10-01 — LOCAL_AI_TOP10_OVERALL_V1
+
+- Nâng evaluator thành `LOCAL_AI_TREND_EVALUATOR_V3_TOP10_OVERALL_20261001`:
+  dedupe `symbol|side`, xếp source/trend/entry/volume/khoảng cách và lấy thẳng Top
+  10 toàn pool. Không reserve 5 LONG/5 SHORT; kết quả 10/0 theo một hướng là hợp lệ.
+- Qwen nhận đủ pool, trả `candidates[]` đúng số dòng và sort strength giảm dần;
+  fallback V2 cũng trả tối đa 10 toàn cục. UI ghi rõ Top 10 toàn engine. Đây là
+  ranking snapshot, không phải xác suất, WinRate, PnL hoặc thống kê lệnh.
+- Không thêm gate/route/label/size/SL/TP. Model path có thể tạo nhiều PRIORITY/
+  WATCH hơn nên Discord và route PRIORITY engine-zone hiện hữu sẽ xét nhiều dòng
+  hơn khi controls ON; route vẫn 3 USDT×5, touch/TTL/protection cũ. Fallback vẫn
+  không cấp quyền Binance. Legacy `longCandidate`/`shortCandidate` vẫn normalize;
+  không migrate JSON. Không thêm card/key WHITELIST, default OFF và CLOSED
+  AvgROE>4% giữ nguyên. Tests kiểm 10/0, schema array, sort và fallback Top 10.
+
+### 2026-10-01 — BTC_HOURLY_ENTRY_FORECAST_V1_DAILY_CAUSAL · superseded by V3
+
+- Thêm card đầu trang AI và API snapshot dựa trên fill bot 5USDT đã đóng: bỏ DCA/
+  lệnh tay, giờ UTC+7, ghép BTC snapshot causal trước entry tuổi<=600s. Cache daily
+  độc lập được refresh mặc định 6 giờ, gồm coverage/hash nguồn, 24 giờ và nhóm
+  giờ × BTC UP/DOWN/FLAT × LONG/SHORT; thiếu BTC giữ UNKNOWN.
+- qualityScore trộn win frequency smooth + AvgROE + profit factor, chỉ là điểm mô
+  tả. Mẫu giờ/hướng>=12, mẫu điều kiện BTC>=6; nếu đủ cả hai dùng 35% nền giờ +
+  65% điều kiện BTC. LONG/SHORT cần score>=53 và edge>=4, còn lại NEUTRAL. UI
+  hiển thị sample/net/PF, BTC1h/4h, lịch24h và giờ đáng chú ý kế tiếp.
+- Hoàn toàn OBSERVE ONLY: không gate/route, không đổi entry/size/leverage/SL/TP,
+  Discord hay vị thế cũ. API/file additive, JSON cũ không migrate. Các exact key
+  `btc-hourly-forecast:*` mặc định OFF; chưa gắn trade nên không cohort/checkbox,
+  policy chỉ hiện khi CLOSED AvgROE>4% giữ nguyên. Tests dùng mock và kiểm matcher.
+
+### 2026-10-01 — LOCAL_AI_DETERMINISTIC_FALLBACK_V1_NO_BINANCE
+
+- Khắc phục pipeline altcoin dừng khi Windows Ollama `qwen3:8b` không cấp phát được
+  CPU buffer/page file. Scheduler vẫn thử model nhưng mọi lỗi inference/model-not-
+  ready chuyển sang causal fallback từ closed retest, very-strong active, early
+  watches, entry/trend/volume score, khung đóng, BTC 1h/4h và breadth hiện tại.
+- Fallback phân loại context BTC/breadth, tính strength không phải xác suất và xếp
+  tối đa 10 candidate toàn pool. PRIORITY cần strength>=65 + nguồn structural + path
+  RETEST/CONTINUATION + không conflict; WATCH>=52. Discord gắn rõ ENGINE FALLBACK,
+  không giả là kết quả Ollama. Snapshot/verdict không phải trade stats.
+- Fallback luôn OBSERVE ONLY và fail-closed với Binance: modelApplied false,
+  priorityZoneExecutionEligible false, runner không arm setup dù candidate PRIORITY.
+  Route model hợp lệ, size3×5, entry/SL/TP cũ không đổi; không sửa vị thế hiện hữu.
+- JSON chỉ thêm metadata fallback/failure, legacy thiếu field vẫn chạy model path.
+  Không thêm signal key/card/tier/WHITELIST; default OFF và closed AvgROE>4% giữ
+  nguyên. Tests mock lỗi buffer/offline/Discord/Binance và xác nhận active setup=0.
+
+### 2026-10-01 — ORDER_BOOK_NEAR3_WIDE20_V1
+
+- Coin Level V10 và Local AI Chat V13 lấy public Binance Futures depth 1000 level
+  của coin được hỏi; nến đóng 5m/15m/1h/4h, BTC/breadth, volume và vùng engine
+  vẫn là dữ liệu causal chính. Không dùng CoinGlass order book; LiqScan 15m chỉ là
+  proxy từ nến và luôn được gắn nhãn riêng.
+- `NEAR` 0–3% gom bucket 0,25%, top4 BID/ASK theo notional cho entry context;
+  `WIDE` >3–20% gom bucket 1%, top6 BID/ASK cho vùng thanh khoản xa. Payload/UI
+  công bố coverage BID/ASK thực tế; depth 1000 chưa chạm20% thì không nội suy và
+  WIDE được phép thiếu/rỗng. Candles/trend là chính, WIDE/LiqScan chỉ phụ trợ.
+- Đây là snapshot OBSERVE ONLY: notional/distance/level count/coverage không phải
+  trade stats hay xác suất, không tác động Binance/gate/entry/size/leverage/SL/TP
+  hoặc Discord. `orderBookProfile` là field additive; JSON cũ fallback zone cũ
+  thành NEAR và WIDE rỗng, không rewrite. Không thêm label/tier/card/WHITELIST;
+  default OFF và policy CLOSED AvgROE >4% giữ nguyên. Tests dùng mock, không gửi
+  lệnh hoặc Discord thật.
+
+### 2026-10-01 — TOXIC_TWO_SIDE_MARKET_V1_20261001
+
+- Thêm page `/toxic-two-side-market` quét Futures USDT và xếp score rủi ro hai đầu
+  từ Binance shared market, funding, quote volume/cap CoinGecko cache cùng nến đóng
+  5m/15m/1h/4h đã có trong cache. Mã cực đoan thiếu cap dùng fallback CoinGecko
+  giới hạn 12, concurrency2, cache6h; không gọi kline Binance cho riêng page và
+  không dùng order book/CoinGlass/PnL tương lai.
+- Score gồm biến động/ATR30, turnover20, xung đột trend15, funding-price divergence15
+  và fake-break hai phía20; tier EXTREME75, HIGH60, WATCH45, NORMAL. Counts/range/
+  turnover/sweeps là snapshot quan sát, không phải hiệu quả giao dịch hay xác suất.
+- OBSERVE ONLY: không ảnh hưởng Binance, gate, entry, size, leverage, SL/TP hoặc
+  Discord. Bốn key `toxic-two-side:*` exact UI/runtime mặc định OFF, chỉ hiện
+  checkbox khi CLOSED AvgROE >4%; hiện chưa có cohort. JSON cũ thiếu observation V1
+  không match và không migrate; market fields mới additive. Tests kiểm score,
+  filter/sort, menu, whitelist/default OFF và boundary 4% bằng dữ liệu mock.
+
+### 2026-10-01 — IMPULSE_TIME_OR_BTC_MARGIN5_ELSE1_V1_20261001
+
+- Theo yêu cầu: hai route IMPULSE chọn margin5 nếu giờ tốt HOẶC BTC cùng hướng,
+  ngoài ra margin1. LONG 03–06/12–15h, SHORT 00–09/18–21h VN (đầu bao gồm, cuối
+  không bao gồm); BTC UP/LONG, DOWN/SHORT từ snapshot trước entry tuổi<=120s.
+  BTC thiếu/cũ không tăng size ngoài giờ tốt. ret15m/ret1h là giải thích, không thêm gate.
+- Runner V7/policy V48/controls V31 cùng kiểm tra decision size, giữ master/route
+  và stage LONG BUY_IMPULSE / SHORT NO_BUY_CONFIRMATION. Size/notional entry mới
+  thay đổi, leverage5/TP10/SL plan20-30ROE và quản lý protection cũ không đổi.
+  Ceil min-notional tối đa1% nếu đủ requested minimum; không đủ thì không vào.
+- Discord ghi size/lý do/giờ/BTC và trạng thái xét từ cùng plan; gửi xác nhận riêng
+  vẫn dùng notifier này. Fill audit lưu reason; không thêm card/thống kê/WHITELIST,
+  không đổi policy closed AvgROE>4%, không bật route OFF hay sửa lệnh đang mở.
+- JSON cũ giữ attempts/dedupe/controls enabledAt, thiếu sizing không bịa kết quả;
+  thống kê vẫn net CLOSED audit, OPEN riêng. Kiểm thử boundary/OR/freshness,
+  authorization/controls/legacy/dedupe/Discord/min-notional bằng mock.
+
+### 2026-10-01 — MARGIN5_ENTRY_TIME_BTC_AUDIT_V1_20261001
+
+- Thêm báo cáo offline entry 5 USDT × giờ Việt Nam × BTC trước fill. Lọc fill thật,
+  loại DCA/lệnh tay; ghép snapshot có loggedAt/evaluatedAt <= entry và tuổi <=600s,
+  đối chiếu thêm <=300s. Thiếu dữ liệu giữ UNKNOWN, không dùng snapshot tương lai.
+- Nhóm theo giờ/ngày/signal/hướng, BTC trend, momentum15m và ret1h ±0,3%; các nhóm
+  chỉ là phân loại thống kê, không phải tín hiệu/gate mới. Net theo CLOSED sau phí
+  và funding trong audit, OPEN riêng; vòng nhiều entry có phân bổ PnL theo notional,
+  thêm cohort single-entry để kiểm tra ảnh hưởng trộn vị thế.
+- Không tác động Binance/entry/size/SL/TP, không thêm UI/WHITELIST, không gửi Discord.
+  Đọc JSON/CSV cũ không migrate; báo cáo riêng versioned có hash, thời điểm chụp,
+  từng entry, nguồn BTC và tuổi snapshot. Assertions kiểm tra ghép không look-ahead.
+
+### 2026-09-27 — DUMP_CAP_REJECTION / RESISTANCE / DISCORD V1
+
+- Thêm page `/dump-cap-rejection` đối xứng SHORT trên 5m/15m/1h/4h/1d. Nến xả
+  đóng cần range2,5ATR, open−low1,8ATR, vol2×median20; nến sau hồi open±0,15ATR.
+  Stage AT_CAP/REJECTING/VOLUME_REJECTION/INVALIDATED dùng tối đa96 nến và chỉ
+  dữ liệu đóng causal. 3 close giảm + volume tăng, vol cuối1,2× xác nhận stage.
+- Entry SHORT tham khảo cần vùng open/pivot-high2/2/broken-base causal, retest râu
+  trên≥25% với volume co≤80%, nến kế đỏ phá low + volume tăng. Stop cấu trúc+0,1ATR,
+  hỗ trợ gần nhất làm target, R:R ròng≥1,5. Live pass cần snapshot≤90s, MARK≤15s,
+  plan≤3 nến, gần kháng cự≤1ATR và entry−0,35/+0,25ATR; không đuổi giá đã rơi xa.
+- Discord server-side gửi đỏ một lần khi MARK thật sự pass, không replay trước
+  startup; latch stop, dedupe, delivery-state/429 giống feed LONG. Cùng webhook
+  đích theo yêu cầu nhưng env key riêng. Không gửi test, không lộ secret.
+- 60 key WHITELIST exact UI/runtime, OFF mặc định, chỉ CLOSED AvgROE>4%; hiện
+  không có closed stats. Page/delivery counts không phải WinRate/PnL. OBSERVE ONLY,
+  không đổi Binance/entry thật/size/leverage/SL/TP. JSON cũ thiếu version/metadata
+  fail closed, không migrate. Tests bao phủ 5 frame, causal target, RR, live stop,
+  key parity/default OFF, Discord baseline/dedupe/invalidation bằng mock.
+
+### 2026-09-27 — PUMP_BASE_SUPPORT_DISCORD_V1_20260927
+
+- Thêm runner server-side cho đúng plan hỗ trợ pump-base đã xác nhận ở 5 khung.
+  Trước khi gửi bắt buộc snapshot≤90s, MARK≤15s, chưa hết hiệu lực/chưa phá stop,
+  MARK trong vùng entry, cách hỗ trợ≤1ATR và R:R live ròng≥1,5. MARK từng xuyên
+  stop được latch invalid; không gửi chỉ vì giá hồi lại.
+- Discord xanh `HỖ TRỢ LONG ĐÃ PASS` ghi loại vùng, entry nến đóng, MARK, vùng
+  hợp lệ, stop/cản/R:R và thời gian VN. Dedupe symbol+frame+confirmedAt; không
+  replay tín hiệu trước startup, không retry mù POST không rõ kết quả, 429 kiểm lại
+  live trước retry. Webhook chỉ ở `.env`; API không lộ secret.
+- Delivery counts không phải performance stats. Không thêm nhãn/card/WHITELIST;
+  40 key support cũ vẫn OFF và cần CLOSED AvgROE>4%. Không ảnh hưởng Binance,
+  entry thật, size, leverage, SL/TP. State JSON riêng versioned; dữ liệu/trade cũ
+  không migrate và vẫn đọc như trước. Test dùng mock Discord, không gửi tin thử.
+
+### 2026-09-27 — PUMP_BASE_SUPPORT_V1_20260927
+
+- Thêm hỗ trợ LONG/entry tham khảo trên pump-base 5m/15m/1h/4h/1d. Dữ liệu
+  trước entry là nến đóng, ATR trước bơm, vùng open/pivot low2/2/đỉnh nền3 nến
+  đã phá. Retest rút chân+volume≤80% nến tăng gần nhất mạnh nhất trong6 nến;
+  nến kế vượt high retest với volume tăng mới xác nhận. Cản gần nhất causal,
+  stop cấu trúc−0,1 ATR, R:R≥1,5 trừ chi phí giả định0,12%; chưa backtest.
+- Xanh/entry cần MARK≤15s, snapshot≤90s, plan≤3 nến, gần hỗ trợ≤1ATR và
+  entry−0,25/+0,35ATR. Giá xa/mất mốc/cũ/mất socket không giữ xanh. Đếm hỗ trợ
+  trên50 dòng đang xem, không outcome/stats giao dịch. WHITELIST40key exact,
+  OFF mặc định, CLOSED AvgROE>4% mới hiện; hiện chưa có closedstats.
+- OBSERVE ONLY: không đổi Binance/entry thật/size/SL/TP; notifier V1 ở mục trên
+  chỉ gửi Discord khi MARK live thật sự pass, không biến cảnh báo thành lệnh.
+  JSON additive support; JSON cũ thiếu field/version fail closed, không migrate.
+  UI latch quote mất mốc trong phiên browser; notifier Discord V1 có latch MARK
+  server riêng cho candidate đã biết và persist ở lượt scan kế.
+
+
+### 2026-09-27 — PUMP_BASE_RECOVERY_V1_20260927
+
+- Thêm trang + menu V2 `/pump-base-recovery`: 5m/15m/1h/4h/1d, nến bơm lớn
+  (range2,5 ATR, mở–đỉnh1,8 ATR, vol2× median20, đóng>=mở), nến sau trả open
+  ±0,15 ATR hoặc quét dưới rồi hồi. Baseline20 trước bơm, chỉ nến đã đóng,
+  tối đa128 nến/96 nến sau bơm. Xác nhận quan sát bằng 3 close+volume tăng sau
+  retest, vol cuối1,2× và lấy lại open; có AT_BASE/RECOVERING/WEAKENED riêng.
+- Thống kê case theo symbol/frame/pumpTime, unique coin riêng; không outcome
+  hoặc tỷ lệ thắng. Cache coverage/thiếu/cũ/gap hiển thị; scan TTL30s singleflight
+  cooperative, gộp bucket đầy đủ. Bổ sung cache nền 1request/15s, chỉ viewer active,
+  tôn trọng rate gate; socket50 coin/page không đổi nhãn nến đóng.
+- **Không ảnh hưởng Binance/entry/size/SL/TP và không gửi Discord.** Nhãn quan sát
+  không phải gate thật. Ngưỡng chưa backtest. WHITELIST20 key UI/runtime khớp,
+  mặc địnhOFF, chỉ CLOSED AvgROE>4% mới hiện checkbox (hiện chưa có stats).
+- JSON cũ không migrate, thiếu `pumpBaseObservation`/version không match key;
+  test causal5frame, gộp/gap/stale, stages, cache TTL và rate-limited warmup.
+
+
+### 2026-09-27 — POST_MOVE_IMPULSE_ENTRY_V1_20260927
+
+- Webhook candle riêng đổi sang chỉ gửi điểm vào sau impulse: RETEST tiếp diễn hoặc
+  BASE_BREAK 2–4 nến; theo dõi BUY_IMPULSE/SELL_IMPULSE gốc tối đa 60 phút, kể cả
+  khi watch gốc rời snapshot. Nến 5m đóng xác nhận, mốc vô hiệu cấu trúc +0,1 ATR,
+  mục tiêu cản gần nhất và R:R ròng ≥1,5 (chi phí giả định 0,12%) là điều kiện báo.
+- Input trước entry: cache nến đóng, vùng gốc, ATR/pivot trước impulse; không nhìn
+  tương lai/PnL. MARK ≤15 giây, pass ≤90 giây, drift thuận chiều ≤0,35 ATR, còn giữ
+  mốc và R:R live đạt. BTC 15m/1h từ nến 5m đóng chỉ là metadata, không là gate.
+- Panel BTC Session và API riêng hiển thị trạng thái/delivery, chưa tính kết quả
+  trading. Ngưỡng V1 thử nghiệm, chưa backtest so sánh với MARKET/confirmation.
+- WHITELIST exact keys `btc-session:ENTRY:{LONG|SHORT}:{RETEST|BASE_BREAK}` nối
+  UI/runtime, OFF, chỉ hiện khi CLOSED AvgROE >4%; hiện avgRoe=null nên ẩn.
+  Test bao gồm key parity/default OFF, nến chưa đóng/future/gap, 2 hướng/2 mẫu,
+  RR/cản gần, socket stale/chase, pending qua restart, dedupe, Discord 429/timeout.
+- Không đổi Binance/entry thật/size/SL/TP hay feed confirmation/cảnh báo cũ. Entry,
+  stop và target mới chỉ tham khảo trên Discord. State riêng versioned, JSON cũ
+  không migrate; pending tiếp tục sau restart, pass cũ không replay; trade thiếu
+  `impulseEntryObservation` không match key mới. POST không rõ kết quả không retry.
+
 ### 2026-09-26 — BTC Session vẫn gửi LONG khi `allowLongEntry=false`
 
 - `BTC_SESSION_CONTEXT_V2_IGNORE_LONG_MARKET_REGIME_20260926` xóa riêng nhánh chặn LONG theo `marketRegime.allowLongEntry`. Candidate/nến đóng/retest, MARK fresh, BTC 1h cùng hướng, session, vùng entry, stale/broken/dual vẫn được kiểm tra như cũ; market regime tiếp tục hiển thị và đi kèm Discord dưới dạng context tham khảo.
@@ -4827,3 +5205,422 @@ Before major edits:
 - Versions: executor V3 MAX50, global policy
   `LIVE_CARD_POST_MOVE_IMPULSE_MAX50_V41_20260927`. State attempts cũ tương thích và
   được giữ; JSON controls/watch/trade/fill không migrate, rewrite hoặc backfill.
+
+### 2026-09-27 — POST_MOVE_CONFIRMATION_5M_MARKET_8USDT_MAX50_V4_20260927
+
+- Đảo gate hai nhánh post-move theo đúng quy trình chờ xác nhận: `BUY_IMPULSE` LONG
+  màu vàng và `SELL_IMPULSE` SHORT màu cam chỉ OBSERVE ONLY nhưng vẫn gửi Discord;
+  `NO_SELL_CONFIRMATION` LONG màu xanh và `NO_BUY_CONFIRMATION` SHORT màu đỏ mới là
+  `executionCandidate` được xét MARKET. Discord phát cả cảnh báo sớm và xác nhận;
+  `LATE_NO_CHASE` vẫn xám và không entry.
+- Input trước entry chỉ gồm pump/dump 15m, vùng nền/impulse 5m và 2–3 nến 5m đã đóng.
+  Xác nhận LONG cần pullback `<=35%`, volume `<=0,60x`, taker-sell `<=45%`, giữ
+  vùng/EMA13 và higher-low; SHORT dùng rebound/taker-buy/no-reclaim/lower-high đối
+  xứng. Không dùng outcome, PnL hoặc nến tương lai để phân loại.
+- Exact route và Auto Controls settings không đổi. Lệnh mới sau xác nhận vẫn MARKET
+  `8 USDT ×5`, TP `+10% ROE`, SL LONG `-20%`, SL SHORT `-30%`, full-fill protection,
+  max50, tuổi confirmation 90 giây, drift 0,5%, no-position/no-order, master/route/
+  runtime/rate gate và dedupe. Impulse gốc cũng phải sau startup/`enabledAt`, nên
+  confirmation của tín hiệu cũ không replay. Không tác động order/vị thế đang mở.
+- Thống kê vẫn dùng fill audit exact route; history V3 và V4 cùng route key nhưng
+  phân biệt được bằng entry reason/version. Không thêm card/label hoặc WHITELIST;
+  policy mặc định OFF và CLOSED AvgROE `>4%` giữ nguyên.
+- Versions: watch V2 confirmation-entry, Discord V4, executor V4, policy
+  `LIVE_CARD_POST_MOVE_CONFIRMATION_MAX50_V42_20260927`, controls V26. JSON route/
+  settings/attempts/fills/trades cũ tương thích; watch V1 fail closed và không được
+  migrate, backfill hoặc replay.
+
+### 2026-09-27 — POST_MOVE_SHORT_CONFIRMATION_LONG_IMPULSE_5M_MARKET_8USDT_MAX50_V5_20260927
+
+- Sửa phạm vi V4: chỉ SHORT phải chờ xác nhận. LONG giữ rule cũ: `BUY_IMPULSE`
+  vàng có quyền xét MARKET ngay; confirmation xanh vẫn gửi Discord nhưng không tạo
+  lệnh lần hai. SHORT `SELL_IMPULSE` cam chỉ Discord; chỉ
+  `NO_BUY_CONFIRMATION` đỏ sau 2–3 nến 5m đóng mới có quyền xét MARKET.
+- Causal input/classifier giữ nguyên: dump/pump 15m, base/EMA/impulse 5m đã đóng;
+  SHORT confirmation cần rebound `<=35%`, volume `<=0,60x`, taker-buy `<=45%`,
+  no-reclaim và lower-high. `LATE_NO_CHASE` không entry ở cả hai hướng.
+- Exact route, ON/OFF, size và protection giữ nguyên: `8 USDT ×5`, TP `+10%`,
+  SL LONG `-20%`, SL SHORT `-30%`, max50, freshness/drift/no-position/no-order và
+  dedupe. Không tác động position/order đang mở, không replay tín hiệu cũ.
+- Stats vẫn dùng fill audit route cũ và phân cohort bằng version/reason; không thêm
+  card/label/WHITELIST. JSON cũ tương thích, watch sai version fail closed.
+- Versions: LONG watch V3, SHORT watch V2, executor V5, LONG Discord V5, SHORT
+  Discord V4, policy V43 và controls V27.
+
+### 2026-09-27 — POST_MOVE_SHORT_CONFIRMATION_LONG_IMPULSE_5M_MARKET_5USDT_MAX50_V6_20260927
+
+- Giảm margin hai exact route post-move từ `8` xuống `5 USDT`; leverage giữ `5x`,
+  notional mới `25 USDT`. Chỉ tác động lệnh mới; TP `+10%`, SL LONG `-20%`, SL
+  SHORT `-30%`, max50 và protection không đổi, không sửa vị thế/order hiện hữu.
+- Classifier/gate giữ nguyên V5: LONG vào ở `BUY_IMPULSE`; SHORT chỉ vào sau
+  `NO_BUY_CONFIRMATION`. Discord vẫn gửi stage sớm và xác nhận với màu riêng.
+- Stats exact route không đổi; entry reason/version tách cohort size. Không thêm
+  label/card/WHITELIST. Migration catalog V15 đổi đúng giá trị legacy `8→5` cho hai
+  route và giữ ON/OFF/`enabledAt`; JSON khác tương thích, payload size cũ fail closed.
+- Versions: executor V6, catalog V15, policy V44, controls V28, LONG Discord V6,
+  SHORT Discord V5.
+
+### 2026-09-27 — BTC_IMPULSE_REGIME_OBSERVE_V1_20260927
+
+- Thêm card đầu BTC Session để đánh giá `_IMPULSE` theo regime BTC live. Input causal
+  gồm freshness health 120 giây, trend/score 1h–4h, EMA1h, bull/bear points và
+  macro shock/spike. Phân loại `SW_UP`, `SW_DOWN`, `NEUTRAL`, `SHOCK`, `STALE`;
+  SW_UP ưu tiên LONG/chờ xác nhận SHORT, SW_DOWN đối xứng, neutral/shock/stale chờ.
+- Card chỉ `OBSERVE ONLY`; không sửa classifier, Discord hoặc quyền MARKET thật.
+  LONG vẫn xét ở `BUY_IMPULSE`; SHORT vẫn xét ở `NO_BUY_CONFIRMATION`; size 5 USDT
+  ×5, TP/SL/max50 và position/order hiện hữu không đổi.
+- Stats chưa có cohort đóng. Nối exact whitelist
+  `btc-session:IMPULSE:{SW_UP|SW_DOWN|NEUTRAL|SHOCK|STALE}` vào UI/runtime, mặc định
+  OFF và chỉ có thể hiện khi CLOSED AvgROE `>4%`; hiện tại ẩn, không cấp Binance.
+- Không migration JSON. Metadata tùy chọn `btcImpulseRegimeObservation` fail closed
+  khi version sai; payload cũ thiếu field vẫn tương thích.
+
+### 2026-09-27 — POST_MOVE_IMPULSE_CONFIRMATION_DISCORD_V1_DEDICATED_20260927
+
+- Nối webhook riêng chỉ cho xác nhận `_IMPULSE`: LONG `NO_SELL_CONFIRMATION` và
+  SHORT `NO_BUY_CONFIRMATION`. Input/classifier giữ nguyên nến 15m/5m đã đóng;
+  cảnh báo sớm, late-no-chase, side sai và payload không `watchOnly` bị loại.
+- Feed cũ vẫn nhận các stage như trước; feed mới có state/dedupe LONG/SHORT độc lập,
+  chỉ nhận signal mới sau restart và không replay event cũ. Không thêm label/card hay
+  WHITELIST; không có thống kê giao dịch mới từ thao tác chuyển tiếp Discord này.
+- Không ảnh hưởng Binance: quyền entry LONG/SHORT, margin 5 USDT, leverage 5x,
+  TP/SL/max50, route ON/OFF và lệnh/vị thế hiện hữu không đổi. JSON cũ tương thích;
+  thiếu state tạo mảng rỗng và thiếu webhook thì fail closed.
+
+### 2026-09-27 — POST_MOVE_IMPULSE_CANDLE_DISCORD_V1_DEDICATED_20260927
+
+- Nối webhook riêng cho đúng hai cảnh báo sớm `_IMPULSE`: LONG `BUY_IMPULSE` màu
+  vàng và SHORT `SELL_IMPULSE` màu cam. Input causal vẫn là pump/dump 15m cùng
+  base/EMA/cây impulse 5m đã đóng; không dùng outcome, PnL hoặc dữ liệu tương lai.
+- Selector bắt buộc `watchOnly=true`, `binanceEligible=false`; loại confirmation,
+  `LATE_NO_CHASE`, sai side và payload không an toàn. Feed chỉ nhận event sinh sau
+  restart, tuổi tối đa 12 phút; state/dedupe LONG và SHORT tách riêng, không replay.
+- Không đổi Binance, entry, size 5 USDT ×5, SL, TP, max50, route ON/OFF hoặc lệnh/
+  vị thế hiện hữu. Đây là kênh Discord bổ sung, không phải gate giao dịch mới.
+- Thống kê chỉ là delivery state độc lập, chưa tạo cohort trading. Không thêm label/
+  card/WHITELIST. JSON cũ tương thích; thiếu state tạo `events=[]`, thiếu webhook
+  thì fail closed và không gửi.
+### 2026-09-28 — COIN_SUPPLY_PROFILE_V1_20260928
+
+- Thêm card hồ sơ cung vào Coin Level: supply từ CoinGecko được cache 6 giờ, market
+  cap live ước tính từ MARK Binance × circulating supply; timeout 3,5 giây và cache
+  lỗi 15 phút để upstream không làm chậm/đơ toàn trang.
+- Rule hiển thị causal: đỏ khi cung lưu hành `<=20M` token (tách thêm cap lớn
+  `>=500M USD`), cam khi `<=100M`, cyan khi `<=500M`, xanh khi rộng hơn. Card có
+  tổng cung, max supply, tỷ lệ lưu hành/max và turnover 24h; không dùng dữ liệu sau
+  entry, PnL hoặc outcome và không coi số token thấp là bằng chứng thanh khoản mỏng.
+- Đây là thống kê `OBSERVE ONLY`, không ảnh hưởng Binance, entry, size, SL, TP,
+  Discord, route hay lệnh/vị thế hiện hữu. Không tạo cohort trading mới.
+- `supplyProfile` là field JSON bổ sung; consumer/snapshot cũ thiếu field vẫn chạy,
+  provider thiếu dữ liệu thì trả `available=false`. Không thêm label/card giao dịch
+  hoặc WHITELIST; rule mặc định OFF và CLOSED AvgROE `>4%` giữ nguyên.
+### 2026-09-28 — COIN_SUPPLY_MARKET_V2_ID_DIRECTORY_20260928
+
+- Tạo page `/low-supply-market` cho Binance USDT perpetual × CoinGecko. Scanner
+  ưu tiên Top250 rồi map directory id và batch tối đa220 id tuần tự, chọn market-cap
+  lớn nhất khi symbol trùng, cache/persist 6 giờ;
+  partial batch được công bố thay vì giả vờ đủ dữ liệu.
+- Default filter `cap>=4B USD && circulating<15M token`, xếp circulating tăng dần;
+  người dùng có thể đổi ngưỡng, tìm coin hoặc sort theo float/max, cap, turnover,
+  change24h. Thống kê chỉ tính trong provider coverage hiện có.
+- Input hoàn toàn hiện tại và causal, không dùng PnL/outcome/future data. Đây là
+  `OBSERVE ONLY`; không đổi Binance, entry, size, leverage, SL/TP, Discord hoặc
+  vị thế/order đang mở.
+- State `coin-supply-market.json` mới độc lập; JSON cũ không migrate và consumer cũ
+  không bị ảnh hưởng. Không tạo trading label/card/WHITELIST; default OFF và rule
+  CLOSED AvgROE `>4%` giữ nguyên.
+
+### 2026-09-28 — LOW_SUPPLY_MARKET_UI_V2_COLUMN_SORT_20260928
+
+- Thêm sort hai chiều trực tiếp trên toàn bộ tiêu đề dữ liệu của table cung thấp;
+  indicator `↑/↓/↕`, mặc định circulating tăng dần và dữ liệu thiếu luôn xuống cuối.
+- Input, filter, phân loại, provider coverage và thống kê giữ nguyên V2; đây chỉ là
+  phép sắp xếp client-side trên snapshot hiện tại, không dùng outcome/PnL/tương lai.
+- Không ảnh hưởng Binance, entry, size, leverage, SL/TP, Discord hoặc position/order.
+  API/JSON/cache cũ không đổi schema và không cần migration. Không có label/card
+  giao dịch mới nên WHITELIST mặc định OFF và rule CLOSED AvgROE `>4%` không đổi.
+
+### 2026-09-28 — LOW_SUPPLY_MARKET_MENU_V1_ALL_PAGES_20260928
+
+- Đồng bộ link `Cung thấp` vào mọi page/menu đang có Liquid Flow V2; test tự động
+  quét toàn bộ HTML để phát hiện trang thiếu link trong các lần sửa sau.
+- Chỉ thay đổi navigation. Input, classification, stats, snapshot và JSON không đổi;
+  không tác động Binance, entry, size, leverage, SL/TP, Discord hoặc position/order.
+  Không có trading label/card mới nên WHITELIST/AvgROE policy giữ nguyên.
+
+### 2026-09-28 — VERY_STRONG_ENTRY_WATCH_UI_V1_BTC_CONTEXT_20260928
+
+- Tạo page quản lý riêng cho Coin Level Entry Score tier hiện hữu `VERY_STRONG`
+  (`>=80`) còn hiệu lực tối đa 45 phút; scanner expose đủ list trước top30 bằng field
+  additive `veryStrongCandidates`.
+- Timing BTC chỉ tô bối cảnh: SHORT cần BTC 1h/4h DOWN + EMA1h dưới + Market Regime
+  cho SHORT; LONG dùng UP đối xứng. Cửa sổ LIMIT/MARKET mới 90 giây được phân biệt
+  với setup cấu trúc còn hiệu lực và retest đã cũ.
+- `OBSERVE ONLY`: không đổi Binance, entry, size, leverage, SL/TP, Discord hoặc
+  position/order. JSON cũ tương thích qua fallback `candidates`; không có nhãn giao
+  dịch mới, runtime matcher hay WHITELIST mới, rule CLOSED AvgROE `>4%` giữ nguyên.
+# 2026-09-28 — VERY_STRONG_TREND_POOL_V1_BTC_WAVE_OBSERVE_20260928
+
+- Nâng trang `/very-strong-entry-watch` từ danh sách setup 45 phút thành pool xu hướng tối đa 24 giờ: giữ coin từng có tier `VERY_STRONG` hoặc `|Trend Score| >=24` kèm volume breakout >=1x.
+- Dữ liệu causal trước đánh giá gồm nến đóng 5m/15m/1h/4h, EMA/ATR, volume/taker đã đóng, BTC health 1h+4h và Market Regime. Socket chỉ cập nhật giá live/khoảng cách vùng.
+- LONG còn active khi 4h UP, 1h chưa DOWN, giữ EMA25 1h và volume 15m >=0.55x median20; SHORT đối xứng. Entry động lấy mốc gần nhất trong breakout gốc, EMA13/25 1h, EMA13 4h, biên 15m.
+- `READY_BTC_WAVE` cần BTC thuận hướng + route hướng được Market Regime cho phép + giá trong vùng động + nến 5m cùng hướng + taker phù hợp + volume 5m >=0.65x. Khi BTC ngược hướng, coin vẫn ở pool nhưng chỉ `WAIT_BTC_TURN`.
+- Thống kê/UI: tổng active, BTC thuận, chờ BTC, đủ điểm vào; có filter/sort và hiển thị volume nguồn/hiện tại, vùng/vô hiệu, trạng thái 1h/4h.
+- Record thiếu cache được giữ ở trạng thái `DATA_WARMUP`, không phát entry. Warm-up tối đa hai symbol/lượt, có cooldown 10 phút và tự dừng khi REST congestion/rate gate đang chặn.
+- Không ảnh hưởng Binance/entry/size/SL/TP/Discord; toàn bộ là `OBSERVE ONLY`. JSON chỉ thêm field, UI có fallback cho snapshot cũ. Không thêm nhãn matcher giao dịch hay checkbox WHITELIST.
+
+# 2026-09-28 — BTC_RELATIVE_STRENGTH_WATCH_V1_OPPOSITE_CONTEXT_OBSERVE_20260928
+
+- Thêm page `/btc-relative-strength-watch` với hai tab đối xứng: LONG `Coin mạnh khi BTC giảm` và SHORT `Coin yếu khi BTC tăng`. Nguồn dùng lại pool xu hướng 24 giờ nên không thêm scanner REST hoặc tải lại toàn bộ market.
+- Input causal gồm nến đóng 5m/15m/1h/4h, current Trend Score, volume nguồn/hiện tại, taker 5m, vùng động và BTC health. LONG cần coin 1h+4h UP, score >=14 khi BTC nghiêng/giảm; SHORT cần coin 1h+4h DOWN, score <=-14 khi BTC nghiêng/tăng.
+- “Sóng chưa chạy mạnh” được chuẩn hóa bằng khoảng cách thuận hướng tới tâm vùng retest động <=1,2%. Xa hơn thì hiện không đuổi; xuyên ngược vùng thì chờ reclaim/từ chối. Trạng thái đủ điều kiện quan sát cần thêm trigger 5m hiện hữu. Điểm 0–100 chỉ xếp hạng trend/volume/proximity/trigger, không phải WinRate.
+- `allowLongEntry/allowShortEntry` không chặn phép quan sát divergence này. Tuy vậy toàn page là `OBSERVE ONLY`: không Discord, không Binance, không đổi entry/size/leverage/SL/TP hoặc vị thế/order đang mở.
+- Không đổi JSON/server state; client cũ không bị ảnh hưởng, snapshot thiếu pool hiện rỗng. Không tạo nhãn runtime/card giao dịch hay WHITELIST mới; policy OFF và điều kiện CLOSED AvgROE >4% giữ nguyên.
+
+# 2026-09-28 — BTC_RELATIVE_STRENGTH_DISCORD_V1_NEAR_READY_20260928
+
+- Nối webhook riêng cho `/btc-relative-strength-watch`. Chỉ hai trạng thái được gửi: `GẦN VÙNG · CHỜ 5M` và `ĐỦ ĐIỀU KIỆN QUAN SÁT`; payload tô rõ vùng entry xanh cho LONG, đỏ cho SHORT và hiển thị live/distance, trend 15m/1h/4h, volume/taker, BTC context cùng mốc vô hiệu.
+- Input hoàn toàn causal trước entry: pool xu hướng còn hạn, nến đóng, vùng động và BTC health; MARK socket chỉ so khoảng cách. Yêu cầu bối cảnh ngược BTC active, `nearEntry=true`, zone/live hợp lệ và setup chưa hết hạn; không dùng PnL/outcome/future data.
+- Dedupe theo coin + side + nguồn setup + stage, nên một setup có thể báo gần vùng một lần rồi báo nâng cấp ready một lần. State delivery giữ 7 ngày, giới hạn mặc định 5 tin/scan và có retry/rate-limit safety; con số delivery không phải thống kê hiệu quả giao dịch.
+- `OBSERVE ONLY`: không thay Binance, entry, size, leverage, SL/TP, protection hay order/position đang mở. API chỉ thêm field configured; state JSON mới độc lập, file cũ không migrate. Không có matcher/card giao dịch mới nên không thêm WHITELIST; policy OFF và CLOSED AvgROE `>4%` giữ nguyên.
+
+# 2026-09-28 — BTC_RELATIVE_STRENGTH_READY_MARKET_2USDT_MAX50_V1_20260928
+
+- Nối real executor cho đúng state đã có `RELATIVE_ENTRY_READY` trên `/btc-relative-strength-watch`, cả LONG và SHORT. `GẦN VÙNG · CHỜ 5M` tiếp tục chỉ Discord; Discord READY nay nói rõ Binance chỉ “được xét”, không khẳng định lệnh đã khớp.
+- Input causal gồm pool active, nến đóng 5m/15m/1h/4h, Trend Score ±14, volume/taker 5m, vùng động và BTC context ngược hướng. Bổ sung `lastClosed5mAt` để executor xác minh chính xác nến đóng tạo pass; MARK chỉ kiểm tra drift `<=0,5%` và khoảng cách vùng `<=1,2%` ngay trước submit.
+- Tín hiệu phải mới <=90 giây và sinh sau process start + route enabledAt; tín hiệu cũ không replay. Có dedupe theo setup+nến pass, cooldown coin 4 giờ, không DCA, chặn position/order đã có và kiểm tra lại switch ngay trước submit.
+- Hai route Auto Controls dùng 2 USDT margin ×5, TP +10% ROE, SL LONG −20% / SHORT −30%, full-fill anchored protection và max50. Policy authorization riêng, payload copy/giả mạo không được phép đặt lệnh.
+- State executor/attempt là JSON mới; API chỉ thêm execution status, consumer cũ tương thích. Không tạo label/card thống kê mới: dùng exact state hiện hữu `RELATIVE_ENTRY_READY`, route được bật tại Auto Controls; Liquid Card WHITELIST/AvgROE policy cũ không đổi.
+
+# 2026-09-28 — BTC_RELATIVE_STRENGTH_READY_MARKET_2USDT_TP_ONLY_MAX50_V2_20260928
+
+- Chuyển exact route `RELATIVE_ENTRY_READY` LONG/SHORT sang TP-only cho entry mới: MARKET `2 USDT ×5`, TP `+10% ROE` neo full-fill, không tạo SL gốc. Executor ép toàn bộ field SL về `null`; private policy V46 từ chối payload cố gắn `stopLossRoePct`, giá SL hoặc distance SL.
+- Input/phân loại/thống kê giữ nguyên V1: nến đóng 5m/15m/1h/4h, trend ±14, volume/taker, vùng động và BTC ngược hướng; freshness 90 giây, drift 0,5%, vùng 1,2%, max50, no replay/DCA và cooldown 4 giờ. Route/label giữ nguyên nên chuỗi stats không bị tách.
+- Chỉ thay protection cho entry mới; không hủy/sửa SL, TP, order hay position hiện có. Profit-lock chung sau khi vị thế có lãi vẫn chạy để chống trả ngược lợi nhuận.
+- JSON/state/API tương thích, không migration. Không có label/card mới nên không thêm WHITELIST; mặc định OFF và điều kiện CLOSED AvgROE `>4%` giữ nguyên.
+
+# 2026-09-28 — AUTO_BTC_LONG_ENTRY_GUARD_V1_RELATIVE_STRENGTH_EXCEPTION_20260928
+
+- Thêm cổng sớm trong `placeOrder` và defense-in-depth quanh signed Binance client để phủ cả executor legacy đi trực tiếp: mọi entry `BUY` tự động cần snapshot Market Regime mới và `allowLongEntry=true`; `RISK_OFF`, `RECOVERY_TEST`, `WAIT_DATA` hoặc snapshot thiếu/cũ đều chặn trước entry submit với code `AUTO_LONG_BLOCKED_BTC_MARKET_REGIME`.
+- Input causal trước entry giữ nguyên từ breadth 15m/30m đã đóng, taker-buy, DUMP shock, socket freshness và quiet/confirmation window; không dùng PnL/outcome/tương lai. Không tạo thống kê hiệu quả mới.
+- Ngoại lệ duy nhất là private authorization reason của exact `btc-relative-strength-watch / RELATIVE_ENTRY_READY`, được truyền xuống signed-client bằng marker `Symbol` không enumerable; payload chỉ tự ghi source/label không vượt được gate. SHORT, reduce-only protection/close, lệnh tay và dry-run giữ nguyên.
+- Chỉ chặn entry LONG tự động mới; không hủy order cũ, không đổi/đóng position, size, leverage, TP, SL hoặc protection. Không đổi JSON/state/API, không thêm label/card/WHITELIST; policy CLOSED AvgROE `>4%` giữ nguyên.
+
+# 2026-09-28 — BTC_RELATIVE_STRENGTH_SHORT_ON_BTC_DOWNTREND_PULLBACK_V4_20260928
+
+- Mở thêm timing SHORT trên `/btc-relative-strength-watch`: không còn bắt buộc chờ BTC chuyển hẳn sang UP. Khi BTC vẫn `DOWN_STRONG/DOWN_LEAN`, hệ thống nhận nến hồi BTC 5m đã đóng và chỉ chọn coin tiếp tục xả mạnh hơn BTC.
+- Detector `BTC_RELATIVE_BTC_PULLBACK_5M_CLOSED_V1_20260928` dùng nến đóng causal: BTC 5m tăng `0,08–0,75%`, ba nến trước giảm ít nhất `0,12%`, thân/range `>=25%`, taker-buy BTC `>=50%`, cửa sổ mới tối đa 120 giây. BTC và coin phải dùng cùng timestamp nến đóng.
+- Coin SHORT cần giữ 1h+4h DOWN, Trend Score `<=-14`, coin 5m giảm `>=0,15%`, underperform BTC `>=0,25` điểm %, volume 5m `>=1,0x`, volume 15m `>=0,75x`, taker-buy `<=45%`, gần vùng động `<=1,2%` và trigger 5m hiện hữu. Nhánh BTC UP cũ và LONG không đổi.
+- Không tạo signal key/cohort mới: pass vẫn là exact `RELATIVE_ENTRY_READY`; UI/Discord thêm context `BTC_DOWNTREND_PULLBACK_SHORT` và in move BTC/coin/chênh lệch để audit. Thống kê attempt/fill/closed PnL tiếp tục chung route cũ, chưa coi là backtest hay WinRate riêng.
+- Binance chỉ mở rộng gate cho route SHORT đang bật: MARKET `2 USDT ×5`, TP `+10% ROE`, không SL gốc, max50, no replay/no DCA/cooldown 4 giờ và recheck MARK/freshness như V2. Không đụng position/order đang mở hoặc protection hiện hữu.
+- JSON chỉ thêm `btcPullback5m` và `last5mMovePct`; dữ liệu cũ thiếu field sẽ fail-closed riêng nhánh pullback, không migration/replay. Không có nhãn/card mới nên không thêm WHITELIST; checkbox route hiện hữu và policy CLOSED AvgROE `>4%` giữ nguyên.
+
+
+# 2026-09-29 — BTC_RELATIVE_STRENGTH_CAUSAL_ALPHA_IN_ZONE_ONE_SETUP_V5
+
+- Áp lại exact `RELATIVE_ENTRY_READY` sau audit khoảng 130 fill: closed-only đang dương nhưng bị lệch TP-only/right-censoring, điểm >=90 không vượt nhóm 80–89 và phần lớn Discord READY cũ nằm ngoài entry zone. Kết quả cũ chỉ là lý do đổi rule, không được gắn thành WinRate của V5.
+- Input trước entry hoàn toàn causal: return coin/BTC trên cùng chuỗi nến 5m đã đóng, cửa sổ 3 nến/15m và 12 nến/1h, timestamp lệch tối đa 5 giây; cộng structure 1h+4h, Trend Score, volume/taker, vùng động và MARK recheck. Không dùng PnL/outcome/tương lai.
+- LONG giờ chỉ pass với BTC `DOWN_STRONG`, alpha coin−BTC >=0,25 điểm %/15m và >=0,50 điểm %/1h. `DOWN_LEAN` và thiếu alpha chỉ quan sát. SHORT pullback/UP-context giữ rule V4. READY bắt buộc MARK ở trong biên entry thật và nến 5m xác nhận; gần tâm <=1,2% nhưng ngoài biên chỉ gửi stage chờ.
+- `relativeScore` chỉ còn là điểm xếp hạng causal, không xác suất. Audit phân cohort bằng executor version + `contextMode`; chưa có CLOSED sample cho V5. Không thêm label/card/WHITELIST mới; exact key và checkbox route giữ nguyên, default OFF/AvgROE >4% giữ nguyên.
+- Binance cho entry mới vẫn MARKET 2 USDT margin x5, TP +10% ROE, không SL gốc, max50, freshness/drift/no-position/no-order/no-DCA không đổi. Mỗi source confirmation chỉ được đi tới submit một lần, kể cả submit lỗi không rõ kết quả; position/order/protection đang mở không bị sửa.
+- Versions: UI V5, executor V4, Discord V5. JSON additive returns tương thích consumer cũ; state executor thêm `setups` và tự suy ra consumed setup từ attempt legacy thành công/đang submit/lỗi không rõ. Record cũ thiếu alpha fail-closed riêng LONG READY.
+
+# 2026-09-29 — Gỡ đúng global BTC LONG guard thêm từ chat
+
+- Version `AUTO_BTC_LONG_GLOBAL_GUARD_REMOVED_V2_ROUTE_LOCAL_20260929` gỡ hai điểm hook của `AUTO_BTC_LONG_ENTRY_GUARD_V1`: gate chung trong `placeOrder` và wrapper quanh signed Binance client. Module ngoại lệ riêng cho `RELATIVE_ENTRY_READY` cũng được bỏ vì không còn global gate để vượt qua.
+- Thay đổi chỉ hoàn tác phần chặn LONG toàn cục được thêm từ yêu cầu chat trước. Các detector/executor vẫn tự đánh giá BTC/Market Regime nếu rule riêng của route yêu cầu; khóa tổng, checkbox exact route, private authorization, freshness, chống trùng, max-position và no-DCA giữ nguyên.
+- Dữ liệu causal trước entry trở lại theo từng chiến lược: nến đóng, BTC context, volume/taker, vùng entry và MARK recheck của route. Không dùng PnL/outcome/tương lai. Không tạo logic phân loại hay điểm số mới.
+- Không còn code block chung `AUTO_LONG_BLOCKED_BTC_MARKET_REGIME`, nên BTC SW up hoặc snapshot `allowLongEntry=false` không tự động chặn sạch mọi LONG. Rule V5 của `RELATIVE_ENTRY_READY` không đổi và vẫn tự yêu cầu `DOWN_STRONG` + alpha + đúng vùng + xác nhận 5m.
+- Không đổi entry, size, leverage, TP/SL/protection hay position/order đang mở; không tự bật route OFF. Không đổi JSON/API/state và không migration. Không thêm label/card/runtime matcher/WHITELIST; default OFF và điều kiện CLOSED `AvgROE >4%` giữ nguyên.
+
+# 2026-09-29 — AI Local Qwen3 8B đánh giá xu hướng OBSERVE ONLY
+
+- Cài Ollama `0.34.4` và model `qwen3:8b`; thêm page `/local-ai-trend-evaluation` cùng API cache/manual refresh. Backend WSL gọi Ollama Windows localhost qua bridge `curl.exe`, không bind model ra LAN và không chạy inference theo từng tick.
+- Version `LOCAL_AI_TREND_EVALUATOR_V1_QWEN3_8B_OBSERVE_ONLY_20260929`. Input trước đánh giá chỉ lấy candidate causal đã có: retest nến đóng, VERY_STRONG active, early watch, structure/score/volume/taker/move, vùng/target engine, BTC health và breadth. Không gửi PnL/outcome/future data; lấy top 10 coin/hướng sau dedupe/ranking deterministic và output đúng một case tốt nhất mỗi hướng hiện có với reasons/risks ngắn để giữ thời gian CPU hữu hạn và tránh JSON bị cắt. Khi BTC health còn seed hoặc thiếu trend 1h/4h, request fail-closed trước Ollama bằng `LOCAL_AI_BTC_CONTEXT_NOT_READY`, tránh cache nhận định sinh từ context rỗng.
+- Structured Output chỉ cho model phân loại bối cảnh, bias, đường đi, horizon và độ rõ. Shortlist top 10 giữ quota 5 LONG + 5 SHORT khi có đủ dữ liệu hai phía. Schema runtime bắt buộc đồng thời `longCandidate` và `shortCandidate`, khóa side và enum symbol theo shortlist nên model không thể bỏ một hướng hoặc tự bịa coin. Server không đọc bất kỳ giá nào do AI tạo; entry zone, invalidation và target hiển thị luôn lấy từ engine định lượng hiện tại. Điểm AI không phải probability/WinRate.
+- Thêm kết luận quan sát `LOCAL_AI_OBSERVE_QUALIFICATION_V1_SIX_CRITERIA_20260929`: đủ 6/6 khi AI `PRIORITY`, strength >=65, path retest/continuation, MARK nằm trong vùng engine, không xung đột mạnh BTC/breadth và chưa chạm invalidation. UI tô xanh dòng pass; dòng fail ghi số đạt và điều kiện thiếu. Kết luận này có `runtimeSignalKey=null`, không phải runtime signal/gate và không cấp quyền Binance.
+- Page là `OBSERVE ONLY`, không route Auto Controls, không Discord/Binance, không đổi entry/size/leverage/SL/TP/protection hay vị thế/lệnh đang mở. Cache RAM 5 phút giảm CPU; restart chỉ mất cache và không cần migrate JSON.
+- Không thêm runtime signal label/card thống kê/WHITELIST. Các chữ PRIORITY/WATCH/WAIT/AVOID và `ĐẠT ĐỦ ĐIỀU KIỆN` chỉ là UI view; số pass là đếm snapshot, không phải WinRate. Muốn cấp quyền giao dịch sau này bắt buộc có walk-forward/CLOSED cohort, `AvgROE >4%`, exact matcher + checkbox mặc định OFF, tests và cập nhật tài liệu mới.
+
+# 2026-09-29 — AI Local Discord PRIORITY/WATCH và đổi hướng BTC
+
+- Thêm notifier `LOCAL_AI_TREND_DISCORD_V1_PRIORITY_WATCH_BTC_SHIFT_20260929` tới webhook riêng: AI `PRIORITY` màu xanh, `WATCH` màu vàng; `WAIT/AVOID` không gửi. Tin nhắn ghi qualification x/6, vùng engine, MARK, path/horizon, BTC/breadth, lý do/rủi ro và nhãn `OBSERVE ONLY`.
+- Dữ liệu trước cảnh báo giữ causal từ evaluator: nến đóng, ranking/candidate hiện hữu, engine zone/invalidation/target, MARK và BTC/breadth tại thời điểm đánh giá; không dùng PnL/outcome/future data. Auto evaluation mặc định 10 phút, start delay 120 giây, dùng cache 5 phút và khóa chống inference chồng.
+- BTC được kiểm tra mỗi 30 giây từ return nến đóng 15m/1h: `UP` tại +0,25%/15m hoặc +0,55%/1h có xác nhận dấu; `DOWN` đối xứng. Lần đầu chỉ baseline; chỉ transition thật mới gửi xanh/đỏ, có candle dedupe và cooldown 15 phút. BTC shift là context alert để chạy lại AI, không phải signal entry.
+- Dedupe candidate theo `symbol|side|verdict|sourceClosedAt`, cooldown 30 phút, tối đa 3 tin/evaluation; state mới giữ delivery 7 ngày. Thống kê này không phải WinRate. API chỉ thêm object `discord`, JSON cũ tương thích và thiếu webhook không làm hỏng evaluator.
+- Hoàn toàn không ảnh hưởng Binance, entry, size, leverage, SL/TP/protection hay order/position hiện hữu. Không tạo runtime signal/card/matcher nên không thêm WHITELIST; `runtimeSignalKey=null`, policy default OFF/CLOSED AvgROE `>4%` giữ nguyên.
+
+# 2026-09-29 — AI Local báo BTC trở lại bình thường
+
+- Nâng notifier lên `LOCAL_AI_TREND_DISCORD_V2_PRIORITY_WATCH_BTC_RECOVERY_20260929`. Ngoài transition mạnh `UP` xanh/`DOWN` đỏ, nay `UP→NEUTRAL` gửi xanh dương `BTC ĐÃ DỪNG TĂNG MẠNH`, còn `DOWN→NEUTRAL` gửi `BTC ĐÃ DỪNG GIẢM MẠNH`.
+- Recovery dùng đúng return BTC 15m/1h từ nến 5m đã đóng và hysteresis 60% so với threshold V1: thoát DOWN tại `>-0,15% / 15m` đồng thời `>-0,33% / 1h`; thoát UP đối xứng `<+0,15%` và `<+0,33%`. Vùng trung gian giữ strong state, tránh nhấp nháy quanh biên. Không dùng nến live, PnL, outcome hoặc dữ liệu tương lai; cảnh báo không khẳng định đảo chiều.
+- Recovery gửi ngay khi transition xác nhận, không bị cooldown strong 15 phút chặn; vẫn dedupe theo `previousDirection|closedAt`, còn state lặp/`NEUTRAL→NEUTRAL` không gửi. State V1 đọc tương thích và tự bổ sung timestamp recovery/strong mới, không replay/migrate order.
+- Không đổi candidate classification/statistics, không ảnh hưởng Binance, entry, size, leverage, SL/TP/protection hoặc vị thế/lệnh hiện hữu. Không thêm runtime signal/card/matcher, nên không có checkbox WHITELIST mới; default OFF và CLOSED AvgROE `>4%` giữ nguyên.
+
+# 2026-09-30 — Khôi phục Ollama và dự báo xu hướng BTC
+
+- Audit runtime xác nhận AI altcoin đã gửi 30 record đến 01:18:58 rồi dừng vì Ollama port `11434` offline; BTC alert vẫn tiếp tục do scanner deterministic độc lập. Khởi động lại `ollama.exe serve` và xác nhận `qwen3:8b` hiện diện.
+- Thêm `LOCAL_AI_OLLAMA_WATCHDOG_V1_WINDOWS_SERVE_RECOVERY_20260930`: health mỗi 60 giây, tự chạy lại service ẩn, chờ tối đa 12 giây, cooldown restart 60 giây; POST manual cũng tự cứu. Việc phục hồi service không thay đổi model input/output hoặc logic altcoin.
+- Nâng Discord thành `LOCAL_AI_TREND_DISCORD_V3_ALT_BTC_SHIFT_RECOVERY_FORECAST_20260930`. Mỗi evaluation phân loại dự báo BTC thành `UP_STRONG/SW_UP/DOWN_STRONG/SW_DOWN/RANGE/UNCLEAR` từ market regime + bias của model, dùng BTC return nến đóng/trend/RSI/funding và breadth hiện có. Màu forecast tách theo hướng; điểm hiển thị là độ rõ, không phải probability.
+- Forecast gửi lần đầu, khi đổi hướng hoặc refresh một lần mỗi 60 phút; state `btcForecast` additive chống trùng. Altcoin PRIORITY/WATCH và BTC strong/recovery giữ nguyên. Dữ liệu trước dự báo không có PnL/outcome/future candles; delivery không phải WinRate.
+- Toàn bộ vẫn OBSERVE ONLY: không Binance, không entry/size/leverage/SL/TP/protection và không sửa order/position. JSON V2 tự bổ sung state forecast mặc định; API field mới additive. Forecast không có runtime matcher/card trading nên không thêm checkbox WHITELIST; default OFF và CLOSED AvgROE `>4%` giữ nguyên.
+
+# 2026-09-30 — Chatbot AI hỏi xu hướng altcoin
+
+- Thêm version `LOCAL_AI_TREND_CHAT_V1_CAUSAL_ALTCOIN_QA_OBSERVE_ONLY_20260930` ngay trong page AI Local và endpoint `/api/local-ai-trend-chat`. Chat dùng `qwen3:8b` local, câu hỏi gợi ý hoặc tên coin cụ thể; mỗi lần hỏi mới chạy model, không inference theo từng tick và không gửi Discord.
+- Input trước trả lời chỉ gồm snapshot causal hiện tại: tối đa 40 candidate Coin Level từ retest đóng/pool mạnh/early watch, structure nến đóng 5m/15m/1h/4h, trend/entry score, volume/taker/move, vùng engine, BTC health, breadth và evaluation gần nhất. Hỏi coin cụ thể chỉ đưa coin đó vào context; hỏi tổng quát lấy top 12. Không có PnL, outcome, future candle hoặc dữ liệu sau entry.
+- Structured Output phân loại LONG/SHORT/NEUTRAL, UP/DOWN/MIXED/RANGE/UNCLEAR và độ rõ 0–100 không phải xác suất. Server chỉ chấp nhận symbol có trong candidate context; coin không có được báo thiếu dữ liệu. Giá, vùng, invalidation và target chỉ lấy nguyên từ engine, không cho model tự bịa.
+- Thống kê chỉ có token/latency inference để quan sát tải, không có WinRate/AvgROE/cohort. Hội thoại giữ trong RAM tab, không tạo state JSON hoặc migration; endpoint là additive và client cũ tương thích.
+- Hoàn toàn `OBSERVE ONLY`, `binanceEligible=false`: không thay Binance, entry, size, leverage, SL/TP/protection hoặc order/position. Chat có `runtimeSignalKey=null`, không phải card/matcher giao dịch nên không thêm checkbox WHITELIST; default OFF và điều kiện CLOSED `AvgROE >4%` giữ nguyên.
+
+# 2026-09-30 — Chatbot hybrid: hỏi coin bất kỳ và feature-vector retrieval
+
+- Nâng lên `LOCAL_AI_TREND_CHAT_V2_HYBRID_DIRECT_SYMBOL_FEATURE_VECTOR_20260930`. Câu hỏi có mã futures cụ thể như `QNT`/`QNTUSDT` không còn phụ thuộc candidates: server resolve theo danh sách hợp đồng đang giao dịch và tải Coin Level trực tiếp, tối đa ba coin/lượt.
+- Nhánh exact-symbol dùng causal Coin Level: nến đóng/trend 5m/15m/1h/4h, MARK/24h, recommendation xác nhận, support/resistance, plan engine/invalidation/target, LiqScan/CoinGlass và BTC context. Nó trả ngay bằng deterministic engine (`COIN_LEVEL_DIRECT_ENGINE`), không chờ Qwen và không tự tạo giá.
+- Câu hỏi tổng quát vẫn gọi Qwen nhưng shortlist được lọc trước bằng vector đặc trưng định lượng: intent LONG/SHORT, trend strength, volume và khoảng cách entry. Đây không phải embedding/vector DB; dữ liệu số thị trường được ưu tiên hơn similarity của văn bản. Chỉ top 12 mới vào context model.
+- Trend lớn và timing hiện tại được tách: ví dụ khung lớn UP nhưng stance breakdown 15m có thể trả trend UP và side SHORT/LOW_PRIORITY cùng cảnh báo xung đột. Điểm retrieval/clarity không phải xác suất và không tạo WinRate/cohort.
+- JSON additive (`directLookup`, retrieval/directCoins), không state/migration. Toàn bộ OBSERVE ONLY, không Binance/entry/size/SL/TP/protection. Không có runtime card/matcher nên không thêm WHITELIST; default OFF/CLOSED AvgROE `>4%` giữ nguyên.
+
+## 2026-09-30 — Tô màu hỗ trợ/kháng cự trong chatbot
+
+- Exact-symbol answer thêm tối đa hai `supports` và hai `resistances` trực tiếp từ Coin Level. UI hiển thị hỗ trợ xanh, kháng cự đỏ, có biên low–high và confidence để phân biệt nhanh.
+- Không đổi dữ liệu trước phân loại, trend/side, retrieval hoặc thống kê; các badge chỉ trình bày vùng engine, không phải xác suất hay tín hiệu entry. JSON additive, không migration.
+- Không ảnh hưởng Binance/entry/size/SL/TP/protection. Không tạo runtime signal/card thống kê/matcher nên không thêm WHITELIST; default OFF và CLOSED AvgROE `>4%` giữ nguyên.
+
+## 2026-09-30 — Order book và kịch bản vùng quét trong chatbot
+
+- Nâng chatbot lên `LOCAL_AI_TREND_CHAT_V3_ORDERBOOK_LIQUIDITY_SCENARIO_OBSERVE_ONLY_20260930`. Exact-symbol answer có cụm BID/ASK Binance kèm notional, vùng trên/dưới từ LiqScan và CoinGlass, hướng lực hút cùng confidence.
+- Input causal lấy từ Coin Level: order-book zones, LiqScan dominant side/kill zone và CoinGlass nearest above/below/agreement. Engine target có sẵn được ưu tiên; hai nguồn đồng hướng mới gắn HIGH, một nguồn MEDIUM, xung đột bắt buộc `CONFLICT/LOW` và không chọn phía.
+- UI tô BID xanh lam, ASK hồng, vùng quét trên cam và vùng dưới xanh dương. Đây là kịch bản thanh khoản tham khảo, không phải xác suất hoặc dự báo chắc chắn; order book có thể bị rút.
+- JSON thêm `orderBook`/`liquidityScenario`, tương thích cũ và không state/migration. Không ảnh hưởng Binance, entry, size, leverage, SL/TP/protection. Badge chỉ là UI, không runtime matcher/card thống kê, nên không thêm WHITELIST; default OFF/CLOSED AvgROE `>4%` giữ nguyên.
+
+## 2026-09-30 — Discord AI Local tô màu theo LONG/SHORT
+
+- Nâng notifier thành `LOCAL_AI_TREND_DISCORD_V4_SIDE_COLOR_LONG_GREEN_SHORT_RED_20260930`: LONG xanh, SHORT đỏ ở cả icon title và thanh màu embed. `PRIORITY/WATCH` vẫn hiển thị bằng chữ nhưng không còn khiến SHORT thành xanh/vàng.
+- Không đổi dữ liệu causal, điều kiện gửi, qualification, dedupe/cooldown hay thống kê delivery. Đây chỉ là presentation, không phải signal/tier/gate mới.
+- Không ảnh hưởng Binance/entry/size/SL/TP/protection, không đổi state schema hoặc replay. Không có matcher/card mới nên không thêm WHITELIST; default OFF/CLOSED AvgROE `>4%` giữ nguyên.
+
+## 2026-09-30 — Tách xu hướng nến khỏi lực hút thanh khoản
+
+- Nâng chatbot lên `LOCAL_AI_TREND_CHAT_V4_TREND_LIQUIDITY_CONFLICT_AWARE_20260930`. Direct lookup nay gắn snapshot LiqScan mới nhất giống API Coin Level; sửa trường hợp chatbot chỉ thấy CoinGlass và gọi lực hút phía trên là dự báo tăng.
+- Kết luận mới có ba lớp: thanh khoản đồng hướng trend, lực hút ngược trend (chỉ là khả năng hồi/quét), hoặc LiqScan–CoinGlass xung đột. Xung đột luôn LOW và không chọn phía; UI ghi trend nến riêng.
+- Case xác nhận ZAMA lúc sửa: bốn khung đều DOWN, LiqScan BELOW 97,44% nhưng CoinGlass UPPER 100%; phải hiện `XU HƯỚNG DOWN · THANH KHOẢN XUNG ĐỘT`, không phải nghiêng lên.
+- Không đổi thống kê hiệu quả và không tác động Binance/entry/size/SL/TP/protection. JSON chỉ thêm field, không migration. Không runtime matcher/card/WHITELIST mới; default OFF/CLOSED AvgROE `>4%` giữ nguyên.
+# 2026-09-30 — Local AI chatbot V5 bounded busy lock
+
+- Giới hạn một câu hỏi Ollama tổng hợp tối đa 120 giây và không fallback/retry qua Windows curl sau `AbortError`/`TimeoutError`, tránh giữ khóa gần gấp đôi.
+- Tra cứu coin trực tiếp vẫn chạy qua Coin Level deterministic khi Ollama tổng hợp đang bận. UI/API hiển thị thời gian đã chạy và trần timeout.
+- Không đổi điều kiện tín hiệu, thống kê, Binance/entry/size/SL/TP hay JSON cũ; đây là `OBSERVE ONLY`, không có card/nhãn mới và không phát sinh checkbox `WHITELIST`.
+# 2026-09-30 — Local AI chatbot V6 fast aggregate retrieval
+
+- Các câu hỏi danh sách/xếp hạng phổ biến trả trực tiếp từ feature-vector causal, tối đa 5 altcoin, thay vì bắt Qwen3:8b tổng hợp lại; `BTCUSDT` chỉ làm bối cảnh và không lọt vào kết quả altcoin. Câu hỏi coin cụ thể tiếp tục dùng Coin Level trực tiếp.
+- Câu mở dùng Qwen giảm còn context 4096, tối đa 400 token và timeout 60 giây. Kết quả nhanh có `fastAggregate=true`, model `QUANT_FEATURE_VECTOR_ENGINE`.
+- Chỉ `OBSERVE ONLY`; không thay đổi thống kê, Binance/entry/size/SL/TP, JSON cũ hoặc `WHITELIST`.
+- UI hotfix V6: nút `Hỏi AI` và bốn nút gợi ý có thêm `pointerdown` trực tiếp bên cạnh `submit`/`Enter`, khắc phục trường hợp browser nhận focus nhưng không phát sinh click/submit. Không đổi dữ liệu hay kết luận AI.
+- UI hotfix V6.1 (`v14`): bổ sung handler cấp trang, script thường, bỏ `pointerdown.preventDefault()`, giữ `mousedown/click/submit/Enter` và thêm tự gửi sau 1,2 giây dừng gõ. Timer bị hủy ngay khi `askChat` bắt đầu và busy guard chống gửi trùng. Giữ nguyên dữ liệu causal, phân loại, thống kê và JSON; hoàn toàn `OBSERVE ONLY`, không ảnh hưởng Binance/entry/size/SL/TP và không tạo WHITELIST mới.
+
+# 2026-09-30 — Local AI chatbot V7 không treo ở câu thứ hai
+
+- Nâng backend thành `LOCAL_AI_TREND_CHAT_V7_CURL_SAFE_FALLBACK_20260930`, UI `v15`. Khi evaluator nền đang chạy hoặc Ollama chỉ truy cập được qua `windows-curl`, câu hỏi mở không chờ timeout 60 giây nữa mà trả ngay bằng `QUANT_FEATURE_VECTOR_FALLBACK`; lỗi/timeout Qwen local-http cũng fallback.
+- Dữ liệu causal, điều kiện direct-symbol, feature ranking, giới hạn tối đa 5 coin và cách thống kê giữ nguyên. `fallbackReason` chỉ audit kỹ thuật, không phải signal/tier/gate; UI không còn gọi lượt evaluation nền là “câu hỏi tổng hợp đang xử lý”.
+- JSON additive, không state/migration. Toàn bộ `OBSERVE ONLY`, không ảnh hưởng Binance/entry/size/leverage/SL/TP/protection và không tạo matcher/card/checkbox WHITELIST mới; default OFF/CLOSED `AvgROE >4%` giữ nguyên.
+
+# 2026-09-30 — Chatbot chỉ dùng order book Binance Futures
+
+- Nâng lên `LOCAL_AI_TREND_CHAT_V8_BINANCE_ORDERBOOK_ONLY_20260930`, UI `v16`. BID/ASK/notional lấy từ Binance Futures Depth; hướng quét, dominant percent và vùng kill/sweep chỉ lấy từ Binance LiqScan. CoinGlass bị loại khỏi toàn bộ phép chọn hướng/confidence và khỏi phần hiển thị order book.
+- Trend nến đóng 5m/15m/1h/4h vẫn là lớp chính. Binance liquidity cùng trend là `TREND_LIQUIDITY_ALIGNED`, ngược trend là `COUNTER_TREND_LIQUIDITY_PULL`; order book không được phép tự đảo xu hướng nến.
+- Thống kê chỉ trình bày zone/notional/dominance hiện tại, không phải WinRate/xác suất và có rủi ro lệnh chờ bị rút. JSON giữ field cũ CoinGlass bằng `null`, thêm source Binance; không state/migration.
+- Hoàn toàn `OBSERVE ONLY`, không ảnh hưởng Binance entry/size/leverage/SL/TP/protection và không tạo matcher/card/checkbox WHITELIST mới; default OFF/CLOSED `AvgROE >4%` giữ nguyên.
+
+# 2026-09-30 — Khôi phục Ollama, giữ order book chỉ từ Binance
+
+- Nâng chatbot lên `LOCAL_AI_TREND_CHAT_V9_OLLAMA_BINANCE_ORDERBOOK_20260930`, UI `v17`. Gỡ early-return deterministic của exact-symbol và gỡ gate bỏ model chỉ vì transport `windows-curl`: cả câu hỏi coin và tổng hợp đều đưa context causal qua `qwen3:8b` trước; chỉ fallback khi Ollama lỗi/timeout.
+- Input exact-symbol trước model chỉ gồm đúng coin được hỏi: nến đóng 5m/15m/1h/4h, volume/market, vùng engine, support/resistance và Binance Futures Depth/LiqScan raw; không còn gửi kèm top-12/aggregate evaluation. Loại hoàn toàn CoinGlass cùng direction assessment trộn nguồn khỏi prompt. Chặn từ khóa `ORDER/BOOK/MARKET/LONG/SHORT` bị nhận nhầm thành symbol khi không có hậu tố `USDT`. Nến là hướng chính; order book Binance là lớp phụ có thể bị rút.
+- Structured output exact-symbol dùng context 2048; một coin chỉ trả object side/trend/clarity/reason tối đa 64 token, nhiều coin mới dùng `assessments`. Schema khóa hướng hợp lệ và không cho model trả giá/entry/BTC context/rủi ro; server luôn ghép lại câu trả lời cùng các phần deterministic. Khi thành công trả token/latency và `modelApplied=true`; fallback phân biệt timeout/JSON hỏng/unavailable để audit nhưng không phải signal/tier hoặc thống kê hiệu quả.
+- Thay đổi hoàn toàn `OBSERVE ONLY`: không Binance order, entry, size, leverage, SL/TP/protection, Discord hoặc position hiện hữu. JSON chỉ thêm field, không migration/state; không có runtime label/card/matcher nên không thêm checkbox WHITELIST, default OFF/CLOSED `AvgROE >4%` giữ nguyên.
+
+## 2026-09-30 — Thẻ AI BTC trên đầu màn hình
+
+- Thêm `LOCAL_AI_BTC_TOP_CARD_V1_20260930` ngay dưới toolbar, trước chatbot: hướng BTC hiện tại 1h/4h, dự báo regime/bias, độ rõ, model/thời điểm và `btcAssessment` của Qwen.
+- Ưu tiên evaluation mới nhất. Sau restart khi cache RAM chưa có, dùng hướng/dự báo đã lưu từ notifier Discord AI và ghi rõ đang thiếu lời giải thích mới; không biến state cũ thành nhận định Qwen mới. Màu xanh/đỏ/xanh dương/xám chỉ biểu diễn UP/DOWN/RANGE/UNCLEAR, không phải signal/gate.
+- Card OBSERVE ONLY, không đổi Binance/entry/size/leverage/SL/TP/protection, không gửi Discord, không thêm thống kê hiệu quả hoặc JSON/state. Không phải live-card tín hiệu nên không có matcher/WHITELIST; policy mặc định OFF/CLOSED AvgROE >4% không đổi.
+- Test DOM/render/asset cache PASS cùng các suite chatbot, BTC intent, Discord và PRIORITY-zone.
+- Xác minh public: HTML/CSS/JS v22 đã có card và renderer; snapshot gần nhất hiện `btcDirection=UP`, `btcForecast=UP_STRONG`. Không POST evaluation hoặc phát Discord trong bước kiểm tra giao diện.
+
+## 2026-09-30 — Chatbot hai chế độ: V2 nhanh hoặc Ollama + order book
+
+- Version `LOCAL_AI_TREND_CHAT_V11_DUAL_DIRECT_OR_ORDERBOOK_20260930`, UI v21. Thêm selector trước ô hỏi: `Nhanh · Coin Level · không order book` mặc định và `Ollama · có Binance order book`.
+- Coin cụ thể ở mode nhanh dùng đúng luồng V2: Coin Level causal (nến/trend/plan/vùng engine) trả trực tiếp, không gọi model, không dùng/hiển thị Depth/LiqScan. Mode order-book giữ luồng V10 gọi Qwen với Binance Futures Depth/LiqScan. Câu hỏi tổng hợp/BTC vẫn gọi model. Selector bị khóa trong lúc request để không trộn mode.
+- `analysisMode` và model/latency/token là audit, không phải phân loại giao dịch hay hiệu quả. Request cũ thiếu mode vẫn theo Ollama/order-book; UI mới mặc định direct. JSON response cũ giữ nguyên, direct cố ý để zone orderbook rỗng/null; không migration.
+- Cả hai OBSERVE ONLY; không ảnh hưởng Binance/entry/size/leverage/SL/TP/protection, Discord, PRIORITY route hay evaluator nền. Không card/matcher/WHITELIST mới; default OFF/CLOSED AvgROE >4% không đổi.
+- Test xác nhận direct không chạm Ollama/OB, order-book vẫn dùng model, cùng các suite BTC/evaluator/Discord/Binance PRIORITY đều PASS.
+- Xác minh public sau reload: HTML đã có selector/default direct/asset v21; QNT direct trả khoảng 1,97 giây, `COIN_LEVEL_DIRECT_ENGINE_V2`, `modelApplied=false`, không có orderBook. QNT order-book đi đúng nguồn `BINANCE_FUTURES_DEPTH`/`BINANCE_FUTURES_DEPTH_LIQSCAN`; lượt kiểm tra model trả JSON lỗi nên response fallback sau 35,6 giây, vẫn gắn mode/nguồn rõ ràng. Không phát sinh order hoặc Discord khi test.
+
+## 2026-09-30 — Chatbot BTC trả sai shortlist altcoin: V10
+
+- Version `LOCAL_AI_TREND_CHAT_V10_BTC_INTENT_GROUNDED_FALLBACK_20260930`, UI v20. Nguyên nhân: BTC bị loại khỏi exact-symbol; fallback tổng hợp trả top altcoin cho câu hỏi BTC. Log runtime có timeout Ollama 60 giây; không quy lỗi này cho CoinGlass khi chưa có bằng chứng.
+- Input trước trả lời chỉ BTC health cho intent BTC; bỏ candidate/history/evaluation và breadth gate altcoin khỏi prompt. Câu so sánh/coin cụ thể giữ nhánh cũ Binance-only. Dữ liệu thiếu không giả 0; thiếu timestamp/quá 5 phút ghi trạng thái cũ. Live test phát hiện model dùng điều kiện RECOVERY altcoin để đảo BTC tăng thành giảm: schema nay khóa outlook theo hướng 1h/4h hiện tại, condition tách riêng kịch bản tương lai. Server ghép số liệu snapshot và loại schema hỏng/altcoin ngoài chủ đề/mâu thuẫn BTC; không ép dự báo tương lai thành hướng hiện tại.
+- Audit thời gian chờ/modelApplied/fallbackReason minh bạch, không phải thống kê hiệu quả giao dịch. Fallback đúng BTC, không giả danh Ollama; UI bỏ auto-send 1,2 giây và chặn chờ vô hạn bằng deadline 90 giây. Kiểm thử hồi quy success/error và nhiều câu liên tiếp.
+- Kiểm thử live phát hiện cache chưa đủ 28 nến/khung nhưng health mặc định flat/0: thêm readiness riêng cho chat BTC, không coi mặc định warm-up là đi ngang. RSI/return thiếu giữ null; không dùng 0 giả. GET chat thêm btcContextReady (additive); không sửa health hay gate giao dịch. Health có thể gồm nến đang chạy. Lần kiểm tra này có Binance REST 429 nên kết quả live chỉ đáng xác nhận khi cache nến đủ.
+- Xác minh cuối lúc khoảng 20:05 VN trên `https://liquidity.nhathadev.trade`: cache đủ, health 1h/4h UP; hai câu BTC liên tiếp trả bằng `qwen3:8b`, `modelApplied=true`, không fallback, không card altcoin, thời gian 15,7 giây và 8,4 giây. Cả năm suite chatbot, BTC-intent, evaluator, Discord và PRIORITY-zone Binance đều PASS. Chỉ POST API chatbot quan sát để kiểm tra; không gọi đặt lệnh/test Discord.
+- OBSERVE ONLY; không ảnh hưởng Binance/entry/size/SL/TP, Discord, evaluator nền hoặc PRIORITY route. JSON additive (intent/elapsedMs), BTC coins rỗng; không migration. Không card thống kê/matcher/WHITELIST mới; default OFF/CLOSED AvgROE >4% không đổi.
+
+## 2026-09-30 — AI PRIORITY chạm vùng engine → MARKET 3 USDT
+
+- Thêm `LOCAL_AI_PRIORITY_ENGINE_ZONE_ENTRY_V1_MARKET_3USDT_20260930`. Không sửa Discord V4: card AI LONG xanh/SHORT đỏ, nội dung và dedupe/cooldown giữ nguyên.
+- Input trước entry gồm verdict `PRIORITY` do model tạo từ dữ liệu causal, vùng engine/invalidation từ engine định lượng, rồi MARK Binance live. Qualification 3/6–6/6 tiếp tục hiển thị để giải thích nhưng không chặn route; chỉ PRIORITY được gài, WATCH/WAIT/AVOID bị loại.
+- Setup tồn tại tối đa 15 phút. MARK chạm/đi vào/cắt `[entryZone.low, entryZone.high]`, exact route ON, sinh sau `enabledAt`/restart, không position/open entry order và MARK kiểm tra lại còn trong vùng thì submit đúng một lần.
+- Binance cho lệnh mới: MARKET `3 USDT ×5`, notional 15, cả LONG/SHORT, max50; TP `+10% ROE`. SL ưu tiên invalidation engine đúng phía và tối đa `50% ROE`; card như ảnh có `Vô hiệu tham khảo 0` dùng fallback `-20% ROE`, không bị loại. Không replay và không sửa vị thế/lệnh hiện hữu.
+- Audit chỉ đếm active/attempt/consumed/order id, không suy WinRate/PF/AvgROE. JSON/state additive, tương thích client cũ, không migration. Hai route mặc định OFF. Không có card thống kê/matcher live-card mới nên không thêm WHITELIST; policy CLOSED `AvgROE >4%` không đổi.
+
+## 2026-09-30 — Chatbot không tái dùng vùng LiqScan đã quét
+
+- Nâng chatbot lên `LOCAL_AI_TREND_CHAT_V12_LIQUIDITY_ZONE_LIFECYCLE_20260930`, UI `v23`, CSS `v5`. Trước đây chỉ cần LiqScan còn báo `ABOVE/BELOW` là giao diện tiếp tục gọi vùng đó là mục tiêu phía trên/dưới, kể cả khi MARK đã đi qua hoặc vùng gốc đã có sweep/reject.
+- Input causal trước khi trả lời nay mang thêm lifecycle `sweepRejectShort` từ Coin Level. Với snapshot được đọc muộn hoặc sau restart, server tái dựng thêm `sweepRejectShortAtSnapshot` đúng mốc `generatedAt`, nên không mất bằng chứng sweep/reject đã có trong nến causal của snapshot chỉ vì freshness live đã hết. Engine deterministic so MARK với toàn bộ biên vùng và đối chiếu vùng hiện tại có giao vùng đã được theo dõi hay không. Trạng thái gồm active, đang chạm, đã quét, đã quét + reject và đã quét + giữ qua; Ollama không tự suy trạng thái này.
+- Vùng đã quét có `active=false`, không còn `primaryTarget` và không còn `likelyDirection` active. Một vùng thanh khoản mới không giao vùng cũ vẫn được hiển thị là vùng mới đang hoạt động. UI tô xám vùng đã tiêu thụ để không nhầm với mục tiêu chưa chạm.
+- Thay đổi chỉ `OBSERVE ONLY`, không sửa thống kê hiệu quả, Discord, verdict AI, Binance entry/size/leverage/SL/TP/protection hoặc vị thế hiện hữu. JSON additive, thiếu field mới vẫn fallback theo MARK; không migration/state.
+- Không thêm signal/card/matcher giao dịch nên không có checkbox WHITELIST mới; mặc định OFF và policy CLOSED `AvgROE >4%` giữ nguyên. Test bao phủ active, touching, passed, reject và cụm mới không trùng vùng cũ.
+
+## 2026-10-01 — Tự dọn `llama-server.exe` mồ côi
+
+- Thêm `LOCAL_AI_OLLAMA_PROCESS_GUARD_V1_ORPHAN_ONLY_20261001` vào watchdog 60 giây. Guard đọc inventory Windows, chỉ chọn đúng `llama-server.exe` có parent PID đã biến mất và đã sống ít nhất 5 phút; trước khi kill kiểm tra lại PID, tên và parent để tránh race/PID reuse. Child còn thuộc Ollama đang sống không bị tác động.
+- Thêm cấu hình bật/tắt, grace và giới hạn kill/lượt. API local-AI trả snapshot guard để audit PID candidate/killed/skipped; test xác nhận giữ live child, giữ orphan còn trẻ, chỉ dọn orphan già và dry-run không kill.
+- Cơ chế này không dùng dữ liệu thị trường, không đổi phân loại/tín hiệu/thống kê và không ảnh hưởng Discord hoặc Binance entry/size/leverage/SL/TP/protection. JSON additive, không migration/state. Không có nhãn/card/matcher mới nên không thêm WHITELIST; route giao dịch vẫn mặc định OFF và policy CLOSED `AvgROE >4%` giữ nguyên.
+
+## 2026-10-01 — Discord Binance LiqScan quét + reject hai chiều
+
+- Thêm `LOCAL_AI_LIQUIDITY_SWEEP_REJECT_DISCORD_V1_TWO_SIDED_20261001`: alert `ABOVE` được theo dõi đến khi nến 5m đã đóng quét vùng trên rồi đóng đỏ trở lại dưới vùng để gửi `SHORT WATCH` màu đỏ; alert `BELOW` đối xứng quét vùng dưới rồi đóng xanh trở lại trên vùng để gửi `LONG WATCH` màu xanh.
+- Tracker chạy nền mỗi 30 giây từ alert Binance LiqScan mới và KlineCache, nên không cần người dùng hỏi chatbot mới phát hiện. Chỉ nhận vùng nằm đúng phía MARK lúc alert, yêu cầu chuỗi nến sau alert liên tục, nến mới không quá 6 phút, track 6 giờ, cooldown coin+hướng 4 giờ và chống gửi trùng theo alert+nến reject. Webhook riêng có thể cấu hình, mặc định dùng kênh AI Local hiện tại.
+- Bổ sung `LIQ_SCAN_SWEEP_REJECT_LONG_OBSERVE_V1_20261001` và đưa `sweepRejectLong/sweepRejectLongAtSnapshot` vào Coin Level/chatbot để vùng dưới đã quét + reclaim cũng được đánh dấu consumed giống vùng trên. Ollama không tự quyết lifecycle.
+- Toàn bộ là `OBSERVE ONLY`: không cấp quyền Binance, không sửa entry/size/leverage/SL/TP/protection và không dùng PnL/outcome. State/API chỉ additive, không migration. Không tạo card thống kê hoặc matcher Binance nên không thêm WHITELIST; route giao dịch vẫn OFF và policy CLOSED `AvgROE >4%` không đổi.
+
+## 2026-10-02 — Tắt Discord LiqScan quét + reject
+
+- Nâng notifier lên `LOCAL_AI_LIQUIDITY_SWEEP_REJECT_DISCORD_V2_EXPLICIT_OPT_IN_20261002` và tắt cả `LONG WATCH` lẫn `SHORT WATCH` theo yêu cầu. Runtime mặc định `LOCAL_AI_LIQUIDITY_SWEEP_REJECT_DISCORD_ENABLED=false`; không còn lấy `LOCAL_AI_TREND_DISCORD_WEBHOOK_URL` làm fallback. Muốn bật lại phải có đồng thời opt-in `true` và webhook LiqScan riêng hợp lệ.
+- Khi OFF, alert mới không được arm; scanner dọn track đang chờ để không gửi trễ sau reload. Phân loại/lifecycle trên Coin Level/chatbot vẫn dùng Binance LiqScan, nến 5m đã đóng và MARK như V1, nhưng delivery trả `enabled=false/configured=false/tracked=0/detected=0/sent=0`. Đây là audit vận hành, không phải thống kê hiệu quả.
+- Thay đổi chỉ tắt kênh Discord này, không đổi dữ liệu trước entry, signal/tier/gate, các Discord AI/BTC/PRIORITY khác hoặc Binance entry/size/leverage/SL/TP/protection. State V1 vẫn đọc được; chỉ `tracks` chưa gửi bị dọn, `sent/recent` giữ audit, API thêm boolean `enabled` và client cũ bỏ qua. Không thêm label/card/matcher nên không thêm WHITELIST; default OFF và policy CLOSED `AvgROE >4%` giữ nguyên.
+
+## 2026-10-02 — Thêm FULL BYPASS protection theo coin
+
+- Nâng Auto Controls lên `AUTO_ENTRY_CONTROLS_V32_FULL_POSITION_PROTECTION_BYPASS_20261002` và runtime `BINANCE_SYMBOL_PROTECTION_EXCLUSION_V5_FULL_POSITION_BYPASS_20261002`. Trang `/binance-auto-controls` giữ loại tạm tự gỡ tại `+15%/-25% ROE`, đồng thời thêm loại `Tắt toàn bộ đến khi đóng vị thế`.
+- Input runtime chỉ là exact symbol, mode đã persist và xác nhận vị thế Binance. `FULL_POSITION_BYPASS` không đọc ROE để tự gỡ; chỉ nút gỡ tay hoặc close/reversal đã xác nhận mới xóa. Chọn mode mới cho cùng coin loại mode cũ atomically; FULL thắng nếu JSON chứa trùng.
+- Đây không phải signal/tier/gate entry: coin vẫn có thể được vào lệnh theo route đang ON. Khi exclusion active, mọi nhánh protection chung bỏ qua tạo/bù/đổi TP/SL, dời TP/SL, profit-lock, missing guard và Fast Wave; không hủy TP/SL đã có hoặc lệnh thủ công. Không đổi size/leverage hay mở thêm quyền entry.
+- UI đếm số coin từng danh sách; không phải thống kê hiệu quả. JSON cũ giữ `protectionExclusions`; field mới `protectionFullBypasses=[]` là additive và fail-closed qua restart/corrupt read. Không thêm card/matcher/WHITELIST; policy default OFF và CLOSED `AvgROE >4%` không đổi.
+
+## 2026-10-02 — Sửa Hỏi AI không gửi mã coin ngắn
+
+- Nguyên nhân thực tế được tái hiện trên production: ô nhập có `ct`, nhưng frontend V14 dùng `text.length < 3` rồi return im lặng, nên không có request tới `/api/local-ai-trend-chat`; Ollama vẫn online.
+- Nâng `LOCAL_AI_TREND_CHAT_V15_SHORT_SYMBOL_QUERY_20261002` và asset UI `v35`. Frontend gửi mọi input không rỗng; backend chỉ nới 1–2 ký tự khi đã resolve được exact Binance symbol và tải được Coin Level. Chuỗi ngắn không phải coin vẫn fail validation rõ, không gọi model để đoán.
+- Đây là sửa UX/validation chatbot `OBSERVE ONLY`; không đổi signal, tier, thống kê, Discord hoặc Binance entry/size/leverage/SL/TP/protection. JSON không đổi, không migration và không thêm card/matcher/WHITELIST; default OFF/CLOSED AvgROE `>4%` giữ nguyên.
+
+# 2026-10-02 — Hover chart order book hiển thị giá
+
+- Nâng chart một coin lên `LOCAL_AI_SINGLE_COIN_ORDERBOOK_KILL_ZONE_CHART_V3_HOVER_PRICE_20261002`, UI JS v36/CSS v9. Rê chuột theo chiều dọc của chart sẽ hiện đường crosshair và tooltip mức giá tương ứng; rời chart thì tooltip ẩn.
+- Giá hover chỉ nội suy tuyến tính từ min/max và vùng plot đã render, không gọi thêm Binance/CoinGlass/Ollama. Không thêm phân loại, thống kê hiệu quả hoặc dữ liệu hậu nghiệm.
+- Đây là thay đổi hiển thị `OBSERVE ONLY`; không ảnh hưởng Discord, Binance entry/size/leverage/SL/TP/protection, JSON/state hoặc vị thế hiện hữu. Không có card/matcher mới nên không thêm `WHITELIST`; default OFF/CLOSED AvgROE `>4%` giữ nguyên.
+# 2026-10-03 — Vượt MAIN KILL + opposite depth phản chiều MARKET 4 USDT
+
+- Executor `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_BINANCE_V2_REVERSED_SIDE_MARKET_4USDT_20261003`: nến Binance 5m/15m đã đóng vượt toàn vùng và depth ngược lớn hơn. ABOVE/BID dưới lớn ánh xạ SHORT; BELOW/ASK trên lớn ánh xạ LONG.
+- Trước entry dùng event causal mới, MARK/position/open-order Binance kiểm tra lại; yêu cầu signal sau process start + `enabledAt`, tuổi không quá 2 phút, exact route ON, không có vị thế/lệnh entry cùng coin và chưa dedupe. Không dùng outcome tương lai.
+- Lệnh thật là MARKET `4 USDT margin ×5` (20 USDT notional), TP `+10% ROE`, max50 và fill-anchor protection. LONG có SL `-20% ROE`; SHORT giữ policy bot SHORT TP-only, không SL gốc. Discord ghi `ĐÃ GỬI`, protection thực tế hoặc lý do không vào. Không DCA/replay/sửa lệnh cũ.
+- Audit lưu attempt/orderId/TP/SL, không phải thống kê hiệu suất. Snapshot ghi `observeOnly=false`, `binanceEligible=true` và yêu cầu exact route. JSON cũ additive. Route seed OFF và được bật explicit trong lượt này. Không thêm card thống kê/live-card matcher; vì chưa có CLOSED AvgROE `>4%`, không tạo WHITELIST thống kê mới; exact Auto Controls là checkbox quyền chạy.

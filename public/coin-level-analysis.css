@@ -99,6 +99,24 @@ button:disabled { cursor: wait; opacity: .58; }
 .metric { padding: 13px 15px; }
 .metric span { display: block; color: var(--muted); font-size: 10px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }
 .metric strong { display: block; margin-top: 5px; font-size: 17px; font-variant-numeric: tabular-nums; }
+.supply-profile { position: relative; overflow: hidden; margin: 10px 0; padding: 17px 19px; border-left: 5px solid var(--line); }
+.supply-profile-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.supply-profile-head h2 { margin: 0; font-size: 21px; }
+.supply-profile-badge { border: 1px solid currentColor; border-radius: 999px; padding: 5px 9px; color: var(--muted); font-size: 10px; font-weight: 950; letter-spacing: .05em; text-align: center; }
+.supply-profile-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 13px; }
+.supply-profile-grid article { min-width: 0; border: 1px solid rgba(143, 169, 160, .22); border-radius: 9px; background: rgba(4, 13, 11, .48); padding: 10px 11px; }
+.supply-profile-grid span, .supply-profile-grid small { display: block; color: var(--muted); }
+.supply-profile-grid span { font-size: 9px; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; }
+.supply-profile-grid strong { display: block; margin-top: 5px; color: var(--text); font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.supply-profile-grid small { margin-top: 3px; font-size: 8px; line-height: 1.35; }
+.supply-profile-note { margin: 12px 0 0; color: var(--muted); font-size: 12px; font-weight: 750; }
+.supply-profile.critical { border-color: #ff4e6f; background: linear-gradient(105deg, rgba(100, 14, 39, .72), rgba(13, 24, 21, .97) 70%); box-shadow: 0 0 28px rgba(255, 78, 111, .14), inset 0 0 0 1px rgba(255, 78, 111, .22); }
+.supply-profile.critical .supply-profile-badge, .supply-profile.critical .supply-profile-note { color: #ff9aae; }
+.supply-profile.critical .supply-profile-grid strong { color: #ffd3db; }
+.supply-profile.warning { border-color: var(--amber); background: linear-gradient(105deg, rgba(91, 62, 7, .62), rgba(13, 24, 21, .97) 70%); box-shadow: 0 0 24px rgba(255, 189, 89, .1); }
+.supply-profile.warning .supply-profile-badge, .supply-profile.warning .supply-profile-note { color: var(--amber); }
+.supply-profile.watch { border-color: var(--cyan); }
+.supply-profile.normal { border-color: var(--mint); }
 .decision { position: relative; overflow: hidden; padding: 18px 20px; }
 .decision::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--amber); }
 .decision.bullish::before { background: var(--mint); }
@@ -258,11 +276,17 @@ th { color: var(--muted); font-size: 9px; letter-spacing: .05em; text-transform:
 .candle-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 10px; margin-top: 9px; color: var(--muted); font-size: 11px; }
 .empty-zone { border: 1px dashed var(--line); border-radius: 9px; padding: 22px 12px; color: var(--muted); text-align: center; }
 @media (max-width: 1050px) {
+  .supply-profile-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .coinglass-summary { grid-template-columns: 1fr 1fr; }
   .coinglass-assessment { grid-column: 1 / -1; }
   .zone-layout { grid-template-columns: 1fr 1fr; }
   .price-ladder { display: none; }
   .detail-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 620px) {
+  .supply-profile-head { display: grid; }
+  .supply-profile-badge { justify-self: start; }
+  .supply-profile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
   .shell { width: min(100% - 20px, 1500px); padding-top: 20px; }

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI Local · Đánh giá xu hướng</title>
+  <link rel="stylesheet" href="/local-ai-trend-evaluation.css?v=20261001-v8-hourly-btc-guidance">
+  <link rel="stylesheet" href="/local-ai-trend-chat.css?v=20261002-v12-orderbook-side-totals">
+  <style>
+    .qualification{display:inline-block;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:950}
+    .qualification-pass{background:#0e593e;color:#67ffbf;box-shadow:0 0 0 1px #2bcc91}
+    .qualification-wait{background:#3d3312;color:#ffd35a}
+    .ai-qualified{background:linear-gradient(90deg,rgba(20,126,88,.2),transparent 50%)}
+    .ai-qualified td:first-child{box-shadow:inset 4px 0 #42f0b2}
+    .ai-not-qualified{opacity:.88}
+    .midpoint{color:#ffb84d;font-weight:950}
+  </style>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <p class="eyebrow">QWEN3:8B LOCAL · AI ĐÁNH GIÁ + PRIORITY ZONE ROUTE</p>
+        <h1>AI Local đánh giá xu hướng</h1>
+        <p>AI tổng hợp BTC, breadth và candidate causal hiện có. Khi Ollama lỗi, engine fallback vẫn gửi Discord nhưng không được gài route Binance.</p>
+      </div>
+      <nav aria-label="Điều hướng">
+        <a href="/coin-level-analysis">Coin Level</a>
+        <a href="/very-strong-entry-watch">Entry rất mạnh</a>
+        <a href="/btc-relative-strength-watch">Ngược BTC</a>
+        <a href="/btc-session-watch">BTC Session</a>
+        <a href="/binance-auto-controls">Quản lý Binance</a>
+        <a class="active" href="/local-ai-trend-evaluation" aria-current="page">AI Local</a>
+      </nav>
+    </header>
+
+    <section class="warning">
+      <strong>Không phải xác suất thắng hoặc dự báo giá bảo đảm.</strong>
+      <span>Điểm 3/6–6/6 chỉ giải thích chất lượng, không thay verdict. Chỉ PRIORITY do model hợp lệ mới được gài chờ vùng engine; ENGINE FALLBACK chỉ gửi Discord quan sát và không vào Binance.</span>
+    </section>
+
+    <section id="hourly-btc-guidance" class="market-guidance guidance-neutral" aria-labelledby="hourly-btc-guidance-title">
+      <div class="guidance-head">
+        <div>
+          <p class="eyebrow">GIỜ VIỆT NAM × XU HƯỚNG BTC × TOP 10 AI</p>
+          <h2 id="hourly-btc-guidance-title">Nên ưu tiên quan sát LONG hay SHORT?</h2>
+        </div>
+        <span id="hourly-btc-guidance-badge" class="guidance-badge">ĐANG NẠP DỮ LIỆU</span>
+      </div>
+      <p id="hourly-btc-guidance-explanation">Đang kết hợp thống kê khung giờ, bối cảnh BTC và candidate AI hiện tại.</p>
+      <div class="guidance-lists">
+        <article class="guidance-side guidance-side-long">
+          <div class="guidance-side-head"><h3>Nên quan sát LONG</h3><span id="guidance-long-count">0</span></div>
+          <div id="guidance-long-list" class="guidance-coin-list"><p>Chưa có PRIORITY/WATCH LONG.</p></div>
+        </article>
+        <article class="guidance-side guidance-side-short">
+          <div class="guidance-side-head"><h3>Nên quan sát SHORT</h3><span id="guidance-short-count">0</span></div>
+          <div id="guidance-short-list" class="guidance-coin-list"><p>Chưa có PRIORITY/WATCH SHORT.</p></div>
+        </article>
+      </div>
+      <small id="hourly-btc-guidance-policy">OBSERVE ONLY · chỉ liệt kê PRIORITY/WATCH; không tự đặt lệnh.</small>
+    </section>
+    <div class="guidance-whitelist-status" data-live-card-status="btc-hourly-forecast"></div>
+
+    <section id="btc-hourly-forecast" class="hourly-forecast hourly-neutral" aria-labelledby="btc-hourly-title">
+      <div class="hourly-head">
+        <div>
+          <p class="eyebrow">LỊCH SỬ MỌI SIZE LỆNH BOT × GIỜ VN × TÍNH CHẤT BTC TẠI ENTRY</p>
+          <h2 id="btc-hourly-title">Thiên hướng theo giờ và bối cảnh BTC</h2>
+        </div>
+        <span id="btc-hourly-badge" class="hourly-badge">ĐANG NẠP DỮ LIỆU</span>
+      </div>
+      <div class="hourly-grid">
+        <article><span>Khung giờ hiện tại</span><strong id="btc-hourly-now">—</strong><small>Asia/Bangkok</small></article>
+        <article><span>Thiên hướng lịch sử</span><strong id="btc-hourly-direction">—</strong><small id="btc-hourly-source">—</small></article>
+        <article><span>Chất lượng / mẫu</span><strong id="btc-hourly-quality">—</strong><small id="btc-hourly-sample">—</small></article>
+        <article><span>BTC hiện tại</span><strong id="btc-hourly-btc">—</strong><small id="btc-hourly-btc-score">—</small></article>
+      </div>
+      <p id="btc-hourly-explanation">Đang xây cache thống kê hằng ngày từ audit lệnh đã khớp.</p>
+      <div id="btc-hourly-next" class="hourly-next" aria-label="Các khung giờ tốt theo hướng lệnh và xu hướng BTC"></div>
+      <div id="btc-hourly-strip" class="hourly-strip" aria-label="Thiên hướng 24 giờ Việt Nam"></div>
+      <small id="btc-hourly-coverage">OBSERVE ONLY · không tác động Binance, size, SL hoặc TP.</small>
+    </section>
+
+    <section class="toolbar">
+      <div>
+        <span id="ollama-dot" class="dot"></span>
+        <strong id="ollama-status">Đang kiểm tra Ollama…</strong>
+        <small id="model-status"></small>
+      </div>
+      <button id="evaluate-button" type="button" disabled>Chạy đánh giá mới</button>
+    </section>
+
+    <section id="btc-ai-top" class="btc-ai-top btc-ai-unclear" aria-labelledby="btc-ai-title">
+      <div class="btc-ai-head">
+        <div><p class="eyebrow">AI BTC · KẾT QUẢ GẦN NHẤT</p><h2 id="btc-ai-title">AI đánh giá BTC</h2></div>
+        <span id="btc-ai-forecast" class="btc-ai-badge">CHƯA CÓ DỮ LIỆU</span>
+      </div>
+      <div class="btc-ai-grid">
+        <article><span>Xu hướng hiện tại</span><strong id="btc-ai-current">—</strong></article>
+        <article><span>Dự báo bối cảnh</span><strong id="btc-ai-context">—</strong></article>
+        <article><span>Độ rõ</span><strong id="btc-ai-score">—</strong><small>Không phải xác suất</small></article>
+        <article><span>Model / thời điểm</span><strong id="btc-ai-model">—</strong><small id="btc-ai-time">—</small></article>
+      </div>
+      <p id="btc-ai-assessment">Đang chờ lần đánh giá AI đầu tiên.</p>
+      <small id="btc-ai-source">OBSERVE ONLY · không đặt lệnh</small>
+    </section>
+
+    <section id="empty-state" class="empty-state">Chưa có kết quả AI. Khi model sẵn sàng, trang sẽ chạy lần đánh giá đầu tiên.</section>
+
+    <section class="chat-panel" aria-labelledby="chat-title">
+      <div class="chat-head">
+        <div>
+          <p class="eyebrow">CHATBOT ALTCOIN · DỮ LIỆU CAUSAL HIỆN TẠI</p>
+          <h2 id="chat-title">Hỏi AI về xu hướng altcoin</h2>
+          <p>Hỏi một coin cụ thể hoặc so sánh LONG/SHORT. AI chỉ dùng coin đang có trong Coin Level, nến đã đóng, volume, BTC và vùng giá do engine cung cấp.</p>
+        </div>
+        <span class="observe-badge">OBSERVE ONLY</span>
+      </div>
+      <div class="chat-suggestions" aria-label="Câu hỏi gợi ý">
+        <button type="button" data-chat-question="Altcoin nào đang mạnh nhất và vì sao?" onclick="window.askLocalTrendChat?.(this.dataset.chatQuestion)">Coin mạnh nhất</button>
+        <button type="button" data-chat-question="Coin nào đang yếu hơn BTC, phù hợp để theo dõi SHORT?" onclick="window.askLocalTrendChat?.(this.dataset.chatQuestion)">Yếu hơn BTC</button>
+        <button type="button" data-chat-question="So sánh candidate LONG và SHORT tốt nhất hiện tại." onclick="window.askLocalTrendChat?.(this.dataset.chatQuestion)">So sánh hai hướng</button>
+        <button type="button" data-chat-question="Coin nào đang gần vùng entry engine nhưng chưa chạy quá xa?" onclick="window.askLocalTrendChat?.(this.dataset.chatQuestion)">Gần vùng entry</button>
+      </div>
+      <div id="chat-messages" class="chat-messages" aria-live="polite">
+        <article class="chat-message assistant">
+          <span>AI LOCAL</span>
+          <p>Bạn có thể hỏi “xu hướng TRXUSDT hiện tại?” hoặc “coin nào mạnh hơn BTC?”. Nếu coin chưa có trong snapshot, tôi sẽ báo thiếu dữ liệu thay vì tự đoán.</p>
+        </article>
+      </div>
+      <form id="chat-form" class="chat-form" onsubmit="event.preventDefault(); window.askLocalTrendChat?.(document.getElementById('chat-input').value)">
+        <label class="chat-mode-label" for="chat-mode">Cách phân tích
+          <select id="chat-mode">
+            <option value="DIRECT_ENGINE" selected>Nhanh · Coin Level · không order book</option>
+            <option value="OLLAMA_BINANCE_ORDERBOOK">Ollama · có Binance order book</option>
+          </select>
+        </label>
+        <label class="sr-only" for="chat-input">Câu hỏi về xu hướng altcoin</label>
+        <textarea id="chat-input" rows="2" maxlength="500" placeholder="Ví dụ: Xu hướng TRXUSDT hiện tại, vùng entry engine và rủi ro là gì?"></textarea>
+        <button id="chat-send" type="submit" disabled>Hỏi AI</button>
+      </form>
+      <small id="chat-status" class="chat-status">Đang kiểm tra model local…</small>
+    </section>
+
+    <section id="evaluation" hidden>
+      <div class="summary-grid">
+        <article><span>Bối cảnh</span><strong id="market-regime">—</strong></article>
+        <article><span>Thiên hướng</span><strong id="market-bias">—</strong></article>
+        <article><span>Độ rõ bối cảnh</span><strong id="market-score">—</strong><small>Không phải xác suất</small></article>
+        <article><span>Model / thời điểm</span><strong id="model-name">—</strong><small id="evaluated-at">—</small></article>
+      </div>
+      <article class="narrative">
+        <h2>Nhận định</h2>
+        <p id="summary"></p>
+        <p id="btc-assessment"></p>
+        <ul id="warnings"></ul>
+      </article>
+      <section class="table-panel">
+        <div class="table-head">
+          <div><p class="eyebrow">TOP 10 CANDIDATE TOÀN ENGINE · KHÔNG CHIA LONG/SHORT</p><h2>Xếp hạng tổng thể &amp; vùng entry</h2></div>
+          <span id="candidate-count"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Coin / hướng</th><th>AI đánh giá</th><th>Điều kiện / Binance</th><th>Đường đi</th><th>Giá / vùng engine</th><th>Target engine</th><th>Lý do</th><th>Rủi ro</th></tr></thead>
+            <tbody id="candidate-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+  <script type="module" src="/local-ai-trend-evaluation.js?v=20261003-v40-priority-zone-1usdt"></script>
+</body>
+</html>

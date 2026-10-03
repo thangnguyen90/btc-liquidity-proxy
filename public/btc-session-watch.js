@@ -1,12 +1,14 @@
-import { buildSessionRows, btcContext, fresh, sessionAt, SESSION_NAMES, sessionCardKey } from './btc-session-model.js?v=20260926-ignore-long-regime-v2';
+import { BTC_IMPULSE_REGIMES, btcImpulseRegime, buildSessionRows, btcContext, fresh, impulseRegimeCardKey, sessionAt, SESSION_NAMES, sessionCardKey } from './btc-session-model.js?v=20260927-impulse-regime-observe-v1';
 import { BTC_SESSION_WATCH_HISTORY_KEY, mergeBtcSessionWatchCandidates, normalizeBtcSessionWatchHistory, updateBtcSessionWatchHistory } from './btc-session-history.js';
 import { PostMoveLivePriceSocket } from './post-move-live-prices.js';
 import { installLiveCardWhitelistUi } from './live-card-whitelist-ui.js';
+import { installImpulseEntryPanel, renderImpulseEntryPanel } from './impulse-entry-panel.js';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const price = v => v != null && Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v).toLocaleString('en-US', {maximumSignificantDigits:8}) : '—';
 const time = v => Number(v) > 0 ? new Date(Number(v)).toLocaleString('vi-VN', {timeZone:'Asia/Bangkok', hour12:false}) : '—';
 let payload = null, health = null, loading = false, error = '', lastTable = '', controller;
+let impulseEntryData = null;
 function readWatchHistory() {
   try { return normalizeBtcSessionWatchHistory(JSON.parse(localStorage.getItem(BTC_SESSION_WATCH_HISTORY_KEY) || 'null')); }
   catch { return normalizeBtcSessionWatchHistory(null); }
@@ -19,6 +21,8 @@ const ticks = new Map();
 const socket = new PostMoveLivePriceSocket({onTick(t) { if (!ticks.has(t.symbol) || t.eventAt >= ticks.get(t.symbol).eventAt) ticks.set(t.symbol,t); }, onState(s) { $('socket').textContent = s.detail; }});
 function render() {
   const now = Date.now(), current = sessionAt(now), btc = btcContext(health, now), bt = ticks.get('BTCUSDT');
+  renderImpulseEntryPanel(impulseEntryData, now);
+  const impulseRegime = btcImpulseRegime(health, now);
   $('clock').textContent = new Date(now).toLocaleTimeString('vi-VN', {timeZone:'Asia/Bangkok', hour12:false});
   $('session').textContent = `${SESSION_NAMES[current.key]}${current.weekend ? ' · cuối tuần' : ''}`;
   $('btc-price').textContent = fresh(bt?.eventAt, now, 10000) ? price(bt.markPrice) : 'Chờ socket';
@@ -27,6 +31,16 @@ function render() {
   $('btc-age').textContent = `Nguồn 1h / 4h: ${health?.btcTrendDir ?? '—'} / ${health?.btcTrendDir4h ?? '—'} · ${time(health?.updatedAt)}`;
   $('regime').textContent = fresh(payload?.marketRegime?.evaluatedAt,now,120000) ? payload.marketRegime.state : 'CHƯA CÓ DỮ LIỆU MỚI';
   $('regime-reason').textContent = (payload?.marketRegime?.reasons ?? []).join(' ');
+  $('impulse-regime-card').className = `impulse-regime-card regime-${impulseRegime.tone}`;
+  $('impulse-regime-title').textContent = impulseRegime.label;
+  $('impulse-regime-reason').textContent = impulseRegime.reason;
+  $('impulse-regime-badge').textContent = `${impulseRegime.regime} · OBSERVE ONLY`;
+  $('impulse-long-title').textContent = impulseRegime.long.title;
+  $('impulse-long-detail').textContent = impulseRegime.long.detail;
+  $('impulse-short-title').textContent = impulseRegime.short.title;
+  $('impulse-short-detail').textContent = impulseRegime.short.detail;
+  $('impulse-long-card').dataset.tier = impulseRegime.long.tier;
+  $('impulse-short-card').dataset.tier = impulseRegime.short.tier;
   $('updated').textContent = error || `Snapshot ${time(payload?.generatedAt)} · BTC ${time(health?.updatedAt)} · Discord ${payload?.btcSessionDiscordConfigured ? 'ON' : 'OFF'}`;
   const currentCandidates = payload?.candidates ?? [];
   const mergedCandidates = mergeBtcSessionWatchCandidates(currentCandidates, watchHistory, now);
@@ -47,9 +61,10 @@ async function load() {
   loading = true; $('refresh').disabled = true; controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(),12000);
   try {
-    const results = await Promise.allSettled([json('/api/coin-level-entry-watch',controller.signal),json('/api/btc-health',controller.signal)]);
+    const results = await Promise.allSettled([json('/api/coin-level-entry-watch',controller.signal),json('/api/btc-health',controller.signal),json('/api/post-move-impulse-entry',controller.signal)]);
     payload = results[0].status === 'fulfilled' ? results[0].value : null;
     health = results[1].status === 'fulfilled' ? results[1].value : null;
+    impulseEntryData = results[2].status === 'fulfilled' ? results[2].value : null;
     error = results.some(r => r.status === 'rejected') ? 'Không tải đủ dữ liệu; các trạng thái liên quan chuyển về CHỜ.' : '';
     if (payload) {
       watchHistory = updateBtcSessionWatchHistory(watchHistory, payload.candidates, Date.now());
@@ -64,7 +79,10 @@ async function load() {
 }
 // Reserved exact group keys, no invented closed ROE. Existing policy hides the
 // checkbox until real closed statistics for this strategy exist; default OFF.
-$('whitelist-groups').innerHTML = ['LONG','SHORT'].flatMap(side => Object.keys(SESSION_NAMES).map(window => `<section data-live-card-key="${sessionCardKey(side,window)}" data-binance-card-avg-roe=""></section>`)).join('');
+$('whitelist-groups').innerHTML = [
+  ...['LONG','SHORT'].flatMap(side => Object.keys(SESSION_NAMES).map(window => sessionCardKey(side,window))),
+  ...BTC_IMPULSE_REGIMES.map(impulseRegimeCardKey),
+].filter(Boolean).map(key => `<section data-live-card-key="${key}" data-binance-card-avg-roe=""></section>`).join('');
 installLiveCardWhitelistUi({page:'btc-session',label:'BTC Session · quan sát',root:$('whitelist-groups')});
 for(const id of ['window','scope','side','sort']) $(id).addEventListener('change',render);
 $('search').addEventListener('input',render); $('refresh').addEventListener('click',load);
@@ -72,4 +90,5 @@ setInterval(() => { if(!document.hidden) render(); },1000);
 setInterval(load,30000);
 document.addEventListener('visibilitychange',() => { if(document.hidden) {controller?.abort();socket.disconnect('hidden');ticks.clear();} else {void load();} });
 window.addEventListener('beforeunload',() => {controller?.abort();socket.disconnect('unload');});
+installImpulseEntryPanel();
 render(); void load();

@@ -17,6 +17,7 @@ import {
   POST_DUMP_NO_SELL_WATCH_VERSION,
   evaluatePostDumpNoSellWatch,
 } from './postDumpNoSellWatch.js';
+import { qualifiesVeryStrongTrendSource } from './veryStrongTrendPool.js';
 
 export const COIN_LEVEL_ENTRY_WATCH_VERSION = 'COIN_LEVEL_ENTRY_WATCH_V3_ENTRY_SCORE_TARGETS_20260920';
 export const COIN_LEVEL_ENTRY_SCORE_VERSION = 'COIN_LEVEL_ENTRY_SCORE_V1_CAUSAL_TARGETS_20260920';
@@ -449,6 +450,17 @@ export function scanCoinLevelEntryWatch({ symbols, getKlines, now = Date.now(), 
   }
   candidates.sort((a, b) => Number(Boolean(b.retestAt)) - Number(Boolean(a.retestAt))
     || b.confirmationAt - a.confirmationAt || Math.abs(b.score) - Math.abs(a.score));
+  const veryStrongCandidates = candidates
+    .filter((candidate) => candidate.entryTier === 'VERY_STRONG')
+    .sort((a, b) => b.entryScore - a.entryScore
+      || Number(Boolean(b.retestAt)) - Number(Boolean(a.retestAt))
+      || b.confirmationAt - a.confirmationAt);
+  const veryStrongTrendSources = candidates
+    .filter(qualifiesVeryStrongTrendSource)
+    .sort((a, b) => Math.abs(b.score) - Math.abs(a.score)
+      || Number(b.entryScoreMetrics?.breakoutVolumeRatio ?? 0)
+        - Number(a.entryScoreMetrics?.breakoutVolumeRatio ?? 0)
+      || b.confirmationAt - a.confirmationAt);
   const confirmedLongSymbols = new Set(candidates
     .filter((candidate) => candidate.side === 'LONG').map((candidate) => candidate.symbol));
   const confirmedShortSymbols = new Set(candidates
@@ -467,6 +479,10 @@ export function scanCoinLevelEntryWatch({ symbols, getKlines, now = Date.now(), 
     generatedAt: now, observeOnly: true,
     minDirectionalScore: MIN_DIRECTIONAL_SCORE, universe: Array.isArray(symbols) ? symbols.length : 0,
     covered, candidates: candidates.slice(0, 30), totalCandidates: candidates.length,
+    veryStrongCandidates,
+    totalVeryStrongCandidates: veryStrongCandidates.length,
+    veryStrongTrendSources,
+    totalVeryStrongTrendSources: veryStrongTrendSources.length,
     earlyLongHistoryEvents: eligibleEarlyLongWatches,
     earlyLongWatches: eligibleEarlyLongWatches.slice(0, 30),
     totalEarlyLongWatches: eligibleEarlyLongWatches.length,

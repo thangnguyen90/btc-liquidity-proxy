@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Theo dõi coin giữ sức mạnh khi BTC giảm và coin xả mạnh hơn BTC trong nhịp tăng hoặc hồi 5m của downtrend.">
+    <title>Sức mạnh tương đối với BTC</title>
+    <link rel="stylesheet" href="/very-strong-entry-watch.css?v=20260928-v2">
+    <link rel="stylesheet" href="/btc-relative-strength-watch.css?v=20260929-v5">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero panel">
+        <div><p class="eyebrow">COIN LEVEL · ALPHA ĐÃ ĐÓNG · READY → BINANCE 2 USDT</p><h1>Sức mạnh tương đối với BTC</h1><p>LONG chỉ pass khi BTC DOWN_STRONG và coin hơn BTC thật trên 15m + 1h. READY bắt buộc MARK nằm trong vùng entry; mỗi setup nguồn chỉ được xét một lệnh.</p></div>
+        <nav aria-label="Điều hướng"><a href="/coin-level-analysis">Coin Level</a><a href="/very-strong-entry-watch">Entry rất mạnh</a><a class="active" href="/btc-relative-strength-watch">Ngược BTC</a><a href="/btc-session-watch">BTC Session</a><a href="/binance-auto-controls">Quản lý Binance</a></nav>
+      </header>
+
+      <section id="btc-context" class="btc-context panel mixed" aria-labelledby="btc-context-title">
+        <div><p class="eyebrow">BTC LIVE CONTEXT</p><h2 id="btc-context-title">Đang đọc BTC…</h2><p id="btc-context-reason">BTC chọn bối cảnh; quyền lệnh còn phụ thuộc trạng thái READY và Auto Controls.</p></div><span id="btc-context-badge">WAIT DATA</span>
+      </section>
+
+      <section class="relative-tabs panel" role="tablist" aria-label="Loại sức mạnh tương đối">
+        <button id="tab-strong" class="relative-tab long active" type="button" role="tab" data-tab="STRONG_WHILE_BTC_DOWN" aria-selected="true"><span>LONG quan sát</span><strong>Coin mạnh khi BTC giảm</strong><small id="strong-count">— coin</small></button>
+        <button id="tab-weak" class="relative-tab short" type="button" role="tab" data-tab="WEAK_WHILE_BTC_UP" aria-selected="false"><span>SHORT quan sát</span><strong>Coin yếu khi BTC tăng / hồi trong downtrend</strong><small id="weak-count">— coin</small></button>
+      </section>
+
+      <section class="summary" aria-label="Tổng quan">
+        <article class="panel"><span>Đúng loại đang chọn</span><strong id="candidate-count">—</strong><small>Pool xu hướng tối đa 24 giờ</small></article>
+        <article class="panel"><span>BTC + alpha đúng bối cảnh</span><strong id="context-count">—</strong><small>LONG không dùng DOWN_LEAN</small></article>
+        <article class="panel"><span>Đang gần vùng</span><strong id="near-count">—</strong><small>Gần không đồng nghĩa READY</small></article>
+        <article class="panel ready"><span>Đủ điều kiện quan sát</span><strong id="ready-count">—</strong><small>MARKET 2 USDT nếu route ON</small></article>
+      </section>
+
+      <section class="toolbar panel" aria-label="Bộ lọc">
+        <label><span>Trạng thái</span><select id="status-filter"><option value="ALL">Tất cả</option><option value="READY">Đủ điều kiện quan sát</option><option value="NEAR">Gần vùng / chưa chạy</option><option value="WAIT_BTC">Chờ BTC đúng bối cảnh</option><option value="EXTENDED">Sóng đã chạy</option></select></label>
+        <label><span>Sắp xếp</span><select id="sort"><option value="priority">Ưu tiên trạng thái</option><option value="relativeScore">Điểm tương đối cao</option><option value="distance">Gần vùng trước</option><option value="newest">Nguồn mới trước</option></select></label>
+        <button id="refresh" type="button">Làm mới</button>
+      </section>
+
+      <p id="status" class="status panel" role="status" aria-live="polite">Đang tải pool xu hướng…</p>
+
+      <section class="table-panel panel" aria-labelledby="list-title">
+        <div class="section-head"><div><p class="eyebrow">BTC OPPOSITE CONTEXT · KHÔNG ĐUỔI GIÁ</p><h2 id="list-title">Coin mạnh khi BTC giảm</h2></div><span class="observe-badge">READY MỚI XÉT BINANCE 2 USDT</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Coin / hướng</th><th>Trạng thái</th><th>Điểm xếp hạng</th><th>Coin so với BTC</th><th>Vùng vào tham khảo</th><th>Giá live / đã chạy</th><th>Volume / 5m</th><th>Còn theo dõi</th><th>Mở</th></tr></thead><tbody id="rows"><tr><td colspan="9">Đang tải…</td></tr></tbody></table></div>
+        <p class="note"><strong>Điểm xếp hạng không phải xác suất thắng.</strong> LONG cần coin giữ 1h + 4h UP, Trend Score ≥14, BTC đúng `DOWN_STRONG`, cùng nến 5m đóng và coin hơn BTC tối thiểu 0,25 điểm %/15m + 0,50 điểm %/1h. `DOWN_LEAN` chỉ quan sát. SHORT khi BTC hồi trong downtrend vẫn cần coin giảm ≥0,15%, yếu hơn BTC ≥0,25 điểm %, volume 5m ≥1,0x, volume 15m ≥0,75x và taker mua ≤45%. READY bắt buộc MARK nằm trong biên entry thật và nến 5m xác nhận; gần vùng chỉ Discord. Mỗi setup nguồn chỉ được xét Binance một lần. MARKET 2 USDT margin ×5, TP +10% ROE, <strong>không đặt SL gốc</strong>, tối đa 50 vị thế; không replay và không DCA.</p>
+      </section>
+    </main>
+    <script type="module" src="/btc-relative-strength-watch.js?v=20260929-v6"></script>
+  </body>
+</html>
