@@ -811,5 +811,6 @@ dùng mocks/fixture, không gửi lệnh hoặc Discord thật.
 
 - Exact routes: `local-ai-liquidity-breakout-opposite-depth / closed-main-kill-opposite-depth / LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_LONG|SHORT / LONG|SHORT`.
 - Mặc định catalog OFF; bật riêng từng hướng. Khi ON, event mới 5m/15m tối đa 2 phút vào MARKET `4 USDT margin ×5`, TP `+10% ROE`, max50. LONG có SL `-20% ROE`; SHORT áp policy bot SHORT TP-only. **ABOVE + BID dưới lớn → SHORT; BELOW + ASK trên lớn → LONG**; payload lệch source/stream/label/stage/hướng/size/protection bị policy V50 chặn.
+- Detector V4 không còn cắt 5 breakout đầu trước khi đọc depth. Mọi symbol breakout đều được phân tích theo batch 5; event đạt xếp theo opposite ratio, coverage và notional. Giới hạn tối đa 5 delivery/executor mỗi vòng là hàng đợi riêng; event đạt dư giữ lại cho vòng 30 giây tiếp theo thay vì bị bỏ qua.
 - Dedupe theo eventId, không vào khi có position hoặc open entry order cùng symbol, không replay event trước process start/`enabledAt`. Discord vẫn được gửi và hiển thị kết quả executor.
 - Đây là exact Auto Controls route thật, không phải live-card WHITELIST. Không có card thống kê mới; cohort CLOSED chưa đạt/không có AvgROE `>4%` nên không hiện checkbox WHITELIST thống kê.

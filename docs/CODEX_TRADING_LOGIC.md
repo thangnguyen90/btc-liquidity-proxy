@@ -1,5 +1,11 @@
 # Codex Trading Logic Map
 
+### 2026-10-03 — Không cắt mất breakout thứ 6+ của nhóm thanh khoản ngược chiều
+
+- Nâng detector/Discord lên `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V4_BATCHED_ALL_BREAKOUTS_PRIORITY_20261003`. V3 từng sort theo breach rồi `slice(0, maxPerScan=5)` trước khi lấy Coin Level; năm breakout không đạt opposite depth có thể chiếm đầu danh sách và làm case tốt phía sau không được đọc order book.
+- V4 phát hiện toàn bộ breakout 5m/15m còn hiệu lực, gom unique symbol và phân tích tất cả theo batch mặc định 5 request song song. Hai khung cùng coin dùng chung snapshot. Event đạt được xếp theo opposite-depth ratio, minimum BID/ASK coverage, opposite notional rồi breach time; tối đa 5 event được gửi/executor mỗi vòng, số đạt dư giữ track để vòng 30 giây kế tiếp xét tiếp. Telemetry thêm số analyzed/selected/deferred; đây không phải xác suất.
+- Dữ liệu causal và rule hướng không đổi: MAIN KILL alert, nến Binance đã đóng, visible depth NEAR+WIDE; ABOVE+BID dưới lớn vào SHORT, BELOW+ASK trên lớn vào LONG. Executor vẫn MARKET 4 USDT ×5, TP +10%, LONG SL -20%, SHORT TP-only, max50; chỉ thay lịch/ưu tiên event mới, không sửa lệnh hiện hữu. State/eventId tương thích V1–V3, không migration. Không thêm label/card/matcher WHITELIST; exact routes giữ trạng thái hiện tại và policy CLOSED AvgROE `>4%` không đổi.
+
 ### 2026-10-03 — AI PRIORITY engine-zone giảm size còn 1 USDT
 
 - Nâng executor lên `LOCAL_AI_PRIORITY_ENGINE_ZONE_ENTRY_V2_MARKET_1USDT_20261003`, policy `LOCAL_AI_PRIORITY_ZONE_1USDT_V51_20261003`, controls V36 và catalog V19. Dữ liệu trước entry/điều kiện không đổi: chỉ candidate Ollama `PRIORITY`, vùng/invalidation causal của engine và Binance MARK live; qualification 3/6–6/6 chỉ giải thích, không phải gate.

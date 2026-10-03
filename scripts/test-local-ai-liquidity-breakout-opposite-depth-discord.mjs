@@ -171,6 +171,62 @@ try {
   assert.equal(requests.length, 2);
   assert.equal(executions.length, 2, 'Discord cooldown must also prevent a duplicate Binance callback');
 
+  const batchRequests = [];
+  const batchExecutions = [];
+  let batchAnalysisCalls = 0;
+  let activeAnalyses = 0;
+  let peakActiveAnalyses = 0;
+  const batchNotifier = new LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier({
+    stateFile: join(directory, 'batch-state.json'),
+    enabled: true,
+    webhookUrl: 'https://discord.com/api/webhooks/123/token',
+    baseUrl: 'http://127.0.0.1:19082',
+    now: () => now,
+    maxPerScan: 1,
+    analysisBatchSize: 2,
+    fetchImpl: async (_url, init) => {
+      batchRequests.push(JSON.parse(init.body));
+      return { ok: true, status: 204 };
+    },
+    onQualified: async (event) => {
+      batchExecutions.push(event.symbol);
+      return { status: 'submitted', orderId: batchExecutions.length };
+    },
+  });
+  for (let index = 0; index < 6; index += 1) {
+    await batchNotifier.arm(alert(`BATCH${index}USDT`, 'ABOVE', 104, 105));
+  }
+  const scanBatch = () => batchNotifier.scan({
+    getRows: (_symbol, interval) => interval === '5m' ? upperBars : [],
+    getAnalysis: async (symbol) => {
+      batchAnalysisCalls += 1;
+      activeAnalyses += 1;
+      peakActiveAnalyses = Math.max(peakActiveAnalyses, activeAnalyses);
+      await new Promise((resolve) => setImmediate(resolve));
+      activeAnalyses -= 1;
+      const index = Number(symbol.match(/BATCH(\d+)/)?.[1]);
+      return index >= 4
+        ? analysis(symbol, index === 5 ? 1_500_000 : 900_000, 500_000)
+        : analysis(symbol, 400_000, 500_000);
+    },
+  });
+  const batchFirst = await scanBatch();
+  assert.equal(batchFirst.detected, 6);
+  assert.equal(batchFirst.analyzedSymbols, 6, 'all detected symbols are analyzed, not only the first limit');
+  assert.equal(batchFirst.qualified, 2);
+  assert.equal(batchFirst.selected, 1);
+  assert.equal(batchFirst.deferredQualified, 1);
+  assert.deepEqual(batchExecutions, ['BATCH5USDT'], 'strongest opposite-depth ratio is selected first');
+  assert(peakActiveAnalyses <= 2, 'analysis concurrency stays within the configured batch size');
+  const batchSecond = await scanBatch();
+  assert.equal(batchSecond.sent, 1);
+  assert.deepEqual(batchExecutions, ['BATCH5USDT', 'BATCH4USDT'],
+    'qualified overflow remains pending and is delivered on the next scan');
+  assert(batchAnalysisCalls >= 11, 'later scans continue assessing every still-pending breakout');
+  assert.equal(batchRequests.length, 2);
+  assert.equal(batchNotifier.snapshot().analysisBatchSize, 2);
+  assert.equal(batchNotifier.snapshot().maxDeliveriesPerScan, 1);
+
   const disabled = new LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier({
     stateFile: join(directory, 'disabled.json'),
     enabled: false,

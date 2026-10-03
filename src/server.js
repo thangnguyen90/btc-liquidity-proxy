@@ -2091,6 +2091,9 @@ const localAiLiquidityBreakoutOppositeDepthDiscord =
     maxPerScan: Number(
       process.env.LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_MAX_PER_SCAN ?? 5,
     ),
+    analysisBatchSize: Number(
+      process.env.LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_ANALYSIS_BATCH_SIZE ?? 5,
+    ),
     onQualified: (event) => localAiLiquidityBreakoutOppositeDepthBinanceRunner.process(event),
   });
 const coinLevelObserveManualOrderInflight = new Set();
@@ -18554,7 +18557,9 @@ function startLocalAiTrendSchedulers() {
       if (delivery.sent > 0) {
         console.log(
           `[LocalAiLiqBreakoutDepth] sent ${delivery.sent}/${delivery.qualified}`
-          + ` qualified; detected=${delivery.detected}; tracked=${delivery.tracked}`,
+          + ` qualified; selected=${delivery.selected}; deferred=${delivery.deferredQualified}`
+          + `; analyzed=${delivery.analyzedBreakouts}/${delivery.analyzedSymbols} symbols`
+          + `; detected=${delivery.detected}; tracked=${delivery.tracked}`,
         );
       }
       if (delivery.errors?.length > 0) {

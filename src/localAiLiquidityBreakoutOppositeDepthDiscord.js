@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { normalizeLiqScanSweepAlert } from './localAiLiquiditySweepRejectDiscord.js';
 
 export const LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_VERSION =
-  'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V3_REVERSED_ENTRY_SIDE_20261003';
+  'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V4_BATCHED_ALL_BREAKOUTS_PRIORITY_20261003';
 
 const TRACK_MS = 6 * 60 * 60_000;
 const RETAIN_MS = 7 * 24 * 60 * 60_000;
@@ -240,6 +240,35 @@ function sameZone(left, right) {
   return Math.max(aLow, bLow) <= Math.min(aHigh, bHigh);
 }
 
+async function mapInBatches(items, batchSize, mapper) {
+  const output = [];
+  for (let index = 0; index < items.length; index += batchSize) {
+    const batch = items.slice(index, index + batchSize);
+    output.push(...await Promise.all(batch.map(mapper)));
+  }
+  return output;
+}
+
+function eventPriority(event = {}) {
+  return {
+    ratio: finite(event.depth?.oppositeRatio, 0),
+    coverage: Math.min(
+      finite(event.depth?.bidCoveragePct, 0),
+      finite(event.depth?.askCoveragePct, 0),
+    ),
+    notional: finite(event.depth?.oppositeNotional, 0),
+  };
+}
+
+function compareEventPriority(left, right) {
+  const a = eventPriority(left);
+  const b = eventPriority(right);
+  return b.ratio - a.ratio
+    || b.coverage - a.coverage
+    || b.notional - a.notional
+    || finite(left?.breachAt, 0) - finite(right?.breachAt, 0);
+}
+
 export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
   constructor({
     stateFile,
@@ -250,6 +279,7 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
     now = () => Date.now(),
     cooldownMs = 4 * 60 * 60_000,
     maxPerScan = 5,
+    analysisBatchSize = 5,
     onQualified,
   } = {}) {
     this.stateFile = stateFile;
@@ -260,6 +290,8 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
     this.now = now;
     this.cooldownMs = Math.max(60_000, finite(cooldownMs, 4 * 60 * 60_000));
     this.maxPerScan = Math.max(1, Math.min(10, Math.trunc(finite(maxPerScan, 5))));
+    this.analysisBatchSize = Math.max(1, Math.min(10,
+      Math.trunc(finite(analysisBatchSize, 5))));
     this.onQualified = onQualified;
     this.state = null;
     this.queue = Promise.resolve();
@@ -276,6 +308,8 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
       observeOnly: false,
       binanceEligible: true,
       binanceRequiresExplicitRoute: true,
+      analysisBatchSize: this.analysisBatchSize,
+      maxDeliveriesPerScan: this.maxPerScan,
       tracked: Object.keys(this.state?.tracks ?? {}).length,
       updatedAt: this.state?.updatedAt ?? null,
     };
@@ -374,7 +408,6 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
     let qualified = 0;
     let sent = 0;
     const errors = [];
-    const analysisBySymbol = new Map();
     const completeInterval = (trackKey, interval) => {
       const track = state.tracks[trackKey];
       if (!track) return;
@@ -383,7 +416,8 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
         delete state.tracks[trackKey];
       }
     };
-    for (const breakout of breakouts.slice(0, this.maxPerScan)) {
+    const pendingBreakouts = [];
+    for (const breakout of breakouts) {
       const trackKey = `${breakout.symbol}|${breakout.direction}`;
       const provisionalRoute = breakout.interval === '15m'
         ? `${breakout.symbol}|${breakout.direction}|15m|BREAKOUT_OPPOSITE_DEPTH`
@@ -392,25 +426,38 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
         completeInterval(trackKey, breakout.interval);
         continue;
       }
-      let event;
+      pendingBreakouts.push(breakout);
+    }
+    const symbols = [...new Set(pendingBreakouts.map((breakout) => breakout.symbol))];
+    const analysisRows = await mapInBatches(symbols, this.analysisBatchSize, async (symbol) => {
       try {
-        if (!analysisBySymbol.has(breakout.symbol)) {
-          analysisBySymbol.set(breakout.symbol, typeof getAnalysis === 'function'
-            ? Promise.resolve().then(() => getAnalysis(breakout.symbol))
-            : Promise.resolve(null));
-        }
-        const analysis = await analysisBySymbol.get(breakout.symbol);
-        event = assessLiquidityBreakoutOppositeDepth({ breakout, analysis });
+        const analysis = typeof getAnalysis === 'function' ? await getAnalysis(symbol) : null;
+        return [symbol, analysis];
       } catch (error) {
-        errors.push(`${breakout.symbol}:ANALYSIS:${error?.message ?? 'FAILED'}`);
-        continue;
+        errors.push(`${symbol}:ANALYSIS:${error?.message ?? 'FAILED'}`);
+        return [symbol, null];
       }
+    });
+    const analysisBySymbol = new Map(analysisRows);
+    const events = [];
+    for (const breakout of pendingBreakouts) {
+      const trackKey = `${breakout.symbol}|${breakout.direction}`;
+      const event = assessLiquidityBreakoutOppositeDepth({
+        breakout,
+        analysis: analysisBySymbol.get(breakout.symbol),
+      });
       if (!event) continue;
       qualified += 1;
       if (state.sent[event.eventId]) {
         completeInterval(trackKey, breakout.interval);
         continue;
       }
+      events.push(event);
+    }
+    events.sort(compareEventPriority);
+    const selectedEvents = events.slice(0, this.maxPerScan);
+    for (const event of selectedEvents) {
+      const trackKey = `${event.symbol}|${event.direction}`;
       if (typeof this.onQualified === 'function') {
         try {
           event.binanceExecution = await this.onQualified(event);
@@ -423,7 +470,7 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
         state.sent[event.eventId] = now;
         state.lastByRoute[event.routeKey] = now;
         state.recent = [{ ...event, sentAt: now }, ...state.recent].slice(0, 50);
-        completeInterval(trackKey, breakout.interval);
+        completeInterval(trackKey, event.interval);
         sent += 1;
       } else {
         errors.push(`${event.symbol}:${event.side}:${result.error}`);
@@ -437,7 +484,11 @@ export class LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier {
       configured: this.configured(),
       tracked: Object.keys(state.tracks).length,
       detected: breakouts.length,
+      analyzedSymbols: symbols.length,
+      analyzedBreakouts: pendingBreakouts.length,
       qualified,
+      selected: selectedEvents.length,
+      deferredQualified: Math.max(0, events.length - selectedEvents.length),
       sent,
       errors,
     };
