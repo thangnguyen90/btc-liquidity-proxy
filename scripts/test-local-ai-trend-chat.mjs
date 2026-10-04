@@ -10,6 +10,8 @@ import {
   classifyLiquidityZoneLifecycle,
   compactDirectCoinAnalysis,
   extractRequestedMarketSymbols,
+  localAiChatModeUsesOllama,
+  localAiChatModeUsesOrderBook,
   normalizeLocalAiChatMode,
 } from '../src/localAiTrendChat.js';
 
@@ -121,6 +123,10 @@ assert.equal(compactDirectCoinAnalysis(directAnalysis).liqScan.current.mainKillZ
 assert.equal(compactDirectCoinAnalysis(directAnalysis).liqScan.current.farKillZone.score, 55_000_000);
 assert.equal(normalizeLocalAiChatMode('unknown'), LOCAL_AI_CHAT_MODES.OLLAMA_BINANCE_ORDERBOOK,
   'old clients without a valid mode keep the current Ollama/order-book behavior');
+assert.equal(normalizeLocalAiChatMode('DIRECT_ENGINE_BINANCE_ORDERBOOK'),
+  LOCAL_AI_CHAT_MODES.DIRECT_ENGINE_BINANCE_ORDERBOOK);
+assert.equal(localAiChatModeUsesOllama('DIRECT_ENGINE_BINANCE_ORDERBOOK'), false);
+assert.equal(localAiChatModeUsesOrderBook('DIRECT_ENGINE_BINANCE_ORDERBOOK'), true);
 assert.equal(JSON.stringify(compactDirectCoinAnalysis(directAnalysis)).toLowerCase().includes('coinglass'), false,
   'CoinGlass must not be sent to the chatbot model');
 let directModelCalls = 0;
@@ -282,6 +288,20 @@ assert.deepEqual(fastDirectAnswer.coins[0].resistances, []);
 assert.equal(fastDirectAnswer.coins[0].orderBook, null);
 assert.equal(fastDirectAnswer.coins[0].liquidityScenario, null);
 assert.match(fastDirectAnswer.limitations, /không gọi Ollama, không dùng order book/);
+const fastOrderBookAnswer = await fastDirectChat.ask({
+  question:'Xu hướng QNT hiện tại?', analysisMode:'DIRECT_ENGINE_BINANCE_ORDERBOOK',
+  entrySnapshot, btcHealth, directAnalyses:[directAnalysis],
+});
+assert.equal(fastOrderBookAnswer.analysisMode, 'DIRECT_ENGINE_BINANCE_ORDERBOOK');
+assert.equal(fastOrderBookAnswer.model, 'COIN_LEVEL_DIRECT_ORDER_BOOK_ENGINE_V1');
+assert.equal(fastOrderBookAnswer.modelApplied, false);
+assert.equal(fastOrderBookAnswer.fallbackReason, null);
+assert.equal(fastOrderBookAnswer.coins[0].supports[0].confidence, 'MEDIUM');
+assert.equal(fastOrderBookAnswer.coins[0].resistances[0].confidence, 'HIGH');
+assert.equal(fastOrderBookAnswer.coins[0].orderBook.totals.bidNotional, 930000);
+assert.equal(fastOrderBookAnswer.coins[0].orderBook.totals.askNotional, 1130000);
+assert.equal(fastOrderBookAnswer.coins[0].liquidityScenario.source, 'BINANCE_FUTURES_DEPTH_LIQSCAN');
+assert.match(fastOrderBookAnswer.limitations, /không gọi Ollama/);
 const shortSymbolAnalysis = structuredClone(directAnalysis);
 shortSymbolAnalysis.symbol = 'CTUSDT';
 const shortSymbolAnswer = await fastDirectChat.ask({
@@ -415,10 +435,11 @@ assert.match(pageSource, /onclick="window\.askLocalTrendChat\?\./);
 assert.match(pageSource, /onsubmit="event\.preventDefault\(\); window\.askLocalTrendChat\?\./);
 assert.match(pageSource, /id="chat-mode"/);
 assert.match(pageSource, /value="DIRECT_ENGINE" selected/);
+assert.match(pageSource, /value="DIRECT_ENGINE_BINANCE_ORDERBOOK"/);
 assert.match(pageSource, /value="OLLAMA_BINANCE_ORDERBOOK"/);
-assert.match(pageSource, /<script type="module" src="\/local-ai-trend-evaluation\.js\?v=20261004-v41-touch-toggle-tooltip"><\/script>/);
+assert.match(pageSource, /<script type="module" src="\/local-ai-trend-evaluation\.js\?v=20261004-v42-fast-orderbook-no-ollama"><\/script>/);
 assert.match(pageSource, /local-ai-trend-chat\.css\?v=20261004-v13-touch-toggle-tooltip/);
-assert.match(pageSource, /local-ai-trend-evaluation\.js\?v=20261004-v41-touch-toggle-tooltip/);
+assert.match(pageSource, /local-ai-trend-evaluation\.js\?v=20261004-v42-fast-orderbook-no-ollama/);
 const pageJsSource = await readFile(new URL('../public/local-ai-trend-evaluation.js', import.meta.url), 'utf8');
 assert.match(pageJsSource, /chat-level support/);
 assert.match(pageJsSource, /chat-level resistance/);
@@ -479,6 +500,7 @@ assert.match(pageJsSource, /!chatRunning && !chatHasResult/);
 assert.match(pageJsSource, /window\.askLocalTrendChat = askChat/);
 assert.match(pageJsSource, /body:JSON\.stringify\(\{ question:text, history:requestHistory, analysisMode \}\)/);
 assert.match(pageJsSource, /COIN LEVEL · KHÔNG ORDER BOOK/);
+assert.match(pageJsSource, /ENGINE NHANH · BINANCE ORDER BOOK · KHÔNG OLLAMA/);
 assert.match(pageJsSource, /Đánh giá AI nền đang chạy · chatbot vẫn gọi model/);
 const chatCssSource = await readFile(new URL('../public/local-ai-trend-chat.css', import.meta.url), 'utf8');
 assert.match(chatCssSource, /\.orderbook-chart-panel/);

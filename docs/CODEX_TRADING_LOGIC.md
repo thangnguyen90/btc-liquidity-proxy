@@ -5676,3 +5676,10 @@ Before major edits:
 - Thêm `DISCORD_PUSH_MANAGER_V1_POST_SUCCESS_ROUTE_ALLOWLIST_20261004` tại `/push-signal-manager`, Web Push V2, Service Worker v3 và navigation V7. Trang gom các env key dùng chung exact Discord webhook, hiển thị telemetry và cho bật/tắt Web Push theo route; route mới mặc định OFF, riêng `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH` giữ ON để tương thích hành vi đang chạy.
 - Bridge chỉ xét sau khi POST Discord trả 2xx, rút gọn chính payload Discord thành notification và không chặn/đợi Push trong request Discord. `observed/push event/device delivered` là telemetry vận hành; không phải chất lượng tín hiệu hoặc xác suất.
 - Thay đổi chỉ là allowlist delivery. Không đổi dữ liệu trước entry, detector/phân loại, Discord, Binance entry/size/leverage/SL/TP/DCA/protection. State settings mới additive, subscription/VAPID JSON cũ giữ nguyên. Không tạo label/card/matcher giao dịch nên không thêm WHITELIST; default OFF/CLOSED AvgROE `>4%` không đổi.
+
+### 2026-10-04 — Hỏi nhanh kèm order book nhưng không gọi Ollama
+
+- Nâng chatbot lên `LOCAL_AI_TREND_CHAT_V17_FAST_ORDER_BOOK_NO_OLLAMA_20261004`, UI v42 và thêm option `DIRECT_ENGINE_BINANCE_ORDERBOOK`. Với coin cụ thể, mode này vẫn lấy Coin Level, nến đã đóng, vùng engine, Binance Futures depth 1.000 level, tổng BID/ASK NEAR/WIDE và LiqScan MAIN/FAR KILL để vẽ chart, nhưng không gọi/check/start Ollama nên không phải chờ model diễn giải.
+- Ba luồng được tách rõ: Direct cũ không order book; Direct mới có order book nhưng không model; Ollama + order book giữ nguyên. Câu BTC/tổng hợp trong mode Direct cũng dùng snapshot/feature-vector deterministic. Đây chỉ là lựa chọn trả lời `OBSERVE ONLY`, không thêm signal/tier/gate hay xác suất.
+- Response mới additive với exact mode, `modelApplied=false` và model kỹ thuật `COIN_LEVEL_DIRECT_ORDER_BOOK_ENGINE_V1`; client cũ thiếu mode vẫn dùng Ollama + order book như trước. Không migration/rewrite JSON.
+- Không ảnh hưởng Discord hoặc Binance entry/size/leverage/SL/TP/DCA/protection/vị thế. Không thêm label/card/matcher nên không có WHITELIST mới; default OFF và policy CLOSED `AvgROE >4%` giữ nguyên.

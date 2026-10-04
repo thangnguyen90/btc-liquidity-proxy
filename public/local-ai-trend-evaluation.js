@@ -47,7 +47,7 @@ const hourlyForecastWhitelistUi = installLiveCardWhitelistUi({
 });
 
 function chatReady() {
-  return !chatRunning && ($('#chat-mode')?.value === 'DIRECT_ENGINE'
+  return !chatRunning && ($('#chat-mode')?.value !== 'OLLAMA_BINANCE_ORDERBOOK'
     || Boolean(status?.ollama?.online && status?.ollama?.modelReady));
 }
 
@@ -541,13 +541,19 @@ async function askChat(question) {
   }
   const requestHistory = chatHistory.slice(-6);
   const analysisMode = $('#chat-mode').value;
-  const modeLabel = analysisMode === 'DIRECT_ENGINE' ? 'COIN LEVEL NHANH' : 'OLLAMA + ORDER BOOK';
+  const modeLabel = analysisMode === 'DIRECT_ENGINE'
+    ? 'COIN LEVEL NHANH'
+    : analysisMode === 'DIRECT_ENGINE_BINANCE_ORDERBOOK'
+      ? 'ENGINE NHANH + ORDER BOOK'
+      : 'OLLAMA + ORDER BOOK';
   appendChatMessage('user', text);
   chatHistory.push({ role:'user', content:text });
   chatRunning = true;
   syncChatControls();
-  $('#chat-send').textContent = 'AI đang trả lời…';
-  $('#chat-status').textContent = 'Đang tổng hợp BTC, nến đã đóng, volume và vùng engine hiện tại…';
+  $('#chat-send').textContent = analysisMode === 'OLLAMA_BINANCE_ORDERBOOK' ? 'AI đang trả lời…' : 'Đang phân tích…';
+  $('#chat-status').textContent = analysisMode === 'DIRECT_ENGINE_BINANCE_ORDERBOOK'
+    ? 'Đang lấy nến/engine và Binance order book/LiqScan; không gọi Ollama…'
+    : 'Đang tổng hợp BTC, nến đã đóng, volume và vùng engine hiện tại…';
   $('#chat-input').value = '';
   const requestStartedAt = Date.now();
   const controller = new AbortController();
@@ -564,6 +570,7 @@ async function askChat(question) {
     const answer = data.answer ?? {};
     appendChatMessage('assistant', answer.answer || 'Chưa đủ dữ liệu để kết luận.', {
       source: answer.analysisMode === 'DIRECT_ENGINE' ? 'COIN LEVEL · KHÔNG ORDER BOOK'
+        : answer.analysisMode === 'DIRECT_ENGINE_BINANCE_ORDERBOOK' ? 'ENGINE NHANH · BINANCE ORDER BOOK · KHÔNG OLLAMA'
         : answer.modelApplied === false || answer.fallbackReason ? 'DỮ LIỆU ENGINE · OLLAMA CHƯA TRẢ LỜI HỢP LỆ' : `OLLAMA + ORDER BOOK · ${answer.model ?? data.model ?? 'AI LOCAL'}`,
       details: renderChatDetails(answer),
     });
@@ -694,10 +701,12 @@ $('#chat-input').addEventListener('input', () => {
 });
 $('#chat-mode').addEventListener('change', () => {
   syncChatControls();
-  const direct = $('#chat-mode').value === 'DIRECT_ENGINE';
-  $('#chat-status').textContent = direct
+  const mode = $('#chat-mode').value;
+  $('#chat-status').textContent = mode === 'DIRECT_ENGINE'
     ? 'Coin cụ thể: trả trực tiếp từ nến/engine, không gọi Ollama và không dùng order book.'
-    : 'Coin cụ thể: gửi qua Ollama với Binance Futures order book/LiqScan.';
+    : mode === 'DIRECT_ENGINE_BINANCE_ORDERBOOK'
+      ? 'Coin cụ thể: lấy nến/engine + Binance order book/LiqScan và vẽ chart, không gọi Ollama.'
+      : 'Coin cụ thể: gửi qua Ollama với Binance Futures order book/LiqScan.';
 });
 document.querySelectorAll('[data-chat-question]').forEach((button) => {
   button.addEventListener('mousedown', (event) => {

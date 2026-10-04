@@ -1,15 +1,24 @@
 import { buildLocalAiTrendInput } from './localAiTrendEvaluator.js';
 
 export const LOCAL_AI_TREND_CHAT_VERSION =
-  'LOCAL_AI_TREND_CHAT_V16_ORDER_BOOK_SIDE_TOTALS_20261002';
+  'LOCAL_AI_TREND_CHAT_V17_FAST_ORDER_BOOK_NO_OLLAMA_20261004';
 export const LOCAL_AI_CHAT_MODES = Object.freeze({
   DIRECT_ENGINE: 'DIRECT_ENGINE',
+  DIRECT_ENGINE_BINANCE_ORDERBOOK: 'DIRECT_ENGINE_BINANCE_ORDERBOOK',
   OLLAMA_BINANCE_ORDERBOOK: 'OLLAMA_BINANCE_ORDERBOOK',
 });
 
 export function normalizeLocalAiChatMode(value) {
   return Object.values(LOCAL_AI_CHAT_MODES).includes(value)
     ? value : LOCAL_AI_CHAT_MODES.OLLAMA_BINANCE_ORDERBOOK;
+}
+
+export function localAiChatModeUsesOllama(value) {
+  return normalizeLocalAiChatMode(value) === LOCAL_AI_CHAT_MODES.OLLAMA_BINANCE_ORDERBOOK;
+}
+
+export function localAiChatModeUsesOrderBook(value) {
+  return normalizeLocalAiChatMode(value) !== LOCAL_AI_CHAT_MODES.DIRECT_ENGINE;
 }
 
 const clean = (value, max = 500) => String(value ?? '').trim().slice(0, max);
@@ -901,6 +910,8 @@ function buildDirectCoinAnswer(context, { fallbackReason = null, includeOrderBoo
     risks,
     limitations: !includeOrderBook
       ? 'Chế độ Coin Level nhanh: không gọi Ollama, không dùng order book/LiqScan và không ra lệnh Binance.'
+      : context.analysisMode === LOCAL_AI_CHAT_MODES.DIRECT_ENGINE_BINANCE_ORDERBOOK
+        ? 'Chế độ engine nhanh: dùng Coin Level và Binance Futures Depth/LiqScan để vẽ chart, không gọi Ollama và không ra lệnh Binance.'
       : fallbackReason
       ? 'Ollama không hoàn tất; trả lời dự phòng từ Coin Level và Binance Futures Depth/LiqScan. Không phải xác suất thắng và không ra lệnh Binance.'
       : 'Trả lời từ Coin Level causal hiện tại; không phải xác suất thắng và không ra lệnh Binance.',
@@ -965,11 +976,20 @@ export class LocalAiTrendChat {
       throw error;
     }
     const context = buildLocalAiTrendChatContext({ ...args, question });
-    if (context.analysisMode === LOCAL_AI_CHAT_MODES.DIRECT_ENGINE && context.directCoins.length) {
+    if (!localAiChatModeUsesOllama(context.analysisMode)) {
       const startedAt = Date.now();
+      const includeOrderBook = localAiChatModeUsesOrderBook(context.analysisMode);
+      const directAnswer = context.directCoins.length
+        ? buildDirectCoinAnswer(context, { includeOrderBook })
+        : context.intent === 'BTC_TREND'
+          ? buildBtcAnswer(context)
+          : buildFastAggregateAnswer(context);
       return {
-        ...buildDirectCoinAnswer(context, { includeOrderBook: false }),
-        model: 'COIN_LEVEL_DIRECT_ENGINE_V2',
+        ...directAnswer,
+        analysisMode: context.analysisMode,
+        model: context.directCoins.length
+          ? includeOrderBook ? 'COIN_LEVEL_DIRECT_ORDER_BOOK_ENGINE_V1' : 'COIN_LEVEL_DIRECT_ENGINE_V2'
+          : directAnswer.model,
         modelApplied: false,
         elapsedMs: Date.now() - startedAt,
         usage: { promptEvalCount: 0, evalCount: 0, totalDurationMs: Date.now() - startedAt },

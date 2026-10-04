@@ -710,7 +710,8 @@ import {
 import { CoinLevelMarketRegimeGuard } from './coinLevelMarketRegimeGuard.js';
 import { LocalAiTrendEvaluator, buildLocalAiTrendInput } from './localAiTrendEvaluator.js';
 import { LocalAiOllamaProcessGuard } from './localAiOllamaProcessGuard.js';
-import { LocalAiTrendChat, extractRequestedMarketSymbols, resolveLocalAiChatIntent, normalizeLocalAiChatMode } from './localAiTrendChat.js';
+import { LocalAiTrendChat, extractRequestedMarketSymbols, resolveLocalAiChatIntent, normalizeLocalAiChatMode,
+  localAiChatModeUsesOllama } from './localAiTrendChat.js';
 import { buildLocalAiMainKillGapWatchSnapshot, resolveMainKillGapCandidateSource } from './localAiMainKillGapWatch.js';
 import { injectLocalAiNavigation } from './localAiNavigation.js';
 import { injectOppositeLiquidityToast } from './oppositeLiquidityToast.js';
@@ -14721,6 +14722,7 @@ const server = createServer(async (request, response) => {
           const requestedSymbols = extractRequestedMarketSymbols(body.question, symbols);
           const questionIntent = resolveLocalAiChatIntent(body.question, symbols);
           const analysisMode = normalizeLocalAiChatMode(body.analysisMode);
+          const usesOllama = localAiChatModeUsesOllama(analysisMode);
           const directResults = await Promise.allSettled(
             requestedSymbols.map(async (symbol) => attachLatestLiqScanAlert(await getCoinLevelAnalysis(symbol))),
           );
@@ -14733,10 +14735,12 @@ const server = createServer(async (request, response) => {
             error.code = 'LOCAL_AI_DIRECT_COIN_UNAVAILABLE';
             throw error;
           }
-          ollama = directAnalyses.length
-            ? await localAiTrendEvaluator.health()
-            : await localAiTrendEvaluator.ensureAvailable();
-          if (!directAnalyses.length && (!ollama.online || !ollama.modelReady)) {
+          ollama = usesOllama
+            ? directAnalyses.length
+              ? await localAiTrendEvaluator.health()
+              : await localAiTrendEvaluator.ensureAvailable()
+            : { ...localAiTrendEvaluator.snapshot(), skipped: true, skipReason: 'DIRECT_ENGINE_MODE' };
+          if (usesOllama && !directAnalyses.length && (!ollama.online || !ollama.modelReady)) {
             await sendJson(response, {
               error: ollama.online
                 ? `Ollama chưa có model ${localAiTrendEvaluator.model}.`
