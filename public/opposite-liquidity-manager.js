@@ -70,6 +70,33 @@ function attemptHtml(attempt) {
     <td>${attempt.orderId ? `#${escape(attempt.orderId)}` : '—'}<small>${escape(attempt.clientOrderId)}${attempt.error ? `<br><span class="bad-text">${escape(attempt.error)}</span>` : ''}${attempt.errorCode ? `<br>${escape(attempt.errorCode)}` : ''}</small></td></tr>`;
 }
 
+function priceAlertHtml(alert) {
+  const active = alert.status === 'ACTIVE';
+  const direction = alert.direction === 'UP' ? 'CẮT LÊN'
+    : alert.direction === 'DOWN' ? 'CẮT XUỐNG'
+      : alert.direction === 'AT_TARGET' ? 'ĐANG Ở MỐC' : 'ĐỢI GIÁ SOCKET';
+  const push = alert.pushResult ?? {};
+  const pushText = active ? 'CHƯA PHÁT'
+    : push.sent > 0 ? `ĐÃ GỬI ${push.sent} THIẾT BỊ`
+      : push.attempted === 0 ? 'KHÔNG CÓ THIẾT BỊ NHẬN'
+        : push.failed ? `LỖI ${push.failed}` : 'ĐÃ XỬ LÝ';
+  return `<tr><td><a href="/coin-level-analysis?symbol=${encodeURIComponent(alert.symbol)}">${escape(alert.symbol)}</a><small>Tạo ${time(alert.createdAt)}</small></td>
+    <td><b>${price(alert.targetPrice)}</b><small>Tham chiếu ${price(alert.referencePrice)}</small></td>
+    <td><b>${price(alert.currentPrice)}</b><small>${alert.currentPriceAt ? `Socket ${time(alert.currentPriceAt)}` : 'Đang chờ tick Binance'}</small></td>
+    <td><span class="pill ${alert.direction === 'DOWN' ? 'bad' : alert.direction === 'UP' ? 'good' : 'wait'}">${direction}</span></td>
+    <td><span class="pill ${active ? 'wait' : push.sent > 0 ? 'good' : 'bad'}">${active ? 'ĐANG CHỜ' : 'ĐÃ CHẠM'}</span><small>${pushText}${alert.triggerPrice ? `<br>MARK kích hoạt ${price(alert.triggerPrice)}` : ''}</small></td>
+    <td>${active ? `Arm ${time(alert.armedAt)}` : `Chạm ${time(alert.triggeredAt)}`}<small>${alert.triggerDirection ? `Hướng ${escape(alert.triggerDirection)}` : 'One-shot'}</small></td>
+    <td><div class="row-actions">${active ? '' : `<button type="button" data-price-alert-action="rearm" data-alert-id="${escape(alert.id)}">Bật lại</button>`}<button class="danger-button" type="button" data-price-alert-action="remove" data-alert-id="${escape(alert.id)}">Xóa</button></div></td></tr>`;
+}
+
+function renderPriceAlerts() {
+  const manager = snapshot?.priceAlerts ?? {};
+  const alerts = manager.alerts ?? [];
+  $('#priceAlertCount').textContent = `${manager.activeCount ?? 0} đang chờ · ${manager.triggeredCount ?? 0} đã chạm`;
+  $('#priceAlertRows').innerHTML = alerts.map(priceAlertHtml).join('')
+    || '<tr><td colspan="7" class="empty">Chưa có cảnh báo giá</td></tr>';
+}
+
 function renderRoutes(execution) {
   $('#masterState').innerHTML = `<span class="pill ${execution.masterEnabled ? 'good' : 'bad'}">MASTER ${execution.masterEnabled ? 'ON' : 'OFF'}</span>${execution.failClosed ? '<span class="pill bad">FAIL CLOSED</span>' : ''}`;
   $('#routes').innerHTML = (execution.routes ?? []).map(route => `<article class="route-card ${route.enabled ? 'route-on' : 'route-off'}"><div><span class="pill ${route.side === 'LONG' ? 'long' : 'short'}">${escape(route.side)}</span><strong>${route.enabled ? 'ĐANG CHO PHÉP VÀO' : 'ĐANG TẮT'}</strong></div><p>${escape(route.signalLabel)}</p><small>${number(route.marginUsdt, 0)} USDT × ${number(route.leverage, 0)} · TP ${number(route.takeProfitRoePct, 0)}% ROE<br>Bật lúc ${time(route.enabledAt)}</small></article>`).join('');
@@ -93,6 +120,7 @@ function render() {
   $('#errors').textContent = number(execution.errorAttempts, 0);
   $('#errors').className = execution.errorAttempts > 0 ? 'negative' : 'positive';
   renderRoutes(execution);
+  renderPriceAlerts();
 
   const side = $('#side').value;
   const interval = $('#interval').value;
@@ -117,6 +145,32 @@ function render() {
   $('#attemptRows').innerHTML = attempts.map(attemptHtml).join('') || '<tr><td colspan="6" class="empty">Chưa có attempt Binance phù hợp</td></tr>';
 }
 
+async function updatePriceAlert(method, payload) {
+  const button = $('#priceAlertAdd');
+  button.disabled = true;
+  $('#priceAlertStatus').textContent = 'Đang cập nhật cảnh báo giá…';
+  try {
+    const response = await fetch('/api/manual-price-push-alerts', {
+      method,
+      headers: { 'content-type':'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+    snapshot.priceAlerts = data.snapshot;
+    renderPriceAlerts();
+    $('#priceAlertStatus').textContent = method === 'DELETE' ? 'Đã xóa cảnh báo.'
+      : payload.action === 'rearm' ? 'Đã bật lại cảnh báo theo MARK hiện tại.'
+        : 'Đã lưu. Binance socket đang theo dõi mốc giá này.';
+    return true;
+  } catch (error) {
+    $('#priceAlertStatus').textContent = `Không cập nhật được: ${error.message}`;
+    return false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function load() {
   requestController?.abort();
   requestController = new AbortController();
@@ -139,6 +193,20 @@ async function load() {
 }
 
 $('#refresh').addEventListener('click', load);
+$('#priceAlertForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const symbol = $('#priceAlertSymbol').value.trim();
+  const targetPrice = $('#priceAlertTarget').value;
+  if (await updatePriceAlert('POST', { symbol, targetPrice })) $('#priceAlertTarget').value = '';
+});
+$('#priceAlertRows').addEventListener('click', event => {
+  const button = event.target.closest('[data-price-alert-action]');
+  if (!button) return;
+  const action = button.dataset.priceAlertAction;
+  const id = button.dataset.alertId;
+  if (action === 'rearm') void updatePriceAlert('POST', { action, id });
+  if (action === 'remove') void updatePriceAlert('DELETE', { id });
+});
 $('#search').addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(render, 180);

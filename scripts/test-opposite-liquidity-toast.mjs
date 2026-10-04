@@ -12,7 +12,7 @@ for (const name of htmlFiles) {
   const rendered = injectOppositeLiquidityToast(source);
   assert.equal((rendered.match(/\/opposite-liquidity-toast\.css\?v=20261004-4/g) ?? []).length, 1,
     `${name} must load the opposite-liquidity toast stylesheet once`);
-  assert.equal((rendered.match(/\/opposite-liquidity-toast\.js\?v=20261004-5/g) ?? []).length, 1,
+  assert.equal((rendered.match(/\/opposite-liquidity-toast\.js\?v=20261004-6/g) ?? []).length, 1,
     `${name} must load the opposite-liquidity toast client once`);
   assert.equal((rendered.match(/\/opposite-liquidity\.webmanifest\?v=20261004-2/g) ?? []).length, 1,
     `${name} must expose one PWA manifest`);
@@ -28,7 +28,7 @@ const [client, css, serviceWorker, managerHtml, manifest, icon, server] = await 
   readFile(new URL('../public/opposite-liquidity-icon.svg', import.meta.url), 'utf8'),
   readFile(new URL('../src/server.js', import.meta.url), 'utf8'),
 ]);
-assert.match(OPPOSITE_LIQUIDITY_TOAST_VERSION, /SITEWIDE_TOAST_V5_MANAGED_DISCORD_PUSH/);
+assert.match(OPPOSITE_LIQUIDITY_TOAST_VERSION, /SITEWIDE_TOAST_V6_MANUAL_PRICE_PUSH/);
 assert.match(client, /scanner\?\.browserNotifications/);
 assert.match(client, /\/api\/opposite-liquidity-manager/);
 assert.match(client, /FIRST_LOAD_RECENT_MS/);
@@ -49,6 +49,7 @@ assert.match(css, /\.opposite-liquidity-toast-stack/);
 assert.match(css, /\.opposite-liquidity-toast\.is-long/);
 assert.match(serviceWorker, /LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH/);
 assert.match(serviceWorker, /DISCORD_ROUTE:/);
+assert.match(serviceWorker, /MANUAL_BINANCE_PRICE_ALERT/);
 assert.match(serviceWorker, /addEventListener\('push'/);
 assert.match(serviceWorker, /registration\.showNotification/);
 assert.match(serviceWorker, /notificationclick/);

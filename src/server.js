@@ -717,6 +717,7 @@ import { injectLocalAiNavigation } from './localAiNavigation.js';
 import { injectOppositeLiquidityToast } from './oppositeLiquidityToast.js';
 import { OppositeLiquidityWebPushService } from './oppositeLiquidityWebPush.js';
 import { DiscordPushManager, buildDiscordPushRouteCatalog } from './discordPushManager.js';
+import { ManualPricePushAlerts, normalizeManualPriceAlertSymbol } from './manualPricePushAlerts.js';
 import { injectToxicTwoSideNavigation } from './toxicTwoSideNavigation.js';
 import { LocalAiTrendDiscordNotifier } from './localAiTrendDiscord.js';
 import { LocalAiSignalReview } from './localAiSignalReview.js';
@@ -904,6 +905,19 @@ const oppositeLiquidityWebPush = new OppositeLiquidityWebPushService({
   vapidPrivateKey: String(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_PRIVATE_KEY ?? '').trim(),
   maxSubscriptions: Number(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_MAX_SUBSCRIPTIONS ?? 50),
 });
+const manualPricePushAlerts = new ManualPricePushAlerts({
+  stateFile: join(rootDir, 'data', 'manual-price-push-alerts.json'),
+  pushSender: payload => oppositeLiquidityWebPush.sendPayload(payload),
+  onSymbolsChanged: symbols => sharedMarkTicker.setSymbols('manualPricePushAlerts', symbols),
+  maxActive: Number(process.env.MANUAL_PRICE_PUSH_MAX_ACTIVE ?? 50),
+});
+sharedMarkTicker.register('manualPricePushAlerts', tick => {
+  void manualPricePushAlerts.onMark(tick).then(result => {
+    for (const alert of result?.triggered ?? []) {
+      console.log(`[ManualPricePush] ${alert.symbol} ${alert.triggerDirection} target=${alert.targetPrice} mark=${alert.triggerPrice} sent=${alert.pushResult?.sent ?? 0}`);
+    }
+  }).catch(error => console.warn(`[ManualPricePush] tick failed: ${error.message}`));
+});
 const discordPushManager = new DiscordPushManager({
   stateFile: join(rootDir, 'data', 'discord-push-manager.json'),
   routes: buildDiscordPushRouteCatalog(process.env),
@@ -911,9 +925,11 @@ const discordPushManager = new DiscordPushManager({
 });
 const fetchBeforeDiscordPushBridge = globalThis.fetch.bind(globalThis);
 globalThis.fetch = discordPushManager.wrapFetch(fetchBeforeDiscordPushBridge);
-void Promise.all([oppositeLiquidityWebPush.initialize(), discordPushManager.initialize()])
-  .then(([webPush, manager]) => console.log(
-    `[DiscordWebPush] ready · ${webPush.subscriptionCount} subscription(s) · ${manager.configuredRoutes} route(s)`,
+void Promise.all([
+  oppositeLiquidityWebPush.initialize(), discordPushManager.initialize(), manualPricePushAlerts.initialize(),
+])
+  .then(([webPush, manager, priceAlerts]) => console.log(
+    `[DiscordWebPush] ready · ${webPush.subscriptionCount} subscription(s) · ${manager.configuredRoutes} route(s) · ${priceAlerts.activeCount} price alert(s)`,
   ))
   .catch((error) => console.warn(`[DiscordWebPush] init failed: ${error.message}`));
 const marketBreadthShockRule = Object.freeze({
@@ -14367,17 +14383,20 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === '/api/opposite-liquidity-manager' && request.method === 'GET') {
       response.setHeader('Cache-Control', 'no-store');
-      const [scanner, execution, webPush] = await Promise.all([
+      const [scanner, execution, webPush, priceAlerts] = await Promise.all([
         localAiLiquidityBreakoutOppositeDepthDiscord.managementSnapshot({ recentLimit: 100 }),
         localAiLiquidityBreakoutOppositeDepthBinanceRunner.managementSnapshot({ attemptLimit: 200 }),
         oppositeLiquidityWebPush.publicConfig(),
+        manualPricePushAlerts.initialize(),
       ]);
       await sendJson(response, {
-        version: 'OPPOSITE_LIQUIDITY_MANAGER_V1_READ_ONLY_20261003',
+        version: 'OPPOSITE_LIQUIDITY_MANAGER_V2_MANUAL_PRICE_PUSH_20261004',
         generatedAt: Date.now(),
         readOnly: true,
+        scannerReadOnly: true,
         scanner,
         execution,
+        priceAlerts,
         webPush: {
           version: webPush.version,
           configured: webPush.configured,
@@ -14385,6 +14404,39 @@ const server = createServer(async (request, response) => {
           lastDelivery: webPush.lastDelivery,
         },
       });
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/manual-price-push-alerts'
+      && ['POST', 'DELETE'].includes(request.method)) {
+      if (!isSameOriginWriteRequest(request)) {
+        await sendJson(response, { error: 'Cross-origin price alert update refused.' }, 403);
+        return;
+      }
+      try {
+        const body = await readJsonBody(request);
+        if (request.method === 'DELETE') {
+          await sendJson(response, await manualPricePushAlerts.remove(body.id));
+          return;
+        }
+        if (body.action === 'rearm') {
+          const current = manualPricePushAlerts.snapshot().alerts.find(alert => alert.id === body.id);
+          const mark = current
+            ? sharedMarkTicker.getPrice(current.symbol) ?? getSnapshotMarkPrice(current.symbol)
+            : null;
+          await sendJson(response, await manualPricePushAlerts.rearm(body.id, { currentPrice: mark }));
+          return;
+        }
+        const symbol = normalizeManualPriceAlertSymbol(body.symbol);
+        const available = new Set((await getSymbols()).map(item => item.symbol));
+        if (!available.has(symbol)) throw new Error(`${symbol} không có trên Binance Futures USDT.`);
+        const mark = sharedMarkTicker.getPrice(symbol) ?? getSnapshotMarkPrice(symbol);
+        await sendJson(response, await manualPricePushAlerts.create({
+          symbol, targetPrice: body.targetPrice, currentPrice: mark,
+        }));
+      } catch (error) {
+        await sendJson(response, { error: error?.message ?? 'MANUAL_PRICE_PUSH_ALERT_UPDATE_FAILED' }, 400);
+      }
       return;
     }
 

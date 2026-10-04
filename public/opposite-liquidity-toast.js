@@ -1,6 +1,6 @@
-const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V5_MANAGED_DISCORD_PUSH_20261004';
+const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V6_MANUAL_PRICE_PUSH_20261004';
 const STORAGE_KEY = 'opposite-liquidity-toast:seen-event-ids:v1';
-const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261004-3';
+const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261004-4';
 const PUSH_CONFIG_URL = '/api/opposite-liquidity-web-push/config';
 const PUSH_SUBSCRIPTIONS_URL = '/api/opposite-liquidity-web-push/subscriptions';
 const FIRST_LOAD_RECENT_MS = 2 * 60_000;
@@ -281,7 +281,7 @@ async function poll() {
     });
     if (!response.ok) return;
     const payload = await response.json();
-    if (payload?.version !== 'OPPOSITE_LIQUIDITY_MANAGER_V1_READ_ONLY_20261003') return;
+    if (!String(payload?.version ?? '').startsWith('OPPOSITE_LIQUIDITY_MANAGER_')) return;
     handleNotifications(payload.scanner?.browserNotifications);
   } catch {
     // A transient manager/API failure must never interrupt the host dashboard.

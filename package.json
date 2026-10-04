@@ -68,7 +68,7 @@
     "test:local-ai-liquidity-sweep-reject-discord": "node scripts/test-local-ai-liquidity-sweep-reject-discord.mjs",
     "test:local-ai-liquidity-breakout-opposite-depth-discord": "node scripts/test-local-ai-liquidity-breakout-opposite-depth-discord.mjs",
     "test:local-ai-liquidity-breakout-opposite-depth-binance": "node scripts/test-local-ai-liquidity-breakout-opposite-depth-binance.mjs",
-    "test:opposite-liquidity-manager": "node scripts/test-opposite-liquidity-manager.mjs",
+    "test:opposite-liquidity-manager": "node scripts/test-opposite-liquidity-manager.mjs && node scripts/test-manual-price-push-alerts.mjs",
     "test:opposite-liquidity-toast": "node scripts/test-opposite-liquidity-toast.mjs && node scripts/test-opposite-liquidity-web-push.mjs",
     "test:discord-push-manager": "node scripts/test-discord-push-manager.mjs && node scripts/test-push-signal-manager-page.mjs",
     "test:local-ai-signal-review-discord": "node scripts/test-local-ai-signal-review-discord.mjs",

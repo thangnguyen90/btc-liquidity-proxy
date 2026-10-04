@@ -1,7 +1,9 @@
 const SIGNAL_TYPE = 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH';
+const MANUAL_PRICE_SIGNAL_TYPE = 'MANUAL_BINANCE_PRICE_ALERT';
 const DISCORD_ROUTE_PREFIX = 'DISCORD_ROUTE:';
 
 const allowedSignalType = value => value === SIGNAL_TYPE
+  || value === MANUAL_PRICE_SIGNAL_TYPE
   || String(value ?? '').startsWith(DISCORD_ROUTE_PREFIX);
 
 self.addEventListener('push', (event) => {

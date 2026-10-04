@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import webPush from 'web-push';
 
 export const OPPOSITE_LIQUIDITY_WEB_PUSH_VERSION =
-  'OPPOSITE_LIQUIDITY_WEB_PUSH_V2_DISCORD_ROUTE_ALLOWLIST_20261004';
+  'OPPOSITE_LIQUIDITY_WEB_PUSH_V3_MANUAL_PRICE_ALERT_20261004';
 
 const RETAIN_EVENT_MS = 7 * 24 * 60 * 60_000;
 
@@ -250,6 +250,7 @@ export class OppositeLiquidityWebPushService {
       if (!eventId) return { attempted: 0, sent: 0, removed: 0, failed: 0, error: 'EVENT_ID_REQUIRED' };
       const signalType = cleanText(payload.signalType, 120);
       if (signalType !== 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH'
+        && signalType !== 'MANUAL_BINANCE_PRICE_ALERT'
         && !signalType.startsWith('DISCORD_ROUTE:')) {
         return { attempted: 0, sent: 0, removed: 0, failed: 0, error: 'SIGNAL_TYPE_NOT_ALLOWED' };
       }

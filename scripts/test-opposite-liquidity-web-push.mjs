@@ -75,6 +75,15 @@ try {
   assert.equal(duplicate.deduped, true);
   assert.equal(deliveries.length, 2);
 
+  now += 500;
+  const manual = await service.sendPayload({
+    signalType:'MANUAL_BINANCE_PRICE_ALERT', eventId:'manual-price:test:1',
+    title:'BTCUSDT chạm 85000', body:'MARK Binance đã cắt lên mốc.',
+    url:'/coin-level-analysis?symbol=BTCUSDT', symbol:'BTCUSDT', side:'UP',
+  });
+  assert.equal(manual.sent, 1);
+  assert.equal(deliveries.at(-1).payload.signalType, 'MANUAL_BINANCE_PRICE_ALERT');
+
   now += 1_000;
   const unsubscribed = await service.unsubscribe(makeSubscription('phone').endpoint);
   assert.equal(unsubscribed.unsubscribed, true);

@@ -5683,3 +5683,11 @@ Before major edits:
 - Ba luồng được tách rõ: Direct cũ không order book; Direct mới có order book nhưng không model; Ollama + order book giữ nguyên. Câu BTC/tổng hợp trong mode Direct cũng dùng snapshot/feature-vector deterministic. Đây chỉ là lựa chọn trả lời `OBSERVE ONLY`, không thêm signal/tier/gate hay xác suất.
 - Response mới additive với exact mode, `modelApplied=false` và model kỹ thuật `COIN_LEVEL_DIRECT_ORDER_BOOK_ENGINE_V1`; client cũ thiếu mode vẫn dùng Ollama + order book như trước. Không migration/rewrite JSON.
 - Không ảnh hưởng Discord hoặc Binance entry/size/leverage/SL/TP/DCA/protection/vị thế. Không thêm label/card/matcher nên không có WHITELIST mới; default OFF và policy CLOSED `AvgROE >4%` giữ nguyên.
+
+### 2026-10-04 — Cảnh báo giá thủ công bằng Binance MARK Web Push
+
+- Thêm `MANUAL_PRICE_PUSH_ALERT_V1_BINANCE_MARK_CROSS_20261004` trên `/opposite-liquidity-manager`. Người dùng nhập `BTC` hoặc exact symbol USDT và target; server xác minh symbol, theo dõi shared Binance Futures MARK socket mỗi giây và hiển thị MARK/trạng thái ngay trong bảng quản lý.
+- Alert phân loại hướng chờ từ giá tham chiếu, chỉ phát `MANUAL_BINANCE_PRICE_ALERT` khi hai tick MARK cắt qua target. Sau lần đầu chuyển `TRIGGERED` để không spam; có thể `Bật lại` theo MARK mới hoặc xóa. Web Push V3 cho phép exact type này và service worker mới nhận được khi web app đã đóng nếu thiết bị đã đăng ký Push.
+- Bộ đếm active/triggered và attempted/sent/failed chỉ là audit vận hành, không phải xác suất hoặc thống kê hiệu quả. Tính năng không dùng nến/order book/Ollama/outcome và không gửi Discord.
+- Hoàn toàn `OBSERVE ONLY`: không gọi signed Binance REST, không đặt/hủy lệnh, không đổi entry/size/leverage/SL/TP/DCA/protection hay route. State JSON mới tách riêng và API manager chỉ thêm `priceAlerts` trong khi giữ `readOnly=true`, nên client/state cũ tương thích.
+- Đây không phải label/card/matcher giao dịch nên không thêm WHITELIST; default OFF và policy CLOSED AvgROE `>4%` giữ nguyên.

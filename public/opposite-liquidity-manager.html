@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Quản lý thanh khoản ngược chiều</title>
-  <link rel="stylesheet" href="/opposite-liquidity-manager.css?v=20261004-3">
+  <link rel="stylesheet" href="/opposite-liquidity-manager.css?v=20261004-4-price-push">
 </head>
 <body><main>
   <header class="hero">
@@ -21,11 +21,26 @@
     </nav>
   </header>
 
-  <aside class="notice"><strong>READ ONLY.</strong> Trang này không bật/tắt route và không đặt lệnh. Quyền LONG/SHORT vẫn chỉ thay đổi tại Quản lý Binance.</aside>
+  <aside class="notice"><strong>SCANNER READ ONLY.</strong> Trang này không bật/tắt route và không đặt lệnh. Phần cảnh báo giá bên dưới chỉ lưu mốc giá để gửi Web Push, không tác động Binance.</aside>
 
   <section class="panel status-bar">
     <div><strong id="status" role="status">Đang tải trạng thái scanner…</strong><p id="scanDetail" class="muted"></p></div>
     <div class="push-actions"><div class="actions"><button type="button" data-opposite-liquidity-push>Bật Push như app</button><a class="button-link" href="/binance-auto-controls">Mở Auto Controls</a><button id="refresh" type="button">Làm mới</button></div><small data-opposite-liquidity-push-help>Android bật trực tiếp; iPhone mở từ icon Màn hình chính.</small></div>
+  </section>
+
+  <section class="panel price-alert-panel">
+    <div class="section-heading"><div><p class="eyebrow">BINANCE MARK SOCKET → ONE-SHOT WEB PUSH</p><h2>Cảnh báo khi giá chạm mốc</h2></div><p id="priceAlertCount" class="muted">—</p></div>
+    <p class="muted">Nhập mã coin và giá mục tiêu. Server theo dõi MARK Binance mỗi giây; khi giá cắt lên hoặc cắt xuống mốc đã đặt, hệ thống gửi Push như app rồi tự chuyển cảnh báo sang Đã chạm.</p>
+    <form id="priceAlertForm" class="price-alert-form">
+      <label>Mã coin<input id="priceAlertSymbol" maxlength="36" placeholder="BTC hoặc BTCUSDT" autocomplete="off" required></label>
+      <label>Giá cần cảnh báo<input id="priceAlertTarget" type="number" inputmode="decimal" min="0" step="any" placeholder="Ví dụ 85000" required></label>
+      <button id="priceAlertAdd" type="submit">Thêm cảnh báo</button>
+    </form>
+    <p id="priceAlertStatus" class="price-alert-status muted" role="status">Cần bật “Push như app” trên thiết bị muốn nhận.</p>
+    <div class="table-wrap price-alert-table"><table>
+      <thead><tr><th>Coin</th><th>Giá đặt</th><th>MARK hiện tại</th><th>Hướng chờ</th><th>Trạng thái Push</th><th>Thời gian</th><th>Quản lý</th></tr></thead>
+      <tbody id="priceAlertRows"><tr><td colspan="7" class="empty">Chưa có cảnh báo giá</td></tr></tbody>
+    </table></div>
   </section>
 
   <section class="summary-grid" aria-label="Tóm tắt vận hành">
@@ -81,6 +96,6 @@
     <p><b>Route:</b> ABOVE + BID dưới lớn hơn tạo LONG theo breakout; BELOW + ASK trên lớn hơn tạo SHORT theo breakdown. Discord có thể phát nhưng Binance vẫn từ chối nếu route OFF, có vị thế/lệnh cùng coin, quá tuổi, chạm giới hạn vị thế hoặc lỗi API.</p>
     <p><b>Số liệu:</b> đây là telemetry vận hành, không phải xác suất thắng, WinRate hoặc khuyến nghị giao dịch.</p>
   </details>
-  <footer>OPPOSITE_LIQUIDITY_MANAGER_UI_V3_TRUE_WEB_PUSH_20261004 · tự làm mới mỗi 30 giây</footer>
-</main><script type="module" src="/opposite-liquidity-manager.js?v=20261003-2"></script></body>
+  <footer>OPPOSITE_LIQUIDITY_MANAGER_UI_V4_MANUAL_PRICE_PUSH_20261004 · tự làm mới mỗi 30 giây</footer>
+</main><script type="module" src="/opposite-liquidity-manager.js?v=20261004-3-price-push"></script></body>
 </html>
