@@ -4,6 +4,7 @@ const DISCORD_ROUTE_PREFIX = 'DISCORD_ROUTE:';
 
 const allowedSignalType = value => value === SIGNAL_TYPE
   || value === MANUAL_PRICE_SIGNAL_TYPE
+  || value === 'BINANCE_LIQUIDITY_ZONE_LIFECYCLE'
   || String(value ?? '').startsWith(DISCORD_ROUTE_PREFIX);
 
 self.addEventListener('push', (event) => {

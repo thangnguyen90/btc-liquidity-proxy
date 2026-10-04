@@ -1,5 +1,66 @@
 # Codex Trading Logic Map
 
+### 2026-10-04 — Đưa vùng cũ/đã vượt xuống cuối
+
+`LIQUIDITY_ZONE_MANAGER_UI_V10_OLD_ZONES_LAST_20261004`: presentation OLD-last theo kịch bản hiện hữu, rồi distance sort trong từng nhóm, trước phân trang. Dùng lifecycle/bounds/MARK hiện hữu, không thêm dữ liệu trước entry hoặc đổi phân loại runtime/thống kê/Push/Binance/entry/size/SL/TP/scannerpriority. JSON/API cũ không đổi, missing seen tương thích. Không nhãn/card/matcher WHITELIST mới; default OFF và closedAvgROE>4% giữ. Test near/far, passed/closed/rejected/consumed/stopped, hơn50 rows và giữ lịch sử.
+
+### 2026-10-04 — MAIN distance max10 riêng và UI mặc định MAIN/xa nhất
+
+Binance notional rejection rõ ràng ghi REJECTED/không chiếm slot, giữ dedupe không retry; ledger cũ cùng lỗi cũng bỏ khỏi capacity. Timeout vẫn giữ slot. Không đổi size để vượt min-notional.
+
+`MAIN_KILL_DISTANCE_V2_SCOPED_MAX10_20261004` đổi gate tối đa10 vị thế riêng source/stream/label, gộpLONG+SHORT và không chặn bởi tổng54/max50 chung. Đếm liveBinance join auditOPEN/ledger, dedupe symbol-side, giữ slotpending/unknown và bỏ reservation hiện tại khi kiểm tra submit. Đủ10 chờ, không consume setup. Dữ liệu trướcentry/classification/freshness giữV1, size2USDT×5, TPmépgần/SL−30%ROE không đổi; master/auth/position/order/protectionguards giữ. UI default MAIN vàng/xa→gần, không đổi scannerpriority. JSON V1 giữ ledger; chỉ lỗiMax50 chắc chắn chưa gửi được xét lại, lỗi cũ lưu previousAttempts, unknown không replay. PushV2versionkey tránh dedupe lỗiV1. Không nhãn/statcard/WHITELIST mới, key và defaultOFF/closedAvgROE>4%/closedstatsformula không đổi. Test giới hạn độc lập với54other,9/10own, pending/closed/dedupe, migration và defaultUI.
+
+### 2026-10-04 — MAIN KILL distance ≥2.5%: 2 USDT ×5, TP vùng, SL30
+
+`MAIN_KILL_DISTANCE_V1_2USDT_5X_ZONE_TP_SL30_20261004` thêm executor độc lập: MAIN ACTIVE/chưa vượt, đủ lịch sử, socket<=15s/closed5m<=6m; khoảng cách mép gần/MARK>=2.5%. Trên giá LONG, dưới SHORT; 2 USDT ×5, TP mép gần cố định, SL −30% ROE neo fill cho cả hai chiều. Kiểm tra lại trước MARKET, không nâng min-notional, không vào coin đã có position/order hoặc tắt protection, giữ mọi master/auth/runtime guards. Route seed OFF, chỉ bật theo opt-in người dùng. Push kết quả + ledger trước gửi, không retry unknown/restart/re-add cùng bounds. Không đổi vùng JSON cũ, thiếu dữ liệu fail closed; ledger riêng. Ngoại lệ source riêng cho SHORT SL và TP giá tuyệt đối, không đổi route khác. WHITELIST key khớp runtime, mặc địnhOFF, chỉ hiện closed AvgROE>4%; gộp closeGroupId, sum netPnL/margin từng nhóm rồi mean, không OPEN. Không coi thống kê là tự động enable gate. Test mới và regression đã bổ sung; lifecycle gốc vẫn OBSERVE ONLY, executor này có ảnh hưởng entry/size/TP/SL khi ON.
+
+### 2026-10-04 — Phân biệt MAIN vàng và FAR tím
+
+`LIQUIDITY_ZONE_MANAGER_UI_V7_MAIN_FAR_20261004`: dùng role/bounds/MARK hiện hữu, sửa thanh và nhãn theo MAIN vàng/FAR tím; thêm lọc loại trước phân trang. Thiếu role hiện chưa rõ, không gán FAR. Không đổi dữ liệu trước entry, phân loại runtime, thống kê hiệu suất, Push hoặc Binance/entry/size/SL/TP; OBSERVE ONLY. JSON cũ giữ nguyên, bounds không cập nhật theo chart mới. Không nhãn/card thống kê/WHITELIST mới; default OFF/closed AvgROE >4% giữ nguyên. Test hai loại, missing role và không thay số giá.
+
+### 2026-10-04 — Hướng tới vùng tách khỏi lịch sử đã vượt
+
+`LIQUIDITY_ZONE_MANAGER_UI_V6_DIRECTION_SCENARIOS_20261004`: dùng MARK/bounds/socket freshness và lịch sử có sẵn (không thêm dữ liệu trước entry), trình bày kịch bản lên/xuống/trong vùng hoặc vùng cũ/thiếu giá. Hiện giá chạm/vượt cụ thể; vùng đã vượt không trở lại mục tiêu mới khi giá quay về. Thiếu nến có cảnh báo, không suy ra chưa quét hay xác suất. Lọc và sort vẫn trước phân trang; mobile dạng thẻ, lịch sử thu gọn. Chỉ presentation OBSERVE ONLY, không thống kê hiệu suất/nhãn giao dịch/card/cohort/matcher WHITELIST mới; default OFF/closed AvgROE >4% không đổi. Không ảnh hưởng Push/Binance/entry/size/SL/TP. JSON không đổi, optional seen tương thích cũ. Test hướng hiện tại, inactive, passed/reject, quay lại trong vùng, stale/missing giá và lịch sử chạm.
+
+### 2026-10-04 — Sort khoảng cách % và vị trí vùng vàng
+
+`LIQUIDITY_ZONE_MANAGER_UI_V5_DISTANCE_SORT_20261004`: MARK/bounds hiện hữu tính khoảng cách tới mép gần nhất theo %, giá trong vùng =0; mặc định gần→xa, thêm xa→gần và lọc vùng trên/dưới giá. Sort trước phân trang, thiếu giá cuối danh sách, hướng gốc giữ rõ riêng. Chỉ presentation OBSERVE ONLY, không dữ liệu trước entry mới, không đổi phân loại runtime/thống kê/Push/Binance/entry/size/SL/TP. JSON không đổi, dữ liệu cũ tương thích. Không nhãn giao dịch/card/matcher/WHITELIST mới, policy default OFF/CLOSED AvgROE >4% giữ nguyên. Test vị trí độc lập direction, biên và comparator.
+
+### 2026-10-04 — Thêm toàn bộ coin vào quản lý vùng
+
+`LIQUIDITY_ZONE_MANAGER_V3_ALL_COINS_IMPORT_20261004` + UI V4 nhập một đợt toàn bộ hợp đồng USDT perpetual TRADING, bỏ trần 100 vùng, batch 4/nhịp 2 giây và nhường rate guard. Dữ liệu trước thông báo dùng snapshot Coin Level mới hoặc cùng thuật toán LiqScan từ 15m240/MARK/24h mới, không model/depth/CoinGlass bổ sung. Giữ phân loại/bounds/lifecycle; coin thiếu vùng/lỗi có lý do, coin đã có giữ nguyên, có dừng đợt và phân trang/tìm kiếm. Tiến độ/đếm chỉ telemetry, không thống kê hiệu suất. JSON thêm importJob atomic, resume pending sau restart, không replay lịch sử; stop bỏ kết quả inflight. OBSERVE ONLY, không Binance/entry/size/SL/TP/protection, Push mới mặc định OFF và giữ cài đặt cũ. Không nhãn/card/cohort/matcher/WHITELIST mới; default OFF/CLOSED AvgROE >4% không đổi. Test all-universe >100, dedupe/Unicode, resume, stop và lỗi riêng từng coin.
+
+### 2026-10-04 — Phân biệt giá ngoài vùng lúc thêm với bằng chứng đã quét
+
+`LIQUIDITY_ZONE_MANAGER_V2_CAPTURE_WORDING_20261004` + UI V3 đổi `CONSUMED_AT_CAPTURE` thành mô tả giá ban đầu: ngoài vùng ở trên/dưới, chưa xác nhận đã quét trong dữ liệu theo dõi; capture trong vùng nhưng snapshot inactive dùng nhãn trung tính. Chỉ dùng MARK/bounds đã lưu trước thông báo, không thêm outcome. Đây là câu từ OBSERVE ONLY, không đổi phân loại/lifecycle, thống kê, Push hoặc Binance/entry/size/SL/TP. JSON cũ giữ nguyên status/flags, API projection additive, không migration/replay hay tạo sweep event. Không thêm nhãn giao dịch/card/cohort/matcher/WHITELIST; default OFF/CLOSED AvgROE >4% không đổi. Tests kiểm tra label record cũ và tách capture price khỏi MARK live.
+
+### 2026-10-04 — Hiện giá vùng vàng ngay cạnh biểu đồ vùng
+
+`LIQUIDITY_ZONE_MANAGER_UI_V2_PRICE_LABELS_20261004`: thêm low–high màu vàng dưới thanh vùng từ bounds snapshot cố định, không dùng dữ liệu mới trước entry. Chỉ hiển thị, không đổi phân loại/lifecycle, thống kê, Push, Binance/entry/size/SL/TP hoặc JSON; không migration, client cũ tương thích. Không thêm nhãn giao dịch/card/matcher/WHITELIST; default OFF/CLOSED AvgROE >4% giữ nguyên. Test nhãn lấy đúng giá vùng.
+
+### 2026-10-04 — Trang quản lý vòng đời MAIN/FAR KILL + Web Push
+
+- `LIQUIDITY_ZONE_MANAGER_V1_SOCKET_CLOSED_HISTORY_20261004`: lấy vùng snapshot AI/Coin Level hoặc top 10, cố định bounds và direction. Dùng MARK socket mới và nến 5m đầy đủ đã đóng sau capture; không hỏi model, không dùng outcome. Tick sai thứ tự/cũ, snapshot stale và socket candle chưa đóng bị loại; gap lịch sử hiển thị cảnh báo.
+- Quan hệ giá trên/trong/dưới tách với lifecycle chạm/vượt/5m đóng vượt/quét rồi đóng về phía gốc. Vùng quét không tự active lại; MAIN/FAR trùng được gộp. Push exact `BINANCE_LIQUIDITY_ZONE_LIFECYCLE` mặc định OFF từng vùng, cần subscription thiết bị; không replay khi bật/restart và không gửi nến lịch sử trễ >2 phút.
+- Audit tối đa 300 event/7 ngày, delivery sent/failed/skipped chỉ là telemetry, không hiệu suất/xác suất/gate. `OBSERVE ONLY`, không Discord hoặc signed Binance, entry/size/leverage/SL/TP/protection không đổi; route LONG vẫn theo cấu hình cũ.
+- State JSON riêng atomic, schema cũ không migration; cache socket `isClosed` additive, thiếu flag giữ closeTime REST. Navigation V8 thêm menu, client V7 cập nhật Service Worker allowlist. Không thêm trading label/cohort/card/matcher nên không WHITELIST mới; default OFF và CLOSED AvgROE >4% giữ nguyên. Tests lifecycle/Push/navigation bao phủ tương thích và không có đường đặt lệnh.
+
+### 2026-10-04 — Tách timeout retest khỏi setup bị vô hiệu
+
+- Version `OPPOSITE_LONG_RETEST_OBSERVE_V2_RESULT_LABELS_20261004`: timeout không touch/không confirmation = KHÔNG CÓ ĐIỂM VÀO vàng; 5m đóng dưới zone.low = SETUP BỊ VÔ HIỆU đỏ; PASS giữ nguyên.
+- Dữ liệu causal/điều kiện trước điểm tham chiếu giữ V1 (zone gốc, nến 5m đóng, high trước, next open, 60 phút); không thêm nhánh hồi nông hoặc sửa rule theo outcome COLLECT. Chỉ diễn đạt lifecycle, không phải thống kê thắng/thua/AvgROE hoặc nhãn giao dịch mới.
+- OBSERVE ONLY: không tác động Binance/entry/size/SL/TP, không bật LONG, không thêm WHITELIST; matcher/default OFF/closed AvgROE >4% giữ nguyên.
+- JSON status/reason/eventId/delivery cũ giữ nguyên; additive presentation trong API/UI, lịch sử đổi nhãn không replay Discord. Tests kiểm tra label/color và state V1 đã gửi không phát lại.
+
+
+### 2026-10-04 — Theo dõi retest LONG, báo riêng PASS / FAIL
+
+- Version `OPPOSITE_LONG_RETEST_OBSERVE_V1_20261004`; bổ sung cột retest trong tín hiệu đã phát và follow-up Discord cùng kênh, không đổi detector/thông báo gốc.
+- Input causal: zone và sentAt của LONG/ABOVE gốc, chuỗi nến 5m đóng sau phát, high nến trước, open nến kế tiếp. Trong 60 phút: touch zone.high rồi nến xanh close > high trước => PASS ở next open; close < zone.low => FAIL; quá hạn => FAIL timeout. Thiếu dữ liệu => UNVERIFIED, không đếm là thất bại giao dịch.
+- Không thống kê lợi nhuận/xác suất từ PASS; lưu lifecycle/evidence/delivery 7 ngày. Tiếp nhận cả tín hiệu 5m/15m còn hạn; lịch sử quá hạn chỉ hiển thị, không gửi lại. Retry, persist và test restart dedupe; có cảnh báo PASS phát hiện trễ.
+- JSON gốc giữ nguyên, state/API additive. Không ảnh hưởng Binance/entry/size/SL/TP; LONG OFF giữ nguyên. Không thêm tradable label/card/cohort nên không thêm WHITELIST; matcher và điều kiện closed AvgROE >4% hiện hữu giữ nguyên. Chi tiết tại CURRENT_DECISION_AND_EMA_RULES và BINANCE_AUTO_ENTRY_CONTROLS.
+
+
 ### 2026-10-03 — Sửa hướng thanh khoản ngược: đỏ LONG, xanh SHORT
 
 - Nâng detector/Discord lên `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_V6_UPPER_LONG_LOWER_SHORT_20261003`, executor lên `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_BINANCE_V3_UPPER_LONG_LOWER_SHORT_MARKET_4USDT_20261003`, toast/push V3 và manager UI V2. Từ deploy này, nến đóng vượt MAIN KILL phía trên + BID dưới lớn hơn ASK trên tạo **LONG màu đỏ**; nến đóng dưới vùng + ASK trên lớn hơn BID dưới tạo **SHORT màu xanh**. Mapping phản chiều trước đó bị thay thế cho event mới.

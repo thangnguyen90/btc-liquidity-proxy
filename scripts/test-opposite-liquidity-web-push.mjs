@@ -84,6 +84,16 @@ try {
   assert.equal(manual.sent, 1);
   assert.equal(deliveries.at(-1).payload.signalType, 'MANUAL_BINANCE_PRICE_ALERT');
 
+  const zonePayload = {
+    signalType:'BINANCE_LIQUIDITY_ZONE_LIFECYCLE', eventId:'zone:test:CLOSED_BEYOND',
+    title:'BTCUSDT · 5M ĐÓNG VƯỢT VÙNG', body:'MAIN KILL trên · close 5m 85000',
+    url:'/liquidity-zone-manager?symbol=BTCUSDT', symbol:'BTCUSDT',
+  };
+  assert.equal((await service.sendPayload(zonePayload)).sent, 1);
+  assert.equal(deliveries.at(-1).payload.signalType, zonePayload.signalType);
+  assert.equal(deliveries.at(-1).payload.url, zonePayload.url);
+  assert.equal((await service.sendPayload(zonePayload)).deduped, true);
+
   now += 1_000;
   const unsubscribed = await service.unsubscribe(makeSubscription('phone').endpoint);
   assert.equal(unsubscribed.unsubscribed, true);

@@ -1,4 +1,4 @@
-export const LOCAL_AI_NAVIGATION_VERSION = 'LOCAL_AI_NAVIGATION_ALL_MENUS_V7_DISCORD_PUSH_MANAGER_20261004';
+export const LOCAL_AI_NAVIGATION_VERSION = 'LOCAL_AI_NAVIGATION_ALL_MENUS_V8_ZONE_MANAGER_20261004';
 
 const LOCAL_AI_HREF = '/local-ai-trend-evaluation';
 const LOCAL_AI_LINK = `<a class="nav-link local-ai-nav-link" href="${LOCAL_AI_HREF}">AI Local</a>`;
@@ -10,11 +10,14 @@ const OPPOSITE_LIQUIDITY_MANAGER_HREF = '/opposite-liquidity-manager';
 const OPPOSITE_LIQUIDITY_MANAGER_LINK = `<a class="nav-link opposite-liquidity-manager-nav-link" href="${OPPOSITE_LIQUIDITY_MANAGER_HREF}">Thanh khoản ngược</a>`;
 const PUSH_SIGNAL_MANAGER_HREF = '/push-signal-manager';
 const PUSH_SIGNAL_MANAGER_LINK = `<a class="nav-link push-signal-manager-nav-link" href="${PUSH_SIGNAL_MANAGER_HREF}">Quản lý Push</a>`;
+const ZONE_MANAGER_HREF = '/liquidity-zone-manager';
+const ZONE_MANAGER_LINK = `<a class="nav-link" href="${ZONE_MANAGER_HREF}">Quản lý vùng thanh khoản</a>`;
 
 export function injectLocalAiNavigation(value) {
   const html = String(value ?? '');
   if (!html) return html;
   const missingLinks = [
+    html.includes(`href="${ZONE_MANAGER_HREF}"`) || html.includes(`href='${ZONE_MANAGER_HREF}'`) ? '' : ZONE_MANAGER_LINK,
     /href=["']\/ai-signal-review["']/.test(html) ? '' : '<a class="nav-link" href="/ai-signal-review">Đánh giá tín hiệu</a>',
     html.includes(`href="${LOCAL_AI_HREF}"`) || html.includes(`href='${LOCAL_AI_HREF}'`) ? '' : LOCAL_AI_LINK,
     html.includes(`href="${MAIN_KILL_GAP_HREF}"`) || html.includes(`href='${MAIN_KILL_GAP_HREF}'`) ? '' : MAIN_KILL_GAP_LINK,

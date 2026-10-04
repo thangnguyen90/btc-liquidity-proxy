@@ -251,6 +251,7 @@ export class OppositeLiquidityWebPushService {
       const signalType = cleanText(payload.signalType, 120);
       if (signalType !== 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH'
         && signalType !== 'MANUAL_BINANCE_PRICE_ALERT'
+        && signalType !== 'BINANCE_LIQUIDITY_ZONE_LIFECYCLE'
         && !signalType.startsWith('DISCORD_ROUTE:')) {
         return { attempted: 0, sent: 0, removed: 0, failed: 0, error: 'SIGNAL_TYPE_NOT_ALLOWED' };
       }

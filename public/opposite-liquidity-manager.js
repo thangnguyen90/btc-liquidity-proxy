@@ -48,6 +48,22 @@ function trackHtml(track) {
     <td><a href="https://www.binance.com/vi/futures/${encodeURIComponent(track.symbol)}" target="_blank" rel="noreferrer">Binance ↗</a></td></tr>`;
 }
 
+function retestHtml(event) {
+  if (event.side !== 'LONG' || event.direction !== 'ABOVE') return '—';
+  const row = snapshot?.retest?.records?.[event.eventId];
+  const names = { WAIT_TOUCH: 'CHỜ RETEST', WAIT_CONFIRMATION: 'CHỜ XÁC NHẬN',
+    DATA_MISSING: 'CHỜ DỮ LIỆU', UNVERIFIED: 'CHƯA XÁC MINH', PASS: 'PASS', FAIL: 'CHƯA XÁC MINH' };
+  // Legacy API/JSON fallback during rolling deployment; never call a timeout a failed trend.
+  const noEntry = row?.status === 'FAIL' && ['TIMEOUT_NO_TOUCH', 'TIMEOUT_NO_CONFIRMATION'].includes(row.reason);
+  const invalidated = row?.status === 'FAIL' && row.reason === 'CLOSED_BELOW_ZONE';
+  const label = row?.resultLabel ?? (noEntry ? 'KHÔNG CÓ ĐIỂM VÀO' : invalidated ? 'SETUP BỊ VÔ HIỆU' : names[row?.status] ?? 'CHỜ THEO DÕI');
+  const tone = row?.resultTone ?? (row?.status === 'PASS' ? 'good' : invalidated ? 'bad' : 'wait');
+  const explanation = row?.resultExplanation ?? (noEntry ? 'Chưa có điểm vào theo rule; không có nghĩa xu hướng LONG sai.' : 'Không phải kết quả lãi/lỗ.');
+  const reasons = { CLOSED_BELOW_ZONE: '5m đóng dưới đáy vùng', TIMEOUT_NO_TOUCH: 'Hết 60 phút, chưa chạm vùng',
+    TIMEOUT_NO_CONFIRMATION: 'Hết 60 phút, chưa xác nhận', MISSING_CANDLES: 'Thiếu chuỗi nến liên tục' };
+  return `<div class="retest-detail"><span class="pill ${escape(tone)}">${escape(label)}</span><small>OBSERVE ONLY · không đặt lệnh<br>${escape(explanation)}<br>Retest ${price(event.zone?.high)} · hủy khi 5m đóng &lt; ${price(event.zone?.low)}<br>Hạn ${time(row?.expiresAt ?? Number(event.sentAt) + 3_600_000)}<br>${escape(reasons[row?.reason] ?? 'Sau chạm: nến 5m xanh đóng vượt đỉnh nến trước; chờ nến kế tiếp.')}${row?.touchAt ? `<br>Chạm (nến đóng) ${time(row.touchAt)}` : ''}${row?.status === 'PASS' ? `<br>Xác nhận ${time(row.confirmationAt)} · close ${price(row.confirmationClose)} &gt; ${price(row.previousHigh)}<br>Nến kế tiếp ${time(row.nextCandleAt)}<br>Mở tham chiếu ${price(row.entryReference)} — không phải giá khớp` : ''}${row?.invalidationClose ? `<br>Close vô hiệu ${price(row.invalidationClose)} · ${time(row.decidedAt)}` : ''}${row ? `<br>${!row.notifyEligible ? 'Lịch sử: không gửi lại Discord' : row.delivery?.sentAt ? `Discord ${time(row.delivery.sentAt)}` : row.delivery?.error ? 'Discord đang chờ gửi lại' : 'Theo dõi / chờ thông báo kết quả'}` : ''}</small></div>`;
+}
+
 function recentHtml(event) {
   const execution = event.binanceExecution ?? {};
   const isLong = event.side === 'LONG';
@@ -56,6 +72,7 @@ function recentHtml(event) {
     <td>${price(event.zone?.low)} – ${price(event.zone?.high)}<small>Close breach ${price(event.breachClose)}<br>Latest ${price(event.latestClose)} · MARK ${price(event.markPrice)}</small></td>
     <td><b>${number(event.depth?.oppositeRatio, 3)}x</b><small>${escape(event.depth?.oppositeSide)} ${compactUsd(event.depth?.oppositeNotional)}<br>cùng phía ${compactUsd(event.depth?.sameSideNotional)}</small></td>
     <td><span class="pill ${statusClass(execution.status)}">${escape(String(execution.status ?? 'NO_CALLBACK').toUpperCase())}</span><small>${execution.orderId ? `Order #${escape(execution.orderId)}` : escape(execution.error || 'Không có order ID')}</small></td>
+    <td>${retestHtml(event)}</td>
     <td>${time(event.sentAt)}<small>${escape(event.eventId)}</small></td>
     <td><a href="https://www.binance.com/vi/futures/${encodeURIComponent(event.symbol)}" target="_blank" rel="noreferrer">Binance ↗</a></td></tr>`;
 }
@@ -136,7 +153,7 @@ function render() {
     && (!interval || event.interval === interval)
     && filterText(event.symbol, event.side, event.interval, event.eventId, event.binanceExecution?.status, event.binanceExecution?.error, event.binanceExecution?.orderId));
   $('#recentLabel').textContent = `${recent.length}/${scanner.recent?.length ?? 0} tín hiệu phù hợp`;
-  $('#recentRows').innerHTML = recent.map(recentHtml).join('') || '<tr><td colspan="7" class="empty">Chưa có tín hiệu đã phát phù hợp</td></tr>';
+  $('#recentRows').innerHTML = recent.map(recentHtml).join('') || '<tr><td colspan="8" class="empty">Chưa có tín hiệu đã phát phù hợp</td></tr>';
 
   const attempts = (execution.attempts ?? []).filter(attempt => matchesSide(attempt.side)
     && (!interval || attempt.interval === interval)

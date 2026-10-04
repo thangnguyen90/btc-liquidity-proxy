@@ -19,6 +19,8 @@ for (const name of files) {
   if (hasMenu) {
     menuPages += 1;
     assert.equal(matches.length, 1, `${name} must contain exactly one AI Local menu link`);
+    assert.equal((rendered.match(/href=["']\/liquidity-zone-manager["']/g) ?? []).length, 1,
+      `${name} must contain exactly one liquidity zone manager menu link`);
     assert.equal(gapMatches.length, 1, `${name} must contain exactly one Main Kill Gap menu link`);
     assert.equal(orderMatches.length, 1, `${name} must contain exactly one Binance signal orders menu link`);
     assert.equal(oppositeLiquidityMatches.length, 1,

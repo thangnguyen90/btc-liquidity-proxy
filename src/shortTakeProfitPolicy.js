@@ -85,6 +85,7 @@ export function shouldSuppressBotShortStopLoss({
   if (normalizedSide !== 'SELL' && normalizedSide !== 'SHORT') return false;
   const normalizedSource = String(source ?? '').trim().toLowerCase();
   if([
+    'main-kill-distance-entry',
     'ema99-near-reject-short',
     'ema99-observe-only',
     'extreme-short-squeeze',
@@ -270,7 +271,7 @@ export function resolveNonLiquidFlowV2TakeProfit({
       : null;
   if (!direction || !isKnownBotSource(source) || isLiquidFlowV2Source(source)
     || isCoinglassWebQualifiedSource(source) || isCoinglassZoneLifecycleSource(source)
-    || ['ema99-near-reject-short','ema99-reclaim-long','ema99-bounce-long','ema99-observe-only','ema99-kill-reclaim','ema99-kill-reclaim-pump-dump-absorption'].includes(String(source??'').trim().toLowerCase())
+    || ['main-kill-distance-entry','ema99-near-reject-short','ema99-reclaim-long','ema99-bounce-long','ema99-observe-only','ema99-kill-reclaim','ema99-kill-reclaim-pump-dump-absorption'].includes(String(source??'').trim().toLowerCase())
     || !(entry > 0) || !(lev > 0) || !(roe > 0)) {
     return {
       applied: false,

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Quản lý vùng thanh khoản</title>
+  <link rel="stylesheet" href="/liquidity-zone-manager.css?v=20261004-7">
+</head>
+<body><main data-ui-version="LIQUIDITY_ZONE_MANAGER_UI_V10_OLD_ZONES_LAST_20261004">
+  <header>
+    <p class="eyebrow">BINANCE SOCKET · MAIN / FAR KILL</p>
+    <h1>Quản lý vùng thanh khoản</h1>
+    <p>Theo dõi giá trên, trong hoặc dưới vùng; giữ lịch sử chạm, vượt và đóng trở lại sau quét.</p>
+    <nav aria-label="Điều hướng">
+      <a href="/liquidity-zone-manager" aria-current="page">Quản lý vùng thanh khoản</a>
+      <a href="/local-ai-trend-evaluation">AI Local</a>
+      <a href="/opposite-liquidity-manager">Thanh khoản ngược</a>
+      <a href="/push-signal-manager">Quản lý Push</a>
+    </nav>
+  </header>
+  <section class="panel">
+    <h2>Thêm coin để theo dõi</h2>
+    <form id="addForm">
+      <label>Mã coin<input id="coin" placeholder="BTC, COLLECT, 龙虾…" required maxlength="36" autocomplete="off"></label>
+      <label class="check"><input id="newPush" type="checkbox">Bật Push cho các vùng mới</label>
+      <button id="add" type="submit">Lấy vùng và theo dõi</button>
+      <button id="importAi" type="button">Thêm top 10 từ AI</button>
+      <button id="importAll" type="button">Thêm toàn bộ coin</button>
+    </form>
+    <p id="actionStatus" role="status"></p>
+    <p id="importProgress" role="status">Thêm toàn bộ hợp đồng Binance Futures USDT đang giao dịch; coin có sẵn giữ nguyên.</p>
+    <button id="stopImport" type="button" disabled>Dừng đợt thêm</button>
+    <details><summary>Coin chưa thêm được</summary><div id="importIssues">Chưa có đợt thêm toàn bộ.</div></details>
+    <p class="muted">Vùng được cố định theo dữ liệu Binance LiqScan đang dùng ở AI. Muốn lấy vùng mới: dừng vùng cũ rồi thêm coin lại. MAIN và FAR trùng giá được gộp, tránh báo hai lần.</p>
+  </section>
+  <section class="panel push-panel">
+    <div><h2>Thông báo trên điện thoại</h2><p>Chọn Push từng vùng bên dưới và bật thông báo cho thiết bị này. Server tiếp tục theo dõi khi bạn chuyển trang hoặc đóng app.</p><small data-opposite-liquidity-push-help>iPhone: thêm vào Màn hình chính và mở từ icon để bật Push.</small></div>
+    <button type="button" data-opposite-liquidity-push>Bật Push như app</button>
+  </section>
+  <section class="panel">
+    <h2>MAIN KILL cách giá ≥2,5% · MARKET 2 USDT ×5x</h2>
+    <p>Tối đa 10 vị thế cho riêng rule này, gộp LONG và SHORT. Vị thế của tín hiệu khác không tính vào giới hạn 10; giới hạn chung không chặn rule này.</p>
+    <p>Vùng MAIN còn hoạt động, chưa ghi nhận vượt: trên giá → LONG, dưới giá → SHORT. TP tại mép gần nhất của vùng; SL −30% ROE (khoảng 6% giá ở 5x, chưa tính phí). Không dùng FAR, vùng đã chạm/vượt, giá cũ hoặc thiếu lịch sử nến.</p>
+    <p>Mỗi vùng chỉ thử đặt lệnh một lần; kết quả không rõ sẽ không tự thử lại. Coin đã có vị thế/lệnh chờ hoặc tắt protection sẽ bị bỏ qua. Push kết quả rule này độc lập checkbox Push lịch sử từng vùng; thiết bị vẫn cần đăng ký nhận Push.</p>
+    <p id="mainDistanceStatus" role="status">Đang tải trạng thái rule…</p>
+    <div id="mainDistanceWhitelist"></div>
+    <a href="/binance-auto-controls">Quản lý bật/tắt route MAIN_KILL_DISTANCE_2_5</a>
+    <details><summary>Kết quả kích hoạt gần đây</summary><div id="mainDistanceAttempts">Chưa có kết quả.</div></details>
+  </section>
+  <section class="panel">
+    <div class="section-head"><h2>Vùng đang theo dõi</h2><span id="status" role="status">Đang tải…</span></div>
+    <div class="filters"><label>Tìm coin<input id="search" placeholder="Tìm coin…" autocomplete="off"></label><label>Trạng thái<select id="filter"><option value="active">Đang theo dõi</option><option value="all">Tất cả</option><option value="passed">Đã vượt / ngoài vùng lúc thêm</option><option value="stopped">Đã dừng</option></select></label><button id="refresh" type="button">Làm mới</button></div>
+    <div class="filters">
+      <label>Hướng cần xem<select id="scenarioFilter"><option value="all">Tất cả kịch bản</option><option value="UP">↑ Theo dõi quét lên</option><option value="DOWN">↓ Theo dõi quét xuống</option><option value="INSIDE">↔ Đang trong vùng</option><option value="OLD">Vùng cũ / đã vượt / đã dừng</option><option value="UNKNOWN">Chưa đủ giá mới</option></select></label>
+      <label>Vị trí vùng so với giá<select id="zoneSide"><option value="all">Tất cả vị trí</option><option value="ABOVE">Vùng nằm trên giá</option><option value="BELOW">Vùng nằm dưới giá</option><option value="INSIDE">Giá đang trong vùng</option></select></label>
+      <label>Loại vùng<select id="zoneRole"><option value="all">MAIN + FAR</option><option value="MAIN_KILL" selected>MAIN KILL · vàng</option><option value="FAR_KILL">FAR KILL · tím</option></select></label>
+      <label>Sắp xếp khoảng cách %<select id="sortOrder"><option value="nearest">Gần nhất → xa nhất</option><option value="farthest" selected>Xa nhất → gần nhất</option></select></label>
+    </div>
+    <p class="muted">MAIN KILL màu vàng; FAR KILL màu tím, không thay thế MAIN. Mỗi dòng giữ vùng tại thời điểm lưu, có thể khác snapshot mới trên chart AI. Khoảng cách = từ giá hiện tại tới mép gần nhất của vùng trên dòng / giá hiện tại × 100%. Giá trong vùng = 0%. Vùng đã vượt, vùng cũ không active và vùng đã dừng luôn nằm cuối; trong từng nhóm vẫn sắp xếp theo khoảng cách đã chọn. Lọc và sắp xếp toàn danh sách trước khi phân trang.</p>
+    <p class="scenario-guide"><b>Đọc hướng ở cột “Kịch bản hiện tại”:</b> ↑ vùng phía trên · ↓ vùng phía dưới · ↔ giá trong vùng · xám là vùng cũ hoặc thiếu giá mới. Đây là hướng giá cần đi để tới vùng, <b>không phải dự báo xác suất</b>. Vùng gần hơn không có nghĩa chắc chắn quét trước; một coin có thể có vùng ở cả hai phía.</p>
+    <div class="table-wrap"><table class="zone-watch-table"><thead><tr><th>Coin / lịch sử</th><th>Kịch bản hiện tại · chỉ quan sát</th><th>Giá hiện tại / vùng MAIN hoặc FAR</th><th>Push / quản lý</th></tr></thead><tbody id="watchRows"><tr><td colspan="4">Chưa thêm coin nào.</td></tr></tbody></table></div>
+    <div class="filters"><button id="prevPage" type="button">Trang trước</button><span id="pageInfo"></span><button id="nextPage" type="button">Trang sau</button></div>
+  </section>
+  <section class="panel">
+    <h2>Lịch sử thay đổi vùng</h2>
+    <div class="table-wrap"><table><thead><tr><th>Thời điểm</th><th>Coin / vùng</th><th>Sự kiện</th><th>Giá / vùng</th><th>Push</th></tr></thead><tbody id="eventRows"><tr><td colspan="5">Chưa có sự kiện.</td></tr></tbody></table></div>
+    <p class="muted">“Giá ở ngoài vùng lúc thêm” chỉ mô tả giá ban đầu, không xác nhận đã quét vùng. “Giá đã vượt” ghi nhận giá socket hoặc biên nến sau lúc theo dõi; “5m đóng vượt” và “đóng trở lại” dùng nến đã đóng. Lịch sử ghi nhận được giữ khi giá quay lại. Đây là thông báo theo dõi, không đặt lệnh Binance. Lịch sử giữ tối đa 300 sự kiện trong 7 ngày.</p>
+  </section>
+</main><script type="module" src="/liquidity-zone-manager.js?v=20261004-10"></script></body>
+</html>

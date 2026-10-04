@@ -1,6 +1,6 @@
-const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V6_MANUAL_PRICE_PUSH_20261004';
+const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V7_ZONE_MANAGER_PUSH_20261004';
 const STORAGE_KEY = 'opposite-liquidity-toast:seen-event-ids:v1';
-const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261004-4';
+const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261004-5';
 const PUSH_CONFIG_URL = '/api/opposite-liquidity-web-push/config';
 const PUSH_SUBSCRIPTIONS_URL = '/api/opposite-liquidity-web-push/subscriptions';
 const FIRST_LOAD_RECENT_MS = 2 * 60_000;

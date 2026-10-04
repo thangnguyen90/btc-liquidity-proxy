@@ -1,8 +1,8 @@
 export const OPPOSITE_LIQUIDITY_TOAST_VERSION =
-  'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V6_MANUAL_PRICE_PUSH_20261004';
+  'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V7_ZONE_MANAGER_PUSH_20261004';
 
 const STYLE_HREF = '/opposite-liquidity-toast.css?v=20261004-4';
-const SCRIPT_SRC = '/opposite-liquidity-toast.js?v=20261004-6';
+const SCRIPT_SRC = '/opposite-liquidity-toast.js?v=20261004-7';
 const MANIFEST_HREF = '/opposite-liquidity.webmanifest?v=20261004-2';
 
 export function injectOppositeLiquidityToast(value) {

@@ -332,6 +332,7 @@ export class KlineCache extends EventEmitter {
       close:                Number(k.c),
       volume:               Number(k.v),
       closeTime:            Number(k.T),
+      isClosed:             k.x === true,
       quoteVolume:          Number(k.q),
       trades:               Number(k.n),
       takerBuyBaseVolume:   Number(k.V),

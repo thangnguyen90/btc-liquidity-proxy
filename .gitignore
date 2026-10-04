@@ -50,3 +50,6 @@ data/coin-level-entry-watch-discord.json
 data/coin-level-entry-watch-discord.json.tmp
 data/coin-level-entry-watch-binance.json
 data/coin-level-entry-watch-binance.json.tmp
+data/opposite-liquidity-retest.json*
+data/liquidity-zone-manager.json*
+data/main-kill-distance-entry.json*

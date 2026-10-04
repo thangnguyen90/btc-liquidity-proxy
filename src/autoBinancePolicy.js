@@ -1,5 +1,8 @@
 export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'LOCAL_AI_PRIORITY_ZONE_1USDT_V51_20261003';
 import { validImpulseSizing } from './postMoveImpulseSizing.js';
+import {validMainDistancePlan} from './mainKillDistanceEntry.js';
+const MAIN_DISTANCE_AUTH=Symbol('main-distance-entry');
+export function authorizeMainDistanceOrder(payload){const p={...payload};Object.defineProperty(p,MAIN_DISTANCE_AUTH,{value:true});return p;}
 import {validEma99OrderSize,EMA99_ENTRY_CATALOG} from './ema99EntryCatalog.js';
 import {
   LIMIT_PAPER_FILL_LABELS,
@@ -454,6 +457,7 @@ export function evaluateAutoBinanceEntryPolicy({
     && validOtherTakeProfitRoe(payload.takeProfitRoePct)) {
     return { allowed: true, exclusive: true, reason: 'LOCAL_AI_PRIORITY_ENGINE_ZONE_MARKET_1USDT' };
   }
+  if(payload?.[MAIN_DISTANCE_AUTH]===true && validMainDistancePlan(payload))return {allowed:true,exclusive:true,reason:'ACTIVE_MAIN_DISTANCE_2USDT_5X_ZONE_TP_SL30'};
   if (payload?.[LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_AUTHORIZATION] === true
     && payload.source === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SOURCE
     && payload.streamId === LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_STREAM
