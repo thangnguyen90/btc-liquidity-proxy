@@ -715,6 +715,7 @@ import { buildLocalAiMainKillGapWatchSnapshot, resolveMainKillGapCandidateSource
 import { injectLocalAiNavigation } from './localAiNavigation.js';
 import { injectOppositeLiquidityToast } from './oppositeLiquidityToast.js';
 import { OppositeLiquidityWebPushService } from './oppositeLiquidityWebPush.js';
+import { DiscordPushManager, buildDiscordPushRouteCatalog } from './discordPushManager.js';
 import { injectToxicTwoSideNavigation } from './toxicTwoSideNavigation.js';
 import { LocalAiTrendDiscordNotifier } from './localAiTrendDiscord.js';
 import { LocalAiSignalReview } from './localAiSignalReview.js';
@@ -890,6 +891,30 @@ loadEnv();
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const publicDir = join(rootDir, 'public');
+const oppositeLiquidityWebPush = new OppositeLiquidityWebPushService({
+  stateFile: join(rootDir, 'data', 'opposite-liquidity-web-push-subscriptions.json'),
+  vapidFile: join(rootDir, 'data', 'opposite-liquidity-web-push-vapid.json'),
+  vapidSubject: String(
+    process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_SUBJECT
+      ?? process.env.LIQUIDITY_BASE_URL
+      ?? 'https://liquidity.nhathadev.trade',
+  ).trim(),
+  vapidPublicKey: String(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_PUBLIC_KEY ?? '').trim(),
+  vapidPrivateKey: String(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_PRIVATE_KEY ?? '').trim(),
+  maxSubscriptions: Number(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_MAX_SUBSCRIPTIONS ?? 50),
+});
+const discordPushManager = new DiscordPushManager({
+  stateFile: join(rootDir, 'data', 'discord-push-manager.json'),
+  routes: buildDiscordPushRouteCatalog(process.env),
+  webPushService: oppositeLiquidityWebPush,
+});
+const fetchBeforeDiscordPushBridge = globalThis.fetch.bind(globalThis);
+globalThis.fetch = discordPushManager.wrapFetch(fetchBeforeDiscordPushBridge);
+void Promise.all([oppositeLiquidityWebPush.initialize(), discordPushManager.initialize()])
+  .then(([webPush, manager]) => console.log(
+    `[DiscordWebPush] ready · ${webPush.subscriptionCount} subscription(s) · ${manager.configuredRoutes} route(s)`,
+  ))
+  .catch((error) => console.warn(`[DiscordWebPush] init failed: ${error.message}`));
 const marketBreadthShockRule = Object.freeze({
   maxSymbols: Math.max(50, Math.min(400, Number(process.env.MARKET_BREADTH_SHOCK_MAX_SYMBOLS ?? 400))),
   minQuoteVolume: Math.max(0, Number(process.env.MARKET_BREADTH_SHOCK_MIN_QUOTE_VOLUME ?? 1_000_000)),
@@ -2076,21 +2101,6 @@ const localAiLiquidityBreakoutOppositeDepthBinanceRunner =
   });
 void localAiLiquidityBreakoutOppositeDepthBinanceRunner.load()
   .catch((error) => console.warn(`[LocalAiLiqBreakoutDepthBinance] state init failed: ${error.message}`));
-const oppositeLiquidityWebPush = new OppositeLiquidityWebPushService({
-  stateFile: join(rootDir, 'data', 'opposite-liquidity-web-push-subscriptions.json'),
-  vapidFile: join(rootDir, 'data', 'opposite-liquidity-web-push-vapid.json'),
-  vapidSubject: String(
-    process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_SUBJECT
-      ?? process.env.LIQUIDITY_BASE_URL
-      ?? 'https://liquidity.nhathadev.trade',
-  ).trim(),
-  vapidPublicKey: String(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_PUBLIC_KEY ?? '').trim(),
-  vapidPrivateKey: String(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_VAPID_PRIVATE_KEY ?? '').trim(),
-  maxSubscriptions: Number(process.env.OPPOSITE_LIQUIDITY_WEB_PUSH_MAX_SUBSCRIPTIONS ?? 50),
-});
-void oppositeLiquidityWebPush.initialize()
-  .then((snapshot) => console.log(`[OppositeWebPush] ready · ${snapshot.subscriptionCount} subscription(s)`))
-  .catch((error) => console.warn(`[OppositeWebPush] init failed: ${error.message}`));
 const localAiLiquidityBreakoutOppositeDepthDiscord =
   new LocalAiLiquidityBreakoutOppositeDepthDiscordNotifier({
     stateFile: join(rootDir, 'data', 'local-ai-liquidity-breakout-opposite-depth-discord.json'),
@@ -2112,7 +2122,6 @@ const localAiLiquidityBreakoutOppositeDepthDiscord =
       process.env.LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_ANALYSIS_BATCH_SIZE ?? 5,
     ),
     onQualified: (event) => localAiLiquidityBreakoutOppositeDepthBinanceRunner.process(event),
-    onNotification: (event) => oppositeLiquidityWebPush.send(event),
   });
 const coinLevelObserveManualOrderInflight = new Set();
 const coinLevelObserveDirectionFlipTracker = new CoinLevelObserveDirectionFlipTracker();
@@ -14381,6 +14390,26 @@ const server = createServer(async (request, response) => {
     if (requestUrl.pathname === '/api/opposite-liquidity-web-push/config'
       && request.method === 'GET') {
       await sendJson(response, await oppositeLiquidityWebPush.publicConfig());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/discord-push-manager' && request.method === 'GET') {
+      response.setHeader('Cache-Control', 'no-store');
+      await sendJson(response, await discordPushManager.snapshot());
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/discord-push-manager/routes' && request.method === 'POST') {
+      if (!isSameOriginWriteRequest(request)) {
+        await sendJson(response, { error: 'Cross-origin push policy update refused.' }, 403);
+        return;
+      }
+      try {
+        const body = await readJsonBody(request);
+        await sendJson(response, await discordPushManager.updateRoute(body.routeId, body.enabled));
+      } catch (error) {
+        await sendJson(response, { error: error?.message ?? 'DISCORD_PUSH_ROUTE_UPDATE_FAILED' }, 400);
+      }
       return;
     }
 
@@ -44193,6 +44222,8 @@ async function sendStatic(pathname, response) {
                   ? '/binance-signal-orders.html'
                 : pathname === '/opposite-liquidity-manager'
                   ? '/opposite-liquidity-manager.html'
+                  : pathname === '/push-signal-manager'
+                    ? '/push-signal-manager.html'
                   : pathname === '/main-kill-gap-watch'
                     ? '/main-kill-gap-watch.html'
               : pathname;

@@ -1,9 +1,9 @@
 {
   "id": "/opposite-liquidity-manager",
-  "name": "AI Local · Thanh khoản ngược",
-  "short_name": "AI Liquidity",
-  "description": "Thông báo tín hiệu LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH.",
-  "start_url": "/opposite-liquidity-manager",
+  "name": "AI Local · Signal Push",
+  "short_name": "AI Push",
+  "description": "Thông báo Web Push cho các route Discord được cho phép.",
+  "start_url": "/push-signal-manager",
   "scope": "/",
   "display": "standalone",
   "background_color": "#04100c",

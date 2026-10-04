@@ -1,4 +1,4 @@
-export const LOCAL_AI_NAVIGATION_VERSION = 'LOCAL_AI_NAVIGATION_ALL_MENUS_V6_OPPOSITE_LIQUIDITY_MANAGER_20261003';
+export const LOCAL_AI_NAVIGATION_VERSION = 'LOCAL_AI_NAVIGATION_ALL_MENUS_V7_DISCORD_PUSH_MANAGER_20261004';
 
 const LOCAL_AI_HREF = '/local-ai-trend-evaluation';
 const LOCAL_AI_LINK = `<a class="nav-link local-ai-nav-link" href="${LOCAL_AI_HREF}">AI Local</a>`;
@@ -8,6 +8,8 @@ const BINANCE_SIGNAL_ORDERS_HREF = '/binance-signal-orders';
 const BINANCE_SIGNAL_ORDERS_LINK = `<a class="nav-link binance-signal-orders-nav-link" href="${BINANCE_SIGNAL_ORDERS_HREF}">Lệnh theo tín hiệu</a>`;
 const OPPOSITE_LIQUIDITY_MANAGER_HREF = '/opposite-liquidity-manager';
 const OPPOSITE_LIQUIDITY_MANAGER_LINK = `<a class="nav-link opposite-liquidity-manager-nav-link" href="${OPPOSITE_LIQUIDITY_MANAGER_HREF}">Thanh khoản ngược</a>`;
+const PUSH_SIGNAL_MANAGER_HREF = '/push-signal-manager';
+const PUSH_SIGNAL_MANAGER_LINK = `<a class="nav-link push-signal-manager-nav-link" href="${PUSH_SIGNAL_MANAGER_HREF}">Quản lý Push</a>`;
 
 export function injectLocalAiNavigation(value) {
   const html = String(value ?? '');
@@ -20,6 +22,8 @@ export function injectLocalAiNavigation(value) {
       ? '' : BINANCE_SIGNAL_ORDERS_LINK,
     html.includes(`href="${OPPOSITE_LIQUIDITY_MANAGER_HREF}"`) || html.includes(`href='${OPPOSITE_LIQUIDITY_MANAGER_HREF}'`)
       ? '' : OPPOSITE_LIQUIDITY_MANAGER_LINK,
+    html.includes(`href="${PUSH_SIGNAL_MANAGER_HREF}"`) || html.includes(`href='${PUSH_SIGNAL_MANAGER_HREF}'`)
+      ? '' : PUSH_SIGNAL_MANAGER_LINK,
   ].join('');
   if (!missingLinks) return html;
 

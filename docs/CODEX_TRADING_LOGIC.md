@@ -5670,3 +5670,9 @@ Before major edits:
 
 - `OPPOSITE_LIQUIDITY_WEB_PUSH_V1_SERVER_VAPID_20261004` + sitewide V4/PWA: điện thoại đăng ký PushManager/VAPID với server; event `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH` mới được server gửi qua Service Worker ngay cả khi trang đã đóng. iPhone/iPad yêu cầu mở web app từ icon Màn hình chính; Android bật trực tiếp. Poll/toast 10 giây vẫn là fallback và không tạo native notification trùng khi đã có true subscription.
 - Payload chỉ dùng event causal vừa phát và trạng thái callback Binance đã biết. Không thay LONG/SHORT, gate, thống kê hiệu suất, Binance/entry/size/SL/TP/DCA/protection/Discord. State subscription và VAPID tách riêng, eventId dedupe 7 ngày, endpoint hết hạn tự dọn; JSON cũ tương thích. Không thêm label/card/matcher nên không thêm WHITELIST.
+
+### 2026-10-04 — Trang quản lý Discord → Web Push
+
+- Thêm `DISCORD_PUSH_MANAGER_V1_POST_SUCCESS_ROUTE_ALLOWLIST_20261004` tại `/push-signal-manager`, Web Push V2, Service Worker v3 và navigation V7. Trang gom các env key dùng chung exact Discord webhook, hiển thị telemetry và cho bật/tắt Web Push theo route; route mới mặc định OFF, riêng `LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH` giữ ON để tương thích hành vi đang chạy.
+- Bridge chỉ xét sau khi POST Discord trả 2xx, rút gọn chính payload Discord thành notification và không chặn/đợi Push trong request Discord. `observed/push event/device delivered` là telemetry vận hành; không phải chất lượng tín hiệu hoặc xác suất.
+- Thay đổi chỉ là allowlist delivery. Không đổi dữ liệu trước entry, detector/phân loại, Discord, Binance entry/size/leverage/SL/TP/DCA/protection. State settings mới additive, subscription/VAPID JSON cũ giữ nguyên. Không tạo label/card/matcher giao dịch nên không thêm WHITELIST; default OFF/CLOSED AvgROE `>4%` không đổi.

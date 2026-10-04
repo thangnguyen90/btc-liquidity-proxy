@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import webPush from 'web-push';
 
 export const OPPOSITE_LIQUIDITY_WEB_PUSH_VERSION =
-  'OPPOSITE_LIQUIDITY_WEB_PUSH_V1_SERVER_VAPID_20261004';
+  'OPPOSITE_LIQUIDITY_WEB_PUSH_V2_DISCORD_ROUTE_ALLOWLIST_20261004';
 
 const RETAIN_EVENT_MS = 7 * 24 * 60 * 60_000;
 
@@ -241,16 +241,24 @@ export class OppositeLiquidityWebPushService {
   }
 
   send(event = {}) {
+    return this.sendPayload(buildOppositeLiquidityPushPayload(event));
+  }
+
+  sendPayload(payload = {}) {
     return this.#run(async () => {
-      const eventId = cleanText(event.eventId, 240);
+      const eventId = cleanText(payload.eventId, 240);
       if (!eventId) return { attempted: 0, sent: 0, removed: 0, failed: 0, error: 'EVENT_ID_REQUIRED' };
+      const signalType = cleanText(payload.signalType, 120);
+      if (signalType !== 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH'
+        && !signalType.startsWith('DISCORD_ROUTE:')) {
+        return { attempted: 0, sent: 0, removed: 0, failed: 0, error: 'SIGNAL_TYPE_NOT_ALLOWED' };
+      }
       const now = this.now();
       this.state.sentEvents = Object.fromEntries(Object.entries(this.state.sentEvents)
         .filter(([, sentAt]) => now - finite(sentAt, 0) <= RETAIN_EVENT_MS));
       if (this.state.sentEvents[eventId]) {
         return { attempted: 0, sent: 0, removed: 0, failed: 0, deduped: true };
       }
-      const payload = buildOppositeLiquidityPushPayload(event);
       const entries = Object.entries(this.state.subscriptions);
       let sent = 0;
       let removed = 0;
@@ -281,6 +289,8 @@ export class OppositeLiquidityWebPushService {
       this.state.sentEvents[eventId] = now;
       this.state.lastDelivery = {
         eventId,
+        signalType,
+        routeId: cleanText(payload.routeId, 100) || null,
         attempted: entries.length,
         sent,
         removed,

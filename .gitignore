@@ -17,6 +17,7 @@ data/*.json.*.tmp
 data/*.json.tmp
 data/opposite-liquidity-web-push-subscriptions.json
 data/opposite-liquidity-web-push-vapid.json
+data/discord-push-manager.json
 scripts/__pycache__/
 reports/
 data/coin-horizon-discord.json
