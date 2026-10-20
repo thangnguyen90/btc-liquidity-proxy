@@ -211,6 +211,28 @@ export function buildBinanceFilledSignalAuditRecord(input = {}, submission = {},
     streamId: text(firstPresent(input.streamId, submission.streamId), 60) || null,
     lifecycleId: text(firstPresent(input.lifecycleId, submission.lifecycleId), 220) || null,
     matchedKeys,
+    ...(combined.risingVolumeSnapshot?{
+      risingVolumeSnapshot:JSON.parse(JSON.stringify(combined.risingVolumeSnapshot)),
+      risingVolumeSignalId:text(combined.risingVolumeSignalId,220)||null,
+      ...(combined.risingVolumeRatioProof?{risingVolumeRatioProof:JSON.parse(JSON.stringify(combined.risingVolumeRatioProof))}:{}),
+      risingVolumeEntryVersion:text(combined.risingVolumeEntryVersion,150)||null}:{}),
+    ...(combined.coinPumpWickEarlyAtEntry?{
+      coinPumpWickEarlyAtEntry:JSON.parse(JSON.stringify(combined.coinPumpWickEarlyAtEntry)),
+      coinPumpWickEarlyRatioProof:combined.coinPumpWickEarlyRatioProof?JSON.parse(JSON.stringify(combined.coinPumpWickEarlyRatioProof)):null,
+      coinPumpWickEarlySignalId:text(combined.coinPumpWickEarlySignalId,220)||null,
+      coinPumpWickEarlyEntryVersion:text(combined.coinPumpWickEarlyEntryVersion,150)||null}:{}),
+    ...(combined.heatmapSweepAtEntry?{
+      heatmapSweepAtEntry:JSON.parse(JSON.stringify(combined.heatmapSweepAtEntry)),
+      heatmapSweepSignalId:combined.heatmapSweepSignalId??null,heatmapSweepEntryVersion:combined.heatmapSweepEntryVersion??null,
+    }:{}),
+    ...(combined.pumpTurnNearAtEntry?{
+      pumpTurnNearAtEntry:JSON.parse(JSON.stringify(combined.pumpTurnNearAtEntry)),
+      pumpTurnNearSignalId:combined.pumpTurnNearSignalId??null,pumpTurnNearEntryVersion:combined.pumpTurnNearEntryVersion??null,
+    }:{}),
+    ...(combined.structureSetupAtEntry?{
+      structureSetupAtEntry:JSON.parse(JSON.stringify(combined.structureSetupAtEntry)),
+      structureSetupSignalId:text(combined.structureSetupSignalId,220)||null,
+      structureSetupEntryVersion:text(combined.structureSetupEntryVersion,150)||null}:{}),
     signalCombo: signalCombo || null,
     signalEntryPrice: finite(firstPresent(input.signalEntryPrice, submission.signalEntryPrice)),
     takeProfitPrice: finite(firstPresent(input.takeProfitPrice, submission.takeProfitPrice)),

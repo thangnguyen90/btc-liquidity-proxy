@@ -1,6 +1,8 @@
 node_modules/
 .playwright-libs/
 .env
+# Regenerable public OHLC research cache; keep summaries and scripts separate.
+data/research/pump-path-week-20261015/raw/
 *.log
 data/coinglass-web-top20/
 data/binance-filled-signal-audit/
@@ -30,6 +32,7 @@ data/post-pump-ema99-discord.json
 data/post-pump-ema99-discord.json.tmp
 data/auto-entry-controls.json
 data/auto-entry-controls.json.tmp
+data/rising-volume-discord.json*
 data/ema99-near-reject-binance.json
 data/ema99-near-reject-binance.json.tmp
 data/ema99-reclaim-long-binance.json
@@ -53,3 +56,18 @@ data/coin-level-entry-watch-binance.json.tmp
 data/opposite-liquidity-retest.json*
 data/liquidity-zone-manager.json*
 data/main-kill-distance-entry.json*
+data/liquidity-zone-manual-orders.json*
+data/btc-liquidation-context.json
+data/btc-liquidation-context.json.tmp-*
+data/btc-wick-recovery.json
+data/btc-wick-recovery.json.tmp-*
+data/coin-pump-long-flush.json
+data/coin-pump-long-flush.json.tmp-*
+data/coin-pump-wick-early.json
+data/coin-pump-wick-early.json.tmp-*
+data/short-setup-watch.json
+data/short-setup-watch.json.tmp-*
+data/pump-turn-near-short-binance.json
+data/pump-turn-near-short-binance.json.tmp-*
+data/heatmap-sweep-watch.json
+data/heatmap-sweep-watch.json.tmp-*

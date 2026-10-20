@@ -6,6 +6,7 @@
   <title>AI Local · Đánh giá xu hướng</title>
   <link rel="stylesheet" href="/local-ai-trend-evaluation.css?v=20261001-v8-hourly-btc-guidance">
   <link rel="stylesheet" href="/local-ai-trend-chat.css?v=20261004-v13-touch-toggle-tooltip">
+  <link rel="stylesheet" href="/btc-liquidation-context.css?v=20261013-v4">
   <style>
     .qualification{display:inline-block;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:950}
     .qualification-pass{background:#0e593e;color:#67ffbf;box-shadow:0 0 0 1px #2bcc91}
@@ -33,6 +34,74 @@
         <a class="active" href="/local-ai-trend-evaluation" aria-current="page">AI Local</a>
       </nav>
     </header>
+
+  <section id="weak-alt-rebound" class="weak-alt-panel" data-state="WAIT_DATA" aria-label="BTC hồi nhưng ALT yếu">
+    <p class="weak-alt-kicker">BTC × ALT · MẠNH/YẾU · ĐỒNG THUẬN/PHÂN HÓA · OBSERVE ONLY</p>
+    <div data-weak-legend class="weak-alt-legend" aria-label="Màu trạng thái BTC/ALT"></div>
+    <h2 data-weak-heading role="status" aria-live="polite">Đang đánh giá sức hồi ALT…</h2>
+    <p data-weak-status></p><div data-weak-metrics class="weak-alt-metrics"></div><ul data-weak-conditions></ul>
+    <p class="weak-alt-policy">Ngưỡng thử nghiệm, chưa backtest lợi thế hoặc xác suất sập. Beta tăng/giảm là hệ số phản ứng lịch sử, không phải nguyên nhân. Không chặn/vào/đóng lệnh, không đổi size/SL/TP.</p>
+    <label class="weak-alt-toggle"><input type="checkbox" data-weak-enabled> Gửi Push khi trạng thái BTC/ALT thay đổi (mọi thiết bị đã đăng ký)</label>
+    <button type="button" data-opposite-liquidity-push>Bật Push như app</button><small data-opposite-liquidity-push-help></small>
+    <p class="weak-alt-note">Tuân thủ giờ yên lặng đang lưu, mặc định00:00–06:00VN. Mỗi trạng thái có emoji/icon màu riêng; nền thông báo do hệ điều hành quyết định. Trạng thái phân hóa/thiếu dữ liệu không gửi Push.</p>
+    <div data-weak-structure></div>
+    <details data-weak-old-matrix><summary>So sánh mức thay đổi1h/15m cũ · không phải xu hướng hoặc phản ứng nhịp mới</summary><div data-weak-relations></div></details>
+    <details data-weak-old-counter><summary>Bổ sung: bằng chứng ép SHORT trên nền15m/1h · không thay phản ứng nhịp mới</summary><div data-weak-countertrend></div></details>
+    <details><summary>Coin theo kịch bản & hệ số phản ứng · tối đa30 coin</summary><div class="weak-alt-table-wrap" data-weak-coins></div></details>
+    <details data-weak-history-details><summary>Lịch sử cảnh báo · không phải kết quả giao dịch</summary><div data-weak-history></div></details>
+  </section>
+    <section id="btc-liquidation-context" class="liquidation-context" data-state="WAIT_DATA" aria-labelledby="liquidation-context-title">
+      <p class="eyebrow">BTC × THANH LÝ THỊ TRƯỜNG × LONG/SHORT RATIO · CẢNH BÁO SỚM · OBSERVE ONLY</p>
+      <h2>LONG / SHORT · nguy cơ sớm & đang tháo vị thế</h2>
+      <div data-context-forecast></div>
+      <p class="context-policy">WATCH: vị thế dễ tổn thương; EARLY: nguy cơ sớm, OI chưa tháo mạnh. ĐANG THÁO: BTC 15m tăng/giảm ≥0,3%, OI giảm ≥0,3%, volume ≥1,3× và lực mua/bán ≥55%; không cần ratio nghiêng hướng đó hoặc OI đang tích tụ. Đây là suy luận nghiêng ép SHORT/LONG, không khẳng định thanh lý thật; số forceOrder ở phần dưới là bằng chứng riêng. Rule thử nghiệm chưa backtest/hiệu chuẩn xác suất. Không tự vào hoặc đóng lệnh.</p>
+      <details class="forecast-history"><summary>Lịch sử cảnh báo sớm · không phải kết quả giao dịch</summary><ul data-context-forecast-history></ul></details>
+      <h3>Thanh lý đã quan sát · không phải dự báo</h3>
+      <h2 id="liquidation-context-title" data-context-heading role="status" aria-live="polite">Đang tải bối cảnh thanh lý…</h2>
+      <div data-context-totals></div>
+      <ul data-context-reasons><li>Đang kiểm tra dữ liệu BTC, OI và nguồn thanh lý.</li></ul>
+      <div data-context-episode hidden></div>
+      <details class="context-data"><summary>Xem số liệu thanh lý, ratio và OI</summary><div data-context-metrics></div></details>
+      <small data-context-time></small>
+      <p class="context-policy">Snapshot Binance USDT-M có thể thiếu sự kiện, không phải tổng đầy đủ đa sàn. Đã quan sát ≥1 triệu USD/5m: ghi nhận ngay cả khi đang thu nền, không cần ratio/OI. Tăng đột biến vẫn cần một phía ≥5 triệu USD/5m, ≥3× nền 30m và chiếm ≥70%, sau khi đủ nền35m; xác nhận dây chuyền dùng thêm BTC/OI/dòng giao dịch. Chỉ spike có nền thật được xác nhận trễ trong30m, không lấy cảnh báo tuyệt đối lúc thu nền làm spike. Dấu vết giữ60m, không đồng nghĩa áp lực hiện tại hoặc đã hồi phục. Không thay đổi Binance, size, SL/TP.</p>
+      <details class="context-history"><summary>Lịch sử chuyển trạng thái thanh lý</summary><ul data-context-history></ul></details>
+    </section>
+
+    <section id="coin-pump-wick-early" class="liquidation-context" aria-labelledby="early-wick-title">
+      <p class="eyebrow">MỚI · SÓNG BƠM 30–60M → XẢ SÂU RÚT RÂU · BÁO NGAY KHI NẾN 1M ĐÓNG</p>
+      <h2 id="early-wick-title">Rút râu sớm sau sóng bơm · không chờ xác nhận hồi</h2>
+      <p data-early-status role="status" aria-live="polite">Đang nạp dữ liệu nến 1m…</p>
+      <p>Giữ bối cảnh sóng bơm lớn kể cả vài phút cuối đã điều chỉnh, như mẫu ERA. Nến xả sâu có râu dưới ≥40% được báo ngay khi đóng; không cần đóng lấy lại hỗ trợ hoặc chờ nến sau. Không cần BTC giảm. Đây là cảnh báo rút râu, KHÔNG phải đã hồi xác nhận.</p>
+      <div class="wick-controls"><label><input type="checkbox" data-early-enabled disabled> Gửi rút râu sớm qua Push + Discord</label><button type="button" data-opposite-liquidity-push>Bật Push như app</button></div>
+      <p class="wick-risk">Rút râu sớm không phải đã hồi xác nhận. Nhánh thử nghiệm: tín hiệu EARLY + ratio tài khoản top trader 5m đi ngang 30m (biên ≤5%), rồi giảm ≥10% trong ≤30m → LONG 3 USDT margin ×5, TP +10% / SL −30% ROE. Không cần Volume 1m liền mạch, BTC giảm, OI tăng hoặc nến xác nhận sau. Route mặc định OFF; cần bật riêng trong <a href="/binance-auto-controls">Quản lý Binance</a>. Không pass vẫn cảnh báo, không sửa lệnh cũ hoặc phát lại lịch sử; chưa backtest lợi thế riêng nhánh này.</p>
+      <p data-early-binance role="status">Đang đọc trạng thái nhánh Binance…</p>
+      <div data-early-cohorts></div><small data-early-counts></small>
+      <details data-early-details><summary>Lịch sử MỚI · rút râu sớm, chưa xác nhận hồi</summary><div data-early-history></div></details>
+    </section>
+
+    <section id="btc-wick-recovery" class="liquidation-context" aria-labelledby="btc-wick-title">
+      <p class="eyebrow">COIN ĐANG BƠM → MỘT CÂY XẢ SÂU → RÚT RÂU / HỒI · 1M CLOSED · OBSERVE ONLY</p>
+      <h2 id="btc-wick-title">CŨ · Sóng bơm đã hồi xác nhận · không cần BTC giảm</h2>
+      <p data-wick-status role="status" aria-live="polite">Đang nạp dữ liệu 1m…</p>
+      <p>Kiểm tra sóng bơm/volume của chính coin trước cây xả, không dùng BTC down làm điều kiện. Một nến quét sâu có râu dưới và đóng lấy lại hỗ trợ (kể cả nến đỏ), hoặc nến xanh lấy lại hỗ trợ trong tối đa 3 nến 1m sau xả. Mất đáy cây xả trước xác nhận: hủy setup.</p>
+      <div class="wick-controls"><label><input type="checkbox" data-wick-enabled disabled> Gửi đã hồi xác nhận qua Push + Discord</label><button type="button" data-opposite-liquidity-push>Bật Push như app</button></div>
+      <small data-opposite-liquidity-push-help></small>
+      <p class="context-policy">Ngưỡng thử nghiệm, chưa chứng minh lợi thế. Râu hồi sâu không tự là điểm LONG tốt; không chặn cảnh báo chỉ vì hồi hơn 1.5% từ đáy râu. Không tự MARKET, không thay size, SL/TP hoặc lệnh cũ. Ratio/OI/BTC và bằng chứng thanh lý không phải điều kiện của card này.</p>
+      <div data-wick-cohorts></div><small data-wick-counts></small>
+      <details data-wick-history-details><summary>Lịch sử sóng bơm bị quét sâu: xác nhận / hủy / hết hạn; giữ riêng mẫu BTC cũ</summary><div data-wick-history></div></details>
+    </section>
+
+    <section id="coin-pump-long-flush" class="liquidation-context" aria-labelledby="coin-pump-flush-title">
+      <p class="eyebrow">SÓNG BƠM + VOLUME TĂNG → MỘT CÂY XẢ / QUÉT LONG · 1M CLOSED · OBSERVE ONLY</p>
+      <h2 id="coin-pump-flush-title">Cảnh báo xả mạnh sau sóng bơm</h2>
+      <p data-flush-status role="status" aria-live="polite">Đang nạp dữ liệu 1m…</p>
+      <p>Kiểm tra 10 nến bơm/volume tăng trước cây xả. Tách nến đóng dưới hỗ trợ và nến quét sâu rồi rút râu lấy lại; không coi rút râu là đã đảo chiều giảm.</p>
+      <div class="wick-controls"><label><input type="checkbox" data-flush-enabled disabled> Gửi push cảnh báo xả sau sóng bơm (mọi thiết bị đã đăng ký)</label><button type="button" data-opposite-liquidity-push>Bật Push như app</button></div>
+      <small data-opposite-liquidity-push-help></small>
+      <p class="context-policy">Cảnh báo sau khi nến 1m đóng, không dự đoán trước cây xả. “Quét LONG” là nghi vấn từ giá/volume; chỉ ghi nhận thanh lý thật khi nguồn Binance có sự kiện mẫu. Không tự đóng LONG, vào SHORT, sửa entry, size hoặc SL/TP.</p>
+      <div data-flush-cohorts></div><small data-flush-counts></small>
+      <details data-flush-history-details><summary>Lịch sử cảnh báo xả / rút râu sau sóng bơm</summary><div data-flush-history></div></details>
+    </section>
 
     <section class="warning">
       <strong>Không phải xác suất thắng hoặc dự báo giá bảo đảm.</strong>
@@ -172,5 +241,12 @@
     </section>
   </main>
   <script type="module" src="/local-ai-trend-evaluation.js?v=20261004-v42-fast-orderbook-no-ollama"></script>
+  <script type="module" src="/btc-liquidation-context.js?v=20261013-v4"></script>
+  <link rel="stylesheet" href="/btc-wick-recovery.css?v=20261010-early-v1">
+  <script type="module" src="/coin-pump-wick-early.js?v=20261011-ratio-v1"></script>
+  <script type="module" src="/btc-wick-recovery.js?v=20261010-discord-v1"></script>
+  <script type="module" src="/coin-pump-long-flush.js?v=20261009-v2-recovery-channel"></script>
+<link rel="stylesheet" href="/weak-alt-rebound.css?v=20261014-phase-v2">
+<script type="module" src="/weak-alt-rebound.js?v=20261014-phase-v2"></script>
 </body>
 </html>

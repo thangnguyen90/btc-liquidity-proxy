@@ -1,10 +1,21 @@
 import {readFileSync,writeFileSync,renameSync,mkdirSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {validImpulseSizing} from './postMoveImpulseSizing.js';
+import {RISING_VOLUME_SOURCE,RISING_VOLUME_STREAM,RISING_VOLUME_ROUTES,RISING_VOLUME_ENTRY_RULE,risingVolumeMargin} from './risingVolumeBinance.js';
+import {EARLY_WICK_ROUTE,EARLY_WICK_RULE} from './coinPumpWickEarlyBinance.js';
+import {STRUCTURE_SOURCE,STRUCTURE_RULE} from './structureSetupBinance.js';
+import {PUMP_TURN_NEAR_SOURCE,PUMP_TURN_NEAR_ROUTE,PUMP_TURN_NEAR_RULE} from './pumpTurnNearShortBinance.js';
+import {HEATMAP_SWEEP_SOURCE,HEATMAP_SWEEP_ROUTES,HEATMAP_SWEEP_RULE,heatmapSweepMargin} from './heatmapSweepBinance.js';
 import {ema99RouteMeta,ema99Margin,ema99Leverage,ema99TakeProfitRoe,validEma99Margin,validEma99Leverage,validEma99TakeProfitRoe,EMA99_ENTRY_INTERVALS,EMA99_ENTRY_SETTINGS_VERSION} from './ema99EntryCatalog.js';
 import {otherRouteMeta,resolveOtherEntrySettings,validOtherMargin,validOtherLeverage,validOtherTakeProfitRoe,OTHER_ENTRY_SETTINGS_VERSION} from './otherEntryCatalog.js';
-export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V36_LOCAL_AI_PRIORITY_ZONE_1USDT_20261003';
-export const BINANCE_PROTECTION_EXCLUSION_VERSION='BINANCE_SYMBOL_PROTECTION_EXCLUSION_V8_DIRECTION_FLIP_FAIL_CLOSED_20261003';
+export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V44_IMPULSE_SHORT_FIXED1_20261020';
+export const BINANCE_PROTECTION_EXCLUSION_VERSION='BINANCE_SYMBOL_PROTECTION_EXCLUSION_V9_FULL_BYPASS_AUTO_CLOSE_20261005';
+const MANUAL_POSITION_CLOSE_AUTHORIZATION=Symbol('authenticated-manual-position-close');
+// Server-only capability: request JSON/client IDs cannot grant this exemption.
+// Mint only after the existing Orders credentials check for an explicit close.
+export function authorizeManualPositionClose(args) {
+  return {...args,[MANUAL_POSITION_CLOSE_AUTHORIZATION]:true};
+}
 export const DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE=15;
 export const DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_LOSS_ROE=-25;
 export function protectionExclusionAutoResumeRoe(value=DEFAULT_PROTECTION_EXCLUSION_AUTO_RESUME_ROE){
@@ -37,6 +48,13 @@ const isLocalAiPriorityEngineZoneRoute=r=>r?.source==='local-ai-trend-evaluation
   &&r?.label==='LOCAL_AI_PRIORITY_ENGINE_ZONE_TOUCH'
   &&['LONG','SHORT'].includes(r?.side);
 const clean=v=>String(v??'').trim().slice(0,200);
+const isRisingVolumeRoute=r=>r?.source===RISING_VOLUME_SOURCE&&r?.stream===RISING_VOLUME_STREAM
+  &&RISING_VOLUME_ROUTES.some(route=>route.signalLabel===r.label&&route.side===r.side);
+const isEarlyWickRoute=r=>r?.source===EARLY_WICK_ROUTE.source&&r?.stream===EARLY_WICK_ROUTE.streamId
+  &&r?.label===EARLY_WICK_ROUTE.signalLabel&&r?.side==='LONG';
+const isStructureRoute=r=>r?.source===STRUCTURE_SOURCE&&r?.stream==='closed-1m-structure'
+  &&r?.label==='STRUCTURE_SETUP_READY'&&['LONG','SHORT'].includes(r?.side);
+const isHeatmapSweepRoute=r=>r?.source===HEATMAP_SWEEP_SOURCE&&HEATMAP_SWEEP_ROUTES.some(x=>x.streamId===r.stream&&x.signalLabel===r.label&&x.side===r.side);
 export function normalizeProtectionExclusionSymbol(value) {
   const compact=String(value??'').normalize('NFKC').trim().toUpperCase().replace(/[\s/_-]+/g,'');
   const symbol=compact.endsWith('USDT')?compact:`${compact}USDT`;
@@ -200,6 +218,13 @@ export class AutoEntryControls {
           if(!meta.executable||r.marginUsdt===null||r.leverage===null||r.takeProfitRoePct===null)r.enabled=false;}
         const otherMeta=otherRouteMeta(r);
         r.otherSettingsEditable=otherMeta!==null;
+        if(isRisingVolumeRoute(r))Object.assign(r,{...RISING_VOLUME_ENTRY_RULE,
+          marginUsdt:risingVolumeMargin(r.side),title:'Volume 1m liền mạch + ratio đi ngang rồi đổi dốc',executable:true,takeProfitSettingsEditable:false});
+        if(isEarlyWickRoute(r))Object.assign(r,{...EARLY_WICK_RULE,title:'Rút râu sớm + ratio giảm mạnh · LONG',executable:true,takeProfitSettingsEditable:false});
+        if(isStructureRoute(r))Object.assign(r,{...STRUCTURE_RULE,title:'Cơ hội LONG / SHORT · READY R:R ≥1,5 · max riêng 15',executable:true,takeProfitSettingsEditable:false});
+        if(r.source===PUMP_TURN_NEAR_SOURCE&&r.stream===PUMP_TURN_NEAR_ROUTE.streamId&&r.label===PUMP_TURN_NEAR_ROUTE.signalLabel&&r.side==='SHORT')Object.assign(r,{...PUMP_TURN_NEAR_RULE,maxOpenPositionsScope:PUMP_TURN_NEAR_SOURCE,title:'GẦN VÙNG SHORT mới · chưa xác nhận nến · 2 USDT ×5 · max riêng 20',executable:true,takeProfitSettingsEditable:false});
+        if(isHeatmapSweepRoute(r))Object.assign(r,{...HEATMAP_SWEEP_RULE,marginUsdt:heatmapSweepMargin(r.side),maxOpenPositionsScope:HEATMAP_SWEEP_SOURCE,
+          title:`QUÉT HẾT CỤM ${r.side==='SHORT'?'TRÊN':'DƯỚI'} · ${r.side} ${heatmapSweepMargin(r.side)} USDT ×5 · max riêng 20 chung hai hướng`,executable:true,takeProfitSettingsEditable:false});
         if(otherMeta){
           const settings=resolveOtherEntrySettings(r,r);
           r.takeProfitSettingsEditable=otherMeta.takeProfitMode==='FIXED_ROE';
@@ -269,7 +294,7 @@ export class AutoEntryControls {
     }
     else if(body.action==='margin'&&s.routes[body.key]) {
       const r=s.routes[body.key];
-      if(isPostMoveImpulseRoute(r))throw new Error('IMPULSE dùng size tự động 5/1 USDT theo giờ hoặc BTC; không dùng margin cố định.');
+      if(isPostMoveImpulseRoute(r))throw new Error('IMPULSE dùng size tự động LONG 2/1 theo giờ hoặc BTC, SHORT cố định 1 USDT; không chỉnh margin tại đây.');
       const emaEditable=ema99RouteMeta(r)?.executable===true,otherEditable=otherRouteMeta(r)!==null;
       if((!emaEditable&&!otherEditable)||!(emaEditable?validEma99Margin(body.marginUsdt):validOtherMargin(body.marginUsdt)))
         throw new Error('Margin phải từ 1–100 USDT, tối đa 2 số lẻ.');
@@ -367,13 +392,30 @@ export class AutoEntryControls {
     if(manual)return;
     const r=this.register(payload),s=this.read();
     if(r.source==='UNCLASSIFIED'||r.side==='UNKNOWN'||!s.enabled||s.routes[r.key]?.enabled!==true){const e=new Error(`Auto Binance OFF: ${r.label} / ${r.side}`);e.code='AUTO_ENTRY_CONTROL_DISABLED';throw e;}
+    if(isRisingVolumeRoute(r)&&(['leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions']
+      .some(key=>payload[key]!==RISING_VOLUME_ENTRY_RULE[key])||payload.marginUsdt!==risingVolumeMargin(r.side)
+      ||payload.notionalUsdt!==risingVolumeMargin(r.side)*5))
+      throw Error('Volume 1m: size/đòn bẩy/TP/SL/cap cố định đã đổi; chặn entry.');
+    if(r.source===PUMP_TURN_NEAR_SOURCE&&(r.stream!==PUMP_TURN_NEAR_ROUTE.streamId||r.label!==PUMP_TURN_NEAR_ROUTE.signalLabel||r.side!=='SHORT'
+      ||['marginUsdt','leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions'].some(k=>payload[k]!==PUMP_TURN_NEAR_RULE[k])||payload.notionalUsdt!==10||payload.maxOpenPositionsScope!==PUMP_TURN_NEAR_SOURCE))
+      throw Error('GẦN VÙNG SHORT: size/TP/SL/max riêng 20 đã đổi; chặn entry.');
+    if(r.source===HEATMAP_SWEEP_SOURCE&&(!isHeatmapSweepRoute(r)||['leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions'].some(k=>payload[k]!==HEATMAP_SWEEP_RULE[k])
+      ||payload.marginUsdt!==heatmapSweepMargin(r.side)||payload.notionalUsdt!==heatmapSweepMargin(r.side)*5||payload.maxOpenPositionsScope!==HEATMAP_SWEEP_SOURCE
+      ||(typeof s.routes[r.key].enabledAt==='number'?s.routes[r.key].enabledAt:Date.parse(s.routes[r.key].enabledAt))!==payload.entryActivationAt))
+      throw Error('Heatmap quét hết cụm: size/TP/SL/max riêng 20 đã đổi; chặn entry.');
+    if(isEarlyWickRoute(r)&&(['marginUsdt','leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions']
+      .some(k=>payload[k]!==EARLY_WICK_RULE[k])||payload.notionalUsdt!==15))
+      throw Error('Early wick ratio: size/đòn bẩy/TP/SL/cap cố định đã đổi; chặn entry.');
+    if(isStructureRoute(r)&&(['marginUsdt','leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions']
+      .some(k=>payload[k]!==STRUCTURE_RULE[k])||payload.notionalUsdt!==5||payload.maxOpenPositionsScope!==STRUCTURE_SOURCE))
+      throw Error('Cơ hội LONG/SHORT: size/TP/SL/max riêng 15 đã đổi; chặn entry.');
     if(ema99RouteMeta(r)?.executable){const routeState=s.routes[r.key],leverage=ema99Leverage(routeState),margin=ema99Margin(routeState),takeProfitRoePct=ema99TakeProfitRoe(routeState);
       if(Number(payload.leverage)!==leverage||!Number.isFinite(Number(payload.notionalUsdt))||Math.abs(Number(payload.notionalUsdt)-margin*leverage)>1e-8)
         throw new Error('EMA99 size/leverage changed; entry blocked until next scan.');
       if(Number(payload.takeProfitRoePct??15)!==takeProfitRoePct)throw new Error('EMA99 TP changed; entry blocked until next scan.');}
     if(otherRouteMeta(r)){const routeState=s.routes[r.key],settings=resolveOtherEntrySettings(r,routeState);
       const coinLevelLimit=r.source==='coin-level-entry-watch'&&payload.orderType==='LIMIT';
-      if(isPostMoveImpulseRoute(r)&&!validImpulseSizing(payload))throw new Error('IMPULSE thiếu hoặc sai quyết định size 5/1 USDT.');
+      if(isPostMoveImpulseRoute(r)&&!validImpulseSizing(payload))throw new Error('IMPULSE thiếu hoặc sai quyết định size LONG 2/1, SHORT cố định 1 USDT.');
       const margin=isPostMoveImpulseRoute(r)?payload.impulseSizing.marginUsdt:coinLevelLimit?3:settings?.marginUsdt;
       if(!settings||Number(payload.marginUsdt)!==margin||Number(payload.leverage)!==settings.leverage
         ||!Number.isFinite(Number(payload.notionalUsdt))||Math.abs(Number(payload.notionalUsdt)-margin*settings.leverage)>1e-8)
@@ -389,10 +431,19 @@ export class AutoEntryControls {
         const type=String(params.type??'').toUpperCase();
         const isConditionalProtection=method==='placeAlgoOrder'
           ||type.includes('STOP')||type.includes('TAKE_PROFIT')||type.includes('TRAILING');
-        if(isReducingOrder(params)&&isConditionalProtection&&this.isProtectionExcluded(params.symbol)){
-          const error=new Error(`${normalizeProtectionExclusionSymbol(params.symbol)} đang Tắt toàn bộ: từ chối tạo hoặc dời TP/SL.`);
-          error.code='BINANCE_PROTECTION_EXCLUDED';
-          throw error;
+        if(isReducingOrder(params)){
+          // Recheck at submission, including after an awaited price/position read.
+          // A concurrent user setting must fence MARKET/LIMIT closes as well as SL/TP.
+          this.read();
+          const excluded=this.isProtectionExcluded(params.symbol);
+          const fullBypass=this.protectionExclusionMode(params.symbol)==='FULL_POSITION_BYPASS';
+          const manualMarketClose=method==='placeFuturesOrder'&&type==='MARKET'
+            &&args[MANUAL_POSITION_CLOSE_AUTHORIZATION]===true;
+          if(excluded&&(isConditionalProtection||(fullBypass&&!manualMarketClose))){
+            const error=new Error(`${normalizeProtectionExclusionSymbol(params.symbol)} đang Tắt toàn bộ: từ chối TP/SL hoặc đóng lệnh tự động; vẫn cho phép đóng MARKET thủ công.`);
+            error.code='BINANCE_PROTECTION_EXCLUDED';
+            throw error;
+          }
         }
         if(!isReducingOrder(params))this.assertEntry(args.entryControl?.payload??legacyRoute(params),args.entryControl?.manual===true);
         return original(args);

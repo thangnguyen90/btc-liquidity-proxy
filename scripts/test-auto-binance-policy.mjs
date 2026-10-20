@@ -29,7 +29,7 @@ import {
 import { ceilQuantityAtMinimumNotional } from '../src/orderQuantityPolicy.js';
 
 const exclusiveEnv = {};
-assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'LOCAL_AI_PRIORITY_ZONE_1USDT_V51_20261003');
+assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'IMPULSE_SHORT_FIXED1_HEATMAP_UNCHANGED_V59_20261020');
 assert.equal(LIQUID_FLOW_V2_BINANCE_LEVERAGE, 5);
 assert.equal(liveCardOnlyAutoBinanceEnabled(exclusiveEnv), true);
 assert.equal(liveCardOnlyAutoBinanceEnabled({ LIVE_CARD_WHITELIST_ONLY_AUTO_BINANCE: 'false' }), false);
@@ -211,7 +211,7 @@ for (const impulse of [
 ]) {
   const base = {
     symbol: 'TESTUSDT', dryRun: false, orderType: 'MARKET',
-    marginUsdt: 5, leverage: 5, notionalUsdt: 25,
+    marginUsdt: impulse.side === 'BUY' ? 2 : 1, leverage: 5, notionalUsdt: impulse.side === 'BUY' ? 10 : 5,
     takeProfitRoePct: 10, maxOpenPositions: 50,
     impulseSizing: impulseSizing({side:impulse.side,now:Date.parse('2026-10-01T20:00:00Z')}),
     ...impulse,
@@ -222,7 +222,7 @@ for (const impulse of [
   const authorized = authorizePostMoveImpulse5mOrder(base);
   assert.equal(evaluateAutoBinanceEntryPolicy({
     payload: authorized, orderEnabled: true, env: exclusiveEnv,
-  }).reason, 'POST_MOVE_IMPULSE_TIME_OR_BTC_MARGIN5_ELSE1_MAX50');
+  }).reason, 'POST_MOVE_IMPULSE_LONG2_ELSE1_SHORT_FIXED1_MAX50');
   for (const invalid of [
     { signalInterval: '15m' }, { marginUsdt: 8, notionalUsdt: 40 }, { leverage: 10 },
     { takeProfitRoePct: 11 }, { maxOpenPositions: 30 },

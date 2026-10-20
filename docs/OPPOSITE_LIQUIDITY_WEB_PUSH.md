@@ -1,5 +1,17 @@
 # Web Push cho tín hiệu Discord được phép
 
+## 2026-10-18 — Tín hiệu trực tiếp GẦN VÙNG SHORT
+
+Đã bật route native19:45:22VN ngày18/10, webPID2660007/publicAPI200/4thiết bị; các routePush cũ và quiet00–06VN giữ nguyên. Chỉ tín hiệu mới sauenable, không gửi lại ICNT18:16. Mở lại/tải lại app một lần để lấy SW mới. Không gửi notification thử để xác minh.
+
+Hiện hành: managerV2 `DISCORD_PUSH_MANAGER_V2_NATIVE_SIGNAL_ROUTES_20261018`, WebPushV14, sitewide loaderV11. Route `signal-pump-turn-near-short-v1`/type `PUMP_TURN_NEAR_SHORT` xuất hiện trong `/push-signal-manager`; mặc địnhOFF cho cài đặt mới, người dùng đã yêu cầu bật riêng. Không bật cả webhook hoặc LONG. Nhóm Discord cũ vẫn cần POST2xx; route native này nhận eventSHORT NEAR/IN_ZONE đã lưu từ detector, không phụ thuộc Discord hoặc kết quả Binance.
+
+Event mới sauPushenabledAt/processstart, age/TTL≤30s, sharedquiet mặc định00–06VN (chỉnh được), khônggửi bù. DurablePENDING trướcsend/dedupeevent/unknownnoretry/nohistoricalreplay. Nhấnnotification mở `/pump-turn-watch?signal=<eventId>#signals`, worker hết hạn thì bỏ; tải lại trang/app một lần để nạp worker allowlist mới. Giữ4subscription hiện có, không tự cấp permission trên thiết bị chưa đăng ký.
+
+Không thay dữ liệu trước entry/điều kiện phân loại detector72closed5m/freshsocket, Binance MARKET2USDT×5/TP10/SL30/capriêng20 hoặc lệnh cũ. Telemetry chỉ event/device counts, không thống kê PnL/AvgROE/cardWHITELIST mới; trading whitelist cũ defaultOFF/closedAvgROE>4% không đổi. ManagerV1 JSON booleans/telemetry giữ nguyên, thêmoptionalnativeenabledAt/reservationmap, missingnative→OFF; subscriptions/quiet/history/dedupe cũ không reset. Tests `test-pump-turn-near-push.mjs`/browser cùng bridge/quiet/SW/entry regressions chỉmock.
+
+## Lịch sử V1 — nhóm Discord
+
 Versions: `OPPOSITE_LIQUIDITY_WEB_PUSH_V2_DISCORD_ROUTE_ALLOWLIST_20261004` và `DISCORD_PUSH_MANAGER_V1_POST_SUCCESS_ROUTE_ALLOWLIST_20261004`.
 
 Web Push nhận các route Discord được bật tại `/push-signal-manager`. Route thanh khoản ngược chiều mặc định bật để giữ tương thích; mọi route mới khác mặc định tắt. Web Push không đặt lệnh và không thay Discord, Binance, entry, size, TP hoặc SL.

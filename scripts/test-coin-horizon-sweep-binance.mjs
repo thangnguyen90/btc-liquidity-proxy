@@ -72,6 +72,9 @@ const lowerPlan = buildCoinHorizonSweepOrder(lower, {
   now, enabledAt: now - 60_000, markPrice: 100,
 });
 assert.equal(lowerPlan.side, 'SELL');
+const lowerOne=buildCoinHorizonSweepOrder(lower,{previousState:'UPPER',previousObservedAt:now-30000,now,enabledAt:now-60000,markPrice:100,routeState:{marginUsdt:1,leverage:5}});
+assert.equal(lowerOne.marginUsdt,1);assert.equal(lowerOne.notionalUsdt,5);
+assert.equal(lowerOne.takeProfitPrice,lowerPlan.takeProfitPrice);assert.equal(lowerOne.stopLossPrice,lowerPlan.stopLossPrice);assert.equal(lowerOne.clientOrderId,lowerPlan.clientOrderId);
 assert.equal(lowerPlan.takeProfitPrice, 94);
 assert.equal(lowerPlan.stopLossPrice, 105);
 assert.ok(Math.abs(lowerPlan.takeProfitRoePct - 30) < 1e-9);

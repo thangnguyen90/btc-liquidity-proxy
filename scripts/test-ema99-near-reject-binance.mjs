@@ -23,18 +23,21 @@ assert.equal(evaluateAutoBinanceEntryPolicy({payload:authorizeEma99NearRejectOrd
 assert.equal(evaluateAutoBinanceEntryPolicy({payload:authorizeEma99NearRejectOrder({...plan,leverage:10}),orderEnabled:true}).allowed,false);
 const dir=await mkdtemp(join(tmpdir(),'near-reject-order-')),controls=new AutoEntryControls(join(dir,'controls.json'));
 const route=controls.register({...EMA99_NEAR_REJECT_ROUTE,signalInterval:event.interval});
-let count=0,context={enabled:true,positions:[],openOrders:[],markPrice:100};
+let count=0,context={enabled:true,positions:[],openOrders:[],markPrice:100};const sent=[];
 const runner=()=>new Ema99NearRejectRunner({file:join(dir,'attempts.json'),controls,now:()=>now,
-  getContext:async()=>context,submit:async()=>{count++;return {status:'submitted',orderResult:{orderId:1}};}});
+  getContext:async()=>context,submit:async p=>{count++;sent.push(p);return {status:'submitted',orderResult:{orderId:1}};}});
 let run=runner();assert.equal((await run.handle(event)).status,'off');
 controls.update({action:'route',key:route.key,enabled:true});controls.update({action:'master',enabled:true});
+const enabledAt=controls.read().routes[route.key].enabledAt;
+controls.update({action:'margin',key:route.key,marginUsdt:1,expectedMarginUsdt:5});assert.equal(controls.read().routes[route.key].enabledAt,enabledAt);
 context.positions=[{symbol:'TESTUSDT',positionAmt:1}];assert.equal((await run.handle(event)).status,'existing-position');
 context.positions=[];context.openOrders=[{symbol:'TESTUSDT',reduceOnly:false}];assert.equal((await run.handle(event)).status,'existing-order');
 context.openOrders=[];
 await Promise.all([run.handle(event),run.handle(event)]);assert.equal(count,1);
+assert.equal(sent[0].marginUsdt,1);assert.equal(sent[0].notionalUsdt,5);assert.equal(sent[0].takeProfitPrice,plan.takeProfitPrice);assert.equal(sent[0].stopLossPrice,plan.stopLossPrice);
 run=runner();assert.equal((await run.handle(event)).status,'deduped');assert.equal(count,1);
 const other=controls.register({...EMA99_NEAR_REJECT_ROUTE,signalInterval:'5m'});
 controls.update({action:'route',key:other.key,enabled:true});
 assert.equal((await run.handle({...event,interval:'5m',candleAt:event.candleAt+1})).status,'deduped','symbol cooldown across frames');
 controls.update({action:'pauseAll'});assert.equal((await run.handle(event)).status,'off');
-console.log('EMA99 near-reject Binance tests passed: exact stage, $5 x5, fresh-only, protection, controls, position/order guard, durable dedupe; mock orders only.');
+console.log('EMA99 near-reject Binance tests passed: exact stage, saved $1 x5 override/default unchanged, activation/TP/SL, fresh-only, position/order guard, durable dedupe; mock orders only.');

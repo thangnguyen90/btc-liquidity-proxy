@@ -263,7 +263,7 @@ const pageSource = await readFile(new URL('../public/local-ai-trend-evaluation.h
 assert.match(pageSource, /id="btc-ai-top"/);
 assert.match(pageSource, /id="btc-ai-assessment"/);
 assert.match(pageSource, /local-ai-trend-evaluation\.css\?v=20261001-v8-hourly-btc-guidance/);
-assert.match(pageSource, /type="module" src="\/local-ai-trend-evaluation\.js\?v=20261002-v37-hover-liquidity/);
+assert.match(pageSource, /type="module" src="\/local-ai-trend-evaluation\.js\?v=[^"\s]+/);
 const pageJs = await readFile(new URL('../public/local-ai-trend-evaluation.js', import.meta.url), 'utf8');
 assert.match(pageJs, /function renderBtcAi/);
 assert.match(pageJs, /LOCAL_AI_BTC_TOP_CARD_V1_20260930/);

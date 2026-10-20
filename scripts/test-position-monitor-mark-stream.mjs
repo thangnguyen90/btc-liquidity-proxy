@@ -50,7 +50,7 @@ assert.equal(await waitForMatchingFullFillPosition({
   delaysMs: [0, 1],
   sleep: async () => {},
 }), null);
-assert.equal(POSITION_USER_DATA_STREAM_VERSION, 'POSITION_USER_DATA_STREAM_V2_LISTEN_KEY_RECOVERY_20260816');
+assert.equal(POSITION_USER_DATA_STREAM_VERSION, 'POSITION_USER_DATA_STREAM_V3_HEARTBEAT_RESTART_20261016');
 assert.equal(isBinanceListenKeyExpiredEvent({ e: 'listenKeyExpired' }), true);
 assert.equal(isBinanceListenKeyExpiredEvent({ e: 'ORDER_TRADE_UPDATE' }), false);
 assert.equal(isBinanceListenKeyInvalidError(new Error('This listenKey does not exist.')), true);
@@ -85,7 +85,7 @@ const monitorSource = await readFile(new URL('../src/positionMonitor.js', import
 assert.match(monitorSource, /binancePositionPriceRoe/);
 assert.doesNotMatch(monitorSource, /const roe = \(upnl \/ margin\) \* 100/);
 assert.match(monitorSource, /scheduleUserDataReconnect\(0, 'listen-key-expired'\)/);
-assert.match(monitorSource, /scheduleUserDataReconnect\(0, 'keepalive-listen-key-invalid'\)/);
+assert.match(monitorSource, /\? 'keepalive-listen-key-invalid' : 'keepalive-failed'/);
 assert.match(monitorSource, /onUserDataReconnect\(\{/);
 assert.match(monitorSource, /scheduleFullFillRetry\(symbol, fill, error\)/);
 assert.match(monitorSource, /clearFullFillRetry\(key\)/);

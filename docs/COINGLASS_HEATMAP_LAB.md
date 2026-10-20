@@ -1,0 +1,117 @@
+# Heatmap Lab — Model 1 / Model 3
+
+Hiện hành20/10: `HEATMAP_DUAL_SWEEP_MARKET_V3_20261020` theo dõi cả cụm trên/dưới cùng một bundle, không tăng số lượt API. Full-set trên→SHORT3USDT margin, dưới→LONG1USDT margin ×5/TP+10%/SL−30% ROE, cap20 riêng chung hai hướng khi master và hướng ON theo xác nhận người dùng. Partial-sweep/chart/kịch bản confluence vẫn OBSERVE ONLY; không đợi nến đảo chiều cho full-set. Nguồn trước entry: ba closedprofiles hai model≥35%, MARK/OI fresh, tập chưa chạm trong±5% mặc định/TTL15phút, liveMARK liên tục≤10s; only-new arm sau activation/start, age≤30s/drift≤0,5%/noDCA/active-cohort/protection/quota checks. Không phải bảo đảm đảo chiều/hết thanh lý toàn sàn; không tự nâng size qua exchange min, không sửa vị thế cũ. Coverage phân biệt checked/loaded/armed/waiting, không coi tải lỗi là dữ liệu hợp lệ.
+
+Entry version `HEATMAP_FULL_SWEEP_SHORT3_LONG1_5X_TP10_SL30_CAP20_V1_20261020`, source `heatmap-full-sweep`, controlsV43/policyV58. JSON detectorV1/V2 giữ history nhưng restart bỏ cohort/no replay; entryledger mới dedupe/unknown bảo thủ, exacthms_ protection cho fill mới, audit optionalfields tương thích JSON cũ. UI/Discord hiển thị hướng/size/status/orderId, không gọi gửi tin là khớp. Chỉ thống kê vận hành, không PnL/AvgROE/card WHITELIST mới; WHITELIST cũ vẫn defaultOFF/closedAvgROE>4%. Không thêm Push/đổi quiet-hours. Test native detector/production MARKET+TP-SL mock hai hướng, cap/race/no-replay/defaultOFF/auth và browser desktop/mobile; không gửi order/notification thử. Chi tiết rule hiện hành trong CURRENT mục20-10; các mục Discord-only/upper-only dưới đây là lịch sử, đã được mục này thay thế.
+
+Ô tìm coin nhận `BTW`, `BTWusdt`, `btwusdt` và khoảng trắng ngoài; UI tự chuẩn hóa thành `BTWUSDT` (logic sẵn có, regression `HEATMAP_SYMBOL_INPUT_VERIFY_V1_20261018`). Dùng cùng coin cho chart/URL/formPush/watch; ticker vẫn cần là hợp đồng Binance hợp lệ. Chỉ bổ sung hint/test, không đổi model/entry/alert/JSON/API hoặc restartBE.
+
+Thang màu mặc định từ18/10/2026: **Tuyến tính**, dùng chung Model1/3; vẫn chọn Log thủ công. `HEATMAP_COLOR_DEFAULT_LINEAR_V1_20261018` chỉ đổi default hiển thị, không ảnh hưởng mô hình/kịch bản/Discord/Push/Binance hoặc JSON cũ. Tải lại trang để áp dụng, không restartBE.
+
+## Bổ sung 18/10/2026: theo dõi quét hết cụm upper và Discord riêng
+
+`HEATMAP_UPPER_SWEEP_WATCH_V1_20261018` / `HEATMAP_SWEEP_UI_V1_20261018`, assets v5-sweep; heatmapAPI V3/model công thức giữ nguyên. Người dùng chọn webhook riêng; chỉ lưu `HEATMAP_SWEEP_DISCORD_WEBHOOK_URL` ở secret server, không frontend/API/tài liệu và không fallback kênh khác. Không gửi test hoặc phát lại ảnh/lịch sử cũ.
+
+Đã nạp18/10~17:32VN/web2553308. Webhook GET xác minh200, không POST thử. PublicAPI cfgready/observeOnly/0watch0history mặc địnhOFF; browser ARC desktop/mobile đúngform/nút/phạmvi5%/0pageerror/0APIwrites/nooverflow. Snapshots `/tmp/heatmap-sweep-public-desktop.png`, `/tmp/heatmap-sweep-public-mobile.png`. Unit/core/VMAPI/browser/cooldown/regressions PASS, mock artifacts `/tmp/heatmap-sweep-browser-HkVs7y`. Controls/cutoff/4subscriptions/quiet và health giữ nguyên; không tự bật coin hoặc gửi notification/order thật để test.
+
+Tìm coin thật → mục **Phát hiện quét hết cụm phía trên** → chọn phạm vi (mặc định+5%, chỉnh0,5–10%) → **Bật theo dõi coin này**. Mặc địnhOFF, max10coin, search/GET không tự bật. Bật một coin vẫn theo dõi khi đóngtab, không scan toàn525coin. Hiện rõ trạng thái/chờnguồn/vùng đã chốt/mépgiá/touched/cleared/count/history, có tắt và deeplink đúngcoin/range/event. Muốn đổi phạm vi coin đangON: tắt, chỉnh rồi bật lại; không thay mốc của cohort đang chạy.
+
+- Detector luôn dùng **24h/nến5m**, kể cả đang xem range khác. Lấy ba profile raw hai model tại nến đã đóng trước lúc arm, cùng symbol/end/step; nến fresh≤5m+120s, OI fresh/sync và cả sáu profile phải có MARK thật. Lưới log0,25% và ≥35% max riêng từng profile như helper đồng thuận; không dựa thang màu/trục fullwindow. Model1/3 chung leverage giả định nên không phải hai bằng chứng độc lập.
+- MARK lúc arm≤10s, sau nến chốt; chỉ cụm hoàn toàn trên max(CLOSE,MARK)×1,001 và toàn bộ mépcao trong phạm vi đã chọn. Cụm đã chạm trước lúc bật không được dùng để gửi lại. DEMO/import/thiếu model/MARK/OI/mismatch không arm. Vùng giữ cố định15phút, không đưa vùng mới sinh vào tập chốt.
+- MARK sauarm chạm mépdưới chỉ touched; ≥mépcao mới cleared. Cụm đầu tiên cleared→`UPPER_CLUSTER_SWEPT` màu cam. Khi hết TẤT CẢ cụm trong tập đã chốt→`ALL_TRACKED_UPPER_SWEPT` màu tím; nhảy qua mọi cụm trong một tick chỉ một tin aggregate. **“Hết” không phải hết mọi vùng phía trên hoặc thanh lý thực toàn sàn**, không xác nhận SHORT/đảo chiều; giá có thể tiếp tục tăng. Chỉ snapshot MARK1s quan sát được, không bảo đảm bắt râu xảy ra giữa hai tick.
+- Gap tick>10s/hết15phút/restart bỏcohort cũ, chốt lại chưachạm ở giá hiện tại. Không backfill hoặc phát lịch sử quá khứ. Maxmột tin mỗi loại/coin/15phút kể cả đổicohort; PENDING durable trước POST, UNKNOWN/FAILED không retry, event xếpqueue>30s không gửi. Statehỏng/savelỗi failclosed. History cho biết SENT/FAILED/UNKNOWN/COOLDOWN/EXPIRED, không giả đã nhận trên Discord.
+- Nạp global tốiđa1bundle/30s (≤2/phút), retrycointhiếu≥60s; cùng labcache120s/quota6bundlephút/sharedpriority8/dropOnCongestion, không WS mới; tick qua sharedMarkTicker. Không tăng vòng quét525coin/accountAPI. Sender webhookstrict/timeout8s/sanitized/bypassgenericPushbridge, không gửi Push ngoài yêu cầu; quiet hours của Push không tắt Discord.
+
+API `/api/heatmap-sweep-watch`: GET snapshot no-store không nạp market/gửi/bật; POSTsameorigin kiểm boolean/FuturesUSDT/range/phạmvi/cap. UI không tự retry write/lỗiđọc ghi rõchưđồngbộ, không trộn historycoin cũ vào coin mới. JSON riêng `data/heatmap-sweep-watch.json`, versionstrict/settings/history≤500/14ngày; cohort chỉin-memory khôngrestorereplay. JSON trade/controls/chart/manual alerts cũ không sửa/migrate.
+
+Counts chỉ số cụm/sựkiện, không PnL/WinRate/AvgROE/cardthốngkê/cohortgiao dịch/WHITELIST/matcher. Không đổi Binance/entry/size/SL/TP/route/cap/cutoff/lệnh cũ, không auto order theo nhãn quét; manual price Push/kịchbảncũ giữ nguyên. Ngưỡng chưa backtest. Tests unit causal/guards/touch/full/all/gap/expiry/reserve/restart/dedupe/cooldown/loadbudget/cap/secret/VMAPI CSRF và browser desktop-mobile opt-in/progress/2event/deeplink/errors/no-retry/coinisolation/DEMO/nooverflow, regressions heatmap/manualpricePush. Không dùng lệnh/Discord/Push thật để test.
+
+## Bổ sung 18/10/2026: đặt mốc chạm giá gửi Push
+
+`HEATMAP_PRICE_PUSH_UI_V1_20261018` / `MANUAL_PRICE_PUSH_ALERT_V2_HEATMAP_CONTEXT_20261018`; assets trang v4-alerts. Kịch bản/model/API V3 bên dưới giữ nguyên. Khác với ghi chú “không Push” của bản chart cũ: hiện chỉ **mốc giá do người dùng chủ động lưu** được gửi Push, không tự phát theo kịch bản.
+
+Đã nạp18/10~17:16–17:17VN/web2540580. Public GET cảnh báo200/no-store/V2 và browser QUSDT form/quickfill/4kịch bản/0APIwrites/0pageerror/nooverflow. Shared subscriptions4 và quiet00–06VN/controls/cutoff giữ nguyên, healthconnected/fault0. Screenshot `/tmp/heatmap-price-alerts-public-desktop.png`; browser mock desktop/mobile `/tmp/heatmap-price-alerts-eAU65e`. Không tạo mốc hoặc gửi notification/order thật để thử.
+
+1. Tìm coin thật bằng nút/Enter. Trong “Push khi giá chạm mốc”, coin tự điền; nhập giá hữu hạn>0 hoặc bấm “Chọn mốc Push” từ một mức giá kịch bản. Chọn mốc chỉ điền form, chưa lưu/gửi.
+2. Bấm **Thêm cảnh báo**. Dùng cùng manager/state/cap50 active/200 audit với trang Thanh khoản ngược; đổi trang không tạo bản sao. Xem riêng coin đang tìm hoặc toàn hệ thống; có Bật lại/Xóa. Đổi sang coin khác xóa draft cũ; DEMO/import không cấp mốc thật từ dữ liệu chưa xác minh.
+3. Bật **Push như app** trên thiết bị muốn nhận (đăng ký chung toàn site). Đóng tab vẫn theo dõi bằng socket MARK Binance đã có, không thêm REST/WS. MARK có thể khác last trade trên chart. Có tham chiếu thì chạm/cắt lên/xuống chuyển ACTIVE→TRIGGERED và gửi một lần; chưa có giá thì tick đầu chỉ arm, không bịa touch. Lưu/rearm/GET không gửi ngay.
+
+Giờ yên lặng chung mặc định00:00–06:00VN, chỉnh tại `/push-signal-manager#push-quiet-hours`. Chạm trong giờ yên lặng vẫn ghi Đã chạm, không Push và không gửi bù. UI phân biệt giờ yên lặng, không thiết bị, lỗi, đã gửi; kết quả “đã gửi” là transport, không bảo đảm thiết bị đã hiển thị. Nút tắt Push hủy đăng ký thiết bị chung, ảnh hưởng nhận Push từ các trang khác. Không thêm Discord hoặc auto notify theo CONDITIONS_MET.
+
+GET `/api/manual-price-push-alerts` đọc snapshot no-store riêng, không chờ scanner/executor; UI poll30s khi tab đang hiển thị. POST/DELETE vẫn cùng origin/validator/atomic state, không tự retry khi chưa rõ kết quả; lỗi đọc giữ list nhưng ghi chưa đồng bộ. Alert mới từ Heatmap thêm optional context allowlist `sourcePage:HEATMAP_LAB`, `range`12h/24h/3d/7d/30d; payload click trở lại đúng coin/range/alert, `#price-alerts` có highlight. JSON V1 thiếu context vẫn đọc và giữ link Coin Level cũ; context lỗi không thành URL ngoài. Không migration/backfill/tạo alert từ search; state `data/manual-price-push-alerts.json` dùng chung.
+
+Không tạo entry, không PnL/winrate/AvgROE/card thống kê/cohort/WHITELIST; số lượng chỉ là counts cảnh báo. Không thay Binance/entry/size/SL/TP/controls/cutoff/lệnh cũ. Tests manual unit (persistence/legacy/deep link/one-shot/GET) + browser desktop/mobile CRUD chủ động/quickfill/duplicate/quiet/network/no retry/search isolation/nooverflow; cùng quiet-hours và heatmap regression, tất cả dùng mock, không gửi notification/order thật.
+
+## Bổ sung 18/10/2026: kịch bản khi tìm coin — V3
+
+UI/API `BINANCE_LOCAL_HEATMAP_LAB_V3_SCENARIOS_20261018`, tính pool `BINANCE_LOCAL_HEATMAP_V2_WITH_PROFILES_20261018`, phân tích `HEATMAP_CONFLUENCE_SCENARIOS_V1_20261018`. Model V2 chỉ bổ sung profile numeric; công thức pool V1 bên dưới giữ nguyên. Đây là phân tích **OBSERVE ONLY, chưa backtest riêng**, không dự báo xác suất hay lệnh tự động.
+
+Đã nạp18/10 lúc~17:06VN/web2528664. Public Q/BTC24h đều hai modelOK và4kịch bản; browser tìm bằng Enter rồi nhấp ra ngoài giữ đúng kết quả,0pageerror/0APIwrites/khôngoverflow. Screenshot `/tmp/heatmap-scenarios-public.png`; browser mock desktop/mobile `/tmp/heatmap-lab-6npigi`. Controls/cutoff giữ nguyên và health streamconnected/restartRequiredfalse/fault0 sau nạp. Không gửi lệnh hoặc notification để test.
+
+- Nhập ticker (Q hoặc QUSDT), bấm **Tìm coin / phân tích** hoặc Enter. Hai chart và bốn kịch bản cùng coin/range. Đổi coin/range xóa kết quả cũ ngay; lỗi/thiếu một model/DEMO/import không giữ kết luận của coin trước. Range12h/24h dùng5m,3d15m,7d30m,30d2h; tất cả lookback trong kịch bản tính bằng số nến của khung đang dùng.
+- Profile raw pool weights dùng lưới log cố định nhân1,0025, không dùng trục/màu của renderer vốn chuẩn hóa toàn cửa sổ. Chọn ba profile kết thúc tại nến trước nến xét, cùng timestamp/step của hai model; OI cả ba phải fresh≤step. Chuẩn hóa max mỗi profile, giữ bin≥35% trong cả sáu profile; gộp≤6bin (~1,5%), loại cụm ôm giá prior±0,1%. Pool sinh/xóa trong nến xét không thay vùng đã xác định trước. Model1/3 chung giả định leverage nên không phải hai nguồn xác nhận độc lập.
+
+| Kịch bản | Điều kiện giá/nến quan sát |
+| --- | --- |
+| LONG tiếp diễn | Nến trước đóng>high12×1,001; nến xét chạm retest≤high12×1,003, xanh và đóng trên mốc. High12 không chứa nến breakout. |
+| SHORT sau bơm | Pump≥15% từ CLOSE nền có trước đỉnh trong72nến, trả3–20%; nến trước đóng<low3×0,999; nến xét hồi≥low3×0,997 rồi đỏ/đóng dưới mốc. Low3 không chứa nến breakdown. |
+| LONG quét đáy | Quét≤mép dưới cụm lower gần nhất, nến xanh đóng>mép trên, râu dưới≥35% biên nến. |
+| SHORT quét đỉnh | Quét≥mép trên cụm upper gần nhất, nến đỏ đóng<mép dưới, râu trên≥35% biên nến. |
+
+Hai nhánh tiếp diễn cần cụm đồng thuận gần high12/low3 trong max(0,2% giá prior;0,5ATR20). Mọi nhánh cần quotevolume≥100.000 USDT, ≥1,3×mean20prior, taker đúng hướng≥55%; thiếu taker không mặc định0/PASS. Nến xét phải đóng và age≤step+120s. Thiếu/misaligned model, OI hoặc lịch sử thì báo chưa thể phân tích.
+
+Giá tham chiếu dùng CLOSE khi điều kiện nến/volume/taker đã đạt, nếu chưa dùng mốc kích hoạt dự tính; đây không phải giá fill. Mức vô hiệu ngoài cấu trúc/râu +buffer0,2ATR20. Target là cụm đồng thuận gần nhất phía có lợi, không giả target nếu thiếu. R:R=(reward−cost)/(risk+cost), cost roundtrip giả định0,14% giá tham chiếu, cần≥1,5. Mỗi khối hiện đầy đủ checklist/lý do chờ, `WAIT_ZONE`/`WAIT`/`CONDITIONS_MET`. Không nhánh đủ thì không chọn hướng; hai hướng cùng đủ ghi xung đột. Mốc tham chiếu có thể không còn phù hợp khi giá mới thay đổi, phải tải lại; không có auto-monitor/submit.
+
+**Thống kê và quyền:** không tính PnL/winrate/AvgROE, không cohort/card thống kê giao dịch, matcher/WHITELIST hoặc proof AT_ENTRY. Không kế thừa lợi thế từ backtest pump-turn riêng. Không thêm Binance order, entry/size/SL/TP, Push/Discord, không sửa lệnh cũ/controls/cutoff. API thêm `models[].data.profiles` và `scenarios` trong bundle, giữ candles/cells/model/source; JSON chart cũ import vẫn vẽ nhưng nguồn chưa xác minh nên không lập kịch bản. Không sửa/migrate JSON trade, không thêm REST ngoài ba nguồn chart/cache/quota cũ.
+
+**Tests:** `scripts/test-heatmap-entry-scenarios.mjs` kiểm bốn nhánh, R:R1,5, missing/OI/taker/target, age/alignment/source/symbol, input immutability và profile nến xét không thay vùng prior. Suite `test:coinglass-heatmap-lab` gồm unit này, API/model tests và browser desktop/mobile tìm bằng Enter/đổi range/lỗi/import/DEMO/no-overflow/zero writes. Navigation56 và server syntax PASS. Không gửi lệnh/notification để test.
+
+## Nền mô hình từ 18/10/2026 — giữ trong bản V3
+
+Lần triển khai nền V2 trước đó:18/10~16:50VN/web2514456. PublicQ/ZEREBRO24h vàBTC30d đều2modelOK; browserpublic hiểnthị2chart tựtính, khôngrequesttớiCoinglass,0pageerror. Unit/browserdesktop-mobile/navigation56PASS. Controls/protectioncutoff giữ nguyên; khôngorder/notification đểtest. Phần V3 đầu tài liệu bổ sung kịch bản quan sát khi search, không thay công thức pool này.
+
+`BINANCE_LOCAL_HEATMAP_LAB_V2_20261018` / model `BINANCE_LOCAL_HEATMAP_V1_VOLUME_OI_20261018`. Thay bản15/10 theo yêu cầu: dựng heatmap tương tự cách hiển thị Coinglass bằng dữ liệu Binance; không gọi API Coinglass hoặc cần key của họ. “Model1” và “Model3” là tên hai công thức xấp xỉ tại lab này, không khẳng định cùng thuật toán hoặc ma trận độc quyền.
+
+- Model1: sau mỗi nến đóng, thêm trọng số quotevolume tại các mức thanh lý giả định quanh CLOSE. LONG/SHORT chia50:50, leverages5/10/20/25/50/100x có weights5/15/25/25/20/10%; maintenance margin giả định0,5%. LONG=entry×(1−1/L+0,005), SHORT=entry×(1+1/L−0,005). Volume chỉ là trọng số, không phải lượng vị thế mới. Half-life12h.
+- Model3: chỉ thêm positiveΔsumOpenInterest×CLOSE, OI giảm co các pool hiện có theo tỷ lệOI mới/cũ. Không dùng sumOpenInterestValue làm lượng; không gán OI ban đầu vào entry hiện tại. Half-life24h, cùng giả định leverage/side/MMR. OI thiếu thì model3 báo thiếu, không thay bằngvolume/model1.
+- Mỗi cột xử lý nếnMARK để xóa pool bị đi qua, rồi mới sinh pool tạiCLOSE; thiếuMARK dùng tradedOHLC tại cột đó và hiển thịcoverage. Không sửa/xóa lại cột quá khứ. OI chỉ dùng timestamp≤closeTime, age≤1step và cặp≤2step; không đọc tương lai để sinhcụm. Trụcgiálog192bin/màu0–100 chuẩn hóa toàn cửa sổ chỉ phục vụrender.
+- Dải sáng là chỉ số tương đối của mô hình, không USD thanh lý hoặc depthlệnh chờ. Không biết actual entry/leverage/margin từng tài khoản; chưa có bằng chứng dự báo hay thắng/thua. Không dùng chartlàm tín hiệu/gate/WHITELIST/entry/size/SL/TP, không Push/Discord hoặc đọc account.
+
+## Vận hành hiện tại
+
+- `/coinglass-heatmap-lab` tự tải dữ liệu Binance khi mở; nút “Tìm coin / phân tích” tải lại cả chart và kịch bản. `?symbol=QUSDT&range=24h` chọn coin/range. `?demo=1` chủ động chọn minh họa renderer và ghiDEMO; không fallbackDEMO khi thị trường lỗi.
+- Khoảng12h/24h:nến5m+12hwarmup;3d:15m+24h;7d:30m+24h;30d:2h+24h. Tối đa499nến/request,OI500mẫu từlatest29,9ngày nên phần đầu30d có thể thiếuOI và hiệncoverage. Nến gap/khônghợp lệ/cũ bị từ chối. M3 yêu cầuOI>=50% visible và>=3cặp hợp lệ.
+- Endpoint giữ tên cũ đểbookmarktương thích. StatusGET không tải marketdata. MainGET chỉ3nguồn Binance `/fapi/v1/klines`, `/fapi/v1/markPriceKlines`, `/futures/data/openInterestHist` qua sharedrateGate/priority8/dropOnCongestion, dùng chung input cho2model. Cache120s/max4bundle/inflightdedupe/max6bundlephút; POST405. Khôngđọc COINGLASS_API_KEY.
+- Import JSON cũ vẫn nhận schema ma trận, chỉ nhãnIMPORT chưa xác minh nguồn/model; client-only, khôngupload. Dữliệu localAPI thêmsourceBINANCE_LOCAL/estimated/algorithm/calculationVersion/inputs/assumptions/notes; versionAPIbump nhưng giữmodel/candles/cells đểrendererđọc. Khôngmigrationfilecollector/trade/controls.
+- Tests `scripts/test-coinglass-heatmap-lab.mjs` kiểmcausalprefix/futuremutation/OIunits/shrink/birthsweep/gap/openbars/limits/cache/missingdata. Browser desktop/mobile vẽ2chart/hover/zoom/import/nofallback/lỗinguồn/0writes. Không gửi order/thôngbáo đểtest.
+
+## Lịch sử bản V1 — đã được thay thế
+
+### 2026-10-15 — Trang thử vẽ CoinGlass Model 1 / Model 3
+
+- **Triển khai/đối chiếu live:** 15/10/2026 lúc 19:56:59 VN, PM2 web PID1632708 online; watchdog3955615 không restart. Public HTML có cả2 model, health OK; API status đúng version/OBSERVE ONLY/affectsOrders=false/apiConfigured=false, cả2 model trả NOT_CONFIGURED, không giả dữ liệu thật. Controls SHA256 trước/sau `EA6DFE2F8863A3047B58A8542058CF599556C1A7595137B88911795912DB7E80` giữ nguyên; 4 subscriptions và quiet00–06VN không đổi. Unit/browser desktop-mobile/navigation55/toast55/sharedPush/quietHours/autoBinancePolicy và syntax server PASS; browser artifacts `/tmp/heatmap-lab-P5JO08`. Không đặt lệnh, refresh collector hoặc gửi Push/Discord thử.
+
+- **Version/phạm vi:** `COINGLASS_HEATMAP_RENDER_LAB_V1_20261015`; trang `/coinglass-heatmap-lab` / .html, navigationV13. Chỉ renderer **OBSERVE ONLY**, không model dự báo/gate hoặc tín hiệu mới, không card thống kê giao dịch/WHITELIST mới. Menu cả55 trang có link Lab, vẫn giữ Binance Controls.
+- **Dữ liệu trước entry/nguồn:** không tạo entry; không gọi manager/refresh/login/lifecycle/runner Coinglass Model3 đang chạy. APIread-only riêng dùng2 endpoint chính thức `/api/futures/liquidation/heatmap/model1` và `model3`, exchangeBinance cùng symbol/range, key chỉ backend `COINGLASS_API_KEY` hoặc `CG_API_KEY`, không gửi key vào HTML/client/log/error. Backend hiện chưa có key; không giả đã tải ma trận thật. Status chỉ boolean; nút tải gọiGET thủ công, không autopoll/trả lời quota bằng DEMO. Docs: https://docs.coinglass.com/reference/liquidation-heatmap và https://docs.coinglass.com/reference/liquidation-heatmap-model3.
+- **Phân loại/JSON/provenance:** COINGLASS_API chỉ khi endpoint model đúng trả ma trận hợp lệ; IMPORT là file đọc client-only, không upload, model/nguồn do người dùng khai báo chưa xác minh; DEMO chỉ khi bấm nút hoặc ?demo=1, badge và watermark trên cả2chart. DEMO dùng CÙNG candles/cells cho2model, không dựng khác biệt giả thuật toán. Một model lỗi không mượn dữ liệu model còn lại, không auto-fallback DEMO hay giữ snapshot cũ như live. Đổi coin/range xóa2dataset và hủy request cũ; mixedsources hoặc khung thời gian không chồng đủ có cảnh báo.
+- **Schema/renderer:** nhận official `y_axis / price_candlesticks / liquidation_leverage_data` và rawweb `y / prices / liq`; chỉ zones tổng hợp bị từ chối, không kéo firstX–lastX thành heatmap giả. Validate model/symbol/range, axis dương/khôngtrùng, OHLC/timeordered/timestampfuture, cells x/yinteger/bounds/intensity≥0/khôngtrùng; sorty kèm remapindex đúng; không resample/liên kết khoảng thiếu. Emptyliq hợp lệ chỉvẽnến và ghi rõ. Bounds10klevels/20kcandles/1Mcells, JSONmax32MB; invalid khôngvẽ. Canvas2D màuviridis/log hoặc tuyến tính, ngưỡng tương đối renderer riêng (không nhận là công thức CoinGlass), heatcells+nến/trụcgiáphải/crosshair/tooltip/zoom/pan/reset/axislock, responsive2cộtdesktop/1cộtmobile. Intensity không gán USD/PnL/xác suất.
+- **Quota/thống kê/ảnh hưởng:** API timeout12s/model, inflightdedupe, cache120s/tối đa4key, max6externalrequest/phút, không tăng REST Binance/sharedcollector. Không số winrate/PnL/AvgROE từ cường độ/DEMO. Không đổi Binance/entry/size/SL/TP/cap/master/route/protection hoặc lệnh cũ; không Push/Discord. Dữ liệu collector/history/trade JSON cũ không sửa/migrate; zones-only JSON không đủ vẽ nhưng vẫn giữcho logic cũ.
+- **Tests:** unit official/raw/import/modelmismatch/yremap/cellbounds/empty/DEMOequal/keyisolation/cache/inflight/quota bằng mock. Browser desktop/mobile thựcvẽ2canvas, pixelheatmap+nến, watermark/hover/zoom/threshold/JSONimport/partialAPI/no-fallback/modelguard/mixedsource/nooverflow/zeroAPIwrites. Navigation55/55, không provider/account/order/notification trong tests. Tài liệu chi tiết `docs/COINGLASS_HEATMAP_LAB.md`.
+
+
+## Vận hành V1 cũ — không áp dụng từ bản V2
+
+- Mở `/coinglass-heatmap-lab` để chọn nguồn. `?demo=1` là chọn minh họa rõ nhãn, không dữ liệu thật.
+- Symbol mặc định ZEREBROUSDT, khoảng24h; hỗ trợ12h/24h/3d/7d/30d. API Pro/Enterprise phải có quyền endpoint; không mua/nâng gói tự động.
+- JSONwrapper nên khai báo model/symbol/range, data có ma trận đầy đủ. File raw API không có metadata được gán vào ô model do người nhập chọn, vẫn nhãn IMPORT chưa xác minh.
+- Status `GET /api/coinglass-heatmap-lab/status` không fetchprovider. `GET /api/coinglass-heatmap-lab?symbol=...&range=...` mới đọc2endpoint. POST bị405; không có API setkey/submitBinance/Push.
+- Mọi dữ liệu API lưu memoryTTL, không sửa file collector/model3. Không log raw upstream errors để tránh lộ secret.
+- Cấu hình key trên server bằng quy trình secret hiện có rồi nạp backend; không gửi API key qua chat, localStorage hoặc ô nhập chart.
+# 2026-10-18 — Sweep toàn bộ Binance Futures USDT, không chỉ ARC
+
+`HEATMAP_UPPER_SWEEP_MARKET_V2_20261018`, loader`HEATMAP_MARKET_COMPACT_PROFILES_V1_20261018`, UIV2market. Globaltoggle/upperdistance/coverage tại `#heatmap-sweep`; activeuniverse động toàn bộ USDTtrading, khônggiới hạn10coin khi globalON. Manualmax10 vẫn giữ khi globalOFF. DefaultinstallationOFF; theo yêu cầu lượt này bậtglobal với webhookHeatmapdedicated đãcấu hình; secretchỉserver. Search/GET vẫn khôngbật hoặcgửi, đóngbrowservẫnchạy, globalhistoryhiện mọicoin.
+
+Không đổi côngthức/điềukiện3profileđồngthuậnMARK/OI, ngưỡng35%/bin0.25%/gộp6bin, chốtcohort15phút vàvùngchưachạm+5%LIVE trướcarm. Compactmodel dùngcùngsimulateHeatmapPools của chart, giữ4rawprofiles+nếncuối thayvìfullmatrix; unitparity. Nạpmax1bundle/giây/1inflight,3publicsources/coin priority8/dropOnCongestion/sharedrateGate, cache120s/max700; reusemanualcache. Manualchartquota6bundle/phút giữ. Warmup toànuniverse mất nhiềuphút/tùyAPI, khônggánchưađủdữliệulàkhôngcórủiro; coverage loaded/total/armed/waitingđược hiểnthị. DùngchungMARKstream, khôngsocket/account mới.
+
+Màucamquétcụmđầu/tímhếttậpchốt, khôngthanh lý thực/hếttấtcảvùng/toàn sàn haySHORTprediction. Discordonly/dedicatedkhôngPushbridge, khôngảnhhưởngBinance/entry/size/SL/TP. History500/14ngàychỉeventkhôngPnL/AvgROE/cardWHITELIST; cooldownmapriêng15phút/coin/loại chốngspamkểcảhistorybịtruncate. DurablePENDINGtrướcPOST/unknownnoretry, MARKgap>10shủycohort. StateV1readcompatible/globalmissing→OFF; persisthistory/manualsettings/globalconfigkhôngcohort525coin. Restartchốtmớikhôngreplay. Tests core+compactparity/525universe/budget/congestion/dedupe+browserdesktopmobile; khôngPOSTDiscord/order thậtđểtest.
+

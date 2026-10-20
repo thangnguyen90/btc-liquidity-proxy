@@ -2,9 +2,13 @@ import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import webPush from 'web-push';
+import {zoneNotificationRecord,ZONE_NOTIFICATION_TYPE,CONTRACT_RISK_NOTIFICATION_TYPE} from './liquidityZoneNotifications.js';
+import {PUSH_QUIET_HOURS_DEFAULT,PUSH_QUIET_HOURS_VERSION,normalizePushQuietHours,isPushQuietNow,pushTtlBeforeQuiet} from '../public/push-quiet-hours-model.js';
+import {WEAK_ALT_PUSH_TYPE,weakAltKey} from '../public/weak-alt-rebound-model.js';
+import {PUMP_TURN_NEAR_PUSH_TYPE} from './pumpTurnNearPush.js';
 
 export const OPPOSITE_LIQUIDITY_WEB_PUSH_VERSION =
-  'OPPOSITE_LIQUIDITY_WEB_PUSH_V3_MANUAL_PRICE_ALERT_20261004';
+  'OPPOSITE_LIQUIDITY_WEB_PUSH_V14_PUMP_TURN_NEAR_SHORT_20261018';
 
 const RETAIN_EVENT_MS = 7 * 24 * 60 * 60_000;
 
@@ -53,7 +57,9 @@ function emptyState(now) {
     updatedAt: now,
     subscriptions: {},
     sentEvents: {},
+    zoneNotifications: [],
     lastDelivery: null,
+    quietHours: {...PUSH_QUIET_HOURS_DEFAULT},
   };
 }
 
@@ -127,7 +133,10 @@ export class OppositeLiquidityWebPushService {
             ? parsed.subscriptions : {},
           sentEvents: parsed?.sentEvents && typeof parsed.sentEvents === 'object'
             ? parsed.sentEvents : {},
+          zoneNotifications: Array.isArray(parsed?.zoneNotifications)?parsed.zoneNotifications:[],
         };
+        try {this.state.quietHours=normalizePushQuietHours(parsed.quietHours??PUSH_QUIET_HOURS_DEFAULT);}
+        catch {this.state.quietHours={...PUSH_QUIET_HOURS_DEFAULT};}
       } catch (error) {
         if (error?.code !== 'ENOENT') console.warn(`[OppositeWebPush] state reset: ${error.message}`);
         this.state = emptyState(now);
@@ -189,6 +198,9 @@ export class OppositeLiquidityWebPushService {
       maxSubscriptions: this.maxSubscriptions,
       updatedAt: this.state?.updatedAt ?? null,
       lastDelivery: this.state?.lastDelivery ?? null,
+      quietHoursVersion:PUSH_QUIET_HOURS_VERSION,
+      quietHours:{...(this.state?.quietHours??PUSH_QUIET_HOURS_DEFAULT)},
+      quietHoursActive:isPushQuietNow(this.state?.quietHours??PUSH_QUIET_HOURS_DEFAULT,this.now()),
     };
   }
 
@@ -199,6 +211,19 @@ export class OppositeLiquidityWebPushService {
       publicKey: this.vapid.publicKey,
       signalType: 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH',
     };
+  }
+  async zoneNotificationHistory(){
+    await this.initialize();
+    return this.state.zoneNotifications.map(row=>zoneNotificationRecord(row,{delivery:row.delivery,legacy:row.legacy===true})).filter(Boolean);
+  }
+
+  updateQuietHours(value) {
+    return this.#run(async()=>{
+      const rule=normalizePushQuietHours(value),previous=this.state.quietHours;
+      this.state.quietHours=rule;
+      try {await this.#save();}catch(error){this.state.quietHours=previous;throw error;}
+      return this.snapshotSync();
+    });
   }
 
   subscribe(value, metadata = {}) {
@@ -252,23 +277,44 @@ export class OppositeLiquidityWebPushService {
       if (signalType !== 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH'
         && signalType !== 'MANUAL_BINANCE_PRICE_ALERT'
         && signalType !== 'BINANCE_LIQUIDITY_ZONE_LIFECYCLE'
+        && signalType !== 'BTC_ALT_WICK_RECOVERY_1M'
+        && signalType !== 'COIN_PUMP_WICK_RECOVERY_1M'
+        && signalType !== 'COIN_PUMP_WICK_EARLY_1M'
+        && signalType !== 'COIN_PUMP_VOLUME_LONG_FLUSH_1M'
+        && signalType !== 'BINANCE_SHORT_SETUP_WATCH'
+        && signalType !== 'BTC_WEAK_ALT_REBOUND'
+        && signalType !== WEAK_ALT_PUSH_TYPE
+        && signalType !== CONTRACT_RISK_NOTIFICATION_TYPE
+        && signalType !== PUMP_TURN_NEAR_PUSH_TYPE
         && !signalType.startsWith('DISCORD_ROUTE:')) {
         return { attempted: 0, sent: 0, removed: 0, failed: 0, error: 'SIGNAL_TYPE_NOT_ALLOWED' };
       }
       const now = this.now();
+      if(signalType===WEAK_ALT_PUSH_TYPE&&!weakAltKey(payload.state))return {attempted:0,sent:0,error:'INVALID_BTC_ALT_STATE'};
+      if (['BTC_ALT_WICK_RECOVERY_1M','COIN_PUMP_WICK_RECOVERY_1M','COIN_PUMP_WICK_EARLY_1M','COIN_PUMP_VOLUME_LONG_FLUSH_1M','BINANCE_SHORT_SETUP_WATCH','BTC_WEAK_ALT_REBOUND',WEAK_ALT_PUSH_TYPE,PUMP_TURN_NEAR_PUSH_TYPE].includes(signalType) && (!(Number(payload.expiresAt) > now)
+        || Number(payload.expiresAt) - now > 120_000)) return { attempted:0, sent:0, error:'EXPIRED_WICK_ALERT' };
+      if(signalType===PUMP_TURN_NEAR_PUSH_TYPE&&(!Number.isFinite(payload.notifiedAt)||payload.notifiedAt>now||now-payload.notifiedAt>30000
+        ||payload.expiresAt>payload.notifiedAt+30000))return {attempted:0,sent:0,error:'STALE_PUMP_TURN_ALERT'};
       this.state.sentEvents = Object.fromEntries(Object.entries(this.state.sentEvents)
         .filter(([, sentAt]) => now - finite(sentAt, 0) <= RETAIN_EVENT_MS));
       if (this.state.sentEvents[eventId]) {
         return { attempted: 0, sent: 0, removed: 0, failed: 0, deduped: true };
       }
+      const notification=[ZONE_NOTIFICATION_TYPE,CONTRACT_RISK_NOTIFICATION_TYPE].includes(signalType)?zoneNotificationRecord(payload,{now}):null;
+      if(notification)payload={...payload,url:notification.url,watchId:notification.watchId,attemptKey:notification.attemptKey};
       const entries = Object.entries(this.state.subscriptions);
       let sent = 0;
       let removed = 0;
       let failed = 0;
+      let quietSkipped=0;
       await Promise.all(entries.map(async ([id, record]) => {
+        // Recheck immediately before transport, including a batch crossing midnight.
+        const sendAt=this.now();
+        if(isPushQuietNow(this.state.quietHours,sendAt)){quietSkipped++;return;}
         try {
           await this.webPush.sendNotification(record.subscription, JSON.stringify(payload), {
-            TTL: 5 * 60,
+            TTL: pushTtlBeforeQuiet(this.state.quietHours,sendAt,
+              ['BTC_ALT_WICK_RECOVERY_1M','COIN_PUMP_WICK_RECOVERY_1M','COIN_PUMP_WICK_EARLY_1M','COIN_PUMP_VOLUME_LONG_FLUSH_1M','BINANCE_SHORT_SETUP_WATCH','BTC_WEAK_ALT_REBOUND',WEAK_ALT_PUSH_TYPE,PUMP_TURN_NEAR_PUSH_TYPE].includes(signalType) ? Math.max(1, Math.ceil((payload.expiresAt-sendAt)/1000)) : 5 * 60),
             urgency: 'high',
             timeout: 8_000,
           });
@@ -293,12 +339,21 @@ export class OppositeLiquidityWebPushService {
         eventId,
         signalType,
         routeId: cleanText(payload.routeId, 100) || null,
-        attempted: entries.length,
+        attempted: entries.length-quietSkipped,
         sent,
         removed,
         failed,
         completedAt: now,
+        ...(quietSkipped||isPushQuietNow(this.state.quietHours,now)?{
+          skippedSubscriptions:quietSkipped,
+          ...(quietSkipped===entries.length?{skipped:'QUIET_HOURS'}:{}),
+          quietHours:{...this.state.quietHours},
+        }:{}),
       };
+      if(notification){
+        this.state.zoneNotifications=[{...notification,delivery:{...this.state.lastDelivery}},...this.state.zoneNotifications]
+          .filter(row=>now-finite(row.notifiedAt,0)<=RETAIN_EVENT_MS).slice(0,1000);
+      }
       await this.#save();
       return { ...this.state.lastDelivery };
     });

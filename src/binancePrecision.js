@@ -1,4 +1,12 @@
 export const BINANCE_SCIENTIFIC_STEP_PRECISION_VERSION = 'BINANCE_SCIENTIFIC_STEP_PRECISION_V1_20260810';
+export const BINANCE_FIXED_FORMAT_VERSION='BINANCE_FIXED_FORMAT_KEEP_INTEGER_ZEROS_V1_20261018';
+
+// Only remove fractional padding. Integer trailing zeros are significant:
+// (140).toFixed(0) must stay "140", not become "14".
+export function formatBinanceFixed(value,precision){
+  const fixed=Number(value).toFixed(precision);
+  return fixed.includes('.')?fixed.replace(/0+$/,'').replace(/\.$/,''):fixed;
+}
 
 export function decimalsFromStep(stepSize) {
   const numeric = Number(stepSize);

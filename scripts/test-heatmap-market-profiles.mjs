@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import {mkdtemp,readFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {HeatmapMarketProfiles} from '../src/heatmapMarketProfiles.js';
+import {HeatmapSweepWatch} from '../src/heatmapSweepWatch.js';
+import {heatmapRangePlan,buildBinanceHeatmapProfiles,buildBinanceLocalHeatmap,normalizeBinanceHeatmapCandles} from '../src/binanceHeatmapModel.js';
+let now=Math.floor(Date.now()/300000)*300000+1000;const plan=heatmapRangePlan('24h',now);
+const raw=Array.from({length:432},(_,i)=>{const t=plan.from+i*300000,c=100+i*.005;return [t,c,c+.1,c-.1,c,100,t+299999,10000,10,50,5000];});
+const oi=raw.map((r,i)=>({timestamp:r[0],sumOpenInterest:1000+i*2})),candles=normalizeBinanceHeatmapCandles(raw,plan);
+for(const model of [1,3]){const args={query:{symbol:'TESTUSDT',range:'24h'},plan,candles,markRows:candles,oiRows:oi,model,now};
+ const compact=buildBinanceHeatmapProfiles(args),full=buildBinanceLocalHeatmap(args);assert.deepEqual(compact.profiles,full.profiles);assert.deepEqual(compact.candles,full.candles.slice(-1).map(c=>({time:c.time,close:c.close})));assert.equal(compact.cells,undefined);}
+let calls=0,blocked=false;
+const loader=new HeatmapMarketProfiles({now:()=>now,blocked:()=>blocked,loadKlines:async p=>{assert.equal(p.limit,499);calls++;return raw;},loadMarkKlines:async()=>raw,loadOi:async()=>oi});
+assert.equal((await loader.compare({symbol:'TESTUSDT'})).models[1].status,'OK');await loader.compare({symbol:'TESTUSDT'});assert.equal(calls,1);
+await assert.rejects(()=>loader.compare({symbol:'NEXTUSDT'}),/BUDGET/);now+=1000;blocked=true;await assert.rejects(()=>loader.compare({symbol:'NEXTUSDT'}),/BUDGET/);blocked=false;await loader.compare({symbol:'NEXTUSDT'});assert.equal(calls,2);
+const file=join(await mkdtemp(join(tmpdir(),'heatmap-market-')),'state.json');let symbols=Array.from({length:525},(_,i)=>'C'+i+'USDT'),loads=0;
+const options={file,now:()=>now,getUniverse:()=>symbols,loadBundle:async()=>{loads++;return {models:[]};}};
+const watch=new HeatmapSweepWatch(options);await watch.init();assert.equal(watch.marketEnabled,false);await watch.update({action:'market',enabled:true,maxDistancePct:5});assert.equal(watch.watches.length,525);assert.equal(watch.snapshot().policy.maxBundleLoadsPerMinute,60);
+await watch.scan();assert.equal(loads,1);await watch.scan();assert.equal(loads,1);now+=1000;await watch.scan();assert.equal(loads,2);
+await assert.rejects(()=>watch.update({symbol:'ARCUSDT',enabled:true}));
+const saved=JSON.parse(await readFile(file,'utf8'));assert.equal(saved.marketEnabled,true);assert.equal(saved.watches.length,0,'do not persist 525 runtime cohorts');
+const restarted=new HeatmapSweepWatch(options);await restarted.init();assert.equal(restarted.watches.length,525);assert.ok(restarted.watches.every(w=>!w.cohort),'restart no replay');
+symbols=symbols.slice(0,524);now+=1000;await restarted.scan();assert.equal(restarted.watches.length,524,'remove delisted contract');
+await restarted.update({action:'market',enabled:false});assert.equal(restarted.watches.length,0);
+console.log('PASS compact/full profile parity, cache/budget/congestion, 525-symbol market mode, bounded scan, persistence/restart/no replay and universe removal. Mock only.');

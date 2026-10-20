@@ -5,7 +5,7 @@ export const NON_LIQUID_FLOW_V2_LONG_TP_ROE = 10;
 export const ORDERS_MANUAL_TP_VERSION = 'MANUAL_SOCKET_TP_ROE30_V2_20260812';
 export const ORDERS_MANUAL_TP_ROE = 30;
 export const BINANCE_MANUAL_SOCKET_SOURCE = 'binance-manual-socket';
-export const BINANCE_BOT_SHORT_TP_ONLY_VERSION = 'BINANCE_BOT_SHORT_TP_ONLY_POST_MOVE_EXEMPT_V7_20260925';
+export const BINANCE_BOT_SHORT_TP_ONLY_VERSION = 'BINANCE_BOT_SHORT_TP_ONLY_HEATMAP_SWEEP_EXEMPT_V11_20261020';
 export const BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION = 'BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_V1_20260824';
 export const COINGLASS_ZONE_LIFECYCLE_TP_ONLY_VERSION =
   'COINGLASS_ZONE_LIFECYCLE_TP_ONLY_NO_SL_V1_20260828';
@@ -85,6 +85,10 @@ export function shouldSuppressBotShortStopLoss({
   if (normalizedSide !== 'SELL' && normalizedSide !== 'SHORT') return false;
   const normalizedSource = String(source ?? '').trim().toLowerCase();
   if([
+    'pump-turn-near-short',
+    'heatmap-full-sweep',
+    'rising-volume-sustained-1m',
+    'structure-setup-ready',
     'main-kill-distance-entry',
     'ema99-near-reject-short',
     'ema99-observe-only',
@@ -105,6 +109,8 @@ export function shouldSuppressBotShortStopLoss({
 }
 
 export function isManualShortProtectionSource({ side, source } = {}) {
+  // Authenticated zone manual orders preserve the confirmed frozen zone TP/SL.
+  if(String(source??'').trim().toLowerCase()==='liquidity-zone-manual')return false;
   const normalizedSide = String(side ?? '').trim().toUpperCase();
   if (normalizedSide !== 'SELL' && normalizedSide !== 'SHORT') return false;
   const normalizedSource = String(source ?? '').trim().toLowerCase();
@@ -271,7 +277,8 @@ export function resolveNonLiquidFlowV2TakeProfit({
       : null;
   if (!direction || !isKnownBotSource(source) || isLiquidFlowV2Source(source)
     || isCoinglassWebQualifiedSource(source) || isCoinglassZoneLifecycleSource(source)
-    || ['main-kill-distance-entry','ema99-near-reject-short','ema99-reclaim-long','ema99-bounce-long','ema99-observe-only','ema99-kill-reclaim','ema99-kill-reclaim-pump-dump-absorption'].includes(String(source??'').trim().toLowerCase())
+    || ['structure-setup-ready','pump-turn-near-short','heatmap-full-sweep'].includes(String(source??'').trim().toLowerCase())
+    || ['rising-volume-sustained-1m','liquidity-zone-manual','main-kill-distance-entry','ema99-near-reject-short','ema99-reclaim-long','ema99-bounce-long','ema99-observe-only','ema99-kill-reclaim','ema99-kill-reclaim-pump-dump-absorption'].includes(String(source??'').trim().toLowerCase())
     || !(entry > 0) || !(lev > 0) || !(roe > 0)) {
     return {
       applied: false,

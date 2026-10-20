@@ -1,16 +1,31 @@
 export const MANUAL_SHORT_SL30_VERSION = 'MANUAL_SHORT_NEW_FILL_SL30_V1_20260915';
 export const MANUAL_SHORT_SL30_DCA_VERSION = 'MANUAL_SHORT_SL30_PENDING_DCA_FIX_V1_20260915';
+export const MANUAL_SHORT_SL30_FILL_PRICE_VERSION = 'MANUAL_SHORT_SL30_CUMQUOTE_PRICE_V1_20261007';
 const SOURCES = new Set(['manual','orders-manual','binance-manual-socket','liquid-flow-v2-manual','pump-manual-order']);
 export const isManualShortSl30Source = source => SOURCES.has(String(source??'').trim().toLowerCase());
 const near = (a,b) => Math.abs(a-b)<=Math.max(Math.abs(b)*1e-8,1e-12);
 const truthy = v => v===true || String(v).toLowerCase()==='true';
+
+function verifiedFillPrice(order) {
+  const qty=Number(order?.executedQty),avg=Number(order?.avgPrice);
+  if (!(qty>0) || !Number.isFinite(qty) || !(avg>0) || !Number.isFinite(avg)) return null;
+  if (order?.cumQuote==null) return {entry:avg}; // Legacy order schema only.
+  const quote=Number(order.cumQuote),entry=quote/qty,text=String(order.avgPrice).trim();
+  const decimal=/^\d+(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(text);
+  const unit=decimal?10**(Number(decimal[2]??0)-(decimal[1]?.length??0)):NaN;
+  if (!(quote>0) || !Number.isFinite(quote) || !(entry>0) || !Number.isFinite(entry)
+    || !Number.isFinite(unit) || !(unit>0)
+    || Math.abs(avg-entry)>unit+Math.max(Math.abs(entry)*1e-8,1e-12)) return null;
+  return {entry,fillPriceVersion:MANUAL_SHORT_SL30_FILL_PRICE_VERSION,orderCumQuote:quote,orderAvgPrice:text};
+}
 
 // Eligibility is proved from a verified opening order, not position updateTime.
 // Orders created before activation are excluded, even if their last fill is new.
 export function buildManualShortSl30({activatedAt,fillTime,symbol,orderId,source,order,
   positionAmount,positionEntryPrice,positionLeverage,positionSide='BOTH'}={}) {
   const activation=Date.parse(activatedAt),filled=Number(fillTime),created=Number(order?.time);
-  const amount=Number(positionAmount),qty=Number(order?.executedQty),entry=Number(order?.avgPrice),lev=Number(positionLeverage);
+  const price=verifiedFillPrice(order);
+  const amount=Number(positionAmount),qty=Number(order?.executedQty),entry=price?.entry,lev=Number(positionLeverage);
   if (!Number.isFinite(activation) || activation<=0 || !Number.isFinite(filled) || filled<activation
     || ![amount,qty,entry,lev,Number(positionEntryPrice)].every(Number.isFinite)
     || !Number.isFinite(created) || created<activation || created>filled
@@ -22,12 +37,18 @@ export function buildManualShortSl30({activatedAt,fillTime,symbol,orderId,source
     || !near(Number(positionEntryPrice),entry)) return null;
   return {version:MANUAL_SHORT_SL30_VERSION,symbol,source,side:'SELL',positionSide,orderId:String(orderId),
     activatedAt:activation,orderCreatedAt:created,fillTime:filled,entryPrice:entry,quantity:qty,leverage:lev,
-    stopLossRoePct:30,stopLossDistanceFraction:.3/lev,stopLossPrice:entry*(1+.3/lev)};
+    stopLossRoePct:30,stopLossDistanceFraction:.3/lev,stopLossPrice:entry*(1+.3/lev),
+    ...(price.fillPriceVersion?{fillPriceVersion:price.fillPriceVersion,orderCumQuote:price.orderCumQuote,orderAvgPrice:price.orderAvgPrice}:{})};
 }
 
 export function manualShortSl30MatchesPosition(policy,position,source) {
   const positionQuantity=policy?.positionQuantity??policy?.quantity;
   const positionEntry=policy?.positionEntryPrice??policy?.entryPrice;
+  if (policy?.fillPriceVersion!=null) {
+    const price=verifiedFillPrice({executedQty:policy.quantity,avgPrice:policy.orderAvgPrice,cumQuote:policy.orderCumQuote});
+    if (policy.fillPriceVersion!==MANUAL_SHORT_SL30_FILL_PRICE_VERSION || !price
+      || price.fillPriceVersion!==policy.fillPriceVersion || !near(price.entry,policy.entryPrice)) return false;
+  }
   if (policy?.version!==MANUAL_SHORT_SL30_VERSION || !isManualShortSl30Source(source)
     || ![policy.activatedAt,policy.orderCreatedAt,policy.fillTime,policy.entryPrice,policy.quantity,policy.leverage,policy.stopLossPrice].every(Number.isFinite)
     || source!==policy.source || !(policy.activatedAt>0) || policy.orderCreatedAt<policy.activatedAt

@@ -4,7 +4,7 @@ import { POST_PUMP_NO_BUY_STAGE } from './postPumpNoBuyWatch.js';
 import { impulseSizingDiscordField } from './postMoveImpulseSizing.js';
 
 export const POST_PUMP_NO_BUY_DISCORD_VERSION =
-  'POST_PUMP_NO_BUY_DISCORD_V6_DYNAMIC_SIZE_20261001';
+  'POST_PUMP_NO_BUY_DISCORD_V7_SHORT1_20261020';
 
 const MAX_SIGNAL_AGE_MS = 12 * 60_000;
 const RETRY_MIN_MS = 60_000;
@@ -42,7 +42,7 @@ function validDiscordWebhook(value) {
 export function postPumpNoBuyDiscordPayload(watch) {
   const confirmed = watch?.stage === POST_PUMP_NO_BUY_STAGE.NO_BUY_CONFIRMATION;
   const late = watch?.stage === POST_PUMP_NO_BUY_STAGE.LATE_NO_CHASE;
-  const size = watch?.impulseSizing?.marginUsdt ?? '1 hoặc 5';
+  const size = watch?.impulseSizing?.marginUsdt ?? 1;
   return {
     username: 'Post-pump Sell Watch',
     allowed_mentions: { parse: [] },

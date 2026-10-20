@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+import {detectPumps,evaluateEvent,futurePath,tradeSimulation,derivativeAsOf,summarizeResearch,VERSION,SETTINGS} from './research-pump-path-model.mjs';
+const minute=60000,origin=Date.parse('2026-10-09T00:00:00Z');
+function row(i,c=100,extra={}){return {t:origin+i*minute,end:origin+(i+1)*minute-1,o:c,h:c*1.001,l:c*.999,c,v:100,q:10000,buy:5500,...extra};}
+function fixture(){const rows=Array.from({length:500},(_,i)=>row(i));rows[90]=row(90,110,{o:100,h:111,l:99.9,v:10000,q:1000000,buy:800000});return rows;}
+let rows=fixture(),events=detectPumps(rows);assert.equal(events.length,1);assert.equal(events[0].index,90);assert.equal(events[0].base,100);
+const event=events[0];
+const before=evaluateEvent('TESTUSDT',rows,event,Infinity).atSignal;
+const mutated=rows.map((r,i)=>i>90?{...r,o:500,h:510,l:490,c:500,q:999999}:r);
+assert.deepEqual(evaluateEvent('TESTUSDT',mutated,event,Infinity).atSignal,before,'no future features at signal');
+assert.deepEqual(detectPumps(rows.slice(0,91)),events,'detection does not need future');
+rows=fixture();for(let i=91;i<rows.length;i++)rows[i]=row(i,109,{o:109,h:110,l:108,v:100,q:10000});
+rows[95]=row(95,114,{o:109,h:115,l:108});
+let report=evaluateEvent('TESTUSDT',rows,event,Infinity);assert.equal(report.path.label,'CONTINUATION_FIRST');assert.equal(report.after3m.state,'KEEP_HIGH');assert.equal(report.after3m.forecastEligible,true);
+const changedAfter3=rows.map((r,i)=>i>93?{...r,o:500,h:510,l:490,c:500,q:999999}:r);
+assert.deepEqual(evaluateEvent('TESTUSDT',changedAfter3,event,Infinity).after3m,report.after3m,'no future features at landmark');
+rows[91]=row(91,113,{o:110,h:114,l:109});report=evaluateEvent('TESTUSDT',rows,event,Infinity);assert.equal(report.after3m.state,'ALREADY_CONTINUED');assert.equal(report.after3m.forecastEligible,false);
+rows=fixture();for(let i=91;i<rows.length;i++)rows[i]=row(i,103,{o:105,h:106,l:102,q:200000,v:2000});
+report=evaluateEvent('TESTUSDT',rows,event,Infinity);assert.equal(report.after3m.state,'FADE_RISK');assert.equal(report.after3m.forecastEligible,true);
+rows[100]=row(100,99,{o:103,h:104,l:98});rows[110]=row(110,108,{o:101,h:109,l:100});
+report=evaluateEvent('TESTUSDT',rows,event,Infinity);assert.equal(report.path.label,'BASE_THEN_RECOVER');assert(report.path.recoveryAt>report.path.baseAt);
+rows[110]=row(110,103);report=evaluateEvent('TESTUSDT',rows,event,Infinity);assert.equal(report.path.label,'BASE_NO_RECOVERY');
+rows[91]=row(91,103,{o:110,h:115,l:98});report=evaluateEvent('TESTUSDT',rows,event,Infinity);assert.equal(report.path.label,'AMBIGUOUS');assert.equal(report.after3m.state,'ALREADY_BASE');
+rows=fixture();const trade=tradeSimulation(rows,90,Infinity);assert.equal(trade.entry,rows[91].o,'entry next open, not signal close');
+rows[91]=row(91,100,{o:100,h:105,l:90});let sim=tradeSimulation(rows,90,Infinity);assert.equal(sim.status,'SL');assert.equal(sim.ambiguousStopFirst,true);assert(Math.abs(sim.netRoe5x+30.7)<1e-8);
+rows=fixture();assert.equal(futurePath(rows,event,90,rows[100].end+1).label,'CENSORED');
+const censored=evaluateEvent('TESTUSDT',rows,event,rows[100].end+1);censored.tradeAtSignal={status:'TP',netPricePct:1.86,netRoe5x:9.3};
+assert.equal(summarizeResearch([censored],origin,rows[100].end+1).all.tradeN,0,'early TP in an immature cohort is not selectively counted');
+rows.splice(95,1);assert.equal(futurePath(rows,event,90,Infinity).label,'DATA_GAP');
+const gap=fixture();gap.splice(50,1);assert.equal(detectPumps(gap).length,0,'gap in feature history rejects signal');
+const at=origin+120*minute,oi=[{timestamp:at-15*minute,sumOpenInterest:'100'},{timestamp:at,sumOpenInterest:'110'},{timestamp:at+minute,sumOpenInterest:'999'}];
+assert(Math.abs(derivativeAsOf(oi,at,'oi').change15mPct-10)<1e-8);assert.equal(derivativeAsOf(oi,at+7*minute,'oi').ready,false);assert.equal(derivativeAsOf([{timestamp:at,sumOpenInterest:'NaN'}],at,'oi').ready,false);
+assert.equal(SETTINGS.horizonMinutes,360);console.log(`${VERSION}: causal features, outcomes, censoring, next-open entry, gap and ambiguous-bar tests PASS`);

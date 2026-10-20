@@ -1,0 +1,34 @@
+.liquidation-context{margin:18px 0;padding:22px;border:1px solid #286454;border-left:5px solid #83a99f;border-radius:15px;background:#092018}
+.liquidation-context h2{margin:8px 0;font-size:1.3rem;line-height:1.45}
+.liquidation-context ul{padding-left:22px;line-height:1.65}
+.liquidation-context[data-state$="CROWDED"]{border-left-color:#ffca53}
+.liquidation-context[data-state$="SPIKE"]{border-left-color:#ff9c45;background:#281d10}
+.liquidation-context[data-state$="OBSERVED_LARGE"]{border-left-color:#ffca53;background:#281d10}
+.liquidation-context[data-state^="RECENT_"]{border-left-color:#ffca53}
+.liquidation-context [data-context-episode]{padding:12px;margin:12px 0;border:1px solid #b78836;border-radius:8px;background:#251e10;line-height:1.6;overflow-wrap:anywhere}
+.liquidation-context [data-context-episode][hidden]{display:none}
+.liquidation-context[data-state$="CASCADE"]{border-left-color:#ff617b;background:#29161d}
+.liquidation-context[data-state^="POST_"]{border-left-color:#5ad7e6}
+.liquidation-context[data-state="WAIT_DATA"]{border-left-color:#95a5ad}
+.liquidation-context [data-context-metrics]{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:16px 0}
+.liquidation-context [data-context-metrics]>div{padding:12px;border:1px solid #285348;border-radius:8px;min-width:0}
+.liquidation-context strong,.liquidation-context small{display:block;overflow-wrap:anywhere}
+.liquidation-context strong{margin:8px 0}.liquidation-context small,.liquidation-context time{color:#8dc6b8}
+.liquidation-context summary{cursor:pointer;padding:10px 0}
+.liquidation-context .context-policy{margin:12px 0;color:#abc9c1;line-height:1.6}
+.liquidation-context [data-context-forecast],.liquidation-context [data-context-totals]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:14px 0}
+.liquidation-context .context-forecast-card,.liquidation-context .context-volume-card{padding:14px;border:1px solid #285348;border-radius:9px;min-width:0;overflow-wrap:anywhere}
+.liquidation-context .context-forecast-card h3{font-size:1rem;margin:0 0 10px;line-height:1.5}
+.liquidation-context .context-forecast-card[data-tier="WATCH"]{border-color:#ffca53;background:#281e10}
+.liquidation-context .context-forecast-card[data-tier="EARLY"],.liquidation-context .volume-large{border-color:#ff617b;background:#34131d}
+.liquidation-context .context-forecast-card[data-tier="UNWINDING"]{border-color:#ff617b;background:#34131d}
+.liquidation-context .context-forecast-card[data-tier="UNWINDING"] h3{color:#ff8699}
+.liquidation-context .context-forecast-card[data-tier="EARLY"] h3,.liquidation-context .volume-large strong,.liquidation-context .volume-large-text{color:#ff8699}
+.liquidation-context .context-forecast-card p{font-size:.9rem;line-height:1.55}
+.liquidation-context .context-forecast-card li{font-size:.85rem}
+.liquidation-context .condition-met{color:#70e4c0}.liquidation-context .condition-wait{color:#b6c3bf}
+.liquidation-context .context-forecast-note{grid-column:1/-1;font-size:.85rem;line-height:1.6;color:#b7cec5;margin:0}
+.liquidation-context .context-forecast-note.volume-large-text{color:#ff8699}
+.liquidation-context .context-volume-card strong{font-size:1.2rem}
+@media(max-width:700px){.liquidation-context [data-context-forecast],.liquidation-context [data-context-totals]{grid-template-columns:1fr}}
+@media(max-width:700px){.liquidation-context{padding:15px}.liquidation-context [data-context-metrics]{grid-template-columns:1fr}.liquidation-context h2{font-size:1.1rem}}

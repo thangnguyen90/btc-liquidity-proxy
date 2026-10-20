@@ -58,6 +58,9 @@ const short = buildLiqScanHighScoreOrder(event('BELOW'), {
   markPrice: 100,
   routeState: { marginUsdt: 5, leverage: 5, takeProfitRoePct: 15 },
 });
+const shortOne=buildLiqScanHighScoreOrder(event('BELOW'),{now:baseNow+10,enabledAt:baseNow-1000,markPrice:100,routeState:{marginUsdt:1,leverage:5,takeProfitRoePct:15}});
+assert.equal(shortOne.marginUsdt,1);assert.equal(shortOne.notionalUsdt,5);
+assert.equal(shortOne.takeProfitPrice,short.takeProfitPrice);assert.equal(shortOne.stopLossPrice,short.stopLossPrice);assert.equal(shortOne.clientOrderId,short.clientOrderId);
 assert.deepEqual(
   [short.side, short.takeProfitPrice, short.stopLossPrice, short.stopLossRoePct],
   ['SELL', 97, 106, 30],

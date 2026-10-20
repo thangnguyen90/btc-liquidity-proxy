@@ -1,6 +1,6 @@
-const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V7_ZONE_MANAGER_PUSH_20261004';
+const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V11_PUMP_TURN_PUSH_20261018';
 const STORAGE_KEY = 'opposite-liquidity-toast:seen-event-ids:v1';
-const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261004-5';
+const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261018-pump-turn-push-v1';
 const PUSH_CONFIG_URL = '/api/opposite-liquidity-web-push/config';
 const PUSH_SUBSCRIPTIONS_URL = '/api/opposite-liquidity-web-push/subscriptions';
 const FIRST_LOAD_RECENT_MS = 2 * 60_000;
@@ -206,6 +206,10 @@ async function showPushNotification(event) {
     const registration = await pushRegistration();
     if (!registration) return;
     if (registration.pushManager && await registration.pushManager.getSubscription()) return;
+    // The local fallback must not bypass the server's quiet schedule when no subscription exists.
+    // Missing config/network failure is fail-closed for native notifications, not the in-page toast.
+    const config=await pushConfig();
+    if(config.quietHoursActive!==false)return;
     const side = event.side === 'LONG' ? 'LONG' : 'SHORT';
     const ratio = finite(event.depth?.oppositeRatio);
     const execution = String(event.binanceExecution?.status ?? 'NO_BINANCE_CALLBACK').toUpperCase();

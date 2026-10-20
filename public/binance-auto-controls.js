@@ -167,6 +167,8 @@ function render(){
     const timeframe=r.interval?` · ${r.interval}`:'';
     for(const value of [r.label,`${r.stream}${timeframe}`,r.side]){const td=document.createElement('td');td.textContent=value;tr.append(td);}
     if(r.title){const title=document.createElement('small');title.textContent=r.title;tr.children[0].append(title);}
+    if(r.source==='pump-turn-near-short'){const note=document.createElement('small');note.textContent=`SHORT MARKET thử nghiệm, không chờ nến xác nhận · 2 USDT margin ×5 · TP +10% / SL −30% ROE · max riêng ${r.maxOpenPositions}, không dùng max chung · chỉ tín hiệu mới, không replay/DCA. Không phải Heatmap sweep.`;tr.children[0].append(note);}
+    if(r.source==='heatmap-full-sweep'){const note=document.createElement('small');note.textContent=`Quét hết cụm trên → SHORT 3 USDT; dưới → LONG 1 USDT margin ×5 · TP +10% / SL −30% ROE · max riêng 20 chung hai hướng, không dùng max chung · tín hiệu mới sau bật, không replay/DCA, không tự nâng size tối thiểu.`;tr.children[0].append(note);}
     if(r.stream==='ema99-retest'&&ema99Notes[r.label]){const note=document.createElement('small');note.className='signal-note';note.textContent=ema99Notes[r.label];tr.children[0].append(note);}
     const routeNote=otherRouteNote(r);if(routeNote){const note=document.createElement('small');note.className='signal-note';note.textContent=routeNote;tr.children[0].append(note);}
     const small=document.createElement('small');small.textContent=r.source;tr.children[1].append(small);tr.children[2].className=r.side;
@@ -180,7 +182,8 @@ function render(){
     const size=document.createElement('td');
     const impulseDynamic=r.source==='post-move-impulse'&&['POST_DUMP_NO_SELL_BUY_IMPULSE_LONG','POST_PUMP_NO_BUY_SELL_IMPULSE_SHORT'].includes(r.label);
     if(impulseDynamic){
-      size.textContent=`Tự động 5 / 1 USDT · 5 nếu giờ tốt HOẶC BTC cùng hướng. ${r.side==='LONG'?'LONG: 03–06h, 12–15h':'SHORT: 00–09h, 18–21h'} VN; còn lại 1 USDT.`;
+      size.textContent=r.side==='SHORT'?'SHORT cố định 1 USDT margin; không tăng size theo giờ hoặc BTC. Chỉ lệnh mới, không đổi vị thế cũ.'
+        :'Tự động 2 / 1 USDT · 2 nếu giờ tốt HOẶC BTC cùng hướng. LONG: 03–06h, 12–15h VN; còn lại 1 USDT.';
     }else if(settingsEditable){
       const leverage=Number(r.leverage)||5;
       const saved=document.createElement('small');saved.textContent=`Đã lưu: ${r.marginUsdt??'LỖI'} USDT margin × ${leverage}x · notional ${r.marginUsdt===null?'—':Number((r.marginUsdt*leverage).toFixed(2))} USDT`;
@@ -227,7 +230,7 @@ function render(){
     tr.append(today);
     check.addEventListener('change',()=>{const enabled=check.checked;const detail=r.source==='coin-horizon-sweep-transition'
       ?`Coin Horizon dùng ${r.marginUsdt} USDT margin ×${r.leverage}, TP động theo vùng thanh khoản hợp lệ gần nhất, R:R ≥1 và SL −25% ROE từ full-fill.`
-      :impulseDynamic?'IMPULSE tự động 5 USDT nếu giờ tốt HOẶC BTC cùng hướng, còn lại 1 USDT. Chỉ lệnh mới, điều kiện entry/TP/SL giữ nguyên.'
+      :impulseDynamic?`IMPULSE ${r.side} tự động ${r.side==='LONG'?2:5} USDT nếu giờ tốt HOẶC BTC cùng hướng, còn lại 1 USDT. Chỉ lệnh mới, điều kiện entry/TP/SL giữ nguyên.`
       :r.otherSettingsEditable===true
         ?`Luồng này dùng ${r.marginUsdt} USDT margin ×${r.leverage}, TP +${r.takeProfitRoePct}% ROE đang lưu; rule SL gốc không đổi.`
         :'EMA99 dùng margin, đòn bẩy và TP% đang lưu của đúng route; SL LONG −20% / SHORT −30% ROE từ giá khớp.';

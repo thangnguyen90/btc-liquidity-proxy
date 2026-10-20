@@ -20,7 +20,7 @@ assert.match(server, /pathname === '\/push-signal-manager'/);
 assert.match(html, /id="routes"/);
 assert.match(html, /data-opposite-liquidity-push/);
 assert.match(html, /CHỈ ĐIỀU KHIỂN WEB PUSH/);
-assert.match(html, /DISCORD_PUSH_MANAGER_UI_V1_20261004/);
+assert.match(html, /DISCORD_PUSH_MANAGER_UI_V2_NATIVE_SIGNAL_20261018/);
 assert.match(client, /fetch\('\/api\/discord-push-manager'/);
 assert.match(client, /fetch\('\/api\/discord-push-manager\/routes'/);
 assert.match(client, /data-route-id/);

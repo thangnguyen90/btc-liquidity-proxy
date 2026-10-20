@@ -1,4 +1,19 @@
-export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'LOCAL_AI_PRIORITY_ZONE_1USDT_V51_20261003';
+export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'IMPULSE_SHORT_FIXED1_HEATMAP_UNCHANGED_V59_20261020';
+import {HEATMAP_SWEEP_SOURCE,validHeatmapSweepOrder} from './heatmapSweepBinance.js';
+const HEATMAP_SWEEP_AUTH=Symbol('heatmap-full-sweep-server-entry');
+export function authorizeHeatmapSweepOrder(payload){const p={...payload};Object.defineProperty(p,HEATMAP_SWEEP_AUTH,{value:true});return p;}
+import {PUMP_TURN_NEAR_SOURCE,validPumpTurnNearOrder} from './pumpTurnNearShortBinance.js';
+const PUMP_TURN_NEAR_AUTH=Symbol('pump-turn-near-short-server-entry');
+export function authorizePumpTurnNearOrder(payload){const p={...payload};Object.defineProperty(p,PUMP_TURN_NEAR_AUTH,{value:true});return p;}
+import {STRUCTURE_SOURCE,validStructureOrder} from './structureSetupBinance.js';
+const STRUCTURE_AUTH=Symbol('structure-ready-server-entry');
+export function authorizeStructureOrder(payload){const p={...payload};Object.defineProperty(p,STRUCTURE_AUTH,{value:true});return p;}
+import {EARLY_WICK_SOURCE,validEarlyWickOrder} from './coinPumpWickEarlyBinance.js';
+const EARLY_WICK_AUTH=Symbol('early-wick-ratio-long-entry');
+export function authorizeEarlyWickOrder(payload){const p={...payload};Object.defineProperty(p,EARLY_WICK_AUTH,{value:true});return p;}
+import {RISING_VOLUME_SOURCE,validRisingVolumeOrder} from './risingVolumeBinance.js';
+const RISING_VOLUME_AUTH=Symbol('rising-volume-sustained-1m-entry');
+export function authorizeRisingVolumeOrder(payload){const p={...payload};Object.defineProperty(p,RISING_VOLUME_AUTH,{value:true});return p;}
 import { validImpulseSizing } from './postMoveImpulseSizing.js';
 import {validMainDistancePlan} from './mainKillDistanceEntry.js';
 const MAIN_DISTANCE_AUTH=Symbol('main-distance-entry');
@@ -271,9 +286,28 @@ export function evaluateAutoBinanceEntryPolicy({
   tokenIsAuthorized = false,
   orderEnabled = false,
   env = process.env,
+  now = Date.now(),
 } = {}) {
   const exclusive = liveCardOnlyAutoBinanceEnabled(env);
   const dryRun = payload?.dryRun !== false;
+  if(!dryRun&&payload.source===HEATMAP_SWEEP_SOURCE){const allowed=orderEnabled&&payload[HEATMAP_SWEEP_AUTH]===true&&validHeatmapSweepOrder(payload,payload.signalEntryPrice,now);
+    return {allowed,exclusive,reason:allowed?'HEATMAP_FULL_SWEEP_SHORT3_LONG1_5X_TP10_SL30_CAP20':'HEATMAP_SWEEP_UNAUTHORIZED_OR_INVALID'};}
+  if(!dryRun&&payload.source===PUMP_TURN_NEAR_SOURCE){const allowed=orderEnabled&&payload[PUMP_TURN_NEAR_AUTH]===true&&validPumpTurnNearOrder(payload,payload.signalEntryPrice,now);
+    return {allowed,exclusive,reason:allowed?'PUMP_TURN_NEAR_SHORT_2USDT_5X_TP10_SL30_CAP20':'PUMP_TURN_NEAR_UNAUTHORIZED_OR_INVALID'};}
+
+  if(!dryRun&&payload.source===STRUCTURE_SOURCE) {
+    const allowed=orderEnabled&&payload[STRUCTURE_AUTH]===true&&validStructureOrder(payload,payload.signalEntryPrice,now);
+    return {allowed,exclusive,reason:allowed?'STRUCTURE_READY_1USDT_5X_TP10_SL30_CAP15':'STRUCTURE_UNAUTHORIZED_OR_INVALID'};
+  }
+
+  if(!dryRun&&orderEnabled&&payload.source===RISING_VOLUME_SOURCE) {
+    const allowed=payload[RISING_VOLUME_AUTH]===true&&validRisingVolumeOrder(payload,payload.signalEntryPrice,now);
+    return {allowed,exclusive,reason:allowed?'RISING_VOLUME_1M_SUSTAINED_RATIO_LONG2_SHORT1_5X_TP10_SL30':'RISING_VOLUME_UNAUTHORIZED_OR_INVALID'};
+  }
+  if(!dryRun&&orderEnabled&&payload.source===EARLY_WICK_SOURCE) {
+    const allowed=payload[EARLY_WICK_AUTH]===true&&validEarlyWickOrder(payload,payload.signalEntryPrice,now);
+    return {allowed,exclusive,reason:allowed?'EARLY_WICK_RATIO_LONG3_5X_TP10_SL30':'EARLY_WICK_UNAUTHORIZED_OR_INVALID'};
+  }
 
   if (!exclusive) {
     return { allowed: true, exclusive: false, reason: 'LEGACY_AUTO_MODE' };
@@ -403,7 +437,7 @@ export function evaluateAutoBinanceEntryPolicy({
         && payload.side === 'SELL' && Number(payload.stopLossRoePct) === 30))
     && validOtherOrderSize(payload)
     && validOtherTakeProfitRoe(payload.takeProfitRoePct)) {
-    return { allowed: true, exclusive: true, reason: 'POST_MOVE_IMPULSE_TIME_OR_BTC_MARGIN5_ELSE1_MAX50' };
+    return { allowed: true, exclusive: true, reason: 'POST_MOVE_IMPULSE_LONG2_ELSE1_SHORT_FIXED1_MAX50' };
   }
   if (payload?.[BTC_RELATIVE_STRENGTH_AUTHORIZATION] === true
     && payload.source === 'btc-relative-strength-watch'

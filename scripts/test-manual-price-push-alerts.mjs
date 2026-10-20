@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -62,6 +62,40 @@ try {
 
   const reloaded = new ManualPricePushAlerts({ stateFile: join(directory, 'alerts.json'), now: () => now });
   assert.equal((await reloaded.initialize()).alerts.length, 0);
+  assert.equal(manager.snapshot().maxActive, 50);
+
+  // A heatmap alert shares the existing matcher/state, only adding a safe return-page context.
+  await assert.rejects(manager.create({symbol:'Q',targetPrice:105,sourcePage:'HEATMAP_LAB',range:'https://invalid.test'}), /không hợp lệ/);
+  const heatmap = await manager.create({symbol:'Q',targetPrice:105,currentPrice:100,sourcePage:'HEATMAP_LAB',range:'24h'});
+  assert.equal(heatmap.alert.sourcePage, 'HEATMAP_LAB');
+  assert.equal(pushed.length, 2, 'saving a level cannot send immediately');
+  const restarted = new ManualPricePushAlerts({stateFile:join(directory,'alerts.json'),now:()=>now,pushSender:async p=>{pushed.push(p);return {sent:1};}});
+  assert.equal((await restarted.initialize()).alerts[0].sourcePage, 'HEATMAP_LAB');
+  await restarted.onMark({symbol:'QUSDT',markPrice:104,eventTime:now});
+  await restarted.onMark({symbol:'QUSDT',markPrice:105,eventTime:now+1000});
+  const heatmapPayload = pushed.at(-1), destination = new URL(heatmapPayload.url, 'https://example.test');
+  assert.equal(destination.pathname, '/coinglass-heatmap-lab');
+  assert.equal(destination.searchParams.get('symbol'), 'QUSDT');
+  assert.equal(destination.searchParams.get('range'), '24h');
+  assert.equal(destination.searchParams.get('alert'), heatmap.alert.id);
+  assert.equal(destination.hash, '#price-alerts');
+  assert.equal(heatmapPayload.signalType, MANUAL_PRICE_PUSH_SIGNAL_TYPE);
+  await restarted.onMark({symbol:'QUSDT',markPrice:106,eventTime:now+2000});
+  assert.equal(pushed.length, 3, 'one-shot remains shared across pages/restarts');
+  const saved = JSON.parse(await readFile(join(directory,'alerts.json'),'utf8'));
+  saved.version='MANUAL_PRICE_PUSH_ALERT_V1_BINANCE_MARK_CROSS_20261004';
+  delete saved.alerts[0].sourcePage;delete saved.alerts[0].range;
+  await writeFile(join(directory,'legacy.json'),JSON.stringify(saved));
+  const legacy = new ManualPricePushAlerts({stateFile:join(directory,'legacy.json'),now:()=>now});
+  const oldAlert = (await legacy.initialize()).alerts[0];
+  assert.equal(oldAlert.status, 'TRIGGERED');
+  assert.equal(buildManualPricePushPayload(oldAlert).url, '/coin-level-analysis?symbol=QUSDT');
+  assert.match(buildManualPricePushPayload({...oldAlert,sourcePage:'HEATMAP_LAB',range:'//evil.test'}).url, /^\/coin-level-analysis\?/);
+  const source = await readFile('src/server.js','utf8');
+  const getRoute = source.slice(source.indexOf("if (requestUrl.pathname === '/api/manual-price-push-alerts' && request.method === 'GET')"));
+  assert.match(getRoute.slice(0,getRoute.indexOf('\n    }')), /manualPricePushAlerts\.snapshot\(\)/);
+  assert.doesNotMatch(getRoute.slice(0,getRoute.indexOf('\n    }')), /managementSnapshot|getSymbols|\.create\(|placeOrder|sendPayload/);
+  assert.match(source, /sourcePage: body\.sourcePage, range: body\.range/);
 } finally {
   await rm(directory, { recursive:true, force:true });
 }

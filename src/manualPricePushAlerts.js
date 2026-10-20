@@ -3,8 +3,15 @@ import { dirname } from 'node:path';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 
 export const MANUAL_PRICE_PUSH_ALERT_VERSION =
-  'MANUAL_PRICE_PUSH_ALERT_V1_BINANCE_MARK_CROSS_20261004';
+  'MANUAL_PRICE_PUSH_ALERT_V2_HEATMAP_CONTEXT_20261018';
 export const MANUAL_PRICE_PUSH_SIGNAL_TYPE = 'MANUAL_BINANCE_PRICE_ALERT';
+const HEATMAP_RANGES = new Set(['12h', '24h', '3d', '7d', '30d']);
+
+function heatmapContext(value) {
+  return value.sourcePage === 'HEATMAP_LAB' && HEATMAP_RANGES.has(value.range)
+    ? { sourcePage: 'HEATMAP_LAB', range: value.range }
+    : { sourcePage: null, range: null };
+}
 
 const finite = value => {
   const parsed = Number(value);
@@ -40,7 +47,9 @@ export function buildManualPricePushPayload(alert = {}) {
     eventId: `manual-price:${alert.id}:${alert.triggeredAt}`,
     title: `🔔 ${alert.symbol} chạm ${priceText(alert.targetPrice)}`,
     body: `MARK Binance ${priceText(alert.triggerPrice)} đã ${verb} mốc ${priceText(alert.targetPrice)} bạn đặt.`,
-    url: `/coin-level-analysis?symbol=${encodeURIComponent(alert.symbol)}`,
+    url: heatmapContext(alert).sourcePage
+      ? `/coinglass-heatmap-lab?symbol=${encodeURIComponent(alert.symbol)}&range=${encodeURIComponent(alert.range)}&alert=${encodeURIComponent(alert.id)}#price-alerts`
+      : `/coin-level-analysis?symbol=${encodeURIComponent(alert.symbol)}`,
     side: direction,
     symbol: alert.symbol,
     targetPrice: alert.targetPrice,
@@ -70,6 +79,7 @@ function normalizeStoredAlert(value = {}) {
       id: String(value.id ?? randomUUID()),
       symbol,
       targetPrice,
+      ...heatmapContext(value),
       status: value.status === 'TRIGGERED' ? 'TRIGGERED' : 'ACTIVE',
       direction: ['UP', 'DOWN', 'AT_TARGET'].includes(value.direction) ? value.direction : null,
       referencePrice: finite(value.referencePrice),
@@ -168,17 +178,21 @@ export class ManualPricePushAlerts {
       generatedAt: this.now(),
       observeOnly: true,
       binanceEligible: false,
+      maxActive: this.maxActive,
       activeCount: alerts.filter(alert => alert.status === 'ACTIVE').length,
       triggeredCount: alerts.filter(alert => alert.status === 'TRIGGERED').length,
       alerts,
     };
   }
 
-  create({ symbol: rawSymbol, targetPrice: rawTargetPrice, currentPrice = null } = {}) {
+  create({ symbol: rawSymbol, targetPrice: rawTargetPrice, currentPrice = null, sourcePage = null, range = null } = {}) {
     return this.#run(async () => {
       const symbol = normalizeManualPriceAlertSymbol(rawSymbol);
       const targetPrice = finite(rawTargetPrice);
       if (!(targetPrice > 0)) throw new Error('Giá cảnh báo phải lớn hơn 0.');
+      if (sourcePage === 'HEATMAP_LAB' && !HEATMAP_RANGES.has(range)) {
+        throw new Error('Khoảng thời gian Heatmap không hợp lệ.');
+      }
       const duplicate = this.state.alerts.find(alert => alert.status === 'ACTIVE'
         && alert.symbol === symbol && alert.targetPrice === targetPrice);
       if (duplicate) throw new Error(`${symbol} đã có cảnh báo đang chờ tại giá này.`);
@@ -189,6 +203,7 @@ export class ManualPricePushAlerts {
       const livePrice = finite(currentPrice) ?? finite(this.livePrices.get(symbol)?.markPrice);
       const alert = {
         id: randomUUID(), symbol, targetPrice, status: 'ACTIVE',
+        ...heatmapContext({ sourcePage, range }),
         direction: livePrice == null ? null : livePrice < targetPrice ? 'UP'
           : livePrice > targetPrice ? 'DOWN' : 'AT_TARGET',
         referencePrice: livePrice, lastPrice: livePrice,

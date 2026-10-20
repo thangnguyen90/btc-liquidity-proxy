@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Quản lý tín hiệu Web Push</title>
   <link rel="stylesheet" href="/push-signal-manager.css?v=20261004-1">
+  <link rel="stylesheet" href="/push-quiet-hours.css?v=20261012-quiet-v1">
 </head>
 <body><main>
   <header class="hero">
     <div>
-      <p class="eyebrow">DISCORD 2XX → ROUTE ALLOWLIST → WEB PUSH</p>
+      <p class="eyebrow">TÍN HIỆU TRỰC TIẾP / DISCORD 2XX → WEB PUSH</p>
       <h1>Quản lý tín hiệu<br>được phép Push</h1>
-      <p>Chọn những nhóm Discord được phép gửi tiếp thành thông báo như app trên điện thoại. Chỉ Discord gửi thành công mới được xét Push.</p>
+      <p>Bật/tắt các loại thông báo như app trên điện thoại. Nhóm Discord chỉ xét sau gửi thành công; loại ghi “Tín hiệu trực tiếp” không phụ thuộc Discord. Tất cả tuân thủ giờ yên lặng đang lưu.</p>
     </div>
     <nav aria-label="Điều hướng">
       <a href="/local-ai-trend-evaluation">AI Local</a>
@@ -25,18 +26,19 @@
   <aside class="notice"><strong>CHỈ ĐIỀU KHIỂN WEB PUSH.</strong> Bật/tắt tại đây không thay đổi detector, Discord, Binance, entry, size, TP hoặc SL. Route mới mặc định tắt; riêng thanh khoản ngược chiều giữ mặc định bật để tương thích phiên bản trước.</aside>
 
   <section class="panel status-bar">
-    <div><strong id="status" role="status">Đang tải danh sách route Discord…</strong><p id="lastDelivery" class="muted"></p></div>
+    <div><strong id="status" role="status">Đang tải danh sách tín hiệu Push…</strong><p id="lastDelivery" class="muted"></p></div>
     <div class="push-actions">
       <div class="actions"><button type="button" data-opposite-liquidity-push>Bật Push như app</button><button id="refresh" type="button">Làm mới</button></div>
       <small data-opposite-liquidity-push-help>Android bật trực tiếp; iPhone mở từ icon Màn hình chính.</small>
     </div>
   </section>
 
+  <section id="push-quiet-hours" class="panel" data-push-quiet-hours aria-label="Giờ yên lặng Push"></section>
   <section class="summary-grid" aria-label="Tóm tắt Web Push">
-    <article><span>Route Discord</span><strong id="configuredRoutes">—</strong><small>webhook đang cấu hình</small></article>
+    <article><span>Loại Push</span><strong id="configuredRoutes">—</strong><small>tín hiệu trực tiếp + nhóm Discord</small></article>
     <article><span>Được phép Push</span><strong id="enabledRoutes">—</strong><small>allowlist runtime</small></article>
     <article><span>Thiết bị nhận</span><strong id="subscriptions">—</strong><small>subscription còn hiệu lực</small></article>
-    <article><span>Đã quan sát</span><strong id="observed">—</strong><small>Discord 2xx kể từ khi theo dõi</small></article>
+    <article><span>Đã quan sát</span><strong id="observed">—</strong><small>tín hiệu / Discord 2xx kể từ khi theo dõi</small></article>
   </section>
 
   <section class="panel filters" aria-label="Bộ lọc route">
@@ -48,16 +50,17 @@
   </section>
 
   <section class="panel">
-    <div class="section-heading"><div><p class="eyebrow">RUNTIME MATCHER = DISCORD WEBHOOK ROUTE</p><h2>Danh sách tín hiệu</h2></div><p id="routeCount" class="muted">—</p></div>
+    <div class="section-heading"><div><p class="eyebrow">MATCHER RUNTIME = ĐÚNG LOẠI TÍN HIỆU / WEBHOOK</p><h2>Danh sách tín hiệu</h2></div><p id="routeCount" class="muted">—</p></div>
     <div id="routes" class="route-grid"><p class="empty">Đang tải…</p></div>
   </section>
 
   <details class="panel method">
     <summary>Cách hoạt động</summary>
     <p>Sau khi một notifier gửi Discord và nhận HTTP 2xx, bridge xác định route bằng webhook thực tế. Nếu checkbox route đang bật, cùng payload được rút gọn và gửi qua Web Push tới các thiết bị đã đăng ký.</p>
+    <p>“GẦN VÙNG SHORT · CHƯA XÁC NHẬN” là công tắc riêng cho tín hiệu SHORT mới, không bật LONG hoặc cả webhook. Push trực tiếp khi detector phát tín hiệu, không chờ Discord hay kết quả Binance; bấm thông báo mở đúng mẫu. Hết hạn sau tối đa30giây, không gửi lại tín hiệu cũ hoặc gửi bù qua giờ yên lặng.</p>
     <p>Những key dùng chung một webhook được gom thành một route vì tại tầng vận chuyển không thể phân biệt chắc chắn từng key chỉ bằng URL. Bật route dùng chung nghĩa là cho phép Push toàn bộ thông báo đi qua webhook đó.</p>
     <p>Đây là allowlist thông báo, không phải whitelist giao dịch và không phải xác suất thắng.</p>
   </details>
-  <footer>DISCORD_PUSH_MANAGER_UI_V1_20261004 · tự làm mới mỗi 30 giây</footer>
-</main><script type="module" src="/push-signal-manager.js?v=20261004-1"></script></body>
+  <footer>DISCORD_PUSH_MANAGER_UI_V2_NATIVE_SIGNAL_20261018 · tự làm mới mỗi 30 giây</footer>
+</main><script type="module" src="/push-signal-manager.js?v=20261018-native-v2"></script><script type="module" src="/push-quiet-hours.js?v=20261012-quiet-v1"></script></body>
 </html>

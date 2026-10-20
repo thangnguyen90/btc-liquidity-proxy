@@ -75,6 +75,15 @@ try {
   assert.equal(duplicate.deduped, true);
   assert.equal(deliveries.length, 2);
 
+  const shortPayload={signalType:'BINANCE_SHORT_SETUP_WATCH',eventId:'short-setup:TESTUSDT:FAILED_HIGH:123:READY:456',
+    title:'SHORT kích hoạt',body:'Vượt đỉnh thất bại',expiresAt:now+120_000,
+    url:'/short-setup-watch?signal=short-setup%3ATESTUSDT%3AFAILED_HIGH%3A123'};
+  assert.equal((await service.sendPayload(shortPayload)).sent,1);
+  assert.equal(deliveries.at(-1).options.TTL,120);
+  assert.equal(deliveries.at(-1).payload.url,shortPayload.url);
+  assert.equal((await service.sendPayload(shortPayload)).deduped,true);
+  assert.equal((await service.sendPayload({...shortPayload,eventId:'expired-short',expiresAt:now})).error,'EXPIRED_WICK_ALERT');
+
   now += 500;
   const manual = await service.sendPayload({
     signalType:'MANUAL_BINANCE_PRICE_ALERT', eventId:'manual-price:test:1',
@@ -91,7 +100,14 @@ try {
   };
   assert.equal((await service.sendPayload(zonePayload)).sent, 1);
   assert.equal(deliveries.at(-1).payload.signalType, zonePayload.signalType);
-  assert.equal(deliveries.at(-1).payload.url, zonePayload.url);
+  const zoneUrl=new URL(deliveries.at(-1).payload.url,'https://app.test');
+  assert.equal(zoneUrl.pathname,'/liquidity-zone-manager');
+  assert.equal(zoneUrl.searchParams.get('notification'),zonePayload.eventId);
+  assert.equal(zoneUrl.searchParams.get('watch'),'test');
+  const history=await service.zoneNotificationHistory();
+  assert.equal(history.length,1);assert.equal(history[0].delivery.sent,1);
+  assert.equal(history[0].eventId,zonePayload.eventId);
+  assert.ok(!JSON.stringify(history).includes('push.example.test'),'History API must not expose endpoints or keys');
   assert.equal((await service.sendPayload(zonePayload)).deduped, true);
 
   now += 1_000;
@@ -107,6 +123,7 @@ try {
   });
   assert.equal((await reloaded.publicConfig()).publicKey, 'PUBLIC_VAPID_TEST_KEY');
   assert.equal((await reloaded.publicConfig()).subscriptionCount, 0);
+  assert.equal((await reloaded.zoneNotificationHistory())[0].eventId,zonePayload.eventId,'History survives reload without resending Push');
 } finally {
   await rm(directory, { recursive:true, force:true });
 }

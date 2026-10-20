@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="vi"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Thông báo vùng thanh khoản</title>
+  <link rel="stylesheet" href="/liquidity-zone-manager.css?v=20261005-16">
+  <link rel="stylesheet" href="/liquidity-zone-notifications.css?v=20261005-3">
+</head><body><main data-ui-version="LIQUIDITY_ZONE_NOTIFICATIONS_UI_V4_DIRECTION_COLORS_20261005">
+  <header><p class="eyebrow">LỊCH SỬ THÔNG BÁO · MAIN / FAR KILL</p>
+    <h1>Thông báo vùng thanh khoản</h1>
+    <p>Bấm thông báo để mở đúng sự kiện, vùng hoặc kết quả MARKET tại Quản lý vùng thanh khoản.</p>
+    <nav aria-label="Điều hướng"><a class="nav-link binance-auto-controls-nav-link" href="/binance-auto-controls">Quản lý Binance tự động</a><a href="/liquidity-zone-notifications" aria-current="page">Thông báo vùng thanh khoản</a><a href="/liquidity-zone-manager">Quản lý vùng thanh khoản</a><a href="/push-signal-manager">Quản lý Push</a></nav>
+  </header>
+  <section class="panel">
+    <div class="filters">
+      <label>Tìm coin / nội dung<input id="notificationSearch" placeholder="BTC, 龙虾, lỗi…" autocomplete="off"></label>
+      <label>Loại thông báo<select id="notificationKind"><option value="all">Tất cả</option><option value="ZONE">Thay đổi vùng</option><option value="ENTRY">Kết quả MAIN MARKET</option><option value="RISK">Delist / tất toán hợp đồng</option></select></label>
+      <label>Gửi Push<select id="notificationDelivery"><option value="all">Tất cả</option><option value="sent">Đã gửi</option><option value="partial">Gửi một phần</option><option value="failed">Lỗi gửi</option><option value="skipped">Đã bỏ qua</option><option value="no-device">Không có thiết bị nhận</option><option value="unknown">Chưa có log gửi</option></select></label>
+      <button id="reloadNotifications" type="button">Làm mới</button>
+      <button id="readCurrentPage" type="button">Đánh dấu trang này đã đọc</button>
+    </div>
+    <p id="notificationStatus" role="status">Đang tải…</p>
+    <p class="muted">Lưu tối đa 1.000 thông báo trong 7 ngày. “Đã đọc” chỉ lưu trên thiết bị/trình duyệt này, không xác nhận lệnh Binance hay thiết bị khác đã nhận. Thông báo cũ được khôi phục từ lịch sử sẵn có nếu còn dữ liệu; không gửi lại Push.</p>
+    <p class="muted">Bấm <b>Vào lệnh · margin USDT</b> dưới thông báo để kiểm tra vùng gốc và nhập margin. Cố định5x, TP mép MAIN, SL−30% ROE; chỉ MAIN hiện còn ACTIVE/chưa vượt, cách giá≥2,5% và đủ dữ liệu. Không vào theo giá lịch sử hoặc thay bằng vùng mới. Cần đăng nhập tại <a href="/orders" target="_blank" rel="noopener">Orders ↗</a>; dùng chung giới hạn20 và chống lệnh trùng với trang vùng thanh khoản.</p>
+    <p id="notificationOrderStatus" role="status" aria-live="polite"></p>
+    <div class="direction-legend" aria-label="Chú thích màu hướng giá"><span class="direction-badge direction-up">↑ Xanh: tăng / hướng lên</span><span class="direction-badge direction-down">↓ Đỏ: giảm / hướng xuống</span><span class="direction-badge direction-flat">→ Vàng: ngang / trong vùng</span><span class="direction-badge direction-unknown">? Xám: chưa có dữ liệu</span></div>
+    <p class="muted">Màu dùng hướng đã lưu lúc phát, không lấy giá hiện tại để tô lại lịch sử. Hướng tới vùng khác với hướng coin/BTC đã diễn biến; không phải xác suất quét hay xác nhận LONG/SHORT.</p>
+    <div id="notificationList" class="notification-list"></div>
+    <div class="filters"><button id="notificationPrev" type="button">Trang trước</button><span id="notificationPage"></span><button id="notificationNext" type="button">Trang sau</button></div>
+  </section>
+</main>
+<dialog id="manualOrderDialog" aria-labelledby="manualOrderTitle">
+  <form id="manualOrderForm">
+    <h2 id="manualOrderTitle">Vào lệnh từ thông báo</h2>
+    <label>Margin USDT<input id="manualMargin" type="number" min="0.01" step="any" value="2" required inputmode="decimal"></label>
+    <p id="manualOrderSummary"></p>
+    <label class="check"><input id="manualConfirmed" type="checkbox" required>Tôi xác nhận gửi MARKET thật với margin trên.</label>
+    <p class="muted">Hướng theo vùng vàng gốc so với giá hiện tại: trên giá → LONG; dưới giá → SHORT. Server kiểm tra lại vùng, giá và protection trước khi gửi. Mỗi tài khoản+cụm vùng chỉ một lần; kết quả không rõ không tự thử lại.</p>
+    <div class="actions"><button id="manualSubmit" type="submit">Submit vào Binance</button><button id="manualClose" type="button">Đóng</button><a href="/orders" target="_blank" rel="noopener">Đăng nhập / kiểm tra Orders ↗</a></div>
+    <p id="manualOrderResult" role="status" aria-live="polite"></p>
+  </form>
+</dialog>
+<script type="module" src="/liquidity-zone-notifications.js?v=20261005-5"></script></body></html>

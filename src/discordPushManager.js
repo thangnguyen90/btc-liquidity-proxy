@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 
 export const DISCORD_PUSH_MANAGER_VERSION =
-  'DISCORD_PUSH_MANAGER_V1_POST_SUCCESS_ROUTE_ALLOWLIST_20261004';
+  'DISCORD_PUSH_MANAGER_V2_NATIVE_SIGNAL_ROUTES_20261018';
 
 const OPPOSITE_ROUTE_KEY = 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_WEBHOOK_URL';
 const DISCORD_WEBHOOK_KEY = /(?:^DISCORD_WEBHOOK_URL$|(?:DISCORD_)?WEBHOOK_URL$)/;
@@ -31,6 +31,8 @@ const hash = value => createHash('sha256').update(String(value)).digest('hex');
 
 function humanizeKey(key) {
   const custom = {
+    COIN_PUMP_WICK_DISCORD_WEBHOOK_URL: 'Sóng bơm · rút râu sớm / hồi xác nhận',
+    RISING_VOLUME_1M_SUSTAINED_DISCORD_WEBHOOK_URL: 'Volume 1m · liền mạch LONG/SHORT',
     LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_DISCORD_WEBHOOK_URL: 'Thanh khoản ngược chiều',
     LOCAL_AI_TREND_DISCORD_WEBHOOK_URL: 'AI Local · đánh giá xu hướng',
     LOCAL_AI_SIGNAL_REVIEW_DISCORD_WEBHOOK_URL: 'AI Local · tín hiệu pass điểm vào',
@@ -52,6 +54,7 @@ function humanizeKey(key) {
 
 function categoryForKeys(keys) {
   const joined = keys.join(' ');
+  if (/RISING_VOLUME/.test(joined)) return 'Volume';
   if (/LOCAL_AI/.test(joined)) return 'AI Local';
   if (/BTC_|MARKET_BREADTH|MEGA_PUMP/.test(joined)) return 'BTC / thị trường';
   if (/COIN_LEVEL|COIN_HORIZON/.test(joined)) return 'Coin Level';
@@ -63,6 +66,8 @@ function categoryForKeys(keys) {
 
 function targetPathForKeys(keys) {
   const joined = keys.join(' ');
+  if (/COIN_PUMP_WICK/.test(joined)) return '/local-ai-trend-evaluation#btc-wick-recovery';
+  if (/RISING_VOLUME/.test(joined)) return '/rising-volume-watch';
   if (joined.includes(OPPOSITE_ROUTE_KEY)) return '/opposite-liquidity-manager';
   if (/LOCAL_AI_SIGNAL_REVIEW/.test(joined)) return '/ai-signal-review';
   if (/BINANCE|ORDER_FILL|TSL/.test(joined)) return '/binance-signal-orders';
@@ -103,6 +108,8 @@ function emptyState(now) {
     updatedAt: now,
     routeSettings: {},
     routeTelemetry: {},
+    routeEnabledAt: {},
+    signalEventReservations: {},
   };
 }
 
@@ -168,13 +175,14 @@ export class DiscordPushManager {
   constructor({ stateFile, routes = [], webPushService, now = () => Date.now() } = {}) {
     this.stateFile = stateFile;
     this.routes = routes;
-    this.routeByWebhook = new Map(routes.map(route => [route.webhook, route]));
+    this.routeByWebhook = new Map(routes.filter(route=>route.webhook).map(route => [route.webhook, route]));
     this.routeById = new Map(routes.map(route => [route.id, route]));
     this.webPushService = webPushService;
     this.now = now;
     this.state = null;
     this.initializing = null;
     this.queue = Promise.resolve();
+    this.startedAt = now();
   }
 
   async initialize() {
@@ -191,6 +199,8 @@ export class DiscordPushManager {
             ? parsed.routeSettings : {},
           routeTelemetry: parsed?.routeTelemetry && typeof parsed.routeTelemetry === 'object'
             ? parsed.routeTelemetry : {},
+          routeEnabledAt:parsed?.routeEnabledAt&&typeof parsed.routeEnabledAt==='object'&&!Array.isArray(parsed.routeEnabledAt)?parsed.routeEnabledAt:{},
+          signalEventReservations:parsed?.signalEventReservations&&typeof parsed.signalEventReservations==='object'&&!Array.isArray(parsed.signalEventReservations)?parsed.signalEventReservations:{},
         };
       } catch (error) {
         if (error?.code !== 'ENOENT') console.warn(`[DiscordPushManager] state reset: ${error.message}`);
@@ -221,6 +231,8 @@ export class DiscordPushManager {
       ? this.state.routeSettings[route.id] : route.defaultEnabled;
   }
 
+  isRouteEnabled(routeId){const route=this.routeById.get(routeId);return !!this.state&&!!route&&this.#enabled(route);}
+
   snapshotSync() {
     const routes = this.routes.map(route => {
       const telemetry = this.state?.routeTelemetry?.[route.id] ?? {};
@@ -232,6 +244,10 @@ export class DiscordPushManager {
         endpointHash: route.endpointHash,
         targetPath: route.targetPath,
         sharedWebhook: route.sharedWebhook,
+        transport:route.transport??'DISCORD_WEBHOOK',
+        signalType:route.signalType??null,
+        description:route.description??null,
+        enabledAt:this.state?.routeEnabledAt?.[route.id]??null,
         enabled: this.#enabled(route),
         defaultEnabled: route.defaultEnabled,
         observedCount: finite(telemetry.observedCount, 0),
@@ -262,6 +278,8 @@ export class DiscordPushManager {
         subscriptionCount: webPush.subscriptionCount,
         maxSubscriptions: webPush.maxSubscriptions,
         lastDelivery: webPush.lastDelivery,
+        quietHours:webPush.quietHours,
+        quietHoursActive:webPush.quietHoursActive,
       },
     };
   }
@@ -271,9 +289,45 @@ export class DiscordPushManager {
       const route = this.routeById.get(cleanText(routeId, 100));
       if (!route) throw new Error('DISCORD_PUSH_ROUTE_NOT_FOUND');
       if (typeof enabled !== 'boolean') throw new Error('DISCORD_PUSH_ENABLED_BOOLEAN_REQUIRED');
+      const hadSetting=Object.hasOwn(this.state.routeSettings,route.id),previous=this.state.routeSettings[route.id],previousAt=this.state.routeEnabledAt[route.id];
+      if(route.transport==='SIGNAL_EVENT'&&enabled&&(!this.#enabled(route)||!Number.isFinite(previousAt)))this.state.routeEnabledAt[route.id]=this.now();
       this.state.routeSettings[route.id] = enabled;
-      await this.#save();
+      try{await this.#save();}catch(error){
+        if(hadSetting)this.state.routeSettings[route.id]=previous;else delete this.state.routeSettings[route.id];
+        if(previousAt===undefined)delete this.state.routeEnabledAt[route.id];else this.state.routeEnabledAt[route.id]=previousAt;
+        throw error;
+      }
       return { routeId: route.id, enabled, snapshot: this.snapshotSync() };
+    });
+  }
+
+  // Native route: detector event identity, independent of the Discord transport.
+  // Durable reservation before Web Push prevents automatic resend after unknown outcomes/restarts.
+  observeSignalEvent({routeId,payload}={}){
+    return this.#run(async()=>{
+      const route=this.routeById.get(routeId),now=this.now();
+      if(route?.transport!=='SIGNAL_EVENT'||!payload||payload.signalType!==route.signalType
+        ||typeof payload.eventId!=='string'||payload.eventId.length>240||!payload.eventId.startsWith(route.eventPrefix))return {matched:false};
+      const enabledAt=this.state.routeEnabledAt[routeId];
+      if(!this.#enabled(route))return {matched:true,enabled:false,routeId};
+      if(![payload.notifiedAt,payload.expiresAt,enabledAt].every(Number.isFinite)||payload.notifiedAt<Math.max(enabledAt,this.startedAt)
+        ||payload.notifiedAt>now||now-payload.notifiedAt>30000||payload.expiresAt<=now||payload.expiresAt>payload.notifiedAt+30000)return {matched:true,skipped:'STALE_OR_PRE_ENABLE',routeId};
+      const key=routeId+':'+payload.eventId;
+      if(Object.hasOwn(this.state.signalEventReservations,key))return {matched:true,deduped:true,routeId};
+      this.state.signalEventReservations=Object.fromEntries(Object.entries(this.state.signalEventReservations)
+        .filter(([,v])=>v&&Number.isFinite(v.at)&&now-v.at<14*86400000).slice(-9999));
+      const reservation={at:now,status:'PENDING'};this.state.signalEventReservations[key]=reservation;
+      const t=this.state.routeTelemetry[routeId]??{observedCount:0,pushedCount:0,deliveredCount:0,lastObservedAt:null,lastPushedAt:null,lastPushResult:null};
+      t.observedCount++;t.lastObservedAt=now;this.state.routeTelemetry[routeId]=t;
+      await this.#save();
+      let delivery;
+      try{delivery=await this.webPushService.sendPayload({...payload,routeId,routeLabel:route.label});}
+      catch{delivery={attempted:0,sent:0,failed:0,error:'PUSH_FAILED_OR_UNKNOWN'};}
+      const suppressed=delivery.deduped||delivery.skipped==='QUIET_HOURS'||delivery.error;
+      t.pushedCount+=suppressed?0:1;t.deliveredCount+=finite(delivery.sent,0);
+      if(!suppressed)t.lastPushedAt=now;t.lastPushResult=delivery;
+      reservation.status=delivery.skipped??(delivery.error?'UNKNOWN':delivery.sent>0?'SENT':'NO_DELIVERY');
+      await this.#save();return {matched:true,enabled:true,routeId,delivery};
     });
   }
 
@@ -301,9 +355,10 @@ export class DiscordPushManager {
       }
       const payload = buildDiscordRoutePushPayload({ route, discordPayload, now });
       const delivery = await this.webPushService.sendPayload(payload);
-      telemetry.pushedCount += delivery.deduped ? 0 : 1;
+      const suppressed=delivery.deduped||delivery.skipped==='QUIET_HOURS';
+      telemetry.pushedCount += suppressed ? 0 : 1;
       telemetry.deliveredCount += finite(delivery.sent, 0);
-      telemetry.lastPushedAt = delivery.deduped ? telemetry.lastPushedAt : now;
+      telemetry.lastPushedAt = suppressed ? telemetry.lastPushedAt : now;
       telemetry.lastPushResult = delivery;
       await this.#save();
       return { matched: true, enabled: true, routeId: route.id, delivery };

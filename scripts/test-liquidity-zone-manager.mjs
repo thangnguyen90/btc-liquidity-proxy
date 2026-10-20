@@ -154,6 +154,19 @@ try{
   const ordered=helpers.sortZoneWatches([mixed[0],...manyCurrent],'all','farthest');
   assert.equal(ordered.at(-1).id,'oldFar','Archived rows follow entire list, not just current page');
   assert.equal(mixed[0].id,'oldFar','Priority sort does not modify original list');
+  const newestMain=[
+    {...fresh,id:'older',role:'MAIN_KILL',zone:{low:110,high:112},capturedAt:1000},
+    {...fresh,id:'latest',role:'MAIN_KILL',zone:{low:97,high:97},capturedAt:3000},
+    {...fresh,id:'below3',role:'MAIN_KILL',zone:{low:102.9999,high:104},capturedAt:5000},
+    {...fresh,id:'far',role:'FAR_KILL',zone:{low:120,high:121},capturedAt:6000},
+    {...fresh,id:'passed',role:'MAIN_KILL',zone:{low:110,high:112},capturedAt:7000,seen:{PRICE_PASSED:true}},
+    {...fresh,id:'missingTime',role:'MAIN_KILL',zone:{low:110,high:112}},
+    {...fresh,id:'legacyTime',role:'MAIN_KILL',zone:{low:110,high:112},sourceAt:'2026-10-04T10:00:00Z'},
+    {...fresh,id:'invalidPrice',role:'MAIN_KILL',markPrice:null,capturedAt:9000},
+  ];
+  assert.equal(helpers.sortZoneWatches(newestMain,'all','newest-main-3').map(w=>w.id).join(','),'legacyTime,latest,older,missingTime,passed','MAIN only, inclusive 3%, saved time desc, archived last, missing date last within group');
+  assert.equal(helpers.sortZoneWatches(newestMain,'BELOW','newest-main-3').map(w=>w.id).join(','),'latest','Side filter composes with newest MAIN mode');
+  assert.equal(helpers.sortZoneWatches(newestMain,'all','farthest').length,newestMain.length,'Other sorting modes do not acquire the 3% filter');
   assert.equal(helpers.zoneScenario(fresh).key,'UP','Current position wins over original LOWER direction');
   assert.equal(helpers.zoneScenario({...fresh,...positions[1]}).key,'DOWN');
   assert.equal(helpers.zoneScenario({...fresh,...positions[2]}).key,'INSIDE');
@@ -167,7 +180,7 @@ try{
   assert.equal(helpers.zoneScenario({...fresh,socketFresh:false}).key,'UNKNOWN');
   assert.equal(helpers.zoneScenario({...fresh,markPrice:null}).key,'UNKNOWN');
   assert.equal(helpers.zoneScenario({...fresh,seen:undefined}).key,'UP','Legacy missing history does not crash');
-  assert.match(ui,/Thiếu lịch sử nến: chưa xác nhận vùng chưa từng bị quét/);
+  assert.match(ui,/Thiếu lịch sử nến: chặn entry, chờ bù và kiểm chứng/);
   assert.doesNotMatch(ui,/Vùng đã tiêu thụ lúc thêm|Đã quét\/vượt/);
   assert.match(ui,/Chưa có xác nhận quét từ nến theo dõi/);
   const diagramSource=ui.slice(ui.indexOf('function diagram(w)'),ui.indexOf('function render()'));
@@ -187,5 +200,32 @@ try{
     if(zoneRole!=='MAIN_KILL')assert.doesNotMatch(rendered,/VÙNG VÀNG/,'FAR or missing role must not masquerade as MAIN');
   }
   assert.match(ui,/w\.role===\$\('zoneRole'\)\.value/,'Role filter uses stored runtime role');
+  // Exercise the real UI handlers and renderer with a minimal read-only DOM.
+  const nodes=new Map();
+  const node=id=>{
+    if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',innerHTML:'',attributes:{},handlers:{},
+      querySelectorAll:()=>[],setAttribute(name,value){this.attributes[name]=value;},
+      addEventListener(name,handler){this.handlers[name]=handler;}});
+    return nodes.get(id);
+  };
+  node('filter').value='active';node('zoneRole').value='MAIN_KILL';node('zoneSide').value='all';
+  node('scenarioFilter').value='all';node('sortOrder').value='farthest';
+  const view=runInNewContext(`${ui}; ({setData:value=>{data=value;page=2;render();},render,getPage:()=>page})`,{
+    document:{getElementById:node},location:{search:''},URLSearchParams,
+    setInterval:()=>0,fetch:()=>new Promise(()=>{}),AbortSignal:{timeout:()=>null},
+  });
+  const columnRows=Array.from({length:51},(_,i)=>({...fresh,id:`row${i}`,role:'MAIN_KILL',symbol:`S${String(i).padStart(2,'0')}USDT`,zone:{low:101+i,high:102+i},capturedAt:1000+i}));
+  view.setData({watches:[{...fresh,id:'archive',symbol:'ARCHIVEUSDT',role:'MAIN_KILL',seen:{PRICE_PASSED:true},zone:{low:300,high:301}},...columnRows],events:[],generatedAt:1000});
+  node('sortDistanceColumn').handlers.click();
+  assert.equal(node('sortOrder').value,'nearest');assert.equal(view.getPage(),1);
+  assert.equal(node('distanceColumnHeader').attributes['aria-sort'],'ascending');
+  assert.equal(node('distanceSortIndicator').textContent,'% ↑');
+  assert.ok(node('watchRows').innerHTML.indexOf('S00USDT')<node('watchRows').innerHTML.indexOf('S49USDT'));
+  assert.ok(!node('watchRows').innerHTML.includes('ARCHIVEUSDT'),'Current page is filled from sorted global list before archived rows');
+  node('sortDistanceColumn').handlers.click();
+  assert.equal(node('sortOrder').value,'farthest');assert.equal(node('distanceColumnHeader').attributes['aria-sort'],'descending');
+  assert.ok(node('watchRows').innerHTML.indexOf('S50USDT')<node('watchRows').innerHTML.indexOf('S49USDT'));
+  node('sortOrder').value='newest-main-3';view.render();assert.equal(node('distanceColumnHeader').attributes['aria-sort'],'none');
+  node('sortDistanceColumn').handlers.click();assert.equal(node('sortOrder').value,'farthest');
 }finally{await rm(dir,{recursive:true,force:true});}
 console.log('Liquidity zone manager: frozen zones, socket crossings, closed candles, no replay, Push OFF and temporal evidence OK');

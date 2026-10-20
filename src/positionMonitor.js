@@ -13,10 +13,11 @@
 
 import WebSocket from 'ws';
 import { binancePositionPriceRoe } from './binanceProfitLock.js';
+import { createUserDataStreamHealth } from './userDataStreamHealth.js';
 
 export const POSITION_MONITOR_MARK_STREAM_VERSION = 'POSITION_MONITOR_PER_SYMBOL_MARK_STREAM_V5_PRICE_ROE_20260831';
 export const POSITION_PROTECTION_TRIGGER_VERSION = 'POSITION_PROTECTION_SOCKET_FILL_V5_POSITION_VISIBILITY_RETRY_20260923';
-export const POSITION_USER_DATA_STREAM_VERSION = 'POSITION_USER_DATA_STREAM_V2_LISTEN_KEY_RECOVERY_20260816';
+export const POSITION_USER_DATA_STREAM_VERSION = 'POSITION_USER_DATA_STREAM_V3_HEARTBEAT_RESTART_20261016';
 export const POSITION_MONITOR_MARK_STREAM_URL = 'wss://fstream.binance.com/market/stream';
 export const POSITION_MONITOR_MARK_STREAM_STALE_MS = 15_000;
 
@@ -112,6 +113,7 @@ export function startPositionMonitor({
   onUserDataReconnect = null,
   getCredentials = null,
 }) {
+  const userDataHealth = createUserDataStreamHealth();
   // symbol → { amt, entry, leverage, isolatedMargin, initialMargin }
   const posCache = new Map();
   const stats = {
@@ -161,6 +163,7 @@ export function startPositionMonitor({
     try {
       const { apiKey, apiSecret } = resolveCredentials();
       const positions = await client.getPositions({ apiKey, apiSecret });
+      userDataHealth.observeRest(positions);
 
       const activeSymbols = new Set();
       for (const p of positions) {
@@ -328,13 +331,14 @@ export function startPositionMonitor({
 
   async function recoverMissedFullFills({
     since = 0,
+    createdAfter = 0,
     handledOrderIds = [],
     recoverySource = 'MISSED_FILL_RECOVERY',
   } = {}) {
     if (!onOrderFill) return { checkedSymbols: 0, candidates: 0, recovered: 0, failed: 0 };
     await syncPositions();
     const handled = new Set((Array.isArray(handledOrderIds) ? handledOrderIds : []).map(String));
-    const minTime = Math.max(0, Number(since) || 0);
+    const minTime = Math.max(0, Number(since) || 0, Number(createdAfter) || 0);
     const summary = {
       checkedSymbols: 0,
       candidates: 0,
@@ -361,6 +365,9 @@ export function startPositionMonitor({
         const candidates = [];
         for (const orderId of orderIds) {
           const order = await client.getOrder({ symbol, orderId, apiKey, apiSecret });
+          // An old LIMIT may fill after activation. Fill time alone cannot
+          // authorize adding TP/SL to a pre-activation order.
+          if (Number(createdAfter)>0 && !(Number(order?.time)>Number(createdAfter))) continue;
           const status = String(order?.status ?? '').toUpperCase();
           const reduceOnly = order?.reduceOnly === true || String(order?.reduceOnly).toLowerCase() === 'true';
           const closePosition = order?.closePosition === true || String(order?.closePosition).toLowerCase() === 'true';
@@ -492,7 +499,7 @@ export function startPositionMonitor({
     keepAliveTimer = null;
   }
 
-  function scheduleUserDataReconnect(delayMs = 0, reason = 'socket-closed') {
+  function scheduleUserDataReconnect(delayMs = 0, reason = 'socket-closed', failure = true) {
     if (userReconnectTimer) return;
     // Invalidate callbacks from the stale socket before terminating it. Its
     // close event must not schedule another connection over the replacement.
@@ -502,6 +509,8 @@ export function startPositionMonitor({
     listenKey = null;
     stats.userDataReady = false;
     stats.lastUserDataReconnectReason = reason;
+    userDataHealth.disconnected(reason, { failure });
+    userStreamStarting = false;
     clearUserDataKeepAlive();
     if (staleSocket) staleSocket.terminate();
     const delay = Math.max(0, Number(delayMs) || 0);
@@ -534,13 +543,14 @@ export function startPositionMonitor({
     }
 
     try {
+      userDataHealth.connecting();
       const res = await client.createListenKey({ apiKey });
       if (generation !== userStreamGeneration) {
-        userStreamStarting = false;
         return;
       }
       listenKey = res.listenKey;
     } catch (err) {
+      if (generation !== userStreamGeneration) return;
       console.error('[PosMonitor] createListenKey failed:', err.message);
       userStreamStarting = false;
       scheduleUserDataReconnect(30_000, 'create-listen-key-failed');
@@ -560,11 +570,13 @@ export function startPositionMonitor({
       stats.lastUserDataConnectedAt = Date.now();
       stats.lastUserDataReconnectAt = reconnected ? Date.now() : null;
       stats.lastUserDataReconnectReason = reason;
+      userDataHealth.opened();
       console.log(
         `[PosMonitor] User data stream connected reason=${reason} reconnect=${reconnected}`
         + ` version=${POSITION_USER_DATA_STREAM_VERSION}`,
       );
       if (onUserDataReconnect) {
+        userDataHealth.recoveryStarted();
         Promise.resolve(onUserDataReconnect({
           reason,
           reconnected,
@@ -572,8 +584,15 @@ export function startPositionMonitor({
           version: POSITION_USER_DATA_STREAM_VERSION,
         })).catch((error) => {
           console.warn(`[PosMonitor] reconnect recovery callback failed: ${error.message}`);
-        });
+          if (generation === userStreamGeneration) scheduleUserDataReconnect(5_000, 'fill-recovery-failed');
+        }).finally(() => userDataHealth.recoveryFinished());
       }
+    });
+
+    // Quiet accounts can have no order events for hours. A matching control
+    // pong is the liveness proof, never the absence of application messages.
+    ws.on('pong', (payload) => {
+      if (generation === userStreamGeneration) userDataHealth.pong(payload);
     });
 
     ws.addEventListener('message', async ({ data }) => {
@@ -602,6 +621,7 @@ export function startPositionMonitor({
 
       if (msg.e === 'ACCOUNT_UPDATE') {
         stats.lastAccountUpdateAt = Date.now();
+        userDataHealth.observeAccount(msg.a?.P ?? []);
         for (const p of msg.a?.P ?? []) {
           const amt = Number(p.pa);
           if (amt === 0) {
@@ -707,15 +727,35 @@ export function startPositionMonitor({
       try {
         await client.keepAliveListenKey({ listenKey, apiKey });
       } catch (err) {
+        if (generation !== userStreamGeneration) return;
         stats.userDataKeepAliveFailureCount += 1;
         console.error('[PosMonitor] keepAlive failed:', err.message);
-        if (isBinanceListenKeyInvalidError(err)) {
-          scheduleUserDataReconnect(0, 'keepalive-listen-key-invalid');
-        }
+        scheduleUserDataReconnect(0, isBinanceListenKeyInvalidError(err)
+          ? 'keepalive-listen-key-invalid' : 'keepalive-failed');
       }
     }, 30 * 60_000);
     keepAliveTimer.unref?.();
   }
+
+  const userDataHealthTimer = setInterval(() => {
+    const action = userDataHealth.check();
+    if (!action) return;
+    if (action.type === 'RECONNECT') {
+      scheduleUserDataReconnect(5_000, action.reason, action.failure !== false);
+    } else if (userWs?.readyState === WebSocket.OPEN) {
+      try {
+        const generation = userStreamGeneration;
+        userWs.ping(action.payload, (error) => {
+          if (error && generation === userStreamGeneration) scheduleUserDataReconnect(5_000, 'ping-send-failed');
+        });
+      } catch {
+        scheduleUserDataReconnect(5_000, 'ping-send-failed');
+      }
+    } else {
+      scheduleUserDataReconnect(5_000, 'socket-not-open');
+    }
+  }, 5_000);
+  userDataHealthTimer.unref?.();
 
   // ── Mark price combined stream ─────────────────────────────────────────────
   let markWs = null;
@@ -926,10 +966,12 @@ export function startPositionMonitor({
       }));
     },
     recoverMissedFullFills,
+    getUserDataHealth: () => userDataHealth.snapshot(),
     getStatus() {
       return {
         ...stats,
         userDataStreamVersion: POSITION_USER_DATA_STREAM_VERSION,
+        userDataHealth: userDataHealth.snapshot(),
         markStreamUrl: MARKET_WS_BASE,
         wsReady,
         cachedSymbols: [...posCache.keys()].sort(),

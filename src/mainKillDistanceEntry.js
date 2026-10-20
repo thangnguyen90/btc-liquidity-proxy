@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import {zoneNotificationUrl} from './liquidityZoneNotifications.js';
+import {safeZoneDirectionNote, historicalDirectionText} from './liquidityZoneObservation.js';
 
-export const MAIN_DISTANCE_VERSION='MAIN_KILL_DISTANCE_V2_SCOPED_MAX10_20261004';
+export const MAIN_DISTANCE_VERSION='MAIN_KILL_DISTANCE_V5_MANUAL_SHARED_CAP_20261005';
 export const MAIN_DISTANCE_SOURCE='main-kill-distance-entry';
-export const MAIN_DISTANCE_MAX_POSITIONS=10;
+export const MAIN_DISTANCE_MAX_POSITIONS=20;
 export const MAIN_DISTANCE_ROUTES=['LONG','SHORT'].map(side=>({source:MAIN_DISTANCE_SOURCE,streamId:'active-main-distance',signalLabel:'MAIN_KILL_DISTANCE_2_5',side}));
 export const mainDistanceRouteKey=r=>JSON.stringify([r.source,r.streamId,r.signalLabel,r.side]);
 export const mainDistanceOldGlobalBlocked=a=>a?.status==='ERROR_OR_UNKNOWN'&&!a.orderId
@@ -17,7 +19,9 @@ export function mainDistanceOpenSlots({positions,fills,attempts,now=Date.now(),e
   const slots=new Set(),closedClients=new Set();
   for(const item of Object.values(fills??{})){
     const r=item?.record??item;
-    if(r?.signalSource!==MAIN_DISTANCE_SOURCE||r.streamId!=='active-main-distance'||r.signalLabel!=='MAIN_KILL_DISTANCE_2_5')continue;
+    const automatic=r?.signalSource===MAIN_DISTANCE_SOURCE&&r.streamId==='active-main-distance'&&r.signalLabel==='MAIN_KILL_DISTANCE_2_5';
+    const manual=r?.signalSource==='liquidity-zone-manual'&&r.streamId==='manual-main-zone';
+    if(!automatic&&!manual)continue;
     if(r.positionStatus==='CLOSED'){if(r.clientOrderId)closedClients.add(r.clientOrderId);continue;}
     const key=`${r.symbol}|${r.direction}`;
     if(live.has(key))slots.add(key);
@@ -96,14 +100,18 @@ export function validMainDistancePlan(p,mark=Number(p.signalEntryPrice),now=Date
 }
 
 export class MainKillDistanceRunner {
-  constructor({file,controls,getWatches,getContext,getFills=async()=>({}),submit,pushSender,isProtectionExcluded,now=Date.now}) {
-    Object.assign(this,{file,controls,getWatches,getContext,getFills,submit,pushSender,isProtectionExcluded,now});
+  constructor({file,controls,getWatches,getContext,getFills=async()=>({}),getManualAttempts=async()=>({}),submit,pushSender,isProtectionExcluded,getDirectionNote,now=Date.now}) {
+    Object.assign(this,{file,controls,getWatches,getContext,getFills,getManualAttempts,submit,pushSender,isProtectionExcluded,getDirectionNote,now});
     this.state=null;this.running=false;
   }
   async load(){
     if(this.state)return;
-    try{this.state=JSON.parse(await readFile(this.file,'utf8'));if(!this.state.attempts)throw Error('Invalid MAIN distance state');}
-    catch(e){if(e.code!=='ENOENT')throw e;this.state={version:MAIN_DISTANCE_VERSION,attempts:{}};}
+    if(this.loading)return this.loading;
+    this.loading=(async()=>{
+      try{this.state=JSON.parse(await readFile(this.file,'utf8'));if(!this.state.attempts)throw Error('Invalid MAIN distance state');}
+      catch(e){if(e.code!=='ENOENT')throw e;this.state={version:MAIN_DISTANCE_VERSION,attempts:{}};}
+    })().finally(()=>{this.loading=null;});
+    return this.loading;
   }
   async save(){this.state.version=MAIN_DISTANCE_VERSION;await mkdir(dirname(this.file),{recursive:true});await writeFile(`${this.file}.tmp`,JSON.stringify(this.state,null,2));await rename(`${this.file}.tmp`,this.file);}
   async tick(){
@@ -111,7 +119,10 @@ export class MainKillDistanceRunner {
     try{
       await this.load();
       // Bounded sequential work; all watches are scanned again, processed keys never replay.
-      const candidates=(await this.getWatches()).map(w=>mainDistanceCandidate(w,this.now())).filter(Boolean);
+      let candidates=(await this.getWatches()).map(w=>mainDistanceCandidate(w,this.now())).filter(Boolean);
+      // A blocked/excluded first coin must not starve later setups in the bounded batch.
+      const after=candidates.findIndex(c=>c.key===this.scanAfterKey);
+      if(after>=0)candidates=[...candidates.slice(after+1),...candidates.slice(0,after+1)];
       let processed=0;
       for(const first of candidates){
         const previous=this.state.attempts[first.key];
@@ -120,10 +131,11 @@ export class MainKillDistanceRunner {
         const settings=this.controls.read(),rs=settings.routes?.[registered.key];
         if(!settings.enabled||!rs?.enabled)continue;
         if(++processed>3)break;
+        this.scanAfterKey=first.key;
         if(this.isProtectionExcluded(first.symbol))continue;
         const context=await this.getContext(first.symbol);
         if(!context?.enabled)continue;
-        const openSlots=mainDistanceOpenSlots({positions:context.positions,fills:await this.getFills(),attempts:this.state.attempts,now:this.now()});
+        const openSlots=mainDistanceOpenSlots({positions:context.positions,fills:await this.getFills(),attempts:{...this.state.attempts,...await this.getManualAttempts()},now:this.now()});
         this.openSlots=openSlots;
         if(openSlots>=MAIN_DISTANCE_MAX_POSITIONS)continue;
         if((context.positions??[]).some(p=>p.symbol===first.symbol&&Math.abs(Number(p.positionAmt))>0)
@@ -139,17 +151,19 @@ export class MainKillDistanceRunner {
         if(!validMainDistancePlan(plan,context.markPrice,this.now()))continue;
         this.controls.assertEntry(plan);
         const attempt={...candidate,at:this.now(),status:'SUBMITTING',clientOrderId:plan.clientOrderId,
+          directionNote:safeZoneDirectionNote({...candidate,now:this.now()},this.getDirectionNote),
           ...(previous?{previousAttempts:[{...previous,previousAttempts:undefined}]}:{})};
         this.state.attempts[first.key]=attempt;await this.save(); // reserve before any order; unknown result never retried
         try{
           const result=await this.submit(plan,context);
           attempt.status=String(result?.status??'UNKNOWN').toUpperCase();attempt.orderId=result?.orderResult?.orderId??null;
-        }catch(e){attempt.status=definitiveNotionalRejection(e)?'REJECTED':'ERROR_OR_UNKNOWN';attempt.error=String(e.message).slice(0,240);attempt.errorCode=e.code??null;}
+        }catch(e){attempt.status=e.beforeZoneMarket===true||definitiveNotionalRejection(e)?'REJECTED':'ERROR_OR_UNKNOWN';attempt.error=String(e.message).slice(0,240);attempt.errorCode=e.code??null;}
         await this.save();
         try{attempt.push=await this.pushSender({signalType:'BINANCE_LIQUIDITY_ZONE_LIFECYCLE',eventId:`main-distance:${first.key}:${MAIN_DISTANCE_VERSION}`,
           title:`MAIN KILL ≥2.5% · ${candidate.side} ${first.symbol}`,
-          body:`${attempt.status} · 2 USDT ×5x · cách ${candidate.distancePct.toFixed(2)}% · TP ${plan.takeProfitPrice} · SL −30% ROE. ${attempt.error??''}`,
-          symbol:first.symbol,notifiedAt:this.now(),url:`/liquidity-zone-manager?symbol=${encodeURIComponent(first.symbol)}`});}
+          body:`${attempt.status} · 2 USDT ×5x · cách ${candidate.distancePct.toFixed(2)}% · TP ${plan.takeProfitPrice} · SL −30% ROE. ${attempt.error??''} ${historicalDirectionText(attempt.directionNote)}`,
+          symbol:first.symbol,watchId:candidate.watchId,attemptKey:first.key,directionNote:attempt.directionNote,notifiedAt:this.now(),
+          url:zoneNotificationUrl({symbol:first.symbol,watchId:candidate.watchId,attemptKey:first.key,eventId:`main-distance:${first.key}:${MAIN_DISTANCE_VERSION}`})});}
         catch(e){attempt.push={error:String(e.message).slice(0,160)};}
         await this.save();
       }

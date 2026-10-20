@@ -25,7 +25,7 @@ const shortSnapshot = { timeframes: [
 ] };
 
 const dual = collectPostMoveDualDirections(longSnapshot, shortSnapshot);
-assert.equal(POST_MOVE_DUAL_DIRECTION_PROFIT_CLOSE_VERSION, 'POST_MOVE_DUAL_DIRECTION_POSITIVE_PNL_CLOSE_V1_20260924');
+assert.equal(POST_MOVE_DUAL_DIRECTION_PROFIT_CLOSE_VERSION, 'POST_MOVE_DUAL_DIRECTION_POSITIVE_PNL_CLOSE_V2_FULL_BYPASS_20261005');
 assert.deepEqual([...dual.keys()], ['BOTHUSDT', 'MULTIUSDT']);
 assert.deepEqual(dual.get('BOTHUSDT').intervals, ['15m']);
 assert.deepEqual(dual.get('MULTIUSDT').intervals, ['1h'], 'different timeframes must not create a dual match');
@@ -57,5 +57,10 @@ const server = await readFile(new URL('../src/server.js', import.meta.url), 'utf
 assert.match(server, /reconcilePostMoveDualDirectionProfitClose/);
 assert.match(server, /requirePositiveUnrealizedPnl/);
 assert.match(server, /POST_MOVE_DUAL_DIRECTION_PROFIT_CLOSE_VERSION/);
+const reconcile = server.slice(server.indexOf('async function reconcilePostMoveDualDirectionProfitClose'),
+  server.indexOf('\nlet _postMoveIdealEntryDiscordRunning'));
+const bypassGuard = reconcile.indexOf("isBinanceFullBypassAutoCloseExcluded(decision.symbol, 'POST_MOVE_DUAL_CLOSE')");
+assert.ok(bypassGuard >= 0 && bypassGuard < reconcile.indexOf('await closePosition('),
+  'PostMove respects full bypass before claiming a close or submitting MARKET');
 
 console.log('post-move dual-direction positive-PnL close tests passed');

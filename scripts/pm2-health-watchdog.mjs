@@ -2,7 +2,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { watchdogStartupGraceRemainingMs } from '../src/runtimeWatchdogPolicy.js';
+import { watchdogStartupGraceRemainingMs, watchdogSubsystemFailure } from '../src/runtimeWatchdogPolicy.js';
 
 const execFileAsync = promisify(execFile);
 const targetUrl = process.env.WATCHDOG_URL ?? 'http://127.0.0.1:19082/healthz';
@@ -75,6 +75,8 @@ async function checkTarget() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     if (payload?.ok !== true) throw new Error('invalid health response');
+    const subsystemFailure = watchdogSubsystemFailure(payload);
+    if (subsystemFailure) throw new Error(subsystemFailure);
     if (consecutiveFailures > 0) {
       console.log(`[Watchdog] ${targetProcess} recovered after ${consecutiveFailures} failure(s)`);
     }

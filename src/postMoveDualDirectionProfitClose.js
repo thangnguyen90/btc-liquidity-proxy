@@ -1,5 +1,5 @@
 export const POST_MOVE_DUAL_DIRECTION_PROFIT_CLOSE_VERSION =
-  'POST_MOVE_DUAL_DIRECTION_POSITIVE_PNL_CLOSE_V1_20260924';
+  'POST_MOVE_DUAL_DIRECTION_POSITIVE_PNL_CLOSE_V2_FULL_BYPASS_20261005';
 
 function finite(value, fallback = null) {
   if (value == null || value === '') return fallback;

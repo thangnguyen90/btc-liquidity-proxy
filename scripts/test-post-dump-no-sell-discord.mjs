@@ -52,8 +52,9 @@ try {
   assert.equal(requests.length, 1);
   assert.match(requests[0].body.embeds[0].title, /HỒI MẠNH SAU XẢ/);
   assert.equal(requests[0].body.embeds[0].fields[0].value, '**HỒI MẠNH SAU XẢ**');
-  assert.match(requests[0].body.embeds[0].description, /MARKET LONG 5 USDT/i);
-  assert.match(requests[0].body.embeds[0].footer.text, /route MARKET LONG 5 USDT/i);
+  assert.match(requests[0].body.embeds[0].description, /MARKET LONG 2 USDT/i);
+  assert.match(requests[0].body.embeds[0].footer.text, /route MARKET LONG 2 USDT/i);
+  assert.match(postDumpNoSellDiscordPayload({...common,stage:POST_DUMP_NO_SELL_STAGE.BUY_IMPULSE}).embeds[0].description,/MARKET LONG 1 hoặc 2 USDT/);
 
   clock += 10 * 60_000;
   const stageTwo = {

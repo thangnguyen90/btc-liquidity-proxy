@@ -3,6 +3,8 @@ import { EventEmitter } from 'node:events';
 
 export const KLINE_CACHE_MANAGED_LIVE_GROUP_VERSION =
   'KLINE_CACHE_MANAGED_LIVE_GROUP_V1_20260819';
+export const KLINE_CACHE_CLOSED_CONTINUITY_VERSION =
+  'KLINE_CACHE_LATE_FINAL_NO_DOWNGRADE_V1_20261018';
 
 const FSTREAM_WS = process.env.BINANCE_FSTREAM_MARKET_WS_BASE
   ?? 'wss://fstream.binance.com/market';
@@ -65,6 +67,8 @@ export class KlineCache extends EventEmitter {
     maxAgeMs = null,
     force = false,
     subscribe = true,
+    requestPriority = 8,
+    requestSource = null,
   } = {}) {
     const now = this.now();
     const allowedAgeMs = Number(maxAgeMs);
@@ -88,16 +92,23 @@ export class KlineCache extends EventEmitter {
         const k = this._key(symbol, interval);
         this._seeding.add(k);
         try {
+          const requestedAt = this.now();
           const klines = await this.client.getKlines(symbol, interval, limit, {
-            priority: 8,
+            // A bounded live-signal repair may precede bulk seed/OI reads;
+            // defaults stay unchanged and account/order priorities 0-1 stay ahead.
+            priority: Number.isFinite(Number(requestPriority)) ? Math.max(2, Math.min(9, Number(requestPriority))) : 8,
             dropOnCongestion: true,
-            source: `KlineCache.seed:${interval}`,
+            source: requestSource ?? `KlineCache.seed:${interval}`,
           });
           const existing = this._cache.get(k);
           const merged = new Map();
           for (const row of [...(existing ?? []), ...(Array.isArray(klines) ? klines : [])]) {
             const openTime = Number(row?.openTime);
             if (!Number.isFinite(openTime)) continue;
+            // A REST snapshot requested before the close may arrive after the
+            // final socket event. Never replace a proven final with that snapshot.
+            if (merged.get(openTime)?.isClosed === true && row.isClosed !== true
+              && Number(row.closeTime) >= requestedAt) continue;
             merged.set(openTime, row);
           }
           const next = [...merged.values()]
@@ -350,7 +361,13 @@ export class KlineCache extends EventEmitter {
       arr.push(candle);
       if (arr.length > this.maxKlines) arr.shift();
     } else if (candle.openTime === last.openTime) {
-      arr[arr.length - 1] = candle;
+      if (last.isClosed !== true || candle.isClosed) arr[arr.length - 1] = candle;
+    } else if (candle.isClosed) {
+      // Overlapping streams/reconnects can deliver the next candle before the
+      // previous candle's final. Update that exact row, not the live tail; do not
+      // invent a close or insert a candle whose opening tick was never observed.
+      const index = arr.findIndex(row => Number(row.openTime) === candle.openTime);
+      if (index >= 0) arr[index] = candle;
     }
   }
 
@@ -393,6 +410,7 @@ export class KlineCache extends EventEmitter {
       : null;
     return {
       interval,
+      closedContinuityVersion: KLINE_CACHE_CLOSED_CONTINUITY_VERSION,
       cached:      count,
       connections: this._conns.size,
       lastTickAt:  intervalLastTickAt || null,

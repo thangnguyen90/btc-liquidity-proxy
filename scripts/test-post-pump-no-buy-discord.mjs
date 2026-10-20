@@ -70,7 +70,7 @@ try {
   assert.equal(requests.length, 2);
   assert.match(requests[1].body.embeds[0].title, /ĐÃ XÁC NHẬN SHORT/);
   assert.match(requests[1].body.embeds[0].title, /XẢ MẠNH SAU BƠM/);
-  assert.match(requests[1].body.embeds[0].description, /MARKET SHORT 5 USDT/i);
+  assert.match(requests[1].body.embeds[0].description, /MARKET SHORT 1 USDT/i);
   assert.notEqual(requests[1].body.embeds[0].color, requests[0].body.embeds[0].color);
 
   clock += 60_000;
@@ -95,7 +95,7 @@ try {
 
   const payload = postPumpNoBuyDiscordPayload(stageTwo);
   assert.equal(payload.allowed_mentions.parse.length, 0);
-  assert.match(payload.embeds[0].footer.text, /route MARKET SHORT 5 USDT sau xác nhận/i);
+  assert.match(payload.embeds[0].footer.text, /route MARKET SHORT 1 USDT sau xác nhận/i);
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

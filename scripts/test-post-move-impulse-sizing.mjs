@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { impulseSizing, validImpulseSizing } from '../src/postMoveImpulseSizing.js';
+import { impulseSizing, validImpulseSizing, impulseSizingDiscordField, POST_MOVE_IMPULSE_LEGACY_SIZING_VERSION, POST_MOVE_IMPULSE_PREVIOUS_SIZING_VERSION } from '../src/postMoveImpulseSizing.js';
 import { PostMoveImpulseBinanceRunner, POST_MOVE_IMPULSE_LONG_ROUTE, buildPostMoveImpulseMarketOrder } from '../src/postMoveImpulseBinance.js';
 import { POST_DUMP_NO_SELL_WATCH_VERSION, POST_DUMP_NO_SELL_STAGE } from '../src/postDumpNoSellWatch.js';
 import { postDumpNoSellDiscordPayload } from '../src/postDumpNoSellDiscord.js';
@@ -14,15 +14,15 @@ import { ceilQuantityAtMinimumNotional } from '../src/orderQuantityPolicy.js';
 
 const at = hour => Date.parse(`2026-10-01T${String(hour).padStart(2,'0')}:00:00+07:00`);
 const market = (time, trend) => ({evaluatedAt:time,btc:{trend,ret15m:0.1,ret1h:0.2}});
-for (const [side,hour,expected] of [['LONG',2,1],['LONG',3,5],['LONG',5,5],['LONG',6,1],['LONG',12,5],['LONG',15,1],['SHORT',0,5],['SHORT',8,5],['SHORT',9,1],['SHORT',18,5],['SHORT',21,1]]) {
+for (const [side,hour,expected] of [['LONG',2,1],['LONG',3,2],['LONG',5,2],['LONG',6,1],['LONG',12,2],['LONG',15,1],['SHORT',0,1],['SHORT',8,1],['SHORT',9,1],['SHORT',18,1],['SHORT',21,1]]) {
   assert.equal(impulseSizing({side,now:at(hour)}).marginUsdt,expected,`${side} ${hour} VN`);
 }
 for (const [side,aligned,opposite] of [['LONG','UP','DOWN'],['SHORT','DOWN','UP']]) {
   const now=at(10);
-  assert.equal(impulseSizing({side,now,market:market(now,aligned)}).marginUsdt,5);
+  assert.equal(impulseSizing({side,now,market:market(now,aligned)}).marginUsdt,side==='LONG'?2:1);
   assert.equal(impulseSizing({side,now,market:market(now,opposite)}).marginUsdt,1);
   for (const timestamp of [now-120001,now+1]) assert.equal(impulseSizing({side,now,market:market(timestamp,aligned)}).marginUsdt,1);
-  assert.equal(impulseSizing({side,now:at(3),market:market(at(3),opposite)}).marginUsdt,5,'good-hour OR overrides opposing BTC');
+  assert.equal(impulseSizing({side,now:at(3),market:market(at(3),opposite)}).marginUsdt,side==='LONG'?2:1,'LONG keeps good-hour OR; SHORT stays fixed1');
 }
 
 const now=at(10);
@@ -32,10 +32,17 @@ const opts={now,enabledAt:now-2000,startedAt:now-2000,markPrice:100};
 const low=buildPostMoveImpulseMarketOrder(watch,opts);
 const high=buildPostMoveImpulseMarketOrder(watch,{...opts,market:market(now,'UP')});
 assert.equal(low.marginUsdt,1);assert.equal(low.notionalUsdt,5);
-assert.equal(high.marginUsdt,5);assert.equal(high.notionalUsdt,25);
+assert.equal(high.marginUsdt,2);assert.equal(high.notionalUsdt,10);
 assert.equal(high.stopLossPrice,low.stopLossPrice);assert.equal(high.takeProfitPrice,low.takeProfitPrice);
 assert.equal(high.clientOrderId,low.clientOrderId,'size change does not bypass dedupe');
 assert.equal(validImpulseSizing(low),true);
+assert.equal(validImpulseSizing(high),true);
+assert.equal(validImpulseSizing({...high,marginUsdt:5,notionalUsdt:25}),false,'new LONG cannot request old 5 USDT');
+const oldDecision={...high.impulseSizing,version:POST_MOVE_IMPULSE_LEGACY_SIZING_VERSION,marginUsdt:5};
+assert.equal(validImpulseSizing({...high,impulseSizing:oldDecision,marginUsdt:5,notionalUsdt:25}),false,'legacy proof is display-only');
+assert.ok(impulseSizingDiscordField({...watch,impulseSizing:oldDecision}).name.includes('SIZE 5 USDT'),'historical size retained');
+assert.ok(impulseSizingDiscordField(watch).value.startsWith('2 USDT'));
+assert.ok(impulseSizingDiscordField({side:'SHORT'}).value.startsWith('1 USDT'));
 assert.equal(validImpulseSizing({...low,marginUsdt:5,notionalUsdt:25}),false);
 assert.equal(validImpulseSizing({...low,impulseSizing:null}),false);
 for (const plan of [low,high]) {
@@ -49,6 +56,16 @@ for (const plan of [low,high]) {
 const short={...watch,side:'SHORT',version:POST_PUMP_NO_BUY_WATCH_VERSION,stage:POST_PUMP_NO_BUY_STAGE.NO_BUY_CONFIRMATION};
 const shortPlan=buildPostMoveImpulseMarketOrder(short,opts);
 assert.equal(shortPlan.marginUsdt,1);
+for(const hour of Array.from({length:24},(_,i)=>i))for(const trend of ['UP','DOWN','UNKNOWN']){
+ const time=at(hour),d=impulseSizing({side:'SHORT',now:time,market:market(time,trend)});
+ assert.equal(d.marginUsdt,1);assert.equal(d.reason,'FIXED_SHORT_1_USDT');
+ assert(validImpulseSizing({side:'SELL',marginUsdt:1,impulseSizing:d}));
+ assert(!validImpulseSizing({side:'SELL',marginUsdt:5,impulseSizing:{...d,marginUsdt:5}}));
+}
+const previousShort={...shortPlan.impulseSizing,version:POST_MOVE_IMPULSE_PREVIOUS_SIZING_VERSION,marginUsdt:5,reason:'GOOD_HOUR'};
+assert(!validImpulseSizing({...shortPlan,marginUsdt:5,impulseSizing:previousShort}));
+assert.match(impulseSizingDiscordField({...short,impulseSizing:previousShort}).name,/SIZE 5 USDT/,'V2 history is displayed unchanged, never reauthorized');
+assert.match(impulseSizingDiscordField({...short,impulseSizing:shortPlan.impulseSizing}).value,/cố định 1 USDT/);
 assert.ok(postPumpNoBuyDiscordPayload({...short,impulseSizing:shortPlan.impulseSizing}).embeds[0].description.includes('SHORT 1 USDT'));
 assert.equal(buildPostMoveImpulseMarketOrder({...short,stage:POST_PUMP_NO_BUY_STAGE.SELL_IMPULSE},opts),null);
 
@@ -82,4 +99,4 @@ try {
   const replay={...watch};const r=await legacy.processWatches([replay]);
   assert.equal(r.submitted,0);assert.equal(replay.impulseSizing,null);
 } finally {await rm(dir,{recursive:true,force:true});}
-console.log('PASS impulse 5/1: VN boundaries, OR, BTC freshness, controls/auth, Discord parity, legacy dedupe, rounding');
+console.log('PASS impulse LONG unchanged 2/1, SHORT fixed1 all hours/BTC states: proof/auth, Discord, V1/V2 history/dedupe, rounding');

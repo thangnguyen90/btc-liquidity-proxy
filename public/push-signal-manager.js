@@ -22,12 +22,14 @@ function routeVisible(route) {
 
 function routeHtml(route) {
   const isUpdating = updating.has(route.id);
-  return `<article class="route-card ${route.enabled ? 'is-enabled' : 'is-disabled'}">
+  const direct=route.transport==='SIGNAL_EVENT';
+  return `<article id="${escape(route.id)}" class="route-card ${route.enabled ? 'is-enabled' : 'is-disabled'}">
     <div>
       <div class="route-meta"><span class="pill ${route.enabled ? 'good' : 'bad'}">${route.enabled ? 'PUSH ON' : 'PUSH OFF'}</span><span class="pill wait">${escape(route.category)}</span>${route.sharedWebhook ? '<span class="pill shared">WEBHOOK DÙNG CHUNG</span>' : ''}</div>
       <h3>${escape(route.label)}</h3>
-      <p>${escape((route.keys ?? []).join(' · '))}</p>
-      <small>Discord 2xx đã thấy: <b>${number(route.observedCount)}</b> · Push event: <b>${number(route.pushedCount)}</b> · thiết bị nhận: <b>${number(route.deliveredCount)}</b><br>Thấy gần nhất ${time(route.lastObservedAt)} · Push gần nhất ${time(route.lastPushedAt)} · endpoint #${escape(route.endpointHash)}</small>
+      <p>${escape((route.keys ?? []).join(' · '))}</p>${route.description?'<p>'+escape(route.description)+'</p>':''}
+      <small>${direct?'Tín hiệu trực tiếp':'Discord 2xx đã thấy'}: <b>${number(route.observedCount)}</b> · Push event: <b>${number(route.pushedCount)}</b> · thiết bị nhận: <b>${number(route.deliveredCount)}</b><br>Thấy gần nhất ${time(route.lastObservedAt)} · Push gần nhất ${time(route.lastPushedAt)} · ${direct?'không cần webhook Discord':'endpoint #'+escape(route.endpointHash)}${route.lastPushResult?.skipped==='QUIET_HOURS'?'<br>Đã bỏ qua trong giờ yên lặng, không gửi bù.':''}</small>
+      ${direct?`<p><a href="${escape(route.targetPath)}">Mở trang tín hiệu ↗</a></p>`:''}
     </div>
     <button class="route-toggle ${route.enabled ? 'on' : 'off'}" data-route-id="${escape(route.id)}" data-next-enabled="${String(!route.enabled)}" ${isUpdating ? 'disabled' : ''}>${isUpdating ? 'Đang lưu…' : route.enabled ? 'Đang bật · bấm tắt' : 'Đang tắt · bấm bật'}</button>
   </article>`;
@@ -44,7 +46,8 @@ function render() {
   $('#status').textContent = `Web Push ${snapshot.webPush?.configured ? 'READY' : 'CHƯA CẤU HÌNH'} · ${snapshot.webPush?.subscriptionCount ?? 0} thiết bị · cập nhật ${time(snapshot.generatedAt)}`;
   const last = snapshot.webPush?.lastDelivery;
   $('#lastDelivery').textContent = last
-    ? `Lần gửi gần nhất: ${time(last.completedAt)} · gửi ${last.sent ?? 0}/${last.attempted ?? 0} · lỗi ${last.failed ?? 0}`
+    ? last.skipped==='QUIET_HOURS'?`Bỏ qua Push lúc ${time(last.completedAt)} · trong giờ yên lặng; không gửi lại.`
+      : `Lần gửi gần nhất: ${time(last.completedAt)} · gửi ${last.sent ?? 0}/${last.attempted ?? 0} · lỗi ${last.failed ?? 0}`
     : 'Chưa có lần Web Push nào trong state hiện tại.';
   $('#routeCount').textContent = `${visible.length}/${routes.length} route phù hợp`;
   $('#routes').innerHTML = visible.map(routeHtml).join('') || '<p class="empty">Không có route phù hợp bộ lọc.</p>';

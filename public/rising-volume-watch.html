@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Quan sát nền volume tăng dần cùng hướng giá LONG/SHORT bằng nến Binance Futures đã đóng.">
+  <title>Volume tăng dần · LONG / SHORT</title>
+  <link rel="stylesheet" href="/rising-volume-watch.css?v=20261012-pass-pnl-v1">
+  <link rel="stylesheet" href="/push-quiet-hours.css?v=20261012-quiet-v1">
+</head>
+<body>
+<main class="shell">
+  <header class="hero">
+    <div><p class="eyebrow">BINANCE FUTURES · NẾN ĐÃ ĐÓNG · KHÔNG DÙNG AI</p>
+      <h1>Volume tăng dần</h1><p class="subtitle">Tìm nền volume lớn dần cùng giá tăng hoặc giảm trên 1m, 5m và 15m.</p></div>
+    <details class="navigation"><summary>Các trang khác</summary><nav aria-label="Điều hướng">
+      <a class="nav-link" href="/rising-volume-watch" aria-current="page">Volume tăng dần</a>
+      <a class="nav-link" href="/short-setup-watch">Cơ hội LONG / SHORT</a>
+      <a class="nav-link" href="/coin-level-analysis">Coin Level</a>
+      <a class="nav-link" href="/binance-auto-controls">Quản lý Binance</a>
+    </nav></details>
+  </header>
+  <section class="notice"><strong>BINANCE MARKET · Chỉ volume 1m liền mạch</strong>
+    Rule thử nghiệm cho tín hiệu mới: Volume 1m liền mạch LONG + ratio tài khoản top trader đi ngang rồi giảm mạnh → margin 2 USDT; Volume SHORT + ratio đi ngang rồi tăng mạnh → margin 1 USDT. Đòn bẩy 5x, TP +10% ROE / SL −30% ROE từ giá khớp. Chưa chứng minh lợi thế qua backtest; vẫn cần execution/route ON và qua các guard. Không khớp gate ratio vẫn gửi Discord, không vào Binance. 5m/15m và các loại khác OBSERVE ONLY; không phát lại lịch sử.
+  </section>
+  <section class="panel execution-panel">
+    <div class="section-head"><h2>Binance · Volume 1m liền mạch</h2><a href="/binance-auto-controls">Bật/tắt tại Quản lý Binance</a></div>
+    <p>LONG 2 USDT margin × 5x = 10 USDT notional; SHORT 1 USDT × 5x = 5 USDT notional. Ratio theo tài khoản top trader 5m: nền 30 phút (7 điểm), biên max−min / median ≤5%; sau đó giảm ≥10% cho LONG hoặc tăng ≥10% cho SHORT so với median nền trong tối đa 30 phút. Không dùng tỷ lệ vị thế/OI. Không nâng size để đạt minimum của sàn; coin không đủ minimum sẽ không vào.</p>
+    <div id="binance-status" class="status" role="status">Đang đọc trạng thái rule…</div>
+    <div id="discord-status" class="status" role="status">Đang đọc trạng thái Discord…</div>
+    <details class="execution-history"><summary>Nhật ký vào / không vào Binance (100 lần gần nhất)</summary><div id="binance-attempts"></div></details>
+  </section>
+  <section id="weak-alt-rebound" class="weak-alt-panel" data-state="WAIT_DATA" aria-label="BTC hồi nhưng ALT yếu">
+    <p class="weak-alt-kicker">BTC × ALT · MẠNH/YẾU · ĐỒNG THUẬN/PHÂN HÓA · OBSERVE ONLY</p>
+    <div data-weak-legend class="weak-alt-legend" aria-label="Màu trạng thái BTC/ALT"></div>
+    <h2 data-weak-heading role="status" aria-live="polite">Đang đánh giá sức hồi ALT…</h2>
+    <p data-weak-status></p><div data-weak-metrics class="weak-alt-metrics"></div><ul data-weak-conditions></ul>
+    <p class="weak-alt-policy">Ngưỡng thử nghiệm, chưa backtest lợi thế hoặc xác suất sập. Beta tăng/giảm là hệ số phản ứng lịch sử, không phải nguyên nhân. Không chặn/vào/đóng lệnh, không đổi size/SL/TP.</p>
+    <label class="weak-alt-toggle"><input type="checkbox" data-weak-enabled> Gửi Push khi trạng thái BTC/ALT thay đổi (mọi thiết bị đã đăng ký)</label>
+    <button type="button" data-opposite-liquidity-push>Bật Push như app</button><small data-opposite-liquidity-push-help></small>
+    <p class="weak-alt-note">Tuân thủ giờ yên lặng đang lưu, mặc định00:00–06:00VN. Mỗi trạng thái có emoji/icon màu riêng; nền thông báo do hệ điều hành quyết định. Trạng thái phân hóa/thiếu dữ liệu không gửi Push.</p>
+    <div data-weak-structure></div>
+    <details data-weak-old-matrix><summary>So sánh mức thay đổi1h/15m cũ · không phải xu hướng hoặc phản ứng nhịp mới</summary><div data-weak-relations></div></details>
+    <details data-weak-old-counter><summary>Bổ sung: bằng chứng ép SHORT trên nền15m/1h · không thay phản ứng nhịp mới</summary><div data-weak-countertrend></div></details>
+    <details><summary>Coin theo kịch bản & hệ số phản ứng · tối đa30 coin</summary><div class="weak-alt-table-wrap" data-weak-coins></div></details>
+    <details data-weak-history-details><summary>Lịch sử cảnh báo · không phải kết quả giao dịch</summary><div data-weak-history></div></details>
+  </section>
+  <section id="push-quiet-hours" class="panel" data-push-quiet-hours aria-label="Giờ yên lặng Push"></section>
+  <section id="passed-signals" class="panel">
+    <h2>Tín hiệu đã PASS · Volume 1m liền mạch + ratio</h2>
+    <p class="muted">Chỉ proof đã lưu lúc runner xử lý; không phải ratio nạp khi xem. PnL ròng/ROE lấy từ audit Binance khớp signal ID và order ID, chỉ hiện khi đóng đủ và có dữ liệu. OPEN không gán PnL thả nổi theo tên coin. PASS bị chặn không được tính là lệnh thắng/thua; lệnh 3 USDT cũ không được gán ratio mới.</p>
+    <div class="filters"><label>Tìm coin<input id="passed-search" type="search" placeholder="BAT / BATUSDT" maxlength="40"></label>
+      <label>Hướng<select id="passed-side"><option value="ALL">LONG & SHORT</option><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select></label>
+      <label>Binance<select id="passed-state"><option value="ALL">Tất cả kết quả</option><option value="ENTERED">Có audit đã khớp</option><option value="BLOCKED">Không vào lệnh</option><option value="OPEN">Đang mở</option><option value="CLOSED">Đã đóng</option></select></label></div>
+    <p id="passed-status" class="status" role="status">Đang đọc lịch sử PASS…</p><div id="passed-list"></div>
+    <div class="pagination"><button id="passed-previous" type="button" disabled>← Trước</button><span id="passed-page"></span><button id="passed-next" type="button" disabled>Sau →</button></div>
+  </section>
+  <details class="rules panel"><summary>Cách nhận diện & cách đọc volume</summary>
+    <p><b>Liền mạch là duy trì nền volume 1m, không phải từng cột cao hơn cột trước.</b> Luôn xét 10 nến 1m đã đóng so với median volume coin của 20 nến 1m trước đó. Khung tín hiệu 5m/15m không thay thế chuỗi 1m này.</p>
+    <p><b>Volume 1m liền mạch:</b> TB10 ≥1,5× nền20; ≥8/10 nến và nến cuối giữ trên ngưỡng cao; một nến không chiếm &gt;35% tổng VOL10; không có nhịp cao→rất thấp. Ngưỡng cao = max(1,2× nền20; 0,5× median10). Các cột có thể giảm nhẹ hoặc bằng nhau.</p>
+    <p><b>Volume 1m ngắt quãng:</b> có nến cao ≥max(2× nền20; median10), rồi nến kế tiếp giữ ≤25% volume nến đó và rơi dưới ngưỡng cao. Có dữ liệu nhưng không rõ hai kiểu trên → <b>kiểu 1m chưa rõ</b>; thiếu/cũ/gap → chưa phân loại. Đây là ngưỡng quan sát ban đầu, chưa backtest xác suất thắng, áp dụng cả LONG/SHORT.</p>
+    <p>MA5 của <b>volume coin</b> tăng trong 3 nến đóng liên tiếp; trung bình 5 nến gần nhất ≥1,5× trung bình 20 nến trước đó, không chồng hai cửa sổ; ít nhất 3/5 nến vượt nền cũ.</p>
+    <p>Giá 5 nến biến động ≥+0,25% cho LONG hoặc ≤−0,25% cho SHORT, có ≥3/5 nến cùng hướng và close cuối tiếp tục theo hướng đó. 1m là khung sớm; 5m/15m được xét độc lập, không tự coi là xác nhận chéo.</p>
+    <p>Detector khung tín hiệu vẫn dùng 28 nến; phân loại liền mạch dùng riêng 30 nến 1m đã đóng (20 nền + 10 gần nhất). Không so nến đang mở với nến đã đóng. Cột coin và USDT khác đơn vị; đổi đơn vị biểu đồ không đổi nhãn.</p>
+    <p>Lịch sử lưu snapshot đầu tiên của mỗi đợt liên tục đạt điều kiện; không ghi lại từng lần refresh, không tạo lệnh paper giả. Rule Binance chỉ xét mẫu đầu đợt 1m đã là liền mạch sau khi bật/start; type flip sau đó không hồi vào lệnh. Nến phải đóng ≤70 giây trước submit và giá MARK không lệch &gt;0,5% so với close tín hiệu. Chặn vị thế/lệnh entry chờ, coin tắt protection, cap chung 50 và kết quả gửi chưa rõ; không tự retry MARKET.</p>
+    <p>WHITELIST thống kê mặc định OFF, chỉ hiện khi closed AvgROE &gt;4% từ fill/close Binance có snapshot gốc. OPEN/quan sát/backtest không tính là CLOSED. WHITELIST không bật rule volume + ratio; route LONG/SHORT được quản lý riêng trong Quản lý Binance. Nhãn/card giữ nguyên; mẫu 3 USDT cũ vẫn được thống kê, không bị gán ratio mới.</p>
+    <p>Phần ratio trên từng mẫu giải thích nền 30 phút, biên ≤5% và mức đổi ≥10% trong ≤30 phút: LONG cần ratio giảm, SHORT cần ratio tăng. Ưu tiên proof lưu tại lần xử lý đầu đợt; dữ liệu nạp khi xem được ghi rõ chỉ quan sát, không là proof trước entry. Ratio PASS không đồng nghĩa đã MARKET; 5m/15m vẫn OBSERVE ONLY. History không có ratio gốc sẽ báo thiếu, không lấy ratio hôm nay để viết lại kết quả cũ.</p>
+    <p>Discord dùng snapshot đầu đợt 1m liền mạch mới sau khi bật notifier, không báo 5m/15m hoặc ngắt quãng. Không cần Binance đã vào: tin báo ghi rõ đã gửi MARKET hay bị chặn, không xác nhận TP/SL đã đặt. Mỗi đợt báo một lần; 429 được xếp hàng lại tối đa 3 phút từ nến đóng, timeout/5xx không gửi lại khi chưa rõ kết quả. Web Push của route này mặc định OFF; quản lý riêng tại trang Push.</p>
+  </details>
+  <section class="panel overview">
+    <div class="section-head"><h2>Theo khung & hướng</h2><span id="updated" class="muted">Đang tải…</span></div>
+    <div id="coverage" class="coverage" aria-live="polite"></div>
+    <div id="patterns" class="patterns"></div>
+    <p class="pattern-hint">Liền mạch/ngắt quãng luôn xét nến 1m, kể cả tín hiệu 5m/15m. Liền mạch không yêu cầu cột sau cao hơn cột trước. Mẫu cũ chưa lưu đủ 1m → chưa phân loại, không dùng dữ liệu hôm nay để gán lại. Đếm riêng coin/khung, không phải xác suất.</p>
+    <div id="cohorts" class="cohorts"></div>
+    <div data-live-card-status="rising-volume" class="whitelist-status"></div>
+  </section>
+  <section class="panel list-panel">
+    <div class="section-head"><h2>Tín hiệu volume</h2><span id="result-count" class="muted"></span></div>
+    <form id="filters" class="filters">
+      <label>Danh sách<select id="view"><option value="live">Đang đạt điều kiện</option><option value="history">Lịch sử đã phát hiện</option></select></label>
+      <label>Tìm coin<input id="search" type="search" placeholder="ON / ONUSDT" maxlength="40" autocomplete="off"></label>
+      <label>Hướng<select id="side"><option value="ALL">LONG & SHORT</option><option value="LONG">LONG · giá tăng</option><option value="SHORT">SHORT · giá giảm</option></select></label>
+      <label>Khung<select id="interval"><option value="ALL">Tất cả</option><option value="1m">1 phút</option><option value="5m">5 phút</option><option value="15m">15 phút</option></select></label>
+      <label>Loại volume 1m<select id="pattern"><option value="ALL">Tất cả loại</option><option value="SUSTAINED">Liền mạch · giữ nền 1m</option><option value="BURSTY">Ngắt quãng · cao rồi rất thấp</option><option value="OTHER">Kiểu 1m chưa rõ</option><option value="UNKNOWN">Thiếu dữ liệu 1m</option></select></label>
+      <label>Biểu đồ VOL<select id="unit"><option value="volume">Volume coin</option><option value="quoteVolume">Volume USDT</option></select></label>
+      <button id="refresh" type="submit">Làm mới</button>
+    </form>
+    <p id="status" class="status" role="status" aria-live="polite">Đang tải tín hiệu…</p>
+    <div id="signals" class="signals"></div>
+    <div class="pagination"><button id="previous" type="button" disabled>← Trước</button><span id="page-label" class="muted"></span><button id="next" type="button" disabled>Sau →</button></div>
+  </section>
+</main>
+<script type="module" src="/rising-volume-watch.js?v=20261012-pass-pnl-v1"></script>
+<script type="module" src="/push-quiet-hours.js?v=20261012-quiet-v1"></script>
+<link rel="stylesheet" href="/weak-alt-rebound.css?v=20261014-phase-v2">
+<script type="module" src="/weak-alt-rebound.js?v=20261014-phase-v2"></script>
+</body>
+</html>

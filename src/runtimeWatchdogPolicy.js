@@ -1,3 +1,11 @@
+export function watchdogSubsystemFailure(payload = {}) {
+  const health = payload.userDataHealth;
+  if (health?.enabled === true && health?.restartRequired === true) {
+    return 'user-data recovery exhausted: ' + String(health.reason ?? 'unknown').slice(0, 100);
+  }
+  return null;
+}
+
 export function watchdogStartupGraceRemainingMs({
   now = Date.now(),
   processStartedAt,

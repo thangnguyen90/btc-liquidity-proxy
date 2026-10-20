@@ -39,7 +39,12 @@ assert.equal(shouldSuppressTrackedCoinglassZoneLifecycleStopLoss({
   source: BINANCE_MANUAL_SOCKET_SOURCE, plannedSide: 'BUY', positionAmount: 20.3,
 }), false);
 
-assert.equal(BINANCE_BOT_SHORT_TP_ONLY_VERSION, 'BINANCE_BOT_SHORT_TP_ONLY_POST_MOVE_EXEMPT_V7_20260925');
+assert.equal(BINANCE_BOT_SHORT_TP_ONLY_VERSION, 'BINANCE_BOT_SHORT_TP_ONLY_HEATMAP_SWEEP_EXEMPT_V11_20261020');
+assert.equal(shouldSuppressBotShortStopLoss({side:'SHORT',source:'structure-setup-ready'}),false);
+assert.equal(shouldSuppressBotShortStopLoss({side:'SHORT',source:'heatmap-full-sweep'}),false);
+assert.equal(resolveNonLiquidFlowV2TakeProfit({side:'SELL',source:'heatmap-full-sweep',entryPrice:100,leverage:5,requestedTakeProfitPrice:98}).takeProfitPrice,98);
+assert.equal(resolveNonLiquidFlowV2TakeProfit({side:'SELL',source:'structure-setup-ready',entryPrice:100,leverage:5,requestedTakeProfitPrice:98}).takeProfitPrice,98);
+assert.equal(shouldSuppressBotShortStopLoss({side:'SHORT',source:'rising-volume-sustained-1m'}),false);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SHORT', source: 'coinglass-web-qualified' }), true);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'SELL', source: 'live-card-whitelist-edge' }), true);
 assert.equal(shouldSuppressBotShortStopLoss({ side: 'LONG', source: 'live-card-whitelist-edge' }), false);

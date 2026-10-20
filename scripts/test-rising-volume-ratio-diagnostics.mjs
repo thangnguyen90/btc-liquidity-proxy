@@ -1,0 +1,105 @@
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {RisingVolumeRatioDiagnostics,explainRisingVolumeRatio} from '../src/risingVolumeRatioDiagnostics.js';
+import {evaluateRisingVolumeRatio,buildRisingVolumeRatioProof} from '../src/risingVolumeRatioGate.js';
+import {renderRatioDiagnostics,buildRatioCurve} from '../public/rising-volume-ratio-diagnostics.js';
+import {ratioRowsFor} from './rising-volume-ratio-fixtures.mjs';
+const STEP=300000,at=1791700800000,asOf=at-1;
+const event={id:`rv:ONUSDT:1m:LONG:${asOf}`,snapshot:{symbol:'ONUSDT',side:'LONG',closedAt:asOf,observedAt:at+1000}};
+const rows=ratioRowsFor(event),flat=rows.map(r=>({...r,longShortRatio:2}));
+const explain=(rs=rows,side='LONG')=>explainRisingVolumeRatio(rs,{side,asOf});
+const pass=explain();assert.equal(pass.state,'PASS');assert.equal(pass.pass,true);assert.equal(pass.reason,'PASS');
+assert.equal(pass.baselineEndAt,evaluateRisingVolumeRatio(rows,{side:'LONG',asOf}).baselineEndAt);
+assert.equal(pass.latestRatio,1.7);assert.equal(pass.changePct,-15.000000000000002);assert(pass.widthPct<=5);
+assert(Math.abs(pass.longAccountPct+pass.shortAccountPct-100)<1e-9);
+const shortRows=ratioRowsFor({...event,snapshot:{...event.snapshot,side:'SHORT'}});assert.equal(explain(shortRows,'SHORT').state,'PASS');
+assert.equal(explain(flat).reason,'RATIO_SHIFT_TOO_SMALL');assert.equal(explain(shortRows).reason,'RATIO_WRONG_DIRECTION');
+assert.equal(explain(rows,'SHORT').reason,'RATIO_WRONG_DIRECTION');
+const trend=rows.map((r,i)=>({...r,longShortRatio:3-i*.055}));assert.equal(explain(trend).reason,'RATIO_NOT_FLAT');
+for(const rs of [rows,shortRows,flat,trend,rows.filter((_,i)=>i!==15),rows.slice(-6),rows.slice(0,-1)]) {
+  for(const side of ['LONG','SHORT']) {
+    const result=explain(rs,side),gate=evaluateRisingVolumeRatio(rs,{side,asOf});
+    if(result.state!=='UNAVAILABLE')assert.equal(result.pass,gate.pass,'display PASS/FAIL must match unchanged runtime gate');
+    else assert.equal(result.pass,null,'missing/stale/gap is UNKNOWN, never a claimed PASS');
+  }
+}
+assert.equal(explain(rows.slice(-6)).reason,'RATIO_HISTORY_MISSING');assert.equal(explain(rows.slice(0,-1)).reason,'RATIO_STALE');
+assert.equal(explain([...rows,rows.at(-1)]).reason,'RATIO_DATA_INVALID');
+assert.equal(explain(rows.map(r=>({...r,timestamp:r.timestamp+1}))).state,'UNAVAILABLE');
+const gap=rows.filter((_,i)=>![10,12,14,16,18].includes(i));assert.equal(explain(gap).reason,'RATIO_WINDOW_GAP');
+const future=[...flat,{timestamp:at+STEP,longShortRatio:1}];assert.equal(explain(future).reason,'RATIO_SHIFT_TOO_SMALL','future drop cannot grant PASS');
+assert.match(buildRatioCurve(pass),/polyline/);assert.equal(buildRatioCurve({rows:[{timestamp:1,longShortRatio:NaN}]}),'');
+const graph=buildRatioCurve(pass);
+assert.match(graph,/ratio-account-bar/);assert.match(graph,/stroke="#111827"/);assert.match(graph,/ratio-base-band/);
+assert.match(graph,/ratio-threshold/);assert.match(graph,/−10% nền/);assert.match(buildRatioCurve(explain(shortRows,'SHORT')),/\+10% nền/);
+assert.equal((graph.match(/class="ratio-point"/g)??[]).length,rows.length);
+assert.doesNotMatch(graph,/NaN|undefined/);assert.match(graph,/62\.96% \/ Short 37\.04%/);
+assert.ok(buildRatioCurve({rows,asOf,side:'LONG',state:'UNAVAILABLE'}),'available rows draw without a baseline');
+assert.doesNotMatch(buildRatioCurve({rows,asOf,state:'UNAVAILABLE'}),/NaN|undefined|ratio-threshold/);
+assert.equal(buildRatioCurve({rows:[rows[0],rows[0]]}), '','duplicate timestamps fail closed');
+assert.equal(buildRatioCurve({rows:[...rows,{timestamp:at+STEP,longShortRatio:1}],asOf}), '','future data is not drawn');
+assert.equal((buildRatioCurve({...pass,rows:rows.filter((_,i)=>i!==10)}).match(/class="ratio-line"/g)??[]).length,2,'gap breaks black line');
+assert.match(buildRatioCurve(explain(rows.slice(-6))),/ratio-account-bar/,'partial history is drawable but UNKNOWN');
+
+let now=at+2000,reads=0;
+const service=new RisingVolumeRatioDiagnostics({now:()=>now,getRows:async()=>{reads++;return rows;}});
+const row={id:event.id,...event.snapshot,interval:'1m',volumePattern:'SUSTAINED'};
+const snapshot={rows:[row],detail:null,cohorts:[{closedCount:0,closedAvgRoe:null}]},before=JSON.stringify(snapshot);
+let projected=service.project(snapshot);assert.equal(projected.rows[0].ratioDiagnostics.reason,'RATIO_PENDING');
+await new Promise(r=>setImmediate(r));assert.equal(reads,1);
+projected=service.project(snapshot);const d=projected.rows[0].ratioDiagnostics;assert.equal(d.source,'VIEW_ONLY');assert.equal(d.state,'PASS');
+assert.equal(reads,1,'TTL prevents refresh request storms');assert.equal(JSON.stringify(snapshot),before,'no monitor/history/stats mutation');
+const expiredService=new RisingVolumeRatioDiagnostics({now:()=>at+2000,getRows:()=>new Promise(()=>{})});
+expiredService.cache.set(row.symbol,{rows,fetchedAt:at,expiresAt:at+1000,pending:false});
+const expired=expiredService.project(snapshot).rows[0];assert.equal(expired.ratioDiagnostics.state,'UNAVAILABLE');
+assert.equal(expired.ratioDiagnostics.pass,null);assert.equal(expired.ratioDiagnostics.reason,'RATIO_CACHE_EXPIRED');
+assert.match(renderRatioDiagnostics(expired),/ratio-account-bar/,'stale cached curve remains visible, not a PASS');
+assert.deepEqual(projected.cohorts,snapshot.cohorts);
+const html=renderRatioDiagnostics(projected.rows[0]);assert.match(html,/RATIO PASS/);assert.match(html,/KHÔNG phải proof pre-entry/);
+assert.match(html,/1\.7/);assert.match(html,/Long 62\.96% \/ Short 37\.04%/);assert.match(html,/LONG cần giảm ≥10%/);
+assert.match(html,/Ratio PASS chỉ là một điều kiện/);
+assert.match(renderRatioDiagnostics({...projected.rows[0],ratioDiagnostics:{...d,entryScope:false}}),/5?khung\/loại này không thuộc MARKET/);
+assert.match(renderRatioDiagnostics({...row,ratioDiagnostics:{...d,...explain(flat)}}),/chưa đạt 10%/);
+assert.match(renderRatioDiagnostics(row),/Runtime chưa cung cấp/,'old JSON is not fabricated PASS/FAIL');
+assert.equal(service.project(snapshot,{view:'history'}).rows[0].ratioDiagnostics.reason,'RATIO_NOT_SAVED');assert.equal(reads,1);
+const proof=buildRisingVolumeRatioProof(event,rows,now),attempt={id:event.id,symbol:row.symbol,side:row.side,status:'SUBMITTED',
+  closedAt:asOf,snapshotObservedAt:event.snapshot.observedAt,risingVolumeRatioProof:proof};
+now+=3600000;
+const original=service.project({rows:[{...row,closedAt:asOf+3600000}],detail:row},{attempts:[attempt],view:'history'});
+assert.equal(original.rows[0].ratioDiagnostics.source,'AT_ENTRY');assert.equal(original.rows[0].ratioDiagnostics.asOf,asOf);
+assert.match(renderRatioDiagnostics(original.rows[0]),/KHÁC nến mới nhất/);assert.equal(reads,1,'original decision never fetches newer ratio');
+const bad=service.project(snapshot,{attempts:[{...attempt,risingVolumeRatioProof:{...proof,symbol:'CKBUSDT'}}],view:'history'});
+assert.equal(bad.rows[0].ratioDiagnostics.reason,'RATIO_PROOF_INVALID');
+const failedProof=buildRisingVolumeRatioProof(event,flat,at+2000);
+const failed=service.project(snapshot,{attempts:[{...attempt,risingVolumeRatioProof:failedProof}],view:'history'});
+assert.equal(failed.rows[0].ratioDiagnostics.reason,'RATIO_SHIFT_TOO_SMALL');
+assert.equal(failed.rows[0].ratioDiagnostics.source,'AT_ENTRY');
+const unavailableAttempt=service.project(snapshot,{attempts:[{...attempt,status:'RATIO_UNAVAILABLE',risingVolumeRatioProof:null}],view:'history'});
+assert.equal(unavailableAttempt.rows[0].ratioDiagnostics.source,'ATTEMPT_NO_RATIO');
+assert.match(renderRatioDiagnostics(unavailableAttempt.rows[0]),/Nhật ký lần xử lý gốc.*Không lấy được ratio public/s);
+
+// Bounded, deduplicated public reads; background work never blocks a GET. New
+// symbols get a turn before expired entries so early rows cannot starve others.
+let clock=0;const providers=[];
+const bounded=new RisingVolumeRatioDiagnostics({now:()=>clock,getRows:symbol=>new Promise(resolve=>providers.push({symbol,resolve}))});
+const many={rows:Array.from({length:6},(_,i)=>({...row,id:'row'+i,symbol:'COIN'+i+'USDT'}))};
+bounded.project(many);bounded.project(many);await new Promise(r=>setImmediate(r));assert.equal(providers.length,2);
+providers.forEach(p=>p.resolve(rows));await new Promise(r=>setImmediate(r));
+bounded.project(many);await new Promise(r=>setImmediate(r));assert.equal(providers.length,4);
+providers.slice(2).forEach(p=>p.resolve(rows));await new Promise(r=>setImmediate(r));
+bounded.project(many);await new Promise(r=>setImmediate(r));assert.equal(providers.length,4,'max4 reads per10s across GETs');
+clock=31000;bounded.project(many);await new Promise(r=>setImmediate(r));
+assert.deepEqual(providers.slice(4).map(p=>p.symbol),['COIN4USDT','COIN5USDT'],'new symbols do not starve behind expired first rows');
+providers.slice(4).forEach(p=>p.resolve(rows));await new Promise(r=>setImmediate(r));
+const outage=new RisingVolumeRatioDiagnostics({now:()=>at+2000,getRows:async()=>{throw Error('no public rows');}});
+outage.project(snapshot);await new Promise(r=>setImmediate(r));
+assert.equal(outage.project(snapshot).rows[0].ratioDiagnostics.reason,'RATIO_UNAVAILABLE');
+assert.equal(outage.project(snapshot).rows[0].ratioDiagnostics.pass,null);
+const historyOnly=new RisingVolumeRatioDiagnostics({getRows:()=>{throw Error('no history backfill');}});
+assert.equal(historyOnly.project(snapshot,{view:'history'}).rows[0].ratioDiagnostics.reason,'RATIO_NOT_SAVED');
+const malicious=renderRatioDiagnostics({...row,ratioDiagnostics:{...d,state:'FAIL',reason:'<img src=x onerror=alert(1)>'}});
+assert(!malicious.includes('<img'));assert(malicious.includes('&lt;img'));
+const server=await readFile('src/server.js','utf8');
+assert.match(server,/risingVolumeRatioDiagnostics\.project\(volumeSnapshot/);assert.match(server,/getRows:symbol=>client\.getTopLongShortAccountRatio\(symbol,'5m',20,\{priority:8,dropOnCongestion:true\}\)/);
+assert(!/submit|placeOrder|signedRequest|writeFile|authorize/.test((await readFile('src/risingVolumeRatioDiagnostics.js','utf8')).replace(/\/\/[^\n]*/g,'')),'display service has no trading/persistence capability');
+console.log('PASS ratio display: unchanged gate parity, LONG/SHORT reasons and graph, frozen exact-ID proof vs VIEW_ONLY, no history backfill/stats/whitelist/entry mutation, bounded public GET cache, legacy/XSS. Mock only.');

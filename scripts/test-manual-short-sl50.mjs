@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
-import {buildManualShortSl30,applyManualShortSl30ToPlan,manualShortSl30MatchesPosition,reconcileManualShortSl30} from '../src/manualShortStopLoss.js';
+import {MANUAL_SHORT_SL30_FILL_PRICE_VERSION,buildManualShortSl30,applyManualShortSl30ToPlan,manualShortSl30MatchesPosition,reconcileManualShortSl30} from '../src/manualShortStopLoss.js';
 import {buildClosePositionProtectionParams,BINANCE_CLOSE_POSITION_PROTECTION_VERSION} from '../src/binanceClosePositionProtection.js';
 import {hasOpenProtectionOrder} from '../src/protectionOrderGuard.js';
 import {resolveNonLiquidFlowV2TakeProfit,resolveManualSocketProtection,BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION} from '../src/shortTakeProfitPolicy.js';
@@ -27,6 +27,23 @@ for(const patch of [{time:at-1},{time:null},{time:at+3000},{side:'BUY'},{status:
   assert.equal(buildManualShortSl30({...input,order:{...input.order,...patch}}),null,JSON.stringify(patch));
 }
 assert.ok(buildManualShortSl30({...input,order:{...input.order,type:'LIMIT'}}));
+// Binance avgPrice is rounded: cumQuote/executedQty must anchor the SL.
+const gtcQty=1275.6,gtcQuote=249.6171,gtcEntry=gtcQuote/gtcQty;
+const gtcInput={...input,symbol:'GTCUSDT',positionAmount:-gtcQty,positionEntryPrice:gtcEntry,
+  order:{...input.order,symbol:'GTCUSDT',executedQty:String(gtcQty),avgPrice:'0.1956860',cumQuote:String(gtcQuote)}};
+assert.equal(buildManualShortSl30({...gtcInput,order:{...gtcInput.order,cumQuote:undefined}}),null,'rounded avgPrice mismatch reproduced');
+const gtcPolicy=buildManualShortSl30(gtcInput);
+assert.ok(gtcPolicy);assert.equal(gtcPolicy.entryPrice,gtcEntry);
+assert.equal(gtcPolicy.stopLossPrice,gtcEntry*1.06);
+assert.equal(gtcPolicy.fillPriceVersion,MANUAL_SHORT_SL30_FILL_PRICE_VERSION);
+const gtcPosition={symbol:'GTCUSDT',positionAmt:-gtcQty,entryPrice:gtcEntry,positionSide:'BOTH'};
+assert.ok(manualShortSl30MatchesPosition(JSON.parse(JSON.stringify(gtcPolicy)),gtcPosition,source));
+for(const value of ['',0,-1,'bad',Infinity,'249.5']) {
+  assert.equal(buildManualShortSl30({...gtcInput,order:{...gtcInput.order,cumQuote:value}}),null);
+}
+for(const patch of [{orderCumQuote:1},{orderAvgPrice:'bad'},{fillPriceVersion:'WRONG'}]) {
+  assert.equal(manualShortSl30MatchesPosition({...gtcPolicy,...patch},gtcPosition,source),false);
+}
 const position={symbol:'TESTUSDT',positionAmt:'-1',entryPrice:'100',leverage:'5',positionSide:'BOTH'};
 const dcaPosition={...position,positionAmt:'-2',entryPrice:'101'};
 const trades=[{id:1,symbol:'TESTUSDT',positionSide:'BOTH',side:'SELL',orderId:123,qty:'1',price:'100',time:at+2000,realizedPnl:'0'},
@@ -65,21 +82,22 @@ const server=await readFile(new URL('../src/server.js',import.meta.url),'utf8');
 const start=server.indexOf('async function setTpSl(payload, token = null)');
 const end=server.indexOf('\nasync function getMarketSnapshot()',start);
 assert.ok(start>0&&end>start);
-function harness({existingSl=false,changePosition=false,initialDca=false,history=[],hidePlaced=false,protectionExcluded=false}={}) {
+function harness({existingSl=false,changePosition=false,initialDca=false,history=[],hidePlaced=false,protectionExcluded=false,currentPosition=position}={}) {
   const placed=[];let reads=0;
   const client={getOpenOrders:async()=>[],getOpenAlgoOrders:async()=>existingSl?[{
     symbol:'TESTUSDT',side:'BUY',positionSide:'BOTH',type:'STOP_MARKET',triggerPrice:'105',closePosition:true}]:hidePlaced?[]:placed,
-    getPositions:async()=>{reads++;return [initialDca||(changePosition&&reads>1)?dcaPosition:position];},
+    getPositions:async()=>{reads++;return [initialDca||(changePosition&&reads>1)?dcaPosition:currentPosition];},
     getUserTrades:async()=>history,
     getPremiumIndex:async()=>({markPrice:'100'}),placeAlgoOrder:async({params})=>{placed.push(params);return {algoId:placed.length};}};
   const context={client,console:{log:()=>{}},process:{env:{}},Date,Number,String,Math,JSON,
-    normalizeSymbol:x=>x,getApiCredentials:()=>({}),getSymbols:async()=>[{symbol:'TESTUSDT'}],
+    normalizeSymbol:x=>x,getApiCredentials:()=>({}),getSymbols:async()=>[{symbol:'TESTUSDT'},{symbol:'GTCUSDT'}],
     resolveSignalProtectionWorkingTypes:()=>({takeProfitWorkingType:'MARK_PRICE',stopLossWorkingType:'MARK_PRICE'}),
     shortStopLossSuppression:()=>({suppressed:true,version:BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION}),
     isTrackedManualShortTpOnlyPosition:()=>true,manualShortSl30MatchesPosition,reconcileManualShortSl30,
     isBinanceProtectionExcluded:()=>protectionExcluded,
     resolveNonLiquidFlowV2TakeProfit,hasOpenProtectionOrder,buildClosePositionProtectionParams,
     BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION,BINANCE_CLOSE_POSITION_PROTECTION_VERSION,
+    PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE:'structure-setup-ready',RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',
     BINANCE_PROTECTION_EXCLUSION_VERSION:'BINANCE_SYMBOL_PROTECTION_EXCLUSION_V2_AUTO_RESET_ON_CLOSE_20260917',
     priceFromTick:(_info,value)=>Number(value.toFixed(6))};
   const run=vm.runInNewContext(server.slice(start,end)+'\nsetTpSl',context);
@@ -105,4 +123,7 @@ for(const options of [{initialDca:true,history:trades},{changePosition:true,hist
 h=harness({initialDca:true});await assert.rejects(h.run({...payload,manualShortSl50:{...policy}}),/cannot verify/);
 assert.equal(h.placed.length,0);
 h=harness({hidePlaced:true});await assert.rejects(h.run({...payload,manualShortSl50:{...policy}}),/not confirmed an open SL/);
+h=harness({currentPosition:gtcPosition});const gtcResult=await h.run({symbol:'GTCUSDT',source,slPrice:gtcPolicy.stopLossPrice,manualShortSl50:gtcPolicy});
+assert.equal(gtcResult.hasSl,true);assert.equal(h.placed.length,1);
+assert.ok(Math.abs(Number(h.placed[0].triggerPrice)-.207427)<1e-9);
 console.log('Manual short SL30 passed: new fill/activation only, 1x–125x, DCA/old/bot guards, actual setTpSl path, existing SL and position race. Mock exchange only.');

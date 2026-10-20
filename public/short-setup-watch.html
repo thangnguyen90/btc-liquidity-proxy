@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Theo dõi LONG tại hỗ trợ và SHORT tại kháng cự từ cấu trúc giá Binance; Web Push và Discord.">
+  <title>Cơ hội LONG / SHORT · hỗ trợ & kháng cự</title>
+  <link rel="stylesheet" href="/short-setup-watch.css?v=20261011-v2">
+  <link rel="manifest" href="/opposite-liquidity.webmanifest?v=20261004-2">
+  <meta name="theme-color" content="#081c16">
+</head>
+<body><main class="shell">
+  <header class="hero"><div><p class="eyebrow">BINANCE FUTURES · CẤU TRÚC GIÁ · NẾN 1M ĐÃ ĐÓNG</p>
+    <h1>Cơ hội LONG / SHORT</h1><p>LONG: quét đáy lấy lại hỗ trợ hoặc vượt kháng cự rồi retest giữ vùng. SHORT: vượt đỉnh thất bại hoặc mất hỗ trợ rồi hồi thất bại.</p></div>
+    <details class="navigation"><summary>Các trang khác</summary><nav aria-label="Điều hướng"><a class="nav-link binance-auto-controls-nav-link" href="/binance-auto-controls">Quản lý Binance tự động</a>
+      <a class="nav-link" href="/short-setup-watch" aria-current="page">Cơ hội LONG / SHORT</a>
+      <a class="nav-link" href="/rising-volume-watch">Volume tăng dần</a><a class="nav-link" href="/local-ai-trend-evaluation">AI Local</a>
+    </nav></details>
+  </header>
+  <section class="panel push-panel"><h2>Thông báo</h2>
+    <div class="push-controls"><label><input id="push-enabled" type="checkbox" disabled> Gửi push khi setup kích hoạt và R:R ≥1,5</label>
+      <label><input id="discord-enabled" type="checkbox" disabled> Gửi Discord khi setup kích hoạt và R:R ≥1,5</label>
+      <label><input id="push-early" type="checkbox" disabled> Push & Discord: báo thêm quét đáy lấy lại vùng / vượt đỉnh thất bại, trước kích hoạt</label>
+      <button type="button" data-opposite-liquidity-push>Bật Push như app</button></div>
+    <p data-opposite-liquidity-push-help class="muted"></p><p id="discord-status" class="muted"></p><p id="settings-status" role="status"></p>
+    <p class="muted">LONG màu đỏ · SHORT màu xanh. Mức tin áp dụng chung; Push và Discord có thể bật/tắt độc lập. Bật Push như app đăng ký thiết bị đang dùng. Bấm thông báo để mở đúng setup. Không gửi lại lịch sử.</p>
+  </section>
+  <section class="panel" id="binance-entry"><h2>MARKET khi PASS · 1 USDT ×5x</h2>
+    <p>Margin 1 USDT ×5x. Chỉ setup mới chuyển READY, R:R cấu trúc ≥1,5. TP +10% ROE / SL −30% ROE theo giá khớp thực tế. LONG + SHORT tối đa 15 lệnh riêng, không dùng max chung.</p>
+    <p class="muted">Không vào WATCH, đang chờ xác nhận, lịch sử hoặc lệnh đã có. Không tự tăng tiền nếu không đạt minimum Binance. R:R trên chart là tham khảo cấu trúc, không phải R:R TP/SL cố định. Giờ yên lặng chỉ tắt Push, không tắt MARKET.</p>
+    <p id="binance-status" role="status">Đang tải trạng thái MARKET…</p>
+    <a href="/binance-auto-controls">Quản lý bật/tắt Binance</a>
+    <details><summary>Lịch sử xử lý MARKET · không phải thống kê thắng/thua</summary><div id="binance-attempts"></div></details>
+  </section>
+  <section class="panel"><div class="section-head"><h2>Danh sách ưu tiên</h2><span id="coverage" class="muted">Đang tải dữ liệu…</span></div>
+    <p class="explanation">Xếp đầu: đã kích hoạt → điểm bằng chứng cao → mới nhất. Điểm /100 là quy tắc xếp hạng thử nghiệm, chưa phải xác suất thắng. Mục tiêu LONG là kháng cự phía trên; SHORT là hỗ trợ phía dưới. Giá đã đi xa được hạ xuống cuối. MARKET riêng chỉ chạy khi đủ điều kiện và control đang bật; xem trạng thái ở trên.</p>
+    <form id="filters"><label>Tìm coin<input id="search" type="search" placeholder="LUMIA / LUMIAUSDT" maxlength="40"></label>
+      <label>Danh sách<select id="view"><option value="live">Đang theo dõi</option><option value="history">Lịch sử setup</option></select></label>
+      <label>Hướng<select id="side"><option value="ALL">LONG & SHORT</option><option value="LONG">LONG · hỗ trợ</option><option value="SHORT">SHORT · kháng cự</option></select></label>
+      <label>Mẫu<select id="pattern"><option value="ALL">Tất cả mẫu</option><option value="FAILED_LOW">Quét đáy · lấy lại hỗ trợ</option><option value="BREAK_HOLD">Vượt kháng cự · retest giữ vùng</option><option value="FAILED_HIGH">Vượt đỉnh thất bại</option><option value="BREAK_RETEST">Mất hỗ trợ · hồi thất bại</option></select></label>
+      <label>Trạng thái<select id="state"><option value="ALL">Tất cả</option><option value="READY">Đã kích hoạt</option><option value="WAIT">Đang chờ kích hoạt</option><option value="WATCH">Gần hỗ trợ / kháng cự</option></select></label>
+      <button type="submit">Làm mới</button></form>
+    <div id="status" role="status" aria-live="polite"></div><div id="signals"></div>
+    <div class="pagination"><button id="previous" type="button">← Trước</button><span id="page-label"></span><button id="next" type="button">Sau →</button></div>
+  </section>
+  <details class="panel rules"><summary>Căn cứ và cách đọc</summary>
+    <p>Mỗi coin cần ít nhất 81 nến 1m liên tục và mới. Swing đỉnh/đáy cần 2 nến đã đóng mỗi phía; vùng được gom trong 60 nến trước tín hiệu. Các mức được cố định lúc tạo setup, không dời theo nến tương lai.</p>
+    <p>Sóng bơm: trong 40 nến trước tín hiệu, đỉnh xuất hiện sau đáy; mức tăng ≥max(2%; 3× ATR20/giá), volume trung bình ≥1,3× nền20 trước sóng và giá vẫn giữ nửa trên sóng. Đây là ngưỡng thử nghiệm.</p>
+    <p><b>Vượt đỉnh thất bại:</b> chọc qua vùng đỉnh rồi nến đỏ đóng dưới vùng; râu trên ≥35%, râu dưới &lt;40%, volume ≥1,3× nền20, bán chủ động ≥55%. Chờ nến sau đỏ đóng dưới đáy nến từ chối. Mức vô hiệu là đỉnh nến từ chối cộng 0,2 ATR.</p>
+    <p><b>Mất hỗ trợ · hồi thất bại:</b> nến đỏ đóng dưới hỗ trợ ít nhất 0,1 ATR, có volume/bán như trên; chờ hồi chạm hỗ trợ đã mất rồi nến đỏ đóng dưới vùng và dưới đáy nến trước, bán ≥55%. Mức vô hiệu là mép trên vùng cộng 0,3 ATR. Nến chạm mức vô hiệu sẽ hủy trước, vì OHLC không cho biết thứ tự di chuyển trong nến.</p>
+    <p><b>LONG · Quét đáy lấy lại hỗ trợ:</b> quét dưới vùng swing đáy rồi nến xanh đóng trên vùng; râu dưới ≥35%, râu trên &lt;40%, volume ≥1,3× nền20, mua chủ động ≥55%. Chờ nến sau xanh đóng vượt đỉnh nến lấy lại vùng. Vô hiệu = đáy nến quét −0,2 ATR.</p>
+    <p><b>LONG · Vượt kháng cự retest giữ vùng:</b> nến xanh đóng trên kháng cự ít nhất 0,1 ATR, râu trên &lt;40%, volume/mua như trên; chờ chạm vùng rồi nến xanh đóng trên vùng và đỉnh nến trước, mua ≥55%. Vô hiệu = mép dưới vùng −0,3 ATR. LONG cần sóng bơm như trên hoặc sóng giảm đối xứng: đỉnh trước đáy, giảm ≥max(2%; 3 ATR/giá), volume ≥1,3× nền và giá ở nửa dưới sóng. Nhánh hồi sau sóng giảm có rủi ro ngược xu hướng.</p>
+    <p>LONG cũng chờ 15 phút, theo dõi 10 phút sau kích hoạt; tăng quá 0,5 ATR hoặc chạm kháng cự mục tiêu thì hạ ưu tiên. Chạm mức vô hiệu dưới sẽ hủy trước. R:R LONG = khoảng tới kháng cự gần nhất / khoảng tới mức vô hiệu; thiếu mục tiêu hoặc R:R &lt;1,5 thì không gửi tin kích hoạt. LONG cộng điểm mua, trên EMA9, RSI tăng từ ≤35 thay cho tiêu chí bán của SHORT.</p>
+    <p>Chờ tối đa 15 phút; setup kích hoạt được theo dõi thêm 10 phút. Giá giảm quá 0,5 ATR khỏi mức kích hoạt hoặc đã chạm hỗ trợ mục tiêu sẽ được hạ ưu tiên. Thiếu nến/cũ/gap/restart dừng theo dõi mẫu cũ, giữ lịch sử để đối chiếu.</p>
+    <p>R:R tham khảo = khoảng từ giá tham khảo đến hỗ trợ gần nhất / khoảng đến mức vô hiệu. Thiếu hỗ trợ phía dưới thì không tính R:R và không gửi push kích hoạt. Phí, trượt giá và funding chưa nằm trong tỷ lệ này.</p>
+    <p>Điểm cộng từ cấu trúc, số swing, lực bán, volume, EMA9, RSI giảm từ vùng cao, R:R và nến kích hoạt. EMA/RSI là dữ liệu bổ sung. Bản này dùng OHLCV và lượng mua/bán chủ động Binance; chưa dùng OI/ratio/orderbook để cấp tín hiệu và không suy ra toàn bộ thanh lý.</p>
+    <p>Lịch sử setup là mẫu quan sát, không có WinRate/PnL/AvgROE. Chưa thêm card thống kê hoặc WHITELIST. Nhánh MARKET READY có control riêng cho LONG và SHORT; không dùng điểm xếp hạng để tự cấp quyền. Push chỉ gửi cho sự kiện mới; tắt rồi bật không phát lại lịch sử.</p>
+  </details>
+</main><script type="module" src="/short-setup-watch.js?v=20261012-market-v2"></script></body></html>

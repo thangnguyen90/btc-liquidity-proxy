@@ -1,4 +1,6 @@
-export const POST_MOVE_IMPULSE_SIZING_VERSION = 'IMPULSE_TIME_OR_BTC_MARGIN5_ELSE1_V1_20261001';
+export const POST_MOVE_IMPULSE_LEGACY_SIZING_VERSION = 'IMPULSE_TIME_OR_BTC_MARGIN5_ELSE1_V1_20261001';
+export const POST_MOVE_IMPULSE_PREVIOUS_SIZING_VERSION = 'IMPULSE_TIME_OR_BTC_LONG2_SHORT5_ELSE1_V2_20261013';
+export const POST_MOVE_IMPULSE_SIZING_VERSION = 'IMPULSE_LONG2_ELSE1_SHORT_FIXED1_V3_20261020';
 export const IMPULSE_BTC_MAX_AGE_MS = 120_000;
 export const IMPULSE_GOOD_HOURS_VN = Object.freeze({
   LONG: Object.freeze([[3, 6], [12, 15]]),
@@ -19,12 +21,12 @@ export function impulseSizing({ side, now = Date.now(), market = null } = {}) {
   const trend = String(market?.btc?.trend ?? 'UNKNOWN').toUpperCase();
   const btcFresh = age != null && age >= 0 && age <= IMPULSE_BTC_MAX_AGE_MS;
   const btcAligned = btcFresh && ((direction === 'LONG' && trend === 'UP') || (direction === 'SHORT' && trend === 'DOWN'));
-  const marginUsdt = goodHour || btcAligned ? 5 : 1;
+  const marginUsdt = direction === 'LONG' && (goodHour || btcAligned) ? 2 : 1;
   return {
     version: POST_MOVE_IMPULSE_SIZING_VERSION, evaluatedAt: now, direction, hourVn,
     goodHour, goodHoursVn: windows.map(([a, b]) => `${String(a).padStart(2, '0')}–${String(b).padStart(2, '0')}h`).join(', '),
     btcFresh, btcAligned, btcAgeMs: age, marginUsdt,
-    reason: goodHour && btcAligned ? 'GOOD_HOUR_AND_BTC_ALIGNED' : goodHour ? 'GOOD_HOUR' : btcAligned ? 'BTC_ALIGNED' : 'BASE_SIZE',
+    reason: direction === 'SHORT' ? 'FIXED_SHORT_1_USDT' : goodHour && btcAligned ? 'GOOD_HOUR_AND_BTC_ALIGNED' : goodHour ? 'GOOD_HOUR' : btcAligned ? 'BTC_ALIGNED' : 'BASE_SIZE',
     btcContext: { evaluatedAt, btc: { trend, ret15m: finite(market?.btc?.ret15m), ret1h: finite(market?.btc?.ret1h) } },
   };
 }
@@ -39,13 +41,16 @@ export function validImpulseSizing(payload) {
 
 export function impulseSizingDiscordField(watch) {
   const d = watch?.impulseSizing;
-  if (!d || d.version !== POST_MOVE_IMPULSE_SIZING_VERSION) return {
+  // Legacy decisions may be displayed as history, never validated for new orders.
+  if (!d || ![POST_MOVE_IMPULSE_SIZING_VERSION, POST_MOVE_IMPULSE_PREVIOUS_SIZING_VERSION, POST_MOVE_IMPULSE_LEGACY_SIZING_VERSION].includes(d.version)) return {
     name: 'SIZE TỰ ĐỘNG · CHƯA CÓ QUYẾT ĐỊNH',
-    value: '5 USDT nếu giờ tốt HOẶC BTC cùng hướng; còn lại 1 USDT. Size được tính tại bước xét lệnh mới.',
+    value: watch?.side === 'SHORT' ? '1 USDT cố định cho SHORT mới, không tăng size theo giờ hoặc BTC; còn chờ bước xét lệnh.'
+      : '2 USDT nếu giờ tốt HOẶC BTC cùng hướng; còn lại 1 USDT. Size được tính tại bước xét lệnh mới.',
   };
   const btc = d.btcContext?.btc;
   const pct = v => v == null ? '—' : `${v >= 0 ? '+' : ''}${v}%`;
-  const why = d.goodHour && d.btcAligned ? 'Giờ tốt và BTC cùng hướng'
+  const fixedShort = d.version === POST_MOVE_IMPULSE_SIZING_VERSION && d.direction === 'SHORT';
+  const why = fixedShort ? 'SHORT cố định 1 USDT, không tăng size theo giờ hoặc BTC' : d.goodHour && d.btcAligned ? 'Giờ tốt và BTC cùng hướng'
     : d.goodHour ? 'Đang trong giờ tốt (điều kiện HOẶC)'
       : d.btcAligned ? 'Ngoài giờ tốt nhưng BTC cùng hướng'
         : 'Ngoài giờ tốt và BTC không cùng hướng hoặc thiếu/cũ';
@@ -57,6 +62,6 @@ export function impulseSizingDiscordField(watch) {
       + `\nBTC **${btc?.trend ?? 'UNKNOWN'}** · ${!d.btcFresh ? 'thiếu/cũ, không dùng tăng size' : d.btcAligned ? 'cùng hướng' : 'không cùng hướng'}`
       + ` · 15m ${pct(btc?.ret15m)} / 1h ${pct(btc?.ret1h)}`
       + `\n${why}. ${status ? `Trạng thái xét: **${status}** (không xác nhận khớp).` : 'Dự kiến, còn kiểm tra khóa route và điều kiện entry.'}`
-      + '\nNếu size nhỏ không đạt min-notional/step Binance: bỏ qua, không tự nâng lên 5 USDT.',
+      + '\nNếu size nhỏ không đạt min-notional/step Binance: bỏ qua, không tự nâng size.',
   };
 }

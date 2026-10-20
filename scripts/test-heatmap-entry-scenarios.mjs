@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import {deriveHeatmapEntryScenarios,heatmapPoolProfile,PROFILE_RATIO} from '../src/heatmapEntryScenarios.js';
+const step=300000,start=Math.floor(1792300000000/step)*step;
+const make=()=>Array.from({length:90},(_,i)=>({time:start+i*step,end:start+(i+1)*step-1,open:100,high:101,low:99,close:100,quoteVolume:100000,takerBuyQuoteVolume:50000}));
+function input(candles,prices=[98,107]){
+ const profiles=candles.slice(-4).map(c=>({at:c.end,oiFresh:true,mark:true,bins:prices.map(p=>[Math.round(Math.log(p)/Math.log(PROFILE_RATIO)),100])}));
+ const data={source:'BINANCE_LOCAL',symbol:'TESTUSDT',range:'24h',step,end:candles.at(-1).end+1,profiles,inputs:{interval:'5m'}};
+ return {models:[{model:1,status:'OK',data:structuredClone({...data,model:1})},{model:3,status:'OK',data:structuredClone({...data,model:3})}],candles,step,now:candles.at(-1).end+1000,symbol:'TESTUSDT',range:'24h'};
+}
+let c=make();c[89]={...c[89],open:99,close:100.5,high:101,low:97.5,quoteVolume:200000,takerBuyQuoteVolume:140000};
+let x=input(c),s=deriveHeatmapEntryScenarios(x);assert.equal(s.status,'OK');assert.equal(s.plans.length,4);assert.equal(s.plans.find(p=>p.id==='SWEEP_RECLAIM_LONG').state,'CONDITIONS_MET');assert.equal(s.preference,'LONG');assert.equal(s.zonesAsOf,c[88].end);
+const priorZones=structuredClone(s.zones);x.models.forEach(m=>m.data.profiles.at(-1).bins=[[999999,1e100]]);assert.deepEqual(deriveHeatmapEntryScenarios(x).zones,priorZones,'current birth/sweep cannot manufacture zones used by current trigger');
+const noTaker=input(c.map((b,i)=>i===89?{...b,takerBuyQuoteVolume:null}:b));assert.equal(deriveHeatmapEntryScenarios(noTaker).plans.every(p=>p.state!=='CONDITIONS_MET'),true);
+const stale=input(c);stale.models[1].data.profiles[1].oiFresh=false;assert.equal(deriveHeatmapEntryScenarios(stale).status,'UNAVAILABLE');
+const transient=input(c);transient.models.forEach(m=>m.data.profiles[0].bins=[]);assert.equal(deriveHeatmapEntryScenarios(transient).plans.every(p=>p.state==='WAIT_ZONE'),true,'single recent coincidence is not persistent consensus');
+const missing=input(c);missing.models.pop();assert.equal(deriveHeatmapEntryScenarios(missing).status,'UNAVAILABLE');
+const mixed=input(c);mixed.models[1].data.source='DEMO';assert.equal(deriveHeatmapEntryScenarios(mixed).status,'UNAVAILABLE');
+const wrong=input(c);wrong.models[1].data.symbol='OTHERUSDT';assert.equal(deriveHeatmapEntryScenarios(wrong).status,'UNAVAILABLE');
+const ancient=input(c);ancient.now+=step+120000;assert.equal(deriveHeatmapEntryScenarios(ancient).status,'UNAVAILABLE');
+const noTarget=input(c,[98]);assert.equal(deriveHeatmapEntryScenarios(noTarget).plans.find(p=>p.id==='SWEEP_RECLAIM_LONG').targetPrice,null);assert.equal(deriveHeatmapEntryScenarios(noTarget).preference,'WAIT');
+c=make();c[89]={...c[89],open:100.5,close:99.5,high:102.5,low:99,quoteVolume:200000,takerBuyQuoteVolume:60000};
+s=deriveHeatmapEntryScenarios(input(c,[94,102]));assert.equal(s.plans.find(p=>p.id==='SWEEP_REJECT_SHORT').state,'WAIT','low RR keeps otherwise valid rejection pending');
+s=deriveHeatmapEntryScenarios(input(c,[93,102]));assert.equal(s.plans.find(p=>p.id==='SWEEP_REJECT_SHORT').state,'CONDITIONS_MET');assert.equal(s.preference,'SHORT');
+c=make();c[88]={...c[88],close:102,high:102.5,low:100.8};c[89]={...c[89],open:101.5,close:102,high:102.2,low:100.9,quoteVolume:200000,takerBuyQuoteVolume:140000};
+s=deriveHeatmapEntryScenarios(input(c,[101,107]));assert.equal(s.plans.find(p=>p.id==='CONTINUATION_LONG').state,'CONDITIONS_MET');
+c=make().map(b=>({...b,open:104.6,close:104.6,high:105,low:104}));for(let i=0;i<20;i++)c[i]={...c[i],open:90,close:90,high:91,low:89};c[30]={...c[30],high:110,close:108};
+c[88]={...c[88],open:104.6,close:103,high:105,low:102.8};c[89]={...c[89],open:103.5,close:102.9,high:104,low:101.8,quoteVolume:200000,takerBuyQuoteVolume:60000};
+s=deriveHeatmapEntryScenarios(input(c,[95,104]));assert.equal(s.plans.find(p=>p.id==='PUMP_FADE_SHORT').state,'CONDITIONS_MET');
+const serialized=JSON.stringify(input(c));deriveHeatmapEntryScenarios(JSON.parse(serialized));assert.equal(JSON.stringify(input(c)),serialized,'inputs unchanged');
+const frame={candle:{end:100},oiFresh:true,mark:true,pools:[{price:100,weight:10},{price:100.01,weight:20}]};
+const prof=heatmapPoolProfile(frame);assert.equal(prof.bins.length,1);assert.equal(prof.bins[0][1],30);frame.pools[0].weight=999;assert.equal(prof.bins[0][1],30,'profile values frozen at as-of');
+console.log('PASS 4 scenario triggers, prior-only persistent consensus, missing/stale/mixed data, target/RR gates, neutral preference and fixed profile lattice');

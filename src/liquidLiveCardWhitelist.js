@@ -6,7 +6,16 @@ import { dumpCapTradeKey } from '../public/dump-cap-rejection-model.js';
 import { dumpResistanceTradeKey } from '../public/dump-resistance-model.js';
 import { toxicTwoSideTradeKey } from '../public/toxic-two-side-model.js';
 import { btcHourlyEntryForecastTradeKey } from '../public/btc-hourly-entry-forecast-model.js';
-export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V21_BTC_HOURLY_FORECAST_OBSERVE_20261001';
+import { risingVolumeTradeKey, risingVolumePatternTradeKey } from '../public/rising-volume-model.js';
+import { btcLiquidationKey, btcLiquidationTradeKey } from '../public/btc-liquidation-context-model.js';
+import { btcLiquidationForecastKey,btcLiquidationForecastTradeKey } from '../public/btc-liquidation-forecast-model.js';
+import { btcWickKey, btcWickTradeKey,coinPumpWickKey,coinPumpWickTradeKey } from '../public/btc-wick-recovery-model.js';
+import { coinPumpFlushKey, coinPumpFlushTradeKey } from '../public/coin-pump-long-flush-model.js';
+import { coinPumpWickEarlyKey, coinPumpWickEarlyTradeKey } from '../public/coin-pump-wick-early-model.js';
+import {weakAltKey,weakAltTradeKey,countertrendKey,countertrendTradeKey,coinRelationKey,coinRelationTradeKey} from '../public/weak-alt-rebound-model.js';
+import {btcAltReactionKey,btcAltReactionTradeKey} from '../public/btc-alt-reaction-model.js';
+import {btcAltStructureKey,btcAltStructureTradeKey} from '../public/btc-alt-structure-model.js';
+export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V36_TREND_REACTION_20261014';
 export const LIVE_CARD_COMBO_ENTRY_MATCH_VERSION = 'LIVE_CARD_COMBO_ENTRY_MATCH_V1_20260804';
 
 const ALLOWED_PREFIXES = [
@@ -61,6 +70,21 @@ export function normalizeLiquidLiveCardKey(value) {
   if (/^dump-resistance:(5m|15m|1h|4h|1d):(READY|WAIT_RETEST|WAIT_CONFIRM|BROKEN|NO_ROOM|WAIT_LIVE|STALE|NO_RESISTANCE)$/.test(key)) return key;
   if (/^toxic-two-side:(EXTREME|HIGH|WATCH|NORMAL)$/.test(key)) return key;
   if (/^btc-hourly-forecast:(LONG|SHORT|NEUTRAL)$/.test(key)) return key;
+  if (/^rising-volume:(1m|5m|15m):(LONG|SHORT)$/.test(key)) return key;
+  if (/^rising-volume:pattern:(CONTINUOUS|MIXED)$/.test(key)) return key;
+  if (/^rising-volume:flow-1m:(SUSTAINED|BURSTY|OTHER)$/.test(key)) return key;
+  if (key.startsWith('btc-liquidation-context:') && btcLiquidationKey(key.slice('btc-liquidation-context:'.length)) === key) return key;
+  if(key.startsWith('weak-alt-rebound:')&&weakAltKey(key.slice('weak-alt-rebound:'.length))===key)return key;
+  if(key.startsWith('weak-alt-coin:')&&countertrendKey(key.slice('weak-alt-coin:'.length))===key)return key;
+  if(key.startsWith('weak-alt-relation:')&&coinRelationKey(key.slice('weak-alt-relation:'.length))===key)return key;
+  if(key.startsWith('weak-alt-reaction:')&&btcAltReactionKey(key.slice('weak-alt-reaction:'.length))===key)return key;
+  if(key.startsWith('weak-alt-structure:')&&btcAltStructureKey(key.slice('weak-alt-structure:'.length))===key)return key;
+  const forecastMatch=key.match(/^btc-liquidation-forecast:(LONG|SHORT):(WATCH|EARLY|UNWINDING)$/);
+  if(forecastMatch && btcLiquidationForecastKey(forecastMatch[1],forecastMatch[2])===key) return key;
+  if (key.startsWith('btc-wick-recovery:') && btcWickKey(key.slice('btc-wick-recovery:'.length)) === key) return key;
+  if (key.startsWith('coin-pump-wick-recovery:') && coinPumpWickKey(key.slice('coin-pump-wick-recovery:'.length)) === key) return key;
+  if (key.startsWith('coin-pump-wick-early:') && coinPumpWickEarlyKey(key.slice('coin-pump-wick-early:'.length)) === key) return key;
+  if (key.startsWith('coin-pump-long-flush:') && coinPumpFlushKey(key.slice('coin-pump-long-flush:'.length)) === key) return key;
   return ALLOWED_PREFIXES.some((prefix) => key.startsWith(prefix)) ? key : null;
 }
 
@@ -133,6 +157,23 @@ export function liquidLiveComboCycleKey(trade = {}) {
 
 export function liquidLiveCardKeysOfTrade(trade = {}) {
   const keys = new Set(['overview:all']);
+  const flushKey = coinPumpFlushTradeKey(trade);
+  if (flushKey) keys.add(flushKey);
+  const wickKey = btcWickTradeKey(trade);
+  if (wickKey) keys.add(wickKey);
+  const pumpWickKey=coinPumpWickTradeKey(trade);
+  const earlyWickKey=coinPumpWickEarlyTradeKey(trade);
+  if(earlyWickKey)keys.add(earlyWickKey);
+  if(pumpWickKey)keys.add(pumpWickKey);
+  const liquidationContextKey = btcLiquidationTradeKey(trade);
+  if (liquidationContextKey) keys.add(liquidationContextKey);
+  const forecastKey=btcLiquidationForecastTradeKey(trade);
+  if(forecastKey)keys.add(forecastKey);
+  const weakAlt=weakAltTradeKey(trade);if(weakAlt)keys.add(weakAlt);
+  const countertrend=countertrendTradeKey(trade);if(countertrend)keys.add(countertrend);
+  const relation=coinRelationTradeKey(trade);if(relation)keys.add(relation);
+  const reaction=btcAltReactionTradeKey(trade);if(reaction)keys.add(reaction);
+  const structure=btcAltStructureTradeKey(trade);if(structure)keys.add(structure);
   const sessionKey = sessionTradeKey(trade);
   if (sessionKey) keys.add(sessionKey);
   const impulseRegimeKey = impulseRegimeTradeKey(trade);
@@ -151,6 +192,10 @@ export function liquidLiveCardKeysOfTrade(trade = {}) {
   if (toxicKey) keys.add(toxicKey);
   const hourlyForecastKey = btcHourlyEntryForecastTradeKey(trade);
   if (hourlyForecastKey) keys.add(hourlyForecastKey);
+  const risingVolumeObservationKey = risingVolumeTradeKey(trade);
+  if (risingVolumeObservationKey) keys.add(risingVolumeObservationKey);
+  const risingVolumeColumnKey = risingVolumePatternTradeKey(trade);
+  if (risingVolumeColumnKey) keys.add(risingVolumeColumnKey);
   const margin = Number(trade.marginUsdt);
   keys.add(margin >= 9.5 && margin <= 10.5
     ? 'overview:margin:test10'

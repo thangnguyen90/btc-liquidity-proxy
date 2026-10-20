@@ -12,7 +12,7 @@ for (const name of htmlFiles) {
   const rendered = injectOppositeLiquidityToast(source);
   assert.equal((rendered.match(/\/opposite-liquidity-toast\.css\?v=20261004-4/g) ?? []).length, 1,
     `${name} must load the opposite-liquidity toast stylesheet once`);
-  assert.equal((rendered.match(/\/opposite-liquidity-toast\.js\?v=20261004-7/g) ?? []).length, 1,
+  assert.equal((rendered.match(/\/opposite-liquidity-toast\.js\?v=20261018-pump-turn-push-v1/g) ?? []).length, 1,
     `${name} must load the opposite-liquidity toast client once`);
   assert.equal((rendered.match(/\/opposite-liquidity\.webmanifest\?v=20261004-2/g) ?? []).length, 1,
     `${name} must expose one PWA manifest`);
@@ -28,13 +28,14 @@ const [client, css, serviceWorker, managerHtml, manifest, icon, server] = await 
   readFile(new URL('../public/opposite-liquidity-icon.svg', import.meta.url), 'utf8'),
   readFile(new URL('../src/server.js', import.meta.url), 'utf8'),
 ]);
-assert.match(OPPOSITE_LIQUIDITY_TOAST_VERSION, /SITEWIDE_TOAST_V7_ZONE_MANAGER_PUSH/);
+assert.match(OPPOSITE_LIQUIDITY_TOAST_VERSION, /SITEWIDE_TOAST_V11_PUMP_TURN_PUSH/);
 assert.match(client, /scanner\?\.browserNotifications/);
 assert.match(client, /\/api\/opposite-liquidity-manager/);
 assert.match(client, /FIRST_LOAD_RECENT_MS/);
 assert.match(client, /Binance:/);
 assert.match(client, /Notification\.requestPermission\(\)/);
 assert.match(client, /registration\.showNotification/);
+assert.match(client, /config\.quietHoursActive!==false/,'native fallback cannot bypass quiet Push');
 assert.match(client, /registration\.pushManager\.subscribe/);
 assert.match(client, /registration\.pushManager\.getSubscription/);
 assert.match(client, /applicationServerKey/);

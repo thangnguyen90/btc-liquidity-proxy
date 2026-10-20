@@ -42,7 +42,7 @@ function validDiscordWebhook(value) {
 export function postDumpNoSellDiscordPayload(watch) {
   const confirmed = watch?.stage === POST_DUMP_NO_SELL_STAGE.NO_SELL_CONFIRMATION;
   const late = watch?.stage === POST_DUMP_NO_SELL_STAGE.LATE_NO_CHASE;
-  const size = watch?.impulseSizing?.marginUsdt ?? '1 hoặc 5';
+  const size = watch?.impulseSizing?.marginUsdt ?? '1 hoặc 2';
   return {
     username: 'Post-dump Buy Watch',
     allowed_mentions: { parse: [] },

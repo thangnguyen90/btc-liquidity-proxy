@@ -1,0 +1,11 @@
+#btc-wick-recovery{border-left-color:#58debe;overflow-wrap:anywhere}
+#coin-pump-wick-early{border-left-color:#ffad33;overflow-wrap:anywhere}
+[data-early-cohorts]>article{padding:14px;border:1px solid #a07732;border-radius:10px;margin:10px 0;min-width:0}
+.wick-controls{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:16px 0}
+.wick-controls button{padding:10px;border:1px solid #286454;border-radius:8px;background:#113f32;color:#d9fff1;cursor:pointer}
+[data-wick-cohorts],[data-flush-cohorts]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+[data-wick-cohorts]>article,[data-flush-cohorts]>article,.wick-event{padding:14px;border:1px solid #285348;border-radius:10px;margin:10px 0;min-width:0}
+#coin-pump-long-flush{border-left-color:#ff617b;overflow-wrap:anywhere}
+.wick-event header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px}.wick-event p{margin:9px 0}
+.wick-selected{outline:2px solid #ffd451;background:#19382b}.wick-risk{color:#ff879a}
+@media(max-width:600px){[data-wick-cohorts],[data-flush-cohorts]{grid-template-columns:1fr}.wick-controls{align-items:flex-start;flex-direction:column}}
