@@ -1,4 +1,6 @@
 import {HEATMAP_SWEEP_VERSION} from './heatmapSweepWatch.js';
+import {heatmapSweepMargin} from './heatmapSweepBinance.js';
+export const HEATMAP_SWEEP_DISCORD_VERSION='HEATMAP_SWEEP_SHORT5_LONG2_DISCORD_V3_20261023';
 const f=n=>Number.isFinite(n)?Number(n.toPrecision(10)).toString():'—';
 export function heatmapSweepDiscordPayload(e){
  const all=['ALL_TRACKED_UPPER_SWEPT','ALL_TRACKED_LOWER_SWEPT'].includes(e.kind),upper=e.direction!=='LOWER',where=upper?'TRÊN':'DƯỚI',side=upper?'SHORT':'LONG';
@@ -9,9 +11,9 @@ export function heatmapSweepDiscordPayload(e){
    {name:'MARK / CỤM ĐÃ QUÉT',value:`MARK ${f(e.markPrice)}\n`+e.zones.filter(z=>z.cleared).map(z=>`${f(z.low)} – ${f(z.high)}`).join('\n')},
    {name:'VÙNG CÓ TRƯỚC GIÁ (VN)',value:`Nến chốt ${new Date(e.zonesAsOf).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'})}\nBắt đầu theo dõi ${new Date(e.armedAt).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'})}`},
    {name:'NGUỒN',value:'Hai model tự tính từ Binance 24h/nến5m, cùng giả định leverage. Cụm ≥35% mỗi profile/3nến, MARK/OI đủ nguồn. Không phải thanh lý thực được xác nhận.'},
-   {name:'BINANCE',value:all&&e.binance?`${side} MARKET ${upper?3:1} USDT margin ×5 · TP +10% / SL −30% ROE · max riêng 20 chung hai hướng.\nKết quả: ${e.binance.status}${e.binance.orderId?' · orderId '+e.binance.orderId:''}. Không coi Discord là đã khớp; không sửa vị thế cũ.`:'Chỉ quan sát; chưa có kết quả entry từ thông báo này. Quét một cụm không cấp lệnh; lịch sử cũ không replay.'},
+   {name:'BINANCE',value:all&&e.binance?`${side} MARKET ${Number.isFinite(e.binance.marginUsdt)?e.binance.marginUsdt:heatmapSweepMargin(side)} USDT margin ×5 · TP +10% / SL −30% ROE · max riêng 20 chung hai hướng.\nKết quả: ${e.binance.status}${e.binance.orderId?' · orderId '+e.binance.orderId:''}. Không coi Discord là đã khớp; không sửa vị thế cũ.`:'Chỉ quan sát; chưa có kết quả entry từ thông báo này. Quét một cụm không cấp lệnh; lịch sử cũ không replay.'},
    {name:'MỞ ĐÚNG LẦN QUÉT',value:`[Heatmap và vùng đã chốt](https://liquidity.nhathadev.trade/coinglass-heatmap-lab?symbol=${encodeURIComponent(e.symbol)}&range=${encodeURIComponent(e.viewRange)}&sweep=${encodeURIComponent(e.id)}#heatmap-sweep)`}],
-  footer:{text:HEATMAP_SWEEP_VERSION+' · Không phải thanh lý thực được xác nhận'},timestamp:new Date(e.at).toISOString()
+  footer:{text:HEATMAP_SWEEP_VERSION+' | '+HEATMAP_SWEEP_DISCORD_VERSION+' · Không phải thanh lý thực được xác nhận'},timestamp:new Date(e.at).toISOString()
  }]};
 }
 export function createHeatmapSweepDiscordSender({webhookUrl,fetchImpl=fetch}={}){

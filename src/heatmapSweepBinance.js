@@ -3,11 +3,21 @@ import {dirname} from 'node:path';
 import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
 import {HEATMAP_SWEEP_VERSION,heatmapSweepCohortId} from './heatmapSweepWatch.js';
 export const HEATMAP_SWEEP_SOURCE='heatmap-full-sweep';
-export const HEATMAP_SWEEP_ENTRY_VERSION='HEATMAP_FULL_SWEEP_SHORT3_LONG1_5X_TP10_SL30_CAP20_V1_20261020';
-export const HEATMAP_SWEEP_RULE=Object.freeze({leverage:5,takeProfitRoePct:10,stopLossRoePct:30,maxOpenPositions:20,maxAgeMs:30000,maxPriceDrift:.005});
+export const HEATMAP_SWEEP_ENTRY_VERSION='HEATMAP_FULL_SWEEP_NO_DRIFT_SHORT5_LONG2_5X_TP10_SL30_CAP20_V4_20261023';
+export const HEATMAP_SWEEP_PRICE_GUARDED_ENTRY_VERSION='HEATMAP_FULL_SWEEP_SHORT5_LONG2_5X_TP10_SL30_CAP20_V3_20261023';
+export const HEATMAP_SWEEP_PREVIOUS_ENTRY_VERSION='HEATMAP_FULL_SWEEP_SHORT3_LONG2_5X_TP10_SL30_CAP20_V2_20261023';
+export const HEATMAP_SWEEP_LEGACY_ENTRY_VERSION='HEATMAP_FULL_SWEEP_SHORT3_LONG1_5X_TP10_SL30_CAP20_V1_20261020';
+const ENTRY_MARGINS=Object.freeze({
+ [HEATMAP_SWEEP_ENTRY_VERSION]:Object.freeze({SHORT:5,LONG:2}),
+ [HEATMAP_SWEEP_PRICE_GUARDED_ENTRY_VERSION]:Object.freeze({SHORT:5,LONG:2}),
+ [HEATMAP_SWEEP_PREVIOUS_ENTRY_VERSION]:Object.freeze({SHORT:3,LONG:2}),
+ [HEATMAP_SWEEP_LEGACY_ENTRY_VERSION]:Object.freeze({SHORT:3,LONG:1}),
+});
+const LEGACY_RULE=Object.freeze({leverage:5,takeProfitRoePct:10,stopLossRoePct:30,maxOpenPositions:20,maxAgeMs:30000,maxPriceDrift:.005});
+export const HEATMAP_SWEEP_RULE=Object.freeze({...LEGACY_RULE,maxPriceDrift:null,priceDriftGuardEnabled:false});
 export const HEATMAP_SWEEP_ROUTES=Object.freeze(['SHORT','LONG'].map(side=>Object.freeze({source:HEATMAP_SWEEP_SOURCE,streamId:'live-mark-frozen-clusters',
  signalLabel:side==='SHORT'?'ALL_TRACKED_UPPER_SWEPT':'ALL_TRACKED_LOWER_SWEPT',side})));
-export const heatmapSweepMargin=side=>side==='SHORT'?3:side==='LONG'?1:null;
+export const heatmapSweepMargin=side=>['LONG','SHORT'].includes(side)?ENTRY_MARGINS[HEATMAP_SWEEP_ENTRY_VERSION][side]:null;
 export const heatmapSweepRouteKey=side=>{const r=HEATMAP_SWEEP_ROUTES.find(r=>r.side===side);return r?JSON.stringify([r.source,r.streamId,r.signalLabel,r.side]):null;};
 const copy=x=>structuredClone(x),epoch=x=>typeof x==='number'?x:Date.parse(x??''),same=(a,b)=>Number.isFinite(a)&&Math.abs(a-b)<1e-10;
 const directionSide=e=>e.direction==='UPPER'?'SHORT':'LONG';
@@ -49,30 +59,42 @@ export function validHeatmapSweepSignal(e={}){
  if(upper?e.previousMarkPrice>=final.high:e.previousMarkPrice<=final.low)return false;
  return e.cohortId===heatmapSweepCohortId(e.symbol,e.zonesAsOf,e.zones,e.direction)&&e.id===e.cohortId+':'+e.kind;
 }
-function fresh(e,{now,enabledAt,startedAt,markPrice}){
+function fresh(e,{now,enabledAt,startedAt,markPrice,maxPriceDrift=HEATMAP_SWEEP_RULE.maxPriceDrift}){
  const active=epoch(enabledAt),start=epoch(startedAt),mark=Number(markPrice);
  return [now,active,start,mark].every(Number.isFinite)&&active>0&&start>0&&mark>0&&e.armedAt>Math.max(active,start)
-  &&e.at>Math.max(active,start)&&e.observedAt<=now+1000&&now-e.at<=30000&&now<e.cohortExpiresAt&&Math.abs(mark/e.markPrice-1)<=.005;
+  &&e.at>Math.max(active,start)&&e.observedAt<=now+1000&&now-e.at<=30000&&now<e.cohortExpiresAt
+  &&(maxPriceDrift===null||Math.abs(mark/e.markPrice-1)<=maxPriceDrift);
 }
 export function buildHeatmapSweepOrder(e={},options={}){
+ return buildSweepOrderForVersion(e,options,HEATMAP_SWEEP_ENTRY_VERSION);
+}
+// Legacy sizing is only used to validate exact stored protection plans,
+// never to build or authorize new entries.
+function buildSweepOrderForVersion(e,options,version){
  const {now=Date.now(),enabledAt,startedAt,markPrice}=options;
- if(!validHeatmapSweepSignal(e)||!fresh(e,{now,enabledAt,startedAt,markPrice}))return null;
- const direction=directionSide(e),route=HEATMAP_SWEEP_ROUTES.find(r=>r.side===direction),mark=Number(markPrice),sign=direction==='LONG'?1:-1,margin=heatmapSweepMargin(direction);
- return {...route,...HEATMAP_SWEEP_RULE,marginUsdt:margin,notionalUsdt:margin*5,side:sign>0?'BUY':'SELL',symbol:e.symbol,
+ const rule=version===HEATMAP_SWEEP_ENTRY_VERSION?HEATMAP_SWEEP_RULE:LEGACY_RULE;
+ if(!validHeatmapSweepSignal(e)||!fresh(e,{now,enabledAt,startedAt,markPrice,maxPriceDrift:rule.maxPriceDrift}))return null;
+ const direction=directionSide(e),route=HEATMAP_SWEEP_ROUTES.find(r=>r.side===direction),mark=Number(markPrice),sign=direction==='LONG'?1:-1,margin=ENTRY_MARGINS[version]?.[direction];
+ if(!Number.isFinite(margin))return null;
+ return {...route,...rule,marginUsdt:margin,notionalUsdt:margin*5,side:sign>0?'BUY':'SELL',symbol:e.symbol,
   signalType:route.signalLabel,signalInterval:'5m',signalStageKey:'ALL_FROZEN_CLUSTERS_SWEPT',executionPage:'coinglass-heatmap-lab',orderType:'MARKET',
   maxOpenPositionsScope:HEATMAP_SWEEP_SOURCE,dryRun:false,allowMinNotionalCeil:false,signalEntryPrice:mark,takeProfitPrice:mark*(1+sign*.02),stopLossPrice:mark*(1-sign*.06),
-  takeProfitDistanceFraction:.02,stopLossDistanceFraction:.06,protectionOnFill:true,preserveSignalProtection:true,fillAnchorEnabled:true,fillAnchorVersion:HEATMAP_SWEEP_ENTRY_VERSION,
+  takeProfitDistanceFraction:.02,stopLossDistanceFraction:.06,protectionOnFill:true,preserveSignalProtection:true,fillAnchorEnabled:true,fillAnchorVersion:version,
   protectionSignalEntryPrice:mark,protectionSignalTakeProfitPrice:mark*(1+sign*.02),protectionSignalStopLossPrice:mark*(1-sign*.06),
   entryActivationAt:epoch(enabledAt),entryRunnerStartedAt:epoch(startedAt),entryExpiresAt:Math.min(e.cohortExpiresAt,e.at+30000),
   heatmapSweepAtEntry:copy(e),heatmapSweepSignalId:e.id,clientOrderId:'hms_'+createHash('sha256').update(e.id).digest('hex').slice(0,28),
-  signalReason:`${HEATMAP_SWEEP_ENTRY_VERSION} | ${e.id} | quét hết tập cụm ${e.direction}; không đợi xác nhận đảo chiều`};
+  signalReason:`${version} | ${e.id} | quét hết tập cụm ${e.direction}; không đợi xác nhận đảo chiều`};
 }
 export function validHeatmapSweepOrder(p={},markPrice=p.signalEntryPrice,now=Date.now()){
+ return p.fillAnchorVersion===HEATMAP_SWEEP_ENTRY_VERSION&&validSweepOrderForVersion(p,markPrice,now,HEATMAP_SWEEP_ENTRY_VERSION);
+}
+function validSweepOrderForVersion(p,markPrice,now,version){
  if(p.takeProfitLegs?.length)return false;
- const e=p.heatmapSweepAtEntry,r=buildHeatmapSweepOrder(e,{now,enabledAt:p.entryActivationAt,startedAt:p.entryRunnerStartedAt,markPrice:p.signalEntryPrice});
- return !!r&&fresh(e,{now,enabledAt:p.entryActivationAt,startedAt:p.entryRunnerStartedAt,markPrice})&&Math.abs(Number(markPrice)/p.signalEntryPrice-1)<=.005
+ const e=p.heatmapSweepAtEntry,r=buildSweepOrderForVersion(e,{now,enabledAt:p.entryActivationAt,startedAt:p.entryRunnerStartedAt,markPrice:p.signalEntryPrice},version);
+ return !!r&&fresh(e,{now,enabledAt:p.entryActivationAt,startedAt:p.entryRunnerStartedAt,markPrice,maxPriceDrift:r.maxPriceDrift})
+  &&(r.maxPriceDrift===null||Math.abs(Number(markPrice)/p.signalEntryPrice-1)<=r.maxPriceDrift)
   &&['source','streamId','signalLabel','side','symbol','signalType','signalInterval','signalStageKey','executionPage','orderType','clientOrderId','heatmapSweepSignalId',
-   'maxOpenPositionsScope','dryRun','allowMinNotionalCeil','protectionOnFill','preserveSignalProtection','fillAnchorEnabled','fillAnchorVersion'].every(k=>p[k]===r[k])
+   'maxOpenPositionsScope','dryRun','allowMinNotionalCeil','protectionOnFill','preserveSignalProtection','fillAnchorEnabled','fillAnchorVersion','maxPriceDrift','priceDriftGuardEnabled'].every(k=>p[k]===r[k])
   &&['marginUsdt','notionalUsdt','leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions','takeProfitPrice','stopLossPrice','takeProfitDistanceFraction','stopLossDistanceFraction',
    'protectionSignalEntryPrice','protectionSignalTakeProfitPrice','protectionSignalStopLossPrice','entryExpiresAt'].every(k=>same(p[k],r[k]));
 }
@@ -82,12 +104,12 @@ export class HeatmapSweepBinanceRunner{
  }
  load(){return this.loading??=this.loadState();}
  async loadState(){if(this.state)return this.state;let s;try{s=this.storage?await this.storage.load():JSON.parse(await readFile(this.file,'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
-  if(s&&(s.version!==HEATMAP_SWEEP_ENTRY_VERSION||!s.attempts||Array.isArray(s.attempts)||typeof s.attempts!=='object'
+  if(s&&(!Object.hasOwn(ENTRY_MARGINS,s.version)||!s.attempts||Array.isArray(s.attempts)||typeof s.attempts!=='object'
    ||Object.entries(s.attempts).some(([id,a])=>!a||a.id!==id||!['LONG','SHORT'].includes(a.side)||typeof a.symbol!=='string'||!Number.isFinite(a.at)||typeof a.status!=='string')))throw Error('HEATMAP_LEDGER_INVALID');
   return this.state=s??{version:HEATMAP_SWEEP_ENTRY_VERSION,attempts:{}};
  }
- async save(){const s=copy(this.state);if(this.storage)return this.storage.save(s);await mkdir(dirname(this.file),{recursive:true});const tmp=this.file+'.tmp-'+process.pid;await writeFile(tmp,JSON.stringify(s));await rename(tmp,this.file);}
- snapshot(){const c=this.controls.read();return {version:HEATMAP_SWEEP_ENTRY_VERSION,...HEATMAP_SWEEP_RULE,capScope:HEATMAP_SWEEP_SOURCE,shortMarginUsdt:3,longMarginUsdt:1,
+ async save(){this.state.version=HEATMAP_SWEEP_ENTRY_VERSION;const s=copy(this.state);if(this.storage)return this.storage.save(s);await mkdir(dirname(this.file),{recursive:true});const tmp=this.file+'.tmp-'+process.pid;await writeFile(tmp,JSON.stringify(s));await rename(tmp,this.file);}
+ snapshot(){const c=this.controls.read();return {version:HEATMAP_SWEEP_ENTRY_VERSION,...HEATMAP_SWEEP_RULE,capScope:HEATMAP_SWEEP_SOURCE,shortMarginUsdt:heatmapSweepMargin('SHORT'),longMarginUsdt:heatmapSweepMargin('LONG'),
   openSlots:this.openSlots??null,slotsCheckedAt:this.slotsCheckedAt??null,startedAt:this.startedAt,masterEnabled:c.enabled===true,error:this.error,
   routes:HEATMAP_SWEEP_ROUTES.map(r=>({...r,enabled:c.routes?.[heatmapSweepRouteKey(r.side)]?.enabled===true,enabledAt:c.routes?.[heatmapSweepRouteKey(r.side)]?.enabledAt??null})),
   attempts:Object.values(this.state?.attempts??{}).sort((a,b)=>b.at-a.at).slice(0,100).map(({plan,...a})=>a)};}
@@ -125,6 +147,8 @@ export class HeatmapSweepBinanceRunner{
   const direction=['BUY','LONG'].includes(side)?'LONG':['SELL','SHORT'].includes(side)?'SHORT':null;
   const a=Object.values(this.state.attempts).find(a=>a.symbol===symbol&&a.side===direction&&a.clientOrderId===String(clientOrderId)&&(!a.orderId||String(a.orderId)===String(orderId))
    &&['SUBMITTING','SUBMITTED','FILLED','NEW','PARTIALLY_FILLED','UNKNOWN','ERROR_OR_UNKNOWN'].includes(a.status));
-  return a?.plan&&validHeatmapSweepOrder(a.plan,a.plan.signalEntryPrice,a.planBuiltAt)?copy(a.plan):null;
+  const version=a?.plan?.fillAnchorVersion;
+  return Object.hasOwn(ENTRY_MARGINS,version)
+   &&validSweepOrderForVersion(a.plan,a.plan.signalEntryPrice,a.planBuiltAt,version)?copy(a.plan):null;
  }
 }

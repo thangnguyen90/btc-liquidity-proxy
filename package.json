@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:heatmap-top-ratio": "node scripts/test-heatmap-top-ratio.mjs && node scripts/test-heatmap-top-ratio-browser.mjs",
+    "test:heatmap-live-price": "node scripts/test-heatmap-live-price.mjs && node scripts/test-heatmap-live-price-browser.mjs",
+    "test:heatmap-manual-order": "node scripts/test-heatmap-manual-order.mjs && node scripts/test-heatmap-manual-order-browser.mjs",
     "test:heatmap-sweep-binance": "node scripts/test-heatmap-sweep-binance.mjs",
+    "test:heatmap-loader-optimization": "node scripts/test-heatmap-loader-optimization.mjs",
     "test:pump-turn-warmup": "node scripts/test-pump-turn-warmup.mjs",
     "test:heatmap-market-profiles": "node scripts/test-heatmap-market-profiles.mjs",
     "test:pump-turn-near-short-binance": "node scripts/test-pump-turn-near-short-binance.mjs",

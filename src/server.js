@@ -736,8 +736,9 @@ import { LocalAiTrendChat, extractRequestedMarketSymbols, resolveLocalAiChatInte
   localAiChatModeUsesOllama } from './localAiTrendChat.js';
 import { buildLocalAiMainKillGapWatchSnapshot, resolveMainKillGapCandidateSource } from './localAiMainKillGapWatch.js';
 import { injectLocalAiNavigation } from './localAiNavigation.js';
-import {CoinglassHeatmapLab} from './coinglassHeatmapLab.js';
-import {HeatmapMarketProfiles} from './heatmapMarketProfiles.js';
+import {CoinglassHeatmapLab,HEATMAP_CHART_REQUEST_PRIORITY} from './coinglassHeatmapLab.js';
+import {HeatmapTopTraderRatio} from './heatmapTopTraderRatio.js';
+import {HeatmapMarketProfiles,HEATMAP_MARKET_REQUEST_PRIORITY} from './heatmapMarketProfiles.js';
 import {HeatmapSweepWatch} from './heatmapSweepWatch.js';
 import {createHeatmapSweepDiscordSender} from './heatmapSweepDiscord.js';
 import {buildZoneNotificationHistory,zoneNotificationPage} from './liquidityZoneNotifications.js';
@@ -753,6 +754,7 @@ import {BinanceContractRiskMonitor} from './binanceContractRisk.js';
 import {loadZoneKlines, buildZoneDirectionNote} from './liquidityZoneObservation.js';
 import {MainKillDistanceRunner,MAIN_DISTANCE_ROUTES,MAIN_DISTANCE_SOURCE,validMainDistancePlan,mainDistanceCandidate,mainDistanceClosedStats,mainDistanceRouteKey,mainDistanceOpenSlots,MAIN_DISTANCE_MAX_POSITIONS} from './mainKillDistanceEntry.js';
 import {LiquidityZoneManualOrders,ZONE_MANUAL_SOURCE,validZoneManualPlan} from './liquidityZoneManualOrder.js';
+import {HeatmapManualOrders,assertHeatmapManualLive,HEATMAP_MANUAL_ORDER_VERSION} from './heatmapManualOrder.js';
 import { injectToxicTwoSideNavigation } from './toxicTwoSideNavigation.js';
 import { LocalAiTrendDiscordNotifier } from './localAiTrendDiscord.js';
 import { LocalAiSignalReview } from './localAiSignalReview.js';
@@ -941,16 +943,18 @@ console.log(`[EmaSqueeze] Discord delivery ${isEmaSqueezeDiscordEnabled() ? 'ON'
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const publicDir = join(rootDir, 'public');
+const heatmapTopTraderRatio=new HeatmapTopTraderRatio({loadRows:({symbol,period,limit})=>client.getTopLongShortAccountRatio(symbol,period,limit,{priority:7,dropOnCongestion:true,source:'heatmapTopTraderRatio:display'})});
 const coinglassHeatmapLab=new CoinglassHeatmapLab({
-  loadKlines:params=>client.get('/fapi/v1/klines',params,{priority:8,dropOnCongestion:true,source:'binanceLocalHeatmap:price'}),
-  loadMarkKlines:params=>client.get('/fapi/v1/markPriceKlines',params,{priority:8,dropOnCongestion:true,source:'binanceLocalHeatmap:mark'}),
-  loadOi:params=>client.get('/futures/data/openInterestHist',params,{priority:8,dropOnCongestion:true,source:'binanceLocalHeatmap:oi'}),
+  loadKlines:params=>client.get('/fapi/v1/klines',params,{priority:HEATMAP_CHART_REQUEST_PRIORITY,dropOnCongestion:true,source:'binanceLocalHeatmap:price'}),
+  loadMarkKlines:params=>client.get('/fapi/v1/markPriceKlines',params,{priority:HEATMAP_CHART_REQUEST_PRIORITY,dropOnCongestion:true,source:'binanceLocalHeatmap:mark'}),
+  loadOi:params=>client.get('/futures/data/openInterestHist',params,{priority:HEATMAP_CHART_REQUEST_PRIORITY,dropOnCongestion:true,source:'binanceLocalHeatmap:oi'}),
 });
 const heatmapMarketProfiles=new HeatmapMarketProfiles({
+  cacheDirectory:join(rootDir,'data','heatmap-market-raw-cache'),maxInFlight:3,
   manualCache:coinglassHeatmapLab.cache,blocked:()=>binanceRateGate.isBlocked?.()||isBinanceRestCongested(),
-  loadKlines:params=>client.get('/fapi/v1/klines',params,{priority:8,dropOnCongestion:true,source:'heatmapMarket:price'}),
-  loadMarkKlines:params=>client.get('/fapi/v1/markPriceKlines',params,{priority:8,dropOnCongestion:true,source:'heatmapMarket:mark'}),
-  loadOi:params=>client.get('/futures/data/openInterestHist',params,{priority:8,dropOnCongestion:true,source:'heatmapMarket:oi'}),
+  loadKlines:params=>client.get('/fapi/v1/klines',params,{priority:HEATMAP_MARKET_REQUEST_PRIORITY,dropOnCongestion:true,source:'heatmapMarket:price'}),
+  loadMarkKlines:params=>client.get('/fapi/v1/markPriceKlines',params,{priority:HEATMAP_MARKET_REQUEST_PRIORITY,dropOnCongestion:true,source:'heatmapMarket:mark'}),
+  loadOi:params=>client.get('/futures/data/openInterestHist',params,{priority:HEATMAP_MARKET_REQUEST_PRIORITY,dropOnCongestion:true,source:'heatmapMarket:oi'}),
 });
 const risingVolumeMonitor = new RisingVolumeMonitor({
   stateFile: join(rootDir, 'data', 'rising-volume-history.json'),
@@ -1084,6 +1088,10 @@ const liquidityZoneManualOrders=new LiquidityZoneManualOrders({
     return liquidityZoneManager.snapshot().watches.find(w=>w.id===id);
   },
   submit:(plan,{token})=>placeOrder(plan,token),
+});
+const heatmapManualOrders=new HeatmapManualOrders({
+  file:join(rootDir,'data','heatmap-manual-orders.json'),
+  submit:(plan,{token})=>placeOrder(plan,token,null,{heatmapManual:true}),
 });
 let zoneOrderQueue=Promise.resolve();
 let causalSignalOrderQueue=Promise.resolve();
@@ -3176,6 +3184,7 @@ try{heatmapSweepDiscordSender=createHeatmapSweepDiscordSender({webhookUrl:proces
 catch{console.warn('[HeatmapSweep] Invalid dedicated Discord configuration');}
 const heatmapSweepWatch=new HeatmapSweepWatch({
  file:join(rootDir,'data','heatmap-sweep-watch.json'),loadBundle:q=>heatmapMarketProfiles.compare(q),getUniverse:()=>risingVolumeUniverse,
+ loadCachedBundle:q=>heatmapMarketProfiles.cachedBundle(q),getLoaderStats:()=>heatmapMarketProfiles.snapshot(),maxInFlight:3,
  getLive:symbol=>{const p=sharedMarkTicker.getPriceInfo(symbol);return p?{price:p.markPrice,at:p.at}:null;},
  onSymbolsChanged:symbols=>sharedMarkTicker.setSymbols('heatmapSweepWatch',symbols),
  blocked:()=>binanceRateGate.isBlocked?.()||isBinanceRestCongested(),discordSender:heatmapSweepDiscordSender,onFullSweep:e=>heatmapSweepRunner.process(e),
@@ -15977,10 +15986,34 @@ const server = createServer(async (request, response) => {
       }else await sendJson(response,{error:'Method not allowed'},405);
       return;
     }
+    if(requestUrl.pathname==='/api/coinglass-heatmap-lab/ratio'){
+      response.setHeader('Cache-Control','no-store');
+      if(request.method!=='GET'){await sendJson(response,{error:'Method not allowed'},405);return;}
+      try{await sendJson(response,await heatmapTopTraderRatio.get({symbol:requestUrl.searchParams.get('symbol'),range:requestUrl.searchParams.get('range')??'24h',period:requestUrl.searchParams.get('period')??'auto'}));}
+      catch{await sendJson(response,{error:'Coin/range/khung ratio không hợp lệ.'},400);}return;
+    }
+    if(requestUrl.pathname==='/api/coinglass-heatmap-lab/order'){
+      response.setHeader('Cache-Control','no-store');
+      if(!['GET','POST'].includes(request.method)){await sendJson(response,{error:'Method not allowed'},405);return;}
+      if(request.method==='POST'&&!isSameOriginWriteRequest(request)){await sendJson(response,{error:'Cross-origin order refused'},403);return;}
+      const token=String(request.headers['x-orders-token']??'');
+      if(!token||!ordersTokens.has(token)){await sendJson(response,{error:'Đăng nhập Binance tại Orders trước khi đặt lệnh.'},401);return;}
+      try{
+        const {apiKey}=getApiCredentials(token),accountKey=crypto.createHash('sha256').update(apiKey).digest('hex');
+        if(request.method==='GET'){
+          const result=await heatmapManualOrders.get(String(requestUrl.searchParams.get('requestId')??''),accountKey);
+          await sendJson(response,result??{status:'NOT_FOUND',message:'Chưa tìm thấy mã lệnh trong tài khoản này. Kiểm tra Orders trước khi gửi thêm.'});
+        }else{
+          const body=await readJsonBody(request);if(body.confirm!==true)throw Error('Cần xác nhận lệnh MARKET/LIMIT thật.');
+          const result=await heatmapManualOrders.execute(body,accountKey,{token,enabled:runtimeSettings.orderEnabled});
+          await sendJson(response,result);invalidateOpenOrdersCache();
+        }
+      }catch(error){await sendJson(response,{error:error.message},400);}return;
+    }
     if(requestUrl.pathname==='/api/coinglass-heatmap-lab/status'){
       response.setHeader('Cache-Control','no-store');
       if(request.method!=='GET'){await sendJson(response,{error:'Method not allowed'},405);return;}
-      await sendJson(response,coinglassHeatmapLab.status());return;
+      await sendJson(response,{...coinglassHeatmapLab.status(),manualOrders:{version:HEATMAP_MANUAL_ORDER_VERSION,orderTypes:['MARKET','LIMIT'],limitTimeInForce:'GTC'}});return;
     }
     if(requestUrl.pathname==='/api/coinglass-heatmap-lab'){
       response.setHeader('Cache-Control','no-store');
@@ -21264,17 +21297,18 @@ async function executeCoinGlassStrongWaveReversalWatch(watch = {}, executionConf
 }
 
 async function placeOrder(payload, token = null, credentialsOverride = null, executionContext = null) {
-  if(['rising-volume-sustained-1m','coin-pump-wick-early-ratio','heatmap-full-sweep',STRUCTURE_SOURCE,PUMP_TURN_NEAR_SOURCE].includes(payload.source)) {
+  if(executionContext?.heatmapManual===true||['rising-volume-sustained-1m','coin-pump-wick-early-ratio','heatmap-full-sweep',STRUCTURE_SOURCE,PUMP_TURN_NEAR_SOURCE].includes(payload.source)) {
     // Both sources may see the same coin/minute. Serialize and hold a short
     // reservation even on an uncertain send; never rely on account REST lag.
     const run=causalSignalOrderQueue.then(async()=>{
       const at=Date.now(),symbol=normalizeSymbol(payload.symbol);
       for(const [s,until]of causalSignalOrderReservations)if(until<=at)causalSignalOrderReservations.delete(s);
-      if((causalSignalOrderReservations.get(symbol)??0)>at){const error=Error('Coin có entry volume/early wick trong 75s; không gửi trùng.');error.code='CAUSAL_SIGNAL_RESERVATION';throw error;}
+      if((causalSignalOrderReservations.get(symbol)??0)>at){const error=Error('Coin có yêu cầu vào lệnh trong 75s; không gửi trùng.');error.code='CAUSAL_SIGNAL_RESERVATION';if(executionContext?.heatmapManual===true)error.beforeHeatmapManualMarket=true;throw error;}
       causalSignalOrderReservations.set(symbol,at+75000);
-      const context=payload.source==='heatmap-full-sweep'?{...executionContext,heatmapMarketSent:false}:payload.source===STRUCTURE_SOURCE?{...executionContext,structureMarketSent:false}:executionContext;
+      const context=executionContext?.heatmapManual===true?{...executionContext,heatmapManualMarketSent:false}:payload.source==='heatmap-full-sweep'?{...executionContext,heatmapMarketSent:false}:payload.source===STRUCTURE_SOURCE?{...executionContext,structureMarketSent:false}:executionContext;
       try{return await executePlaceOrder(payload,token,credentialsOverride,context);}
-      catch(error){if(payload.source==='heatmap-full-sweep'&&!context.heatmapMarketSent)error.beforeHeatmapMarket=true;
+      catch(error){if(context?.heatmapManual===true&&!context.heatmapManualMarketSent)error.beforeHeatmapManualMarket=true;
+        if(payload.source==='heatmap-full-sweep'&&!context.heatmapMarketSent)error.beforeHeatmapMarket=true;
         if(payload.source===STRUCTURE_SOURCE&&!context.structureMarketSent)error.beforeStructureMarket=true;throw error;}
     });
     causalSignalOrderQueue=run.catch(()=>{});return run;
@@ -21287,6 +21321,8 @@ async function placeOrder(payload, token = null, credentialsOverride = null, exe
   try{return await run;}catch(error){if(!context.zoneMarketSent)error.beforeZoneMarket=true;throw error;}
 }
 async function executePlaceOrder(payload, token = null, credentialsOverride = null, executionContext = null) {
+  const heatmapManual=executionContext?.heatmapManual===true;
+  if(heatmapManual&&(!token||!ordersTokens.has(token)||!runtimeSettings.orderEnabled))throw Error('Phiên Orders hết hạn hoặc execution đang tắt.');
   const zoneManual=payload.source===ZONE_MANUAL_SOURCE;
   if(zoneManual&&(!token||!ordersTokens.has(token)))throw Error('Manual zone order requires authorized Orders session.');
   if(zoneManual&&!runtimeSettings.orderEnabled)throw Error('Binance execution disabled.');
@@ -21406,6 +21442,9 @@ async function executePlaceOrder(payload, token = null, credentialsOverride = nu
   const roundedLimitPrice = limitPrice
     ? priceFromTick(symbolInfo, limitPrice)
     : null;
+  if(heatmapManual&&orderType==='LIMIT'&&(!(Number(roundedLimitPrice)>0)
+    ||Math.abs(Number(roundedLimitPrice)-limitPrice)>Math.abs(limitPrice)*1e-12))
+    throw Error(`Giá LIMIT không khớp bước giá Binance. Giá hợp lệ gần nhất: ${roundedLimitPrice}. Chưa gửi lệnh; nhập và xác nhận lại.`);
   if (protectionSource === 'coin-level-entry-watch' && orderType === 'LIMIT') {
     const roundedEntry = Number(roundedLimitPrice);
     const gap = side === 'BUY' ? markPrice / roundedEntry - 1 : 1 - markPrice / roundedEntry;
@@ -21416,9 +21455,16 @@ async function executePlaceOrder(payload, token = null, credentialsOverride = nu
     }
   }
   const executionPrice = roundedLimitPrice ? Number(roundedLimitPrice) : markPrice;
-  const quantity = quantityFromNotional(symbolInfo, notionalUsdt, executionPrice, dryRun, {
+  let quantity = quantityFromNotional(symbolInfo, notionalUsdt, executionPrice, dryRun, {
     allowMinNotionalCeil: payload.allowMinNotionalCeil === true,
   });
+  // Full-sweep MARKET does not reject price drift. Validate preview TP/SL
+  // against the current execution MARK; actual protection still anchors to fill.
+  const heatmapExecutionProtection = protectionSource === 'heatmap-full-sweep'
+    ? resolveFillAnchoredProtectionPrices({...payload,fillPrice:executionPrice})
+    : null;
+  const executionTakeProfitPrice = heatmapExecutionProtection?.takeProfitPrice ?? takeProfitPrice;
+  const executionStopLossPrice = heatmapExecutionProtection?.stopLossPrice ?? stopLossPrice;
   const manualShortEmaPolicy = isManualShortProtectionSource({ side, source: protectionSource })
     ? resolveManualShortEma99TakeProfit({
         entryPrice: executionPrice,
@@ -21431,13 +21477,13 @@ async function executePlaceOrder(payload, token = null, credentialsOverride = nu
     source: protectionSource,
     entryPrice: executionPrice,
     leverage,
-    requestedTakeProfitPrice: takeProfitPrice,
+    requestedTakeProfitPrice: executionTakeProfitPrice,
   }) ?? resolveNonLiquidFlowV2TakeProfit({
     side,
     source: protectionSource,
     entryPrice: executionPrice,
     leverage,
-    requestedTakeProfitPrice: takeProfitPrice,
+    requestedTakeProfitPrice: executionTakeProfitPrice,
     shortRoePct: Number(payload.takeProfitRoePct) > 0 ? Number(payload.takeProfitRoePct) : undefined,
     longRoePct: Number(payload.takeProfitRoePct) > 0 ? Number(payload.takeProfitRoePct) : undefined,
   });
@@ -21451,8 +21497,8 @@ async function executePlaceOrder(payload, token = null, credentialsOverride = nu
         price: Number(leg?.price) > 0 ? priceFromTick(symbolInfo, Number(leg.price)) : null,
       })).filter((leg) => leg.price > 0 && Number(leg.closeRatio) > 0)
     : [];
-  const roundedStopLossPrice = stopLossPrice
-    ? priceFromTick(symbolInfo, stopLossPrice)
+  const roundedStopLossPrice = executionStopLossPrice
+    ? priceFromTick(symbolInfo, executionStopLossPrice)
     : null;
   if((protectionSource==='heatmap-full-sweep'||protectionSource===PUMP_TURN_NEAR_SOURCE||protectionSource===STRUCTURE_SOURCE||protectionSource===RISING_VOLUME_SOURCE||protectionSource==='coin-pump-wick-early-ratio')&&(!(Number(roundedTakeProfitPrice)>0)||!(Number(roundedStopLossPrice)>0)
     ||stopLossSuppressed||!(side==='BUY'?Number(roundedStopLossPrice)<markPrice&&markPrice<Number(roundedTakeProfitPrice)
@@ -21538,6 +21584,12 @@ async function executePlaceOrder(payload, token = null, credentialsOverride = nu
     ? executionContext.positions
     : null;
   const zoneEntry=[MAIN_DISTANCE_SOURCE,ZONE_MANUAL_SOURCE].includes(protectionSource);
+  if(heatmapManual){
+    positionsForOrder=await client.getPositions({apiKey,apiSecret});
+    const pending=await client.getOpenOrders({apiKey,apiSecret,symbol});
+    assertHeatmapManualLive(payload,{authorized:ordersTokens.has(token),orderEnabled:runtimeSettings.orderEnabled,
+      excluded:protectionSuppressedBySymbol,markPrice,positions:positionsForOrder,openOrders:pending});
+  }
   if(protectionSource==='heatmap-full-sweep'||protectionSource===PUMP_TURN_NEAR_SOURCE||protectionSource===STRUCTURE_SOURCE||protectionSource===RISING_VOLUME_SOURCE||protectionSource==='coin-pump-wick-early-ratio') {
     positionsForOrder=await client.getPositions({apiKey,apiSecret});
     const pending=await client.getOpenOrders({apiKey,apiSecret,symbol});
@@ -21781,6 +21833,14 @@ async function executePlaceOrder(payload, token = null, credentialsOverride = nu
 
   let orderResult;
   try {
+    if(heatmapManual){
+      const [latestPositions,latestOrders,latestPremium]=await Promise.all([client.getPositions({apiKey,apiSecret}),
+        client.getOpenOrders({apiKey,apiSecret,symbol}),client.getPremiumIndex(symbol)]);
+      assertHeatmapManualLive(payload,{authorized:ordersTokens.has(token),orderEnabled:runtimeSettings.orderEnabled,
+        excluded:isBinanceProtectionExcluded(symbol,'ORDER_PROTECTION'),markPrice:Number(latestPremium.markPrice),positions:latestPositions,openOrders:latestOrders});
+      if(orderType==='MARKET'&&Math.abs(Number(latestPremium.markPrice)/markPrice-1)>.005)throw Error('Giá MARK thay đổi quá 0,5% trong lúc kiểm tra; chưa gửi MARKET. Xác nhận lại sau.');
+      if(Number(leverageResult?.leverage)!==leverage)throw Error('Binance chưa xác nhận đúng đòn bẩy đã chọn; chặn MARKET/LIMIT.');
+    }
     if(protectionSource==='heatmap-full-sweep') {
       const latest=await ema99NearRejectRunner.getContext(symbol);
       autoEntryControls.assertEntry(payload);
@@ -21794,6 +21854,10 @@ async function executePlaceOrder(payload, token = null, credentialsOverride = nu
         ||!runtimeSettings.orderEnabled||runtimeSettings.dryRun)
         throw Error('Heatmap quét hết cụm: điều kiện thay đổi ngay trước MARKET; chặn lệnh.');
       autoEntryControls.assertEntry(payload);
+      // Keep the requested notional at the latest MARK instead of reusing
+      // stale quantity after removing the price-drift rejection.
+      quantity=quantityFromNotional(symbolInfo,notionalUsdt,Number(latest.markPrice),dryRun,{allowMinNotionalCeil:false});
+      orderParams.quantity=quantity;plannedOrder.quantity=quantity;plannedOrder.quantityMarkPrice=Number(latest.markPrice);
     }
     if(protectionSource===PUMP_TURN_NEAR_SOURCE) {
       const latest=await ema99NearRejectRunner.getContext(symbol);
@@ -21850,6 +21914,7 @@ async function executePlaceOrder(payload, token = null, credentialsOverride = nu
     }
     if(zoneEntry)executionContext.zoneMarketSent=true;
     if(protectionSource==='heatmap-full-sweep')executionContext.heatmapMarketSent=true;
+    if(heatmapManual)executionContext.heatmapManualMarketSent=true;
     orderResult = await client.placeFuturesOrder({ params: orderParams, apiKey, apiSecret, entryControl });
   } catch (err) {
     if (protectionOnFill) signalProtectionPlans.delete(symbol);
@@ -21906,7 +21971,7 @@ async function executePlaceOrder(payload, token = null, credentialsOverride = nu
     side,
     quantity,
     leverage,
-    markPrice,
+    markPrice: plannedOrder.quantityMarkPrice ?? markPrice,
     orderResult,
     isHedge,
     positionSide,

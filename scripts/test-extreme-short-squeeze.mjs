@@ -2,9 +2,19 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {detectExtremeShortSqueeze as detect,extremeShortSqueezeEvent,extremeShortSqueezePayload,scanExtremeShortSqueeze} from '../src/extremeShortSqueeze.js';
+import {detectExtremeShortSqueeze as detect,extremeShortSqueezeEvent,extremeShortSqueezePayload,scanExtremeShortSqueeze,EXTREME_SHORT_SQUEEZE_DISCORD_VERSION} from '../src/extremeShortSqueeze.js';
 import {buildExtremeShortSqueezeOrder,ExtremeShortSqueezeBinanceRunner,EXTREME_SHORT_SQUEEZE_BINANCE_VERSION} from '../src/extremeShortSqueezeBinance.js';
 import {CoinHorizonDiscordNotifier} from '../src/coinHorizonDiscord.js';
+function assertHeatmapLink(payload,symbol){
+ const embed=payload.embeds[0],field=embed.fields.find(f=>f.name==='HEATMAP MODEL 1 / 3');assert(field);
+ const url=new URL(field.value.match(/\]\(([^)]+)\)/)[1]);
+ assert.equal(url.origin,'https://liquidity.nhathadev.trade');assert.equal(url.pathname,'/coinglass-heatmap-lab');
+ assert.equal(url.searchParams.get('symbol'),symbol);assert.equal(url.searchParams.get('range'),'24h');assert.equal([...url.searchParams].length,2);
+ const binance=embed.fields.find(f=>f.name==='MỞ BIỂU ĐỒ');assert(binance);
+ assert.equal(new URL(binance.value.match(/\]\(([^)]+)\)/)[1]).pathname,'/en/futures/'+encodeURIComponent(symbol));
+ assert.match(embed.footer.text,new RegExp(EXTREME_SHORT_SQUEEZE_DISCORD_VERSION));assert.deepEqual(payload.allowed_mentions.parse,[]);
+ assert(embed.fields.length<=25);assert(embed.fields.every(f=>f.value.length<=1024));
+}
 for (const interval of ['5m','15m']) {
   const d=interval==='5m'?300000:900000, now=Date.UTC(2026,8,9,13,30);
   const rows=Array.from({length:30},(_,i)=>({openTime:now-(30-i)*d,closeTime:now-(29-i)*d-1,
@@ -97,6 +107,10 @@ for (const interval of ['5m','15m']) {
   assert.equal(detect(fallback,opts).at(-1).quoteEstimated,true);
   assert.equal(detect(fallback,opts).at(-1).quoteVolume,495000);
   const payload=extremeShortSqueezePayload(event);assert.deepEqual(payload.allowed_mentions.parse,[]);
+  for(const variant of [event,live,peak,rejected,liveFollow,closedFollow,detect(both,opts).at(-1),...next])for(const symbol of ['ERAUSDT','QUSDT','测试USDT']){
+    const input={...variant,symbol},before=structuredClone(input);assertHeatmapLink(extremeShortSqueezePayload(input),symbol);
+    assert.deepEqual(input,before,'Discord display links must not mutate event/proof/entry fields');
+  }
   assert.ok(payload.embeds[0].fields.every(f=>f.value.length<=1024));
   assert.match(payload.embeds[0].description,interval==='5m'?/\$1 margin × 5x/:/không tự đặt lệnh Binance/);
   assert.equal(payload.embeds[0].color,0xf59e0b);assert.equal(extremeShortSqueezePayload(rejected).embeds[0].color,0xef4444);
@@ -153,7 +167,7 @@ for (const interval of ['5m','15m']) {
     assert.equal((await runner.handle(sagaFollow)).status,'deduped','same SAGA 15m closed follow is never submitted twice');
   }
   let clock=now,sends=0;
-  const create=(fetchImpl=async()=>{sends++;return {ok:true};})=>new CoinHorizonDiscordNotifier({
+  const create=(fetchImpl=async(_url,init)=>{sends++;assertHeatmapLink(JSON.parse(init.body),event.symbol);return {ok:true};})=>new CoinHorizonDiscordNotifier({
     stateFile,webhookUrl:'https://discord.invalid/test',now:()=>clock,fetchImpl,
     eventBuilder:extremeShortSqueezeEvent,payloadBuilder:extremeShortSqueezePayload});
   let notifier=create();await Promise.all([notifier.notify(event),notifier.notify(event)]);assert.equal(sends,1);
@@ -198,6 +212,7 @@ for (const interval of ['5m','15m']) {
   assert.equal(buildExtremeShortSqueezeOrder(signal,{now,enabledAt:new Date(impulseOpenAt-1).toISOString(),markPrice:signal.price}),null,
     'Discord-only first-pump signal must never build a Binance order');
   const payload=extremeShortSqueezePayload(signal);
+  assertHeatmapLink(payload,signal.symbol);
   assert.equal(payload.embeds[0].color,0x06b6d4,'cyan distinguishes absorption/reclaim from yellow pump and red rejection');
   assert.match(payload.embeds[0].description,/OBSERVE ONLY/);
   assert.match(payload.embeds[0].fields[0].value,/USDT/);

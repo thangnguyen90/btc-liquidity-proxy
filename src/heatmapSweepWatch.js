@@ -3,6 +3,7 @@ import {dirname} from 'node:path';
 import {createHash} from 'node:crypto';
 import {heatmapConsensusZones} from './heatmapEntryScenarios.js';
 export const HEATMAP_SWEEP_VERSION='HEATMAP_DUAL_SWEEP_MARKET_V3_20261020';
+export const HEATMAP_SWEEP_LOAD_POLICY_VERSION='HEATMAP_SWEEP_CACHE_REARM_BOUNDED3_V1_20261020';
 const STEP=300000,TTL=15*60000,DAY=86400000;
 const symbolOk=s=>/^[\p{L}\p{N}]{1,32}USDT$/u.test(s??'');
 const ranges=new Set(['12h','24h','3d','7d','30d']);
@@ -36,8 +37,9 @@ export function prepareHeatmapSweepCohort(bundle,point,now,maxDistancePct=5,dire
   maxDistancePct,zones,lastTickAt:point.at,lastPrice:point.price,peakPrice:point.price,maxTickGapMs:0,state:'ARMED',firstReserved:false,allReserved:false}};
 }
 export class HeatmapSweepWatch{
- constructor({file,loadBundle,getUniverse=()=>[],getLive=()=>null,onSymbolsChanged=()=>{},blocked=()=>false,discordSender=null,onFullSweep=null,now=Date.now,maxWatches=10}={}){
-  Object.assign(this,{file,loadBundle,getUniverse,getLive,onSymbolsChanged,blocked,discordSender,onFullSweep,now,maxWatches});
+ constructor({file,loadBundle,loadCachedBundle=null,getLoaderStats=()=>null,getUniverse=()=>[],getLive=()=>null,onSymbolsChanged=()=>{},blocked=()=>false,discordSender=null,onFullSweep=null,now=Date.now,maxWatches=10,maxInFlight=3}={}){
+  Object.assign(this,{file,loadBundle,loadCachedBundle,getLoaderStats,getUniverse,getLive,onSymbolsChanged,blocked,discordSender,onFullSweep,now,maxWatches});
+  this.maxInFlight=Math.min(3,Math.max(1,maxInFlight));this.activeLoads=new Set();this.cacheWarmBusy=false;this.cacheRestored=0;
   this.marketEnabled=false;this.marketDistancePct=5;this.cooldowns={};
   this.watches=[];this.history=[];this.queue=Promise.resolve();this.error=null;this.cursor=0;this.scanBusy=false;this.initPromise=null;this.startedAt=now();
  }
@@ -92,23 +94,36 @@ export class HeatmapSweepWatch{
   if(changed){w.cohort=null;w.lowerCohort=null;w.status=enabled?'WARMING':'OFF';w.reason=enabled?'Chờ chốt vùng mới hai phía giá hiện tại.':'Đã tắt.';w.nextLoadAt=0;}
   this.watches=this.watches.filter(x=>x.enabled||x.symbol===symbol);await this.save();this.publish();return this.snapshot();
  });}
+ armBundle(w,bundle,at){
+  const point=this.getLive(w.symbol),prepared=prepareHeatmapSweepCohort(bundle,point,at,w.maxDistancePct),lower=prepareHeatmapSweepCohort(bundle,point,at,w.maxDistancePct,'LOWER');w.lastLoadedAt=at;
+  if([1,3].every(n=>bundle?.models?.some(m=>m.model===n&&m.status==='OK')))w.lastDataAt=at;
+  w.cohort=prepared.cohort?.symbol===w.symbol?prepared.cohort:null;w.lowerCohort=lower.cohort?.symbol===w.symbol?lower.cohort:null;
+  if(w.cohort||w.lowerCohort){w.status='ARMED';w.reason='Vùng hai phía đã chốt; chỉ xét các tick MARK sau lúc bật.';}
+  else {w.status='WAIT_DATA';w.reason=prepared.reason??'Coin trong bundle không khớp coin theo dõi.';w.nextLoadAt=at+60000;}
+ }
+ async warmCache(){
+  await this.init();if(this.error||!this.marketEnabled||!this.loadCachedBundle||this.cacheWarmBusy||this.now()<(this.nextCacheWarmAt??0))return;
+  this.cacheWarmBusy=true;this.nextCacheWarmAt=this.now()+1000;
+  try{const due=this.watches.filter(w=>w.enabled&&!w.cacheChecked&&!w.lastLoadedAt&&!this.activeLoads.has(w.symbol)).slice(0,8);
+   for(const w of due){w.cacheChecked=true;let bundle;try{bundle=await this.loadCachedBundle({symbol:w.symbol,range:'24h'});}catch{continue;}
+    if(!bundle||this.error||!w.enabled||!this.watches.includes(w)||w.lastLoadedAt||this.activeLoads.has(w.symbol))continue;
+    this.armBundle(w,bundle,this.now());w.nextLoadAt=this.now()+STEP;w.loadedVia='FRESH_RAW_CACHE';this.cacheRestored++;
+   }
+  }finally{this.cacheWarmBusy=false;}
+ }
  async scan(){
-  await this.init();if(this.error||this.scanBusy||this.blocked())return;
+  await this.init();if(this.error||this.activeLoads.size>=(this.marketEnabled?this.maxInFlight:1)||this.blocked())return;
   const before=this.watches.map(w=>w.symbol).join(',');this.syncUniverse();if(before!==this.watches.map(w=>w.symbol).join(','))this.publish();
   const now=this.now();for(const w of this.watches)for(const c of [w.cohort,w.lowerCohort])if(c?.state==='ARMED'&&now>=c.expiresAt){c.state='EXPIRED';w.status='EXPIRED';w.reason='Hết hạn 15 phút; chờ chốt vùng mới.';w.nextLoadAt=0;}
-  const due=this.watches.filter(w=>w.enabled&&![w.cohort,w.lowerCohort].some(c=>c?.state==='ARMED')&&now>=(w.nextArmAt??0)&&now>=(w.nextLoadAt??0));
+  const due=this.watches.filter(w=>w.enabled&&!this.activeLoads.has(w.symbol)&&![w.cohort,w.lowerCohort].some(c=>c?.state==='ARMED')&&now>=(w.nextArmAt??0)&&now>=(w.nextLoadAt??0));
   if(!due.length||now<(this.nextBatchAt??0))return;this.nextBatchAt=now+(this.marketEnabled?1000:30000);
-  const w=due.sort((a,b)=>(a.lastLoadedAt??0)-(b.lastLoadedAt??0))[0];this.scanBusy=true;w.nextLoadAt=now+STEP;
+  const w=due.sort((a,b)=>(a.lastLoadedAt??0)-(b.lastLoadedAt??0))[0];this.activeLoads.add(w.symbol);this.scanBusy=true;w.nextLoadAt=now+STEP;
   try{
    const bundle=await this.loadBundle({symbol:w.symbol,range:'24h'});
    if(!w.enabled||!this.watches.includes(w)||this.error)return;
-   const at=this.now(),point=this.getLive(w.symbol),prepared=prepareHeatmapSweepCohort(bundle,point,at,w.maxDistancePct),lower=prepareHeatmapSweepCohort(bundle,point,at,w.maxDistancePct,'LOWER');w.lastLoadedAt=at;
-   if([1,3].every(n=>bundle?.models?.some(m=>m.model===n&&m.status==='OK')))w.lastDataAt=at;
-   w.cohort=prepared.cohort?.symbol===w.symbol?prepared.cohort:null;w.lowerCohort=lower.cohort?.symbol===w.symbol?lower.cohort:null;
-   if(w.cohort||w.lowerCohort){w.status='ARMED';w.reason='Vùng hai phía đã chốt; chỉ xét các tick MARK sau lúc bật.';}
-   else {w.status='WAIT_DATA';w.reason=prepared.reason??'Coin trong bundle không khớp coin theo dõi.';w.nextLoadAt=at+60000;}
+   this.armBundle(w,bundle,this.now());w.loadedVia='REST_OR_SHARED_CACHE';
   }catch{w.lastLoadedAt=this.now();w.status='WAIT_DATA';w.reason='Chưa tải được bundle; chờ lượt tiếp theo, không suy ra quét.';}
-  finally{this.scanBusy=false;}
+  finally{this.activeLoads.delete(w.symbol);this.scanBusy=this.activeLoads.size>0;}
  }
  onMark(tick){
   const w=this.watches.find(w=>w.enabled&&w.symbol===tick.symbol);
@@ -145,7 +160,7 @@ export class HeatmapSweepWatch{
    await this.save();
   }).catch(()=>{});
  }
- start(){void this.init().then(()=>this.scan());this.timer=setInterval(()=>void this.scan(),1000);this.timer.unref?.();}
+ start(){void this.init().then(()=>{void this.warmCache();void this.scan();});this.timer=setInterval(()=>{void this.warmCache();void this.scan();},1000);this.timer.unref?.();}
  stop(){clearInterval(this.timer);}
  isCurrentFullSweep(e){
   const w=this.watches.find(w=>w.enabled&&w.symbol===e?.symbol);
@@ -154,9 +169,13 @@ export class HeatmapSweepWatch{
  }
  snapshot(id=null){return structuredClone({version:HEATMAP_SWEEP_VERSION,observeOnly:!this.onFullSweep,affectsOrders:!!this.onFullSweep,discordConfigured:!!this.discordSender,error:this.error,maxWatches:this.maxWatches,
   marketEnabled:this.marketEnabled,marketDistancePct:this.marketDistancePct,
+  loadPolicyVersion:HEATMAP_SWEEP_LOAD_POLICY_VERSION,loader:this.getLoaderStats(),
   coverage:{total:this.watches.filter(w=>w.enabled).length,checked:this.watches.filter(w=>w.enabled&&w.lastLoadedAt).length,loaded:this.watches.filter(w=>w.enabled&&w.lastDataAt).length,
    armed:this.watches.filter(w=>w.enabled&&[w.cohort,w.lowerCohort].some(c=>c?.state==='ARMED'&&this.now()<c.expiresAt)).length,
-   waiting:this.watches.filter(w=>w.enabled&&w.status==='WAIT_DATA').length,updatedAt:this.now()},
-  policy:{range:'24h',interval:'5m',maxDistancePctDefault:5,cohortTtlMinutes:15,maxBundleLoadsPerMinute:this.marketEnabled?60:2,noHistoryReplay:true},
-  watches:this.watches.map(w=>({...w,status:w.cohort?.state==='ARMED'&&this.now()>=w.cohort.expiresAt?'EXPIRED':w.status})),history:this.history.slice(-50).reverse(),selected:id?this.history.find(e=>e.id===id)??null:null});}
+   waiting:this.watches.filter(w=>w.enabled&&w.status==='WAIT_DATA').length,unloaded:this.watches.filter(w=>w.enabled&&!w.lastLoadedAt).length,
+   expired:this.watches.filter(w=>w.enabled&&![w.cohort,w.lowerCohort].some(c=>c?.state==='ARMED'&&this.now()<c.expiresAt)&&[w.cohort,w.lowerCohort].some(c=>c?.state==='EXPIRED'||c?.state==='ARMED'&&this.now()>=c.expiresAt)).length,
+   inFlight:this.activeLoads.size,cacheRestored:this.cacheRestored,updatedAt:this.now()},
+  policy:{range:'24h',interval:'5m',maxDistancePctDefault:5,cohortTtlMinutes:15,maxBundleLoadsPerMinute:this.marketEnabled?60:2,maxInFlight:this.marketEnabled?this.maxInFlight:1,maxCacheRestoresPerSecond:8,noHistoryReplay:true},
+  watches:this.watches.map(w=>({...w,status:[w.cohort,w.lowerCohort].some(c=>c?.state==='ARMED'&&this.now()<c.expiresAt)?'ARMED':
+   [w.cohort,w.lowerCohort].some(c=>c?.state==='ARMED'&&this.now()>=c.expiresAt)?'EXPIRED':w.status})),history:this.history.slice(-50).reverse(),selected:id?this.history.find(e=>e.id===id)??null:null});}
 }

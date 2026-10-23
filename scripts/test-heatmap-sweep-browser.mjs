@@ -10,8 +10,9 @@ import {HEATMAP_LAB_VERSION} from '../public/coinglass-heatmap-model.js';
 const STEP=300000,dir=await mkdtemp(join(tmpdir(),'heatmap-sweep-browser-')),root=resolve('public'),writes=[],errors=[],sent=[],entries=[];
 let manager,now=Date.now(),failRead=false,failWrite=false;
 const bundle=symbol=>{const at=Math.floor(now/STEP)*STEP-1,d={symbol,source:'BINANCE_LOCAL',range:'24h',step:STEP,end:at+1,candles:[{time:at-STEP+1,close:100}],profiles:Array.from({length:3},(_,i)=>({at:at-(2-i)*STEP,oiFresh:true,mark:true,bins:[96,98,102,104,110].map(p=>[Math.round(Math.log(p)/Math.log(PROFILE_RATIO)),100])}))};return {models:[1,3].map(model=>({model,status:'OK',data:structuredClone(d)}))};};
-const snapshot=id=>({...manager.snapshot(id),binance:{masterEnabled:true,routes:[{side:'SHORT',enabled:true},{side:'LONG',enabled:true}],openSlots:2,attempts:[]}});
+const snapshot=id=>({...manager.snapshot(id),binance:{masterEnabled:true,routes:[{side:'SHORT',enabled:true},{side:'LONG',enabled:true}],shortMarginUsdt:5,longMarginUsdt:2,maxPriceDrift:null,priceDriftGuardEnabled:false,openSlots:2,attempts:[]}});
 const server=createServer(async(req,res)=>{const u=new URL(req.url,'http://local'),p=u.pathname;try{
+ if(p==='/ws/coin-level-analysis'){res.writeHead(503);res.end();return;}
  if(p.startsWith('/api/')){
   let body={};if(p==='/api/heatmap-sweep-watch'){
    if(req.method==='GET'){if(failRead)throw Error('offline fixture');body=snapshot(u.searchParams.get('sweep'));}
@@ -38,7 +39,9 @@ try{for(const mobile of [false,true]){
  const c=manager.watches[0].cohort;now+=1000;await manager.onMark({symbol:'ARCUSDT',markPrice:c.zones[0].high+.001,eventTime:now});await page.locator('#sweepRefresh').click();await page.locator('.sweep-event').waitFor();assert.match(await page.locator('#sweepHistory').innerText(),/QUÉT HẾT CỤM PHÍA TRÊN/);
  now+=1000;await manager.onMark({symbol:'ARCUSDT',markPrice:c.zones[1].high+.001,eventTime:now});await page.locator('#sweepRefresh').click();await page.locator('#sweepProgress').filter({hasText:'2/2 cụm'}).waitFor();assert.equal(await page.locator('.sweep-event').count(),2);
  const e=manager.history.at(-1);await page.goto(base+`/coinglass-heatmap-lab.html?symbol=ARCUSDT&range=24h&sweep=${encodeURIComponent(e.id)}#heatmap-sweep`);await page.waitForSelector('.sweep-event.is-selected');
- assert.match(await page.locator('#sweepBinance').innerText(),/SHORT ON · LONG ON/);assert.match(await page.locator('#sweepBinance').innerText(),/2\/20/);
+ assert.match(await page.locator('#heatmap-sweep h2').innerText(),/SHORT 5\$.*LONG 2\$/);
+ assert.match(await page.locator('#sweepBinance').innerText(),/SHORT ON · LONG ON/);assert.match(await page.locator('#sweepBinance').innerText(),/SHORT 5 \/ LONG 2 USDT/);assert.match(await page.locator('#sweepBinance').innerText(),/2\/20/);
+ assert.match(await page.locator('#sweepBinance').innerText(),/Không chặn lệch giá so với tín hiệu/);assert.match(await page.locator('#heatmap-sweep').textContent(),/không vào bù tín hiệu cũ/);
  now+=1000;await manager.onMark({symbol:'ARCUSDT',markPrice:95,eventTime:now});await page.locator('#sweepRefresh').click();await page.locator('#sweepHistory').filter({hasText:'PHÍA DƯỚI → LONG'}).waitFor();
  assert.equal(await page.locator('.sweep-event').count(),3);assert.match(await page.locator('#sweepHistory').innerText(),/Binance SUBMITTED · orderId 123/);assert.match(await page.locator('#sweepHistory').innerText(),/OBSERVE ONLY/);
  await page.locator('#heatmap-sweep').screenshot({path:join(dir,mobile?'mobile.png':'desktop.png')});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);

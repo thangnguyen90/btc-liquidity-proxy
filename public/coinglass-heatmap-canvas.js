@@ -1,4 +1,5 @@
 import {heatmapColor} from './coinglass-heatmap-model.js?v=20261018-v3';
+export const HEATMAP_CANVAS_INTERACTION_VERSION='HEATMAP_CLICK_PIN_TOOLTIP_V1_20261022';
 const time=x=>new Date(x).toLocaleTimeString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit',minute:'2-digit'});
 export const priceText=x=>Number(x).toLocaleString('en-US',{maximumSignificantDigits:6});
 function nearest(a,x,value=v=>v){let lo=0,hi=a.length-1;while(lo<hi){const m=Math.floor((lo+hi)/2);if(value(a[m])<x)lo=m+1;else hi=m;}return lo>0&&Math.abs(value(a[lo-1])-x)<Math.abs(value(a[lo])-x)?lo-1:lo;}
@@ -7,14 +8,39 @@ export class HeatmapCanvas{
   Object.assign(this,{canvas,tooltip,onView,data:null,options:{floor:.05,log:true},domain:null,view:null});
   this.base=document.createElement('canvas');this.ctx=canvas.getContext('2d');this.bctx=this.base.getContext('2d');
   this.resizeObserver=new ResizeObserver(()=>this.draw());this.resizeObserver.observe(canvas.parentElement);
-  canvas.addEventListener('pointerdown',e=>{this.drag={x:e.clientX,view:[...(this.view??[])]};canvas.setPointerCapture(e.pointerId);this.inspect(e);});
-  canvas.addEventListener('pointermove',e=>{if(this.drag?.view.length&&Math.abs(e.clientX-this.drag.x)>4){const delta=(e.clientX-this.drag.x)/this.plot.w*(this.drag.view[1]-this.drag.view[0]);this.onView([this.drag.view[0]-delta,this.drag.view[1]-delta]);}else this.inspect(e);});
-  canvas.addEventListener('pointerup',()=>{this.drag=null;});canvas.addEventListener('pointercancel',()=>{this.drag=null;});
-  canvas.addEventListener('pointerleave',()=>{if(!this.drag){this.tooltip.hidden=true;this.paint();}});
-  canvas.addEventListener('wheel',e=>{if(!this.data)return;e.preventDefault();const r=canvas.getBoundingClientRect(),p=Math.max(0,Math.min(1,(e.clientX-r.left-this.plot.x)/this.plot.w)),anchor=this.view[0]+p*(this.view[1]-this.view[0]),factor=e.deltaY>0?1.22:.82;this.onView([anchor-(anchor-this.view[0])*factor,anchor+(this.view[1]-anchor)*factor]);},{passive:false});
+  canvas.addEventListener('pointerdown',e=>{
+   if(e.isPrimary===false){this.drag=null;return;}
+   if(e.pointerType==='mouse'&&e.button!==0)return;
+   this.drag={id:e.pointerId,x:e.clientX,y:e.clientY,moved:false,view:[...(this.view??[])]};canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove',e=>{
+   if(this.drag){
+    if(e.pointerId!==this.drag.id)return;
+    const dx=e.clientX-this.drag.x,dy=e.clientY-this.drag.y;
+    if(Math.hypot(dx,dy)>6)this.drag.moved=true;
+    if(this.drag.moved){this.hideInspection();if(this.drag.view.length&&Math.abs(dx)>6&&Math.abs(dx)>Math.abs(dy)){
+     const delta=dx/this.plot.w*(this.drag.view[1]-this.drag.view[0]);this.onView([this.drag.view[0]-delta,this.drag.view[1]-delta]);
+    }}return;
+   }
+   if(this.pinned||e.pointerType==='touch')return;
+   if(this.hoverPause&&Math.hypot(e.clientX-this.hoverPause.x,e.clientY-this.hoverPause.y)<=6)return;
+   this.hoverPause=null;this.inspect(e);
+  });
+  canvas.addEventListener('pointerup',e=>{
+   const drag=this.drag;if(!drag||e.pointerId!==drag.id)return;this.drag=null;
+   if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);
+   if(drag.moved||Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>6)return;
+   if(this.pinned){this.hideInspection();this.hoverPause={x:e.clientX,y:e.clientY};}
+   else if(this.inspect(e)){this.pinned=true;this.hoverPause=null;}
+  });
+  canvas.addEventListener('pointercancel',()=>{this.drag=null;this.hideInspection();});
+  canvas.addEventListener('pointerleave',()=>{if(!this.drag&&!this.pinned)this.hideInspection();});
+  canvas.addEventListener('wheel',e=>{if(!this.data)return;e.preventDefault();this.hideInspection();const r=canvas.getBoundingClientRect(),p=Math.max(0,Math.min(1,(e.clientX-r.left-this.plot.x)/this.plot.w)),anchor=this.view[0]+p*(this.view[1]-this.view[0]),factor=e.deltaY>0?1.22:.82;this.onView([anchor-(anchor-this.view[0])*factor,anchor+(this.view[1]-anchor)*factor]);},{passive:false});
  }
  set(data,domain,view,options){if(this.data!==data){this.columns=data?Array.from({length:data.candles.length},()=>[]):[];for(const c of data?.cells??[])this.columns[c[0]].push(c);}this.data=data;this.domain=domain;this.view=view;this.options=options;this.draw();}
+ setLivePrice(tick){this.livePrice=this.data?.source==='BINANCE_LOCAL'&&tick?.symbol===this.data.symbol&&Number.isFinite(tick.markPrice)&&tick.markPrice>0?tick:null;this.paint();}
  draw(){
+  this.pinned=false;this.hoverPause=null;this.inspectionPoint=null;this.tooltip.hidden=true;
   const rect=this.canvas.parentElement.getBoundingClientRect(),w=Math.max(240,rect.width),h=Math.max(340,rect.height),dpr=Math.min(2,devicePixelRatio||1);
   this.w=w;this.h=h;for(const c of [this.canvas,this.base]){c.width=Math.round(w*dpr);c.height=Math.round(h*dpr);}this.canvas.style.width=w+'px';this.canvas.style.height=h+'px';
   this.ctx.setTransform(dpr,0,0,dpr,0,0);this.bctx.setTransform(dpr,0,0,dpr,0,0);this.plot={x:10,y:16,w:w-92,h:h-54};
@@ -38,13 +64,29 @@ export class HeatmapCanvas{
   ctx.textAlign='left';ctx.fillStyle='#dbc3e1';ctx.fillText(d.source==='DEMO'?'Dữ liệu dựng minh họa renderer':d.source==='IMPORT'?'JSON người dùng · nguồn chưa xác minh':d.source==='BINANCE_LOCAL'?'BINANCE · TỰ TÍNH ƯỚC LƯỢNG · không phải USD':'Nguồn chưa xác minh',p.x,this.h-5);
   this.paint();
  }
- paint(){if(this.ctx){this.ctx.clearRect(0,0,this.w??0,this.h??0);this.ctx.drawImage(this.base,0,0,this.w??0,this.h??0);}}
+ paint(){
+  if(!this.ctx||!this.w)return;
+  const ctx=this.ctx,p=this.plot;ctx.clearRect(0,0,this.w,this.h);ctx.drawImage(this.base,0,0,this.w,this.h);
+  const tick=this.livePrice;
+  if(this.data?.source==='BINANCE_LOCAL'&&tick?.symbol===this.data.symbol&&this.domain){
+   const [low,high]=this.domain.price,outside=tick.markPrice<low||tick.markPrice>high,yy=Math.max(p.y+10,Math.min(p.y+p.h-10,this.toY(tick.markPrice)));
+   ctx.save();ctx.strokeStyle='#66f5ff';ctx.fillStyle='#66f5ff';ctx.lineWidth=1;
+   if(!outside){ctx.setLineDash([6,3]);ctx.beginPath();ctx.moveTo(p.x,this.toY(tick.markPrice));ctx.lineTo(p.x+p.w,this.toY(tick.markPrice));ctx.stroke();ctx.setLineDash([]);}
+   const label=(outside?(tick.markPrice>high?'↑ ':'↓ '):'')+priceText(tick.markPrice);ctx.font='bold 11px system-ui';
+   const labelWidth=Math.min(this.w-p.x-p.w-2,Math.max(60,ctx.measureText(label).width+8));
+   ctx.fillRect(p.x+p.w+1,yy-10,labelWidth,20);ctx.fillStyle='#06212b';ctx.textAlign='center';ctx.fillText(label,p.x+p.w+1+labelWidth/2,yy+4,labelWidth-4);
+   ctx.fillStyle='#66f5ff';ctx.textAlign='right';ctx.font='bold 10px system-ui';ctx.fillText(outside?'MARK · ngoài trục giá':'MARK SOCKET',p.x+p.w-5,yy-6);ctx.restore();
+  }
+  if(this.inspectionPoint){const {px,py}=this.inspectionPoint;ctx.save();ctx.strokeStyle='#fff9';ctx.lineWidth=.7;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(px,p.y);ctx.lineTo(px,p.y+p.h);ctx.moveTo(p.x,py);ctx.lineTo(p.x+p.w,py);ctx.stroke();ctx.restore();}
+ }
+ hideInspection(){this.pinned=false;this.inspectionPoint=null;this.tooltip.hidden=true;this.paint();}
  inspect(event){
-  if(!this.data||!this.plot||!this.view)return;const rect=this.canvas.getBoundingClientRect(),px=event.clientX-rect.left,py=event.clientY-rect.top,p=this.plot;
-  if(px<p.x||px>p.x+p.w||py<p.y||py>p.y+p.h)return;
+  if(!this.data||!this.plot||!this.view)return false;const rect=this.canvas.getBoundingClientRect(),px=event.clientX-rect.left,py=event.clientY-rect.top,p=this.plot;
+  if(px<p.x||px>p.x+p.w||py<p.y||py>p.y+p.h){this.hideInspection();return false;}
   const t=this.view[0]+(px-p.x)/p.w*(this.view[1]-this.view[0]),price=this.domain.price[1]-(py-p.y)/p.h*(this.domain.price[1]-this.domain.price[0]),ix=nearest(this.data.candles,t,c=>c.time+this.data.step/2),iy=nearest(this.data.y,price),c=this.data.candles[ix],cell=this.columns[ix].find(z=>z[1]===iy);
-  this.paint();const ctx=this.ctx;ctx.strokeStyle='#fff9';ctx.lineWidth=.7;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(px,p.y);ctx.lineTo(px,p.y+p.h);ctx.moveTo(p.x,py);ctx.lineTo(p.x+p.w,py);ctx.stroke();ctx.setLineDash([]);
+  this.inspectionPoint={px,py};this.paint();
   this.tooltip.textContent=`${new Date(c.time).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'})} VN\nVùng giá ${priceText(this.data.y[iy])}\nCường độ ${cell?cell[2].toLocaleString('en-US'):'không có ô dữ liệu'}${this.data.source==='BINANCE_LOCAL'?' /100 · ước lượng':''}\nO ${priceText(c.open)} · H ${priceText(c.high)}\nL ${priceText(c.low)} · C ${priceText(c.close)}`;
   this.tooltip.style.left=Math.max(4,Math.min(this.w-240,px+14))+'px';this.tooltip.style.top=Math.max(4,Math.min(this.h-142,py+12))+'px';this.tooltip.hidden=false;
+  return true;
  }
 }

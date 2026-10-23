@@ -1,5 +1,44 @@
 # Binance auto entry controls
 
+### 2026-10-23 — Heatmap full sweep bỏ guard độ lệch giá
+
+Runner `HEATMAP_FULL_SWEEP_NO_DRIFT_SHORT5_LONG2_5X_TP10_SL30_CAP20_V4_20261023`/controlsV47/policyV62: hai keyfull-sweep cũ giữ, SHORT5/LONG2×5/TP10SL30/cap20 riêng chung hai hướng/no minceil giữ. `maxPriceDrift:null`, `priceDriftGuardEnabled:false` bỏ kiểm0,5% ở builder/runner/native đầu-cuối; không bỏ MARKfinite>0/age30s/cohort/activation-start/authority/controls/noDCA/pending/exclusion/cap/runtime. Dữliệu pre-entry/detectorV3/3profiles×2models/MARK-OI/35%/freeze15phút/gap≤10s/phân loại giữ, partial chỉquan sát. Native previewTP-SL rebaseexecutionMARK, quantity cập nhậtMARKcuối, actualTP-SL từfill; signalproof khôngrewrite. Chỉentry mới, không vào bù BTR hoặc đổi lệnhcũ/flags/enabledAt/routeskhác/Push/quiet/cutoff.
+
+Không stat/PnL/card/tier/WHITELIST/matcher mới; defaultOFF/closedAvgROE>4% giữ. LedgerV1–V4 readno-migrate, save thật headerV4 giữattempts/IDs/plans; V1–V3 protection-only giữdrift/sizing cũ, khôngauthorize mới. Legacy missingflag đọc theo version, không mặc định no-drift; JSONmodel/proof/history giữ, previewquantityMarkPrice optional. Mocknative/builder/runner/UI±0,6%/±20%+guards/quantity/fillprotection/legacy/otherroute hồiquy, khôngorder/notification thử. CURRENT/CODEX cùngngày ghi triểnkhai.
+
+### 2026-10-23 — Heatmap upper sweep SHORT5 USDT, lower LONG2
+
+Runner `HEATMAP_FULL_SWEEP_SHORT5_LONG2_5X_TP10_SL30_CAP20_V3_20261023`/controlsV46/policyV61: keyupper `['heatmap-full-sweep','live-mark-frozen-clusters','ALL_TRACKED_UPPER_SWEPT','SHORT']` giữ, marginSHORT3→5×5/notional25; lowerLONG2 giữ. TP+10%ROE/SL−30%ROE từfill, cap20 riêng chung hai hướng/no minceil giữ. Detector/pre-entry3closedprofiles×2models/MARK-OI/35%/frozen-beforearm/gap≤10s/event≤30s/drift≤0,5%/activation-start/cácguards cũ giữ; partial chỉquan sát. Chỉentry mới, không sửa vị thế cũ/SLTP/size hoặc route khác/master/activation/cutoff/Push/quiet.
+
+Không statcard/tier/label/WHITELIST/matcher mới; defaultOFF/closedAvgROE>4% giữ. SavedSHORT3/LONG1-2 read-project5/2 khôngwrite; ledgerV1/V2/V3, oldplans exactprotection-only/giữamountversionIDs/noentryreplay, save thật chỉheaderV3. JSONmodel/proof/history khôngđổi. Test native sizing25/10/guards/TP-SL/cap20, V1/V2recovery/config/dedupe và UI/otherroute hồiquy mock-only; CURRENT/CODEX cùngngày ghi kếtquả triểnkhai.
+
+### 2026-10-23 — Heatmap quét hết cụm dưới LONG2 USDT
+
+Controls `AUTO_ENTRY_CONTROLS_V45_HEATMAP_LOWER_LONG2_20261023`/policy `HEATMAP_LOWER_LONG2_KEEP_SHORT3_V60_20261023` và runner `HEATMAP_FULL_SWEEP_SHORT3_LONG2_5X_TP10_SL30_CAP20_V2_20261023`: key giữ `['heatmap-full-sweep','live-mark-frozen-clusters','ALL_TRACKED_LOWER_SWEPT','LONG']`, size cố định **2USDT margin×5/notional10**. NhánhupperSHORT3, TP+10%ROE/SL−30%ROE fillanchored, scope `heatmap-full-sweep`20 chung hai hướng/no minceil giữ. Không dùng max chung hoặc tự nâng minimum. Savedfixed1 được read-project2, không ép ghi config/đổi master/enabled/enabledAt/route khác. Defaults vẫnOFF; hai route đangON giữ nguyên flags và activation.
+
+Pre-entry/phân loại vẫn detectorV3,3closedprofiles×2models/MARK-OI/frozen-before-arm/35%/tất cảlowercleared/gap≤10s/event≤30s/drift≤0,5%/sauenable-start; partial không có quyền giao dịch. Server authority/currentV2/native finalguards/noDCA/pending/exclusion/cap giữ. Chỉ signal mới, không replay/sửa vị thế cũ/SLTP/size/cutoff/Push/quiet. Không statcard/nhãn/tier/PnL/WHITELIST/matcher mới; defaultOFF/closedAvgROE>4% giữ.
+
+LedgerV1/V2: read khôngmigrate/save; newwrite headerV2 nhưng plan/size/version/IDs attempt cũ giữ. Exact stored V1 LONG1/SHORT3 protection lookup vẫn hợp lệ, không biến thành entryV2 hoặc resize; V1 không authorize entry mới. Dedupe/clientOrderId không đổi. JSON model/proof/history giữ; testmock sizing/authority/nativeTP-SL/cap/V1recovery/configprojection/no-write/no-replay/browser, không order/notification thử. CURRENT/CODEX cùngngày ghi triểnkhai.
+
+### 2026-10-22 — LIMIT GTC tay trên Heatmap, không đổi auto-entry
+
+`HEATMAP_MANUAL_MARKET_LIMIT_GTC_V2_20261022` thêm limitPrice và LIMIT LONG/SHORT, giữ MARKET/margin/leverage/auth/confirm. Chỉ người dùng bấm/xác nhận mới gửi Binance, không tự bật master/route/card WHITELIST. UI kiểm status APIversionV2/LIMIT/GTC, thiếu/sai/BE cũ không POST/downgrade MARKET. Native LIMIT GTC, không IOC/fallback/reprice/auto-cancel, quantity từ LIMIT/no minceil; sai tick từ chối để nhập lại. Pre-entry/final MARK/metadata/positions/pending/auth/exclusion/lev/plan60s giữ, MARKET drift0,5% giữ còn LIMIT giá cố định. TP/SL manual/onfill hiện có, không hứa bảo vệ khi chỉ SUBMITTED. Không đổi caps/size/SLTP/activation/cutoff/vị thế/lệnh chờ cũ/Push/Discord.
+
+Không stats/tier/label/card mới, sourceorders-manual/ORDERS_MANUAL/executionPage cũ giữ; defaultOFF/closedAvgROE>4% giữ. Ledger nhậnV1/V2, oldMARKET fingerprint/UUID/no replay, only newwriteV2; LIMIT fingerprint thêmtype+price và cross-type pending/unknown chặn/khôngretry. GET khôngmigrate; UIstoreV1 thiếutype=MARKET. Unit/native/browser desktop/mobile mock-only kiểm guards/GTC/fixedprice/tick/legacy/dedupe/noimplicitwrites, CURRENT/CODEX cùngngày cóchi tiết và kết quả.
+
+### 2026-10-21 — MARKET tay từ Heatmap, không cấp thêm auto-route
+
+`HEATMAP_MANUAL_MARKET_MARGIN_LEVERAGE_V1_20261021`: hai nút human-confirmed LONG/SHORT, margin/leverage tùy chọn0,01–100USDT/1–125integer/default2×5. StrictOrderssession/sameorigin/confirm/executionON, planserverorders-manual/ORDERS_MANUAL/streamheatmap-manual/executionPagecoinglass-heatmap-lab; input trướcentry từ metadata/MARK/positions/openOrders mới, finalreauth/noDCA/pending/protection/lev/drift0,5%/plan60s. Manual giữquyềnOrders hiệncó, khôngtựbật master/route hay dùngcardWHITELIST/PASS/scenario đểautoentry. Khôngsửadetectorgate, HeatmapfullsweepSHORT3LONG1×5/TP10SL30/cap20 hoặc route/lệnhcũ; TP/SL tay vẫnOrderspolicy, minnotionalkhôngceil.
+
+Ledgerignored mớiaccountUUID durable/samepayloadidempotency/newnonceunknownblock/sharedcausal75s; pre-MARKET/−2019/−4164reject rõ, timeoutkhôngretry. GETstatusauthreadonly/khôngOrdersmutations, UIreload/search/DEMO/import khôngPOST. Auditmanualsource cũ/labelORDERS_MANUAL+executionPage, khôngcohortstat/cardWHITELISTmới, defaultOFF/closedAvgROE>4% cũgiữ. JSONmodel/history/controls/proof/IDs khôngmigrate/replay; cutoff/exclusions/Pushquiet khôngđổi. NativeMARKET/guards/auth/ledger/browser tests đềumock; CURRENT21-10 cóchi tiết.
+
+### 2026-10-20 — Heatmap loader cache/concurrency, không đổi quyền entry
+
+LoaderV2/rawcacheV1/scheduler `HEATMAP_SWEEP_CACHE_REARM_BOUNDED3_V1_20261020` chỉ input acquisition: raw36h5mprice/MARK/OI+incrementaloverlap3bars/crop/fullreplay, validatedpersist cachecurrentbucket/30mfullrefresh, max3bundles/1RESTlaunchs/max60min, cache8/srearmfresh. SharedRESTgate2/1200/ban/congestion giữ, priority6 sauaccount/order/protection≤5. Không phục hồi activecohort qua restart, không replayhistory, stale/gap/partial/corrupt khôngarm. Parityfullchart/profile/cohort/restart/gap tests dùngmock; không liveordertest.
+
+DetectorV3/entryV1/matcher/controlsV44/policyV59/flags/activation/SHORT3LONG1×5/TP10SL30/capriêng20 giữ; bốnSHORT1/cácLONG vàroute khác/oldpositions/cutoff/protectionexceptions/Pushquiet giữ. Tốtcoverage/armtiming cóthểtăngnewsignals/orders hợp lệ, không thay phânloại/gate/R:R. Snapshot thêmloader+coverage diagnostics optional, khôngPnL/WHITELISTcard mới, defaultOFF/closedAvgROE>4% giữ; history/ledger/JSONold khôngrelabel. Chi tiết CURRENT mục loader20-10; checkpointsource trước sửa đãpush `8405192`.
+
+
 ### 2026-10-20 — Bốn dòng SHORT5 đã yêu cầu giảm về1
 
 Config version `FOUR_ACTIVE_SHORT_MARGIN5_TO1_V1_20261020` chỉ sửa margin của đúng bốn matcher: EMA99 rebound-near-reject SHORT15m; Horizon4h8h12h LOWER SHORT; LiqScan high-score BELOW SHORT; post-pump-no-buy5m impulseSHORT. Không đổi EMA99 5m/default catalog hoặc route khác; giữ ON/OFF/enabledAt/master/leverage/TP/cap. Ba route editable dùng saved1 và vẫn chỉnh được sau. Impulse sizingV3/entryV9 mới SHORT cố định1, LONG vẫn2/1 theo OR giờ/BTC; controlsV44/policyV59 chặn proofV2/SHORT5 từ nativeentry mới. UI/Discord currentSHORT1, lịch sử giữ size đã lưu. Không reset activation/replay/DCA, không sửa lệnh cũ; HeatmapSHORT3 và PumpTurnSHORT2 giữ.

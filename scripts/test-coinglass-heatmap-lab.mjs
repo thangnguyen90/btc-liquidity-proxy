@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {heatmapQuery,normalizeHeatmap,demoHeatmap,heatmapColor,HEATMAP_LAB_VERSION} from '../public/coinglass-heatmap-model.js';
-import {CoinglassHeatmapLab} from '../src/coinglassHeatmapLab.js';
+import {CoinglassHeatmapLab,HEATMAP_CHART_REQUEST_PRIORITY,HEATMAP_CHART_LOAD_VERSION} from '../src/coinglassHeatmapLab.js';
+import {HEATMAP_MARKET_REQUEST_PRIORITY} from '../src/heatmapMarketProfiles.js';
 import {heatmapRangePlan,normalizeBinanceHeatmapCandles,simulateHeatmapPools,assumedLiquidationPrice} from '../src/binanceHeatmapModel.js';
 import {readFile} from 'node:fs/promises';
 const now=Date.now(),q={symbol:'ZEREBROUSDT',range:'24h',model:1},time=Math.floor((now-3600000)/1000);
@@ -45,6 +46,8 @@ assert.equal(normalizeBinanceHeatmapCandles([...rawCandles,[plan.end,100,101,99,
 let calls=[];
 const loaders={loadKlines:async p=>{calls.push('price');return rawCandles;},loadMarkKlines:async p=>{calls.push('mark');return rawCandles;},loadOi:async p=>{calls.push('oi');return oiRows;},now:()=>now};
 const api=new CoinglassHeatmapLab(loaders),result=await api.compare(q);
+assert(HEATMAP_CHART_REQUEST_PRIORITY>5&&HEATMAP_CHART_REQUEST_PRIORITY<HEATMAP_MARKET_REQUEST_PRIORITY,'interactive charts must follow trading/protection but precede continuous market warmup');
+assert.equal(api.status().loadPolicyVersion,HEATMAP_CHART_LOAD_VERSION);
 assert.equal(result.scenarios.status,'OK');assert.equal(result.scenarios.plans.length,4);assert.equal(result.scenarios.observeOnly,true);assert(result.scenarios.zonesAsOf<result.scenarios.asOf);
 assert.equal(result.requiresCoinglassApi,false);assert(result.models.every(x=>x.status==='OK'&&x.data.source==='BINANCE_LOCAL'&&x.data.estimated));
 assert(result.models.every(x=>x.data.maxIntensity===100&&x.data.inputs.markCoveragePct===100));assert.notDeepEqual(result.models[0].data.cells,result.models[1].data.cells,'two explicit local models actually differ');
@@ -55,6 +58,14 @@ const missing=new CoinglassHeatmapLab({...loaders,loadOi:async()=>{throw Error('
 const noMark=new CoinglassHeatmapLab({...loaders,loadMarkKlines:async()=>{throw Error();}});assert((await noMark.compare(q)).models.every(x=>x.data.inputs.markCoveragePct===0));
 const none=new CoinglassHeatmapLab();assert((await none.compare(q)).models.every(x=>x.status==='BINANCE_UNAVAILABLE'));
 const error=new CoinglassHeatmapLab({...loaders,loadKlines:async()=>{throw Error('private');}});assert(!JSON.stringify(await error.compare(q)).includes('private'));
+let transientCalls=0;const recovering=new CoinglassHeatmapLab({...loaders,loadKlines:async()=>{if(++transientCalls===1)throw Error('temporary');return rawCandles;}});
+assert((await recovering.compare(q)).models.every(x=>x.status==='BINANCE_UNAVAILABLE'));assert.equal(recovering.cache.size,0,'never retain an initial REST failure for120seconds');
+assert((await recovering.compare(q)).models.every(x=>x.status==='OK'));assert.equal(transientCalls,2);
+let oiCalls=0;const recoveringOi=new CoinglassHeatmapLab({...loaders,loadOi:async()=>{if(++oiCalls===1)throw Error('temporary OI');return oiRows;}});
+assert.equal((await recoveringOi.compare(q)).models[1].status,'INSUFFICIENT_OI');assert.equal(recoveringOi.cache.size,0,'partial bundle must remain repairable on next explicit read');
+assert((await recoveringOi.compare(q)).models.every(x=>x.status==='OK'));assert.equal(oiCalls,2);
+const oldFailed=new CoinglassHeatmapLab(loaders);oldFailed.cache.set(q.symbol+':'+q.range,{at:now,value:{models:[1,3].map(model=>({model,status:'BINANCE_UNAVAILABLE'}))}});
+assert((await oldFailed.compare(q)).models.every(x=>x.status==='OK'),'ignore old cached failure JSON');
 let quotaCalls=0;const quota=new CoinglassHeatmapLab({...loaders,loadKlines:async()=>{quotaCalls++;throw Error();}});for(let i=0;i<7;i++)await quota.compare({...q,symbol:`TEST${i}USDT`});assert.equal(quotaCalls,6);assert(quota.cache.size<=4);
 const code=await readFile('src/coinglassHeatmapLab.js','utf8');assert.doesNotMatch(code,/open-api.*coinglass|COINGLASS_API_KEY|CG-API-KEY/);
 console.log('PASS local Binance heatmap: causal pools, post-birth sweep, OI shrink/unknown initial, correct units, closed/gap validation, shared inputs/cache/quota, missing OI/mark handling, old JSON import. Zero external network/orders.');

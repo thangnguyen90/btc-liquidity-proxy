@@ -22,7 +22,7 @@ assert.deepEqual(applyFourShortMarginOne(after),after,'idempotent without resett
 controls.save(after);
 const restart=new AutoEntryControls(controls.file),read=restart.read();assert.deepEqual(fourShortMarginOneKeys(read),keys);
 for(const key of keys)assert.equal(read.routes[key].marginUsdt,1);
-assert.equal(read.routes[entryRoute({source:'heatmap-full-sweep',streamId:'live-mark-frozen-clusters',signalLabel:'ALL_TRACKED_UPPER_SWEPT',side:'SHORT'}).key].marginUsdt,3);
+assert.equal(read.routes[entryRoute({source:'heatmap-full-sweep',streamId:'live-mark-frozen-clusters',signalLabel:'ALL_TRACKED_UPPER_SWEPT',side:'SHORT'}).key].marginUsdt,5);
 assert.equal(read.routes[entryRoute({source:'pump-turn-near-short',streamId:'live-5m-near-zone',signalLabel:'PUMP_TURN_NEAR_SHORT',side:'SHORT'}).key].marginUsdt,2);
 for(const route of routes){const r=read.routes[entryRoute(route).key];const p={...route,side:'SELL',marginUsdt:1,leverage:r.leverage,notionalUsdt:r.leverage,takeProfitRoePct:r.takeProfitRoePct};
  if(route.source==='post-move-impulse')p.impulseSizing=impulseSizing({side:'SHORT'});
@@ -31,4 +31,4 @@ for(const route of routes){const r=read.routes[entryRoute(route).key];const p={.
 const missing=structuredClone(before);delete missing.routes[keys[0]];assert.throws(()=>applyFourShortMarginOne(missing),/MISSING/);
 const raced=structuredClone(before);raced.routes[keys[0]].marginUsdt=7;assert.throws(()=>applyFourShortMarginOne(raced),/CHANGED/);
 const disk=JSON.parse(await readFile(controls.file,'utf8'));for(const key of keys)assert.equal(disk.routes[key].enabledAt,before.routes[key].enabledAt);
-console.log('PASS exact four SHORT5→1 config operation, restart, stale5 blocked, activation/TP/leverage/other routes including Heatmap3/PumpTurn2/LONG/protection unchanged. Mock only.');
+console.log('PASS exact four SHORT5→1 config operation, restart, stale5 blocked, activation/TP/leverage/other routes including current Heatmap5/PumpTurn2/LONG/protection unchanged. Mock only.');

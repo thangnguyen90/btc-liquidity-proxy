@@ -81,7 +81,8 @@ assert.ok(endpoint.indexOf('!ordersTokens.has(token)')<endpoint.indexOf('getApiC
 assert.match(endpoint,/isSameOriginWriteRequest/);assert.match(endpoint,/body.confirm!==true/);
 assert.match(endpoint,/watchId:String\(body.watchId/);assert.doesNotMatch(endpoint,/\.\.\.body/,'Client may not override source/order/TP/SL');
 const orderFns=server.slice(server.indexOf('async function placeOrder('),server.indexOf('function trackSubmittedOrderPosition('));
-const base={ZONE_MANUAL_SOURCE,MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',runtimeSettings:{orderEnabled:true},ordersTokens:new Set(['authorized']),
+const base={ZONE_MANUAL_SOURCE,MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',STRUCTURE_SOURCE:'structure-setup-ready',
+  PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',runtimeSettings:{orderEnabled:true},ordersTokens:new Set(['authorized']),
   autoEntryControls:{assertEntry(){},isProtectionExcluded:()=>false},normalizeSymbol:s=>s,isBinanceProtectionExcluded:()=>false,
   shortStopLossSuppression:()=>({suppressed:false}),resolveSignalProtectionWorkingTypes:()=>({}),
   evaluateAutoBinanceEntryPolicy:()=>({allowed:true}),getSymbols:async()=>[{symbol:w.symbol}],

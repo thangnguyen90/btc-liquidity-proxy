@@ -1,4 +1,4 @@
-export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'IMPULSE_SHORT_FIXED1_HEATMAP_UNCHANGED_V59_20261020';
+export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'HEATMAP_NO_PRICE_DRIFT_SHORT5_LONG2_V62_20261023';
 import {HEATMAP_SWEEP_SOURCE,validHeatmapSweepOrder} from './heatmapSweepBinance.js';
 const HEATMAP_SWEEP_AUTH=Symbol('heatmap-full-sweep-server-entry');
 export function authorizeHeatmapSweepOrder(payload){const p={...payload};Object.defineProperty(p,HEATMAP_SWEEP_AUTH,{value:true});return p;}
@@ -291,7 +291,7 @@ export function evaluateAutoBinanceEntryPolicy({
   const exclusive = liveCardOnlyAutoBinanceEnabled(env);
   const dryRun = payload?.dryRun !== false;
   if(!dryRun&&payload.source===HEATMAP_SWEEP_SOURCE){const allowed=orderEnabled&&payload[HEATMAP_SWEEP_AUTH]===true&&validHeatmapSweepOrder(payload,payload.signalEntryPrice,now);
-    return {allowed,exclusive,reason:allowed?'HEATMAP_FULL_SWEEP_SHORT3_LONG1_5X_TP10_SL30_CAP20':'HEATMAP_SWEEP_UNAUTHORIZED_OR_INVALID'};}
+    return {allowed,exclusive,reason:allowed?'HEATMAP_FULL_SWEEP_NO_DRIFT_SHORT5_LONG2_5X_TP10_SL30_CAP20':'HEATMAP_SWEEP_UNAUTHORIZED_OR_INVALID'};}
   if(!dryRun&&payload.source===PUMP_TURN_NEAR_SOURCE){const allowed=orderEnabled&&payload[PUMP_TURN_NEAR_AUTH]===true&&validPumpTurnNearOrder(payload,payload.signalEntryPrice,now);
     return {allowed,exclusive,reason:allowed?'PUMP_TURN_NEAR_SHORT_2USDT_5X_TP10_SL30_CAP20':'PUMP_TURN_NEAR_UNAUTHORIZED_OR_INVALID'};}
 

@@ -29,7 +29,7 @@ import {
 import { ceilQuantityAtMinimumNotional } from '../src/orderQuantityPolicy.js';
 
 const exclusiveEnv = {};
-assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'IMPULSE_SHORT_FIXED1_HEATMAP_UNCHANGED_V59_20261020');
+assert.equal(AUTO_BINANCE_ENTRY_POLICY_VERSION, 'HEATMAP_NO_PRICE_DRIFT_SHORT5_LONG2_V62_20261023');
 assert.equal(LIQUID_FLOW_V2_BINANCE_LEVERAGE, 5);
 assert.equal(liveCardOnlyAutoBinanceEnabled(exclusiveEnv), true);
 assert.equal(liveCardOnlyAutoBinanceEnabled({ LIVE_CARD_WHITELIST_ONLY_AUTO_BINANCE: 'false' }), false);

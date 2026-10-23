@@ -71,3 +71,6 @@ data/pump-turn-near-short-binance.json
 data/pump-turn-near-short-binance.json.tmp-*
 data/heatmap-sweep-watch.json
 data/heatmap-sweep-watch.json.tmp-*
+data/heatmap-market-raw-cache/
+data/heatmap-manual-orders.json*
+data/heatmap-sweep-binance.json*

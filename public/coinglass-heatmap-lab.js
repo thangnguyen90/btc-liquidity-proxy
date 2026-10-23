@@ -1,14 +1,33 @@
 import {HEATMAP_LAB_VERSION,heatmapQuery,normalizeHeatmap,demoHeatmap} from './coinglass-heatmap-model.js?v=20261018-v3';
-import {HeatmapCanvas} from './coinglass-heatmap-canvas.js?v=20261018-v3';
+import {HeatmapCanvas,priceText} from './coinglass-heatmap-canvas.js?v=20261022-v5-live-mark';
+import {HeatmapLivePrice} from './heatmap-live-price.js?v=20261022-v1';
+import {mountHeatmapTopRatio} from './heatmap-top-ratio.js?v=20261022-v2';
 import {mountHeatmapPriceAlerts} from './heatmap-price-alerts.js?v=20261018-v1';
-import {mountHeatmapSweepWatch} from './heatmap-sweep-watch.js?v=20261020-v3-dual-entry';
+import {mountHeatmapSweepWatch} from './heatmap-sweep-watch.js?v=20261023-v7-no-price-drift';
+import {mountHeatmapManualOrders} from './heatmap-manual-order.js?v=20261022-v3-limit-capability';
 const $=id=>document.getElementById(id),datasets=new Map(),panels=new Map();
 const priceAlerts=mountHeatmapPriceAlerts();
 const sweepWatch=mountHeatmapSweepWatch();
+const manualOrders=mountHeatmapManualOrders();
+const topRatio=mountHeatmapTopRatio();
 const names={DEMO:'DEMO · DỮ LIỆU MINH HỌA',IMPORT:'JSON · NGƯỜI DÙNG KHAI BÁO',BINANCE_LOCAL:'BINANCE · TỰ TÍNH ƯỚC LƯỢNG'};
 const errors={INVALID_QUERY:'Coin/range không hợp lệ. Dùng symbol Binance USDT.',FULL_MATRIX_REQUIRED:'File chỉ có zones/thiếu ma trận: cần y_axis, price_candlesticks và liquidation_leverage_data.',MODEL_MISMATCH:'Model trong file không khớp ô đang nhập.',SYMBOL_MISMATCH:'Coin trong file không khớp coin đã chọn.',RANGE_MISMATCH:'Khoảng thời gian trong file không khớp lựa chọn.',DATA_SIZE_LIMIT:'Ma trận quá lớn hoặc thiếu trục giá/nến.',INVALID_PRICE_AXIS:'Trục giá không hợp lệ.',INVALID_CANDLES:'Nến OHLC/timestamp không hợp lệ.',UNORDERED_CANDLES:'Nến cần theo thứ tự thời gian, không trùng.',INVALID_CELLS:'Ô heatmap có tọa độ/cường độ không hợp lệ.',DUPLICATE_CELL:'Có ô trùng tọa độ trong ma trận.',PROVIDER_RESPONSE_ERROR:'File chứa mã lỗi từ provider, không phải dữ liệu chart.'};
 let view=null,full=null,busy=false,epoch=0,controller=null,raf=0;
+export const HEATMAP_FIRST_LOAD_UI_VERSION='HEATMAP_LINK_AUTOLOAD_RETRY_V1_20261020';
+export const HEATMAP_SYMBOL_CLEAR_UI_VERSION='HEATMAP_SYMBOL_CLEAR_BUTTON_V1_20261022';
 for(const model of [1,3]){const root=document.querySelector(`[data-model="${model}"]`);panels.set(model,{root,badge:root.querySelector('.source-badge'),meta:root.querySelector('.chart-meta'),chart:new HeatmapCanvas(root.querySelector('canvas'),{tooltip:root.querySelector('.chart-tooltip'),onView:setView})});}
+let liveTick=null;
+const livePrice=new HeatmapLivePrice({onTick:tick=>{
+ liveTick=tick;for(const p of panels.values())p.chart.setLivePrice(tick);
+},onState:state=>{
+ const labels={idle:'MARK socket: tìm coin Binance để theo dõi',connecting:'MARK socket: đang nối / chờ tick mới…',stale:'MARK socket: mất kết nối hoặc giá quá 10s · đang nối lại…',unavailable:'MARK socket: chưa kết nối được trên trang này'};
+ for(const p of panels.values()){const node=p.root.querySelector('.chart-live-price');if(!node)continue;node.dataset.state=state;
+  node.textContent=state==='live'&&liveTick?`MARK SOCKET · ${priceText(liveTick.markPrice)} USDT · ${new Date(liveTick.eventAt).toLocaleTimeString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'})} VN`:labels[state]??labels.idle;
+ }
+}});
+function syncLiveSelection(){const values=[...datasets.values()],symbol=values[0]?.symbol;livePrice.setSelection(values.length&&values.every(d=>d.source==='BINANCE_LOCAL'&&d.symbol===symbol)?symbol:null);}
+window.addEventListener('pagehide',()=>livePrice.setSelection(null));
+window.addEventListener('pageshow',event=>{if(event.persisted)syncLiveSelection();});
 function query(model=1){let symbol=$('symbol').value.trim().toUpperCase();if(!symbol.endsWith('USDT'))symbol+='USDT';return heatmapQuery({symbol,range:$('range').value,model});}
 const esc=x=>String(x??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
 const scenarioPrice=n=>Number.isFinite(n)?Number(n.toPrecision(8)).toString():'—';
@@ -39,11 +58,15 @@ function draw(){
  const values=[...datasets.values()],sources=new Set(values.map(d=>d.source));
  for(const [model,panel] of panels){const data=datasets.get(model)??null;const d=data?($('sync').checked?full:domain(data)):null;
   panel.chart.set(data,d,data?view:null,{floor:Number($('floor').value)/100,log:$('scale').value==='log'});
+  panel.chart.setLivePrice(liveTick);
  }
  if(values.length===2){const [a,b]=values,overlap=Math.max(0,Math.min(a.end,b.end)-Math.max(a.start,b.start));$('comparison').textContent=sources.size>1?'HAI NGUỒN KHÁC NHAU: kiểm tra nguồn từng chart trước khi đối chiếu.':sources.has('DEMO')?'DEMO: hai khung dùng cùng dữ liệu minh họa renderer, không phải kết quả tự tính từ thị trường.':overlap<Math.min(a.end-a.start,b.end-b.start)*.8?'Khoảng dữ liệu hai model không trùng đủ: hãy kiểm tra thời gian trước khi so sánh.':sources.has('BINANCE_LOCAL')?'Cùng nến Binance: Model1 tích lũy trọng số volume; Model3 tích lũy OI tăng và co cụm khi OI giảm. Cường độ 0–100 chuẩn hóa riêng từng model, không so số USD.':'JSON do người dùng khai báo nguồn và model; chưa xác minh thuật toán.';}
  else $('comparison').textContent='Chưa đủ hai model có dữ liệu. Không dùng một model thay cho model còn thiếu.';
 }
 function clear({message='Chưa dựng heatmap từ Binance'}={}){
+ topRatio.setSelection(null);
+ livePrice.setSelection(null);
+ manualOrders.setSelection(null);
  priceAlerts.setSelection(null);
  sweepWatch.setSelection(null);
  epoch++;controller?.abort();controller=null;datasets.clear();setBusy(false);updateDomain();setSource(message);
@@ -56,17 +79,31 @@ function apply(model,data){
  const date=t=>new Date(t).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'});
  p.meta.textContent=`${data.symbol} · ${data.range}${data.inputs?.interval?' · nến'+data.inputs.interval:''} · ${data.candles.length.toLocaleString()} nến / ${data.cells.length.toLocaleString()} ô · ${date(data.start)} → ${date(data.end-data.step)} VN${data.source==='BINANCE_LOCAL'?` · MARK ${data.inputs.markCoveragePct.toFixed(0)}%${model===3?' · OI '+data.inputs.oiCoveragePct.toFixed(0)+'%':''} · chỉ số 0–100`:''}${data.cells.length?'':' · Không có cụm theo mô hình trong dữ liệu này, chỉ vẽ nến'}`;
  p.meta.title=(data.notes??[]).join('\n');
- updateDomain();scheduleDraw();
+ const a=datasets.get(1),b=datasets.get(3);
+ manualOrders.setSelection(a?.source==='BINANCE_LOCAL'&&b?.source==='BINANCE_LOCAL'&&a.symbol===b.symbol&&a.range===b.range?{symbol:a.symbol,range:a.range}:null);
+ updateDomain();syncLiveSelection();scheduleDraw();
 }
 function links(){try{const q=query();for(const a of document.querySelectorAll('[data-binance]'))a.href='https://www.binance.com/en/futures/'+encodeURIComponent(q.symbol);}catch{}}
-$('load').addEventListener('click',async()=>{
+async function loadHeatmaps({automatic=false}={}){
  let q;try{q=query();}catch{clear({message:errors.INVALID_QUERY});return;}
  $('symbol').value=q.symbol;const searchUrl=new URL(location.href);searchUrl.searchParams.set('symbol',q.symbol);searchUrl.searchParams.set('range',q.range);searchUrl.searchParams.delete('demo');history.replaceState(null,'',searchUrl);
- clear({message:'Đang tải nến Binance, MARK và OI để tự dựng hai model…'});priceAlerts.setSelection(q);sweepWatch.setSelection(q);links();setBusy(true);const token=epoch;controller=new AbortController();
+ clear({message:'Đang tải nến Binance, MARK và OI để tự dựng hai model…'});topRatio.setSelection(q);priceAlerts.setSelection(q);sweepWatch.setSelection(q);links();setBusy(true);const token=epoch;controller=new AbortController();const signal=controller.signal;
  try{
-  const response=await fetch('/api/coinglass-heatmap-lab?'+new URLSearchParams({symbol:q.symbol,range:q.range}),{cache:'no-store',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(28000)])});
-  if(!response.ok)throw Error();const result=await response.json();if(token!==epoch)return;
-  if(result.version!==HEATMAP_LAB_VERSION||!Array.isArray(result.models))throw Error();
+  let result;
+  for(let attempt=0;attempt<(automatic?2:1);attempt++){
+   let transient=false;
+   try{
+    const response=await fetch('/api/coinglass-heatmap-lab?'+new URLSearchParams({symbol:q.symbol,range:q.range}),{cache:'no-store',signal:AbortSignal.any([signal,AbortSignal.timeout(28000)])});
+    if(!response.ok){const e=Error('HEATMAP_HTTP_ERROR');e.retryable=[408,502,503,504].includes(response.status);throw e;}
+    result=await response.json();if(token!==epoch||signal.aborted)return;
+    if(result.version!==HEATMAP_LAB_VERSION||!Array.isArray(result.models))throw Object.assign(Error('HEATMAP_SCHEMA_ERROR'),{retryable:false});
+    transient=result.models.length===2&&result.models.every(m=>m.status==='BINANCE_UNAVAILABLE');
+   }catch(error){if(token!==epoch||signal.aborted)return;if(!automatic||attempt>0||error.retryable===false||error instanceof SyntaxError)throw error;transient=true;}
+   if(!automatic||attempt>0||!transient)break;
+   setSource('Lần tải đầu đang chậm hoặc lỗi tạm thời. Đang thử lại 1/1…');
+   await new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();},timer=setTimeout(done,1500);signal.addEventListener('abort',done,{once:true});});
+   if(token!==epoch||signal.aborted)return;
+  }
   let loaded=0;for(const item of result.models){const p=panels.get(item.model);if(!p)continue;
    if(item.status==='OK'&&item.data?.source==='BINANCE_LOCAL'&&item.data.estimated===true&&item.data.model===item.model&&item.data.symbol===q.symbol&&item.data.range===q.range){apply(item.model,item.data);loaded++;}
    else {p.badge.textContent='CHƯA ĐỦ DỮ LIỆU';p.meta.textContent=item.message??'Model này chưa dựng được.';}
@@ -74,26 +111,33 @@ $('load').addEventListener('click',async()=>{
   setSource(loaded?`Đã tự dựng ${loaded}/2 model từ Binance · CÁC VÙNG LÀ ƯỚC LƯỢNG.`:'Chưa dựng được hai model từ Binance. Kiểm tra thông báo từng khung hoặc thử tải lại.');
   renderScenarios(result.scenarios?.symbol===q.symbol&&result.scenarios?.range===q.range?result.scenarios:null,'Chưa đủ hai model hoặc backend chưa cung cấp kịch bản cho dữ liệu này.');
  }catch(error){if(token===epoch){setSource('Không tải được dữ liệu Binance. Chưa dựng chart; thử lại sau.');renderScenarios(null,'Không tải được dữ liệu; chưa lập kịch bản.');}}finally{if(token===epoch)setBusy(false);}
-});
+}
+$('load').addEventListener('click',()=>void loadHeatmaps());
 $('demo').addEventListener('click',()=>{let q;try{q=query();}catch{setSource(errors.INVALID_QUERY);return;}clear();links();const now=Date.now();for(const model of [1,3])apply(model,demoHeatmap({...q,model},now));setSource('DEMO MINH HỌA · KHÔNG PHẢI DỮ LIỆU THỊ TRƯỜNG','DEMO');renderScenarios(null,'DEMO chỉ minh họa chart; không lập kịch bản vào lệnh từ dữ liệu dựng.');});
 $('clear').addEventListener('click',()=>clear());
 for(const input of document.querySelectorAll('[data-import]'))input.addEventListener('change',async()=>{
  const file=input.files?.[0],model=Number(input.dataset.import);if(!file)return;
  const token=++epoch;controller?.abort();setBusy(false);
+ topRatio.setSelection(null);
+ livePrice.setSelection(null);
+ manualOrders.setSelection(null);
  renderScenarios(null,'JSON nhập chỉ để đối chiếu chart; chưa xác minh nguồn để lập kịch bản.');
  try{if(file.size>32000000)throw Error('DATA_SIZE_LIMIT');const q=query(model),payload=JSON.parse(await file.text());if(token!==epoch)return;const data=normalizeHeatmap(payload,{...q,source:'IMPORT'});apply(model,data);links();setSource('JSON nhập trên thiết bị · nguồn và nhãn model do người dùng khai báo; chưa xác minh.');}
  catch(error){if(token===epoch){datasets.delete(model);const p=panels.get(model);p.badge.textContent='JSON BỊ TỪ CHỐI';delete p.badge.dataset.source;p.meta.textContent=errors[error.message]??'File JSON không hợp lệ.';updateDomain();scheduleDraw();setSource('Không vẽ payload lỗi hoặc ma trận nhầm model.');}}finally{input.value='';}
 });
 function selectionChanged(){clear({message:'Đã đổi coin/range. Hãy chọn lại nguồn dữ liệu.'});links();}
-$('symbol').addEventListener('input',selectionChanged);
+function syncSymbolClear(){$('symbolClear').hidden=$('symbol').value.length===0;}
+$('symbol').addEventListener('input',()=>{syncSymbolClear();selectionChanged();});
+$('symbolClear').addEventListener('click',()=>{$('symbol').value='';$('symbol').dispatchEvent(new Event('input',{bubbles:true}));$('symbol').focus();});
 $('range').addEventListener('change',selectionChanged);
 $('symbol').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('load').click();}});
 $('floor').addEventListener('input',()=>{$('floorText').textContent=$('floor').value+'%';scheduleDraw();});for(const id of ['scale','sync'])$(id).addEventListener('change',scheduleDraw);
 for(const [id,factor] of [['zoomIn',.7],['zoomOut',1.4]])$(id).addEventListener('click',()=>{if(view){const mid=(view[0]+view[1])/2,span=(view[1]-view[0])*factor;setView([mid-span/2,mid+span/2]);}});
 $('reset').addEventListener('click',()=>{if(full){view=[...full.time];scheduleDraw();}});
-async function init(){
- const params=new URLSearchParams(location.search);if(params.has('symbol'))$('symbol').value=params.get('symbol');if(params.has('range')&&[...$('range').options].some(x=>x.value===params.get('range')))$('range').value=params.get('range');links();scheduleDraw();
- try{const r=await fetch('/api/coinglass-heatmap-lab/status',{cache:'no-store',signal:AbortSignal.timeout(8000)}),s=await r.json();$('apiState').textContent=s.source==='BINANCE_LOCAL'?'Nguồn: Binance công khai → tự tính trên máy chủ. Không sử dụng API Coinglass.':'Backend chưa nạp bản tự tính từ Binance.';}catch{$('apiState').textContent='Chưa kiểm tra được backend. Có thể thử tải lại; JSON/DEMO vẫn hoạt động trên thiết bị.';}
- if(params.get('demo')==='1')$('demo').click();else $('load').click();
+function init(){
+ const params=new URLSearchParams(location.search);if(params.has('symbol'))$('symbol').value=params.get('symbol');if(params.has('range')&&[...$('range').options].some(x=>x.value===params.get('range')))$('range').value=params.get('range');syncSymbolClear();links();scheduleDraw();
+ // Informational status must never delay, retry or overwrite the selected chart.
+ void fetch('/api/coinglass-heatmap-lab/status',{cache:'no-store',signal:AbortSignal.timeout(8000)}).then(r=>r.json()).then(s=>{manualOrders.setCapabilities(s.manualOrders);$('apiState').textContent=s.source==='BINANCE_LOCAL'?'Nguồn: Binance công khai → tự tính trên máy chủ. Không sử dụng API Coinglass.':'Backend chưa nạp bản tự tính từ Binance.';}).catch(()=>{manualOrders.setCapabilities(null);$('apiState').textContent='Chưa kiểm tra được backend. Có thể thử tải lại; JSON/DEMO vẫn hoạt động trên thiết bị.';});
+ if(params.get('demo')==='1')$('demo').click();else void loadHeatmaps({automatic:true});
 }
-void init();
+init();

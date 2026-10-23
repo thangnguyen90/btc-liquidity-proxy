@@ -18,6 +18,7 @@ function bundle(symbol,range){
  return {version:HEATMAP_LAB_VERSION,models,scenarios:deriveHeatmapEntryScenarios({models,candles,step:plan.step,now,symbol,range})};
 }
 const server=createServer(async(req,res)=>{
+ if(new URL(req.url,'http://localhost').pathname==='/ws/coin-level-analysis'){res.writeHead(503);res.end();return;}
  const u=new URL(req.url,'http://localhost'),p=u.pathname;
  try{
   if(p.startsWith('/api/')){

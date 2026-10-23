@@ -8,7 +8,7 @@ import {PUMP_TURN_NEAR_SOURCE,PUMP_TURN_NEAR_ROUTE,PUMP_TURN_NEAR_RULE} from './
 import {HEATMAP_SWEEP_SOURCE,HEATMAP_SWEEP_ROUTES,HEATMAP_SWEEP_RULE,heatmapSweepMargin} from './heatmapSweepBinance.js';
 import {ema99RouteMeta,ema99Margin,ema99Leverage,ema99TakeProfitRoe,validEma99Margin,validEma99Leverage,validEma99TakeProfitRoe,EMA99_ENTRY_INTERVALS,EMA99_ENTRY_SETTINGS_VERSION} from './ema99EntryCatalog.js';
 import {otherRouteMeta,resolveOtherEntrySettings,validOtherMargin,validOtherLeverage,validOtherTakeProfitRoe,OTHER_ENTRY_SETTINGS_VERSION} from './otherEntryCatalog.js';
-export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V44_IMPULSE_SHORT_FIXED1_20261020';
+export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V47_HEATMAP_NO_PRICE_DRIFT_20261023';
 export const BINANCE_PROTECTION_EXCLUSION_VERSION='BINANCE_SYMBOL_PROTECTION_EXCLUSION_V9_FULL_BYPASS_AUTO_CLOSE_20261005';
 const MANUAL_POSITION_CLOSE_AUTHORIZATION=Symbol('authenticated-manual-position-close');
 // Server-only capability: request JSON/client IDs cannot grant this exemption.

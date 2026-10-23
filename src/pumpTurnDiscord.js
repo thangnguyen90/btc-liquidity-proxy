@@ -1,4 +1,5 @@
 import {PUMP_TURN_VERSION} from '../public/pump-turn-model.js';
+export const PUMP_TURN_DISCORD_VERSION='PUMP_TURN_DISCORD_HEATMAP_LINK_V2_20261021';
 const f=n=>Number.isFinite(n)?Number(n.toPrecision(8)).toString():'—';
 export function pumpTurnDiscordPayload(e){
   return {username:'Vùng dự tính bơm / xả',allowed_mentions:{parse:[]},embeds:[{
@@ -9,8 +10,9 @@ export function pumpTurnDiscordPayload(e){
       {name:'CÒN CHỜ NẾN KÍCH HOẠT',value:e.side==='LONG'?'Đóng vượt mốc; tăng60m≥8%, volume≥2×/≥100kUSDT, mua≥55%, đóng vùng trên30%.':'Nến đỏ đóng thủng mốc, trả3–20% từ đỉnh; volume≥1,5×/≥100kUSDT, bán≥55%.'},
       {name:'BINANCE',value:e.side==='SHORT'&&e.marketRuleEnabled?'Rule SHORT mới đang ON: xét MARKET 2 USDT margin ×5, TP +10% / SL −30% ROE; còn kiểm tra giá/vị thế/cap. Xem kết quả trên trang, không coi Discord là đã khớp.':'Không cấp lệnh từ thông báo này; xem trạng thái rule trên trang.'},
       {name:'HẾT HIỆU LỰC (VN)',value:new Date(e.expiresAt).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false})},
-      {name:'MỞ ĐÚNG TÍN HIỆU',value:`[Xem vùng và lý do](https://liquidity.nhathadev.trade/pump-turn-watch?signal=${encodeURIComponent(e.id)}#signals)`}],
-    footer:{text:PUMP_TURN_VERSION+' · Cảnh báo quan sát'},timestamp:new Date(e.observedAt).toISOString()
+      {name:'MỞ ĐÚNG TÍN HIỆU',value:`[Xem vùng và lý do](https://liquidity.nhathadev.trade/pump-turn-watch?signal=${encodeURIComponent(e.id)}#signals)`},
+      {name:'HEATMAP MODEL 1 / 3',value:`[Mở hai model đúng coin · 24h](https://liquidity.nhathadev.trade/coinglass-heatmap-lab?symbol=${encodeURIComponent(e.symbol)}&range=24h)`}],
+    footer:{text:PUMP_TURN_VERSION+' · '+PUMP_TURN_DISCORD_VERSION+' · Cảnh báo quan sát'},timestamp:new Date(e.observedAt).toISOString()
   }]};
 }
 export function createPumpTurnDiscordSender({webhookUrl,fetchImpl=fetch}={}){

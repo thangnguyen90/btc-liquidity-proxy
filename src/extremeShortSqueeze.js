@@ -1,4 +1,5 @@
 export const EXTREME_SHORT_SQUEEZE_VERSION = 'EXTREME_SQUEEZE_SAGA_15M_CLOSED_FOLLOW_SHORT_V6_20260926';
+export const EXTREME_SHORT_SQUEEZE_DISCORD_VERSION = 'EXTREME_SQUEEZE_DISCORD_HEATMAP_LINK_V1_20261022';
 export const EXTREME_SHORT_SQUEEZE_RULE = Object.freeze({
   minPumpPct: 8, minSpikeAtr: 4, minVolumeRatio: 3, minQuoteVolume: 100000,
   breakoutPct: 1, rejectionRetracePct: 50, rejectionWickPct: 40, lowerSweepPct: 3,
@@ -249,6 +250,7 @@ const STYLES={
 };
 export function extremeShortSqueezePayload(e) {
   const s=STYLES[e.kind];
+  const heatmap={name:'HEATMAP MODEL 1 / 3',value:`[Mở hai model đúng coin · 24h](https://liquidity.nhathadev.trade/coinglass-heatmap-lab?symbol=${encodeURIComponent(e.symbol)}&range=24h)`};
   if(e.kind==='FIRST_PUMP_FLUSH_RECLAIM_LONG') {
     return {username:'Extreme Squeeze · First Pump Long',allowed_mentions:{parse:[]},embeds:[{
       title:`🩵 ${e.symbol} · 5m · ${s.title}`,color:s.color,
@@ -260,7 +262,8 @@ export function extremeShortSqueezePayload(e) {
         {name:'📐 MỐC CẤU TRÚC',value:`Reclaim ${num(e.reclaimLevel)} · EMA13 ${num(e.ema13)} · EMA25 ${num(e.ema25)}\nMeasured target tham khảo **${num(e.measuredTarget)}** · vô hiệu cấu trúc nếu 5m đóng thủng pivot **${num(e.invalidationPrice)}**`},
         {name:'⏰ THỜI ĐIỂM (VIỆT NAM)',value:`Cú bơm mở ${vn(e.candleAt)}\nNến hấp thụ đóng ${vn(e.evaluatedCloseAt)}\n${e.stage}`},
         {name:'MỞ BIỂU ĐỒ',value:`[Binance](https://www.binance.com/en/futures/${encodeURIComponent(e.symbol)})`},
-      ],timestamp:e.generatedAt,footer:{text:`${EXTREME_SHORT_SQUEEZE_VERSION} · closed 5m only`},
+        heatmap,
+      ],timestamp:e.generatedAt,footer:{text:`${EXTREME_SHORT_SQUEEZE_VERSION} · closed 5m only · ${EXTREME_SHORT_SQUEEZE_DISCORD_VERSION}`},
     }]};
   }
   const execution=e.binanceExecution;
@@ -279,7 +282,8 @@ export function extremeShortSqueezePayload(e) {
       {name:'BỐI CẢNH 20 NẾN TRƯỚC',value:`Đỉnh ${num(e.priorHigh)} · đáy ${num(e.priorLow)} · biên độ ${e.priorRangePct.toFixed(2)}%\nĐo biến động theo nến; không dùng % tăng giảm 24h để xác nhận.`},
       {name:'THỜI ĐIỂM (VIỆT NAM)',value:`Nến bơm mở ${vn(e.candleAt)}\nĐánh giá ${vn(e.observedAt)}${e.followBars?` · nến thứ ${e.followBars} sau spike`:''}\n${e.stage}`},
       {name:'MỞ BIỂU ĐỒ',value:`[Binance](https://www.binance.com/en/futures/${encodeURIComponent(e.symbol)})`},
-    ],timestamp:e.generatedAt,footer:{text:EXTREME_SHORT_SQUEEZE_VERSION},
+      heatmap,
+    ],timestamp:e.generatedAt,footer:{text:`${EXTREME_SHORT_SQUEEZE_VERSION} · ${EXTREME_SHORT_SQUEEZE_DISCORD_VERSION}`},
   }]};
 }
 

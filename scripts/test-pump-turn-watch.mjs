@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {plannedPumpZones,confirmationChecks,closedPumpRows,livePumpZone,STEP,PUMP_TURN_VERSION} from '../public/pump-turn-model.js';
 import {PumpTurnWatch} from '../src/pumpTurnWatch.js';
-import {createPumpTurnDiscordSender,pumpTurnDiscordPayload} from '../src/pumpTurnDiscord.js';
+import {createPumpTurnDiscordSender,pumpTurnDiscordPayload,PUMP_TURN_DISCORD_VERSION} from '../src/pumpTurnDiscord.js';
 import {detect} from './research-pump-turn-entry-week.mjs';
 import vm from 'node:vm';
 const baseTime=1792200000000-Math.floor(1792200000000%STEP);
@@ -48,8 +48,21 @@ const unsafe=new PumpTurnWatch({...options,file:join(temp,'nonexistent'),getLive
 const eight=new PumpTurnWatch({...options,file:join(temp,'many.json'),getSymbols:()=>Array.from({length:8},(_,i)=>'C'+i+'USDT'),discordSender:async()=>({sent:1})});await eight.scan();assert.equal(eight.history.length,5,'global max5 per scan');await eight.scan();assert.equal(eight.history.length,8);
 const failed=new PumpTurnWatch({...options,file:join(temp,'failed.json'),discordSender:async()=>{throw Error('unknown');}});await failed.scan();assert.equal(failed.history[0].delivery.status,'UNKNOWN');const retry=new PumpTurnWatch({...options,file:join(temp,'failed.json')});await retry.scan();assert.equal(sent,1,'unknown delivery not blindly retried');
 const payload=pumpTurnDiscordPayload({...long,livePrice:point.price,distancePct:.4,observedAt:now});assert.deepEqual(payload.allowed_mentions.parse,[]);assert.match(JSON.stringify(payload),/pump-turn-watch\?signal=/);assert.match(payload.embeds[0].title,/CHƯA XÁC NHẬN/);
+for(const side of ['LONG','SHORT'])for(const symbol of ['QUSDT','ERAUSDT','龙虾USDT']){
+  const event={...long,side,symbol,id:`pump-turn-near:${symbol}:${side}:${now}`,observedAt:now,marketRuleEnabled:side==='SHORT'};
+  const before=structuredClone(event),message=pumpTurnDiscordPayload(event),embed=message.embeds[0];
+  const heatmap=embed.fields.find(field=>field.name==='HEATMAP MODEL 1 / 3');assert(heatmap);
+  const url=new URL(heatmap.value.match(/\]\(([^)]+)\)/)[1]);
+  assert.equal(url.origin,'https://liquidity.nhathadev.trade');assert.equal(url.pathname,'/coinglass-heatmap-lab');
+  assert.equal(url.searchParams.get('symbol'),symbol);assert.equal(url.searchParams.get('range'),'24h');assert.equal([...url.searchParams].length,2);
+  const signal=new URL(embed.fields.find(field=>field.name==='MỞ ĐÚNG TÍN HIỆU').value.match(/\]\(([^)]+)\)/)[1]);
+  assert.equal(signal.pathname,'/pump-turn-watch');assert.equal(signal.searchParams.get('signal'),event.id);assert.equal(signal.hash,'#signals');
+  assert.match(embed.title,new RegExp('GẦN VÙNG '+side));assert.match(embed.footer.text,new RegExp(PUMP_TURN_DISCORD_VERSION));
+  assert.deepEqual(message.allowed_mentions.parse,[]);assert.deepEqual(event,before,'adding display links must not mutate the signal or proof');
+  assert.equal(embed.fields.filter(field=>field.name==='BINANCE').length,1);assert(embed.fields.length<=25);
+}
 assert.throws(()=>createPumpTurnDiscordSender({webhookUrl:'https://evil.test/api/webhooks/123/token'}));
-const sender=createPumpTurnDiscordSender({webhookUrl:'https://discord.com/api/webhooks/123/mock',fetchImpl:async(url,init)=>{assert.equal(init.redirect,'error');assert.equal(init.method,'POST');return {ok:true,status:204};}});assert.equal((await sender({...long,observedAt:now})).sent,1);
+const sender=createPumpTurnDiscordSender({webhookUrl:'https://discord.com/api/webhooks/123/mock',fetchImpl:async(url,init)=>{assert.equal(init.redirect,'error');assert.equal(init.method,'POST');const sent=JSON.parse(init.body);assert.match(sent.embeds[0].fields.find(field=>field.name==='HEATMAP MODEL 1 / 3').value,/symbol=QUSDT&range=24h/);return {ok:true,status:204};}});assert.equal((await sender({...long,observedAt:now})).sent,1);
 const safe=createPumpTurnDiscordSender({webhookUrl:'https://discord.com/api/webhooks/123/mock',fetchImpl:async()=>{throw Error('secret');}});assert.doesNotMatch(JSON.stringify(await safe({...long,observedAt:now})),/secret|webhooks/);
 assert.match(await readFile('src/server.js','utf8'),/isSameOriginWriteRequest\(request\)[\s\S]*pumpTurnWatch.update/);
 assert.equal(JSON.parse(await readFile(file,'utf8')).version,PUMP_TURN_VERSION);
