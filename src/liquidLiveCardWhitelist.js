@@ -15,7 +15,12 @@ import { coinPumpWickEarlyKey, coinPumpWickEarlyTradeKey } from '../public/coin-
 import {weakAltKey,weakAltTradeKey,countertrendKey,countertrendTradeKey,coinRelationKey,coinRelationTradeKey} from '../public/weak-alt-rebound-model.js';
 import {btcAltReactionKey,btcAltReactionTradeKey} from '../public/btc-alt-reaction-model.js';
 import {btcAltStructureKey,btcAltStructureTradeKey} from '../public/btc-alt-structure-model.js';
-export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V36_TREND_REACTION_20261014';
+import {SECOND_SWEEP_KEY,secondSweepTradeKey} from '../public/heatmap-second-sweep-model.js';
+import {LONG_QUALITY_LABELS,longQualityKey,longQualityTradeKey} from '../public/heatmap-long-quality-model.js';
+import {UPPER_MOMENTUM_TITLES,upperMomentumKey,upperMomentumTradeKey} from '../public/heatmap-upper-momentum-model.js';
+import {LOWER_MOMENTUM_TITLES,lowerMomentumKey,lowerMomentumTradeKey} from '../public/heatmap-lower-momentum-model.js';
+import {PUMP_TURN_CONTEXT_TITLES,pumpTurnContextKey,pumpTurnContextTradeKey} from '../public/pump-turn-context-model.js';
+export const LIQUID_LIVE_CARD_WHITELIST_VERSION = 'LIVE_CARD_WHITELIST_V41_PUMP_TURN_CONTEXT_20261028';
 export const LIVE_CARD_COMBO_ENTRY_MATCH_VERSION = 'LIVE_CARD_COMBO_ENTRY_MATCH_V1_20260804';
 
 const ALLOWED_PREFIXES = [
@@ -61,6 +66,11 @@ function addTierKey(keys, prefix, ...parts) {
 export function normalizeLiquidLiveCardKey(value) {
   const key = String(value ?? '').trim();
   if (!key || key.length > 1000 || /[\u0000-\u001f\u007f]/.test(key)) return null;
+  if(Object.keys(PUMP_TURN_CONTEXT_TITLES).some(label=>pumpTurnContextKey(label)===key))return key;
+  if(key===SECOND_SWEEP_KEY)return key;
+  if(Object.keys(UPPER_MOMENTUM_TITLES).some(state=>upperMomentumKey(state)===key))return key;
+  if(Object.keys(LOWER_MOMENTUM_TITLES).some(state=>lowerMomentumKey(state)===key))return key;
+  if([LONG_QUALITY_LABELS.GOOD,LONG_QUALITY_LABELS.BAD].some(label=>longQualityKey(label)===key))return key;
   if (/^btc-session:(LONG|SHORT):(NIGHT|MORNING|OTHER)$/.test(key)) return key;
   if (/^btc-session:IMPULSE:(SW_UP|SW_DOWN|NEUTRAL|SHOCK|STALE)$/.test(key)) return key;
   if (/^btc-session:ENTRY:(LONG|SHORT):(RETEST|BASE_BREAK)$/.test(key)) return key;
@@ -157,6 +167,11 @@ export function liquidLiveComboCycleKey(trade = {}) {
 
 export function liquidLiveCardKeysOfTrade(trade = {}) {
   const keys = new Set(['overview:all']);
+  const pumpContext=pumpTurnContextTradeKey(trade);if(pumpContext)keys.add(pumpContext);
+  const secondSweepKey=secondSweepTradeKey(trade);if(secondSweepKey)keys.add(secondSweepKey);
+  const longQuality=longQualityTradeKey(trade);if(longQuality)keys.add(longQuality);
+  const upperMomentum=upperMomentumTradeKey(trade);if(upperMomentum)keys.add(upperMomentum);
+  const lowerMomentum=lowerMomentumTradeKey(trade);if(lowerMomentum)keys.add(lowerMomentum);
   const flushKey = coinPumpFlushTradeKey(trade);
   if (flushKey) keys.add(flushKey);
   const wickKey = btcWickTradeKey(trade);

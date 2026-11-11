@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { classify } from './research-parabolic-crash-fortnight.mjs';
+const e = { status: 'MATCH', gain24: 100, gain72: 100, drop24: 50, drop72: 50 };
+assert.equal(classify(e).irys, true);
+assert.equal(classify({ ...e, gain24: 99.99 }).irys, false);
+assert.equal(classify({ ...e, gain24: 50, gain72: 200 }).irys, true);
+assert.equal(classify({ ...e, drop24: 49.99, drop72: 80 }).irys, false, 'a late 72h crash cannot meet the 24h IRYS rule');
+assert.equal(classify({ ...e, gain24: 200, drop24: 70 }).extreme, true);
+assert.equal(classify({ ...e, gain24: 500, drop24: 90, status: 'FUTURE_GAP' }).irys, false);
+assert.equal(classify({ ...e, status: 'MINUTE_GAP' }).invalid, true);
+assert.equal(classify({ ...e, status: 'PENDING_72H', drop24: 0 }).irys, false);
+console.log('PASS fortnight research: thresholds, 24h vs 72h, gaps and censored samples');

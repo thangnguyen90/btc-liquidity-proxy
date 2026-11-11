@@ -1,3 +1,4 @@
+import {resolveFrozenNewBotTakeProfit,botTpSource} from './newBotTakeProfitPolicy.js';
 export const NON_LIQUID_FLOW_V2_SHORT_TP_VERSION = 'NON_LIQUID_FLOW_V2_SHORT_TP_ROE6_BOT_ONLY_V2_20260809';
 export const NON_LIQUID_FLOW_V2_SHORT_TP_ROE = 6;
 export const NON_LIQUID_FLOW_V2_LONG_TP_VERSION = 'NON_LIQUID_FLOW_V2_LONG_TP_ROE10_BOT_ONLY_V1_20260810';
@@ -85,6 +86,7 @@ export function shouldSuppressBotShortStopLoss({
   if (normalizedSide !== 'SELL' && normalizedSide !== 'SHORT') return false;
   const normalizedSource = String(source ?? '').trim().toLowerCase();
   if([
+    'pump-squeeze-sell-flow-short',
     'pump-turn-near-short',
     'heatmap-full-sweep',
     'rising-volume-sustained-1m',
@@ -258,9 +260,11 @@ export function resolveNonLiquidFlowV2TakeProfit({
   entryPrice,
   leverage,
   requestedTakeProfitPrice = null,
+  newBotTakeProfitProof = null,
   shortRoePct = NON_LIQUID_FLOW_V2_SHORT_TP_ROE,
   longRoePct = NON_LIQUID_FLOW_V2_LONG_TP_ROE,
 } = {}) {
+  const frozen=botTpSource(source)?resolveFrozenNewBotTakeProfit({proof:newBotTakeProfitProof,side,entryPrice,leverage}):null;if(frozen)return frozen;
   const normalizedSide = String(side ?? '').trim().toUpperCase();
   const direction = normalizedSide === 'BUY' || normalizedSide === 'LONG'
     ? 'LONG'
@@ -277,7 +281,7 @@ export function resolveNonLiquidFlowV2TakeProfit({
       : null;
   if (!direction || !isKnownBotSource(source) || isLiquidFlowV2Source(source)
     || isCoinglassWebQualifiedSource(source) || isCoinglassZoneLifecycleSource(source)
-    || ['structure-setup-ready','pump-turn-near-short','heatmap-full-sweep'].includes(String(source??'').trim().toLowerCase())
+    || ['pump-squeeze-sell-flow-short','structure-setup-ready','pump-turn-near-short','pump-turn-near-long','heatmap-full-sweep'].includes(String(source??'').trim().toLowerCase())
     || ['rising-volume-sustained-1m','liquidity-zone-manual','main-kill-distance-entry','ema99-near-reject-short','ema99-reclaim-long','ema99-bounce-long','ema99-observe-only','ema99-kill-reclaim','ema99-kill-reclaim-pump-dump-absorption'].includes(String(source??'').trim().toLowerCase())
     || !(entry > 0) || !(lev > 0) || !(roe > 0)) {
     return {

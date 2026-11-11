@@ -5,7 +5,23 @@ import { join } from 'node:path';
 import {
   BINANCE_FILLED_SIGNAL_AUDIT_VERSION,
   BinanceFilledSignalAudit,
+  buildBinanceFilledSignalAuditDiscordPayload,
+  buildBinanceClosedSignalAuditDiscordPayload,
 } from '../src/binanceFilledSignalAudit.js';
+
+const reboundRecord = {
+  symbol: 'TESTUSDT',
+  direction: 'SHORT',
+  signalType: 'EXTREME_REBOUND_SWEEP_CONFIRMED',
+  signalLabel: 'EXTREME_REBOUND_SWEEP_CONFIRMED',
+};
+const reboundName = 'NẾN HỒI SAU XẢ · ĐÃ QUÉT CỤM SHORT';
+const reboundFill = buildBinanceFilledSignalAuditDiscordPayload(reboundRecord).embeds[0];
+assert.equal(reboundFill.title, '[FILLED] TESTUSDT · SHORT · ' + reboundName);
+assert.equal(reboundFill.fields.find(field => field.name === 'Loại tín hiệu').value, reboundName);
+const reboundClose = buildBinanceClosedSignalAuditDiscordPayload({records:[reboundRecord]}).embeds[0];
+assert.match(reboundClose.title, new RegExp(reboundName));
+assert.equal(reboundRecord.signalLabel, 'EXTREME_REBOUND_SWEEP_CONFIRMED');
 
 const dataDir = await mkdtemp(join(tmpdir(), 'binance-filled-signal-audit-'));
 const requests = [];

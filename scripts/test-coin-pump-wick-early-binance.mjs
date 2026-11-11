@@ -1,3 +1,4 @@
+import {newEntrySizing} from '../src/newEntryLeveragePolicy.js';
 import assert from 'node:assert/strict';
 import {STRUCTURE_SOURCE} from '../src/structureSetupBinance.js';
 import {readFile,mkdtemp,rm,writeFile} from 'node:fs/promises';
@@ -103,7 +104,7 @@ try{
   function harness({positions=[],orders=[],excluded=false,mark=e.price,finalMark=mark,types=null,execution=true}={}) {
     const placed=[],audits=[],protectedPlans=[];let reads=0;
     const run=vm.runInNewContext(server.slice(start,end)+'\nreturn {orderResult,plannedOrder};\n}\nexecutePlaceOrder',{
-      PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE,RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
+ activeNewEntryPolicy:()=>null,newEntrySizing,      PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE,RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
       ordersTokens:new Map(),runtimeSettings:{orderEnabled:execution,dryRun:false},coinPumpWickEarly:{enabled:true,error:null},
       autoEntryControls:{assertEntry:p=>controls.assertEntry(p),read(){},isProtectionExcluded:()=>excluded},normalizeSymbol:s=>s,
       isBinanceProtectionExcluded:()=>excluded,shortStopLossSuppression:(side,source)=>({suppressed:shouldSuppressBotShortStopLoss({side,source})}),

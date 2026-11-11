@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {resolveFrozenManualTakeProfit,NEW_MANUAL_TP_VERSION} from '../src/newManualTakeProfitPolicy.js';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {MANUAL_SHORT_SL30_FILL_PRICE_VERSION,buildManualShortSl30,applyManualShortSl30ToPlan,manualShortSl30MatchesPosition,reconcileManualShortSl30} from '../src/manualShortStopLoss.js';
@@ -89,15 +90,15 @@ function harness({existingSl=false,changePosition=false,initialDca=false,history
     getPositions:async()=>{reads++;return [initialDca||(changePosition&&reads>1)?dcaPosition:currentPosition];},
     getUserTrades:async()=>history,
     getPremiumIndex:async()=>({markPrice:'100'}),placeAlgoOrder:async({params})=>{placed.push(params);return {algoId:placed.length};}};
-  const context={client,console:{log:()=>{}},process:{env:{}},Date,Number,String,Math,JSON,
+  const context={currentNewBotTpProof:()=>null,slTracking:{positions:{}},newBotTakeProfitLedger:{clientProof:()=>null},client,console:{log:()=>{}},process:{env:{}},Date,Number,String,Math,JSON,
     normalizeSymbol:x=>x,getApiCredentials:()=>({}),getSymbols:async()=>[{symbol:'TESTUSDT'},{symbol:'GTCUSDT'}],
     resolveSignalProtectionWorkingTypes:()=>({takeProfitWorkingType:'MARK_PRICE',stopLossWorkingType:'MARK_PRICE'}),
     shortStopLossSuppression:()=>({suppressed:true,version:BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION}),
     isTrackedManualShortTpOnlyPosition:()=>true,manualShortSl30MatchesPosition,reconcileManualShortSl30,
     isBinanceProtectionExcluded:()=>protectionExcluded,
-    resolveNonLiquidFlowV2TakeProfit,hasOpenProtectionOrder,buildClosePositionProtectionParams,
+    resolveFrozenManualTakeProfit,resolveNonLiquidFlowV2TakeProfit,hasOpenProtectionOrder,buildClosePositionProtectionParams,
     BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION,BINANCE_CLOSE_POSITION_PROTECTION_VERSION,
-    PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE:'structure-setup-ready',RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',
+    PUMP_TURN_NEAR_LONG_SOURCE:'pump-turn-near-long',SELL_FLOW_SOURCE:'pump-squeeze-sell-flow-short',PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE:'structure-setup-ready',RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',
     BINANCE_PROTECTION_EXCLUSION_VERSION:'BINANCE_SYMBOL_PROTECTION_EXCLUSION_V2_AUTO_RESET_ON_CLOSE_20260917',
     priceFromTick:(_info,value)=>Number(value.toFixed(6))};
   const run=vm.runInNewContext(server.slice(start,end)+'\nsetTpSl',context);
@@ -127,3 +128,15 @@ h=harness({currentPosition:gtcPosition});const gtcResult=await h.run({symbol:'GT
 assert.equal(gtcResult.hasSl,true);assert.equal(h.placed.length,1);
 assert.ok(Math.abs(Number(h.placed[0].triggerPrice)-.207427)<1e-9);
 console.log('Manual short SL30 passed: new fill/activation only, 1x–125x, DCA/old/bot guards, actual setTpSl path, existing SL and position race. Mock exchange only.');
+
+{
+ const manualTakeProfitProof={version:NEW_MANUAL_TP_VERSION,scope:'NEW_MANUAL_ORDERS_ONLY',roePct:10,manual:true,
+  symbol:'TESTUSDT',side:'SELL',source:'binance-manual-socket',leverage:5,createdAt:at+1000,activatedAt:at};
+ const mock=harness();
+ const fixed=await mock.run({...payload,tpPrice:94,manualTakeProfitProof});
+ assert.equal(fixed.takeProfitPrice,98);
+ assert.equal(fixed.stopLossPrice,106);
+ assert.equal(fixed.hasTp,true);assert.equal(fixed.hasSl,true);
+ assert.deepEqual(mock.placed.map(p=>Number(p.triggerPrice)).sort((a,b)=>a-b),[98,106]);
+ console.log('PASS fixed manual TP10 is applied in native setTpSl while first manual SL30 remains unchanged. Mock only.');
+}

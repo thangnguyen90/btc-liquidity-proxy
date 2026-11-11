@@ -16,6 +16,13 @@ import {
   LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_TP_ROE_PCT,
 } from './localAiLiquidityBreakoutOppositeDepthBinance.js';
 
+import { EXTREME_REBOUND_SWEEP_KIND } from './extremeReboundSweepDiscord.js';
+
+export const EXTREME_REBOUND_SWEEP_ROUTE = Object.freeze({
+  source:'extreme-short-squeeze',streamId:'extreme-short-squeeze-rebound-5m',
+  signalLabel:EXTREME_REBOUND_SWEEP_KIND,side:'SHORT',
+});
+
 export const OTHER_ENTRY_SETTINGS_VERSION =
   'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V19_LOCAL_AI_PRIORITY_ZONE_1USDT_20261003';
 
@@ -34,6 +41,7 @@ const profile = ({ source, streamId, signalLabel, side, marginUsdt, leverage,
 });
 
 export const OTHER_ENTRY_CATALOG = Object.freeze([
+  profile({ ...EXTREME_REBOUND_SWEEP_ROUTE, marginUsdt: 3, leverage: 3, takeProfitRoePct: 5 }),
   ...LIMIT_PAPER_FILL_LABELS.map((signalLabel) => profile({
     source: LIMIT_PAPER_FILL_SOURCE,
     streamId: LIMIT_PAPER_FILL_STREAM,

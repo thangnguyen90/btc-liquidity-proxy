@@ -63,7 +63,7 @@ function rowHtml(row) {
   const entry = row.avgFillPrice ?? row.signalEntryPrice;
   return `<tr><td><a href="/coin-level-analysis?symbol=${encodeURIComponent(row.symbol)}">${escape(row.symbol)}</a><br><span class="pill ${directionClass}">${escape(row.direction)}</span><span class="pill ${statusClass}">${statusLabels[row.displayStatus] ?? escape(row.displayStatus)}</span>${row.isDca ? '<span class="pill warning">DCA</span>' : ''}<small>${escape(row.outcome || '')}</small></td>
     <td>${time(row.filledAt)}<small>${row.closedAt ? `Đóng ${time(row.closedAt)}` : 'Chưa có close audit'}</small></td>
-    <td><b>${escape(row.signalType)}</b><small>${escape(row.signalLabel)}<br>${escape(row.signalSource)}</small></td>
+    <td><b>${escape(row.signalDisplayName || row.signalType)}</b><small>${escape(row.signalLabel)}<br>${escape(row.signalSource)}</small></td>
     <td>Entry <b>${price(entry)}</b><small>${mark != null ? `MARK ${price(mark)}<br>Entry vị thế ${price(row.livePosition?.entryPrice)}` : `Exit ${price(row.exitAvgPrice)}`}</small></td>
     <td>${money(row.marginUsdt)}<small>${number(row.leverage,0)}x · notional ${money(row.filledNotionalUsdt)}<br>Qty ${number(row.filledQty,8)}</small></td>
     <td>${pnlHtml(row)}</td>
@@ -88,7 +88,7 @@ function render() {
   $('#winRate').textContent = summary.winRatePct == null ? '—' : `${number(summary.winRatePct,1)}%`;
   $('#winLoss').textContent = `${summary.wins} thắng · ${summary.losses} thua · ${summary.breakeven} hòa`;
   const selectedType = $('#signalType').value;
-  $('#signalType').innerHTML = '<option value="">Tất cả loại tín hiệu</option>' + snapshot.facets.signalTypes.map(item => `<option value="${escape(item.value)}">${escape(item.value)} (${item.count})</option>`).join('');
+  $('#signalType').innerHTML = '<option value="">Tất cả loại tín hiệu</option>' + snapshot.facets.signalTypes.map(item => `<option value="${escape(item.value)}">${escape(item.displayName || item.value)} (${item.count})</option>`).join('');
   $('#signalType').value = selectedType;
   $('#rows').innerHTML = snapshot.rows.map(rowHtml).join('') || '<tr><td colspan="8" class="empty">Không có lệnh phù hợp bộ lọc</td></tr>';
   const pagination = snapshot.pagination;

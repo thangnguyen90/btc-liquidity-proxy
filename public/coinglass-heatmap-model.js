@@ -56,8 +56,12 @@ export function demoHeatmap(query={},now=Date.now()){
  }
  return normalizeHeatmap({model:q.model,symbol:q.symbol,range:q.range,data:{y_axis:levels,price_candlesticks:candles,liquidation_leverage_data:cells}},{...q,source:'DEMO',now});
 }
+export const HEATMAP_COLOR_VERSION='HEATMAP_WEAK_PURPLE_CONTRAST_V1_20261026';
 export function heatmapColor(value,max,log=true){
+ if(!(value>0)||!(max>0))return 'rgb(48,0,61)';
  const t=Math.max(0,Math.min(1,max>0?(log?Math.log1p(99*value/max)/Math.log(100):value/max):0));
- const stops=[[48,0,61],[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]],p=t*(stops.length-1),i=Math.min(stops.length-2,Math.floor(p)),f=p-i;
+ // Positive weak cells get more contrast against the unchanged empty background.
+ // This is a display palette only: intensities, filtering and consensus gates are unchanged.
+ const stops=[[78,20,102],[108,41,143],[59,82,139],[33,145,140],[94,201,98],[253,231,37]],p=t*(stops.length-1),i=Math.min(stops.length-2,Math.floor(p)),f=p-i;
  return `rgb(${stops[i].map((x,k)=>Math.round(x+(stops[i+1][k]-x)*f)).join(',')})`;
 }

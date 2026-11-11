@@ -4,15 +4,20 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {HeatmapMarketProfiles} from '../src/heatmapMarketProfiles.js';
 import {HeatmapSweepWatch} from '../src/heatmapSweepWatch.js';
+import {model13NearbyContext} from '../src/pumpTurnCombinedContext.js';
 import {heatmapRangePlan,buildBinanceHeatmapProfiles,buildBinanceLocalHeatmap,normalizeBinanceHeatmapCandles} from '../src/binanceHeatmapModel.js';
 let now=Math.floor(Date.now()/300000)*300000+1000;const plan=heatmapRangePlan('24h',now);
 const raw=Array.from({length:432},(_,i)=>{const t=plan.from+i*300000,c=100+i*.005;return [t,c,c+.1,c-.1,c,100,t+299999,10000,10,50,5000];});
 const oi=raw.map((r,i)=>({timestamp:r[0],sumOpenInterest:1000+i*2})),candles=normalizeBinanceHeatmapCandles(raw,plan);
 for(const model of [1,3]){const args={query:{symbol:'TESTUSDT',range:'24h'},plan,candles,markRows:candles,oiRows:oi,model,now};
- const compact=buildBinanceHeatmapProfiles(args),full=buildBinanceLocalHeatmap(args);assert.deepEqual(compact.profiles,full.profiles);assert.deepEqual(compact.candles,full.candles.slice(-1).map(c=>({time:c.time,close:c.close})));assert.equal(compact.cells,undefined);}
+ const compact=buildBinanceHeatmapProfiles(args),full=buildBinanceLocalHeatmap(args);assert.deepEqual(compact.profiles,full.profiles);assert.deepEqual(compact.candles,full.candles.slice(-1).map(c=>({time:c.time,close:c.close,high:c.high,low:c.low})));assert.equal(compact.inputs.markCoveragePct,full.inputs.markCoveragePct);assert.equal(compact.inputs.oiCoveragePct,full.inputs.oiCoveragePct);assert.equal(compact.cells,undefined);}
 let calls=0,blocked=false;
 const loader=new HeatmapMarketProfiles({now:()=>now,blocked:()=>blocked,loadKlines:async p=>{assert.equal(p.limit,499);calls++;return raw;},loadMarkKlines:async()=>raw,loadOi:async()=>oi});
-assert.equal((await loader.compare({symbol:'TESTUSDT'})).models[1].status,'OK');await loader.compare({symbol:'TESTUSDT'});assert.equal(calls,1);
+const bundle=await loader.compare({symbol:'TESTUSDT'});
+assert.equal(bundle.models[1].status,'OK');
+assert.ok(model13NearbyContext({bundle,symbol:'TESTUSDT',price:candles.at(-1).close,at:plan.end}),
+ 'production compact bundle must carry MARK/OI and candle bounds into the Discord evaluator');
+await loader.compare({symbol:'TESTUSDT'});assert.equal(calls,1);
 await assert.rejects(()=>loader.compare({symbol:'NEXTUSDT'}),/BUDGET/);now+=1000;blocked=true;await assert.rejects(()=>loader.compare({symbol:'NEXTUSDT'}),/BUDGET/);blocked=false;await loader.compare({symbol:'NEXTUSDT'});assert.equal(calls,2);
 const file=join(await mkdtemp(join(tmpdir(),'heatmap-market-')),'state.json');let symbols=Array.from({length:525},(_,i)=>'C'+i+'USDT'),loads=0;
 const options={file,now:()=>now,getUniverse:()=>symbols,loadBundle:async()=>{loads++;return {models:[]};}};

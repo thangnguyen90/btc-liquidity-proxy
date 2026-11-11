@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {detectFailedTops,ratioBefore} from './research-failed-top-model.mjs';
+const S=900000,at=200*S;
+const ratios=[1,0.99,.98,.995].map((v,i)=>({timestamp:at-(4-i)*S,longShortRatio:v}));
+const r=ratioBefore(ratios,at);assert.ok(r.changePct>0&&r.nearTopDropPct<0,'precursor drop can recover at breakdown');
+assert.deepEqual(ratioBefore([...ratios,{timestamp:at,longShortRatio:100}],at),r);
+assert.equal(ratioBefore(ratios.filter((_,i)=>i!==1),at),null);
+assert.equal(ratioBefore(ratios,at+5*S),null);
+const rows=Array.from({length:100},(_,i)=>({t:i*S,end:(i+1)*S-1,o:100,h:101,l:99,c:100}));
+rows[88].h=120;rows[94].h=119;rows[95].h=119;rows[96]={...rows[96],o:100,h:100,l:95,c:96};
+const hits=detectFailedTops(rows,96*S,100*S);assert.equal(hits.length,1);assert.equal(hits[0].at,97*S);
+const future=structuredClone(rows);future[99].h=10000;assert.deepEqual(detectFailedTops(future,96*S,100*S),hits);
+const gap=structuredClone(rows);gap[90].t--;assert.equal(detectFailedTops(gap,96*S,100*S).length,0);
+const noRetest=structuredClone(rows);noRetest[94].h=101;noRetest[95].h=101;assert.equal(detectFailedTops(noRetest,96*S,100*S).length,0);
+console.log('PASS failed-top research: closed causal price trigger, retest, gap rejection, no future peak, precursor ratio recovery, ratio lag/gap/stale.');

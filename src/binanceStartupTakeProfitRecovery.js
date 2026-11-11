@@ -1,3 +1,4 @@
+import {resolveFrozenNewBotTakeProfit,botTpSource} from './newBotTakeProfitPolicy.js';
 import { hasOpenProtectionOrder } from './protectionOrderGuard.js';
 import {
   BINANCE_MANUAL_SOCKET_SOURCE,
@@ -77,10 +78,13 @@ export function resolveStartupTakeProfitTarget({
   isLiquidFlowV2 = false,
   isManual = false,
   source = null,
+  newBotTakeProfitProof = null,
   defaultLongRoePct = 10,
   defaultShortRoePct = 6,
 } = {}) {
   const direction = String(side ?? '').trim().toUpperCase();
+  const frozen=!isManual&&botTpSource(source)?resolveFrozenNewBotTakeProfit({proof:newBotTakeProfitProof,side,entryPrice,leverage}):null;
+  if(frozen)return{takeProfitPrice:frozen.takeProfitPrice,source:'NEW_BOT_TP5',policyVersion:frozen.version};
   const explicitCandidates = [
     ['TRACKED_SIGNAL', trackedTakeProfitPrice],
     ['LIQUID_FLOW_V2_PAPER', liquidFlowV2TakeProfitPrice],

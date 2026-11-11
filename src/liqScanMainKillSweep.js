@@ -246,7 +246,11 @@ export function collectLiqScanSweepDiscordEvent(value) {
   return event && liquidity != null && liquidity > LIQ_SCAN_SWEEP_DISCORD_MIN_SIDE_PROXY ? event : null;
 }
 
-export async function deliverLiqScanSweepDiscord(event, notifier, tracker) {
+export async function deliverLiqScanSweepDiscord(event, notifier, tracker, { enabled = true } = {}) {
+  if (!enabled) {
+    tracker.acknowledge(event);
+    return { sent: 0, reason: 'discord_disabled' };
+  }
   const outcome = collectLiqScanSweepDiscordEvent(event)
     ? await notifier.notify(event)
     : { sent: 0, reason: 'side_proxy_not_over_100m', filtered: true };

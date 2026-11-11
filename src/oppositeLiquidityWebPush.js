@@ -104,7 +104,9 @@ export class OppositeLiquidityWebPushService {
     webPushImpl = webPush,
     now = () => Date.now(),
     maxSubscriptions = 50,
+    enabled = true,
   } = {}) {
+    this.enabled = enabled === true;
     this.stateFile = stateFile;
     this.vapidFile = vapidFile;
     this.vapidSubject = cleanText(vapidSubject, 512) || 'https://liquidity.nhathadev.trade';
@@ -193,6 +195,7 @@ export class OppositeLiquidityWebPushService {
   snapshotSync() {
     return {
       version: OPPOSITE_LIQUIDITY_WEB_PUSH_VERSION,
+      enabled: this.enabled,
       configured: Boolean(this.vapid?.publicKey),
       subscriptionCount: Object.keys(this.state?.subscriptions ?? {}).length,
       maxSubscriptions: this.maxSubscriptions,
@@ -228,6 +231,7 @@ export class OppositeLiquidityWebPushService {
 
   subscribe(value, metadata = {}) {
     return this.#run(async () => {
+      if (!this.enabled) throw new Error('WEB_NOTIFICATIONS_DISABLED');
       const subscription = normalizeWebPushSubscription(value);
       const id = subscriptionId(subscription.endpoint);
       const now = this.now();
@@ -271,6 +275,7 @@ export class OppositeLiquidityWebPushService {
 
   sendPayload(payload = {}) {
     return this.#run(async () => {
+      if (!this.enabled) return { attempted: 0, sent: 0, removed: 0, failed: 0, skipped: 'WEB_NOTIFICATIONS_DISABLED' };
       const eventId = cleanText(payload.eventId, 240);
       if (!eventId) return { attempted: 0, sent: 0, removed: 0, failed: 0, error: 'EVENT_ID_REQUIRED' };
       const signalType = cleanText(payload.signalType, 120);

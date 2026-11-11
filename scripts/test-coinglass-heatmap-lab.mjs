@@ -22,6 +22,10 @@ for(const symbol of ['../../.env','BTCUSDT&model=3','<img>USDT'])assert.throws((
 assert.throws(()=>heatmapQuery({...q,model:2}),/INVALID_QUERY/);assert.throws(()=>heatmapQuery({...q,range:'1h'}),/INVALID_QUERY/);
 const demo1=demoHeatmap(q,now),demo3=demoHeatmap({...q,model:3},now);assert.equal(demo1.source,'DEMO');assert.deepEqual(demo1.cells,demo3.cells);assert.deepEqual(demo1.candles,demo3.candles,'do not invent proprietary model differences');assert(demo1.cells.length>1000);
 assert.equal(heatmapColor(100,100,false),'rgb(253,231,37)');assert.notEqual(heatmapColor(1,100,true),heatmapColor(1,100,false));
+assert.equal(heatmapColor(0,100,false),'rgb(48,0,61)');
+assert.equal(heatmapColor(10,100,false),'rgb(93,31,123)');
+assert.equal(heatmapColor(40,100,false),'rgb(59,82,139)');
+assert.equal(heatmapColor(60,100,false),'rgb(33,145,140)');
 for(const range of ['12h','24h','3d','7d','30d']){const p=heatmapRangePlan(range,now);assert((p.end-p.from)/p.step<=499);assert.equal(p.end%p.step,0);}
 const plan=heatmapRangePlan('24h',now);
 const fixtures=p=>Array.from({length:(p.end-p.from)/p.step},(_,i)=>{const v=100+Math.sin(i*.2)*.2;return [p.from+i*p.step,v,v+.01,v-.01,v,1000,p.from+(i+1)*p.step-1,100000+i*20,100,500,50000];});

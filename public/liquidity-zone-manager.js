@@ -20,8 +20,8 @@ function manualZoneReady(w,now=Date.now()) {
 function manualOrderSummary() {
   if(!manualSelection)return;
   const {w,side}=manualSelection,margin=Number($('manualMargin').value);
-  const tp=side==='LONG'?w.zone.low:w.zone.high,sl=w.markPrice*(side==='LONG'?.94:1.06);
-  $('manualOrderSummary').textContent=`${side} ${w.symbol} · MARKET\nMargin ${Number.isFinite(margin)?margin:'—'} USDT ×5x = ${Number.isFinite(margin*5)?price(margin*5):'—'} USDT notional (làm tròn quantity theo Binance, không tự nâng margin).\nMARK tham khảo ${price(w.markPrice)} · TP ${price(tp)} · SL tham khảo ${price(sl)} (−30% ROE, neo theo giá khớp).\nVùng vàng ${price(w.zone.low)} – ${price(w.zone.high)}. Giá khớp có thể khác MARK; phí/trượt giá chưa tính. Giới hạn gộp MAIN tự động + thủ công: 20.`;
+  const sl=w.markPrice*(side==='LONG'?.94:1.06);
+  $('manualOrderSummary').textContent=`${side} ${w.symbol} · MARKET\nMargin ${Number.isFinite(margin)?margin:'—'} USDT ×5x = ${Number.isFinite(margin*5)?price(margin*5):'—'} USDT notional (làm tròn quantity theo Binance, không tự nâng margin).\nMARK tham khảo ${price(w.markPrice)} · TP +10% ROE neo theo giá khớp và đòn bẩy thực thi · SL tham khảo ${price(sl)} (−30% ROE, neo theo giá khớp).\nVùng vàng ${price(w.zone.low)} – ${price(w.zone.high)}. Giá khớp có thể khác MARK; phí/trượt giá chưa tính. Giới hạn gộp MAIN tự động + thủ công: 20.`;
 }
 function openManualZoneOrder(id) {
   const w=data?.watches.find(w=>w.id===id);

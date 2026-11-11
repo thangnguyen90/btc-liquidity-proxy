@@ -1,5 +1,9 @@
+import {newEntrySizing} from '../src/newEntryLeveragePolicy.js';
 import assert from 'node:assert/strict';
 import {STRUCTURE_SOURCE} from '../src/structureSetupBinance.js';
+import {isExtremeReboundSweepOrder} from '../src/extremeShortSqueezeBinance.js';
+import {SELL_FLOW_SOURCE} from '../src/pumpSqueezeSellFlowBinance.js';
+import {resolveFrozenNewBotTakeProfit} from '../src/newBotTakeProfitPolicy.js';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -201,7 +205,7 @@ try {
   function harness({positions=[],orders=[],excluded=false,mark=plan.signalEntryPrice,types=null,finalMark=mark,execution=true}={}) {
     const placed=[],protection=[],audits=[];
     const run=vm.runInNewContext(server.slice(start,end)+'\n return {orderResult,plannedOrder};\n}\nexecutePlaceOrder',{
-      PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE,RISING_VOLUME_SOURCE,MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
+ newManualTakeProfitPolicy:{preview:()=>null},resolveFrozenManualTakeProfit:()=>null,activeNewEntryPolicy:()=>null,newEntrySizing,isExtremeReboundSweepOrder,SELL_FLOW_SOURCE,resolveFrozenNewBotTakeProfit,newBotTakeProfitLedger:{preview:()=>null},currentNewBotTpProof:()=>null,PUMP_TURN_NEAR_LONG_SOURCE:'pump-turn-near-long',      PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE,RISING_VOLUME_SOURCE,MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
       ordersTokens:new Map(),runtimeSettings:{orderEnabled:execution,dryRun:false},
       autoEntryControls:{assertEntry:p=>controls.assertEntry(p),read(){},isProtectionExcluded:()=>excluded},
       normalizeSymbol:s=>s,isBinanceProtectionExcluded:()=>excluded,
@@ -235,14 +239,14 @@ try {
   function protectionHarness(side,hidePlaced=false) {
     const placed=[];
     const run=vm.runInNewContext(server.slice(tpStart,tpEnd)+'\nsetTpSl',{
-      PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE,RISING_VOLUME_SOURCE,BINANCE_CLOSE_POSITION_PROTECTION_VERSION,BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION:'manual',
+      PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE,RISING_VOLUME_SOURCE,SELL_FLOW_SOURCE,PUMP_TURN_NEAR_LONG_SOURCE:'pump-turn-near-long',resolveFrozenManualTakeProfit:()=>null,resolveFrozenNewBotTakeProfit,currentNewBotTpProof:()=>null,BINANCE_CLOSE_POSITION_PROTECTION_VERSION,BINANCE_MANUAL_SHORT_EMA99_TP_ONLY_VERSION:'manual',
       client:{getOpenOrders:async()=>[],getOpenAlgoOrders:async()=>hidePlaced?[]:placed,
         getPositions:async()=>[{symbol:'ONUSDT',positionAmt:side==='BUY'?'1':'-1',entryPrice:'100',leverage:'5',positionSide:'BOTH'}],
         getPremiumIndex:async()=>({markPrice:'100'}),placeAlgoOrder:async({params})=>{placed.push(params);return {algoId:placed.length};}},
       normalizeSymbol:s=>s,getApiCredentials:()=>({}),getSymbols:async()=>[{symbol:'ONUSDT'}],
       resolveSignalProtectionWorkingTypes:()=>({takeProfitWorkingType:'CONTRACT_PRICE',stopLossWorkingType:'MARK_PRICE'}),
       shortStopLossSuppression:(side,source)=>({suppressed:shouldSuppressBotShortStopLoss({side,source})}),
-      isTrackedManualShortTpOnlyPosition:()=>false,isBinanceProtectionExcluded:()=>false,
+      isTrackedManualShortTpOnlyPosition:()=>false,isBinanceProtectionExcluded:()=>false,slTracking:{positions:{}},
       resolveNonLiquidFlowV2TakeProfit,hasOpenProtectionOrder,buildClosePositionProtectionParams,
       priceFromTick:(_,p)=>Number(p.toFixed(6)),console:{log(){}},process:{env:{}},Date,
     });return {run,placed};

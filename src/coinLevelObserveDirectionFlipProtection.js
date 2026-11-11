@@ -1,5 +1,7 @@
+import { shouldRetainDcaAttachedLimitOrder } from './limitOrderRetention.js';
+
 export const COIN_LEVEL_OBSERVE_DIRECTION_FLIP_PROTECTION_VERSION =
-  'COIN_LEVEL_OBSERVE_DIRECTION_FLIP_PROTECTION_V1_20260922';
+  'COIN_LEVEL_OBSERVE_DIRECTION_FLIP_DCA_RETENTION_V2_20261109';
 
 export const COIN_LEVEL_OBSERVE_DIRECTION_CARRY_MS = 30 * 60_000;
 
@@ -125,4 +127,22 @@ export function isEntryOrderAgainstCoinLevelFlip(order = {}, flip = {}) {
   if (type.includes('STOP') || type.includes('TAKE_PROFIT')) return false;
   const side = String(order?.side ?? '').toUpperCase();
   return side === (fromDirection === 'LONG' ? 'BUY' : 'SELL');
+}
+
+export function partitionCoinLevelFlipEntries(orders, flip, positions) {
+  if (!Array.isArray(positions)) throw new Error('Coin Level flip: invalid Binance Position Risk response');
+  const activePositions = positions.filter(position => {
+    if (String(position?.symbol ?? '').toUpperCase() !== flip.symbol) return false;
+    const amount = finite(position.positionAmt ?? position.amt);
+    if (amount === null) throw new Error('Coin Level flip: invalid Binance position amount');
+    return amount !== 0;
+  });
+  const cancel = [];
+  const retainedDca = [];
+  for (const order of orders) {
+    if (!isEntryOrderAgainstCoinLevelFlip(order, flip)) continue;
+    const attached = activePositions.some(position => shouldRetainDcaAttachedLimitOrder({ order, position }));
+    (attached ? retainedDca : cancel).push(order);
+  }
+  return { cancel, retainedDca };
 }

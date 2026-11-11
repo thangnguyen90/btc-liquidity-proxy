@@ -1,6 +1,7 @@
 import {dirname} from 'node:path';
 import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
-import {isRisingVolumeEntrySignal,risingVolumeMargin} from './risingVolumeBinance.js';
+import {isRisingVolumeEntrySignal,risingVolumeAlignedSizing,risingVolumeMargin} from './risingVolumeBinance.js';
+import {risingVolumeContext,risingVolumeContextFields,RISING_VOLUME_CONTEXT_VERSION} from './risingVolumeContext.js';
 
 export const RISING_VOLUME_DISCORD_VERSION='RISING_VOLUME_1M_SUSTAINED_DISCORD_V1_20261008';
 export const RISING_VOLUME_DISCORD_MAX_AGE_MS=70_000;
@@ -29,11 +30,11 @@ function publicBase(value) {
   try{const u=new URL(String(value));if(['http:','https:'].includes(u.protocol)&&!u.username&&!u.password)return u.origin;}catch{}
   return 'https://liquidity.nhathadev.trade';
 }
-export function risingVolumeDiscordPayload(event,execution={},baseUrl) {
+export function risingVolumeDiscordPayload(event,execution={},baseUrl,context=null) {
   const s=event.snapshot,isLong=s.side==='LONG',status=String(execution.status??'UNKNOWN').toUpperCase();
   const proof=execution.risingVolumeRatioProof;
   const ratioText=proof?.pass?`**PASS ratio tài khoản top trader 5m** · nền 30m biên **${number(proof.widthPct,2)}%** · đổi **${number(proof.changePct,2)}%** trong **${proof.transitionMinutes}m**`
-    :`**CHỈ DISCORD khi chưa pass gate ratio** · ${String(proof?.reason??(status.startsWith('RATIO_')?status:'chưa kiểm tra / route OFF'))}\nCần nền 30m biên ≤5%, rồi ${isLong?'giảm':'tăng'} ≥10% trong ≤30m; không suy từ OI hoặc ratio vị thế.`;
+    :`**NHÁNH RATIO CHƯA PASS** · ${String(proof?.reason??(status.startsWith('RATIO_')?status:'chưa kiểm tra / route OFF'))}\nCần nền 30m biên ≤5%, rồi ${isLong?'giảm':'tăng'} ≥10% trong ≤30m; không suy từ OI hoặc ratio vị thế.`;
   const id=String(execution.orderId??'').replace(/[^0-9]/g,'').slice(0,24);
   return {username:'Volume 1m · Liền mạch',allowed_mentions:{parse:[]},embeds:[{
     title:`${isLong?'🟢':'🔴'} VOLUME 1M LIỀN MẠCH · ${s.side} · ${s.symbol}`,color:isLong?0x35f3b0:0xff6e87,
@@ -43,8 +44,11 @@ export function risingVolumeDiscordPayload(event,execution={},baseUrl) {
       {name:'VOLUME ĐÃ ĐẠT',value:`MA5 tăng **3/3 bước** · TB5 / nền20 **${number(s.volumeRatio,2)}x**\nNền 1m: **${s.pattern1mElevatedBars}/10 nến** giữ floor · TB10 / median20 **${number(s.pattern1mMeanRatio,2)}x**\nCột lớn nhất **${number(Number(s.pattern1mDominantShare)*100,1)}%** tổng10 · không cao→tụt ≥75%`,inline:false},
       {name:`BINANCE · RULE ${risingVolumeMargin(s.side)} USDT MARGIN × 5X`,value:`**${executionLabels[status]??(status.startsWith('RATIO_')?'KHÔNG VÀO · chưa đạt / thiếu dữ liệu ratio':'CHƯA RÕ · xem nhật ký trên web')}**${id?`\nOrder ID **${id}**`:''}\nTP **+10% ROE** / SL **−30% ROE**, neo giá khớp. Tin này không xác nhận đã đặt đủ TP/SL.`,inline:false},
       {name:'GATE BINANCE · VOLUME + RATIO',value:ratioText+'\nNgưỡng thử nghiệm, chưa chứng minh lợi thế. Các guard Binance vẫn áp dụng.',inline:false},
+      ...risingVolumeContextFields(event,context),
+      ...(context?.entryCandidate?[{name:`BINANCE · NHÁNH CÙNG HƯỚNG ${risingVolumeAlignedSizing(s.side).marginUsdt} USDT × 3X`,
+        value:'Đủ bối cảnh Cùng hướng trước nến. Xét MARKET ở mốc 5m kế sau lúc Discord nhận tin, TP +5% / SL −20% ROE. Xem nhật ký để biết kết quả guard và khớp lệnh.',inline:false}]:[]),
       {name:'THỜI ĐIỂM NẾN ĐÓNG (UTC+7)',value:new Date(s.closedAt).toLocaleString('vi-VN',{timeZone:'Asia/Bangkok',hour12:false}),inline:false},
-      {name:'MỞ TÍN HIỆU',value:`[Volume · snapshot gốc](${publicBase(baseUrl)}/rising-volume-watch?view=history&id=${encodeURIComponent(event.id)}) · [Binance](https://www.binance.com/en/futures/${encodeURIComponent(s.symbol)})`,inline:false},
+      {name:'MỞ TÍN HIỆU',value:`[Volume · snapshot gốc](${publicBase(baseUrl)}/rising-volume-watch?view=history&id=${encodeURIComponent(event.id)}) · [Model 1/3](${publicBase(baseUrl)}/coinglass-heatmap-lab?symbol=${encodeURIComponent(s.symbol)}&range=24h) · [Binance](https://www.binance.com/en/futures/${encodeURIComponent(s.symbol)})`,inline:false},
     ],timestamp:new Date(s.observedAt).toISOString(),
     footer:{text:`${RISING_VOLUME_DISCORD_VERSION} · dữ liệu lúc phát hiện; xem giá mới trước quyết định`},
   }]};
@@ -52,8 +56,8 @@ export function risingVolumeDiscordPayload(event,execution={},baseUrl) {
 
 export class RisingVolumeDiscordNotifier {
   constructor({stateFile,webhookUrl=()=>'',baseUrl=()=>'',fetchImpl=(...args)=>globalThis.fetch(...args),
-    now=()=>Date.now(),startedAt=now(),storage=null}={}) {
-    Object.assign(this,{stateFile,webhookUrl,baseUrl,fetchImpl,now,startedAt,storage});
+    now=()=>Date.now(),startedAt=now(),storage=null,getContext=null,onSent=null}={}) {
+    Object.assign(this,{stateFile,webhookUrl,baseUrl,fetchImpl,now,startedAt,storage,getContext,onSent});
     this.state=null;this.queue=Promise.resolve();this.error=null;
   }
   configured(){return !!risingVolumeDiscordWebhook(typeof this.webhookUrl==='function'?this.webhookUrl():this.webhookUrl);}
@@ -93,8 +97,17 @@ export class RisingVolumeDiscordNotifier {
         if(s.closedAt<=this.startedAt||s.closedAt>=s.observedAt||s.observedAt>admittedAt
           ||admittedAt-s.closedAt>RISING_VOLUME_DISCORD_MAX_AGE_MS)return {status:'old-or-stale'};
         if(this.state.events[event.id])return {status:'deduped'};
+        let context=null;
+        if(this.getContext){
+          let timer;
+          try{context=await Promise.race([Promise.resolve().then(()=>this.getContext(clone(event))),
+            new Promise(resolve=>{timer=setTimeout(()=>resolve(null),2800);})]);}
+          catch{}finally{clearTimeout(timer);}
+          context??=risingVolumeContext(event,{at:this.now()});
+        }
         const record={id:event.id,symbol:s.symbol,side:s.side,closedAt:s.closedAt,at:admittedAt,status:'PENDING',
-          payload:risingVolumeDiscordPayload(event,execution,typeof this.baseUrl==='function'?this.baseUrl():this.baseUrl)};
+          ...(context?{context:clone(context)}:{}),
+          payload:risingVolumeDiscordPayload(event,execution,typeof this.baseUrl==='function'?this.baseUrl():this.baseUrl,context)};
         this.state.events[event.id]=record;await this.save();
         await this.sendPending();return {status:record.status};
       } catch(e){this.error=e.message;return {status:'state-error'};}
@@ -129,11 +142,12 @@ export class RisingVolumeDiscordNotifier {
         this.state.retryAfter=this.now()+30_000;
       }
       await this.save();
+      if(r.status==='SENT'){try{this.onSent?.(r);}catch{}}
     }
   }
   snapshot() {
     const events=Object.values(this.state?.events??{});
-    return {version:RISING_VOLUME_DISCORD_VERSION,configured:this.configured(),startedAt:this.startedAt,error:this.error,
+    return {version:RISING_VOLUME_DISCORD_VERSION,contextVersion:this.getContext?RISING_VOLUME_CONTEXT_VERSION:null,configured:this.configured(),startedAt:this.startedAt,error:this.error,
       sent:events.filter(r=>r.status==='SENT').length,pending:events.filter(r=>r.status==='PENDING').length,
       uncertain:events.filter(r=>['POSTING','UNKNOWN'].includes(r.status)).length,
       rejected:events.filter(r=>r.status==='REJECTED').length,lastSentAt:Math.max(0,...events.map(r=>r.sentAt??0))||null};

@@ -1,14 +1,18 @@
+import {SELL_FLOW_SOURCE,SELL_FLOW_ROUTE,SELL_FLOW_RULE,validSellFlowOrder} from './pumpSqueezeSellFlowBinance.js';
 import {readFileSync,writeFileSync,renameSync,mkdirSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {validImpulseSizing} from './postMoveImpulseSizing.js';
-import {RISING_VOLUME_SOURCE,RISING_VOLUME_STREAM,RISING_VOLUME_ROUTES,RISING_VOLUME_ENTRY_RULE,risingVolumeMargin} from './risingVolumeBinance.js';
+import {RISING_VOLUME_SOURCE,RISING_VOLUME_STREAM,RISING_VOLUME_ROUTES,RISING_VOLUME_ENTRY_RULE,RISING_VOLUME_ALIGNED_ROUTES,risingVolumeAlignedSizing,risingVolumeMargin,validRisingVolumeOrder} from './risingVolumeBinance.js';
 import {EARLY_WICK_ROUTE,EARLY_WICK_RULE} from './coinPumpWickEarlyBinance.js';
 import {STRUCTURE_SOURCE,STRUCTURE_RULE} from './structureSetupBinance.js';
-import {PUMP_TURN_NEAR_SOURCE,PUMP_TURN_NEAR_ROUTE,PUMP_TURN_NEAR_RULE} from './pumpTurnNearShortBinance.js';
+import {PUMP_TURN_NEAR_SOURCE,PUMP_TURN_NEAR_ROUTE,PUMP_TURN_NEAR_RULE,PUMP_TURN_NEAR_LONG_SOURCE,PUMP_TURN_NEAR_LONG_RULE,pumpTurnNearLongRouteKey,validPumpTurnNearOrder} from './pumpTurnNearShortBinance.js';
 import {HEATMAP_SWEEP_SOURCE,HEATMAP_SWEEP_ROUTES,HEATMAP_SWEEP_RULE,heatmapSweepMargin} from './heatmapSweepBinance.js';
+import {SECOND_SWEEP_LABEL,SECOND_SWEEP_TITLE} from '../public/heatmap-second-sweep-model.js';
+import {LONG_QUALITY_LABELS,longQualityKey} from '../public/heatmap-long-quality-model.js';
 import {ema99RouteMeta,ema99Margin,ema99Leverage,ema99TakeProfitRoe,validEma99Margin,validEma99Leverage,validEma99TakeProfitRoe,EMA99_ENTRY_INTERVALS,EMA99_ENTRY_SETTINGS_VERSION} from './ema99EntryCatalog.js';
 import {otherRouteMeta,resolveOtherEntrySettings,validOtherMargin,validOtherLeverage,validOtherTakeProfitRoe,OTHER_ENTRY_SETTINGS_VERSION} from './otherEntryCatalog.js';
-export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V47_HEATMAP_NO_PRICE_DRIFT_20261023';
+import {newEntryLeveragePolicy} from './newEntryLeveragePolicy.js';
+export const AUTO_ENTRY_CONTROLS_VERSION='AUTO_ENTRY_CONTROLS_V49_HEATMAP_LONG_QUALITY_20261026';
 export const BINANCE_PROTECTION_EXCLUSION_VERSION='BINANCE_SYMBOL_PROTECTION_EXCLUSION_V9_FULL_BYPASS_AUTO_CLOSE_20261005';
 const MANUAL_POSITION_CLOSE_AUTHORIZATION=Symbol('authenticated-manual-position-close');
 // Server-only capability: request JSON/client IDs cannot grant this exemption.
@@ -50,6 +54,7 @@ const isLocalAiPriorityEngineZoneRoute=r=>r?.source==='local-ai-trend-evaluation
 const clean=v=>String(v??'').trim().slice(0,200);
 const isRisingVolumeRoute=r=>r?.source===RISING_VOLUME_SOURCE&&r?.stream===RISING_VOLUME_STREAM
   &&RISING_VOLUME_ROUTES.some(route=>route.signalLabel===r.label&&route.side===r.side);
+const isAlignedVolumeRoute=r=>r?.source===RISING_VOLUME_SOURCE&&RISING_VOLUME_ALIGNED_ROUTES.some(x=>x.streamId===r.stream&&x.signalLabel===r.label&&x.side===r.side);
 const isEarlyWickRoute=r=>r?.source===EARLY_WICK_ROUTE.source&&r?.stream===EARLY_WICK_ROUTE.streamId
   &&r?.label===EARLY_WICK_ROUTE.signalLabel&&r?.side==='LONG';
 const isStructureRoute=r=>r?.source===STRUCTURE_SOURCE&&r?.stream==='closed-1m-structure'
@@ -218,13 +223,16 @@ export class AutoEntryControls {
           if(!meta.executable||r.marginUsdt===null||r.leverage===null||r.takeProfitRoePct===null)r.enabled=false;}
         const otherMeta=otherRouteMeta(r);
         r.otherSettingsEditable=otherMeta!==null;
+        if(r.source===SELL_FLOW_SOURCE)Object.assign(r,{...SELL_FLOW_RULE,title:'SHORT ép LONG · bán chủ động ≥55% · 2 USDT ×3 · TP5/SL20 · max riêng 5',executable:true,takeProfitSettingsEditable:false});
         if(isRisingVolumeRoute(r))Object.assign(r,{...RISING_VOLUME_ENTRY_RULE,
           marginUsdt:risingVolumeMargin(r.side),title:'Volume 1m liền mạch + ratio đi ngang rồi đổi dốc',executable:true,takeProfitSettingsEditable:false});
+        if(isAlignedVolumeRoute(r))Object.assign(r,{...risingVolumeAlignedSizing(r.side),title:'Volume 1m · Cùng hướng cá voi + Model 1/3 · '+r.side,executable:true,takeProfitSettingsEditable:false});
         if(isEarlyWickRoute(r))Object.assign(r,{...EARLY_WICK_RULE,title:'Rút râu sớm + ratio giảm mạnh · LONG',executable:true,takeProfitSettingsEditable:false});
         if(isStructureRoute(r))Object.assign(r,{...STRUCTURE_RULE,title:'Cơ hội LONG / SHORT · READY R:R ≥1,5 · max riêng 15',executable:true,takeProfitSettingsEditable:false});
         if(r.source===PUMP_TURN_NEAR_SOURCE&&r.stream===PUMP_TURN_NEAR_ROUTE.streamId&&r.label===PUMP_TURN_NEAR_ROUTE.signalLabel&&r.side==='SHORT')Object.assign(r,{...PUMP_TURN_NEAR_RULE,maxOpenPositionsScope:PUMP_TURN_NEAR_SOURCE,title:'GẦN VÙNG SHORT mới · chưa xác nhận nến · 2 USDT ×5 · max riêng 20',executable:true,takeProfitSettingsEditable:false});
-        if(isHeatmapSweepRoute(r))Object.assign(r,{...HEATMAP_SWEEP_RULE,marginUsdt:heatmapSweepMargin(r.side),maxOpenPositionsScope:HEATMAP_SWEEP_SOURCE,
-          title:`QUÉT HẾT CỤM ${r.side==='SHORT'?'TRÊN':'DƯỚI'} · ${r.side} ${heatmapSweepMargin(r.side)} USDT ×5 · max riêng 20 chung hai hướng`,executable:true,takeProfitSettingsEditable:false});
+        if(r.key===pumpTurnNearLongRouteKey)Object.assign(r,{...PUMP_TURN_NEAR_LONG_RULE,maxOpenPositionsScope:PUMP_TURN_NEAR_LONG_SOURCE,title:'GẦN VÙNG LONG · LỰC MUA + VOLUME MẠNH · 5 USDT ×3',executable:true,takeProfitSettingsEditable:false});
+        if(isHeatmapSweepRoute(r))Object.assign(r,{...HEATMAP_SWEEP_RULE,marginUsdt:heatmapSweepMargin(r.side,r.label),maxOpenPositionsScope:HEATMAP_SWEEP_SOURCE,
+          title:longQualityKey(r.label)?`QUÉT HẾT CỤM DƯỚI · LONG NHÓM ${r.label===LONG_QUALITY_LABELS.GOOD?'TỐT · 5':'XẤU · 1'} USDT ×5 · thử nghiệm · cần WHITELIST/closed AvgROE >4%`:r.label===SECOND_SWEEP_LABEL?`${SECOND_SWEEP_TITLE} · SHORT 10 USDT ×5 · cần WHITELIST/closed AvgROE >4%`:`QUÉT HẾT CỤM ${r.side==='SHORT'?'TRÊN':'DƯỚI'} · ${r.side} ${heatmapSweepMargin(r.side)} USDT ×5 · max riêng 20 chung hai hướng`,executable:true,takeProfitSettingsEditable:false});
         if(otherMeta){
           const settings=resolveOtherEntrySettings(r,r);
           r.takeProfitSettingsEditable=otherMeta.takeProfitMode==='FIXED_ROE';
@@ -234,6 +242,10 @@ export class AutoEntryControls {
           r.takeProfitRoePct=settings?.takeProfitRoePct??null;
           if(!settings)r.enabled=false;
         }
+      }
+      if(s.newEntryLeveragePolicy){
+        const policy=newEntryLeveragePolicy(s);
+        for(const r of Object.values(s.routes))r.executionLeverage=policy.leverage;
       }
       s.protectionExclusions=protectionExclusions;
       s.protectionFullBypasses=protectionFullBypasses;
@@ -303,6 +315,7 @@ export class AutoEntryControls {
       r.marginUsdt=body.marginUsdt;
     }
     else if(body.action==='leverage'&&s.routes[body.key]) {
+      if(s.newEntryLeveragePolicy)throw Error('Đòn bẩy lệnh mới đang áp dụng chính sách chung 3x.');
       const r=s.routes[body.key];
       const emaEditable=ema99RouteMeta(r)?.executable===true,otherEditable=otherRouteMeta(r)!==null;
       if((!emaEditable&&!otherEditable)||!(emaEditable?validEma99Leverage(body.leverage):validOtherLeverage(body.leverage)))
@@ -392,15 +405,22 @@ export class AutoEntryControls {
     if(manual)return;
     const r=this.register(payload),s=this.read();
     if(r.source==='UNCLASSIFIED'||r.side==='UNKNOWN'||!s.enabled||s.routes[r.key]?.enabled!==true){const e=new Error(`Auto Binance OFF: ${r.label} / ${r.side}`);e.code='AUTO_ENTRY_CONTROL_DISABLED';throw e;}
+    if(r.source===SELL_FLOW_SOURCE&&!validSellFlowOrder(payload))throw Error('SHORT ép LONG: proof/size/TP/SL không hợp lệ');
     if(isRisingVolumeRoute(r)&&(['leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions']
       .some(key=>payload[key]!==RISING_VOLUME_ENTRY_RULE[key])||payload.marginUsdt!==risingVolumeMargin(r.side)
       ||payload.notionalUsdt!==risingVolumeMargin(r.side)*5))
       throw Error('Volume 1m: size/đòn bẩy/TP/SL/cap cố định đã đổi; chặn entry.');
+    if(isAlignedVolumeRoute(r)&&(!validRisingVolumeOrder(payload)
+      ||(typeof s.routes[r.key].enabledAt==='number'?s.routes[r.key].enabledAt:Date.parse(s.routes[r.key].enabledAt))!==payload.entryActivationAt))
+      throw Error('Volume 1m Cùng hướng: thiếu proof hợp lệ hoặc cấu hình đã đổi; chặn MARKET.');
+    if(r.source===PUMP_TURN_NEAR_LONG_SOURCE&&(r.key!==pumpTurnNearLongRouteKey||!validPumpTurnNearOrder(payload)
+      ||(typeof s.routes[r.key].enabledAt==='number'?s.routes[r.key].enabledAt:Date.parse(s.routes[r.key].enabledAt))!==payload.entryActivationAt))
+      throw Error('GẦN VÙNG LONG: proof, size hoặc thời điểm bật đã đổi; chặn MARKET.');
     if(r.source===PUMP_TURN_NEAR_SOURCE&&(r.stream!==PUMP_TURN_NEAR_ROUTE.streamId||r.label!==PUMP_TURN_NEAR_ROUTE.signalLabel||r.side!=='SHORT'
       ||['marginUsdt','leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions'].some(k=>payload[k]!==PUMP_TURN_NEAR_RULE[k])||payload.notionalUsdt!==10||payload.maxOpenPositionsScope!==PUMP_TURN_NEAR_SOURCE))
       throw Error('GẦN VÙNG SHORT: size/TP/SL/max riêng 20 đã đổi; chặn entry.');
     if(r.source===HEATMAP_SWEEP_SOURCE&&(!isHeatmapSweepRoute(r)||['leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions'].some(k=>payload[k]!==HEATMAP_SWEEP_RULE[k])
-      ||payload.marginUsdt!==heatmapSweepMargin(r.side)||payload.notionalUsdt!==heatmapSweepMargin(r.side)*5||payload.maxOpenPositionsScope!==HEATMAP_SWEEP_SOURCE
+      ||payload.marginUsdt!==heatmapSweepMargin(r.side,r.label)||payload.notionalUsdt!==heatmapSweepMargin(r.side,r.label)*5||payload.maxOpenPositionsScope!==HEATMAP_SWEEP_SOURCE
       ||(typeof s.routes[r.key].enabledAt==='number'?s.routes[r.key].enabledAt:Date.parse(s.routes[r.key].enabledAt))!==payload.entryActivationAt))
       throw Error('Heatmap quét hết cụm: size/TP/SL/max riêng 20 đã đổi; chặn entry.');
     if(isEarlyWickRoute(r)&&(['marginUsdt','leverage','takeProfitRoePct','stopLossRoePct','maxOpenPositions']

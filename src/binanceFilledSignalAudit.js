@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { binanceSignalDisplayName } from './binanceSignalDisplayName.js';
 
 export const BINANCE_FILLED_SIGNAL_AUDIT_VERSION =
   'BINANCE_SIGNAL_LIFECYCLE_AUDIT_V2_ALL_REAL_FILLS_AND_CLOSE_PNL_20260905';
@@ -214,6 +215,7 @@ export function buildBinanceFilledSignalAuditRecord(input = {}, submission = {},
     ...(combined.risingVolumeSnapshot?{
       risingVolumeSnapshot:JSON.parse(JSON.stringify(combined.risingVolumeSnapshot)),
       risingVolumeSignalId:text(combined.risingVolumeSignalId,220)||null,
+      ...(combined.risingVolumeAlignedProof?{risingVolumeAlignedProof:JSON.parse(JSON.stringify(combined.risingVolumeAlignedProof))}:{}),
       ...(combined.risingVolumeRatioProof?{risingVolumeRatioProof:JSON.parse(JSON.stringify(combined.risingVolumeRatioProof))}:{}),
       risingVolumeEntryVersion:text(combined.risingVolumeEntryVersion,150)||null}:{}),
     ...(combined.coinPumpWickEarlyAtEntry?{
@@ -322,6 +324,7 @@ export function binanceFilledSignalAuditCsvLine(record = {}) {
 
 export function buildBinanceFilledSignalAuditDiscordPayload(record = {}) {
   const isLong = record.direction === 'LONG';
+  const displayName = binanceSignalDisplayName(record);
   const fillText = [
     `Giá: **${record.avgFillPrice ?? '-'}**`,
     `Qty: **${record.filledQty ?? '-'}**`,
@@ -338,11 +341,11 @@ export function buildBinanceFilledSignalAuditDiscordPayload(record = {}) {
   return {
     username: 'Binance Filled Signal Audit',
     embeds: [{
-      title: `[FILLED] ${record.symbol} · ${record.direction} · ${record.signalLabel || record.signalType}`.slice(0, 256),
+      title: `[FILLED] ${record.symbol} · ${record.direction} · ${displayName || record.signalLabel || record.signalType}`.slice(0, 256),
       color: isLong ? 0x22c55e : 0xef4444,
       description: `**Nguyên nhân vào**\n${text(record.entryReason, 3_500)}`,
       fields: [
-        { name: 'Loại tín hiệu', value: text(record.signalType || '-', 1_024), inline: false },
+        { name: 'Loại tín hiệu', value: text(displayName || record.signalType || '-', 1_024), inline: false },
         { name: 'Nguồn / stream', value: `${record.signalSource || '-'}${record.streamId ? ` / ${record.streamId}` : ''}`.slice(0, 1_024), inline: true },
         { name: 'Margin / leverage', value: marginText.slice(0, 1_024), inline: true },
         { name: 'Khớp lệnh', value: fillText.slice(0, 1_024), inline: false },
@@ -365,8 +368,10 @@ export function buildBinanceFilledSignalAuditDiscordPayload(record = {}) {
 
 export function buildBinanceClosedSignalAuditDiscordPayload({ records = [], close = {} } = {}) {
   const primary = records.find((record) => record.isDca !== true) ?? records[0] ?? {};
-  const labels = [...new Set(records.map((record) => record.signalLabel || record.signalType).filter(Boolean))];
-  const types = [...new Set(records.map((record) => record.signalType).filter(Boolean))];
+  const labels = [...new Set(records.map(record =>
+    binanceSignalDisplayName(record) || record.signalLabel || record.signalType).filter(Boolean))];
+  const types = [...new Set(records.map(record =>
+    binanceSignalDisplayName(record) || record.signalType).filter(Boolean))];
   const net = finite(close.netRealizedPnlUsdt, 0);
   const roe = finite(close.realizedRoePct, 0);
   const outcome = net > 0 ? 'WIN' : net < 0 ? 'LOSS' : 'BREAKEVEN';

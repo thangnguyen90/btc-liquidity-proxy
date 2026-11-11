@@ -74,3 +74,6 @@ data/heatmap-sweep-watch.json.tmp-*
 data/heatmap-market-raw-cache/
 data/heatmap-manual-orders.json*
 data/heatmap-sweep-binance.json*
+
+# Dedicated range-sweep observer runtime state (never includes webhook)
+data/range-liquidity-sweep-watch.json*

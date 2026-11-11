@@ -1,3 +1,5 @@
+import {NewManualTakeProfitPolicy,resolveFrozenManualTakeProfit,NEW_MANUAL_TP_VERSION} from '../src/newManualTakeProfitPolicy.js';
+import {newEntrySizing} from '../src/newEntryLeveragePolicy.js';
 import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
 import {mkdtemp,readFile,writeFile} from 'node:fs/promises';
@@ -60,6 +62,7 @@ for(const code of [-2019,-4164]){
 }
 const broken=join(dir,'broken.json');await writeFile(broken,'{invalid');await assert.rejects(new HeatmapManualOrders({...options,file:broken}).execute(body,'account',{}),/Không đọc được/);
 const noSave=new HeatmapManualOrders({...options,file:join(dir,'save-fail.json'),submit:()=>{throw Error('must not submit');}});noSave.save=async()=>{throw Error('disk full');};await assert.rejects(noSave.execute(body,'account',{}),/disk full/);
+const manualTpPolicy=new NewManualTakeProfitPolicy({file:join(dir,'tp10.json'),now:()=>now});
 const source=await readFile('src/server.js','utf8'),routeStart=source.indexOf("if(requestUrl.pathname==='/api/coinglass-heatmap-lab/order')"),routeEnd=source.indexOf("if(requestUrl.pathname==='/api/coinglass-heatmap-lab/status')",routeStart),handler=source.slice(routeStart,routeEnd);
 for(const [method,origin,authorized,confirmed,status] of [['POST',false,true,true,403],['POST',true,false,true,401],['POST',true,true,false,400],['DELETE',true,true,true,405],['GET',false,true,false,200],['POST',true,true,true,200]]){
  let sent=0;const output=[];
@@ -75,7 +78,8 @@ const start=source.indexOf('async function executePlaceOrder('),end=source.index
 function native(p,{positions=[],pending=[],finalExisting=false,excluded=false,leverageResult=p.leverage,finalMark=100,roundedLimit=null}={}){
  let reads=0,premiumReads=0;const orders=[],plans=[],sizingPrices=[];
  const run=vm.runInNewContext(source.slice(start,end)+'\nreturn {orderResult,plannedOrder};\n}\nexecutePlaceOrder',{
-  PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE:'structure-setup-ready',RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
+ newManualTakeProfitPolicy:manualTpPolicy,resolveFrozenManualTakeProfit,newBotTakeProfitLedger:{preview:()=>null},resolveFrozenNewBotTakeProfit:()=>null,currentNewBotTpProof:()=>null,isExtremeReboundSweepOrder:()=>false,PUMP_TURN_NEAR_LONG_SOURCE:'pump-turn-near-long',SELL_FLOW_SOURCE:'pump-squeeze-sell-flow-short',
+ activeNewEntryPolicy:()=>null,newEntrySizing,  PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE:'structure-setup-ready',RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
   ordersTokens:new Set(['session']),runtimeSettings:{orderEnabled:true,dryRun:false},autoEntryControls:{assertEntry(){}},normalizeSymbol:s=>s,isBinanceProtectionExcluded:()=>excluded,
   shortStopLossSuppression:()=>({suppressed:false}),resolveSignalProtectionWorkingTypes,evaluateAutoBinanceEntryPolicy,AUTO_BINANCE_ENTRY_POLICY_VERSION:'mock',
   getSymbols:async()=>[{symbol:p.symbol}],client:{getPremiumIndex:async()=>({markPrice:++premiumReads>1?finalMark:100}),getPositions:async()=>++reads>1&&finalExisting?[{symbol:p.symbol,positionAmt:1}]:positions,getOpenOrders:async()=>pending,
@@ -88,7 +92,11 @@ function native(p,{positions=[],pending=[],finalExisting=false,excluded=false,le
 }
 for(const orderType of ['MARKET','LIMIT'])for(const side of ['LONG','SHORT']){
  const limitPrice=side==='LONG'?95:105,p=buildHeatmapManualOrder({...body,side,orderType,limitPrice,requestedAt:Date.now()},key),h=native(p),r=await h.run(p,'session',null,{heatmapManual:true});
- assert.equal(h.orders.length,1);assert.equal(h.orders[0].side,side==='LONG'?'BUY':'SELL');assert.equal(h.orders[0].type,orderType);assert.equal(r.plannedOrder.leverage,5);
+ assert.equal(h.orders.length,1);assert.equal(h.orders[0].side,side==='LONG'?'BUY':'SELL');assert.equal(h.orders[0].type,orderType);assert.equal(r.plannedOrder.leverage,5);assert.equal(r.plannedOrder.takeProfitPolicyVersion,NEW_MANUAL_TP_VERSION);
+ assert.equal(r.plannedOrder.takeProfitRoePct,10);
+ const anchor=orderType==='LIMIT'?limitPrice:100;
+ assert.ok(Math.abs(Number(r.plannedOrder.takeProfitPrice)-anchor*(side==='LONG'?1.02:.98))<1e-8);
+ assert.equal(h.plans[0].manualTakeProfitProof.roePct,10);
  assert.equal(h.orders[0].price,orderType==='LIMIT'?String(limitPrice):undefined);assert.equal(h.orders[0].timeInForce,orderType==='LIMIT'?'GTC':undefined);assert.equal(h.sizingPrices[0],orderType==='LIMIT'?limitPrice:100);
  assert.equal(h.orders[0].quantity,String(10/(orderType==='LIMIT'?limitPrice:100)));assert.equal(h.plans.length,1,'protection remains on-fill, not sent against unfilled entry');
  assert.equal(h.plans[0].source,'orders-manual');assert.equal(h.plans[0].executionPage,'coinglass-heatmap-lab');
@@ -101,7 +109,7 @@ for(const orderType of ['MARKET','LIMIT'])for(const side of ['LONG','SHORT']){
 const wrapper=source.slice(source.indexOf('async function placeOrder('),source.indexOf('async function executePlaceOrder('));
 for(const reserved of [false,true]){
  const call=vm.runInNewContext(wrapper+'\nplaceOrder',{
-  STRUCTURE_SOURCE:'structure-setup-ready',PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
+  isExtremeReboundSweepOrder:()=>false,PUMP_TURN_NEAR_LONG_SOURCE:'pump-turn-near-long',STRUCTURE_SOURCE:'structure-setup-ready',PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
   causalSignalOrderQueue:Promise.resolve(),causalSignalOrderReservations:new Map(reserved?[[body.symbol,Date.now()+75000]]:[]),normalizeSymbol:s=>s,
   executePlaceOrder:async()=>{throw Error('preflight stopped');}
  });await assert.rejects(call(buildHeatmapManualOrder(body,key),'session',null,{heatmapManual:true}),e=>e.beforeHeatmapManualMarket===true);

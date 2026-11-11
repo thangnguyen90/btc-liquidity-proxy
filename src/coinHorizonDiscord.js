@@ -44,8 +44,8 @@ export function buildHorizonDiscordPayload(event) {
 }
 
 export class CoinHorizonDiscordNotifier {
-  constructor({stateFile,webhookUrl=()=>'',now=()=>Date.now(),fetchImpl=fetch,eventBuilder=collectHorizonDirectionEvent,payloadBuilder=buildHorizonDiscordPayload}) {
-    Object.assign(this,{stateFile,webhookUrl,now,fetchImpl,eventBuilder,payloadBuilder});
+  constructor({stateFile,webhookUrl=()=>'',now=()=>Date.now(),fetchImpl=fetch,eventBuilder=collectHorizonDirectionEvent,payloadBuilder=buildHorizonDiscordPayload,enrichEvent=null}) {
+    Object.assign(this,{stateFile,webhookUrl,now,fetchImpl,eventBuilder,payloadBuilder,enrichEvent});
     this.queue=Promise.resolve(); this.retryAfter=0; this.memory=null;
   }
   notify(analysis) {
@@ -54,7 +54,7 @@ export class CoinHorizonDiscordNotifier {
     this.queue=job;return job;
   }
   async process(analysis) {
-    const now=this.now(), event=this.eventBuilder(analysis,now);
+    let now=this.now(), event=this.eventBuilder(analysis,now);
     if (!event) return {sent:0,reason:'no_direction'};
     const url=String(typeof this.webhookUrl==='function'?this.webhookUrl():this.webhookUrl).trim();
     if (!url) return {sent:0,reason:'not_configured'};
@@ -70,6 +70,12 @@ export class CoinHorizonDiscordNotifier {
     const sideAt=prior?.sentBySide?.[event.side];
     if ((Number.isFinite(sideAt)&&now-sideAt<15*60_000)
       || (prior?.side===event.side&&now-prior.sentAt<FOUR_HOURS)) return {sent:0,reason:'deduped'};
+    if (this.enrichEvent) {
+      const enriched=await this.enrichEvent(event);
+      now=this.now();
+      event=this.eventBuilder(enriched??event,now);
+      if (!event) return {sent:0,reason:'no_direction'};
+    }
     let response;
     try { response=await this.fetchImpl(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(this.payloadBuilder(event)),signal:AbortSignal.timeout(10000)}); }
     catch {this.retryAfter=now+60_000;throw new Error('Horizon Discord network failure; retry delayed');}

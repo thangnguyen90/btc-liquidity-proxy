@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import {newEntrySizing} from '../src/newEntryLeveragePolicy.js';
+import {NewManualTakeProfitPolicy,resolveFrozenManualTakeProfit,NEW_MANUAL_TP_VERSION} from '../src/newManualTakeProfitPolicy.js';
 import {mkdtemp,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -81,7 +83,10 @@ assert.ok(endpoint.indexOf('!ordersTokens.has(token)')<endpoint.indexOf('getApiC
 assert.match(endpoint,/isSameOriginWriteRequest/);assert.match(endpoint,/body.confirm!==true/);
 assert.match(endpoint,/watchId:String\(body.watchId/);assert.doesNotMatch(endpoint,/\.\.\.body/,'Client may not override source/order/TP/SL');
 const orderFns=server.slice(server.indexOf('async function placeOrder('),server.indexOf('function trackSubmittedOrderPosition('));
-const base={ZONE_MANUAL_SOURCE,MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',STRUCTURE_SOURCE:'structure-setup-ready',
+const tpDirectory=await mkdtemp(join(tmpdir(),'zone-tp10-'));
+const manualPolicy=new NewManualTakeProfitPolicy({file:join(tpDirectory,'policy.json'),now:()=>now});
+const base={newManualTakeProfitPolicy:manualPolicy,resolveFrozenManualTakeProfit,newBotTakeProfitLedger:{preview:()=>null},resolveFrozenNewBotTakeProfit:()=>null,currentNewBotTpProof:()=>null,
+ activeNewEntryPolicy:()=>null,newEntrySizing,isExtremeReboundSweepOrder:()=>false,PUMP_TURN_NEAR_LONG_SOURCE:'pump-turn-near-long',SELL_FLOW_SOURCE:'pump-squeeze-sell-flow-short',ZONE_MANUAL_SOURCE,MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',STRUCTURE_SOURCE:'structure-setup-ready',
   PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',runtimeSettings:{orderEnabled:true},ordersTokens:new Set(['authorized']),
   autoEntryControls:{assertEntry(){},isProtectionExcluded:()=>false},normalizeSymbol:s=>s,isBinanceProtectionExcluded:()=>false,
   shortStopLossSuppression:()=>({suppressed:false}),resolveSignalProtectionWorkingTypes:()=>({}),
@@ -116,6 +121,8 @@ await assert.rejects(place(plan,'authorized'),/Max open positions \(20\)/);asser
 audit={};positions=[];
 const placed=await place(plan,'authorized');assert.equal(placed.status,'submitted');assert.equal(orders,1);
 assert.equal(placed.order.notionalUsdt,36.25);assert.equal(placed.order.stopLossSuppressed,false);
-assert.equal(savedPlan.takeProfitPrice,103);assert.equal(savedPlan.stopLossDistanceFraction,.06);
+assert.equal(savedPlan.takeProfitPrice,102);assert.equal(savedPlan.manualTakeProfitProof.version,NEW_MANUAL_TP_VERSION);assert.equal(savedPlan.stopLossDistanceFraction,.06);
 assert.equal(savedPlan.preserveSignalProtection,true);assert.equal(savedPlan.marginUsdt,7.25);
 console.log('Manual MAIN margin order: LONG/SHORT zone TP, fill SL, auth/confirmation, no auto-size increase, stale gates, shared20 cap, immutable dedupe/restart/unknown and UI submit OK (mock Binance only)');
+
+await rm(tpDirectory,{recursive:true,force:true});

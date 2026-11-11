@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {detectExtremeShortSqueeze as detect,extremeShortSqueezeEvent,extremeShortSqueezePayload,scanExtremeShortSqueeze,EXTREME_SHORT_SQUEEZE_DISCORD_VERSION} from '../src/extremeShortSqueeze.js';
 import {buildExtremeShortSqueezeOrder,ExtremeShortSqueezeBinanceRunner,EXTREME_SHORT_SQUEEZE_BINANCE_VERSION} from '../src/extremeShortSqueezeBinance.js';
 import {CoinHorizonDiscordNotifier} from '../src/coinHorizonDiscord.js';
+import {sweepPositionContext} from '../src/heatmapSweepPositionAnalysis.js';
 function assertHeatmapLink(payload,symbol){
  const embed=payload.embeds[0],field=embed.fields.find(f=>f.name==='HEATMAP MODEL 1 / 3');assert(field);
  const url=new URL(field.value.match(/\]\(([^)]+)\)/)[1]);
@@ -107,13 +108,41 @@ for (const interval of ['5m','15m']) {
   assert.equal(detect(fallback,opts).at(-1).quoteEstimated,true);
   assert.equal(detect(fallback,opts).at(-1).quoteVolume,495000);
   const payload=extremeShortSqueezePayload(event);assert.deepEqual(payload.allowed_mentions.parse,[]);
+  const contextFor=(whaleLong,smartLong,sourceAt=now-60_000)=>sweepPositionContext(
+    {symbol:event.symbol,at:now,direction:'UPPER'},
+    {at:now,points:[
+      {sourceAt:now-3660_000,observedAt:now-3650_000,whaleCount:25,whaleLong:47,smartLong:48,crowdLong:42},
+      {sourceAt,observedAt:sourceAt+1000,whaleCount:25,whaleLong,smartLong,crowdLong:35},
+    ],ratioRows:[{timestamp:now-300_000,longShortRatio:1.5}],ratioReadAt:now-1000},
+  );
+  const topPosition={longPosition:.57,timestamp:now-900_000,fetchedAt:now-1000};
+  for (const [whale,smart,color,icon] of [[60,65,0x10b981,'🟢'],[40,33,0xef4444,'🔴'],[75,40,0xf59e0b,'🟡'],[59,65,0xf59e0b,'🟡']]) {
+    const input={...event,positionAnalysis:contextFor(whale,smart),topPosition};
+    const embedded=extremeShortSqueezePayload(input).embeds[0];
+    const positions=embedded.fields.find(f=>f.name==='CÁ VOI · SMART · TOP BINANCE');
+    assert.equal(embedded.color,color);
+    assert.ok(embedded.title.startsWith(icon));
+    assert.match(positions.value,/Đám đông: 35\.0% LONG/);
+    assert.match(positions.value,/Top Binance \(tài khoản\): 60\.0% LONG/);
+    assert.match(positions.value,/Top Binance \(vị thế 15m\): 57\.0% LONG/);
+    assert.match(positions.value,/Δ tỷ trọng LONG ~1h/);
+    assert.ok(positions.value.length<=1024);
+  }
+  const stale=extremeShortSqueezePayload({...event,
+    positionAnalysis:contextFor(80,80,now-901_000),topPosition:{...topPosition,timestamp:now-1800_001},
+  }).embeds[0];
+  assert.equal(stale.color,0x64748b);
+  const staleField=stale.fields.find(f=>f.name==='CÁ VOI · SMART · TOP BINANCE');
+  assert.match(staleField.value,/PumpGlass: thiếu dữ liệu mới/);
+  assert.match(staleField.value,/vị thế 15m\): chưa có cache mới/);
+  assert.equal(extremeShortSqueezePayload({...rejected,positionAnalysis:contextFor(80,80)}).embeds[0].color,0xef4444);
   for(const variant of [event,live,peak,rejected,liveFollow,closedFollow,detect(both,opts).at(-1),...next])for(const symbol of ['ERAUSDT','QUSDT','测试USDT']){
     const input={...variant,symbol},before=structuredClone(input);assertHeatmapLink(extremeShortSqueezePayload(input),symbol);
     assert.deepEqual(input,before,'Discord display links must not mutate event/proof/entry fields');
   }
   assert.ok(payload.embeds[0].fields.every(f=>f.value.length<=1024));
   assert.match(payload.embeds[0].description,interval==='5m'?/\$1 margin × 5x/:/không tự đặt lệnh Binance/);
-  assert.equal(payload.embeds[0].color,0xf59e0b);assert.equal(extremeShortSqueezePayload(rejected).embeds[0].color,0xef4444);
+  assert.equal(payload.embeds[0].color,0x64748b);assert.equal(extremeShortSqueezePayload(rejected).embeds[0].color,0xef4444);
   const peakPayload=extremeShortSqueezePayload(peak);assert.equal(peakPayload.embeds[0].color,0xff7a00);
   assert.match(peakPayload.embeds[0].description,interval==='5m'?/\$2 margin × 5x/:/không tự đặt lệnh Binance/);
   const peakPlan=buildExtremeShortSqueezeOrder(peak,{now:liveNow,enabledAt:new Date(peak.evaluatedCandleAt-1000).toISOString(),markPrice:peak.price});
@@ -213,7 +242,7 @@ for (const interval of ['5m','15m']) {
     'Discord-only first-pump signal must never build a Binance order');
   const payload=extremeShortSqueezePayload(signal);
   assertHeatmapLink(payload,signal.symbol);
-  assert.equal(payload.embeds[0].color,0x06b6d4,'cyan distinguishes absorption/reclaim from yellow pump and red rejection');
+  assert.equal(payload.embeds[0].color,0x06b6d4,'cyan distinguishes absorption/reclaim from pump ratio colors and red rejection');
   assert.match(payload.embeds[0].description,/OBSERVE ONLY/);
   assert.match(payload.embeds[0].fields[0].value,/USDT/);
   assert.ok(payload.embeds[0].fields.every(field=>field.value.length<=1024));

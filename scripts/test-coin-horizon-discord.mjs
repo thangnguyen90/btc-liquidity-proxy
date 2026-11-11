@@ -34,4 +34,26 @@ const failed=new CoinHorizonDiscordNotifier({stateFile:join(dir,'failed.json'),w
 await assert.rejects(failed.notify(make()),/HTTP 429/);
 assert.equal((await failed.notify(make())).reason,'backoff');assert.equal(failCalls,1);
 now+=121000;await assert.rejects(failed.notify(make()),/HTTP 429/);assert.equal(failCalls,2);
+let enrichCalls=0, enrichedPosts=0;
+const enriched=new CoinHorizonDiscordNotifier({
+  stateFile:join(dir,'enriched.json'),webhookUrl:'https://discord.invalid/test',now:()=>now,
+  eventBuilder:(input,at)=>at-input.createdAt<=1000?input:null,
+  enrichEvent:async event=>{
+    enrichCalls++;
+    if(event.expireDuringEnrichment)now+=2000;
+    return {...event,context:'loaded'};
+  },
+  payloadBuilder:event=>({context:event.context}),
+  fetchImpl:async(_url,opts)=>{
+    enrichedPosts++;
+    assert.deepEqual(JSON.parse(opts.body),{context:'loaded'});
+    return {ok:true,status:204};
+  },
+});
+const sourceEvent={symbol:'TESTUSDT',side:'LONG',createdAt:now};
+assert.equal((await enriched.notify(sourceEvent)).sent,1);
+assert.equal((await enriched.notify(sourceEvent)).reason,'deduped');
+assert.equal(enrichCalls,1);
+assert.equal((await enriched.notify({...sourceEvent,symbol:'OTHERUSDT',expireDuringEnrichment:true})).reason,'no_direction');
+assert.equal(enrichedPosts,1);
 console.log('Coin horizon Discord tests passed (mock sends only)');

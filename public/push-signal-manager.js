@@ -43,7 +43,7 @@ function render() {
   $('#enabledRoutes').textContent = number(snapshot.enabledRoutes);
   $('#subscriptions').textContent = number(snapshot.webPush?.subscriptionCount);
   $('#observed').textContent = number(routes.reduce((sum, route) => sum + Number(route.observedCount || 0), 0));
-  $('#status').textContent = `Web Push ${snapshot.webPush?.configured ? 'READY' : 'CHƯA CẤU HÌNH'} · ${snapshot.webPush?.subscriptionCount ?? 0} thiết bị · cập nhật ${time(snapshot.generatedAt)}`;
+  $('#status').textContent = `Web Push ${snapshot.webPush?.enabled === false ? 'ĐÃ TẮT TOÀN BỘ THÔNG BÁO WEB' : snapshot.webPush?.configured ? 'READY' : 'CHƯA CẤU HÌNH'} · ${snapshot.webPush?.subscriptionCount ?? 0} thiết bị · cập nhật ${time(snapshot.generatedAt)}`;
   const last = snapshot.webPush?.lastDelivery;
   $('#lastDelivery').textContent = last
     ? last.skipped==='QUIET_HOURS'?`Bỏ qua Push lúc ${time(last.completedAt)} · trong giờ yên lặng; không gửi lại.`

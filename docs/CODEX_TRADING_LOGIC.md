@@ -1,5 +1,317 @@
 # Codex Trading Logic Map
 
+### 2026-10-31 — Thu hẹp catalog theo volume và biên độ kiểu AIN
+
+Đã reload dịch vụ và xác minh health200/APIversionV2,5coin,browserdanh sáchAGLD/AKE/LSK/Q/IDOLkhôngBRETT;hashcontrols/WHITELIST/live-realgiữnguyên. Bằngchứngv2-before.json/v2-after.json tại data/research/wick-coins-deploy-20261031.
+
+WICK_COIN_AIN_VOLUME_V2_20261031 thay V1 quá rộng (BRETT1,66%range vẫnlọt do volume tươngđốicao). Nến15mđóng phải đồng thời range≥8%, quotevolume≥1.000.000USDT và≥3×trungvị20nến trước, range≥2ATR14trước nến, râu≥50%; nền12nến width≤8ATR vàefficiency≤0,35. Toàn bộ baseline/ATR/nền lấy trước nến, thờiđiểmghi nhậnkhinếnđóng. Cooldowngiảm6h→1h để không bỏ cúvolumeAIN13:00 sau cú08:30. Danhsáchvẫn24h; lặp lại≥2lầncáchnhau≥1h. Các ngưỡng nhận diện được chỉnh theo ví dụ, chưa là rule dự đoán lợi nhuận hoặc kế thừa winrate backtest V1.
+
+FixtureOHLCVgốc bấtbiến scripts/fixtures/wick-coin-ain-brett.json:AIN30/10 01:45/08:45/13:15 UTC+7 đều đạt; quotevolume6,04m/2,78m/20,12m,range10,28%/10,01%/31,02%. BRETT31/10 20:30 khôngđạt. Testâmvolume lớnnếnnhỏ vàvolumeUSDT<1mđềubịloại; causal/gap/ratio/budgettestsPASS. Quétcachetạithờiđiểmsửa:5coin, BRETTkhôngcònlọt. UIhiểnthịtriệuUSDT/nếnvàngưỡng; ghimcũngoàibộlọcchỉhiệnởtabĐãghimvớiđánhdấuđãlưu,khôngtrộnTấtcả.
+
+Chỉcatalogquan sát,khôngảnhhưởngBinance/entry/size/SL/TP/3x/Discord/WHITELIST;khôngthêmCLOSED/PnLcard,checkboxhayroutegiao dịch. Bốicảnhratio/Model1/3giữcáchđọchiệntại,vẫnlàoptional. JSONruntimecũkhôngđổi; APIversionV2córuleminRangePct/minQuoteVolume/cooldownMs,localStorageV1tươngthíchvàkhôngtựxóaghimcũ.
+
+
+### 2026-10-31 — Trang quản lý coin nến bất thường
+
+Đã reload btc-liquidity-web, health/local/publicAPI200;141coin/15lặplại tại20:44UTC+7. Testgộpnến/closed/gap/causal/ratio/caching/budgetPASS; browsersearch/ghim/bỏghim/ghichúlưusau reload/ẩn/hiện/tablặplạiPASS,console0error. Inputghichúautosavetrênmỗilầnnhập. Hashcontrols/WHITELIST/live-realgiữnguyên;navmọitrangcólink,injectidempotent. Bằngchứngdata/research/wick-coins-deploy-20261031/{before,after}.json.
+
+WICK_COIN_CATALOG_V1_20261031, trang /wick-coins và GET /api/wick-coins. Catalog nhận diện mẫu coin, OBSERVE ONLY. Tái dùng cache heatmap36h của các USDT-M đang giao dịch; gộp3nến5mliêntục đã đóng thành15m. Một nến range≥2ATR14trước nến, râu≥50%, quotevolume≥3×trung vị20nến trước; nền12nến width≤8ATR vàefficiency≤0,35. Không bắtbuộc nếnđóng vềnền. Chỉ dùng dữliệu trước/khi nếnđóng; ghi nhận một lần mỗi6h/coin, danh sách24h; ≥2lần là lặp lại. Chưa xác nhận hướng giao dịch. Nến thiếu/gap bỏqua; lastclosecũ>30mphânbiệtNẾNCŨ. Cache chỉ quét lại tốiđa1lần/phút, APIđọckhônggọiRESTđểtảinến.
+
+Bối cảnh hiện tại tách thời điểm phát hiện. Global/TopAccount/TopPosition15m lấyđiểm timestamp≤now−15m vàkhôngcũ>45m; SHORTpct=100/(1+L/S),threshold60%chỉlọcdanhsách. Nạp lầnlượtkhimởtranghoặcnhấnnạp,max1coin/15s,1inflight,TTL15m,3REST/coin,timeout2500ms mỗi request,sharedgatepriority7/dropOnCongestion;khôngtựnạp khiđóngtrang. Thiếuratio làunknown. Model1/3chỉcachedBundlekhôngREST,chỉkhiđồngbộvàmới<7m; dùngcụmđồngthuận3mốc,sođiểmtươngđối cùng±5%quanhgiá. “Phíadướiít hơn”=upperScore>0vàlowerScore<upperScore/2; khôngphảiUSD/thanh lýthật,unknownkhôngcoilàít.
+
+UIghim/ẩn/ghichúlưulocalStoragetrìnhduyệt,giữsnapshotcoinghimkhirờidanhsáchvàđánhdấuđãlưu/cũ;search/sort/filter/biểuđồnến/linkModel1/3/Binance. KhôngthêmPnL/CLOSEDstatscard,WHITELISTcheckboxhayroutegiao dịch;khôngảnhhưởngBinance/entry/size/SL/TP/3x/Discord. JSONruntimecũgiữnguyên,khôngsửalịch sửbacktest;catalogdựnglạitừcache,localStoragekeywick-coin-prefs-v1.
+
+
+### 2026-10-31 — Nghiên cứu nến bất thường + SHORT đông trong30ngày
+
+WICK_BASE_SHORT_CROWD_30D_V1_20261031, offline, 01/10/2026 18:30→31/10/2026 18:30 UTC+7,522USDT-M perpetual hiện còn giao dịch. Nến15mđóng: range≥2ATR14trước nến, râu≥50%, quotevolume≥3×trung vị20nến trước; ít nhất2nến như vậy/24nến, triggercũngbấtthường; nền12nến width≤8ATR,efficiency≤0,35,closeởtrongnền. Cooldown6h/coin theo mẫu giá trước ratio. Global/TopAccount/TopPosition lấy riêng khung1h, timestamp≤signal−1h, tối đa cũ thêm1h; SHORTcao=100/(1+L/S)≥60%; báo cả SHORTtăngso1h trước. Không dùng dữ liệu tương lai để phân loại.
+
+931mẫu/395coin; thiếu2ratio mỗi loại. SHORTglobalcao46mẫu/26coin (45đủ24h), +5%trước−5%:46,67%; LONG3×SL20%grossROE,khôngTP,thoát24h,chi phí0,12%notional,chưa funding:win55,56%,mean+6,2002%ROE/PF2,05194. TopAccountSHORTcao16mẫu/6coin:success68,75%,mean+19,354%; TopPositionchỉ1mẫu,khôngđủsuyluận. Baseline910mẫuđủ24h:mean−0,122265%. Cảhai nhómSHORTcaoâmởnửasau:global−5,60%,topAccount−3,13%; kết quả tập trung vài coin. Không xác nhận lợi thế.
+
+V1khôngbắtđoạnAIN29–30/10trongảnh. SensitivityV2WICK_BASE_FIRST_WICK_SENSITIVITY_V2_20261031saukhixemvídụ,bỏyêucầulặpvàcloseởtrongnền,bắtAIN01:45/08:45ngày30/10nhưngtạo6.213mẫutrêncả522coin. V2chưachạyđủratio:thiếu4162/4163/4163mẫu,mặcđịnhkhôngsuywinratetừtậpcon. Chưa có bộ phát hiện sớm đáng tin cậy.
+
+Cacheheatmapmỗicoinchỉ36h,khôngcótoàntháng; KHÔNG kiểm chứngđiềukiệnModel1/3phíadướiít,historicalheatmapkhôngđượcbùbằnghiệntại. Chỉnghiêncứumẫunến/ratio,khôngphảibằngchứngthanh lýSHORT. PublicGETonly,0lỗi,0gapgiá; kiểmthửcausal/gap/lagPASS;đốichiếuđộclập2762outcomesPASS. Khôngảnhhưởngbot/Discord/Binance/entry/size/SL/TP/WHITELIST,khôngthêmcardPnLhaycheckbox. JSONruntimecũgiữnguyên,JSONnghiêncứucóversionriêng,data/research/wick-short-30d-20261031.
+
+
+### 2026-10-31 — Nghiên cứu SHORT 3× và SL 20% ROE
+
+Version FAILED_TOP_SHORT_3X_SL20_RESEARCH_V1_20261031, offline. Giữ nguyên dữ liệu trước entry và điều kiện phân loại của FAILED_TOP_POSITION_DOWN_14D_V1_20261031: 1.947 mẫu giá + Position ratio trên 449 coin, trong 522 USDT-M perpetual hiện còn giao dịch, từ 17/10 18:30 đến 31/10 18:30 UTC+7. Không tái dựng Model1/3 hoặc coi đây là lịch sử Discord. Không lựa chọn lại tín hiệu theo kết quả tương lai.
+
+SHORT tại open nến sau trigger; ký quỹ ban đầu cố định, leverage 3×. SL là -20% ROE trước phí, tương đương giá tăng 6,6667%, kiểm tra high CONTRACT_PRICE 15m. Thoát ở SL hoặc close sau 15/30/60/240 phút; không TP. Gap mở cửa vượt stop lấy giá open bất lợi hơn. Chi phí giả định 0,12% notional/vòng = 0,36% margin; net SL thông thường -20,36%. Stress cost 0,20%; chưa tính funding/mark-price stop/tick/depth. Chỉ dùng mẫu đủ toàn bộ horizon cho cả có/không SL, kể cả khi SL đã xảy ra sớm, tránh thiên lệch kiểm duyệt. Mỗi lệnh độc lập, không phải danh mục tái đầu tư.
+
+Kết quả net ROE trung bình: 15m -0,572325% (1.947 mẫu, 10 SL); 30m -0,638750% (1.944, 17 SL); 60m -0,664824% (1.941, 36 SL, win 42,1432%, PF 0,660486); 240m -0,813220% (1.924, 145 SL, win 42,9834%, PF 0,784584). Cùng mẫu không SL: 60m -0,537169%, 240m -0,908873%. Không có bằng chứng lợi thế dương trong mẫu. Tất cả baseline đối chiếu đúng kết quả cũ ×3; kiểm thử stop intrabar, hồi sau stop, gap, chi phí, maturity, thiếu nến và future isolation PASS.
+
+Không ảnh hưởng Binance/entry/size/SL/TP thật, màu Discord, WHITELIST hoặc cấu hình 3× hiện tại. Không thêm nhãn/card CLOSED/PnL, checkbox hoặc route. JSON runtime cũ giữ nguyên; JSON nghiên cứu có version riêng ở data/research/failed-top-14d-20261031/leverage3-sl20. Script không import runtime, không gọi mạng hay đặt lệnh. Báo cáo BAO_CAO_3X_SL20.md, TRADES_3X_SL20.csv, results.json và validation.json.
+
+
+### 2026-10-31 — Đếm mẫu đỉnh thất bại + Position ratio giảm trên14ngày
+
+FAILED_TOP_POSITION_DOWN_14D_V1_20261031; nghiên cứu mới offline, không phải lịch sử tin bot đã gửi hoặc gate giao dịch. Quét522hợpđồng USDT-M perpetual hiện đanggiao dịch, khoảng17/10/2026 18:30→31/10/2026 18:30 UTC+7, có24hwarmup. Không gồmCOIN-M/USDC/đãhủyniêmyết;1cointhiếu lịch sửtoànkỳ. Giá15mđóng, pump từlow24h tớiđỉnh≥8%; đỉnhhigh của10nến trước2nếnretest trong3h;2nếnretestkhôngvượtđỉnh vàít nhất1high cáchđỉnh≤2%; nếntriggerđỏđóngthủng low4nến trước0,1ATR14. Giãncách4h/coin theo mẫu giá trước khi lọcratio.
+
+Positionratio15m lấyđiểm≤trigger-15m, đủ4điểmliêntục; trong3điểm gầnnhất cóít nhất1điểm thấp hơnbaseline45mphía trước. Cho phép ratiohồilạitạilúcthủngsupport nhưAIN. Đây là địnhnghĩathămdòsauvídụ, khôngphảimột rule cũ được backfill. APIratio trả500điểmgầnnhất khiwindowquádài: đãsửa bằngwindow≤500periodvàtảilạicachebịcắt. Khôngdùngratiohiệntạiđiềnngượclịchsử; khôngcóreceipttimestamp gốc nênlag15mvẫnlàgiảđịnhavailability.
+
+Kếtquả3022mẫu giá,6thiếuratio,1947mẫuđạt/449coin. Đủtheodõi1h:1941,727chạmít nhất1ATRphíadưới (37,45%); winSHORTsauchi phígiảđịnh0,12%=42,45%, mean -0,179056%notional. Giữ15m win36,06%, mean-0,197560%;4h win44,13%,mean-0,302958%. Funding chưa tính, mỗi mẫuđộclập/chồnglấn, khôngphảilợinhuậndanhmục. Khôngthể suy ratio giảm +failedtop làSHORT cólợithế. CaseAIN18:00ngày31/10đượcbắtđúng, roof0,28507/support0,2706; không tínhphầngiảmtrướctínhiệu.
+
+CHƯA táidựng/vàxácnhậnvùngvàngModel1/3lịchsử; khôngđượcgọi1947mẫulà1947lầnquétđúngcụm/thanh lýthật. Khôngđổi logic màuDiscord/Binance/entry/size/SL/TP/3x/WHITELIST; khôngthêmcardCLOSED/PnL/checkbox/route. JSONruntimegiữnguyên, dữliệunghiêncứuđộclập. Testmodelcausal/future/gap/ratio hồi vàvalidatefull522coin/cooldown/cutoff/chi phí/AIN PASS,0lỗitải;6mẫuthiếuratiotáchriêng. Bằngchứng data/research/failed-top-14d-20261031/{manifest,results,validation,BAO_CAO_14_NGAY,TIN_HIEU_14_NGAY}. Kiểmtrahashcontrols/WHITELIST/live-realgiữnguyên.
+
+
+### 2026-10-31 — Discord màu tím cho LONG có Position ratio tăng và vùng≥50
+
+Runtime xác minh18:26 ngày31/10/2026 UTC+7: reload btc-liquidity-web PID1874216; localhealth/publicAPI200, colorPolicyV1 đúng, ready=true/error=null, Discordconfigured=true, affectsOrders=false. Hash controls/WHITELIST/live-real giữ nguyên. Không phát tin test; màu mới áp dụng alert mới đủ điều kiện.
+
+RANGE_SWEEP_LONG_POSITION_ZONE_PURPLE_V1_20261031. Hiển thị Discord thuần OBSERVE ONLY, không phải gate giao dịch. LONG có flow hợp lệ, vùng consensus frozen Model1/3 overlapStrength≥50, Position longShortRatio tăng (>0%) qua15m sẽ dùng tím0x9b59b6 và nhãn POSITION↑ + VÙNG≥50. Ratio dùng khung5m, điểm mới nhất timestamp≤signal.at-5m và không cũ quá thêm5m; phải đủ4điểm liên tục cách5m, baseline cách15m. Không dùng Account ratio, không đòi ratio tuyệt đối>1. Điểm50 không phải xác suất. Theo nghiên cứu thăm dò, chưa xác nhận ngoài mẫu.
+
+Trước gửi Discord: reserve PENDING bền vững rồi đọc Position ratio qua BinanceClient/sharedRESTgate priority7, dropOnCongestion, timeoutHTTP1,5s và budgetchờ2s; tối đa1inflight/6requestphút, cache60s/100coin. Chỉ lookup LONG có vùng≥50. Request có thể còn chờ queue khi budget hết nhưng không làm đổi màu/replay tin đã gửi; cache có thể dùng cho alert mới còn hợp lệ. Thiếu/gap/stale/bận/lỗi/không tăng giữ LONG xanh và giải thích. Ratio historical được lấy trước gửi, receipt time không lưu trước signal, nên không giả là có snapshot ratio tại lúc emit. Recheck tuổi event30s sau enrichment để không gửi trễ. Không gửi test thật hoặc sửa tin cũ. SHORT đỏ, UNKNOWN xám đủflow và suppression thiếuflow giữ nguyên.
+
+Lịch sử JSON thêm longConfluence optional (version/qualified/reason/symbol/ratioAt/baselineAt/ratio/previous/change15Pct/zoneStrength/classifiedAt), schemaV1 vẫn đọc lịch sử cũ; formatter không tô tím lịch sử thiếu metadata. API thêmcolorPolicy. Không thêm cardCLOSED/PnL, nhãn thống kê entry hoặc matcherWHITELIST; do đó không tạo checkbox hay route mới. Không đổi Binance/entry/size/SL/TP/3x/flags. Test purple boundary50, trend15m, gap/stale/future,cache/block/timeout,durable/late-expiry và bộ range sweep hiện hữu PASS; node --check server PASS. Bằng chứng deployment tại data/research/range-sweep-purple-deploy-20261031/.
+
+
+### 2026-10-31 — Phân tích RangeSweep với top-trader ratio và Model1/3
+
+RANGE_SWEEP_TOP_TRADER_CONFLUENCE_RESEARCH_V1_20261031, offline trên123 alert SENT của backtest cố định. Nhãn lời/lỗ dựa net15m sau chi phí0,12% + funding; không phải nhãn entry/runtime. Ghép Account/Position riêng, điểm ratio ít nhất5m trước tín hiệu, thay đổi15m, kiểm tra lag10m; thiếu receipt timestamp nên không khẳng định availability lịch sử tuyệt đối. Dùng vùng consensus frozen trước tín hiệu (cả Model1/3 qua3 mốc), không tái tạo bằng raw hiện tại; không phải thanh lý thật. Đủ123/123ratio,0lỗi.
+
+LONG kết hợp zoneStrength≥50 và Position ratio tăng:21 mẫu win61,90%, mean net15m+0,410525%; phần còn lại59 mẫu+0,067635%; lag10m20 mẫu+0,358244%. Account tăng cùng Position không cải thiện rõ (20mẫu+0,165159% vs baseline+0,157643%). SHORT cùng điều kiện đối xứng:9mẫu-0,127941%, lag10m7mẫu+0,010539%, không ổn định. Các điều kiện thăm dò đều lưu pass/complement, mẫu, chia thời gian và độ nhạy; không gọi là tối ưu hoặc ngoài mẫu. Mẫu LONG lời có target distance median1,61ATR vs4,80ATR nhóm lỗ; volume/taker mạnh hơn không đủ phân biệt.
+
+Không đổi runtime/Discord/Binance/entry/size/SL/TP/3x/WHITELIST. Không thêm card CLOSED/PnL nên không có checkbox mới. JSON runtime tương thích nguyên trạng; dữ liệu nghiên cứu riêng tại data/research/range-sweep-confluence-20261031/. Test asof future/gap/stale/lag PASS, validation123 timestamps và split denominators PASS. Báo cáo BAO_CAO_KET_HOP.md và results.json lưu toàn bộ kết quả, hạn chế và định nghĩa.
+
+
+### 2026-10-31 — Nghiên cứu kết quả RangeSweep đã gửi Discord
+
+Version RANGE_SWEEP_DELIVERED_ALERT_STUDY_V1_20261031; nghiên cứu offline, không thay logic runtime RANGE_SWEEP_FLOW_PREPARE_NO_MISSING_DATA_SPAM_V4_20261030. Thu thập 123 cảnh báo SENT duy nhất (80 LONG, 43 SHORT), 112 coin, từ 20:44 ngày 30/10 đến 12:47 ngày 31/10 (UTC+7), chốt dữ liệu 13:10 ngày 31/10. Snapshot nền/ATR/vùng/volume/taker đều có trước tín hiệu; entry nghiên cứu là open nến giao dịch 1m đầu tiên sau delivery thành công, không dùng high/low phút trước nhận tin. Chỉ phân nhóm theo side và kind đã lưu, không phân loại lại bằng tương lai. Dữ liệu bot giữ tối đa 500 sự kiện, thêm bản chụp cũ chỉ khôi phục được một phần lịch sử.
+
+Đo 5/15/30/60 phút, chi phí giả định 0,12% notional/vòng (taker 0,05% + trượt giá 0,01% mỗi chiều), stress 0,20%, funding lịch sử công khai theo phía. Kết quả giữ 15m: LONG 80 mẫu, win 50%, mean net +0,157643%, PF1,718685; SHORT 43 mẫu, win23,255814%, mean net -0,294934%, PF0,313525. LONG hai nửa thời gian +0,469614% rồi -0,154327%, block-bootstrap 1h CI95% [-0,162689%;+0,268311%]; chưa chứng minh lợi thế ổn định. SHORT phá nền 34 mẫu mean net15m -0,261804%; SHORT tiếp diễn 2 mẫu -2,395717%; SHORT từ chối vùng 7 mẫu net30m +0,787702% nhưng mẫu rất nhỏ. Không coi so sánh nhiều horizon/nhóm là xác nhận ngoài mẫu.
+
+Thử giả định TP1ATR/SL1ATR, timeout30m, gap tại open và chạm cả hai tính SL trước: LONG80 win72,5%, mean net+0,136245%, PF1,871305; SHORT42 win50%, mean net-0,130859%. Đây không phải SL/TP bot đang chạy. 30m loại1 và60m loại2 mẫu chưa đủ thời gian; không thiếu dữ liệu công khai. Mỗi alert mô phỏng độc lập, có chồng lấn, tổng % không phải lợi nhuận danh mục. Không thêm card CLOSED/PnL/WHITELIST; không đổi Binance/entry/size/SL/TP/3x/flags, không restart hoặc gửi Discord. JSON runtime không migrate hay sửa; JSON/CSV nghiên cứu ở data/research/range-sweep-alert-backtest-20261031/.
+
+Validation: scripts/test-range-sweep-alert-research.mjs PASS cả LONG/SHORT, OHLC ambiguity/gap/timeout và kiểm tra dữ liệu thật (entry sau delivery, maturity, phí/funding, totals); chạy lại từ raw cache với 0 request. Báo cáo BAO_CAO_BACKTEST.md, trades.csv, results.json, causality-check.json, validation.json. Hash controls/WHITELIST/live-real giữ nguyên trong lúc nghiên cứu.
+
+
+### 2026-10-30 — Bù nến ứng viên và bỏ thông báo xám do thiếu dữ liệu
+
+Version dữ liệu: RANGE_SWEEP_FLOW_PREPARE_NO_MISSING_DATA_SPAM_V4_20261030. Observer vẫn OBSERVE ONLY, không gửi lệnh. Dữ liệu xác nhận dùng ít nhất 21 nến 1 phút đã đóng, liên tục và mới; volume và taker-buy phải hợp lệ. Giữ nguyên điều kiện nền, vùng thanh khoản, volume, taker, TTL và điều kiện phân loại LONG/SHORT. Không hạ ngưỡng để ép tín hiệu.
+
+Chuẩn bị dữ liệu: repairFlow bù 30 nến 1 phút cho ứng viên đang active thiếu dữ liệu, ưu tiên coin đã phá nền rồi coin gần biên. Giới hạn 1 coin/10 giây, 1 yêu cầu đang chạy, thử lại sau 60 giây; priority 6 qua shared REST gate, dừng khi blocked/congested. Không tải lại chỉ vì phút có volume bằng 0. Các slot ưu tiên của warmup hiện hữu vẫn giữ BTC và hàng đợi công bằng.
+
+Duy trì nến mới qua managed WebSocket group range-sweep-confirmation. Chỉ thêm coin đã được arm, giữ membership 1 giờ, tối đa 700 coin; cập nhật nhóm tối đa mỗi phút sau lượt có coin đầu tiên để hạn chế reconnect. Dùng chung KlineCache. API flowStream/liveCoverage đo tick mới; flowCoverage đo nến đóng đủ dùng, hai số này có ý nghĩa khác nhau.
+
+Discord: UNKNOWN thiếu flow hợp lệ được lưu DATA_NOT_READY và không POST, không chiếm quota gửi. Xám được gửi chỉ khi đủ dữ liệu nhưng chưa chốt hướng hoặc đã hủy hướng; đỏ SHORT và xanh LONG giữ nguyên. Chốt flowDiagnostic tại thời điểm phát, không sửa/replay lịch sử sau khi bù dữ liệu. API thống kê lý do thiếu/gap/stale/taker/volume và kết quả bù. Đây là chẩn đoán vận hành, không thêm card CLOSED/PnL hoặc key WHITELIST. Giữ schema JSON V1, trường mới tùy chọn, lịch sử cũ vẫn đọc được.
+
+Kiểm chứng runtime lúc 21:56:30 ngày 30/10/2026 (UTC+7): reload btc-liquidity-web PID 1242047, health local/public HTTP 200, error=null. Có 23/125 ứng viên đủ nến xác nhận; 102 ứng viên còn thiếu lịch sử, không kết luận là đã sẵn sàng toàn bộ. 122/124 coin trong danh sách membership nhận tick mới theo ngưỡng liveCoverage tại thời điểm chụp. Qua 63 giây, 11 mẫu trùng nhau đều tăng từ 3 lên 4 nến đóng; repair 21 lần thành công/23 lần thử. Sự kiện tự nhiên AXLUSDT LONG được gửi, DOGSUSDT/CHZUSDT xám có flow được gửi; HOLOUSDT/FOGOUSDT/AXLUSDT thiếu flow được lưu DATA_NOT_READY, không gửi. Đây là xác minh vận hành, không phải backtest hiệu quả hay đảm bảo lợi nhuận.
+
+Validation: test-range-liquidity-sweep, test-heatmap-sweep-watch, test-rising-volume-minute-warmup và node --check src/server.js PASS. Có test bù sang READY, giới hạn tần suất, subscription giữ membership, chặn thiếu flow nhưng vẫn gửi confirmation mới, UP/DOWN, màu, durable reservation và không replay. Hash ba tệp controls/WHITELIST/live-real giữ nguyên; đòn bẩy lệnh mới 3×, margin, route flags, entry, SL/TP và vị thế không bị thay đổi. Bằng chứng: data/research/range-sweep-flow-diagnostics-20261030/{stream-observation-start,after-v4}.json.
+
+### 2026-10-30 — Phân biệt màu xám thiếu dữ liệu và đủ dữ liệu chờ hướng
+
+DataVersion RANGE_SWEEP_RAW_BASE_FLOW_DIAGNOSTICS_V3_20261030; observer rule/JSONV1 giữ nguyên. Lần kiểm tra15:46:35VN:22event đềuUNKNOWN,20flow=null,2flowhợp lệ (1BREAKOUTvà1BASE_REENTRYhủyhướng). UNKNOWN trước đây gom cả thiếu/không hợp lệflow với chờtrigger nên người xem không phân biệt được. Không suy flow=null là chắc chắn thiếu nến: có thểgap/stale/takerinvalid/volume0.
+
+inspectRangeSweepFlow trả reason/barcount/lastclosedAt/READY. Mã: FEWER_THAN_21_CLOSED_1M, CLOSED_1M_GAP_OR_INVALID, CLOSED_1M_STALE, TAKER_BUY_MISSING_OR_INVALID, LAST_MINUTE_ZERO_VOLUME, BASELINE_ZERO_VOLUME. SnapshotAPI flowCoverage cho currentactive; lịch sử chốt flowDiagnostic lúc phát, không tính lại nguyên nhân của tin cũ. Discordxám mới ghi THIẾU DỮ LIỆU XÁC NHẬN khi không có flow hợp lệ, ĐỦ DỮ LIỆU · CHƯA CHỐT HƯỚNG khi flowREADY nhưng stagechưađạt/hủyhướng; thêm field giải thích cụ thể. Đỏ/xanh giữ nguyên.
+
+Ưu tiên coin active thiếuflow (đãbreak trước) vào các slotpriority của RisingVolumeMinuteWarmup hiện hữu, BTC giữ vị trí ưu tiên tiếp theo; vẫn quota6/10s,2priorityslot,4fairlane, retry30s, sharedRESTgate và subscribe cũ. Giữ nguyên hạn mức warmup cũ; bổ sung một lượt repair riêng chỉ cho coin active thiếuflow, tối đa1symbol/10s,1inflight,retry60s,limit30nến,priority6 qua sharedRESTgate và dừng khi blocked/congested. Không tảitoànuniverse mới; quotaaccount/order/protection0–1 vẫn ưu tiên. Lượt riêng tránh bị batchwarmup priority8 đang chờ giữ busy quá lâu. Không retry phút volume0 bằngREST. API có flowRepair counters. Cần21nếnđóng hợp lệ; zero-volume không được giả thành directionalflow. Không đổi ngưỡng nền/vùng/volume/taker/TTL/cooldown, không gửi lệnhBinance/đổi3×/size/SL/TP/routeflags/WHITELIST. Đây là chẩn đoán vận hành, không thêm cardCLOSED/PnL/nhãnentry. JSON cũ thiếuflowDiagnostic vẫn đọc được, không migrate/backfill/replaytin.
+
+Kiểm thử mọi reason READY/thiếunến/gap/stale/taker/volume0,hai nhãnxám,candidatepriority/flowCoverage,UP-DOWN/redgreen/durable/noReplay và heatmapwatchPASS. Triển khai ghi sau xác minh. Bằng chứng data/research/range-sweep-flow-diagnostics-20261030/.
+
+### 2026-10-30 — Sửa RangeSweep không phát tín hiệu: bundle chỉ có1nến
+
+Runtime 15:28:15 30/10/2026 VN: đã reload btc-liquidity-web PID943402. Health/API local/public200, dataVersionV2 đúng, error=null/Discordconfigured=true. Đã có 16 nền thực được arm, 16 đang active; MARK sau arm được quan sát (chi tiết live-observation.json). Không còn lỗi14.051/14.051 thiếu25nến. Chưa giả lập/replay thông báo để ép Discord có tín hiệu. Hash controls/WHITELIST/live-real cùng policy3× và flags giữ nguyên. Bằng chứng data/research/range-sweep-no-signals-fix-20261030/{after,live-observation}.json.
+
+Data version RANGE_SWEEP_SHARED_RAW_25_CANDLES_V2_20261030; rule/JSON version RANGE_LIQUIDITY_SWEEP_OBSERVE_V1_20261029 giữ để đọc lịch sử cũ. Runtime trước sửa:14.051bundle/14.051rejected,tracked0/history0,error=null/Discordconfigured. Nguyên nhân xác định: HeatmapMarketProfiles.build dùng buildBinanceHeatmapProfiles tối ưu, chỉ giữ candles=[lastClose], trong khi armRangeSweep yêu cầu25OHLC. Kiểm thử cũ dùng bundle đầy đủ của chart nên không bắt được contract khác biệt này; lỗi nối dữ liệu trong triển khai observer.
+
+Sửa: server cấp getBaseRows từ heatmapMarketProfiles.rawCache.memory (không REST). Bundle compact lấy25nến5m PRICE đóng liên tục từ raw cùng symbol/step/end; kiểm tra raw.savedAt nằm trong thời gian hợp lệ, timestamp/close cuối khớp cả2model, dữ liệu không tương lai/gap. Bundle chart đầy đủ vẫn đọc theo nhánh cũ. Sau đó giữ nguyên nền24nến/ATR14/width≤6ATR/eff≤0,30/net≤1ATR, zone2model≥35%3profile/ngoàinền≤5%, MARK≤10s, TTL15phút và mọi triggervolume/taker/gap/cooldown. Không nới ngưỡng để ép tín hiệu. Snapshot lịch sử thêm dataVersion/baseSource và24nến nền frozen trước gửi; metadata tùy chọn, không migrate/backfill/replayJSON cũ.
+
+API bổ sung armedTotal, rejectionReasons, mẫu loại gần nhất và tickInvalidations để phân biệt không có setup với thiếu dữ liệu. Đây là thống kê vận hành, không phải cardCLOSED/PnL hoặc nhãn giao dịch mới; không thêmWHITELIST. Chỉ cảnh báo Discord đỏSHORT/xanhLONG/xámUNKNOWN, không thay Binance/entry/3×/size/SL/TP/routeflags/vị thế.
+
+Kiểm tra: regression với compact fixture và chính buildBinanceHeatmapProfiles thật + rawcache→arm; thiếu/gap/future/mismatchraw→reject rõ lý do; baseimmutable; cáccaseUP/DOWN/continuation/rejection/durable/noReplay/DiscordmàuPASS, heatmapwatchregressionPASS. Audit120rawwindow tại clock sau savedAt, tham chiếu lastclose giả định chỉ kiểm tra contract (không phải tín hiệu live/backtest): bảncũ120/120thiếunến, bảnmới34arm/86loạiđúngbộlọc. Bằng chứng data/research/range-sweep-no-signals-fix-20261030/{before,contract-audit}.json. Trạng thái triển khai ghi sau xác minh live.
+
+### 2026-10-29 — Nền đi ngang → quét vùng, Discord riêng đỏ/xanh/xám
+
+Runtime 17:15:30 29/10/2026 VN: đã reload btc-liquidity-web PID4105594; health/API observer local/public200, ready=true/error=null/discordConfigured=true. Discord riêng nhận tin kiểm tra kết nối xám, ghi rõ KHÔNG PHẢI TÍN HIỆU, HTTP204 (không gửi tín hiệu giả). Đã nhận 148 bundle thực; 0 nền đang đạt điều kiện tại lần chốt, chưa có cảnh báo giao dịch tự nhiên. Hash controls/WHITELIST/live-real giữ nguyên; policy3× và flags giữ nguyên. Bằng chứng data/research/range-liquidity-sweep-deploy-20261029/{before,after,connection-test}.json. Không tự nới ngưỡng để ép phát tín hiệu.
+
+Version RANGE_LIQUIDITY_SWEEP_OBSERVE_V1_20261029, observeOnly=true/affectsOrders=false. Theo yêu cầu người dùng, gửi vào webhook riêng RANGE_LIQUIDITY_SWEEP_DISCORD_WEBHOOK_URL (.env, không log/API/Git). Màu đỏ0xed4245=điều kiện cảnh báoSHORT, xanh0x2ecc71=LONG, xám0x95a5a6=chưa rõ hướng. Không xem màu là bảo đảm thắng hoặc quyền gửi lệnh Binance.
+
+Dữ liệu trước phát: chỉ hai modelBINANCE_LOCAL24h/5m đồng bộ,3profileđóng liên tiếp đủMARK/OI, cụm đồng thuận≥35% mỗi profile. Nền24nến5mđóng(2h),ATR14, width≤6ATR,efficiency≤0,30,netclose≤1ATR; MARK còn trong nền khi arm và tick≤10s. Chốt nền/vùng hai phía trước nhịp, chọn cụm gần nhất nằm ngoài nền trong5%. Dùng bundle/cache và MARKstream sẵn có, không thêm REST/universe loader. Độ phủ phụ thuộc heatmapwatch hiện có; model chưa tải/nến1m thiếu thì không tự suy đủ dữ liệu.
+
+State: phá biên≥0,25ATR→BREAKOUTxám; chạm cụm→ZONE_TOUCHxám. Trước cụm, nến1m đóng sau breakout, volume≥2×TB20, mua≥55%và nến xanh choLONG / mua≤45%và nến đỏ choSHORT; MARK cùng phía, không đuổi quá1ATR và còn cách cụm≥0,25ATR. Sau chạm, chỉ xét nến1m đóng sau chạm: từ chối cụm với volume≥1,5×/taker tương ứng→SHORT sauquéttrên hoặcLONG sauquétdưới; đóng vượt cụm và volume≥2×/taker→LONG tiếpdiễntrên hoặcSHORT tiếpdiễndưới. MARK cũng phải xác nhận phía đóng và cách mép≤1ATR. Nến đóng trở lại nền trước chạm→xám hủy hướng. Không mặc định quétlên=SHORT/quétxuống=LONG. Toàn bộ ngưỡng thử nghiệm chưa backtest.
+
+CohortTTL15phút, không nối gapMARK>10s; bộ quan sát cache không chờ/gọi executor. Chốt event/input trước queue, lưuPENDING trướcPOST; cooldown30phút/coin-kind-side,≤30tin/phút,queue≤60, trễ>30s bỏ; history500/14ngày. Không retry deliveryFAILED/UNKNOWN/PENDING sau restart, không replaychart; restart arm mới khiMARK còn trongnền. File JSON riêng data/range-liquidity-sweep-watch.json; JSON/schema cũ của bộ khác không đổi; sai schema/storagefail thì observer ngừng gửi. API GETread-only /api/range-liquidity-sweep?event=id, không lộ webhook.
+
+Không thêm nhãn/card thống kêCLOSED hayWHITELIST; các phase chỉ là cảnh báo quan sát không phải ruleBinance. Giữ control/3×/size/entry/SL/TP và các vị thế/plan cũ. Test causal/frozen/UP-DOWN/tiếpdiễn-từchối/legacyrestart/missing-gap/defaultxám/durable-beforePOST/secretvalidationPASS; regressionheatmapwatch/native3×PASS. Triển khai/xác minh Discord thực tế ghi sau khi hoàn tất.
+
+### 2026-10-29 — Đòn bẩy chung 3× cho lệnh mới
+
+Runtime 16:44:46 29/10/2026 VN: btc-liquidity-web PID3989882 online; chính sách3× kích hoạt2026-10-29T09:44:16.674Z. Health và controlAPI local/public200; 99/99route hiển thị3×,41routeON giữ nguyên, toàn bộ margin/strategyLeverage nguyên. Hash WHITELIST/live-real giữ nguyên; 824 plan cũ khớp hash. 31/31 vị thế cũ còn mở giữ leverage như trước (đã kiểm tra qua GET vị thế). Không gửi lệnh thử hay đổi leverage trực tiếp trên các vị thế cũ. Bằng chứng data/research/new-entry-leverage-3x-20261029/{before,after}.json.
+
+Theo xác nhận người dùng: toàn bộ cấu hình vào lệnh mới dùng đòn bẩy3×, giữ tiền ký quỹ, không đổi vị thế đang mở. Version NEW_ENTRY_LEVERAGE_3X_V1_20261029; controlV49 có trường tùy chọn newEntryLeveragePolicy(scope=NEW_ENTRIES_ONLY,leverage=3). Không đổi master/enabledAt/routeON-OFF, không thêm route hay nhãn/thống kê/WHITELIST.
+
+Runtime dùng hai lớp: (1) giữ nguyên payload/proof/rule chiến lược để kiểm tra tính hợp lệ; newEntrySizing sau đó tính effective notional=(notional gốc/leverage gốc)×3, audit ghi leverage thực3 và margin gốc. Không tự ceil min-notional khi policyON; nếu margin×3 thấp hơn minimum thì bỏ qua. (2) guard chung trên client.setLeverage và placeFuturesOrder: đọc vị thế/open-entry của coin trước đổi leverage và trước entry; có vị thế/lệnh entry cũ thì chặn để giữ nguyên. Chỉ gửi entry khi Binance vừa xác nhận3× trong30giây, tách theo credential+symbol; setLeverage thất bại/sai/xác nhận cũ thì chặn. Direct legacy entry generators cũng lấy leverage chung3. Không gọi đổi leverage hàng loạt khi khởi động. Lệnh reduceOnly/closePosition/TP-SL hiện hữu đi qua control protection cũ, không bị policy3 chặn.
+
+API auto-entry-controls trả leverage/executionLeverage=3 cho mọi route, strategyLeverage giữ giá trị proof/generation cũ; giao diện hiển thị chính sách chung, khóa chỉnh leverage riêng. Giá trị chiến lược nội bộ không phải đòn bẩy gửi sàn. JSON cũ thiếu policy giữ hành vi cũ; không migrate snapshot/plan/filled history. Các plan cũ giữ nguyên để recovery protection. Nhóm fixed native giữ khoảng giá TP/SL đã định trước (ví dụ nearSHORT2%/6% tương ứng ROE gộp6%/18% ở3×); các policy TP/SL theo ROE còn chạy theo logic riêng với leverage thực. Không thay các vị thế/TP-SL cũ; tỷ lệ ROE của lệnh mới phụ thuộc leverage mới.
+
+Kiểm thử sizing giữ margin/immutable proof, sai leverage/stale/khác account, vị thế/pending trước mutation, reducing/protection giữ đường cũ; native SHORT/heatmap3×+audit/protection và regression volume/earlywick/structure/manual/controls/watch đều PASS (mock). Triển khai ghi sau xác minh runtime, không gửi lệnh thử.
+
+### 2026-10-28 — Backtest LONG context V1, offline
+
+Version PUMP_TURN_LONG_BACKTEST_V1_20261028; classifier runtime PUMP_TURN_LONG_CONTEXT_V1_20261028 giữ nguyên. Khóa 424 cảnh báo/165 coin 24–28/10; 389 mẫu đủ6h15m, loại35mới theo clock. Dùng duy nhất snapshot gốc gain60/preBuyPct/preVolumeX/zone/tick trước entry; nhãn tính hồi cứu trong research, không sửa JSON/history live. UNKNOWN ưu tiên thiếu/sai, EXTENDED gain≥10%; STRONG_BUY mua≥55/vol≥2; BUY_PRESSURE mua≥55/vol<2; MIXED còn lại.
+
+Mô phỏng LONG OPEN phút kế tiếp, TP+2%/SL−6%giá,5×,timeout6h; cost0,14%,stress0,30%hai chiều; SL-first/gap bất lợi, không funding/MARK/orderbook/portfolio. Baseline389:win71,72%,netROE+0,1060%,stress−0,6940%. STRONG_BUY120:+0,9528%/stress+0,1528%,CIcoin-ngày[−1,5161;+3,2348]%,70%đầu−0,2000%/30%cuối+4,2623%. BUY89:−0,1486%; EXTENDED31:+0,8650%,30%cuối−2,1286%,bỏcoinlãicao nhất−0,0387%; MIXED149:−0,5817%; UNKNOWN0. Mọi CI đều cắt0; chưa có nhóm chứng minh edge ổn định. Chờ đủ nến5m trong15phút chỉ12entry/389,net−7,3667%,quá ít. Chia70/30 hồi cứu, nhiều phép so sánh, history cap1000LONG/SHORT; không phải OOS độc lập.
+
+Kiểm thử simulationPASS; audit giá/TP/SL/PnL theo cách tính riêng khớp389/389; tái lập cùng cohorthash,0request mạng. Không thay runtime/control/route/gate/entry/size/SL/TP/vị thế, khôngrestart/order/Discord/Push. Không thêm card/WHITELIST, không migrate/backfillJSON. Reports: reports/pump-turn-long-backtest-20261028.md/.csv; cohort/results/summary/independent-audit tại data/research/pump-turn-long-backtest-20261028/.
+
+### 2026-10-28 — Bối cảnh GẦN VÙNG LONG V1
+
+Runtime 15:36:59 28/10/2026 VN: reload riêng btc-liquidity-web; health/API local và public HTTP200, đúng longContextVersion V1, error=null, Discord ON. Module public HTTP200. Ba hash control/whitelist/live-real và 121 plan SHORT giữ nguyên; hai route người dùng vừa tắt vẫn OFF. Watermark do runtime quản lý đã thay đổi trong quá trình reload; không ghi đè/khôi phục file này. Chưa có LONG mới với context trong lần kiểm tra, chưa xác nhận delivery tự nhiên. Bằng chứng data/research/pump-turn-long-context-deploy-20261028/after.json.
+
+Version PUMP_TURN_LONG_CONTEXT_V1_20261028, Discord CONTEXT_V4_LONG. Chỉ dùng snapshot nến5m đã đóng: gain60, preBuyPct (15m), preVolumeX (TB3/nền20), vùng giá và tick≤30s. Giữ detector LONG hiện hữu (gain≥4%, volume≥1,2×, mua≥50%). Phân loại ưu tiên: thiếu/sai/stale→UNKNOWN; gain60≥10%→EXTENDED (ĐÃ TĂNG MẠNH); còn lại mua≥55% và volume≥2×→STRONG_BUY; mua≥55%/volume<2×→BUY_PRESSURE; còn lại MIXED (LỰC MUA CHƯA RÕ). Ngưỡng mô tả thử nghiệm, chưa backtest và không thể hiện xác suất thắng.
+
+longContext chốt đồng bộ trước lưu lịch sử/gửi Discord, có version/eventId/symbol/input/label/reason, observeOnly=true/affectsOrders=false. UI/Discord có cùng nhãn, màu và chỉ số, vẫn CHƯA XÁC NHẬN. Không tính lại lịch sử; JSON cũ thiếu longContext hiện THIẾU DỮ LIỆU. SHORT V1 giữ nguyên. Không thêm route MARKET LONG; không đổi điều kiện entry, control, size, SL/TP. Không có thống kê/card CLOSED LONG mới (chưa có native LONG fills), không tạo WHITELIST cho các nhãn hiển thị này; WHITELIST thống kê SHORT giữ policy cũ. Không backfill PnL hay đưa research vào lệnh thật.
+
+Kiểm thử: năm nhóm/biên ngưỡng/stale/legacy/tamper/future-input, nhãn lưu trước Discord, không replay/không gọi onNearShort cho LONG; browser desktop/mobile mười nhãn LONG+SHORT, không overflow; regression 571 SHORT/native/watch đều PASS. Trạng thái triển khai ghi sau xác minh runtime.
+
+### 2026-10-28 — OFF hai route theo ảnh người dùng
+
+15:28:01 VN đã tắt entry mới `POST_DUMP_NO_SELL_BUY_IMPULSE_LONG` (post-move-impulse/post-dump-no-sell-5m/LONG) và `RELATIVE_ENTRY_READY` (btc-relative-strength-watch/opposite-btc-5m/SHORT). Control V49, cập nhật route enabled=false qua module chính thức; live API xác nhận OFF và so sánh toàn bộ route/master không có thay đổi ngoài hai cờ này. Không thay snapshot/dữ liệu trước entry, classifier/thống kê, size/SL/TP; không đóng/hủy vị thế cũ. JSON tương thích nguyên schema, không backfill. Không restart. Bằng chứng `data/research/disable-two-loss-routes-20261028/after.json`.
+
+### 2026-10-28 — Phân loại GẦN VÙNG SHORT và Discord V3
+
+Runtime 14:36:03 VN 28/10: `btc-liquidity-web` PID 2765708 online, local/public health/API 200 đúng context V1, error=null; assets mới 200. Discord ON và master/route giữ nguyên; 4 hash cấu hình/watermark và 121 plan cũ không đổi, 92/92 protection lookup hợp lệ. Năm contextStats CLOSED=0/defaultOFF; không replay/test lệnh hoặc tin giả. Chưa có SHORT mới tại lần kiểm tra này; trạng thái delivery chưa được xác minh bằng cảnh báo tự nhiên. Xem `data/research/pump-turn-context-deploy-20261028/after.json`.
+
+`PUMP_TURN_NEAR_CONTEXT_V1_20261028`, Discord`PUMP_TURN_DISCORD_CONTEXT_V3_20261028`, WHITELIST V41: chốt nearContext trước lưu/gửi/queue từ input nến5m đóng và tick≤30s. UNKNOWN khi proof thiếu/sai/cũ; DEEP_DROP giảm≥10%; chưa sâu: BUY preBuyPct≥50/gain60>0, SELL preBuyPct≤45/preVolumeX≥1/gain60<0; còn lại MIXED. Ngưỡng giống nghiên cứu V1, 571event parity. Nhãn mô tả bối cảnh, chưa phải xác nhận SHORT/gate. Discord thêm tên nhóm/màu/4chỉ số, giữ CHƯA XÁC NHẬN và deep links; LONG giữ nội dung cũ. UI lịch sử dùng snapshot bất biến, legacy thiếu context hiển thịUNKNOWN không backfill.
+
+nearContext theo pumpTurnNearAtEntry vào plan/audit. Thống kê nativeSHORT CLOSED finiteROE/net, source/symbol/signalId/clientptns_/orderId/closeGroup chính xác, replay72closed5m; dedupeopeningorder, bỏDCA/mixedgroup/OPEN/blocked và dữ liệu nghiên cứu. Nămkey`pump-turn-context:<label>` nốiUI/normalizer/runtime matcher, defaultOFF, server/UIclosedAvgROE>4% mới cho bật. WHITELIST quan sát không tạo quyền MARKET hoặc đổi route hiện hữu. Không đổi eligibility/cooldown/cap/entry/size/TP/SL, không sửa vị thế/planprotection cũ, không replay/tin thử giả. JSONcũ không migrate. Testsclassifier/native/audit/stats/whitelist/Discord và browserdesktopmobile PASS; triển khai xác minh riêng sau nạp backend.
+
+### 2026-10-28 — Lớp bối cảnh SHORT, nghiên cứu offline V1
+
+`PUMP_TURN_NEAR_CONTEXT_RESEARCH_V1_20261028`: thêm script/test/report, chưa nối runtime. Dùng đúng snapshot trước entry, allowlist source/state/asOf/expiry/tick/zone/peak/pump/preBuyPct/preVolumeX/gain60; thiếu/legacy/stale/future→UNKNOWN. Ưu tiên DEEP_DROP nếu giảm≥10%; còn lại BUY_PRESSURE nếu takerbuy15m≥50% và gain60>0; SELL_PRESSURE nếu takerbuy≤45%,volumeTB3/baseline20≥1,gain60<0; còn lại MIXED. Giữ flow phụ khi giảm sâu. Không dùng outcome/nến về sau làm input và không gán nhãn là chất lượng entry đã chứng minh.
+
+Cohort527đủ6h15m của571event/75coin24–28/10; giữ mô phỏng cũ OPEN phút tiếp,TP−2%/SL+6%giá,5×,timeout6h,cost0,14%/stress0,30%,SL-first; không funding/MARK/portfolio. Baseline−1,0461%; SELL4/+9,30% (quá ít,0first-retained-peak); BUY100/+1,4777% nhưng CI[−1,94;+4,74],cuối28/+0,6438%net/−0,1562%stress; DEEP190/−1,9218%; MIXED229/−1,6084%; UNKNOWN4/−0,70%. Không nhóm vượt màn sàng lọc. Split368/159 hồi cứu không phải OOS; kiểm tra cụm coin-ngày/first-global-retained-peak/loại top contributor; không hiện CI khiN<30 hoặc<10cụm. Ngưỡng V1 không tối ưu lại sau kết quả.
+
+Sửa lỗi bin nghiên cứu cũ: null preReturn60m không được tính UP. Sau sửa527mẫu:UP293/DOWN199/UNKNOWN35; cohort hash và571bộ outcome không đổi,0requestmạng. Không thay detector/nhãn/card/controls/WHITELIST/Binance/entry/size/SL/TP/vị thế, không restart/order/Discord/Push. JSONruntime không migrate/backfill. Nếu triển khai runtime cần chốt proof lúc phát,UNKNOWN cholegacy, đồng thời nốiWHITELISTdefaultOFF/closedAvgROE>4% theoAGENTS; backtest không thay CLOSEDfill thật. Tests classifier+backtestPASS; reports/pump-turn-near-classification-20261028.md/.csv và data/research/pump-turn-near-context-20261028/.
+
+### 2026-10-28 — Backtest riêng GẦN VÙNG SHORT · CHƯA XÁC NHẬN
+
+PUMP_TURN_NEAR_DELAY_REBOUND_RESEARCH_V1_20261028, offline-only. Snapshot09:19:47VN:571alert/75coin 24–28/10, cohort chính527đủ6h15m theo đồng hồ; loại44mới độc lập với việc TP nhanh. Frozen event/zone/peak/baseline +public1m, OPEN phút kế tiếp; wait-red/wait-full dùng closed5m tối đa15m trên zone gốc. TP−2%/SL+6%giá,5×,timeout6h,cost0,14%/stress0,30%,SL-first khi cùng nến; không funding/MARK/portfolio/cap. Không phải tín hiệu/gate runtime mới.
+
+Vào ngay527/TP374/SL125/timeout28,netwin72,11%,AvgROE−1,0461%,PF0,8637. Wait-red248/−0,7765%; wait-full50/−0,6201%, chưa có cách dương ổn định. Median giảm từ peak7,65%,tuổi mốc peak80,5phút,tick0,965s/Discord1,075s. Fixed-path hồi≥2%trong15m214/569 không đồng nghĩa thua vì có thể sauTP. Bootstrap134coin-ngày CI[−2,71%;+0,63%]; short retrospective split không OOS, paired future-confirmation nhóm không dùng lọc vào ngay. Audit thật76exactCLOSED sau loại18DCA/16mixed,net−3,77537918USDT/AvgROE−2,48380209%,cohort18–23/10 riêng và có đóng tay/bot.
+
+Chỉ script/test/report/CSV/cache research; không sửa detector/nhãn/card/controls/whitelist/Binance/entry/size/SL/TP/vị thế cũ, không restart/order/Discord/Push. Không card/WHITELIST mới, JSONruntime không migrate/backfill; snapshotresearch version riêng.124publicGET lần đầu,rerun0request/120cache,không key. Causal/censoring/mature/exact-ledger tests và audit độc lập527outcome/rawCSV PASS. Báo cáo reports/pump-turn-near-backtest-20261028.md; tái lập node scripts/research-pump-turn-near-20261028.mjs.
+
+### 2026-10-26 — Discord neutral heading V9
+
+NạpBE21:14:44VN26/10 PID1800406; local/public200,errornull/Discordconfigured; upper/lowergate vẫntrue, controls/whitelist/watermark/601planprefixhash giữ. TestsregressionPASS, khôngtestlive/replay/editDiscordcũ. Đã hoàn tất triển khai.
+
+Version`HEATMAP_SWEEP_NEUTRAL_MOMENTUM_HEADING_V9_20261026`: tiêu đề chung là ĐÁNH GIÁ ĐỘNG LƯỢNG TRƯỚC QUÉT · PHÍA TRÊN/DƯỚI, không còn gán cảm giác “còn đà bơm/xả” cho mọi mẫu. Dòngkếtluận/4điềukiện/dữliệutrướcentry/statistics/whitelist/gate giữ nguyên. Không đổi Binance/entry/size/SL/TP, không label/card/key mới; JSONcũgiữ,khôngbackfill/replay/editDiscordcũ. Testsupper/lowerexactheadingmọitrạngthái +limits. NạpBEđểápdụngtinmới.
+
+### 2026-10-26 — LOWER momentum / CÒN ĐÀ XẢ
+
+Đã nạp17:15:59VN26/10 PID1708324; APIlocal/public200, lower/upperveto đềutrue,errornull,Discordconfigured;assetV26/lowpanel200. LowerwhitelistOFF/closed0;controls/whitelist/watermark/582planprefix hash giữ;304/304oldprotectionlookup hợp lệ. Tests7Nodesuites/browserdesktopmobilePASS; khôngtestlive/replay. Hoàn tất triển khai.
+
+`HEATMAP_LOWER_MOMENTUM_V1_20261026` +gate`HEATMAP_LOWER_CONTINUATION_NO_ENTRY_V1_20261026`: 21closed5m trướcentry,cacheonly đồngbộ;15m≤−1%,1h≤−3%,quotevol≥1,5×20trước,closeposition≤25% đềuđạtCONTINUATION. ThiếuUNKNOWN,đủtrượtNOT_CONFIRMEDkhôngnghĩahồi. RatioACCOUNT/OIlag5m vàBTCcontextonly. Ngưỡngthửnghiệmchưabacktest. PersistBLOCKEDtrướcroutes/account/submit, nativefirst/final, chặn cảLONG2/GOOD5/BAD1, WHITELISTkhôngoverride;DiscordV8/UIV12đỏ, linkModel1/3,khônggửilệnh. Khôngđổisize/cap/SL/TP hayvịthếcũ, khôngreplay; builderprotectiongiữ. JSONcũthiếulowerMomentumkhôngbackfill/giữgatecũ. WhitelistV40ba keyheatmap-lower-momentum:<state>,OFF,closedAvgROE>4%,dedupe/loạiDCA/mixed/OPEN/blockednofill. Testsclassifier/watch/runner/native/whitelist/UIvàupperregression;runtimechờxácnhậnsauBE.
+
+### 2026-10-26 — HEATMAP_UPPER_CONTINUATION_NO_ENTRY_V1_20261026
+
+Runtime xác nhận17:08:23VN26/10 PID1676961; APIlocal/public200 đúngversion/blockUpperContinuationtrue/errornull/Discordconfigured. Controls/whitelist/watermark/582planprefix hash giữ,304/304protectionplan cũ khôi phục. Khôngtestorder/Discordlive/replay. Đã hoàn tất triển khai.
+
+Theo yêu cầu tắt tự vào nhóm CÒN ĐÀ BƠM: dùng snapshot V1 trước entry (21closed5m,giá15m≥1%,1h≥3%,volquote≥1,5×20trước,closeposition≥75%), stateCONTINUATION hợp lệ chặn SHORT5/cảsecond10. RunnerpersistBLOCKED trước account/submit; nativecheckfirst/final; WHITELIST khôngoverride. DiscordV7/UIV11 vẫn thông báo và giải thích veto thật, không còn gọi gate entry này OBSERVE ONLY. Ratio/OI/BTCcontextonly, không đổi classification version/legacyproof. NOT_CONFIRMED/UNKNOWN/JSONcũ giữpolicycũ; khôngreplay. Không đổi size/SL/TP/cap/routeflags/master hay sửa lệnh đang mở; protectionbuilder/validator khônggắnveto đểkhôiphụcplancũ. Thống kêclosedAvgROE/whitelistOFF>4%giữ; blockedkhôngtínhPnL, khôngcard/keymới. Unit/native/browserregressionPASS, chờxácnhậnruntime.
+
+### 2026-10-26 — HEATMAP_UPPER_MOMENTUM_OBSERVE_V1_20261026
+
+Thêm annotation full-upper đồng bộ cache-only trước entry: 21closed5m; giá15m≥1%,1h≥3%, volumequote/20trước≥1,5×, closeposition≥75% đều đạt → CÒN ĐÀ BƠM; thiếuUNKNOWN; đủ nhưng trượtNOT_CONFIRMED, không khẳng định đảo chiều. RatioACCOUNT/OI lag5m13điểm và BTC chỉ bối cảnh, thiếu hiện—. Không fetch/await/đánhgiálạisauentry; ngưỡng thử nghiệm chưa backtest. DiscordV6/UIV10 thêm giải thích/cam, linkModel1/3, cùng kênh hiện hữu. Đã nạp BE16:37:29VN26/10 PID1625190, APIlocal/public200 đúngversion/errornull/Discordconfigured; ba whitelistOFF/closed0. Controls99routes/whitelist/cutoff/Push/578planprefix hash giữ,304/304protectionlookup cũ hợp lệ. Không gửi testlive hay replay.
+
+Thống kê SHORT CLOSED đúng proof, dedupe openingID, bỏDCA/mixed/OPEN; AvgROE trung bình, không dùng nghiên cứu để mở quyền. WhitelistV39 ba key `heatmap-upper-momentum:<state>` nối UI/runtime, OFF, chỉ hiện/cho bật khi closedAvgROE>4%. Đây là OBSERVE ONLY, không route hay gate entry; giữ Binance/size/SL/TP/cap/master. JSON cũ không phân loại lại, không replay. Tests mới + regression/watch/entry/whitelist/browser; xem CURRENT cho định nghĩa đầy đủ.
+
+### 2026-10-26 — HEATMAP_WEAK_PURPLE_CONTRAST_V1_20261026
+
+- Chỉ tăngcontrast hai stopmàutím choôcó dữliệudương trên Model1/3; nềntrống#30003d/stop40%+/linear-log/filterdefault5%giữ. Khôngthêmdữliệutrướcentry,khôngđổi phânloại/statistics/nhãn/tier/whitelist hoặcconsensus≥35%/3profile. Vùngtímsánghơnkhôngcấpquyềngiaodịch.
+- KhôngảnhhưởngBinance/entry/size/SL/TP/Discord/Push;khôngrestart. JSONmodel/import/history/ledger đọcnguyên. Cache-bustHTML→page→canvas→model, refreshđểthấy. Kiểmtrahiểnthịdesktop/mobile, giữclickpopup/MARK/zoomhiệncó.
+
+### 2026-10-26 — HEATMAP_SHORT_PRE_ENTRY_CONTEXT_RESEARCH_V1_20261026
+
+- Hoàntất215publicGET/táidùng12.040cachepoints/rerun0request/0errors,89/89primaryđủ4sources. PrimaryV4SHORT5:89closed61win28loss/net+3,22443/AvgROE+0,72459%/9SL. Ratio1..<2:36/+3,1151%ROE;≥2:45/−0,9590%. EMAtrên≥2%58/−0,2484%và8/9SL;trên<2%23/+2,2104%. OItăng≥2%31/−0,7704%;strength35..<50:42/−1,0781%;50..<70:41/+1,7959%. KhôngđảoLONGtheoRSI/overshoot,khôngcoiBTCgiảmlàan toàn;nhómnhỏ/chưaOOS. Unit+audit100causaltimestamps/17factors/9candidate/tổngPNLsplitPASS.Findings/fullreport26/10lưu;khôngđổiDiscord/entry/size/SL/TP/runtime/whitelist,restart hayorderPOST.
+
+- Khóaaudit15:37:23VN:183ownedfull-upperSHORT,33DCAloại,182closed/1open;primary89closedV4SHORT5khôngmixed,legacy3/V3tách. Context100V4entry69coin; khôngtựgánsecond-sweepchohistoricalthiếuproof.
+- Featuretrướcentry=event.at:closed5m/RSI14Wilder/EMA20-50/BTCreturns;ACCOUNT ratio/OIquantitylag5m,gap/missingtách. SHORTovershootméptrên/armRise/râutrên riêng, khôngmượn côngthứcLONG. Historicalreconstructed/unknownlatency/cache/revision;giữsnapzonegốc,filldriftbiếnsauquyếtđịnh. Bins/candidatefixed,split70/30chỉhồicứu,chưaOOS.
+- Script/test/report/researchJSONriêng,reusecacheLONG+publicGETthrottle/stoprateban;khôngorder/Discord/Push/restart/đổirule/entry/size/SL/TP/whitelist. JSONruntimecũgiữ,norelabel/replay;khôngruntimelabel/card/checkboxmới. Testupperedge/sign/wick/causality/exactledger/dedupe/noDCA/mixed/sizeversion/missingPASS; chờkếtquảtổnghợp.
+
+### 2026-10-26 — HEATMAP_LOWER_LONG_QUALITY_V1_20261026
+
+- Nạp15:29:14VN/webPID1504514/watchdog1919405. Local/public200/errornull/versionV1/Discordconfigured/HTMLassetmới.40shealthconnected/fault0/pending0,warmup20/523. GOOD5/BAD1vẫnOFF/enabledAtnull/qualityModefalse/whitelistOFF/closed0,giữLONG2. Hash97oldrouteflags/nonTarget/settings/Push/quiet/cutoff/prefix571attemptsgiữ,exactprotection304/304;1SUBMITTINGDYMlegacy20/10khôngđụng. ChínNode suites/browserdesktopmobile/syntax/diffcheckPASS,researchparity117/117,noorder/DiscordPOSTthử/replay/Gitpush. Ghi nhận này thaytrạngthái source/chờdeploybên dưới.
+
+- Full-lower mới có đánh giá trước runner/entry và lưu event.longQuality nguyên vào plan/audit. GOOD=xuyên mépcụm<0,1% + RSI14Wilder240closed5m<60 + ACCOUNT ratioΔ1h≥−5% + OIquantityΔ1h≥−2%; đầyđủinputtrượt≥1=BAD,thiếu=UNKNOWN. Priceclosed<event;ratio/OI13điểm5m lag5m,source/coin/shares/gap/freshchecks. BTC15m/1h chỉhiệnthamkhảo. Rawmodelcache/sharedRESTgate + sharedratioloader,candidateonly,max2underlyingjobs,timeout4s,khôngbackgroundratiofetchtoànuniverse.
+- DiscordV5/UIV9 phânbiệtgreenGOOD/orangeBAD/grayUNKNOWN,check/value/lýdo,sizephânloại5/1vàsizekếtquảthựctếtách,giữmodellink/kênhfullsweep. Khônggọinhãn làxácsuấtthắng. ThôngbáocũthiếuprooftựhiệnUNKNOWN,khôngbackfillreplay.
+- ControlsV49 thêmLOWER_SWEEP_LONG_GOOD/BAD cùngsourceheatmap/streamfrozen/LONG,defaultOFF;plangood5/bad1×5 TP10SL30ROE/capheatmap20/fillprotection/nodca/fresh30/activation/nativechecks. ANYnewrouteON→qualitymode;matchingrouteOFF/UNKNOWN/gatefailchặnkhôngfallback2. BothOFF→legacyLONG2giữ. Khôngtựbậtgiaodịch/mutatevịthếcũ.
+- WHITELISTV38 exactkeys `heatmap-long-quality:LOWER_SWEEP_LONG_GOOD`/`LOWER_SWEEP_LONG_BAD`,defaultOFF,checkboxchỉclosedAvgROE>4%. Realclosedaudit/proofpreentry/dedupesymbolopeningID/noDCA/noMixed;OPEN/old/researchkhôngcấpquyền. Runner/nativeđầu-cuốikiểm;size1khôngceilminnotional. Statsgồmcảsize2cóqualitytrướcentryvàsize5/1;khôngbảochứnglợithếcủasizemới.
+- Kiểmtrafeature117/117researchparity. Bộkết hợp hồi cứu112clean:GOOD52/41win/AvgROE+3,50442%,BAD60/37win/−0,35705%;net+3,6446/−0,42845ởsize2,khôngbacktestportfolio5/1hoặcOOS. UNKNOWNtách. JSONoptionalquality,watchV3/ledgerV4/oldplansamounts/protectionIDsgiữ;thêm2planversionexactrecovery,khôngmigrateresearch/oldhistory. TrạngtháinạpBEghi bổ sung saukiểmchứng.
+
+### 2026-10-26 — HEATMAP_LONG_PRE_ENTRY_CONTEXT_RESEARCH_V1_20261026
+
+- Hoàntất223publicGET/cache223file,rerun0request/0errors;coverage112/112BTC/coin/ratio/OI.112cleanclosed78win34loss/net+3,21615/AvgROE+1,43578%;9SL/25âmnhỏtách. Xuyênmép<0,1%73lệnh/AvgROE+2,7256%,≥0,1%39/−0,9785%;RSI≥60:16/−2,2674%;ratio1hgiảm>5%21/−1,8547%;ratio±5%73/+2,6473%;ratiolevel≥2:39/+3,6184%. BTC1hđingang±0,3%88mẫu/cả9SL, BTCgiảm<-0,3%15win/15; khôngsuyquanhenhânquả/bộlọcchắcchắn. Unit +auditđộclập117causaltimestamps/16partitions/7candidate reconcilePASS. Findingsvàfullreport26/10đãlưu; khôngđổiruntime/entry/size/SL/TP/whitelist hoặcPOST/restart.
+
+- Nghiên cứu hồi cứu nhóm LONG full-lower quét cụm, không thêm rule/label/card runtime. Cohort khóa14:57:37VN26/10:117entry exactledger/proof,2DCA loại,116closed/1open;112closed chính sau loại4mixed/DCAclosegroups. So netPNL thật đã lưu, không mô phỏngTP/SL hay PnLOPEN.
+- Pre-entry=event.at: closed5mBTC/coin,EMA20/50,RSI14,volume/taker; ratioACCOUNT/OIquantity lùi5phút timestamp+5m≤event. SnapshotzoneModel1/3 gốc; filldrift làbiếnsauquyếtđịnh. Historicalreconstruction khôngchứngminhrealtimeavailability; gaps/thiếu tách, khôngsuyPASS. Bins/candidate cốđịnh, split70/30 chỉkiểmổnđịnhhồicứu, khôngOOStíncậy hoặc chứngminhnhânquả.
+- Script/test/report/cache nghiêncứu riêng; noorder/noDiscord/noPush/norestart, khôngđổiBinance/entry/size/SL/TP/gate/whitelist. JSONruntimecũ giữ; khôngbackfill labels/proof vào ledger. Không thêmcheckboxgiả vì khôngcóruntimelabel/statcard mới. Testcausalclosedbar/ratioOIlags/gaps/exactledger/dedupe/noDCA/mixed/missing/OPEN/partition PASS. Tổnghợpsẽghiở report cùngversion.
+
+### 2026-10-25 — HEATMAP_SECOND_UPPER_BELOW_PEAK_V1_20261025
+
+- Deploy19:55:44VN25/10 theo yêu cầu restart, webPID1231057/watchdog1919405. Local/publicAPI200/marketON/Discordconfigured/dedicatedfullroute/errornull; health28sconnected/fault0/pending0. Warm-up14/523checked/13armed. Nhánh10seedOFF/enabledAtnull, whitelistOFF/closed0/eligiblefalse; không bật giao dịch hoặc bỏ gate. Ledger509attempts/hash/prefixgiữ, protection254/254, nonTargetroutes/2heatmaproutes/master/Pushflags/quiet/cutoffgiữ; subscriptionhash đổi vận hành. Không order/DiscordPOSTthử/replay. Ghi nhận triển khai này thay thông tin “chưa nạp BE” ở ghi chú thực hiện trước đó.
+
+- Kiểm chứng: 6suite Node (second/watch/Binance/whitelist/policy/Discordlinks) + browser desktop/mobile PASS, syntax/diffcheckPASS. Readonly252/252storedplans exactprotectionlookup, khôngwrite/POST/restart. Đây là kiểmkhôi phụcplan, không xác nhận lệnhbảo vệhiệntrênsàn. Auditunavailable trảgatefalse/unknown, không suyPnL hoặc làm sậpwatchAPI.
+
+- Pre-entry: full-upper Model1/3 V3 + MARK liên tục; lần đầu được quan sát, baseline=MARK arm đầu. Pump≥10%, retrace≥5%, rebound≥2%, full-upper mới còn dưới đỉnh MARK. Một lần2/24h; chạm đỉnh vô hiệu, gap>10s/restart/đổi theo dõi reset. Freeze trước await, không backfill/future/replay. Giữ re-arm/cooldown15phút; không cam kết bắt nhịp2 trong cùng15phút, ngưỡng thử nghiệm chưa backtest.
+- DiscordV4 title tím `COIN · QUÉT LẦN 2 SAU BƠM · CHƯA VƯỢT ĐỈNH CŨ`, thời điểm đầu VN/đỉnh MARK/%điều chỉnh/%cách đỉnh/link Model1/3 event, kênh full-sweep cũ; không gửi thêm trùng. Không khẳng định XNY cũ đủ proof.
+- Entry opt-in `HEATMAP_SECOND_SWEEP_SHORT10_5X_TP10_SL30_V1_20261025`, controlsV48, SHORT10margin×5 TP10/SL30ROE theo fill, cùng heatmapcap20/noDCA/age30s/activation/currentcohort/minnotional guards. Native chặn MARK≥đỉnh cũ, không drift0,5%. RouteOFF giữ SHORT5; ON nhưng gate fail chặn không fallback. **Chưa nạp BE/bật route/whitelist, không order/Discord thử**, không đổi lệnh cũ.
+- WHITELIST V37 key `heatmap-sweep:SECOND_UPPER_BELOW_PEAK` đồng nhất UI/matcher/gate, defaultOFF. Checkbox chỉ hiện closedAvgROE>4% từ audit nguồnheatmap SHORT CLOSED/ROEhữu hạn/proofpreentry, dedupe openingorder; average từng lệnh5/10 cùngnhãn, không PnLgiả lập/retroactivelabel. Runner/native recheck; thiếu mẫu chưa được giao dịch10.
+- JSON: optional secondSweep trong event/plan/audit; trackerRAM resetrestart, oldhistory/plans/amount/TP-SL/IDs giữ, exactlegacyprotection. HeaderledgerV4 giữ, thêmversionplan10; không migrate runtimeJSON. Config seed OFF lúc nạp sau này. Tests detector/Discord/matcher/stats/runner/nativeguard/dedupe/legacy protection mock-only; xem CURRENT và docs Binance.
+
+### 2026-10-25 — PRE_PUMP_SAVED_ALERT_REPLAY_V1_20261025
+
+- Backtest bộ lọc hiện hành trên47PRE đãSENT/44coin (24–25/10), khóa06:57VN25/10. Dựng Model1/3 từpublic price/MARK/OI36h theo thời điểm alert; giữsnapshotLIVE cũ, chọnprofile trước nến; ratio ACCOUNT5m timestamp≤alert. Tái dựng timestamp không đồng nghĩa dữ liệu đã có sẵn realtime; latency/correction/cache chưa mô phỏng.
+- FullPASS0, FAIL47, thiếu0; model-onlyPASS1(PENGU), ratioPASS0. Ratio35shift<10%/12sai chiều; heatmap44không gần cụm dưới,46R:Rkhông đạt (lỗi chồng lấp). Loại cảTREE vàANIME đã cóMFE6h+57,92%/+9,68%; không gọi MFE là tiền lãi hay0PASS là lọc tốt.
+- Thống kêentryOPEN1m sauSENT, fixed-horizon net trừ0,14%, loại censored/gap khỏi mẫu số tương ứng:1h30mẫu/TB−0,3314%;3h27/TB+0,8252%;6h20/TB−0,2499%. Không PnLthật/winrateV2, khôngbacktesttoànthịtrường; các tín hiệu cùng nhịp khôngđộclập. Report `reports/prepump-confluence-backtest-20261025.md`, raw/results riêng `data/research/prepump-confluence-20261025`.
+- Không đổi rule/entry/size/SL/TP/Binance/Push/whitelist; khôngrestart/replay/POST. JSON nghiên cứu độc lập, botstateV1/V2 nguyên. PublicGET236lầnđầu cóthrottle; reruncache0requests. Testoutcome vàauditcausal/tổnghợp47mẫu PASS.
+
+
+### 2026-10-25 — PARABOLIC_PUMP_RISK_MODEL13_RATIO_V2_20261025
+
+- Deploy06:53:12VN, PID966859, watchdog giữ; APIlocal/public200/V2/errornull. Chín suites +syntax/diffcheck PASS. Sau51s connectedtrue/fault0/pending0, cache đang31/522ready (warmup tiếp). Controls/Push/quiet/cutoff/prefix441attempts giữ, protection191/191; hash80history/74cooldownV1 nguyên, không replay/POSTtest/Gitpush.
+- PRE_PUMP_WATCH giờ cần giá/volume V1 + `PRE_PUMP_MODEL13_TOP_ACCOUNT_V1_20261025` PASS. Đồng thuận3 profile5m trước nến ứng viên, từng model≥35%, MARK/OI thật mới; cụm dưới cách≤2% còn giữ, cụm trên cách1–5% chưa chạm; R:R tham chiếu≥1,5 sau cost0,14%, buffer0,2ATR20. Ratio top trader **tài khoản**5m dùng nguyên rule nền30phút≤5% rồi giảm≥10% trong≤30phút. Không dùng profile/ratio tương lai hay thay ratio vị thế/global.
+- Dữ liệu trước cảnh báo: ứng viên đã có từ cache nến; chỉ ứng viên mới được đọc shared Model1/3 và ratio, tối đa3/tick15s, cooldown kiểm30s/coin, giữ shared quota/rate gate. Thiếu dữ liệu=UNAVAILABLE, điều kiện không đạt=FAIL, không gửi PRE; ghi lý do và bằng chứng riêng. Discord PASS hiển thị vùng/target/R:R và ratio/long-short accounts. Các trạng thái khác giữ ngưỡng cũ.
+- Thống kê tách ứng viên giá/volume, kết quả kiểm tra và lịch sử gửi; không PnL/winrate/tier/card/whitelist mới. 47tin PRE cũ/44coin chưa lưu Model/ratio, không suy retroactive PASS/FAIL; xem `reports/parabolic-prepump-confluence-audit-20261025.md`. Ngưỡng mới thử nghiệm, chưa xác lập lợi thế dự báo.
+- OBSERVE ONLY; không ảnh hưởng Binance/entry/size/SL/TP hoặc Push/whitelist. JSONV1 được đọc không ghi, giữ cooldown/history và version từng event; save vận hành nâng headerV2, thêm diagnostics≤100/24h, không replay/backfill. Malformed/unknown version fail closed.
+
+
+### 2026-10-24 — DISCORD_ALL_ROUTES_MODEL13_LINKS_V1_20261024
+
+- Nạp11:31:32VN, PID777382; startup marker đúng, local/public health200/connected/fault0. Năm suites/syntax/diffcheck PASS. Controls/Push/quiet/cutoff/prefix356attempts giữ, exactprotection124/124; watchdog giữ, không POST thử/replay.
+- Yêu cầu mọi Discord kèm Model1/3: thêm `src/discordHeatmapLinks.js` tại fetch backend dùng chung; nhận diện mã USDT Unicode/nhiều coin từ payload có sẵn, encode đúng mã/range24h; không rõ coin thì mở trang chung. Giữ link cũ, tránh trùng và không vượt giới hạn Discord; payload đã đầy giữ nội dung gốc.
+- Dữ liệu trước entry: không thêm dữ liệu thị trường; chỉ trình bày thông báo. Phân loại/gate/tier và cách thống kê/PnL không đổi; không thêm whitelist/card. Binance/entry/size/SL/TP không ảnh hưởng. Push vẫn quan sát payload gốc để giữ hash/dedupe; không đổi kênh hoặc retry/replay.
+- JSON cũ: không migrate/ghi state/ledger; tạo bản sao khi gửi mới. Test mock kiểm Unicode/multi-coin/link cũ/content giới hạn/đúng host và POST/transport lỗi không retry/Push giữ payload gốc; không gửi webhook thử.
+
+
+### 2026-10-24 — PARABOLIC_PUMP_RISK_PREBUILD_LIVE5M_V1_20261024
+
+Đã nạp10:55:51VN24/10/web731194/watchdog1919405giữ; APIlocal/public đúngversion/configured/observeOnly/errornull/no-secret, webhookGET200/noPOSTthử. Envđúng1keymới/otherhashgiữ/ignored. Sáusuites/syntax4/package/diffcheck/secret8files PASS; controls/routes/flags/Push/subscriptions/quiet/cutoff/prefix348attemptgiữ, exactprotection122/122. Health119s connected/fault0/pending0/restartRequiredfalse; cached5mđangnạplại54/522ready/51live/468insufficient/0gap-stale, PumpTurn42/42refreshedtheogate, khôngkhẳngđịnhphủ522ngay. Historymớitrống, khôngreplaynghiêncứu; PushroutemớidefaultOFF, khôngorder/testmessage/Gitpush. CURRENT ghi bằngchứng/giớihạn.
+
+Nhánh Discord riêng theo user: 🔵nghi tích lũy trước bơm, 🟡tăng tốc, 🟠dựng đứng, 🟣mất lực/rút đỉnh, 🔴đã xả50%. V1 thử nghiệm OBSERVEONLY; không dùng future/các4coin đã sập của nghiên cứu làm điều kiện dự báo. Quét15s toàn shareduniverse, đọc90cache5m/cần74closedliên tục/fresh375s; LIVE phải tick riêng≤15s (volume thực không annualize), CLOSEDalert≤90s, mất lực/xả chỉclosed. Không REST/socket/quota mới; dùng warm-up/shared5m hiện có, coverage báo thiếu/gap/stale. Không OI/funding/ratio/liquidation trongV1.
+
+PRE: nền12nến trước3nến có range≤4%, meanvol3≥3×nền/tổng≥300k/buy≥60%; close+0,5–3%, sát mép trên−2%..+1%, hai đáy nâng, chưa+20% từ nền6h. Tăng tốc: +8%/3nến hoặc+20%/12nến, breakout12≥0,2%, xanh/vol2×median20/≥100k/buy55. Dựng đứng thêm+50%/12nến hoặc+100%nền6h hoặc HIGH/open20%. Đỉnh3h có pump≥20%/vol2×/≥100k; mất lực close thấp hơn10%+râu35/trả30 hoặc phá3đáy đỏ/sell55, vol1,2×/100k; xả close thấp hơn50%+đỏ/sell55/100k. Các nhãn không bảo đảm bơm/đỉnh/đảo chiều, chưa có độ chính xác/lead-time hay PnL backtest. CURRENT cùngmục có công thức chi tiết.
+
+Webhook secret local.env keyPARABOLIC_PUMP_RISK_DISCORD_WEBHOOK_URL, source/docs/API không chứaURLtoken; Discord màu+metrics+conditions+Model1/3 đúngcoin. Percoin/stage6h/cùngcandle dedupe, stageescalationriêng/max5/vòng; atomicreservation trướcPOST, unknown/429 khôngreplay, backoff60s..1h. Startup khônggửinếnđóngtrướcboot hoặcLIVEnếnmởtrướcboot; không gửi lạiIRYS/DOS/DOOD/STBL nghiên cứu. StateversionV1 mới độc lập, legacyJSON khôngmigrate/overwrite; statecorrupt failclosed. GETstatusreadonlykhôngscan/POST405, history7ngày/max500 chỉvận hành, không WR/PnL/card/WHITELIST/matcher/quyền Binance; không đổi entry/size/SLTP/flags/lệnhcũ. Pushbridge route mới defaultOFF/quiethoursgiữ; chỉ bậtDiscord theo yêu cầu. Fixture/mock kiểm causal/gap/stale/live/pre/closed/routing/reserve/no-replay/storage/429/budget/escalation/API/secret; testscripts đăng kýpackage. Không tinthử/orderthử.
+
+### 2026-10-24 — PARABOLIC_CRASH_FORTNIGHT_RESEARCH_V1_20261024
+
+Đã chạy:525/526 coin đọc được, GAIB HTTP400;0gap/thiếu đầu-cuối,193candidate refine1m→99đỉnh đại diện. Rộng60coin/71nhịp, IRYS4coin/4nhịp (IRYS/DOS/DOOD/STBL), cực đoan2coin (IRYS/DOS); pending8broad/1IRYS24h (BIRB). IRYS hiện sụt87,90% dù chưa đủ24h theo dõi. Đối chiếu MARK cùng phút đỉnh bổ sung4coin bằng raw60nến1m không đổi cohort LAST/OHLC; riêng IRYS HIGHlast0,50406/MARKhigh0,43831636, không suy basis cùng tick/thanh lý. Report chứa đủ danh sách71nhịp, phương pháp/giới hạn/mark-audit; hai suite/syntax/diffcheck PASS, không runtime/restart/order/thông báo.
+
+Nghiên cứu public OHLCV 14 ngày 10:00VN10/10 → 10:00VN24/10, universe Binance perpetual USDT hiện còn metadata, không chọn trước top gainers. Quét1h/cần72h tiền sử, refine đỉnh1m; bỏ LOW cùng phút đỉnh. Nhóm IRYS tăng≥100%/24h hoặc≥200%/72h từ CLOSE nền, sụt≥50%/24h; cực đoan tăng200%/400% và sụt70%/24h; nhóm rộng tăng30%/60% và sụt20%/24h hoặc30%/72h. Chọn đại diện đỉnh cách72h trước khi xét outcome, unique coin/nhịp riêng, nhóm lồng nhau không cộng; gaps/censoring/72h đầu listing/metadata delist/đỉnh chưa đủ6h ghi rõ. Đỉnh±6h và đáy tương lai chỉ cho thống kê hồi cứu, không feature trước entry hoặc gate giao dịch, không chứng minh short squeeze/thanh lý/thao túng, chưa backtest độ sớm hay PnL/WR.
+
+Script độc lập/test `research-parabolic-crash-fortnight.mjs` và `test-research-parabolic-crash-fortnight.mjs`, tái dùng pure model tháng đã test thứ tự/gap/pending/dedupe; raw/results tách data/research, Markdown báo cáo reports. Không sửa Binance/entry/size/SL/TP/flags/runtime/Push/Discord, không restart, không thêm card/WHITELIST/matcher. JSON cũ không đọc/sửa/migrate. CURRENT cùng mục ghi phương pháp/giới hạn đầy đủ; kết quả thực đo ghi trong báo cáo sau khi quét xong.
+
+### 2026-10-23 — Chuyển full-sweep Discord sang kênh riêng mới
+
+Đã nạp22:10:05VN23/10/web462841, watchdog1919405 giữ. Local/public routingV1/full dedicated+configured/partialconfigured đúng, runnerV4 và toàn thông số/activation cũ giữ. GETwebhook200/noPOSTthật, .envđúng1keymới/otherenvhashgiữ/Gitignore đúng. 7suites/syntax3/diffcheckPASS; legacyprotection91/91, ledger294attempts/controls/Push/quiet/cutoffhash giữ, health39s connected/fault0/pending0/restartRequiredfalse. Không order/notification thử/replay/Gitpush; CURRENT cùngmục cóchi tiết.
+
+`HEATMAP_FULL_SWEEP_DEDICATED_DISCORD_V1_20261023`: `ALL_TRACKED_UPPER_SWEPT`/`ALL_TRACKED_LOWER_SWEPT` gửi secret `.env` key `HEATMAP_FULL_SWEEP_DISCORD_WEBHOOK_URL` mới, partialUPPER/LOWER giữ key/kênh cũ. Chỉ destination, không đổi pre-entry/detectorV3/3profiles×2models/MARK-OI/35%/freeze/gap/full-partial, không gate/label/tier/stat/PnL/WHITELIST/matcher mới; partial OBSERVEONLY/defaultOFF/closedAvgROE>4% giữ. BinanceV4/no-drift/SHORT5-LONG2/5x/TP10SL30/cap20/age30s/flags/activation/cutoff/lệnhcũ và Push/quiet giữ.
+
+Không có keymới giữ legacy single-channel; đãchọn mới thì lỗi khôngfallback/nhânđôi/retry, không replay tin cũ/BTR/testPOSTthật. Full-only khôngđẩy partial sangkênhfull. APIoptionaldiscordRouting chỉversion/booleans khôngsecrets, JSONstate/ledger/proof/history khôngmigrate/IDs-cooldown-statcũ giữ. URL/token chỉlocal.envignoreGit, envexampleđểtrống. Testmock4kinds/legacy/missing/invalid/429/no-fallback/secret/GET-POSTguards+regressions; GET webhook200 xácminhkhônggửi thử. CURRENT cùngmục ghi triểnkhai.
+
 ### 2026-10-23 — Heatmap full sweep MARKET không chặn lệch giá
 
 Đã nạp14:37:05VN23/10/web309885, watchdog1919405 giữ. Runtime/public desktopmobile V4/no-drift/SHORT5-LONG2/5x/TP10SL30/cap20/age30s đúng, activation/master/routesON giữ; 14suites/syntax10files/diffcheck PASS, public0write/error/overflow. Legacyprotection84/84, ledgerV3/279attempts và controls/Push/subscriptions/quiet/cutoffhash ngay trước-sau restart giữ; original277attempts khôngđổi, BTR cũ khôngreplay. Health23s connected/fault0/pending0/restartRequiredfalse; không order/notification thử/Gitpush. CURRENT cùngmục cóchi tiết.
@@ -3722,6 +4034,53 @@ Before major edits:
 - Whitelist hiện tại chỉ quyết định nguồn nào được tạo clone mới. Một clone đã tạo luôn được đồng bộ trạng thái/PnL từ source bằng `sourcePage + sourceTradeId`, kể cả khi combo sau đó không còn pass. Vì vậy mọi lệnh thắng/thua cũ vẫn cộng vào combo để số liệu tương lai không bị survivorship bias.
 - Card combo lịch sử hiển thị `ĐANG PASS` khi combo còn thuộc whitelist của cửa sổ đang chọn, hoặc `ĐÃ RỚT PASS` khi không còn đạt điều kiện nhưng vẫn giữ toàn bộ kết quả đã phát sinh.
 `r`n
+
+### 2026-11-10 — Bối cảnh Model 1/3 và cá voi cho Post Dump Kill Long / Post Pump Kill Short
+
+`PPKS_MODEL13_WHALE_CONTEXT_V1_20261110` bổ sung vào tin Discord của hai nhánh confirmed. Dữ liệu gồm cụm ước lượng Model 1/3 24h/nến 5m đóng trước lúc phát hiện, Model 1 đủ MARK và Model 3 có OI ≥95%, cùng snapshot PumpGlass cá voi/Smart đã được lưu trước hoặc tại mốc đó, cũ tối đa 15 phút và tối thiểu 10 cá voi. Điểm vùng đo quanh giá đóng 5m trong ±5%. Cùng hướng khi cá voi và Smart đều ≥60% theo phía tín hiệu, Model 1/3 có điểm phía đó lớn hơn và còn cụm ngoài biên nến 5m gần nhất. Tin ghi vùng, khoảng cách, tỷ trọng hai phía, và trạng thái Cùng hướng/Trái chiều/Chưa đủ đồng thuận/Thiếu bối cảnh. Lookup giới hạn 2,3 giây và dùng chung ngân sách dữ liệu; tin gốc vẫn gửi khi thiếu dữ liệu.
+
+Backtest theo 73 tín hiệu confirmed từ 07/11 đến 10:05 ngày 10/11 VN. Có 69 mẫu đủ 4h theo dõi, 27 mẫu đủ cả hai nguồn. Entry giá mở 5m sau timestamp paper, 3×, TP +5% ROE (contract), SL −20% (MARK), phí giả định 0,14% notional hai chiều, chưa gồm funding và trượt giá. So sánh bộ lọc trên 12 LONG và 15 SHORT có đủ hai nguồn. LONG không có mẫu cùng hướng. SHORT có một mẫu BSBUSDT, ROE ròng mô phỏng −2,18%. Báo cáo và input ở `data/research/ppks-model13-whale-20261110`. Kết quả là quan sát, không dùng để thay gate Binance, entry, size, TP/SL, thống kê giao dịch hoặc WHITELIST. JSON cũ dùng được vì ghép lúc tạo tin, không thêm trường bắt buộc vào ledger hoặc paper.
+
+
+### 2026-11-10 — Volume 1m Cùng hướng LONG 5 USDT
+
+`RISING_VOLUME_1M_ALIGNED_LONG5USDT_3X_TP5_SL20_V2_20261110` tăng ký quỹ riêng MARKET LONG của nhánh Volume 1m cùng hướng cá voi và Model 1/3 từ 2 lên 5 USDT, notional mục tiêu 15 USDT ở 3×. SHORT cùng nhánh dùng 2 USDT ×3. Cả hai đặt TP +5% ROE và SL −20% ROE từ giá khớp. Công tắc và nhãn route cũ dùng tiếp, nhánh Volume + ratio cũ áp dụng rule riêng.
+
+Dữ liệu trước entry gồm nến 1m đóng, volume liền mạch, cá voi/Smart và Model 1/3 có bằng chứng trước mốc tín hiệu, cùng lịch vào ở ranh 5m sau receipt Discord. Guard giá, tuổi, vị thế, giới hạn và bước khối lượng áp dụng như trước. Discord và Quản lý Binance hiển thị ký quỹ theo hướng. Audit và thống kê tiếp tục phân nhóm theo source/stream/label. JSON cũ tương thích và giữ nguyên chứng cứ. Kế hoạch LONG 2 USDT cũ chỉ được đọc để khôi phục bảo vệ đúng lệnh đã gửi, còn MARKET LONG mới bắt buộc dùng 5 USDT.
+
+
+### 2026-11-09 — Giữ DCA LIMIT khi Coin Level đảo hướng
+
+`COIN_LEVEL_OBSERVE_DIRECTION_FLIP_DCA_RETENTION_V2_20261109` đọc Position Risk Binance trước khi hủy lệnh chờ theo hướng cũ. Dùng cùng quy tắc giữ DCA hiện có cho LIMIT cùng coin, cùng hướng và cùng leg đang có khối lượng. Một phần lệnh vào mới đã khớp và tự tạo toàn bộ vị thế chưa được xem là DCA. Dữ liệu vị thế lỗi hoãn xử lý. Lệnh bị hủy có log ghi đúng order ID, và lệnh giữ lại có log DCA. Sau khi hủy entry, đọc lại vị thế trước khi xử lý đóng MARKET có lãi hoặc dời TP về giá vốn khi lỗ.
+
+Ca xác minh ONUSDT 19:10:26 VN, SELL LIMIT #1541088545 giá 0.3000, 317 ON, 0 ON khớp trong khi SHORT 545 ON còn mở. Replay rule mới giữ LIMIT này. Nhánh dọn DCA khi Binance xác nhận vị thế đã đóng vẫn chạy riêng. Thay đổi ở điều kiện hủy lệnh, giữ cấu hình entry, size, TP/SL và số liệu hiện tại. JSON cũ dùng được vì phân loại trực tiếp từ open orders và Position Risk, không thêm trường bắt buộc.
+
+
+### 2026-11-09 — Màu Discord theo tỷ trọng vị thế cho nến bơm siêu cao
+
+`EXTREME_PUMP_POSITION_COLOR_V1_20261109` chỉ áp dụng tin `EXTREME_PUMP` 5m/15m đang chạy hoặc đã đóng. Dùng snapshot PumpGlass lúc gửi qua bộ đọc bối cảnh dùng chung. Nguồn phải có ít nhất 10 cá voi, tối đa cũ 15 phút và có tỷ trọng cá voi, Smart và đám đông hợp lệ. Xanh nếu cả cá voi và Smart LONG ≥60%, đỏ nếu cả hai SHORT ≥60%, vàng nếu chưa cùng đạt ngưỡng, xám nếu thiếu nguồn hợp lệ. Tin ghi tỷ trọng hai phía, độ lệch LONG khoảng 1 giờ nếu có mốc, thời gian nguồn và số cá voi.
+
+Tỷ lệ tài khoản Top Trader Binance dùng bộ đọc hiện có và cửa sổ mới ≤15 phút. Tỷ lệ vị thế Top Trader Binance 15m chỉ đọc từ cache có timestamp ≤30 phút. Các tỷ lệ tham chiếu không tham gia tô màu. Chỉ bổ sung bối cảnh sau khi đã qua kiểm tra trùng Discord, kiểm tra lại tuổi cảnh báo trước POST. Dữ liệu được đọc lúc gửi, có thể sau lúc nến được phát hiện, nên không dùng cho điều kiện entry hay thống kê hiệu quả.
+
+Không đổi loại tín hiệu, rule vào Binance, size, TP/SL, thống kê hoặc luồng Nến hồi quét SHORT màu tím. JSON cũ và key dedupe tương thích, không thêm schema hay nhóm WHITELIST. Các ngưỡng màu mô tả tỷ trọng, chưa phải tín hiệu giao dịch đã backtest.
+
+
+### 2026-11-09 — Tên tín hiệu khi khớp lệnh Binance
+
+Bản hiển thị `BINANCE_REBOUND_FILL_DISPLAY_NAME_V1_20261109` dùng tên **NẾN HỒI SAU XẢ · ĐÃ QUÉT CỤM SHORT** cho `EXTREME_REBOUND_SWEEP_CONFIRMED` trên Discord báo khớp, audit đóng vị thế và trang Lệnh theo tín hiệu. Ánh xạ từ mã đã ghi trong audit nên bản ghi JSON/CSV cũ đọc được, không cần đổi schema hay chép lại lịch sử. Bộ lọc và số liệu tiếp tục dùng mã gốc. Chỉ sửa trình bày, không đổi dữ liệu trước entry, điều kiện vào lệnh Binance, size, TP hay SL.
+
+
+### 2026-11-09 — Nến hồi quét cụm SHORT vào Binance 3 USDT
+
+`EXTREME_REBOUND_SWEEP_SHORT_3USDT_V1_20261109` dùng tín hiệu đã xác nhận bằng nến đóng 5m và MARK vượt cụm trên Model 1/3 có từ trước spike. Chỉ xét nến mở sau khi bật route, tối đa 90 giây từ khi đủ bằng chứng, MARK lệch không quá 0,5%. MARKET SHORT 3 USDT ×3, TP +5% ROE và SL −30% ROE neo theo fill. Không nâng size để đạt min notional. Chặn lệnh trùng coin/vị thế hoặc thiếu bảo vệ. Đường giao dịch dùng audit khớp lệnh và cooldown sẵn có, Discord ghi kết quả submit. Ca AKE cũ không phát lệnh. JSON controls và dedupe giữ schema cũ, thêm key route và loại sự kiện riêng. Kiểm tra mock bao gồm size, quyền, tuổi, bật sau nến và Discord retry không gửi lại MARKET.
+
+
+### 2026-11-09 — Xác nhận Discord cho cú hồi kiểu AKEUSDT
+
+`EXTREME_REBOUND_SWEEP_DISCORD_V1_20261109` nối cảnh báo bơm 5m đã đóng với sự kiện Model 1/3 có vùng được chốt trước nến. Sau mức giảm ≥6% trên 20 nến trước, close trước spike hồi ≤35%, nến đóng xanh hồi ≥50% nhịp giảm và đóng tại ≥60% biên nến. Chỉ xác nhận khi MARK vượt cụm trên hợp lệ trong nến đó hoặc nến kế tiếp. Discord gửi màu tím một lần mỗi coin/nến vào kênh Extreme Short Squeeze.
+
+Replay AKEUSDT 09/11 VN từ nến Binance và tick đã lưu: đỉnh 0.004766 → đáy 0.004219 (−11.48%), nến mở 16:25 và đóng 16:30 tại 0.005465 (+25.66% từ open). MARK 0.00554944 → 0.00557059 lúc 16:30:41 vượt cụm 0.00553172192–0.00555941511, đồng thuận 41.8/100. Replay chỉ kiểm tra mẫu, không gửi lại Discord hay tính win rate. Runtime log hai bộ đếm `reboundConfirmed`/`reboundFailed`. Mẫu quan sát không vào Binance hoặc sửa size/entry/SL/TP. Dedupe thêm key riêng trong JSON cũ, bản ghi thiếu chứng cứ bị bỏ qua.
+
 ## 2026-07-18 - Shakeout Chase Bad Groups
 
 - `CHASE CANDLE TEST` van duoc tao de do lenh duoi nen, nhung cac combo chase xau tu backtest 4 ngay duoc ha xuong `margin=$1`.
@@ -6488,3 +6847,667 @@ Before major edits:
 - Bộ đếm active/triggered và attempted/sent/failed chỉ là audit vận hành, không phải xác suất hoặc thống kê hiệu quả. Tính năng không dùng nến/order book/Ollama/outcome và không gửi Discord.
 - Hoàn toàn `OBSERVE ONLY`: không gọi signed Binance REST, không đặt/hủy lệnh, không đổi entry/size/leverage/SL/TP/DCA/protection hay route. State JSON mới tách riêng và API manager chỉ thêm `priceAlerts` trong khi giữ `readOnly=true`, nên client/state cũ tương thích.
 - Đây không phải label/card/matcher giao dịch nên không thêm WHITELIST; default OFF và policy CLOSED AvgROE `>4%` giữ nguyên.
+
+
+## 2026-11-01 — Nghiên cứu bộ lọc opposite-depth sau ESPORTS
+
+- Version: OPPOSITE_DEPTH_FILTER_RESEARCH_V1_20261101. Chỉ chạy scripts/backtest-opposite-depth-filters.mjs, không import server/executor. Cohort đóng băng trong data/research/opposite-depth-filters-20261101/manifest.json: các lần thử gửi lệnh V3 còn metadata vùng và depth; loại V2 ngược hướng.
+- Dữ liệu trước entry: vùng/depth đã lưu tại submission, OHLC 5m đã đóng, return1h/24h; Position L/S 15m trễ tối thiểu15m và delta1h liên tục. Retest dùng các nến tiếp theo nhưng chỉ entry open sau nến xác nhận, không dùng kết quả tương lai chọn mẫu.
+- Phân loại nghiên cứu: depth>=1.2; tránh ngược đà tăng1h>3% hoặc24h>15% cho SHORT (LONG đối xứng); Position delta đồng hướng; loại giá tăng24h>10% cùng tỷ trọng SHORT tăng>=2pp/1h; retest trong30m đóng reject phía phá vùng, hủy nếu đóng vượt mép xa. Các ngưỡng là giả thuyết thăm dò sau ESPORTS, chưa phải rule đang chạy.
+- Thống kê: chuẩn hóa3x TP10/SL20 gross ROE, phí/trượt giá0.36% margin; so no-SL với proxy thanh lý -100% gross ROE, không tái dựng liquidation exchange. OHLC contract5m, SL trước khi cùng nến chạm TP/SL; đủ4h/24h, split thời gian và matched cohorts. Không funding, không portfolio; tín hiệu trùng5m/15m có tương quan. Kết quả và hạn chế nằm BAO_CAO.md/results.json, independent replay ở validation.json.
+- Binance/entry/size/SL/TP: không thay đổi runtime hoặc cấu hình thật; không gửi Discord, không tạo/sửa/hủy order. Không nhãn/card PnL UI mới nên không thêm WHITELIST. JSON cũ chỉ đọc; không migrate hoặc ghi lại ledger cũ, output nghiên cứu nằm thư mục riêng.
+
+- Kết quả nghiên cứu V1: SHORT24h gốc143 mean−2.30%/SL20−1.31%; SL+Position57 mean+0.84%, bootstrap theo34coin CI95%[−1.93,+3.42], chưa chứng minh edge. Ghép tất cả5mẫu/1coin âm−1.78%; xem BAO_CAO.md. Runtime không đổi.
+
+
+## 2026-11-01 — Tắt Binance nhánh SHORT opposite-depth 4 USDT
+
+- Version thao tác OPPOSITE_DEPTH_SHORT4_DISABLED_20261101. Theo yêu cầu người dùng, exact route local-ai-liquidity-breakout-opposite-depth / closed-main-kill-opposite-depth / LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH_SHORT / SHORT được đặt enabled=false.
+- Dữ liệu trước entry, classifier vùng/nến/depth không đổi; route gate OFF chặn entry SHORT mới. Không nhãn/card thống kê hoặc WHITELIST mới.
+- Thống kê lịch sử và JSON cũ giữ nguyên, không migrate/replay. Không đổi master, route khác, margin/leverage hoặc SL/TP position đã mở. Discord quan sát vẫn theo cấu hình hiện có. Audit: data/audits/disable-opposite-depth-short-20261101/.
+
+
+## 2026-11-01 — Mở rộng danh sách coin volume kiểu AIN
+
+- Version WICK_COIN_AIN_TIERS_V3_20261101. Trang /wick-coins có lựa chọn Mở rộng (mặc định) và AIN mạnh (ngưỡng V2 giữ nguyên). Mở rộng: nến15m range>=4%, quotevolume>=500000 USDT, volume>=3x median20, wick>=40%; strict range>=8%, quote>=1m, wick>=50%. Cả hai dùng range>=2ATR14, nền12 width<=8ATR/eff<=.35, cooldown1h và cửa sổ24h.
+- Dữ liệu: cùng cache5m đã đóng, đủ3nến liên tục để tạo15m, không thêm candle REST. Hai cohort được tính riêng để cooldown rộng không che sự kiện strict. API rows cho rộng, strictRows cho gốc, rules chứa cả hai. Nhãn CÓ MẪU AIN MẠNH nói coin có ít nhất1event strict trong24h; dòng số lần và event cuối theo mức đang chọn.
+- Thống kê chỉ đếm coin/event quan sát, không PnL/card giao dịch mới, không cần WHITELIST. Tất cả thiếu/stale ratio và Model1/3 vẫn theo rule cũ; cùng budget nạp1coin/15s, không tăng request rate. Ghim/ẩn/ghi chú cũ giữ tương thích; lựa chọn mức lưu riêng browser.
+- Không thay Binance/entry/size/SL/TP; không gửi Discord, không tạo lệnh. Route SHORT opposite-depth4 vẫn OFF. Kiểm thử giữ fixtureAIN, loại BRETT nhỏ kể cả rộng, test API hai cohort và bảo toàn strictEvents.
+
+
+## 2026-11-01 — Trang quản lý bơm sớm kiểu ESPORTS
+
+- Version EARLY_PUMP_CATALOG_V1_20261101. Trang /early-pump và menu Bơm sớm. Đây là danh mục quan sát coin, không phải signal/card PnL giao dịch; không có runtime matcher Binance, không thêm WHITELIST. Whitelist giao dịch hiện tại và policy CLOSED AvgROE >4% giữ nguyên.
+- Dữ liệu trước nhận diện: 21 nến5m liên tục đã đóng từ raw cache; quote volume nến >=500000 USDT và >=3x median20 trước, nến xanh đóng vượt high12 trước. Không dùng tương lai, không bắt buộc râu hay taker>=60. Cooldown1h/coin, cửa sổ24h. Chạy nền mỗi60s ngay cả khi trang đóng; chỉ đọc cache, không tải thêm candle REST.
+- Trạng thái: EARLY khi mới nhận diện; HOLD sau2 hoặc3 nến đóng đều giữ vùng vượt, lows không hạ, close cuối >giá nhận diện, avg quote volume >=1.5x baseline ban đầu. LOST khi bất kỳ close sau mẫu <vùng vượt (latch, không tự hồi thành HOLD); UNCONFIRMED khi hết3nến chưa đạt; UNKNOWN nếu thiếu/gap nến. Giá/mức tăng trên UI là close5m, không phải giá tick.
+- Bối cảnh hiện tại tách khỏi dữ liệu lúc phát hiện: global/account/position ratio15m latest timestamp<=now-15m, age<=45m, delta short share so đúng1h trước. Dùng6rows thay4rows cho shared loader. Nhãn giá giữ+SHORT vị thế tăng chỉ khi row không stale, EARLY/HOLD, giá>=vùng, context<=15m và delta position short>0; thiếu dữ liệu là null, không xác nhận squeeze. Model1/3 giữ cache-only cùng mốc, age<7m, điểm cụm±5% tương đối. Shared context cache/budget với wick-coins: tối đa1coin/15s,3REST, không tăng concurrency/request rate.
+- Thống kê chỉ coin đang có mẫu24h, HOLD mới, context tham khảo và ghim browser; không winrate, PnL hoặc xác suất. Quét lại lịch sử được gắn REPLAY. LIVE chỉ event sau khi process khởi động và đọc trong120s từ nến đóng. observedAt giữ lần đầu thật, không backdate; restart giữ record. Đây chưa phải backtest hiệu quả.
+- Lưu JSON mới data/early-pump-watch.json atomic, version riêng; không migrate hoặc sửa JSON trading cũ. Giữ identity/cooldown khi cửa sổ cache dịch chuyển. API mới /api/early-pump và /context GET only. Menu AIN vẫn giữ, thêm Bơm sớm, idempotent. Ghim/ẩn/notes dùng early-pump-prefs-v1 riêng; lịch sử ghim ngoài24h ghi rõ archived.
+- Binance/entry/size/leverage/SL/TP không thay đổi; không tạo/sửa/hủy lệnh, không gửi Discord. Nhánh opposite-depth SHORT4 vẫn OFF. Tests: lookahead/gap/volume/breakout, lifecycle giữ/mất vùng, ratio as-of/thiếu/stale, JSON restart, universe, menu; regression AIN/navigation và fixture ESPORTS10:00VN.
+
+- Cold start: dùng shared getSymbols/exchangeInfo khi universe volume chưa sẵn sàng; không quét tất cả file ngoài universe. Scanner khởi động cùng monitor sau khởi tạo metadata dependencies, UI báo đang nạp nếu chưa có danh sách.
+
+- Freshness: ghép lịch sử raw cache với nến5m đóng trong klineCache hiện có, ưu tiên bản closed từ stream tại cùng openTime. Loại isClosed=false/future/invalid; gap vẫn UNKNOWN/không tạo mẫu. Không seed/subscribe/REST mới cho candles.
+
+
+## 2026-11-02 — Backtest Bơm sớm theo Model 1/3
+
+- Version EARLY_PUMP_LIQUIDITY_RESEARCH_V1_20261102. Chỉ scripts offline, public GET/cache, không import server/executor/notifier. Universe USDT perpetual active tại cutoff,7ngày, train4/test3ngày, purge6h; lịch sử quét giả định, không phải tin đã phát. Protocol/hash đóng băng trước outcome trong data/research/early-pump-liquidity-20261102/protocol.json.
+- Dữ liệu trước entry:21nến5m đóng liên tục, trigger V1 volume>=500k và>=3xmedian20, xanh vượt high12, cooldown1h liên tục. Ba kiểu quyết định BREAKOUT/HOLD/RETEST; open vào sau quyết định5m, hủy khi mất vùng trong lúc chờ. HOLD2–3nến giữ/nâng đáy, avgvolume>=1.5x; RETEST6nến low<=vùng+.25ATR rồi đóng xanh trên.
+- Thanh khoản: cùng simulatorModel1/3,36hclosed5m+MARK đầy đủ+OI>=95%, ba profile đồng thuận, lag5m và sensitivity10m. Kiểm upper>=2lower trong±5%, điểm trên tăng20%/15m, quét cụm dưới rồi reclaim, khoảng trốngRR>=1.5, optional vị thế SHORT tăng1h từratio15m trễ15m. Missing riêng; không dùng vùng hiện tại gán lịch sử, không suy ra thanh khoảnUSD thật.
+- Thống kê:54tổ hợp mode/exit/filter công bố; chọn duy nhất bằng TRAIN n>=40,coin>=15,mean vàstressmean dương. TEST yêu cầu>=30lệnh/10coin, bootstrap theo coin CI95% lower>0 vàstressmean>0. Không chọn lại bằng TEST. 3x FIXED TP10/SL20 grossROE/4h; MODEL stop cấu trúc min vùng/3lows-.2ATR với capSL20, target cụm trên,RRnet>=1.5. Phí+trượt0.14%notional;stress0.30%;fundingtheolịch sử. GapSLopen, cùngnếnSLtrước; hoàn chỉnh4h, không báoPnLportfolio.
+- Không đổi Binance/entry/size/SL/TPruntime; nhánh SHORT4 giữOFF; không gửiDiscord/Push. Không thêm nhãn/cardPnL/gate/WHITELIST. JSONcũ chỉđọc; dữliệu/nghiêncứu mới trong thưmục riêng, không migrate. Kết quả chưa làcông thức production.
+
+- Kết quả cuối nghiên cứu02/11: đủ522hợp đồng,1260mẫu/181coin. Test BREAKOUT348 meanROE−1.55%, HOLD120−0.11%, RETEST107−1.41%; upper2x+BREAKOUT130−1.91%; thêmpositionSHORTtăng78−2.32%. Công thức chọn TRAIN RETEST+ROOM_RR15/FIXED train42 +0.92%,test36−0.87%,CI95[−2.69,+1.02],khôngđạt. HOLD+upper2x test44+1.03% nhưngtrain79−0.31%,chỉgiảthuyết,chưa triển khai. Audit5392outcomes/7500asof PASS. Báocáo/CSV trong data/research/early-pump-liquidity-20261102. Không thay runtime.
+
+
+## 2026-11-02 — Thử nghiệm DCA nhóm Bơm sớm
+
+- Version EARLY_PUMP_DCA_FIXED_BUDGET_V1_20261102. Nghiên cứu offline trên bộ7ngày đã xem, không phải holdout mới. Dữ liệu/entry candidates/Model1/3 giữ từ nghiên cứu trước; chưa tối ưu thêm ngưỡng.
+- Vốn dự trù1USDT/tín hiệu,3x: FULL100%; THIRD_ONLY33.33%; DCA/DCA_RECLAIM tối đa3phần bằng nhau. DCA khi close5m giảm2%/4% soentryđầu, khớpopenkếtiếp nếu còn<=ngưỡng và>SL. RECLAIM yêu cầu nếnxanh close vàopenkhớp>=vùngbreakout. Không dùngnếntươnglai chọnlầnthêm.
+- SL giữ nguyên giá banđầu entry*(1-.2/3), không nới. TPgiávốnbìnhquân*(1+.1/3); thời hạn4h từlầnđầu. Bảo vệopen trướcDCA; gapSLopen; cảTP/SLcùngnếnSLtrước. Chi phí0.07%mỗichiều/turnoverthật;stress0.15%;funding theoquantity từngthờiđiểm.
+- Thống kêPnL/tổngvốndựtrù,gồmphầnchưadùng; khôngnhầmvớiROEtrênmarginđãdùng. Paircohort/bootstrapcoin. BREAKOUTtest348 FULL−1.548%,THIRD_ONLY−.516%,DCA−.702%,DCA_RECLAIM−.485%; HOLD120DCA+.058%nhưngstress−.163%. Tấtcả5nhómCI95DCA−THIRD_ONLYbao0. Khôngđủbằngchứngđểtriểnkhai.
+- Audit6296ledger/1574FULLexitmatchPASS. Outputriêng data/research/early-pump-dca-20261102. JSONcũchỉđọc,khôngmigrate. Khôngsửaruntime,Binance/entry/size/SL/TP,khôngbậtnhánhSHORT4,khôngDiscord. Khôngthêmnhãn/card/gate/WHITELISTproduction.
+
+
+## 2026-11-02 — Backtest dữ liệu PumpGlass cá voi/đám đông
+
+- Version PUMPGLASS_POSITIONING_RESEARCH_V1_20261102. Research offline, JSON lịch sử14dPumpGlass/w,c bucket8h kết hợp bộgiáBinance7d522USDT đãđóngbăng, funding. Không có historicalPnL/entry/count/smart riêng nên không backtest cácfieldtrongảnh bằngsnapshothiệntại.
+- Phân loại LONG/SHORT đối xứng:WHALE70,DIVERGENCE70_40,GAP30_60,RISING5_60,BOTH70;ALL hướngcốđịnh đối chứng. EntryOPEN5m saukếtthúcbucket(t+8h),sensitivitytrễthêm8h. Timestamps/aggregation/publication vàlựachọnnhómwhaleschưaxácminh;khônggọilàbằngchứngrealtime.
+- Thốngkê3x,TP10/SL20grossROE,8h,phí+trượt.14%notional/stress.30%,fundinglịchsử,gapSLopen,cùngbarSLtrước. Train4/test3ngày,purge24h;coinCI95%;khôngoptimizer,tấtcảruleđượcbáo. Dữliệuđãxemkhôngphảiholdoutmới;kiểmsoátsurvivorship/tuyểnchọnnhómchưahoànchỉnh.
+- KhôngsửaBinance/entry/size/SL/TPproduction,khôngDiscord/Push,khôngthêmcardPnL/gate/WHITELIST. JSONcũchỉđọc,newresearchdata/research/pumpglass-positioning-20261102,khôngmigrate.
+
+- Kết quả PumpGlass02/11: đủ522coin, bucket8h, khônglỗidữliệu;67225outcomeauditPASS (tổhợpchồnglặp). LONGwhale70test197/31coinmean+.971%nhưngtrain−.477%;LONGdivergence70/40test11/2coin+4.097%,bỏAINcòn3mẫu−.42%;LONGgap30/whale60test32/8coin+3.817%,train31+.076%,lagthêm8h+1.256%,chưađủmẫu/độphủ. SHORTwhale70test2850mean−1.033%; SHORTdivergence1521−.923%. Khôngruleđạtcriteria;chưakếthợpModel1/3,khôngPnL/entryhistory,khôngtriểnkhairuntime. XemBAO_CAO.md.
+
+
+## 2026-11-02 — Discord màu riêng cho hai nhóm LONG PumpGlass
+
+- **Version:** PUMPGLASS_LONG_GROUP_COLORS_V1_20261102. Scanner riêng theo yêu cầu người dùng: DIVERGENCE70_40 màu tím (0xa855f7), whales LONG >=70% và crowd LONG <=40%; GAP30_60 màu xanh ngọc (0x14b8a6), whales LONG >=60% và whales-crowd >=30 điểm phần trăm. Nếu đạt cả hai chỉ gửi một tin tím, ghi rõ cả hai điều kiện. Gap làm tròn 9 chữ số để tránh lỗi biên floating point. Nhãn phân loại thông báo OBSERVE ONLY, chưa xác nhận điểm vào hoặc xác suất thắng.
+- **Dữ liệu trước gửi:** public GET PumpGlass /smart-money/api/board mỗi 60 giây; meta snapshot và updated không cũ quá 5 phút, không ở tương lai. Giao với universe Binance USDT perpetual đang hoạt động. Board chỉ lọc ứng viên; phải đọc lại /token đúng symbol để xác nhận Whales/Crowd, basis=whales, whale_count>=10, phần trăm là số hữu hạn trong [0,100], price>0, scanned_at không cũ quá 15 phút và không ở tương lai. Không dùng series 8h hồi cứu hoặc snapshot PnL/giá vốn để bù dữ liệu thiếu; không đồng nhất với top trader Binance. Không ghép thêm điều kiện volume/AIN/Model1/3 vào hai nhóm nguồn đã chọn. Tin có link Model1/3 để xem tham khảo.
+- **Delivery:** tối đa 6 token checks và 3 lần gửi mỗi scan, chỉ một scan chạy đồng thời; timeout 8 giây và không follow redirect. Ghi reservation bền trước POST, chống lặp 8 giờ/coin qua restart; nâng xanh ngọc lên tím được gửi một lần, hạ màu không spam. Lần khởi động gửi các coin đang đạt bằng dữ liệu mới, ghi thời điểm nguồn và lúc bot đọc; không mô tả là cảnh báo đã phát trước đó. Sau 8 giờ có thể nhắc lại nếu còn đạt. Backoff khi 429/403/418; không replay delivery UNKNOWN. State hỏng hoặc ghi lỗi sẽ fail closed. Không gửi tin test thật; kiểm thử POST bằng mock.
+- **Kênh:** dùng PUMPGLASS_LONG_DISCORD_WEBHOOK_URL nếu cấu hình, fallback RANGE_LIQUIDITY_SWEEP_DISCORD_WEBHOOK_URL, là kênh người dùng đã cung cấp. Không sửa .env thật hoặc thay webhook khác; .env.example có tùy chọn mới. Sender dùng wrapper link Model1/3 và đi trước Push bridge, không tự bật Push mới. API /api/pumpglass-long-watch chỉ GET, có coverage và delivery audit, không lộ webhook.
+- **Thống kê:** chỉ vận hành eligible/checked/qualified/attempted/sent, không tạo card PnL hoặc cohort CLOSED mới. Hai nhãn không có runtime matcher Binance nên không có checkbox WHITELIST giao dịch. Policy WHITELIST default OFF/CLOSED AvgROE>4% giữ nguyên. Không thay Binance entry/size/leverage/DCA/SL/TP hoặc bật lại nhánh SHORT4. Kết quả research cũ giữ nguyên; không dùng 75%/81,8% làm xác suất trong tin.
+- **JSON:** file mới data/pumpglass-long-discord.json, version riêng, atomic write, tối đa 500 history records trong 7 ngày. Giữ cooldown và group qua restart, không migrate hoặc ghi đè ledger cũ. Tests: biên ngưỡng, null/missing, stale/future, basis/universe, overlap/color, giới hạn gửi, cooldown/restart/upgrade, 429, delivery UNKNOWN, storage fail closed và webhook validation.
+
+
+## 2026-11-02 — Backtest kết hợp PumpGlass và Model 1/3
+
+- Version PUMPGLASS_MODEL13_RESEARCH_V1_20261102. Nghiên cứu offline hai nhóm LONG đang bật Discord; dùng nguyên166 source records (gồm hai nhóm, train/test, sensitivity trùng mẫu) từ nghiên cứu PumpGlass trước. Bổ sung MARK/OI5m cả cửa sổ7ngày+37h cho12coin, không chọn theo kết quả Model.
+- Dữ liệu trước entry: PumpGlass bucket8h chỉ sử dụng sau cuối bucket, entryOPEN5m sau; Model dựng36h cùng simulatorbackend, lag5m/sensitivity10m, đủ432candle/MARK/OI>=95%,3profile đồngbộ. Không dùng vùnghiệntại; cutoffaudit.
+- Phânloại: ALL/AVAILABLE, UPPER_2X trong±5%, UPPER_GROWING>=20%/15m vàtrên>dưới, TARGET_RR15 theo cụmtrênchưabịchạm vàSLmin3lows−.2ATR, LOWER_RECLAIM nếnquétcụmdướirồiđóngxanhtrên, UPPER2X_RR15. MODEL_EXIT dùngtargetcụmtrên/SLcấutrúccap20grossROE,RRnet>=1.5theoentrythật; giữ8h3x,phí.14/stress.30notional,funding,SLtrướckhicùngbar/gapopen. So cùngmẫuFIXED.
+- Truy cập lịch sử giávốn/PnL: tìm thấy publicchart cówhaleshistory nhưng locked=true,long_avg/short_avg=null vàkhôngPnLseries ởAIN/BTC. Khôngbypass,tránhgándữliệuhiệntạichoquákhứ. Chưađủdữliệu backtestPnL/inprofit%; source-access-audit.jsonlưukếtquả.
+- Train/testđãđượcxem,khôngholdoutmới; purge24h; côngbốtấtcảtổhợp/coverage/coinCI/sensitivity/bỏAIN/soFIXEDcùngmẫu. Khôngtốiưuđểépwinratecao. JSONnghiêncứuriêng data/research/pumpglass-model13-20261102;khôngmigrateJSONcũ.
+- Khôngthayruntime,Binanceentry/size/DCA/leverage/SL/TP hoặcDiscordcolors/gates. KhôngthêmcardPnL/WHITELIST;policygiao dịchdefaultOFF/CLOSEDAvgROE>4%giữnguyên.
+
+- Kết quả cuối Model+PumpGlass: ModelOK332/332 bản dựng, audit140model-exitPASS; khôngthiếuModel ởcácmẫu xét. Tím gốc11/2coin+4.10%,upper2x6−.47%,RR9+6.21% nhưngtrain6−.42%. Xanhngọc gốc32/8coin+3.82%,upper2x15+1.63%,RR23/6coin+3.57%,train21+2.11%,lagPumpGlassthêm8h+.58%. MODEL_EXITxanh10+1.15% soFIXEDcùng10+6.42%;bỏAINMODEL−1.48%. Khôngđủcơsởthêmgate/đổiTP_SL; giữDiscord2màu. Giávốn/PnLhistory vẫnlocked/null,chưađượckiểmchứng. XemKET_QUA.md/source-access-audit.json.
+
+
+## 2026-11-02 — Cá voi và đánh giá trên trang Model 1/3
+
+- Version HEATMAP_WHALE_CONTEXT_V1_20261102. Thêm bảng hiện tại trên /coinglass-heatmap-lab, ba nhóm nguồn PumpGlass (whales/smart/crowd), LONG/SHORT, so7ngày trước, số cávoi, quy mô USD, giá vốn bìnhquân, PnLchưa thực hiện và tỷlệ đanglãi. Giá đổi để vềgiávốn nhóm được tính entry/giáPumpGlass−1, khônggọi làSL/thanh lý hoặc PnLtừngcávoi. Fieldnull/missing giữ—, khôngép0. Hai chart có dòng nhắc bối cảnh cùngcoin.
+- Source: GET /api/coinglass-heatmap-lab/whales chỉ cho symbolBinanceUSDTactive/rangehợplệ/end<=now. Backend gọi publictokenPumpGlass timeout8s, cache60s, dedupinflight, tốiđa2pending/global1request/s;403/418/429backoff15phút. Không gọi thêm RESTBinance để dựng model; chỉ đọc bundlechartđãcótrong cache. SourceAt/readAt riêng; sourcecũ>15m hoặc bảnđọc>2m ngừng đánhgiá, cóthểhiển thịbảngcũmờ kèmnhãn. Khônglưugiávốn/PnLhiệntạithànhfeaturelịchsử.
+- Classifier quan sát: cầnbasiswhales/count>=10, hướngLONG>=60%,SHORT<=40%,còn lạiBALANCED. Nhóm tím/xanhngọc dùng chung classifierDiscord. So với preference của kịchbảngiá hiệncó:ALIGNEDnếucùnghướng,CONFLICTnếungượchướng,WAITnếuchưaxácnhận; khôngtựtạotriggerLONG/SHORT từPnLhoặctỷtrọng. NhắcSHORTcávoichưa cókếtquảtốt. Khônggánxácsuấtthắng.
+- Model1/3 phảiBINANCE_LOCAL,samesymbol/range/endtheochartclientđangxem,samestep,nếnkhôngcũquástep+2m,MARK100%,OI>=95%; consensus3profiletrướcnếncuốidùnghelperbackend≥35%. Điểmcụm±5%tươngđối,nearestcụmtrên/dướichưabịnếncuốichạm,khoảngcáchtheogiáđóngchart. Mốcchart/token riêng;khungkhác5mbáokhácbacktest. Dữliệukhôngđủkhôngcoi làkhôngthanhkhoản.
+- UI hủyrequest/bỏresponsecũkhiđổicoin/range,clear,DEMO,import. Chỉghép2modelđãtảithật; dựavàomốcendđượcclienttruyềnđểkhôngtrộnbundle. Tựđọc lại60s khi tabhiện, khôngtựtải lại chart hoặc gửiorder. RawsourcekhôngđưaHTMLvàoUI; renderescape vàtextContent.
+- Đây là cardbối cảnh/snapshotnguồn, kểcảPnLhiệntạicủanhóm; khôngphải thốngkêCLOSEDtheotínhiệu,khôngcócohortAvgROE hoặc routematcherBinance. KhôngthêmWHITELISTgiả. PolicyWHITELISTgiao dịchdefaultOFF/CLOSEDAvgROE>4%giữnguyên. Khôngđổientry/size/leverage/DCA/SL/TP hoặc hai màuDiscord. API/GETkhôngđặt/cancelorder.
+- JSONcũkhôngmigrate/ghilại; dữliệumới cacheRAMtốiđa200coin, táchkhỏiLedger/Discordstate. Payloadversionriêng, clientcũbỏquafeaturemới. Testsnull/signPnL,sourcefreshness,symbol/range/end,mismatch/conflict,MARK/OI,import,cache/inflight/stalefailure; regressionchart hiệncó,QAUIcoinchange/DEMO, desktop và CSS responsive.
+
+
+### 2026-11-03 · WEB_NOTIFICATIONS_MASTER_V1_20261103
+Theo yêu cầu tắt toàn bộ thông báo web: WEB_NOTIFICATIONS_ENABLED=false chặn toast và tất cả Web Push (kể cả cầu nối Discord, báo giá, vùng và rủi ro). API config/manager trả enabled=false; response toast trả browserNotifications rỗng cho tab cũ. Worker kiểm tra policy trước hiển thị và đóng thông báo cũ khi cập nhật. Đăng ký mới bị chặn; subscription, lịch sử và route đã lưu được giữ lại. Không dùng dữ liệu trước entry, không đổi phân loại/thống kê tín hiệu, không ảnh hưởng Binance/entry/size/SL/TP hay gửi Discord. JSON cũ không cần migrate; mặc định code giữ tương thích bật nếu chưa cấu hình biến mới.
+
+
+### 2026-11-03 · PUMP_HIGH_WHALE_TURN_RESEARCH_V1_20261103
+Nghiên cứu offline, không triển khai tín hiệu. Dữ liệu trước entry: giá Binance 5m của 522 cặp trong 26/10–02/11; 183 cặp từng bơm ít nhất 15% từ đáy 24h và close ở 20% phía trên biên 24h. Dùng tỷ trọng cá voi/đám đông PumpGlass, trễ 15/30 phút, so crowd 1h và whale 4h, ít nhất 10 cá voi; bỏ nguồn cũ và các khoảng refresh danh sách. Toàn bộ 177.372 dòng size khách có tổng 1.000, chỉ dùng tỷ trọng; không coi là lượng hợp đồng hoặc bằng chứng mở mới SHORT. Không có giá vốn/PnL lịch sử.
+
+Phân loại: rule SHORT ≥60%, giảm ≥5 điểm %/1h và LONG cá voi giảm ≥10 điểm %/4h hoặc đổi từ ≥60% sang ≤40% có 0 tín hiệu. Các nhánh giảm ròng nhẹ được ghi riêng là phân tích thăm dò sau kết quả 0. TEST nhánh crowd giảm + whale LONG giảm có 13 mẫu/8 coin, SHORT ROE ròng TB +6,89%, giá giảm sau 4h ở 61,5% mẫu; nhánh giảm liên tiếp 3 khoảng 20 phút có 11 mẫu, ROE TB −1,33%. Có AIN sau TP SHORT vẫn tăng 29,7%/4h. Model 1/3 đủ ở 12/20 mẫu giảm LONG nhẹ; 0 mẫu chính đạt cụm dưới ≥2× phía trên.
+
+Thống kê: mỗi coin/mỗi nhánh cách 8h, đòn bẩy 3×, TP10/SL20 ROE, tối đa 8h, phí 0,14% notional cộng funding, stress 0,30%; SL trước nếu cùng nến. Train/test theo thời gian, purge 24h, dữ liệu đã xem trong nghiên cứu trước. 1.720 lượt phát lại lệnh độc lập khớp kết quả. Báo cáo và raw tách tại data/research/pump-high-whale-turn-20261103. Không ảnh hưởng Binance, entry, size, SL/TP, whitelist, Discord hoặc Web Push. JSON/runtime cũ giữ nguyên, không cần migrate.
+
+
+### 2026-11-03 · PUMP_HIGH_WHALE_SHORT_DISCORD_V1_20261103
+Đã bật nhóm cảnh báo Discord màu cam 0xf59e0b, tên “BƠM CAO · SHORT ĐÔNG GIẢM RÒNG · CÁ VOI GIẢM LONG”. Đây là nhóm quan sát nhịp điều chỉnh, không gán là cá voi mở thêm SHORT hoặc xác nhận tạo đỉnh. Dữ liệu trước cảnh báo: 288 nến Binance 5m đã đóng, liên tục, nến mới không quá 7,5 phút; close ≥15% trên đáy 24h và ở ≥80% biên 24h. Đọc tỷ trọng cá voi/đám đông PumpGlass trễ 15 phút trước nến quyết định, cùng hàm tính với backtest. SHORT đám đông ≥60% và giảm ròng 1h; LONG cá voi giảm ròng 4h; chỉ loại nhiễu số học <1e−9 điểm %. Không yêu cầu giảm liên tiếp qua ba khoảng 20 phút, không dùng mốc giảm 5 điểm %/1h hoặc 10 điểm %/4h.
+
+Loại nguồn thiếu/cũ/tương lai, nến thiếu, group smart hoặc <10 cá voi, khoảng so sánh đi qua refresh danh sách và lịch dự phòng 06:00–07:30 UTC. Snapshot tại cutoff tối đa cũ 30 phút cho whale, 10 phút cho crowd; token và lần scan cá voi mới nhất phải còn trong 15 phút ở thời điểm gửi. Lấy giá từ raw cache hiện có và socket cache; không gọi thêm Binance REST. Mỗi phút quét universe đang giao dịch, nạp luân phiên tối đa 6 coin đủ giá, tối đa 3 lần gửi; gặp 403/418/429 nguồn dừng 15 phút.
+
+Thông báo kèm giá, mức bơm từ đáy, vị trí trong biên, hai thay đổi tỷ trọng và timestamp; link Model 1/3, PumpGlass, Binance. Không đưa winrate nghiên cứu vào cảnh báo. Model 1/3 chưa là điều kiện lọc. Chống lặp mỗi coin 8h, lưu reservation trước POST; restart không phát lại cùng event và không thử lại kết quả UNKNOWN. Chỉ xét nến hiện tại đủ mới, không replay tín hiệu lịch sử/backtest; lần khởi động đầu có thể gửi coin hiện vẫn đang đạt. Lịch sử tối đa 500 cảnh báo/7 ngày, phân biệt RESERVED/SENT/FAILED/UNKNOWN. GET /api/pump-high-whale-short-watch chỉ xem trạng thái, không kích hoạt scan hoặc gửi.
+
+Đích mặc định cùng webhook các nhóm PumpGlass LONG, sau đó fallback webhook range-sweep; có biến tùy chọn PUMP_HIGH_WHALE_SHORT_DISCORD_WEBHOOK_URL. Gửi bằng transport trước cầu nối Web Push; thông báo web vẫn OFF. Không thay đổi Binance, entry/size/SL/TP, route giao dịch hoặc Discord nhóm khác. Không tạo nhãn/card thống kê giao dịch hay matcher/checkbox WHITELIST cho nhóm Discord quan sát này. Backtest 13 mẫu cuối kỳ/8 coin là dữ liệu thăm dò đã xem, không dùng làm điều kiện cấp quyền Binance. State mới tách data/pump-high-whale-short-discord.json; JSON cũ không migrate. Mã hàm giá/positioning được dùng chung với research; không đổi phép tính thống kê cũ.
+
+
+### 2026-11-04 · PUMP_HIGH_WHALE_SHORT_DATA_V2_20261104
+Sửa độ phủ dữ liệu của nhánh Discord màu cam; nhóm tín hiệu PUMP_HIGH_WHALE_LONG_WEAKENING và điều kiện backtest giữ nguyên. Nguyên nhân: reader cũ chỉ duyệt file heatmap và phụ thuộc thời điểm bộ heatmap lưu được cả giá/MARK/OI, dẫn đến nến giá cũ hoặc thiếu dù socket có dữ liệu. Nguồn mới PumpHighPriceCoverage duyệt toàn bộ universe đang giao dịch, ghép cache giá riêng, raw giá heatmap và nến đóng 5m dùng chung. Coin mới không cần có file heatmap để được kiểm tra. Cache giá riêng lưu tối đa 300 nến đóng/coin, không phụ thuộc OI hoặc model; kiểm tra liên tục ít nhất 288 nến và tuổi nến ≤7,5 phút. Không tạo nến giả, không dùng nến chưa đóng, không đổi timestamp cũ thành mới.
+
+Vá thiếu nến bằng client đọc giá và Binance rate gate dùng chung, lưu vào cache giá riêng: tối đa 5 coin mỗi chu kỳ 5 giây, 60 lần đọc/phút, 300 nến/lần, priority 5 (lệnh và bảo vệ đi trước), dropOnCongestion. Không chờ khóa seed lịch sử của các detector khác; không ghi đè cache của detector khác. Loại nến còn đang hình thành ở thời điểm bắt đầu REST, kể cả response đến sau lúc đóng. Chỉ sửa coin chưa READY, kiểm tra lại trước từng request; lỗi chờ ít nhất 2 phút và xoay vòng để không bỏ đói coin. Dùng lại nhóm socket rising-volume-observe 5m hiện có, không mở một bộ socket trùng. Giá đủ thì không gọi thêm REST. Cache riêng giúp restart không mất lịch sử 24h.
+
+Nguồn PumpGlass: GET dùng no-store/no-cache; chỉ thử lại một lần với lỗi mạng/timeout/500/502/503/504, không retry 403/418/429 (vẫn dừng 15 phút). Pha nạp cá voi có ngân sách 45 giây/lượt, tối đa 6 coin và 3 lần gửi như cũ. Giữ cứng tuổi token/lần scan mới nhất 15 phút và các mốc dữ liệu trễ 15 phút, crowd 1h, whale 4h. Nguồn thực sự cũ vẫn bị loại; không thay đổi điều kiện ≥60% SHORT, giảm ròng hai tỷ trọng, tăng giá ≥15% và vị trí ≥80% biên 24h. Bổ sung lastChecks theo coin, sourceTotals và priceSource readiness/repair vào API trạng thái để thấy rõ dữ liệu thiếu, nguồn cũ và điều kiện không đạt. Đây là telemetry dữ liệu, không thêm nhãn/card thống kê giao dịch hoặc matcher WHITELIST.
+
+Không đổi cấu hình Binance/entry/size/SL/TP, nhóm Discord khác hay Web Push OFF. Cập nhật cache giá riêng là sửa dữ liệu đầu vào của nhánh quan sát, không đổi rule giao dịch. State cảnh báo V1 giữ nguyên alerts/history/cooldown 8h và reservation trước POST, không replay các cảnh báo cũ. Cache giá mới tách data/pump-high-price-cache với schema PUMP_HIGH_PRICE_COVERAGE_V1_20261104; JSON heatmap và lịch sử backtest không migrate. Test kiểm tra độc lập OI/file, phục hồi sau restart, gap và nến cũ, giới hạn/gate/độ công bằng, retry nguồn/deadline/429; test cảnh báo và research cũ tiếp tục pass.
+
+Xác minh triển khai: độ phủ nến từ 175/522 lên 522/522, STALE=0 và GAP_OR_INVALID=0. Sau một lần nạp lại dịch vụ, bộ quét phục hồi đủ 522 cặp với 0 lượt sửa REST; kiểm tra độc lập chỉ đọc cache giá trên đĩa cũng đủ 522. Hai cảnh báo BMT/AIN cũ giữ nguyên và không phát lại; rule tín hiệu, cấu hình giao dịch, route Discord và Web Push OFF không đổi. Bằng chứng lưu tại data/audits/pump-high-data-repair-20261104/verification.json.
+
+
+### 2026-11-05 · PUMP_HIGH_DISCORD_DESTINATION_V1_20261105
+Theo yêu cầu người dùng, chuyển riêng nhóm Discord màu cam Bơm cao / Cá voi giảm LONG sang webhook ID 1567732592281911447 qua PUMP_HIGH_WHALE_SHORT_DISCORD_WEBHOOK_URL. Không ghi token webhook vào tài liệu hoặc API. API trạng thái thêm destinationWebhookId để xác minh đích runtime; không trả URL/token. Chỉ thay đích gửi, dữ liệu và điều kiện phân loại/thống kê giữ nguyên; không ảnh hưởng Binance, entry/size/SL/TP, whitelist, Web Push OFF hoặc các nhóm Discord khác. Giữ state V1, history/reservation/cooldown 8h, không migrate hoặc phát lại cảnh báo cũ. Dữ liệu trước entry/cảnh báo vẫn là nến đóng 24h và tỷ trọng trễ 15 phút theo rule hiện có.
+
+
+### 2026-11-05 · PUMP_LOW_WHALE_SMART_LONG_V1_20261105
+Theo yêu cầu thêm case ngược lại, bật nhóm Discord quan sát LONG màu xanh 0x22c55e, cùng webhook nhánh SHORT màu cam trừ khi có biến PUMP_LOW_WHALE_SMART_LONG_DISCORD_WEBHOOK_URL riêng. Diễn giải mặc định đã thông báo: giá giảm sâu ≥15% từ đỉnh 24h, close nằm trong ≤20% phía dưới biên 24h; LONG đám đông ≥60% nhưng giảm ròng 1h; cá voi và Smart traders đều tăng tỷ trọng LONG so mốc 4h. Không yêu cầu hai nhóm đã nghiêng LONG đa số. Cần đúng cả hai mức tăng, nguồn thiếu/flat/giảm ở một nhóm đều loại. Chưa backtest riêng nhánh LONG này.
+
+Dữ liệu trước cảnh báo: dùng cùng nguồn giá riêng đã sửa, 288 nến 5m đóng liên tục, tuổi ≤7,5 phút. Tỷ trọng as-of trước nến 15 phút; đám đông lấy chart công khai có lịch sử 1h (mỗi mốc tối đa cũ 10 phút). Cá voi/Smart cùng lấy hai snapshot token đã lưu đúng sourceAt và first observedAt, mốc hiện tại và 4h trước (tối đa lệch cũ 30 phút mỗi mốc), đã được bot biết trước khi đánh giá. Nguồn không cung cấp chuỗi Smart 4h; không dùng was7d, không lấy whale thay Smart, không nội suy hoặc dựng lịch sử. Nhánh chờ tích lũy khoảng 4h trước khi có thể gửi; trong thời gian chờ API báo WARMING_HISTORY, không gửi tín hiệu giả.
+
+PumpglassPositionJournal lấy token công khai luân phiên toàn universe, tối đa 4 coin mỗi 10 giây, source token ≤15 phút, basis whales và ≥10 cá voi, đúng một số LONG hợp lệ cho từng nhóm Whales/Smart traders/Crowd. Bản ghi trùng sourceAt không tạo mẫu mới; nếu giá trị bị sửa cùng timestamp thì đánh dấu ambiguous và không dùng làm bằng chứng tăng. Lưu tối đa 512 điểm/coin trong 72h tại data/pumpglass-position-journal, cursor/backoff có lưu sau restart. Lỗi meta/coin/file không cho gửi dựa trên history hỏng; 403/418/429 dừng 15 phút, không vượt khóa nguồn. Chỉ dùng dữ liệu công khai, không có lịch sử giá vốn/PnL của Smart.
+
+Kiểm tra token mới và lần scan whale mới nhất ≤15 phút; loại cửa sổ thay danh sách whale trên chart và lịch dự phòng 06:00–07:30 UTC, giống rule SHORT. Các bước này không chứng minh từng tài khoản thực sự mở thêm LONG. Trước khi gọi nguồn, lọc bằng history cục bộ đã có đủ hai mức tăng; tránh gọi nhiều token/chart khi đang chờ dữ liệu. Cảnh báo nêu rõ before/after cho whale, Smart, crowd và các mốc giờ; link Model 1/3 chỉ tham khảo, chưa là gate. Tối đa 6 coin context/3 gửi mỗi phút, reservation trước POST, cooldown riêng 8h/coin, không replay kết quả UNKNOWN hoặc lịch sử cũ.
+
+Không sửa rule/state/đích SHORT hoặc các nhóm LONG cũ, không thêm matcher/WHITELIST/card thống kê giao dịch cho nhóm quan sát này. Không ảnh hưởng Binance/entry/size/SL/TP và Web Push vẫn OFF. Generic observer chỉ thêm strategy hooks; mặc định SHORT và JSON V1 cũ giữ nguyên. State LONG mới tách data/pump-low-whale-smart-long-discord.json, schema riêng PUMP_LOW_WHALE_SMART_LONG_V1_20261105. GET /api/pump-low-whale-smart-long-watch và /api/pumpglass-position-journal chỉ xem trạng thái, không scan/gửi.
+
+
+### 2026-11-05 · PUMP_SQUEEZE_WHALE_SMART_LONG_V1_20261105
+
+Theo xác nhận “cả 2”, giữ nhánh xanh lá PUMP_LOW_WHALE_SMART_LONG_V1_20261105 và thêm nhánh độc lập xanh dương 0x3b82f6, group PUMP_SQUEEZE_WHALE_SMART_LONG_RISING. Dữ liệu trước cảnh báo: 288 nến Binance 5m đóng liên tục đủ 24h, tuổi ≤7,5 phút; tỷ trọng as-of trước nến 15 phút. SHORT đám đông ≥60% từ chart (mốc tối đa cũ 10 phút); cá voi và Smart traders đều tăng LONG ròng >0 so snapshot thật khoảng 4h trước. Không yêu cầu giá giảm sâu/ở đáy/đã bơm; không lọc chiều thay đổi SHORT đám đông. Delta SHORT 1h chỉ hiển thị tham khảo; thiếu mốc 1h vẫn xét được nếu mốc hiện tại hợp lệ.
+
+Dùng chung PumpglassPositionJournal và nguồn giá với nhánh xanh lá, không thêm collector hoặc socket. Kiểm tra basis whales, ≥10 cá voi, token/chart nguồn mới ≤15 phút, snapshot hợp lệ và đã biết tại thời điểm đánh giá; mỗi mốc cá voi/Smart tối đa cũ 30 phút, loại cohort refresh. Thiếu lịch sử Smart thật 4h tiếp tục WARMING_HISTORY, không dùng was7d, nội suy hoặc tạo mẫu lịch sử. Bộ lọc cục bộ kiểm tra đủ hai nhóm tăng trước khi gọi nguồn. Tối đa 6 context/3 gửi mỗi phút cho nhánh mới, cooldown riêng 8h/coin và reservation bền vững trước POST. Tiêu đề Discord “LONG ÉP SHORT”, ghi rõ chỉ quan sát và chưa có backtest riêng; không dùng win rate nhánh SHORT để mô tả nhánh LONG.
+
+Đích mặc định cùng webhook ID 1567732592281911447 với nhánh xanh lá/cam; biến PUMP_SQUEEZE_WHALE_SMART_LONG_DISCORD_WEBHOOK_URL có thể override riêng. State riêng data/pump-squeeze-whale-smart-long-discord.json, version PUMP_SQUEEZE_WHALE_SMART_LONG_V1_20261105; không migrate/reset JSON cũ, không phát lại lịch sử và cooldown xanh lá/cam. GET /api/pump-squeeze-whale-smart-long-watch chỉ đọc trạng thái, POST trả 405. Refactor phần chứng minh LONG dùng chung giữ nguyên điều kiện nhánh xanh lá. Không thêm card/thống kê giao dịch, matcher hoặc checkbox WHITELIST cho nhóm Discord quan sát; không ảnh hưởng Binance/entry/size/SL/TP. Web Push vẫn OFF. Chưa thống kê hiệu quả giao dịch nhánh mới; history chỉ ghi cảnh báo và kết quả delivery.
+
+
+### 2026-11-06 · PUMP_SQUEEZE_WHALE_SMART_SHORT_V1_20261106
+
+Theo yêu cầu thêm case SHORT ép LONG đối xứng với LONG ép SHORT, thêm group PUMP_SQUEEZE_WHALE_SMART_LONG_WEAKENING màu đỏ 0xef4444, tiêu đề Discord “SHORT ÉP LONG”. Điều kiện: LONG đám đông ≥60%; cá voi VÀ Smart traders cùng giảm tỷ trọng LONG ròng so mốc khoảng 4h trước (mỗi delta < -1e-9 điểm %, chỉ bỏ sai số số học). Không bắt buộc tỷ trọng LONG đã xuống dưới 50%, không chứng minh từng trader mở thêm SHORT. Không lọc vị trí giá trong biên 24h, không yêu cầu đã bơm/đã giảm; chiều thay đổi LONG đám đông 1h chỉ tham khảo, thiếu mốc 1h không loại khi mốc hiện tại hợp lệ.
+
+Dữ liệu trước cảnh báo: 288 nến Binance 5m đóng liên tục đủ 24h, nến mới ≤7,5 phút. Tỷ trọng được lấy as-of trước nến 15 phút; đám đông từ chart công khai, mốc tối đa cũ 10 phút. Cá voi và Smart từ cùng snapshot token thật trong PumpglassPositionJournal ở hiện tại và khoảng 4h trước, mỗi mốc tối đa cũ 30 phút, đã biết trước thời điểm đánh giá, ≥10 cá voi, basis whales; token và lần chart whale mới nhất ≤15 phút. Loại bản ghi ambiguous, nguồn tương lai, thiếu lịch sử và cửa sổ cohort refresh giống các nhánh hiện có. Không dùng was7d để dựng lịch sử 4h. Cần đủ cả hai nhóm giảm ở prefilter cục bộ trước khi gọi token/chart; tái kiểm chứng tại lúc đánh giá.
+
+Dùng chung collector journal, cache giá và socket đang chạy, không tạo bộ lấy dữ liệu mới. Scan 60 giây, tối đa 6 coin context/3 gửi mỗi phút; lưu reservation trước POST, cooldown riêng 8h/coin và không replay UNKNOWN. State riêng data/pump-squeeze-whale-smart-short-discord.json với version PUMP_SQUEEZE_WHALE_SMART_SHORT_V1_20261106, không reset/migrate lịch sử hoặc JSON cũ. Helper chứng minh định hướng được dùng chung, giữ alias proveWhaleSmartLong và mặc định LONG để tương thích caller cũ; các điều kiện nhánh xanh lá/xanh dương/cam không đổi. GET /api/pump-squeeze-whale-smart-short-watch chỉ đọc, POST trả 405.
+
+Đích mặc định cùng webhook ID 1567732592281911447; PUMP_SQUEEZE_WHALE_SMART_SHORT_DISCORD_WEBHOOK_URL override riêng nếu có, nếu không theo đích LONG squeeze. Chỉ gửi Discord OBSERVE ONLY, chưa backtest riêng hoặc xác nhận có long liquidation thực tế; Model 1/3 là link tham khảo, chưa là gate. Không thêm card/thống kê giao dịch hoặc matcher/WHITELIST cho nhánh quan sát; history chỉ ghi cảnh báo và delivery, không công bố win rate/ROE. Không ảnh hưởng Binance/entry/size/SL/TP, không bật lại route đã tắt, Web Push vẫn OFF. Test kiểm tra hướng giảm của cả hai nhóm, ngưỡng 60%, không lọc xu hướng crowd, dữ liệu thiếu/cũ/tương lai/refresh, màu đỏ, cooldown/restart, và hồi quy các nhánh trước.
+
+
+### 2026-11-06 · PUMPGLASS_WHALE_SMART_DOMINANCE_V1_20261106
+
+Theo yêu cầu thêm loại cá voi và trader thông minh LONG hoặc SHORT chiếm hơn 70%, thêm bộ quan sát tỷ trọng hiện tại với hai group độc lập: WHALE_SMART_LONG_GT70 (xanh lá 0x10b981) và WHALE_SMART_SHORT_GT70 (đỏ 0xdc2626). Mỗi nhóm phải cùng hướng và TỪNG tỷ trọng >70%, đúng 70% không đạt. SHORT được tính 100% - LONG từ cùng snapshot token, không cộng gộp hai nhóm. Không cần thay đổi 4h, không lọc vị trí giá, crowd hoặc Model 1/3; tỷ trọng đám đông là tham khảo, thiếu crowd vẫn xét được.
+
+Dữ liệu trước cảnh báo: universe Binance USDT-M đang hoạt động; board PumpGlass công khai có snapshot và updated ≤5 phút để lọc sơ bộ wl/sl (Whales LONG/Smart LONG), basis whales và ≥10 cá voi. Prefilter board dùng ≥70% LONG hoặc ≤30% LONG để không bỏ biên do làm tròn; kết luận bắt buộc xác minh lại token cùng coin, một giá trị số hợp lệ duy nhất 0–100 cho từng Whales/Smart traders, basis whales, whale_count nguyên ≥10, giá nguồn dương, scanned_at số hợp lệ ≤15 phút và không tương lai. Chỉ tỷ trọng token quyết định group/side; board một mình không phát cảnh báo. Không lấy was7d, giá vốn/PnL hoặc tỷ trọng lịch sử làm điều kiện nhóm này.
+
+Bộ quét riêng mỗi 60 giây lấy 1 board rồi tối đa 6 token và 3 lần gửi/phút, source budget 45 giây, ưu tiên coin lâu chưa kiểm tra để không kẹt các coin đầu bảng. Nguồn 403/418/429 dừng 15 phút, backoff có lưu bền; cache no-store, không vượt khóa nguồn. Mỗi coin và mỗi hướng có cooldown độc lập 8h: chuyển LONG sang SHORT có thể báo ngay nếu token xác minh đủ điều kiện. Reservation ghi trước POST; UNKNOWN không phát lại. Hỏng state/storage thì không gửi; gửi lỗi backoff và không xóa dấu reservation. History chỉ ghi cảnh báo/delivery, không là thống kê giao dịch hoặc xác suất thắng; nhánh chưa backtest riêng.
+
+State mới data/pumpglass-whale-smart-dominance-discord.json với version PUMPGLASS_WHALE_SMART_DOMINANCE_V1_20261106; không sửa/reset/migrate JSON, cooldown, điều kiện hoặc route các nhóm cũ. GET /api/pumpglass-whale-smart-dominance-watch chỉ đọc, POST 405, API chỉ lộ webhook ID. Đích mặc định cùng webhook ID 1567732592281911447 của nhóm ép LONG/SHORT; biến PUMPGLASS_WHALE_SMART_DOMINANCE_DISCORD_WEBHOOK_URL override riêng nếu có. Tiêu đề ghi rõ “CÁ VOI + SMART LONG >70%” hoặc “CÁ VOI + SMART SHORT >70%”, kèm cả tỷ trọng LONG/SHORT, tuổi dữ liệu và link Model 1/3.
+
+Chỉ gửi Discord OBSERVE ONLY, không thêm matcher/card/thống kê giao dịch hoặc checkbox WHITELIST. Không ảnh hưởng Binance/entry/size/SL/TP hoặc các route đã tắt, Web Push vẫn OFF. Không thêm REST/socket Binance hoặc collector lịch sử; chỉ thêm yêu cầu board/token công khai trong giới hạn trên. Test bao phủ ngưỡng strict70, đồng hướng cả hai nhóm, nguồn thiếu/cũ/tương lai/duplicate, crowd tùy chọn, không cần4h, xác minh lại token, universe, hai màu, cooldown theo hướng/restart, giới hạn gửi/lấy token, fair order,429/UNKNOWN và storage failclosed; hồi quy các nhóm cũ.
+
+
+### 2026-11-06 · PUMPGLASS_WHALE_SMART_DOMINANCE_V2_CROWD_OPPOSITE_20261106
+
+Thay thế rule gửi V1 cho riêng hai nhóm WHALE_SMART_LONG_GT70 / WHALE_SMART_SHORT_GT70 theo yêu cầu thêm đám đông ngược chiều >60% và có xu hướng tăng. Giữ cá voi VÀ Smart từng nhóm >70% cùng hướng. LONG chỉ gửi khi SHORT đám đông >60% và tăng ròng 1h; SHORT chỉ gửi khi LONG đám đông >60% và tăng ròng 1h. “Xu hướng tăng” được định nghĩa là tỷ trọng hiện tại lớn hơn mốc khoảng 1h trước, không bắt buộc tăng liên tục mọi điểm trung gian. Delta >1e-9 điểm % để loại sai số máy; đúng 60%, đi ngang hoặc giảm đều loại. Không thêm điều kiện thay đổi cá voi/Smart 4h, vị trí giá hoặc Model 1/3.
+
+Dữ liệu trước cảnh báo: board mới ≤5 phút vẫn chỉ lọc sơ bộ, thêm crowd cr ngược chiều ≥60% ở prefilter để bao biên làm tròn. Token cùng coin phải có chính xác một Crowd số hợp lệ 0–100, ngược chiều strictly >60%; giữ các kiểm tra Whales/Smart >70%, basis whales, ≥10 cá voi, scanned_at ≤15 phút và giá dương. Sau token, lấy chart công khai riêng coin để xác minh lịch sử crowd: mốc cutoff=token.scanned_at, current as-of cutoff và previous as-of cutoff-1h, mỗi mốc tối đa cũ 10 phút, không dùng mẫu sau cutoff cho quyết định. Chart symbol phải đúng, crowd hợp lệ/không trùng timestamp, mẫu mới nhất không tương lai và tuổi ≤15 phút. SHORT đám đông=100-LONG. Chart current cũng phải ngược chiều >60% và delta1h dương. Thiếu mốc, nguồn cũ/sai, tỷ trọng không ngược chiều hoặc không tăng thì không gửi; không dùng was7d, không nội suy và không bỏ điều kiện vì thiếu dữ liệu.
+
+Giữ nhịp quét 60 giây, tối đa 6 coin context/3 gửi mỗi lượt; mỗi context nay tối đa token+chart, board một lần, budget nguồn 45 giây. Giữ backoff 403/418/429, reservation trước POST, cooldown riêng 8h/coin/hướng, UNKNOWN không replay và storage lỗi không gửi. Payload giữ màu/tên nhóm >70%, thêm điều kiện đám đông và số liệu token, chart before/after, delta1h cùng mốc thời gian; nhánh chưa backtest riêng, chỉ Discord OBSERVE ONLY. Đích webhook ID 1567732592281911447 giữ nguyên.
+
+Version rule/runtime mới PUMPGLASS_WHALE_SMART_DOMINANCE_V2_CROWD_OPPOSITE_20261106. Schema/state version giữ PUMPGLASS_WHALE_SMART_DOMINANCE_V1_20261106 tại file cũ data/pumpglass-whale-smart-dominance-discord.json, API thêm stateVersion. Giữ nguyên alerts/history/reservation/cooldown cũ; bản ghi V1 vẫn ghi version V1, không gán lại kết quả cũ theo bộ lọc mới và không phát lại khi nâng rule. Event mới mang version V2 và lưu crowdTrend đã xác minh. History chỉ là cảnh báo/delivery, không tính win rate/ROE hoặc thống kê giao dịch. GET status vẫn chỉ đọc; các nhánh squeeze, LOW/HIGH và nhóm cá voi/đám đông cũ giữ nguyên điều kiện.
+
+Không thêm card/matcher/WHITELIST giao dịch, không ảnh hưởng Binance/entry/size/SL/TP hoặc route đã tắt, Web Push vẫn OFF. Chỉ thêm chart công khai trong cùng giới hạn nguồn, không thêm collector/socket/REST Binance. Test hai hướng >70 + crowd ngược >60 và tăng, biên60, đi ngang/giảm, thiếu/cũ/tương lai/duplicate/cutoff, payload bắt buộc proof, cùng kiểm tra tương thích V1/cooldown và delivery failure. Các cảnh báo V1 đã gửi trước khi cập nhật không được xem là đã vượt bộ lọc V2.
+
+
+### 2026-11-06 · PUMPGLASS_DOMINANCE_DESTINATION_V1_20261106
+
+Theo yêu cầu tách đích gửi, chuyển riêng nhóm CÁ VOI + SMART >70% kèm đám đông ngược chiều >60% và tăng ròng 1h sang webhook ID 1568117396869226496 bằng PUMPGLASS_WHALE_SMART_DOMINANCE_DISCORD_WEBHOOK_URL. LONG ÉP SHORT và SHORT ÉP LONG vẫn dùng webhook ID 1567732592281911447; các nhóm LOW/HIGH và whale/crowd cũ cũng giữ route hiện có. Không ghi URL/token webhook vào tài liệu hoặc API.
+
+Chỉ thay destination; rule/data version vẫn PUMPGLASS_WHALE_SMART_DOMINANCE_V2_CROWD_OPPOSITE_20261106. Giữ dữ liệu trước cảnh báo và phân loại: từng Whales/Smart >70% cùng hướng, token/crowd chart ngược chiều >60% và tăng ròng 1h as-of token.scanned_at, đủ freshness/history. Chưa có backtest riêng; history là cảnh báo/delivery, không thống kê ROE/win rate. Không thay Binance/entry/size/SL/TP, WHITELIST hoặc Web Push OFF.
+
+Giữ state schema V1, file data/pumpglass-whale-smart-dominance-discord.json, history/reservation và cooldown riêng coin/hướng 8h; không reset hoặc replay cảnh báo đã gửi khi đổi kênh. Event mới từ runtime sẽ theo webhook mới sau reload. Các API status chỉ lộ destinationWebhookId để xác minh; LONG/SHORT squeeze tiếp tục đích cũ. Thông báo xác nhận cấu hình gửi vào kênh mới được gắn rõ không phải tín hiệu, không đưa vào ledger/cooldown.
+
+
+### 2026-11-06 · DISCORD_WAIT_RECEIPT_V1_20261106
+
+Theo phản ánh tin mới có vẻ vào Discord cũ, kiểm tra routing: nhóm >70% có runtime webhook ID 1568117396869226496, kênh 1505201292547723304; hai nhóm LONG ÉP SHORT/SHORT ÉP LONG vẫn webhook ID 1567732592281911447, kênh 1536764749704855712. Chỉ có một tiến trình server PM2; wrapper heatmap chỉ thêm link, không đổi URL. Chưa đủ căn cứ kết luận tin người dùng đang nói bị gửi sai khi chưa có link/tên coin/giờ để đối chiếu.
+
+Bổ sung delivery version DISCORD_WAIT_RECEIPT_V1_20261106 cho riêng nhóm dominance, không đổi rule PUMPGLASS_WHALE_SMART_DOMINANCE_V2_CROWD_OPPOSITE_20261106. Request POST dùng wait=true để Discord trả message receipt. Reservation trước POST lưu configuredWebhookId; kết quả lưu confirmed, webhookId, channelId, messageId và receiptVersion, không lưu token hoặc URL bí mật. Chỉ confirmed=true khi message/channel ID hợp lệ và webhook_id Discord trả khớp webhook đã cấu hình. Nếu HTTP chấp nhận nhưng thiếu/sai receipt, giữ SENT với confirmed=false cùng confirmationError; tuyệt đối không replay vì có thể đã gửi thành công. Timeout vẫn UNKNOWN và giữ cooldown.
+
+Không thay dữ liệu trước cảnh báo/phân loại: từng Whales/Smart >70% cùng hướng và crowd ngược >60%, tăng ròng1h theo chart as-of token; không thay thống kê (history chỉ delivery, chưa backtest), route, nhịp quét, Binance/entry/size/SL/TP, WHITELIST hoặc Web Push OFF. State schema V1 và alerts/history/reservation/cooldown cũ giữ nguyên; các record cũ không có receipt không được gán xác nhận hồi tố. LONG/SHORT squeeze giữ sender và đích cũ. GET status thêm deliveryVersion, history hiển thị receipt IDs cho lượt mới. Test xác minh URL chỉ thêm wait=true, receipt matching, ghi đúng ID và không gửi lại HTTP-accepted khi receipt thiếu/sai.
+
+
+### 2026-11-06 · DOMINANCE_CROWD_MODEL13_RESEARCH_V1_20261106
+
+Nghiên cứu offline theo yêu cầu backtest nhóm mới cùng Model1/3. Runtime dominance vẫn V2_CROWD_OPPOSITE, dữ liệu/gate/kênh Discord và Binance không thay đổi. Lấy toàn bộ journal first-observed thật hiện có khoảng25,5h trên522coin, không dựng Smart30ngày từ tỷ trọng hiện tại. Replay điều kiện Whales/Smart từng nhóm >70%, crowd ngược >60% tăng1h; snapshot sourceAt/observedAt đúng thứ tự, crowd chart hồi cứu as-of không tương lai. Timestamp bị đánh dấu conflict sau này giữ giá trị ban đầu trong primary để tránh lọc bằng tương lai, mask chỉ sensitivity.
+
+Model1/3 được dựng lại bằng cùng estimator từ432nến5m giá/MARK, OI≥95%, lag5/10phút trước quyết định. Entry trễ5–10phút,3× TP10%/SL20%grossROE, giữ8h, chi phí0,14%notional và stress0,30%, fundingthật, SLfirstkhinếnmơhồ. Chỉ mẫu đủ8h. Cooldown8h/coin/hướng. Bộlọc định trước: AVAILABLE, vùngthuận>ngược, vùngthuận≥2×, RRnet≥1,5, conjunction. So fixed/model exit trêncùngmẫu, hướngngượcvàBTCcùnggiờ; split thời gian midpoint, TRAIN phải kết thúc toàn bộhold trước TEST, purge8h+khoảngchờentry.
+
+Thống kê nghiên cứu riêng, không có card/matcher/WHITELIST hoặc live gate mới; mẫu LONG ít, cùng1đợt thịtrường nên chưa là kiểm chứng ổn định. ActualV2đãgửi được tách khỏi replay, mẫu chưa đủ8h không gán winrate. Hạnchế: thiếu archiveboard/chart đã côngbố đúnglúc, chart cóthể bịnguồn sửa, journal chỉgiữmẫuthuđược; replaykhôngphảidanh sáchDiscordchínhxác. StateJSONruntime/history/cooldown và WebPushOFF giữ nguyên; file JSONnghiêncứu nằm data/research/dominance-model13-20261106, không migrate vào runtime. Kếtquả/audit sẽ lưu manifest, PROTOCOL, cohort, results, summary, validation và BAO_CAO.
+
+Kết quả đã audit: 618 tín hiệu replay, 468 đủ8h (SHORT464/221coin; LONG4/2coin), Model đủ936/936 lượt ở hai độ trễ. SHORT gốc toàn kỳ +5,61%ROE, TEST88 +4,09%; lọc vùng thuận≥2× toàn kỳ110 +5,98% nhưng TEST13 -2,44%, chưa cải thiện ngoài phần đầu. Model exit SHORT196 +2,38% so fixed cùng mẫu +5,06%. LONG -12,81%/4mẫu, chưa đủ đánh giá. ActualV2 54 cảnh báo tại cutoff chưa đủ8h. Giới hạn~25,5h và chart hồi cứu, time-cluster CI TEST gốc bao gồm0; không gán hiệu quả này cho bot live hoặc triển khai gate/entry mới. Bằng chứng tại summary/results/validation và BAO_CAO trong thư mục nghiên cứu.
+
+
+### 2026-11-06 · UPPER_SWEEP_WHALE_SMART_SHORT_OBSERVE_V1_20261106
+
+Theo yêu cầu thêm case kiểu ACT: sự kiện ALL_TRACKED_UPPER_SWEPT trực tiếp từ bộ Model1/3, cùng cá voi VÀ Smart từng nhóm SHORT >70%, đám đông LONG >60% và tăng ròng1h theo rule dominance V2. Nhánh quan sát độc lập group UPPER_SWEEP_WHALE_SMART_SHORT_GT70, màu tím hồng 0xd946ef, title “QUÉT TRÊN + CÁ VOI/SMART SHORT”. Nếu cả hai SHORT >90% thì ghi rõ mức áp đảo trong nội dung, không đổi thành xác nhận vào lệnh. Không yêu cầu đã gãy đà/retest; payload luôn ghi CHƯA XÁC NHẬN, hiển thị CONTINUATION/NOT_CONFIRMED/UNKNOWN từ snapshot upperMomentum hợp lệ. NOT_CONFIRMED chỉ là thiếu dấu hiệu bơm tiếp, không gán thành đảo chiều.
+
+Dữ liệu trước cảnh báo: chỉ sự kiện live đã reserve trong native sweep, native version hiện có, đúng UPPER/full, tất cả vùng chốt đã clear, MARK vừa vượt mép cao cuối cùng, tickgap≤10giây, cohort còn hạn, vùng có trước giá. Không quét lại history. Event phải mới≤30giây và không trước lúc khởi động observer. Token PumpGlass đúng coin, basis whales, ≥10 cá voi, Whales/Smart/Crowd số hợp lệ, tuổi≤15phút và scanned_at không sau lượt quét. Chart crowd bị cắt tại giờ quét, current as-of token và mốc1h trước tối đa cũ10phút; ngược >60% và delta dương như V2. Bot đọc token có thể sau quét vài giây nhưng không dùng mốc nguồn sau quét hoặc dữ liệu1h sau để gắn lại sự kiện cũ. PnL/giá vốn/tỷ lệ đang lãi của SHORT chỉ là tham khảo cùng token, không là gate.
+
+HeatmapSweepWatch chỉ thêm callback optional onSweepObservation sau durable reservation và cooldown native; callback nhận clone, không await và lỗi không lan ra luồng native. Không thay snapshot động lượng, callback Binance, native Discord, các điều kiện trade hoặc nội dung state JSON native. Observer có queue riêng tối đa6, tối đa6context/3gửi mỗi phút, deadline nguồn≤20giây và trong25giây sau quét. Thiếu nguồn/quá hạn thì bỏ, nguồn403/418/429 backoff15phút. State riêng data/upper-sweep-whale-smart-short.json, version UPPER_SWEEP_WHALE_SMART_SHORT_OBSERVE_V1_20261106; reserve trước POST, cooldown riêng8h/coin, UNKNOWN không replay và lỗi storage không gửi. Dùng wait=true ghi receipt webhook/channel/message ID, không lưu token.
+
+Mặc định gửi cùng Discord mới của dominance (webhook ID1568117396869226496) qua fallback PUMPGLASS_WHALE_SMART_DOMINANCE_DISCORD_WEBHOOK_URL; UPPER_SWEEP_WHALE_SHORT_DISCORD_WEBHOOK_URL override riêng nếu có. Không fallback sang kênh cũ khi gửi lỗi. Các nhánh LONG ép SHORT/SHORT ép LONG giữ route trước đó. GET /api/upper-sweep-whale-short-watch chỉ đọc và POST405. Không tạo card/thống kê/WHITELIST hoặc matcher giao dịch mới; history chỉ cảnh báo và delivery. Tổ hợp mới chưa backtest riêng, không gán win rate dominance cho case quét. Không ảnh hưởng Binance/entry/size/SL/TP hoặc Web Push OFF, không thêm socket/REST Binance. JSON/state/cooldown các nhóm cũ giữ nguyên; không phát lại ACT13:21 sau khi bật. Test giả lập kiểm chứng native evidence, source/knownAt, threshold/trend, màu/nhãn, reservation/receipt/cooldown/restart/budget/backoff/storage và callback không chặn native.
+
+
+### 2026-11-07 · SIDEWAYS_ALLSHORT_PREBREAK_V1_20261107 · Nghiên cứu nhận diện khi còn trong nền
+
+Theo yêu cầu detect trước khi xả, thêm helper thuần src/sidewaysShortCrowding.js và scripts fetch/evaluate/test/validate offline; version nghiên cứu SIDEWAYS_ALLSHORT_PREBREAK_RESEARCH_V1_20261107. Chưa import vào server hoặc bật quét/Discord live. Dữ liệu trước quyết định: nến5m đóng, bối cảnh24h liên tục, nền60/120phút rộng≤3%, |drift|≤0,8%, efficiency≤0,35, median biên nến≤0,8%, thân lớn nhất≤1,5%, thân nến cuối≤0,5%, volume cuối≤1,5×20nến. Nến cuối phải đóng trong đáy/đỉnh nền trước đó. Giá thấp hơn đỉnh24h≥8% và ở35%phần thấp biên24h. Nến xả hoặc nến đã ra ngoài nền bị loại; không chờ breakdown/reclaim.
+
+Whales/Smart/Crowd từng nhóm SHORT>60% cùng snapshot gốc, ≥10cá voi, sourceAt≤observedAt≤decision và tuổi nguồn≤15phút. Không dùng timestamp biết sau quyết định; flag conflict phát hiện về sau chỉ sensitivity. Model1/3 dựng từ36h PRICE/MARK/OI, lag5/10phút; bản thêm vùng yêu cầu consensus dưới toàn đáy nền với buffer0,1% và cách giá≤3%. Nhãn WATCH_SETUP_BEFORE_BREAK, side UNDECIDED, OBSERVE ONLY; không gán ba nhóm SHORT thành xác nhận hướng.
+
+Thống kê riêng tại data/research/sideways-allshort-20261107: journal522coin khoảng46,87h Nov5 10:12–Nov7 09:05VN,35coin từng allSHORT>60. Cooldown8h/coin/biến thể; entry trễ5phút và bỏ khi mở đã ra nền; 3× TP10/SL20grossROE, hold8h, chi phí0,14%notional/stress0,30%, funding thật, SL-first/gap-open. Split midpoint, purge toàn hold TRAIN trước TEST, đủ8h mới tính. GTC là development example loại khỏi primary. Nền60:31setup/29lệnh, SHORT+0,36%/win44,8%, TEST12−1,35%; thêm Model27setup/25lệnh SHORT−1,63%, TEST10−2,95%. Nền120 SHORT24lệnh−0,56%; thêm Model24lệnh−1,62%. LONG toàn kỳ âm cả4biến thể. Nền60 có19/31phá xuống trước nhưng17/31có phá rồi quay nền≤30phút. Chưa chứng minh lợi thế entry.
+
+GTC nền60đủ03:00nhưng entry03:05bị bỏ vì ra nền; nền120đủ06:10. Điều kiện60phút đủ lại08:10 khi còn nền0,18107–0,18478, giá0,18262, có Model dưới0,177890–0,178780, trước nến xả08:25–08:30; cooldown8h nghĩa là08:10không phải cảnh báo mới. Nến đóng08:30bị loại. GTC chưa đủ8h tại cutoff nên không có winrate.
+
+Không thêm card/thống kê giao dịch live, matcher hoặc WHITELIST; không ảnh hưởng Binance/entry/size/SL/TP. Không sửa/migrate/reset JSON/history/cooldown hiện có; dữ liệu nghiên cứu mới tách riêng, WebPushOFF giữ nguyên. Test chống future-leak, vị trí trong nền, nến xả/trend/gap/freshness, strict60, model causal; audit522hash và302trade bằng engine độc lập, hash runtime/config không đổi, health200. Báo cáo giới hạn nguồn~47h và độ trễ OI5/10phút chưa được audit publication thực tế; không nhận là backtest30ngày hoặc live alerts.
+
+
+## HEATMAP_SWEEP_POSITION_CONTEXT_V1_20261107 · Phân tích vị thế trong Discord quét cụm
+
+Thêm bối cảnh lúc gửi cho mọi thông báo quét từng cụm và quét hết tập, cả UPPER/LOWER. Sender version HEATMAP_SWEEP_POSITION_CONTEXT_V10_20261107; native detector/entry version giữ nguyên. PumpGlass cá voi, Smart traders, đám đông LONG/SHORT từ journal không ambiguous tuổi≤15phút hoặc token mới xác minh symbol/basis/count≥10; mốc1h từ journal có trước lúc gửi, dung sai15phút, thiếu thì ghi rõ. Binance TOP ACCOUNT là tỷ trọng tài khoản riêng, không đánh đồng Smart PumpGlass hoặc TOP POSITION; lấy cache hoặc request5m ưu tiên8/dropOnCongestion, mốc nguồn lùi≥5phút, tuổi≤15phút.
+
+Hai nhóm cá voi/Smart cùng >50% LONG hoặc SHORT thì mô tả thiên hướng; khác phía hoặc50% ghi chưa đồng thuận. Nhận xét liên hệ hướng quét: trên+LONG áp lực tăng, trên+SHORT theo dõi giảm; dưới+SHORT áp lực giảm, dưới+LONG theo dõi hồi/giữ vùng. Nêu crowd>60% ngược chiều và tài khoản top trái chiều khi có. Không là xác nhận đảo chiều hoặc gate entry; tỷ trọng đổi không chứng minh cá nhân mở/đóng vị thế. Snapshot ghi rõ lúc gửi và có thể sau entry, không gọi dữ liệu này là trước entry.
+
+Provider tối đa6lượt context/phút, token timeout1,8giây; Binance client timeout2,5giây và tôn trọng rate gate; token403/418/429 backoff15phút. Tổng chờ sender≤2,8giây, thiếu/lỗi vẫn gửi thông báo gốc kèm thiếu dữ liệu. Cache bounded128coin; không thêm collector/timer. Nội dung field≤1024 và tổng embed≤5900ký tự. Giữ kênh partial/full và reservation/cooldown. Delivery lưu positionAnalysis đúng snapshot đã gửi để audit; JSON cũ thiếu trường vẫn đọc, không reset hoặc replay.
+
+Chỉ thêm nội dung Discord, không thêm thống kê giao dịch/card/matcher/WHITELIST, không ảnh hưởng Binance/entry/size/SL/TP. Web Push vẫnOFF. Không gán win rate nghiên cứu cho nhận xét này. Test hai hướng, nguồn cũ/tương lai/ambiguous, đồng thuận/trái chiều, lỗi provider không mất tin, lưu proof và giới hạn payload; chạy hồi quy sweep watcher trước deploy.
+
+
+## PUMP_TURN_MODEL13_POSITION_CONTEXT_V1_20261107 · Phân tích hai chiều trong cảnh báo GẦN VÙNG
+
+Bổ sung bối cảnh Model1/3 + PumpGlass + TOP ACCOUNT Binance vào đầu Discord nhánh pump-turn-near LONG và SHORT; sender version PUMP_TURN_DISCORD_MODEL13_POSITION_V5_20261107. Giữ mốc gốc và phân loại volume/mua, thêm suffix BỐI CẢNH NGHIÊNG LONG/SHORT hoặc TRÁI CHIỀU khi đủ dữ liệu. Hướng phân tích độc lập với side gốc: gần mốc LONG vẫn có thể cho WATCH_SHORT, không đợi nến xả để quan sát.
+
+Dữ liệu là bối cảnh LÚC GỬI, có thể sau phát hiện/entry, không gọi là snapshot trước entry. Dùng provider SweepPositionAnalysis hiện có: cá voi/Smart/crowd từ token hoặc journal ≤15phút, delta tỷ trọng1h khi đủ mốc, top tài khoản Binance riêng từ cache/request5m. Smart PumpGlass không đồng nghĩa top Binance. Model cùng coin/24h/step5m/end đã đóng mới≤7phút, MARK100%, OI≥95%, 3profile đồng thuận mỗi model≥35%; giá live event≤30giây. Liệt kê cụm chung trên/dưới chưa chạm bởi nến cuối và còn trong5%, khoảng cách, điểm tương đối±5%, phản ứng đóng so biên nến trước. Không suy quét hết khi không tìm thấy cụm, không coi điểm là USD thanh lý.
+
+WATCH_LONG/SHORT: cá voi và Smart từng nhóm cùng phía≥60%, có cụm mục tiêu phía đó, điểm phía đó lớn hơn phía kia, không có TOP ACCOUNT đang đối nghịch. Thiếu top vẫn ghi thiếu, không coi là xác nhận. Vị thế và điểm thanh khoản trái phía hoặc top đối nghịch -> CONFLICT. Thiếu model/vị thế -> MISSING; chưa đồng thuận -> WAIT. Đây là ngưỡng quan sát thử nghiệm chưa backtest riêng, không công bố winrate/xác suất/entry tốt. Phân tích giá không phải điều kiện bắt buộc để ra WATCH; không chờ breakdown.
+
+Model ưu tiên cachedBundle và rebuild từ raw cache; thiếu cache mới compare với shared rate gate, tối đa6lượt/phút, maxInFlight hiện có. Context chạy song song vị thế+model, sender chờ tối đa3,2giây; lỗi/timeout vẫn gửi nội dung gốc kèm báo thiếu dữ liệu. Field≤1024, embed≤5900, title≤256. Không thêm timer. Delivery mới lưu combinedContext đúng snapshot gửi; JSON cũ không có trường vẫn tương thích, không reset/replay lịch sử/cooldown/kênh.
+
+Không thêm card thống kê giao dịch/matcher/WHITELIST, không đổi Binance/entry/size/SL/TP hoặc Web PushOFF. Entry callbacks giữ luồng cũ độc lập, context chỉ nằm sender. Test đảo hướng LONG gốc->WATCH_SHORT khi nến còn nền và chiều ngược, model stale/future/sai coin/thiếuMARK/OI, source thiếu, proofdelivery, lỗi nguồn và regression watcher/phân loại cũ.
+
+
+## HEATMAP_SWEEP_REVERSAL_REVIEW_V1_20261107 · Kết luận chưa bắt đảo chiều sau quét
+
+Discord sweep sender nâng HEATMAP_SWEEP_VERDICT_V11_20261107; thêm review độc lập cho partial/full hai phía. Dữ liệu lúc gửi: sự kiện≤30giây, tập cụm Model1/3 đóng băng gốc, số cụm cleared/remaining và cụm kế tiếp,13nến5m đóng liên tục mới≤7phút từ raw cache (không REST mới), cá voi/Smart≤15phút nếu có. Không gọi context này là trước entry.
+
+Quét dưới mặc định CHƯA LONG—CHƯA CÓ XÁC NHẬN HỒI; khi return15m<0 AND return1h<0 AND vị trí đóng≤35% hoặc cả cá voi/Smart SHORT≥60% thì CÒN ÁP LỰC GIẢM. Quét trên đối xứng CHƯA SHORT, return15m/1h>0, close≥65% hoặc hai nhóm LONG≥60% -> CÒN ÁP LỰC TĂNG. Dữ liệu thiếu không bị coi là bearish/bullish. Muốn ghi nhận lấy lại vùng, phải là nến đóng SAU thời điểm quét, xanh trên mép cao các cụm đã quét cho LOWER / đỏ dưới mép thấp cho UPPER; sau đó vẫn chờ giữ/retest, không cấp entry. Nếu vị thế trái chiều ghi CONFLICT. Không suy xác suất hồi0, không suy chưaLONG thành đượcSHORT. Ngưỡng nhận xét chưa backtest riêng.
+
+Provider vị thế giờ giới hạn chờ nội bộ2,1giây để trả phần đã có khi topRatio chậm, snapshot clone tránh sửa hồi tố; sender có fallback journal và luôn dựng review dù context lỗi. Lý do APR17:09 thiếu được xác minh delivery.positionAnalysis=null; không đủ telemetry để phân biệt timeout với exception, không khẳng định nguồn cụ thể. Cụm gốc APR1/6, còn5. Không replay/sửa tin cũ.
+
+Delivery thêm sweepVerdict versioned, JSON cũ thiếu field vẫn đọc, giữ state/history/cooldown/kênh. Không thêm card/statistics/matcher/WHITELIST và không đổi Binance/entry/size/SL/TP hoặc gate đà xả hiện có; WebPushOFF. Tests mô phỏng áp lực hai hướng, không dùng nến tương lai hoặc nến trước quét làm reclaim, thiếu/cũ nguồn, cached whale sống qua slowRatio và review vẫn gửi khi provider lỗi; hồi quy sender/watch và combined context.
+
+
+## MARGIN3_WHALE_PREORDER_AUDIT_V1_20261107 · Đối chiếu lệnh3USDT và cá voi
+
+Nghiên cứu offline tại data/research/margin3-whales-20261107, script scripts/research-margin3-whales-20261107.mjs. Freeze audit10000fill/851order margin3USD,522journal. Tách5nguồn; nhánh còn vào3USD hiện là coin-level-entry-watch LIMIT.360recordđóng/6open; primary loại19DCA/chungcloseGroup, còn341đóng độc lập win61,88%, net−0,0033USD.3×160record win51,25%, net−1,8575USD;5×181record ở kỳ cũ, không kết luận tác động leverage.
+
+Input trước entry: snapshot first-observed source≤observed≤submittedAt,≤15phút,≥10cá voi, đủ tỷ trọngWhales/Smart/Crowd. So phụ tại fillAt tách riêng vì LIMIT có thể chờ. Không dùng snapshot hiện tại cho quá khứ, thiếutimestamp submit không thayfill. Flags conflict về sau chỉ sensitivity. Nhãn phân nhóm thống kê: whale cùng≥60, whale+Smart cùng≥60, cảhai ngược≥60, cùng≥60+crowdngược≥60. Không là live gate, không thêm card/matcher/WHITELIST.
+
+Preorder chỉ15mẫuSHORT, gốc win60%/ROE2,28%;cùngwhale+Smart13mẫu win53,85%/ROE1,89%, loại2mẫuthắng;chưa cải thiện. Tại fill17mẫu win64,71%/ROE0,89%;cùng13mẫu win53,85%/ROE0,59%;thêmcrowd4mẫu win75%/ROE3,45% quáít để kếtluận. Journalchỉ~57h, không đủLONG hoặc kỳ cũ. Netđãgồmcommission/funding, khôngước tính lại. Validationuniquefill, nhómđóngđộclập, knownBy/noFuture, hash, ROE/net và gross−commission+funding.
+
+Không ảnh hưởng runtime/Binance/entry/size/SL/TP, webhook hay WebPushOFF. JSON/state/cooldown cũ không sửa hoặc migrate, dữ liệu nghiên cứu tách riêng. Không restart hoặc bật rule do thống kê này.
+
+
+## MARGIN3_CROWD_ONLY_V1_20261107 · Đám đông độc lập với cá voi
+
+Nghiên cứu offline tiếp từ frozen margin3-whales-20261107, data/research/margin3-crowd-only-20261107. Nhánh SHORT coin-level-entry-watch margin3USD, clean CLOSED khôngDCA/chungcloseGroup; crowd là PumpGlass, không mix Binance globalratio. Không lọc hướngWhales/Smart. Decisionprimary submittedAt, secondaryfilledAt; source≤observed≤decision,≤15phút, giữunknownriêng và không gánsnapshot hiện tại vềquákhứ.
+
+Thử các ngưỡngcrowdLONG≥50/60/65/70/75/80 vàbinsrời nhau<40/40–50/50–60/60–70/70–80/≥80. Trướcđặt15mẫu:baselinewin60%/ROE2,28%;≥60còn4mẫu win75%/ROE2,73%;≥70còn2win50%/ROE2,16%;≥75còn1win0%/ROE−0,12%;≥80khôngmẫu. Trướckhớp17mẫu:gốcwin64,71%/ROE0,89%;≥60còn5win80%/ROE3,02%. Khôngcàngcaocàngtốt. Bootstrapcoin95%delta≥60so gốc preorder[-1,88;2,98]pp, fill[-0,32;5,72]pp bao0; khônggọi làcải thiệnđãkiểmchứng. Snapshotlaterconflictsensitivityriêng; filldata không phải gate trướcđặtLIMIT.
+
+Không thayruntime hoặc JSON/state/history/cooldown cũ; không entry/size/leverage/SL/TP/Discord/WHITELIST/card giao dịch mới. Chỉ phân nhóm nghiên cứu vàbáocáo, không gate. Validation32joinasof, sourceCrowd từfrozenjournal, partitionbins/threshold và thống kênet; khôngngoại suyLONG.
+
+
+## MARGIN3_MARKET_VOLUME_V1_20261107 · Volume và bối cảnh thị trường của lệnh margin3USDT
+
+Nghiên cứu offline scripts/research-margin3-market-volume-20261107.mjs, data/research/margin3-market-volume-20261107. Dùng lại frozen audit của nghiên cứu cá voi, không đổi cohort theo kết quả: coin-level-entry-watch có360record đóng, loại19DCA/chungcloseGroup, còn341đóng độc lập.307/341khớp trước journal05/11/2026 10:12:49VN.34lệnh trùng kỳ có15snapshot mới trước submit,19cũ;trước fill17.66thiếu submittedAt không được thayfill ở primary. Nến đủ275/275submittedAt (đềuSHORT),341/341fill (288SHORT/53LONG).
+
+Input trước entry:49nến5m liên tục, close+5giây≤submittedAt; BTC cùng cutoff. Volume15m so mean20nến5m trước đó quy ra15m≥1,5×; taker quote volume theo chiều lệnh≥55%; coin/BTC1h theo chiều lệnh>0. Sáu nhóm cố định trongprotocol trước retrieval/outcome:VOLUME,FLOW,COIN_TREND,BTC_TREND,FLOW_VOLUME,CONFLUENCE. Crowdngược≥60 và giao từng nhóm chỉ tính trên15snapshotknownBy ban đầu, không chèn snapshot hiện tại. Giữ leverage thực tế3×/5× và netPnL/phí/funding gốc. Primarypreorder khác secondaryatFill doLIMIT có thể chờ.
+
+SHORT275primary win57,09%,ROE−0,235%;volume179win59,78%/ROE+0,316%;flow206ROE−0,240%;flow+volume141win61,70%/ROE+0,771%/net+3,2634USD. Thêm coin+BTC106win62,26%/ROE+0,971%;coin1h cùng hướng vốn đúng cả275 nên không loại thêm.70/30temporalcheck tại01/11/2026 14:00:50VN, purge4trainchưa đóng.83testgốcROE−0,603%;volume49+0,752%;flow+volume41+0,835%;thêmBTC25+0,222%;BTCđơn51−1,184%. Không tự tối ưu hoặc bật gate. CI2.000bootstrapcoin/day cho delta,flow+volume toàncoin[-0,059;2,022]pp,day[-0,338;2,159],testcoin[-0,037;3,124] cònchứa0. CrowdLONG≥60+flowvol3mẫuROE3,37%;thêmBTC2mẫu5,12%,quáít. Chưa xác nhậnLONGđốixứng; mẫuLONG chỉ53tạifill,kỳcũ,nhómđẹp khôngđứngvữngphầnsau.
+
+BTC chỉ proxy thị trường,không phải marketbreadth. Dữliệu nến tải lịch sử có thể đượcsửa;5giây làgiảđịnh độtrễ,không có logavailabilitythậttừngnến. Không OI/model1/3 hoặcgiávốn/PnLcávoi giả. Independentvalidation táitính616join,221rawhash,thresholdpartition,train/test,ROE=net/3,khôngnếntươnglai. Script validation riêng,protocol/summary/uncertainty/báocáo xuất thưmụctáchriêng.
+
+Chỉ phân nhóm nghiên cứu, không thêm card thống kê giao dịch,matcher hoặc WHITELIST runtime (policyAvgROE>4không được bypass). Không ảnh hưởng Binance/entry/size/leverage/SL/TP/gate/Discord/WebPushOFF,khôngrestart. JSONstate/history/cooldown cũkhôngsửa hoặcmigrate; JSONresearch cóversion riêng.
+
+
+## SHORT_SQUEEZE_VOLUME_ACTUAL_V1_20261107 · Nhánh SHORT ép LONG theo volume
+
+Nghiên cứu offline riêng nhánh PUMP_SQUEEZE_WHALE_SMART_SHORT_V1_20261106, không phải lệnh margin3USD. File data/research/short-squeeze-volume-20261107; scripts fetch/research/evaluate/validate/report-short-squeeze-volume-20261107.mjs. Freeze500history SENT gần nhất (live chỉ giữ500);318đủ8h,182pending.318cảnh báo/272coin từ06/11/2026 23:41 đến07/11/2026 12:39VN,cutoff07/11 20:45VN. Số sơ bộ323 trước freeze thay đổi do journal live capped500; không ghép dữliệuchạy thêm sau cutoff, không gọi toàn bộ lịch sử/30ngày.
+
+Input trước entry: giữ nguyên proof CrowdLONG≥60,Whale+SmartLONG cùng giảm4h,nguồn15phút trước decision vàđãobserved trước nhận tin.23nến5m đóngtạidecision,close+5giây≤availableAt=max(observedAt,delivery.at).Volume15m/(mean20nến5m trước đó×3),takerbán=1−takerbuyquote/quote. Nhómfixed ALL,volume≥1/1,5/2/3×,sell≥55%,vol≥1,5+sell≥55 vàbinsrờinhau; không tối ưu lại cooldown. Entry giả lập next5mboundary sauavailableAt+1nến5m,SHORT3×TP10/SL20grossROE,max8h,cost0,14%notional/stress0,30%,fundinglịchsử,SL-first/gapopen; không mô phỏng vốn/cap/dca.
+
+Quét=MARKlow≤mépdưới cụm Model1/3 chốttrướcgiá;touch≤méptrên.36h432PRICE/MARK/OI≥95,lag5/10m,consensus35%/3profile,cụmgầndưới trong5%,chưa chạm từmodelcutoff tới entry.304đủcụm,9khôngcụmdưới,5chạmtrướcentry;14này khôngcoilàquétthấtbại nhưngvẫn ở318trade. Quét8hđượctínhtáchPnL,cóthểxảyrasausl;khôngphảixácnhậnthanh lýthật. OIavailabilitylịchsửkhôngđược kiểmchứng,lagchỉsensitivity.
+
+318gốcwin59,43%/ROE+0,4775%/stress−0,0025%,quét78/304=25,66%.Volume≥1,5 còn37win62,16%/ROE+0,5417%,quét5/36=13,89%;volume<1 quét58/214=27,10%.Sell≥55 còn123win71,54%/ROE+1,4558%/stress+0,9758%,quét34/114=29,82%.Vol1,5+sell55 chỉ10win80%/ROE+2,5121%,quét2/10. Khôngcóquan hệvolume càngcaocàngquét;quanhệquan sát khôngchứngminhvolume thấp gâyquét. Sellflowlàứngviênnghiêncứu,khônggate.
+
+70/30mốc07/11/2026 07:34:40VN,purge8h đểkhôngleak=>TRAIN0,PURGED222,phầncuối96;khôngcóholdoutđộclậpđúngnghĩa. Bootstrap2000theocoin/khối2h chỉ7khối,CIchưachỉnhthửnhiềungưỡng.Vol1,5ΔROECIcoin[-1,88;1,68]pp;vol+sell[-0,24;4,61]pp;khôngchốtcôngthứctừnhóm10mẫu. ASR20:35volume0,89×/sell83,85%;1000000MOG0,30×/sell13,06%;cả2pending,khônggánwinloss. Điều kiện chờvolume xuất hiện sau cảnhbáo chưađược kiểmtra;khôngdùngfuturevolume đểlọctincũ.
+
+Validation318tradeđộclậpagreePnL/exit,318volume,304sweep,272rawhash,futurevolume/modelinvariance;hash.env và3srcruntimegiữnguyên. Khôngthêmcardstatgiao dịch/matcher/WHITELIST (policyAvgROE>4 khôngbypass);không đổiBinance/entry/size/leverage/SL/TP/gate/Discord/WebPushOFF,khôngrestart/replaytin. JSONstate/history/cooldowncũkhôngsửahoặcmigrate;JSONresearchversionedriêng.
+
+
+## SHORT_SQUEEZE_SELL_PRESSURE_THRESHOLDS_V1_20261107 · So ngưỡng lực bán15m sau cảnh báo SHORT ép LONG
+
+Nghiên cứu offline scripts/research-short-squeeze-sell-pressure-20261107.mjs tại data/research/short-squeeze-sell-pressure-20261107. Tái dùng đúng frozen318SENTmatured/272coin từ SHORT_SQUEEZE_VOLUME_ACTUAL_V1_20261107, không nạp182pending hoặc giá mới. Nghiên cứu thêm sau khi đã thấy kết quả55%, không là holdout mới. SourceSHA256 và protocol ngưỡng cố định55/60/65/70/75/80/85/90; binsrời<55,55–60,…,≥90. Cùng eventID và cooldown của nguồn, không sinh tín hiệu bù sau khi lọc.
+
+Đầu vào trước entry:áp lực bán=100×(quote−takerBuyQuote)/quote trong3nến5mđóngtại decisionAt,close+5s≤availableAt. Đây là tỷtrọng khối lượng bán chủ động15m,không phải ratioSHORT/cávoi. Giữ nguồnCrowdLONG≥60+Whale/SmartgiảmLONG4h,giữ môphỏngSHORT3×TP10/SL20grossROE,max8h,cost0,14notional/funding/stress0,30,gap/SL-first. Modelquét làMARK≤mépdưới cụmchung chốttrước giá,lag5m;tiêu chí/timing nguồn giữ nguyên,khôngthanh lýthật.
+
+≥55 n123win71,54%/ROE+1,4558%,quét34/114=29,82%;≥60 n92win69,57/ROE+1,3290%;≥65 n56win66,07/ROE+1,2894%;≥70 n30win73,33/ROE+2,2659%,quét11/28=39,29%;≥75 n13win61,54/ROE+1,1999%;≥80 n7win57,14/ROE+1,0090%;≥85 n4ROE−0,0184%;≥90 n1ROE−3,4602%. Không quan hệ càngcao càngtốt.70làứngviênquan sátchưa tối ưuđãkiểmchứng,giữ24,39%nhóm55 và loại93cóROETB+1,1944%. Nhóm70–75riêng17mẫuROE3,0811% là mô tả,khôngtựchọnband sauoutcome.
+
+Pairedbootstrap2000theocoin/khối2h,deltaROE≥70so55 CIcoin[-0,4425;2,1647]pp chứa0,khôngchỉnhmultiplicity;chỉ7khốithờigian.≥75có13mẫuhoặcít hơn khôngdiễngiảiCIthànhbằngchứng;≥90chỉ1mẫubootstrapkhôngđạidiệncasechưaquan sát. Earlier222vslater96chỉmôtả vìsourceTRAIN0saupurge8h.≥70 trước20ROE1,1797%,cuối10ROE4,4383%;≥55trước88+0,3908%,cuối35+4,1333%.≥70+volume≥1×chỉ7ROE−0,0348%,không suy bộđôi làedge.
+
+Validation táitính318sellPcttừraw272coin,sourcehash,groups/bins/keptremoved/nestedIDs,ROE/win/stress vàmodeldenominator,volume/temporal intersections;hash.env và3srcruntimekhôngđổi. Khôngthêmcardstatgiao dịch/matcher/WHITELIST(policyAvgROE>4khôngbypass),khôngsửagateruntimehoặcBinance/entry/size/leverage/SL/TP/Discord/WebPushOFF;khôngrestart. JSONstate/history/cooldowncũkhôngsửahoặcmigrate,researchJSONversionedriêng.
+
+
+## SHORT_SQUEEZE_SL_ENTRY_V1_20261107 · SL và dời entry trên nhóm bán chủ động≥70%
+
+Nghiên cứu offline scripts/fetch/research/evaluate/test/validate/report-short-squeeze-sl-entry-20261107.mjs, data/research/short-squeeze-sl-entry-20261107. Cùng30eventID/29coin đã chọn từ nhóm318frozen, không thêmpending hoặc lọclại entry/cooldown. FreezeSHA2562nguồncohort/funding,14.400nếnPRICE1m/30file. Inputtrướcentry giữsourceWhale/Smart/Crowd vàtaker15m≥70,timingreceipt/entryAt nguồn;khôngsnapshotmới.
+
+Grid20cấu hình nghiên cứu:SHORT3×,TP10grossROE,max8h,SL20/15/10/7,5/5grossROE × NONE/BEở+3/+5/+7grossROE. Bản chính yêu cầuCLOSE1mđạttrigger,dờiSLvềentry từphút kếtiếp,SLđangactiveưu tiênTPcùngphút,gapbấtlợitạigiáopen. Entrystopkhôngbùphí/funding,cost0,14%notional/stress0,30. Sensitivitychạmtrigger lập tức,giữcácnhánhOHLC1m vàtrigger→high→low đểkhônggiảđịnh thứtựcólợi;choosewholepathnetworst/best,khônggreedybar. KhôngDCA/vốn/cap/ticksize/orderbook/triggerMARKthực,khôngdờistoptươnglai ởnếncuối.
+
+Baseline1mROE+2,2659%/win22/30=73,33%khớp5mnguồn,có1TP/0SL/29TIME. SL15khôngđổi;SL10+2,0344%/1SL;SL7,5+2,1178%/1SL;SL5+1,9870%/3SL. KhôngcócasechạmSL15/20nênkhôngsuyrủirotailbằngnhauởtươnglai. SL20BE3/5/7bảnCLOSE1mROE+1,9445/+2,0233/+2,2659%,entrySL2/1/0. ChạmtriggerlậptứcROE+1,6852/+2,0233/+2,0233%;khôngnhánhtouchkhácnettrênbộcasehiệncó. SL15+BEgiốngSL20+BE. CácbảnSLnhỏ+BEkhôngcải thiệnmean,khônggọibestparamđãkiểmchứng.
+
+Ví dụ1000RATSgốc+6,9188%netROE→−0,3583%khiBE5(entryphí/funding);USTCgốcđóng8h−3,4602%nhưngSL10−10,4049%,SL5−5,4049%;COOKIEsauSL5cóquayxuốngentrynhưngkhôngTP10trong8h. Poststopchỉđếmnếnopen>exitAt,khônggiảđịnhthứtựcùngphút. KhôngcaseSLrồichạmTPgốcởphútsau. Quétmodel11/28làđườnggiáđộclậpnênkhôngcoilàlệnhcònsốnghưởngnhịpđó.
+
+Validation600replayđộclậpROEchuẩnhóa,entry/exit/time/kind/arming/funding,20stats,30baselinegốckhớp.84naiveOHLCdiffđềucóphútđầukhônggiaodịch/carrygiá;aggregatebằngphútcógiaodịchkhớp11.520trường5mgốc. UnitcasephíBE,nextminuteactivation,SL-first,samebartrigger-hồi-TP,gap,noFuturearming,SLnhỏ,fundingsign. Pairedbootstrap2000coin/khối2h,20cấu hìnhsaukhichọn70trênmẫucũ,chưachỉnhmultiplicity;earlier20/later10chỉmôtảkhôngholdout. N30khôngđủxácnhậntailriskhoặcngưỡngtốiưu.
+
+Chỉnghiêncứu/khônglivegate,khôngthêmcard/matcher/WHITELIST(policyAvgROE>4khôngbypass);khôngđổiBinance/entry/size/leverage/SL/TP/Discord/gate/WebPushOFF,khôngrestart. Hash.env và3srcruntimegiữnguyên. JSONstate/history/cooldowncũkhôngsửa/migrate,researchJSONcóversionriêng;khônggửitinlịchsử.
+
+
+## 2026-11-08 · SHORT ép LONG SELL55 MARKET và TP5 cho lệnh bot mới
+
+Version nhánh: SHORT_EP_LONG_SELL55_MARKET_2USD_3X_TP5_SL20_V1_20261108 (src/pumpSqueezeSellFlowBinance.js). Người dùng xác nhận ký quỹ2USDT để đạt minimum, giữ3×, TP+5%/SL−20%grossROE. Các mức≥60/65/70 là tập con của≥55; mỗievent chỉ1MARKET, không4lệnh. Không tạo card thống kê mới hoặc bypassWHITELIST của card khác; đây là route thử nghiệm được người dùng chủ động bật trong Auto Entry Controls, mặc địnhOFF khi seed. Policy cardclosedAvgROE>4 vẫn giữ nguyên cho các card cóWHITELIST.
+
+Đầu vào trước entry: đúng cảnh báo SENT SHORT ép LONG V1; CrowdLONG≥60%, Whale vàSmart giảmLONG theo context4h gốc (cặp snapshot3–5h); nguồnknownBy trước cảnh báo, trễ15m trước nến. Tính takerSELL15m từ3nến5m đóng,quote−takerBuyQuote/quote≥55%; giữ23nến proof để kiểm tra baselinevolume nhưng volume không làgate. Proof phải đúngeventID/version/side,23nếnliên tục,giáclosekhớp snapshot. Chỉ decisionAt sau cảstartedAt/enabledAt, mớiobserved≤30s, nến≤450s,MARK lệch≤0,5%. Khác backtest cũ: liveMARKET ngay sau tinSENT, không giả lập đợi5m; thống kê thật phải tách riêng.
+
+Luồng riêng có ledger durable reserve trước IO, khôngreplay history khi restart;UNKNOWN giữslot và khôngtựgửi lại. KhôngDCA/coin cóvịthế hoặc lệnhentry chờ; tối đa5vịthế riêng gồm reservationschưađốisoát, không tính vịthế nhánh khác. 2USDT×3=6USDTnotional; floorlot, khôngceilminimum hoặc nângkýquỹ; coinmin>6/precisionkhôngđủ bịSKIP. TP/SLMARKET neo lại fill, xácnhậnđủ2chân. Protection recovery chỉ theo đúngsymbol/side/clientOrderId/orderId vàplanBuiltAt đãlưu; không MARKETreplay. Sau8h từfill, chỉreduce-onlyđúngvịthế của route,qty khớpfill/audit duy nhất;close reserve trướcgửi,UNKNOWN khôngreplay. FULLprotectionbypass được tôntrọng.
+
+Version TP toànbot: NEW_BOT_ENTRY_TP5_ROE_V1_20261108 (src/newBotTakeProfitPolicy.js). Người dùng xác nhận áp dụng tất cảlệnh bot MỚI, giữTP vịthế đangmở. PolicyactivatedAt vàscope NEW_BOT_ORDERS_ONLY lưu trong auto-entry-controls.json; ledger riêng reserve theo opening clientID ngay tại client entry boundary, trước private send. Existing/manual/reduce-only/protection không tạo proof mới. LệnhLIMIT đãđặt trước activation không bị gán5 khi khớp muộn. NewTP preview ưu tiên sau xácnhậntínhiệu/gate, không sửa snapshot/rulechiếnlược hoặc nới entrypermission. TP5 neo fill qua pendingplan/tracking; missingTP/startup resolve proof đúng client/order/fill đãlưu. Không dùng thờiđiểm restart/symbol-only đểđổi vịthếcũ. JSON cũ không có proof giữpolicy cũ, state/cooldown cũ khôngmigrate/reset.
+
+NewTP không đổi SL/cácprofitlock hoặc thờiđiểm vào của nhánh khác. Manual Orders và thao tácTP thủcông giữ nguyên. UI trả executionTP5 tách strategyTP gốc; audit của placeOrder lưu actualroundedTP vàlýdo. Ledger newTP chỉcapturelệnh gửi sauactivatedAt; IOC0fillEXPIRED cóthểđiMARKETfallback nhưcũ; kếtquảunknownkhôngtựlặp. Chỉ bật route mới vàpolicy mới sau khi code/test sẵn sàng, giữ nguyên40permission đangbật vàcácnhánh đãtắt.
+
+Kiểmtra:318frozen volume proofs/123đạt55 dùng snapshotgiá fixture đúng nến; fake-onlyorder sends,authSymbol,tamper,pre-enable/future/stale,minimum/cap,dedup/restart/UNKNOWN; TP5LONG/SHORT,manual/existing/reducing giữnguyên;8hclosekhôngnhầmclient/qty,exact protectionrecovery. Hồi quy AutoEntryControls/autoBinancePolicy, TPlegacy/startup,new3x,squeezeLONG/SHORT vàfillanchor. So snapshot vịthế/TP trước-saudeploy, kiểmhealth/runtimeAPI. Không gửi lệnh giả hoặc replay tín hiệu lịch sử để kiểm thử.
+
+
+## 2026-11-08 · Backtest LONG sau quét trên còn cụm — BNT
+
+Version UPPER_PARTIAL_LONG_BNT_RESEARCH_V1_20261108. Nghiên cứu offline tại data/research/upper-partial-long-bnt-20261108, các script fetch/evaluate/validate-upper-partial-long-bnt-20261108.mjs. Freeze 16:50 VN 08/11, 500 cảnh báo giữ lại từ 06/11; lọc SENT UPPER partial, lần đầu mỗi cohort, cooldown coin8h TRƯỚC feature filters:177event,158mature/19pending. Không gọi đây là full-market30d. BNT16:36 chưa đủ8h, entry giả lập16:45 và maturity00:45 VN09/11; không chấm kết quả sớm.
+
+Đầu vào trước entry: cụm Model1/3 đã chốt trước nhịp quét; delivered price feature causal hoặc13nến5m lag5m; vị thế PumpGlass source<=observed<=sweepAt, age<=15m và whaleCount>=10. Ưu tiên point ghi tại cảnh báo, fallback first-observed journal đóng băng. 66/158 có vị thế hợp lệ (5recorded,61journal),92thiếu/cũ làunknown; không gán lại từ ratio hiện tại,không dùng giá vốn/PnL. PRICE:15m>=0,1h>0,closeposition>35. POSITION:WhaleLONG<50,SmartLONG<50,CrowdLONG>=60. PRICE_POSITION là hypothesis giống BNT, không phải gate giao dịch thật.
+
+Mô phỏng LONG3x,TP5grossROE/SL20,max8h,entry ceil(receipt/5m)+1bar; giákhớpOHLC5m,SL-first/gap-open,phí+trượt0,14%notional/stress0,30 vàfundingthật; khôngDCA/BE/cap/lot/minimum/tick-level execution. ALL158meanROE−0,7049%/win60,13;PRICE88mean−0,2306/win62,5;POSITION26mean−2,0038/win53,85;PRICE_POSITION17/16coinmean−0,0864/win64,71,11TP/0SL/6TIME,stress−0,5664. Win không đồng nghĩa TP, các TIME lỗ xóa lời. TP10 trên17mean−0,8160. Bootstrap2000 theo16coin hoặc7khối4h:CImean lầnlượt[−3,3549;3,0099]/[−4,2087;2,5230];không có holdout,không kết luận edge dương.
+
+Mục tiêu cụm trên gần nhất cònnguyên, loại nếu bịchạm lúcchờ(entry) kểcả cả nếnchứaquét (bảo thủ doOHLC). 83/158bịloại mục tiêu;75hợplệ,MARKfullsweep41/75. ModelTP75mean−1,1579 so fixedTP5cùng75−1,3557. BNTgroup chỉ4modelhợplệ,quét2/4,modelTPmean−5,5819 so TP5cùng4−3,8576. Fullsweep là đườnggiá8h độc lập, cóthểsauSL,khôngcoilàlợinhuận. Vùng là ước lượng hai model,không thanh lý toàn sàn được xácnhận.
+
+Timing sensitivity bổ sung SAU kếtquảchính: vào open5m đầu sau receipt,giữđúng158IDs. ALLmean−0,9216;BNT17win70,59/mean−0,0458/stress−0,5258. BNT7cònmodeltarget,meanModel−4,4671 so TP5cùng7−3,5078. Không gọi vào sớm là tối ưu. Không loại theo ambiguity phát hiện muộn ở bảnchính; loại chỉlà sensitivity dữliệu,khônggate causal.
+
+Validation PASS136rawhash/136journalhash/fundinghash+dedup,cohort177độclập,158causalchecks vàfuture-price-removal invariance,316zone replays,647trade replays,stats/filterpartition vàmatchedsubset khớp. BAO_CAO.md nêu đầyđủ hạnchế nguồn và fill. Không thêm card/nhãn live/WHITELIST,khôngbậtLONG/Binance,khôngđổi entry/size/leverage/SL/TP/Discord do nghiêncứunày. JSONnghiêncứuversionriêng,JSONstate/history/cooldowncũ khôngmigrate/reset.
+
+### Đối soát triển khai SELL55 / TP5 đã được người dùng xác nhận
+
+Route SHORT_EP_LONG_SELL55_MARKET_2USD_3X_TP5_SL20_V1_20261108 bật lúc16:54:29,992 VN08/11/2026, cùng activation NEW_BOT_ENTRY_TP5_ROE_V1_20261108 cho tất cảlệnh bot mới. Restart btc-liquidity-web thànhcông, health200. 40permission đangbật cũgiữnguyên,route mới thành41; cácnhánh cũđãtắt khôngbật lại. Snapshot sau deploy:22vịthếcũcònmở đượcđốichiếu,11TPalgoID cònnguyêntriggerprice. Bằngchứng data/research/deploy-sell55-tp5-20261108/post-deploy-validation.json. RuntimeAPI kiểmtraenabled=true,2USD/3x/TP5/SL20,capriêng5,max8h,errornull. Lúc17:03VNchưa có attempt mới từ route;khôngphátlệnh/testDiscordgiảđểkiểmtra. Bot/test-b khôngdùng tiếp tục dừng;WebPushgiữOFF. Đây là thayđổi trading đãủyquyền riêng, không phải hệquả của backtestLONG.
+
+
+## 2026-11-08 · Sửa race TP5 giữa socket fill và audit — 4USDT
+
+Version NEW_BOT_TP_FILL_IDENTITY_V2_20261108, giữ schema NEW_BOT_ENTRY_TP5_ROE_V1_20261108 và rule SHORT_EP_LONG_SELL55_MARKET_2USD_3X_TP5_SL20_V1_20261108. Người dùng phát hiện TP lệnh2USD sai; đối chiếu Binance4USDT fill19:05:59VN entry0,0094/3x/638coin, TP thực0,009212=6%grossROE. Pending plan/ledger đã5 nhưng setTpSl chạy trước recordFill async xuất hiện, currentNewBotTpProof trảnull nên genericSHORTTP6 ghi đè. TP đã có được guard idempotent giữ lại; cấu hình/API5 không chứng minh TP thực5.
+
+Bản sửa: positionProof nhận thêm tracking verified-opening-order; chỉ fallback khi chưa có open audit cùngside. Require canonical ledger SUBMITTED, exact symbol/clientID/orderID/source/side, entryprice khớp1e-8, openedAt sau proof.createdAt, orderCreatedAt sau activation, không dùng lifecycle đãCLOSED. Audit cóconflict/manual không fallback. setTpSl dùngfreshpos+tracking đểlấyproof; nếu canonicalclient đãreserve nhưng identitychưađủ thì giữplanpending thayvìgenericfallback. SELL55 làsource cóTPriêng, khôngcho genericSHORT6 ghiđè requestedTP5 kểcảauditđếnmuộn. Khôngthay entrysignal/volume/crowd/whale threshold,margin2USDT/leverage3/SL20/cap5/8h. Manualvà vịthế trướcpolicy giữcũ. JSONledger/trackingcũ khôngmigrate/reset; thiếuproof không bịgán5.
+
+Test scripts/test-tp5-fill-audit-race.mjs môphỏng thứtựprivatefakeFILLED→verifiedtracking→TP trước asyncaudit, kiểmtraTP0,0092433333 thay0,009212, exactidentityvàsaiorder/client/source/side/price/preactivation/CLOSED/manual/RESERVED/UNKNOWN từchối. Hồi quy test-sell-flow-market-tp5,shortTP,startupTP,new3x,live-card-fill-anchor PASS; node--check3files. Khôngtạo lệnhentry/Discord test. Tạm dừng riêng routeSELL55 tronglúcdeploy, sẽkhôi phục permissiongốc sauthànhcông. Đối chiếu vịthế/algoTPthật vàlưu data/research/tp5-fill-race-fix-20261108; sửa riêng TP sai của lệnh sau activation theo yêu cầu, giữSL vàTPcũ trướcactivation. Khôngthêmcard/WHITELIST hoặc thốngkêtrade mới.
+
+
+Đối soát sau sửa: TP4USDT đã thay trực tiếp trên Binance từ0,009212 sang0,009243 (entry0,0094,3x →5,010638%grossROE; tick0,000001). Đặt và xácnhận TPmới trước khi hủy TPcũ; algoTPmới3000002328200588, TPcũ3000002328093430 đãhủy. SL3000002328093468 vẫn0,010027 vàkhôngđổi. Đồngbộ tracking.signalTp theođúng entryclient/orderID, khôngđổi signalEntry/SL hoặcproofactivation. CLANKER14,39≈4,9214% vàSANTOS0,3844≈4,9885% giữTPcũđãđúng5 sau rounding.
+
+Propagate fresh position proof cho pendingLiq/startup/TPrefresh, khôngđể resolver thứhai quayvềlegacy khi auditđếnmuộn. Pump-order fill dùngđúng o.symbol vàclientID/orderresponse (sửa thamchiếusymbolkhôngtrongscopecủanhánh) vàleverage canonicalproof. Sau stop/startđểđồngbộtracking, health200;routeSELL55 khôiphụcenabled=true vàenabledAtmới đểkhôngreplay thờiđiểmdừng;TPactivationgốc16:54:29,992VNgiữ nguyên. Khôngresetledger/cooldown hoặcmởlệnhtest.
+
+Postcheck2026-11-08 19:24:07VN:5vịthế cócanonicalnewTPproof đều≈5%ROE,trongđó3lệnhSELL55;4USDTđúng1TPmới+SLcũ. BaTPvịthếcũcònnguyênID/giá;XVG/BASEDkhôngcònlifecyclecũ. JCTTPmanualbịruleNegativeTPV6đangcósẵnhủylúc19:18:37VNvàthayLIMITreduce-onlyởentry0,009938, trước thao tácrepair4USDT19:20:26; logvàRESTđốichiếukhớp,khôngphảiTP5migrationvàkhôngsửaJCTtrongfixnày. Bằngchứng before/after/repair/tracking/resumed JSON trong thưmụcaudit;checktừngTPthậtthayvìchỉđọccấuhình.
+
+
+## 2026-11-08 · Nhịp bơm đầu / bơm hồi trong Discord quét thanh khoản
+
+Version HEATMAP_SWEEP_PUMP_PHASE_DISCORD_V1_20261108; formatter HEATMAP_SWEEP_PUMP_PHASE_V12_20261108. Module src/heatmapSweepPumpPhase.js, getPumpPhase callback chỉ trong createHeatmapSweepDiscordSender; thêm tiêu đề và field NHỊP BƠM / QUÉT THANH KHOẢN cho UPPER partial/full. Lower giữ nguyên. Đây là thuộc tính bối cảnh gửi Discord, không thêm nhãn/card thống kê trade hoặc matcher/WHITELIST mới. Các checkbox/AvgROE>4 của card đang có không đổi. Người dùng vừa giới hạn thao tác vào code; lượt này không gửi lệnh, sửa TP/SL thật, sửa tài khoản hoặc điều chỉnh permission.
+
+Dữ liệu tại mốc quét:288 nến5m đóng liên tục kết thúc đúng floor(event.at/5m), cộng MARK của chính event. Ưu tiên close MARK từ raw cache; nếu thiếu dùng giá khớp từ raw.price + klineCache, không trộn MARK/trade trong cùng chuỗi. Chỉ đọc cache hiện có, không tải thêm REST/seed/socket, không chờ thêm trước entry. Dữ liệu mới/future, lỗi OHLC, gap, không đủ24h hoặc event trễ>30s không được suy thành bơm đầu. Snapshot phân loại chụp trước await vị thế trong sender, lưu vào delivery.pumpPhase; asOf là event.at, evaluatedAt là thời điểm gửi. Không gọi đây là proof trước entry: onFullSweep giao dịch chạy độc lập trước sender như cũ.
+
+FIRST_PUSH: đủ24h, giá đang nhích lên, tăng ít nhất1% từ giá đóng thấp nhất trong13nến gần nhất (12khoảng=1h), chưa có chu kỳ pump>=10% rồi pullback>=5% trong lịch sử đóng nến24h. Hiển thị BƠM ĐẦU TRONG CỬA SỔ24H; không khẳng định lần đầu của coin. Detector theo close, có thể bỏ lỡ pump/dump chỉ xảy ra nội nến. REBOUND: một nhịp tăng từ nền trước đến đỉnh>=10%, sau đó điều chỉnh>=5%, rồi hồi>=2% và nhịp hiện tại đang lên; ghi peak/trough/percentage/asOf. Tách REBOUND_BELOW_PEAK và REBOUND_BREAKOUT (>=đỉnh cũ). Chọn chu kỳ phù hợp mới nhất trong cửa sổ, không đếm số thông báo; có chu kỳ nhưng hồi<2 hoặc chưa nhích lên thì UNKNOWN. Ngưỡng quan sát ban đầu, chưa backtest riêng hoặc suy xác suất lời.
+
+Nếu event đã có secondSweep MARK liên tục hợp lệ (rule10/5/2, gap<=10s, max24h), dùng bằng chứng đó làm BƠM HỒI dù thiếu288nến; không sửa tracker/classifier secondSweep cũ hoặc gate của nó. Snapshot được kiểm tra eventID/symbol/asOf, thời gian, số nến/source và tính lại tỷ lệ để chặn state không khớp dữ liệu. Giữ màu embed hiện tại và phân tích cá voi/Smart/top/động lượng; chỉ thêm nhãn BƠM ĐẦU(24H)/BƠM HỒI và field. Tin mẫu cũ không có pumpPhase vẫn hiển thị như cũ, không phân loại lại/gửi lại lịch sử. Header JSON watcher/cooldown không thay đổi hoặc migrate; field delivery mới là optional.
+
+Kiểm tra: test-heatmap-sweep-pump-phase.mjs gồm bơm đầu/hồi dưới-qua đỉnh/flat/hồi chưađủ/gap/thiếunến/future/invalid/futurecache/mismatchsymbol/close-onlywick/mergedcache/continuousMARK/tamperedproof, budgetDiscord<=6000/field<=1024 và giữ whale+verdict, mockPOST duy nhất/cloneimmutable/lỗicachevẫngửi/JSONcũ. Hồi quy watcher/durablecooldown/routing,secondSweep,vịthế,verdict,upper/lower momentum và native MARKET harness đềuPASS. Cập nhật kiểm tra momentum từ field[0] sang tìm đúng tên vì field bối cảnh có thứ tự khác; native VM harness khai báo policyTP5 OFF để kiểm legacy và có globals mới từ bảnTP5 trước đó. Tests không chạm mạng/Discord/tài khoản thật.
+
+Triển khai bằng restart web để nạp code. Không thay code runner/watch entry, tiêu chí quét, loại coin, size/leverage/SL/TP hoặc thông báo web. So hash.env và subset cấu hình permission/size/TP/SL trước-sau, chỉ đọc API public status để xác nhận version. Các cảnh báo tự nhiên tiếp theo đi đúng webhook đang có; không POST tin thử hoặc replay cảnh báo cũ để chứng minh hoạt động.
+
+
+Xác nhận triển khai 2026-11-08 20:30:58 VN08/11: btc-liquidity-web PID3892547 online, health200, API /api/heatmap-sweep-watch trả discordPumpPhaseVersion=HEATMAP_SWEEP_PUMP_PHASE_DISCORD_V1_20261108, watch.error=null. Dedicated full-sweep vàpartial routing giữnguyên. Hash.env vàsubset cấuhình enabled/route permission/enabledAt/margin/leverage/TP/SL/new-entrypolicy trước-sau khớp. Chỉ restart để nạp nội dungDiscord; không cóprivateAPIwrite hoặcDiscordPOSTtest tronglượtnày. Bằngchứng data/research/heatmap-sweep-pump-phase-20261108/deployment.json. Tại kiểmtra cuối có0cảnhbáo tựnhiên đãlưu snapshot mới; không hứa đãgửi nếu chưa có tínhiệu.
+
+
+## 2026-11-08 · Quy mô USD và màu Discord cho Cá voi + Smart đồng thuận >70%
+
+Version hiển thị PUMPGLASS_WHALE_POSITION_SIZE_DISCORD_V1_20261108, module src/pumpglassPositionSize.js. Áp dụng đúng nhóm cảnh báo >70% trong ảnh người dùng; giữ signal version PUMPGLASS_WHALE_SMART_DOMINANCE_V2_CROWD_OPPOSITE_20261106 và state schema V1. Không tạo card thống kê giao dịch, matcher hoặc checkbox WHITELIST mới: đây là field USD và màu trình bày, không phải rule vào lệnh. Các WHITELIST/AvgROE >4 hiện có không đổi.
+
+Nguồn: long.size_usd và short.size_usd trong cùng token PumpGlass LIVE có basis=whales, cùng symbol, scanned_at và observedAt với proof cảnh báo. Chụp giá trị USD tại whaleSmartDominanceProof trước await chart và trước khi gửi, lưu optional positionSize cùng durable reservation. Không gọi thêm API hoặc lấy số tiền từ tỷ trọng %. Đây là quy mô mẫu vị thế cá voi theo nguồn; không phải tổng Binance, tổng thị trường hoặc quy mô USD của Smart traders. Bảng web hiện có đã hiển thị hai số tiền này; lượt này thêm chúng vào Discord.
+
+Quy ước hiển thị tuyệt đối: SMALL <100.000 USD màu xám0x94a3b8; MEDIUM từ100.000 đến dưới1.000.000 USD màu cam0xf59e0b; LARGE >=1.000.000 USD màu tím0x8b5cf6; UNKNOWN thiếu/sai dữ liệu màu xám xanh0x475569. Màu thanh embed và chữ QUY MÔ trong tiêu đề theo số USD của PHÍA PHÁT TÍN HIỆU (LONG dùng longUsd, SHORT dùng shortUsd), không theo tổng hai phía hoặc phía đối diện. Icon hướng vẫn xanh LONG / đỏ SHORT để không lẫn hướng với quy mô. Thiếu số tiền không bị coi là0 hoặc NHỎ và không loại tín hiệu; zero thực được hiển thị0USD, không chia cho0. Số âm, string, NaN/Infinity hoặc vượtMAX_SAFE_INTEGER không được coi là USD hợp lệ.
+
+Field QUY MÔ VỊ THẾ CÁ VOI (USD) ghi LONG/SHORT và tier riêng, tổng hai phía khi đủ dữ liệu, phía lớn hơn bao nhiêu lần và chênh USD. Ví dụ ảnh: LONG313.713 / SHORT895.705 USD → SHORT VỪA, màu cam, SHORT gấp2,86× LONG, tổng1.209.418 USD; tổng vượt1M không làm màu SHORT thành LỚN. Đây là quy ước đọc dữ liệu, không xếp hạng khả năng tác động giá/thắng thua hay bộ lọc đã backtest.
+
+Không đổi điều kiện cả Whale/Smart >70%, đám đông đối chiều >60% và tăng1h, nguồn/tuổi dữ liệu, universe, cooldown8h, caps, routing/webhook hoặc số request. Không gửi/sửa lệnh Binance, entry, margin, leverage, SL/TP, permission hoặc thông báo web. Không sửa tin Discord cũ hoặc reset cooldown để thử; tin đủ điều kiện tiếp theo nhận format/màu mới.
+
+JSON cũ: positionSize là optional; thiếu field chỉ hiện CHƯA RÕ, không tự dựng quy mô, fetch lại hoặc backfill lịch sử. Giữ header state, các bản ghi version cũ và durable UNKNOWN/no-replay. Payload/snapshot thêm version và rule hiển thị riêng, không đổi cách đếm hoặc thống kê giao dịch cũ.
+
+Kiểm tra PASS test-pumpglass-position-size.mjs: biên100k/1M, bốn màu cho cả LONG/SHORT, màu theo phía tín hiệu, so sánh USD/ratio/tổng, zero/missing/old JSON, nguồn/symbol/side/time/metadata sai bị bỏ, snapshot không đổi khi token đổi, giới hạn Discord6000/1024 vàallowed_mentions rỗng. Scanner mock lưu size trước POST, đúng3GETboard/token/chart không thêm sourceIO, chỉ1POST, receipt xácnhận, reload khôngreplay. Hồi quy dominanceV2 strict >70/>60/rising1h/cooldown/caps/fairness/429/storage/UNKNOWN và model1/3 research PASS. Không POSTDiscord thật hoặc privateAPI trong tests. Cập nhật assertion màu cũ để fixture không cóUSD được UNKNOWN, vẫn kiểm iconLONG/SHORT.
+
+
+Triển khai 2026-11-08 20:56:11 VN: web đã restart, health200; API dominance trả positionSizeVersion đúng V1 và quy ước100k/1M. Cấu hình webhook/rule signal/state version, hash.env và subset permission/size/leverage/SL/TP trước-sau không đổi. Không có privateAPIwrite hoặcDiscordPOSTthử trong lượt này. Đối soát tại data/research/pumpglass-position-size-discord-20261108/deployment.json. Tin tự nhiên mới cópositionSize sẽ mang màu theo phía tín hiệu; lịch sử cũ không sửa hoặc gửi lại.
+
+
+## 2026-11-08 · Quy mô vị thế theo vốn hóa lưu hành — thay cách chia USD tuyệt đối
+
+Theo yêu cầu mới, version PUMPGLASS_WHALE_POSITION_CAP_RATIO_DISCORD_V2_20261108 thay tier USD V1 cho tin Discord Cá voi + Smart >70% mới. Công thức: USD vị thế của PHÍA TÍN HIỆU / vốn hóa lưu hành USD ×100. Ngưỡng hiển thị: NHỎ <0,1% màu xám; VỪA 0,1–<1% màu cam; LỚN >=1% màu tím. Icon hướng LONG xanh/SHORT đỏ giữ nguyên. Tiêu đề, màu, các tier LONG/SHORT và %cap đều theo công thức này; giữ USD tuyệt đối, tổng hai phía và so sánh bội số. Tổng LONG+SHORT không quyết định màu. Ngưỡng là quy ước đọc dữ liệu, chưa backtest hoặc dùng làm gate.
+
+Nguồn cap mới src/pumpglassMarketCap.js, version PUMPGLASS_CIRCULATING_CAP_EXACT_FUTURES_ID_V1_20261108: lấy coin_id từ đúng ticker perpetual USDT trong Binance(Futures) trên CoinGecko, kiểm target/contract/expired/tradeURL/last_traded. Chỉ dùng một ID duy nhất; mã trùng, link sai hoặc không tìm thấy hợp đồng → UNKNOWN, không chọn coin cap lớn nhất hay đoán theo symbol. Hợp đồng1000/1000000/1M giữ nguyên khi tra identity; market cap của coin cơ sở lấy theo coin_id, không nhân/chia market cap theo multiplier. Không dùng cache coin-supply-market.json cũ tra symbol. Tài liệu gốc: https://docs.coingecko.com/reference/derivatives-exchanges-id và https://docs.coingecko.com/reference/coins-markets .
+
+Dùng market_cap cùng circulating_supply/current_price/last_updated của /coins/markets?ids=ID, không dùng fully_diluted_valuation hoặc tự thay cap bằng FDV. Cap, supply và price phải dương/hợp lệ; sourceAt vàfetchedAt không tương lai, cap tối đa cũ15phút. Identity tối đa6h, nhận diện một ticker có2coin_id khác nhau là ambiguous. Cache marketdata riêng data/pumpglass-circulating-market-cap.json, dedupe inflight, tối đa4publicrequest/phút, timeout3s, 403/418/429 nghỉ15phút và lưu backoff qua restart; cachecap15phút, missing negativecache15phút (requestbudget1phút). Không key hoặc request tài khoản.
+
+Nguồn USD vẫn là token PumpGlass cùng sourceAt/observedAt nhưV1. Chỉ sau khi gate Crowd1h hợp lệ mới enrichment cap, bounded tối đa2,5s và trong45s budget scanner. Warm identity một lần không chặn startup; không warm toàn bộcap500coin. Snapshot USD đóng băng trước, attach cap clone với capEvaluatedAt sau lookup, trước durable reservation và DiscordPOST. Giữ riêng timestamp cap và timestamp vị thế; không gọi cap là dữ liệu trước entry hoặc dựng lịch sử từcap hiện tại. Lỗi/timeout/capthiếu hoặc sai ID không chặn cảnh báo cũ: vẫn gửi USD và CHƯA RÕ theo cap; không quay về tier USD tuyệt đối. %notional/cap có thể >100%, khôngclamp và không phải %sở hữu token hoặc %OI.
+
+JSON cũ/compatibility: state header và signalV2/cooldown8h không đổi. positionSizeV1 vẫn được đọc, giữUSD/oldfield nguyên trạng; khi render theo chuẩncap mới thì CHƯA RÕ vì chưa có cap cùng thời điểm, không tự lấy caphiện tại để relabel/gửi lại lịch sử. V2 thêm marketCap/source/identity/capEvaluatedAt/longCapPct/shortCapPct/signalCapPct. Validator tính lại các tỷ lệ và tier, từ chối tamper/source/symbol/time không khớp. API snapshot bổ sung provider status và version riêng. Không tạo thống kê giao dịch/card/matcher/WHITELIST mới; whitelist AvgROE>4 hiện có không thay đổi.
+
+Kiểm tra PASS: test-pumpglass-position-size.mjs bao gồm cùng900kUSD nhưngcap10M=LỚN/cap1B=NHỎ, biên0,1/1%, màu hai hướng, timestamp, missing/zero/legacy, %>100 khôngclamp, field6000/1024, snapshot trước mockPOST. test-pumpglass-market-cap.mjs xác minh IDBTC=bitcoin khôngnhầmbatcat, multiplier1000PEPE không đổi cap, duplicate/URL/expired/future/missing/stale/FDV-only bịtừchối, persistentcache/backoff429, caplookup timeout/throw/missing vẫn gửialert. Hồi quy dominanceV2 gates/cooldown/caps/receipt/storage và researchModel1/3 PASS. Tests giả lập mạng, không gửiDiscord thật hoặc lệnh.
+
+Đối chiếu publicsource thật trước deploy:4USDT→coin_id4-2, cap9.307.507USD; nhóm SHORT872.227USD→9,37122046%cap=LỚN/tím. Đây là snapshot đã lưu tại data/research/pumpglass-position-cap-20261108/live-source-validation.json, không phải lệnh tài khoản hoặc hiệu quả chiến lược. Không đổi gateWhale/Smart>70, đối chiềuCrowd>60/rising1h, cooldown,Webhook, Binanceentry/size/leverage/SL/TP, permission hay thông báo web. Không sửa tài khoản hoặc tin Discord cũ; chỉ code, nguồn publiccap và format tin mới. So.env/permissions/rule gate trước-sau khi restart để xác nhận.
+
+
+Xác nhận triển khai 2026-11-08 21:28:55 VN: web online/health200; API dominance trả positionSizeVersionCAP_RATIO_V2, rule smallBelowCapPct0,1/largeFromCapPct1, provider CoinGecko exact-futures-ID với521hợpđồng trongcache. Quy tắc signal/stateheader/destination vàsubset controlpermission/size/lev/TP/SL/.env trước-sau khớp. Cache mới đã kiểm chứng live4USDT; không privateAPIwrite/Discordtest/replay. Bằng chứng data/research/pumpglass-position-cap-20261108/deployment.json. Tin tự nhiên mới sẽ dùng tỷ lệ cap; không chỉnh tin đã gửi.
+
+
+## 2026-11-09 · LONG sau cảnh báo quét một cụm trên và BƠM ĐẦU (24H)
+
+Nghiên cứu UPPER_PARTIAL_FIRST_PUSH_LONG_RESEARCH_V1_20261109 dùng tin Discord SENT UPPER_CLUSTER_SWEPT đã lưu FIRST_PUSH hợp lệ, cùng event ID, symbol và timestamp. Tiêu đề QUÉT HẾT CỤM PHÍA TRÊN là đã quét xong một cụm và còn cụm khác trong tập. Phân loại FIRST_PUSH lấy snapshot đóng băng của runtime, không dựng lại nhãn chính. Hai bản lưu hợp nhất có 823 event, cutoff 09:50 VN 09/11. Có 49 tin đúng nhãn, gồm 17 đủ 8h trên 14 coin và 32 chưa đủ 8h. Nhóm so cùng kỳ có 22 mẫu đủ thời gian với mọi trạng thái lưu sẵn.
+
+Mô phỏng LONG 3×, TP5/SL20 gross ROE, giữ tối đa 8h, phí và trượt giá tổng 0,14% notional cộng funding lịch sử, stress 0,30%. Entry là open 5m tiếp theo sau receipt, thêm một nến 5m ở bản chính. Tính bằng OHLC giá giao dịch, SL ưu tiên nếu cùng nến, gap qua SL tính giá mở. 17 mẫu chính có 11 TP, 1 SL, 5 hết giờ, 64,71% thắng ròng, ROE TB −0,47645%, stress −0,95645%. Vào sớm hơn 5m −0,76425%. TP10 cùng cách vào −2,46606%. Mỗi coin chỉ lấy tin đầu trong 8h còn 14 mẫu, ROE −1,55998%. Nếu nến trước entry đóng ở hoặc trên mép trên cụm đã quét thì 5 mẫu/4 coin, 5 TP, ROE +4,73704%. Đây là phép đối chiếu mẫu nhỏ, không làm gate. Chỉ 2/17 giá đóng sau 8h cao hơn giá vào. Replay 1m khớp lý do thoát và ROE 17/17; trung vị chạm TP 10 phút.
+
+Cohort đối chiếu UPPER_FULL_FIRST_PUSH_LONG_RESEARCH_V1_20261109 tách riêng ALL_TRACKED_UPPER_SWEPT, 87 SENT và 80 đủ 8h. Ba FIRST_PUSH lưu thật ROE −3,75333%; 30 FIRST_PUSH tái dựng theo nến MARK đóng trước event ROE +0,87973%. Chọn label có sẵn khi có; phần tái dựng đánh dấu nguồn REPLAY_MARK. Không gộp thành tích cohort này vào mẫu đúng tiêu đề chính.
+
+Script scripts/backtest-upper-first-push-long-20261109.mjs dùng --partial cho nhóm chính. Snapshot, dữ liệu Binance công khai, manifest, results và validation trong data/research/upper-partial-first-push-long-20261109 và data/research/upper-first-push-long-20261109. Đối chiếu đúng 17 tiêu đề bằng formatter, replay độc lập 83 và 243 đường giá. Nghiên cứu offline, không tạo card/matcher/WHITELIST, không thay Binance/entry/size/leverage/SL/TP hay triển khai bot. JSON runtime/cooldown không migrate. Dữ liệu nghiên cứu lưu version riêng và giữ distinction recorded/replay.
+
+
+## 2026-11-09 · Báo sớm trước quét và xác nhận LONG 1m sau quét
+
+Nghiên cứu offline UPPER_PARTIAL_FIRST_PUSH_EARLY_RESEARCH_V1_20261109 so trên cùng 17 cảnh báo UPPER_CLUSTER_SWEPT / FIRST_PUSH đã SENT, 14 coin, đủ 8h. Báo sớm dùng cụm Model 1/3 gần nhất chốt trước giá, MARK lúc arm và nến MARK 1m đã đóng trước chạm, quy tắc FIRST_PUSH tính từ 288 nến MARK 5m đã đóng trước điểm xét. Các ngưỡng khoảng cách 0,3% / 0,6% / 1% tới mép gần bắt lần lượt 5 / 11 / 12 ca, trung vị dẫn trước tick quét 331 / 337 / 328 giây. Ngưỡng 0,6% báo trước ít nhất một phút ở 10 ca. Chỉ đo độ phủ trên ca đã quét do chưa có nhật ký cohort hết hạn để tính báo hụt.
+
+So LONG 3×, TP5/SL20 ROE, 8h, phí và trượt giá 0,14% notional cộng funding. Vào đầu nến 1m sau receipt sớm hơn 8 phút ở trung vị, ROE TB −5,17% (9 TP, 5 SL, 3 hết giờ). Chờ một trong 5 nến 1m hoàn chỉnh đầu tiên đóng ở/trên mép trên cụm đã quét, vào nến kế, sớm hơn 7 phút ở trung vị, ROE TB −3,68% (6 TP, 3 SL). Cùng 9 ca đó, mốc 5m cũ ROE TB −0,84%. Toàn bộ 17 mốc cũ khớp kiểm tra 1m với bản trước, ROE TB −0,48%; nhóm nến 5m trước entry đóng ở/trên mép trên có 5 TP trên 4 coin, ROE TB +4,74%.
+
+Chạy scripts/research-earlier-first-push-long-20261109.mjs. Manifest, nến và kết quả tại data/research/upper-first-push-earlier-20261109. Đây là đo offline, không ảnh hưởng Discord, Binance, entry, size, TP hoặc SL; không thêm card, WHITELIST hay thay cấu trúc JSON runtime. JSON nghiên cứu version riêng, dùng lại snapshot cũ đã xác thực và không ghi đè snapshot.
+
+
+## 2026-11-09 · Chất lượng LONG sau quét một cụm trên và Bơm đầu (24h)
+
+UPPER_PARTIAL_FIRST_PUSH_QUALITY_RESEARCH_V1_20261109 phân tích offline 19/49 cảnh báo FIRST_PUSH đúng tiêu đề có đủ 8h ở mốc 10:05 VN, 16 coin. Mốc entry và mô phỏng cũ LONG 3×, TP5/SL20 ROE, 8h, phí và trượt giá 0,14% notional cộng funding. Giữ nguyên 17 đường giá đã xác minh. Hai ca mới PONS/USELESS chạm SL. Toàn mẫu 11TP, 3SL, 5 hết giờ, ROE ròng TB −2,59%.
+
+Dữ liệu trước entry gồm mép cụm quét và cụm trên chưa chạm trong snapshot đã chốt, MARK 5m đóng trước entry, Model 1/3 hai phía tái dựng theo giờ chốt, tỷ lệ Binance 5m trễ ít nhất 5m, ảnh chụp PumpGlass tuổi tối đa 15m. Giữ mép trên 5 TP/6 ca, ROE +0,53%; mất mép 6 TP/13, −4,03%. Mỗi coin chỉ lấy ca đầu thì hai nhánh lần lượt 4/5 và 4/11, ROE −0,27% và −5,59%. Còn cụm trên riêng 8 TP/15, −2,83%. Vị thế top Binance tăng LONG 5 TP/8, −3,24% so với 6 TP/11, −2,11% khi không tăng. PumpGlass có 11 ảnh chụp đủ mới, 9 ca đủ so xu hướng; cá voi và Smart cùng tăng LONG có 3 TP/4, +2,78%. Chỉ 1 ca vừa giữ mép vừa có cả hai tăng LONG. Không chọn bộ lọc giao dịch từ các nhóm nhỏ này. Thử nhạy biên 0,14% trên mép sau khi xem mẫu: 5 TP/5, 4 coin, chưa kiểm chứng độc lập.
+
+Chạy scripts/research-first-push-quality-20261109.mjs. Snapshot đã lưu, kết quả, tham số và dữ liệu khôi phục đặt riêng trong data/research/upper-first-push-quality-20261109. Không migrate JSON cũ hoặc sửa nhãn, runtime, Discord, Binance, size, entry, SL/TP hay WHITELIST.
+
+
+
+## 2026-11-09 · Discord Bơm đầu · Đánh giá LONG và dư địa Model 1/3
+
+HEATMAP_SWEEP_FIRST_PUSH_LONG_V13_20261109 / HEATMAP_FIRST_PUSH_LONG_REVIEW_V1_20261109 áp dụng riêng cho UPPER_CLUSTER_SWEPT có FIRST_PUSH hợp lệ và còn cụm khác trong tập đã chốt. Gửi ngay tin xám CHỜ NẾN 5M qua webhook partial hiện có; ghi tối đa hai cụm trên chưa chạm gần nhất, giá mép gần/xa, khoảng cách theo MARK lúc quét và điểm đồng thuận. Lấy ID bằng wait=true. Mốc xét là lúc đóng nến 5m trọn vẹn đầu tiên sau lần gửi được Discord xác nhận, dùng cùng cách đặt mốc với backtest. Tác vụ cập nhật Discord chạy ngoài hàng xử lý MARK/entry, mỗi lượt một tin, cách lượt tối thiểu 5 giây. Đợi thêm 12 giây để nguồn nến đóng cập nhật, cửa sổ chỉnh tin tối đa 2 phút sau mốc xét. PATCH đúng tin cũ theo message ID đã lưu, không gửi thêm tin. Ghi kết quả cập nhật; nếu hết hạn, thiếu ID, sai webhook hoặc lỗi Discord thì lưu trạng thái, không phát lại.
+
+Màu đỏ LONG YẾU nếu giá đóng 5m dưới mép trên cụm đã quét. Xanh GIỮ MÉP · CÒN DƯ ĐỊA LÊN nếu giá đóng vượt mép ít nhất 0,14% và mép gần cụm còn chưa chạm cách giá đóng ít nhất 5/3%, mốc +5% ROE tại 3× trước phí. Cam CHỜ THÊM nếu giữ mép nhưng biên giữ nhỏ, cụm gần hoặc không còn cụm đủ điều kiện trong tập. Xám nếu chưa đủ dữ liệu để xét. Loại cụm đã chạm lúc quét hoặc MARK 5m đã chạm trước mốc xét, tính theo khoảng cách từ giá đóng đến hai mép; nến 5m chứa tick quét được xét thận trọng. Màu xanh là tiêu chí quan sát thử nghiệm, không phải xác nhận lợi nhuận. Replay 19 ca đã lưu: đỏ 13 ca/6 TP, cam 5 ca/4 TP, xanh 1 ca/1 TP. Không suy hiệu quả riêng từ một mẫu xanh.
+
+Bổ sung LONG/SHORT theo vị thế top trader Binance và theo tài khoản toàn thị trường. Tỷ lệ 5m dùng mốc lùi ít nhất 5 phút, tối đa 15 phút, delta 1h khi đủ mốc. PumpGlass dùng journal đã được quan sát trước lúc xét, tuổi tối đa 15 phút, hiển thị cá voi, Smart, đám đông và thay đổi cá voi/Smart khoảng 1h. Vị thế chỉ bổ sung bối cảnh, không quyết định màu. Dùng cache nến và public REST ứng viên với shared Binance rate gate, không bulk-load. Khi thiếu MARK/nến báo rõ thiếu dữ liệu; thiếu vị thế không tự suy hướng.
+
+delivery thêm firstPushLong, firstPushLongMessage (ID tin, ID webhook, mốc thời gian; không lưu token), firstPushLongUpdate và firstPushLongUpdatedAt. Header watcher và JSON cũ đọc bình thường. Sau restart chỉ xử lý PATCH của tin mới đã có receipt còn hạn; tin lịch sử thiếu receipt giữ như cũ. API GET/POST heatmap-sweep-watch công bố discordFirstPushLongVersion. Chỉ đổi Discord partial Bơm đầu, không thêm card/thống kê chọn WHITELIST, không thay Binance/entry/size/leverage/SL/TP. Kiểm tra mock POST/PATCH, payload size, restart/expiry, màu, nến thiếu và các test hồi quy sweep, phase, position, verdict.
+
+
+Triển khai 2026-11-09 10:32 VN. Restart riêng btc-liquidity-web. Health 200 và API heatmap-sweep-watch trả HEATMAP_FIRST_PUSH_LONG_REVIEW_V1_20261109. Đối chiếu hash cấu hình và routing trước/sau khớp. Kiểm tra POST/PATCH bằng mock; lúc kiểm tra live chưa có cảnh báo Bơm đầu mới. Audit tại data/audits/heatmap-first-push-long-review-20261109/deployment.json.
+
+
+## 2026-11-09 · Khôi phục đánh giá Bơm đầu khi dữ liệu đến trễ
+
+HEATMAP_SWEEP_FIRST_PUSH_LONG_V14_20261109 giữ công thức phân loại và schema đánh giá V1. Kiểm tra live V13: CLANKERUSDT và CYSUSDT đều có receipt gửi/đổi tin nhưng lần đọc ban đầu thiếu MARK và tỷ lệ Binance, tin dừng ở xám. Cả hai có nến MARK 5m đúng mốc khi kiểm tra lại. V14 tiếp tục đọc khi nến giao dịch/MARK chưa đủ, cách tối thiểu 15 giây mỗi sự kiện, trong 5 phút sau mốc đóng nến. Tác vụ ngoài luồng MARK/entry, mỗi lượt một tin và ưu tiên tin mới. Chỉ dùng nến đã đóng ở mốc xác nhận ban đầu. Public REST priority 5, vẫn qua shared rate gate và bỏ khi nghẽn, không ưu tiên hơn lệnh/protection. Top vị thế và tài khoản toàn thị trường đặt endTime trước mốc xét 5 phút, thống kê biến động 1h nếu đủ. PumpGlass nạp journal coin khi cần, lọc source/observed timestamp theo đúng mốc cũ, giữ snapshot đủ mới đã có cùng mốc nếu lượt khôi phục thiếu.
+
+Tin xám đã sửa thành công có thể được sửa đúng message ID thêm một lần trong 30 phút nếu đủ nến. Bổ sung riêng vị thế từ journal cho tin vừa khôi phục thiếu snapshot, trong cùng cửa sổ, giữ nguyên vùng và màu; không gọi REST ở lượt chỉ khôi phục vị thế. Chỉ làm với receipt mới hợp lệ và khớp webhook, lưu firstPushLongRecovery / firstPushLongContextRepair, JSON cũ bỏ qua. Màu đỏ/cam/xanh và dư địa không đổi công thức. Không gửi tin trùng, không thêm whitelist/card hoặc đổi Binance/entry/size/leverage/SL/TP. Kiểm thử mock giới hạn thời gian, retry, sửa tin xám, bổ sung vị thế, restart và hồi quy sweep/Discord/Binance.
+
+Đã triển khai và kiểm tra health/API cùng hash cấu hình trước-sau. Discord xác nhận PATCH hai tin thật sang cam: CLANKERUSDT nến đóng 10:45 VN, cụm gần 14.554555–14.774243, cách +1,07% đến +2,60%; CYSUSDT nến đóng 10:50 VN, cụm gần 0.08162503–0.08182910, cách +1,65% đến +1,90%. Hai tin có tỷ trọng top Binance, tài khoản thị trường và PumpGlass tại mốc xét. Bằng chứng data/audits/heatmap-first-push-long-review-20261109/recovery-verified.json.
+
+
+
+## 2026-11-09 · Đo dư địa SHORT tiếp diễn sau quét một cụm dưới
+
+LOWER_PARTIAL_CONTINUATION_SHORT_RESEARCH_V1_20261109. Trong 181 tin LOWER_CLUSTER_SWEPT đã SENT, 139 tin/105 coin đủ 8h tại mốc 11:10 VN 09/11. Entry đầu nến 5m sau một nến đầy đủ từ Discord receipt. Dữ liệu trước entry: nến giá 5m đóng, vùng đã chốt và đường MARK tới mốc xét để bỏ cụm đã chạm, ảnh chụp PumpGlass <=15m đã được quan sát. Khoảng cách đo tới hai mép cụm chưa chạm gần nhất phía dưới, theo giá đóng trước entry. Mốc giữ mép: giá đóng dưới mép dưới cụm đã quét ít nhất 0,14%. Đủ dư địa tới mép gần nếu cách >=5/3%, hoặc phân tích thử tới mép xa để biết mục tiêu rơi trong cụm. Mô phỏng SHORT 3×, TP5/SL20 ROE, 8h, phí+trượt 0,14% notional và funding thật.
+
+Toàn mẫu 108 TP/139, 10 SL, ROE ròng +1,70%. Giữ mép và đủ 1,67% tới mép gần có 2 TP/3, ROE +4,43%. Đủ tới mép xa nhưng thiếu tới mép gần có 8 TP/9, +4,48%. Gộp hai nhóm có 10 TP/12, +4,47%; mỗi coin lấy tín hiệu đầu trong 8h còn 7 TP/8, +4,54%. Tập đã chốt hết cụm chưa chạm có 14 TP/21, −0,77%. Mẫu dư địa gộp chỉ có 6 ca có PumpGlass mới, chưa kết luận hiệu quả của dữ liệu vị thế. Không dùng vị thế hiện tại thay ảnh chụp lịch sử. Hai nhóm theo mép xa là khám phá cùng mẫu, chưa kiểm chứng độc lập.
+
+Nghiên cứu offline, không thêm nhãn chạy thật, card hay WHITELIST, không đổi Discord, Binance, entry/size/SL/TP. Dữ liệu riêng, JSON cũ đọc nguyên dạng. Mã scripts/research-lower-partial-continuation-short-20261109.mjs, kết quả và snapshot data/research/lower-partial-continuation-short-20261109.
+
+
+
+## 2026-11-09 · Discord quét cụm dưới · Phân nhóm SHORT và dư địa Model 1/3
+
+HEATMAP_SWEEP_CONTINUATION_COLORS_V15_20261109 / HEATMAP_LOWER_SHORT_REVIEW_V1_20261109 áp dụng cho LOWER_CLUSTER_SWEPT đã quét một phần tập cụm phía dưới. Tin partial gửi ngay màu xám, kèm tối đa hai cụm chưa chạm gần nhất phía dưới, mép gần/xa, khoảng cách so với MARK lúc quét và điểm đồng thuận Model 1/3. Mốc xét là lúc đóng nến 5m trọn vẹn đầu tiên kể từ Discord xác nhận gửi. Cập nhật đúng message ID, dùng giá đóng nến hợp đồng 5m, cực tiểu MARK 5m từ nến chứa tick quét tới mốc xét, và cụm Model 1/3 đã chốt trước quét. Bỏ cụm đã chạm theo snapshot hoặc MARK tới mốc xét. Khoảng cách giảm tính từ giá đóng tới mép gần (giá cao) và mép xa (giá thấp).
+
+- Xanh SHORT · CÒN DƯ ĐỊA TRƯỚC CỤM: giá đóng dưới mép dưới của cụm đã quét ít nhất 0,14%, mép gần cụm chưa chạm kế tiếp cách ít nhất 5/3% giá.
+- Vàng SHORT · TP THAM CHIẾU TRONG CỤM: cùng điều kiện giữ mép, mép gần cách dưới 5/3%, mép xa cách từ 5/3%.
+- Cam SHORT · CHỜ THÊM: giá chưa giữ đủ biên, cụm kế tiếp không phủ tới TP tham chiếu, hoặc tập đã chốt không còn cụm dưới chưa chạm.
+- Đỏ HỒI QUA MÉP · SHORT YẾU: nến 5m đóng trở lại trên mép dưới của cụm vừa quét. Xám khi chờ nến hoặc chưa đủ dữ liệu.
+- TP tham chiếu là giá giảm 5/3%, tương ứng +5% ROE tại 3× trước chi phí. Màu và mức giá chỉ dùng để quan sát, không bảo đảm hướng đi. Tỷ trọng top Binance, đám đông và PumpGlass, cùng Δ SHORT của top Binance/cá voi/Smart nếu đủ dữ liệu, bổ sung bối cảnh.
+
+Dùng chung luồng đọc cache/REST rate gate, retry khi thiếu nến và chỉnh tin gốc theo receipt đã lưu với Bơm đầu phía trên. Mỗi lượt một tin, tối thiểu 5 giây; backoff đọc thiếu theo sự kiện 15 giây, cửa sổ cập nhật chính 5 phút sau mốc đóng nến, khôi phục tin xám đã có receipt trong 30 phút. Mốc tỷ lệ Binance trước lúc xét 5–15 phút và dữ liệu PumpGlass đã quan sát, tuổi tối đa 15 phút. Tin cũ thiếu receipt không cập nhật. JSON mới thêm delivery.lowerShort, lowerShortMessage, lowerShortUpdate, lowerShortUpdatedAt và tùy chọn lowerShortRecovery/lowerShortContextRepair. Đọc legacy firstPushLong cùng phiên bản cũ; API báo thêm discordLowerShortVersion.
+
+Replay đúng 139 mẫu offline 08–09/11, xanh 3/2 TP, vàng 9/8 TP, cam 75/58 TP, đỏ 52/40 TP với SHORT 3×, TP5/SL20 ROE, tối đa 8h, phí/trượt 0,14% notional và funding. Xanh +4,43% ROE TB, vàng +4,48%, mẫu nhỏ; vàng là nhóm phân tích thêm sau khi xem mẫu. Kiểm tra mock bốn trạng thái màu và vàng, đường MARK, tin cũ, định tuyến full/partial, giữ payload trong giới hạn, retry/restart/PATCH, hồi quy Bơm đầu và Binance. Chỉ đổi tin Discord partial dưới. Không thêm card/thống kê WHITELIST, không thay Binance, entry, size, leverage, SL/TP hoặc luồng full sweep.
+
+
+Triển khai 2026-11-09 11:35 VN. Restart riêng btc-liquidity-web, health 200, API trả HEATMAP_LOWER_SHORT_REVIEW_V1_20261109 cùng phiên bản Bơm đầu cũ. Đối chiếu hash .env, route Discord, và controls Binance trước/sau khớp. Chưa có cảnh báo quét dưới mới lúc kiểm tra API. Kiểm tra formatter/replay và POST/PATCH dùng mock. Audit data/audits/heatmap-lower-short-review-20261109/deployment.json.
+
+
+## 2026-11-09 · Discord báo sớm Bơm hồi hướng tới cụm trên
+
+HEATMAP_SWEEP_REBOUND_WATCH_V16_20261109 / HEATMAP_UPPER_REBOUND_WATCH_DISCORD_V1_20261109. Chỉ xét UPPER_CLUSTER_SWEPT còn cụm trong tập và có phase REBOUND_BELOW_PEAK hợp lệ của HEATMAP_SWEEP_PUMP_PHASE_DISCORD_V1_20261108. Nhịp bơm hồi dùng giá đóng 288 nến 5m trước sự kiện và MARK lúc quét. Yêu cầu hai tick MARK cách tối đa 10 giây, tick trước từ lúc arm, MARK trước nằm dưới mép xa cụm vừa quét và MARK hiện tại đạt/vượt mép đó. Cụm mục tiêu là vùng Model 1/3 đã chốt trước giá, chưa chạm, còn ở phía trên; chọn mép gần nhất. Dùng ngưỡng đồng thuận có sẵn của bộ tạo vùng, không thêm gate sức mạnh, volume hay cá voi. Snapshot tạo lúc dựng tin trước tác vụ lấy bối cảnh Discord; không chờ nến tiếp theo, không lấy vùng tương lai.
+
+Tin Discord partial hiện có đổi màu xanh dương, gắn nhãn BƠM HỒI · HƯỚNG TỚI CỤM TRÊN. Ghi MARK lúc quét, mép vừa vượt, số cụm còn chưa chạm, mép gần để chạm, mép xa để vượt, phần trăm từ MARK và điểm đồng thuận. Hai mốc là mức giá quan sát, không phát sinh tin bổ sung hoặc tự xác nhận đã đạt. Dùng cùng cơ chế chống trùng/cooldown của sweep partial và webhook partial, một POST. Chỉ phân loại quan sát; không tạo gate LONG/SHORT, không đổi size/leverage/entry/SL/TP, full-sweep hay whitelist/card.
+
+JSON delivery thêm upperReboundWatch tùy chọn gồm version, eventId, symbol, asOf, mark, clearedEdge, remainingCount, target và cờ observeOnly/affectsOrders. API trả discordUpperReboundWatchVersion. Tin cũ thiếu field hiển thị như cũ và không phát lại. Phát lại formatter offline 12/12 cảnh báo REBOUND_BELOW_PEAK đã gửi trong snapshot hiện có khớp điều kiện; đây là độ phủ trong mẫu, không phải backtest lãi lỗ hay tỷ lệ đạt mục tiêu. PIEVERSEUSDT 11:23:04 VN, MARK 1.49746868, mép vừa vượt 1.49667526, cụm kế tiếp 1.51926617–1.54219807, +1,46% đến +2,99%, điểm 70,1. Mock kiểm POST một tin, route partial/full, bỏ tick đứt quãng, vùng tương lai/đã chạm, FIRST_PUSH và payload.
+
+
+Triển khai 2026-11-09 11:52 VN. Restart btc-liquidity-web, health 200, API trả HEATMAP_UPPER_REBOUND_WATCH_DISCORD_V1_20261109. Đối chiếu cấu hình webhook và Binance trước/sau khớp. Không có ca live mới tại mốc xác minh; đã kiểm nhãn qua replay và POST mock. Audit data/audits/heatmap-upper-rebound-watch-20261109/deployment.json.
+
+
+## 2026-11-09 · Discord Volume 1m liền mạch ghép Model 1/3 và cá voi
+
+RISING_VOLUME_MODEL13_WHALE_DISCORD_V1_20261109 chỉ bổ sung bối cảnh sau khi runner độc lập trả kết quả và notifier nhận đúng snapshot đầu đợt SUSTAINED 1m LONG/SHORT còn mới. Ledger RISING_VOLUME_1M_SUSTAINED_DISCORD_V1_20261008 giữ header. Dữ liệu Model 1/3 Binance local 24h/5m đồng bộ, MARK đủ, Model 3 OI ≥95%, ba profile dùng đồng thuận hiện có, mốc model không sau nến 1m tín hiệu và tối đa cũ 7 phút. Giá tham chiếu là giá đóng 1m gốc. Dùng nến 1m đã đóng liên tục từ mốc model tới tín hiệu để tránh đề xuất cụm đã chạm theo biên nến; không dùng nến tương lai. Hiển thị cụm gần trên/dưới, hai mép, khoảng cách, điểm đồng thuận và điểm tương đối ±5%. Cụm là ước lượng.
+
+PumpGlass dùng journal và provider SweepPositionAnalysis hiện có, độ tuổi nguồn tối đa 15 phút, ≥10 cá voi, hiển thị LONG/SHORT của cá voi, Smart, đám đông, thay đổi khoảng 1h và top tài khoản Binance khi đủ. Ghi rõ snapshot nào bot đọc trước hay sau lúc đóng nến tín hiệu; position chỉ làm bối cảnh lúc gửi, có thể sau thời điểm entry. Hai nhóm cùng ≥60% về một phía mới coi là cùng nghiêng. Cùng hướng khi cá voi và Smart nghiêng theo tín hiệu, điểm model cùng phía cao hơn và còn cụm chưa chạm cùng phía. Trái chiều nếu vị thế cùng nghiêng hướng ngược hoặc điểm model dày hơn phía đối diện. Thiếu hiển thị rõ phần thiếu; còn lại Chờ thêm. Không diễn giải thành xác suất thắng. Màu embed vẫn theo chiều LONG/SHORT, nhãn bối cảnh nằm riêng trong embed.
+
+Dùng cache và giới hạn refresh Model 1/3 dùng chung với nhánh gần vùng, tối đa 6 lượt refresh ứng viên/phút và qua Binance rate gate. Position dùng provider đã có budget, không quét toàn thị trường từ notifier. Thu thập tối đa 2,4 giây và trả phần đã có; notifier có trần 2,8 giây. Provider lỗi/thiếu vẫn gửi. Lưu snapshot context và payload đã dựng trước POST để 429 retry dùng đúng nội dung, giữ cơ chế chống trùng và bất định. API Discord thêm contextVersion. JSON cũ không có context vẫn đọc và không phát lại. Không thay detector, entry, size, leverage, SL/TP, rule ratio, webhook, Push hay WHITELIST. Không thêm card thống kê. Chưa backtest lợi thế của nhãn ghép.
+
+Kiểm tra mock hai phía, trường hợp trái chiều/thiếu, nguồn cũ/sai mốc, loại cụm đã chạm, một lần gửi, không chặn khi provider lỗi, hồi quy notifier/gate ratio/model. Harness test-rising-volume-binance.mjs còn dừng tại SELL_FLOW_SOURCE không được khai báo trong VM mock của đoạn executePlaceOrder; đoạn giao dịch đó không thuộc thay đổi.
+
+
+Triển khai 2026-11-09 14:48 VN. Restart btc-liquidity-web, health 200, /api/rising-volume trả contextVersion RISING_VOLUME_MODEL13_WHALE_DISCORD_V1_20261109 và ledger cũ đọc bình thường. So sánh hash .env, rule entry và controls trước/sau khớp. Chưa có tin Volume 1m mới ở mốc xác minh live. Audit data/audits/rising-volume-context-20261109/deployment.json.
+
+
+## 2026-11-09 · Backtest Volume 1m ghép cá voi/Model 1/3 và sửa hợp đồng dữ liệu model
+
+RISING_VOLUME_CONTEXT_RESEARCH_V1_20261109 / RISING_VOLUME_MODEL13_WHALE_DISCORD_V1_20261109. Dùng 376 cảnh báo Discord 1m liền mạch đã SENT trong 72h đến 14:55 VN. 331 tin/184 coin đủ 8h. Mốc vào đầu nến 5m kế sau receipt, LONG/SHORT 3×, TP5/SL20 ROE trước phí, 8h, phí/trượt 0,14% notional cộng funding lịch sử. Dữ liệu trước mốc nến tín hiệu: Model 1/3 tái dựng 36h giá/MARK/OI đến mốc 5m gần nhất, nến 1m đã đóng để loại vùng chạm và journal PumpGlass đã được bot quan sát trước/đúng mốc đóng, tuổi ≤15m. Thiếu snapshot không lấy tỷ trọng hiện tại. Code gốc phân loại theo hai nhóm nghiêng ≥60%, điểm cụm ±5% và target. Mẫu không đo phần snapshot đọc sau tín hiệu trong live.
+
+Trong 108 ca đủ nguồn, Cùng hướng 26 ca/20 TP/0 SL, ROE ròng +2,53%; Trái chiều 63/26 TP/9 SL, −2,62%; Chờ thêm 19/13 TP/2 SL, +0,01%. Toàn 331 ca −0,36%. 223 thiếu cá voi đúng mốc không đánh giá được phối hợp. Cùng hướng LONG 4/4 TP, +4,57%, SHORT 16/22 TP, +2,16%. Lọc cá voi riêng 44 ca +1,87%, Model riêng 59 ca −0,01% trên cùng mẫu. Sau dedup 8h/coin Cùng hướng 19 ca +2,96%, Trái chiều 44 ca −2,36%. Chỉ một tin PASS ratio và trạng thái đã có vị thế, không đủ suy hiệu quả lệnh thật. Chi tiết, raw, manifest và validation tại data/research/rising-volume-context-20261109.
+
+Phát hiện bộ build compact buildBinanceHeatmapProfiles thiếu inputs.markCoveragePct/oiCoveragePct và high/low nến cuối nên bộ đánh giá hợp lệ từ chối toàn bộ 108 mẫu compact lần chạy đầu. Bổ sung các field từ cùng quá trình mô phỏng để tương đương bản chart đầy đủ, giữ nguyên tính vùng và định dạng tương thích của field cũ. Test compact/full parity và loader → evaluator PASS, rerun 108/108 dựng được model. Restart web để nạp bản sửa. Không đổi detector, gate, size, leverage, SL/TP, webhook, entry, ledger header hay whitelist. Phiên bản raw/JSON cũ vẫn đọc bình thường, các field mới là bổ sung trong model được dựng khi chạy.
+
+
+
+## 2026-11-09 · Binance MARKET Volume 1m Cùng hướng · 2 USDT
+
+RISING_VOLUME_1M_ALIGNED_MARKET_2USDT_3X_TP5_SL20_V1_20261109. Hai công tắc riêng LONG/SHORT ở Quản lý Binance, source rising-volume-sustained-1m, stream closed-1m-sustained-aligned, labels RISING_VOLUME_1M_SUSTAINED_ALIGNED_LONG/SHORT. Mặc định OFF khi seed. Theo yêu cầu user bật cả hai trên máy đang chạy; giữ master và hai công tắc ratio gốc. Nhánh ratio cũ dùng logic cũ; khi đã có yêu cầu Binance hoặc kết quả không chắc chắn cho cùng event thì nhánh Cùng hướng bỏ qua.
+
+Nhận snapshot gốc SUSTAINED 1m đầu đợt. Cùng hướng từ cá voi/Smart mỗi nhóm ≥60% theo chiều signal, nguồn PumpGlass <=15m và bot đã quan sát không sau mốc đóng nến. Model 1/3 chốt trước hoặc đúng mốc 5m <=7 phút, MARK/OI đủ, cùng phía điểm cao hơn và còn cụm chưa chạm trong ±5%. Cùng hướng chỉ xác định sau khi gửi thì chỉ hiển thị. Khi đủ bối cảnh trước nến, dùng cùng nhận định đó trong Discord và proof entry. Sau khi Discord xác nhận đã gửi, chờ đầu nến 5m tiếp theo như backtest. Receipt phải trong 70s từ nến tín hiệu, cửa sổ gửi lệnh 20s kể từ mốc 5m. Proof bám event ID, symbol, side, giá đóng, mốc model/position, thời gian nhận tin, hai mép vùng. Không replay lịch sử hoặc lịch đã mất khi restart; khóa theo lúc bật và lúc runner khởi động.
+
+MARKET 2 USDT margin ×3, mục tiêu notional 6 USDT, TP +5% ROE, SL −20% ROE neo giá khớp. Dùng lệch giá tối đa 0,5%, lot-size/min-notional, kiểm hỗ trợ MARKET/STOP_MARKET/TAKE_PROFIT_MARKET và skip nếu khối lượng không đủ. Không làm tròn lên để vượt quy mô, không DCA khi đang có vị thế hay lệnh mở chờ cùng coin. Dùng cap chung của runner, kiểm runtime/route/protection trước khi gửi. Dùng cùng server-only authorizer và đường thực thi Binance; dự trữ durable trước POST. Audit lưu risingVolumeAlignedProof; ledger giữ header, có thêm key <event>|aligned và clientOrderId dùng chung identity với nhánh cũ để chống trùng. Exact plan recovery theo clientOrderId/orderId, không phát lại MARKET. Vị thế cũ giữ dữ liệu bảo vệ cũ. Live dùng TP/SL; 8h là cửa sổ chốt thống kê backtest. Không thêm card/whitelist, công tắc trực tiếp riêng cho lệnh được yêu cầu.
+
+Nghiên cứu gần nhất: 26 ca Cùng hướng, 20 TP và +2,53% ROE. Áp lệch giá 0,5% còn 20/26, 14 TP và +1,91%; với filter quy mô 6 USDT dùng exchangeInfo hiện tại còn 19/20, 13 TP và +1,76%. Đây là mô phỏng, chưa có fill thật của nhánh mới. Kiểm thử mock hai hướng, độ tuổi/tamper, quy mô, không đúp, no ratio IO, audit/protection recovery. Trạng thái route và kiểm tra triển khai lưu data/audits/rising-volume-aligned-binance-20261109.
+
+
+Đã bật hai route aligned mới 15:26:56 VN. Dịch vụ health 200, API rising-volume đọc hai route ON, 2 USDT mỗi phía, runtime Binance ON. Trước/sau giữ trạng thái và enabledAt của các route cũ; .env khớp. Chưa có attempt aligned tại mốc xác minh. Audit activation.json trong data/audits/rising-volume-aligned-binance-20261109.
+
+## 2026-11-10 · Màu Discord cho nhóm SHORT quy mô lớn vừa bơm
+
+`PUMPGLASS_DOMINANCE_RECENT_PUMP_COLOR_V1_20261110` dùng cache nến Binance 5m đã đóng trước lúc gửi. Cảnh báo SHORT >70% của cả Cá voi và Smart đã đạt quy mô lớn theo cap đổi viền sang xanh cyan khi đỉnh 60 phút cao hơn giá đóng đầu khung ≥5%. Cảnh báo ghi mức bơm, mốc nến và lưu `recentPump` tùy chọn. Giữ schema JSON, lịch sử và cooldown. Dữ liệu thiếu dùng màu tier. Backtest 09–10/11 ghi nhận 2/228 mẫu đủ cửa sổ đạt ngưỡng và cả hai chạm TP mô phỏng. Đây là màu quan sát. Không thêm thống kê live, WHITELIST hoặc thay Binance, entry, size, SL, TP.
+
+## 2026-11-10 · Gửi thêm Discord cho Gần vùng LONG · Lực mua + Volume mạnh
+
+`PUMP_TURN_STRONG_LONG_DISCORD_ROUTE_V1_20261110` dùng snapshot `STRONG_BUY` lúc phát. Điều kiện trên nến 5 phút đã đóng gồm tăng 1 giờ ≥4% và <10%, mua chủ động 15 phút ≥55% và volume 3 nến ≥2× nền 20 nến, cùng trạng thái giá gần hoặc trong vùng của cảnh báo gốc. Gửi một bản sao cùng nội dung vào webhook tùy chọn. Kết quả đích mới ghi riêng trong delivery và không tính thêm mẫu thống kê. Không thay schema hoặc phát lại JSON cũ. Chỉ thay định tuyến Discord, không ảnh hưởng Binance, entry, size, SL, TP hoặc WHITELIST.
+
+## 2026-11-10 · Gửi thêm Discord cho Gần vùng SHORT · Lực bán + Volume mạnh
+
+`PUMP_TURN_STRONG_FLOW_DISCORD_ROUTE_V2_20261110` thêm SHORT vào cùng kênh bổ sung của LONG. SHORT dùng proof đóng nến 5 phút và giá live của tin gốc, bối cảnh `SELL_PRESSURE` hoặc `MIXED`, bán chủ động 15 phút ≥55%, volume 3 nến ≥2× nền 20 nến. Nhóm giảm từ đỉnh ≥10% không vào kênh bổ sung. Ghi tỷ trọng bán và kết quả gửi SHORT riêng trong JSON, không thay trạng thái gửi gốc hay tạo mẫu thống kê. Cooldown, JSON cũ và nhánh LONG tiếp tục tương thích. Không phát lại, không đổi Binance, entry, size, SL, TP hay WHITELIST.
+
+## 2026-11-10 · MARKET LONG 5 USDT cho Gần vùng LONG · Lực mua + Volume mạnh
+
+`PUMP_TURN_NEAR_LONG_STRONG_BUY_5USDT_3X_TP5_SL20_V1_20261110` thêm route LONG riêng. Chỉ xét `STRONG_BUY` trước nến xác nhận sau mốc bật/khởi động. Bằng chứng gồm 72 nến 5m đã đóng và giá live. Phải tăng 4% đến dưới 10%/1h, mua chủ động ≥55%, volume ≥2×, còn gần/trong vùng và giá hợp lệ lúc đặt. MARKET 5 USDT ký quỹ ×3, TP +5% ROE và SL −20% ROE neo giá khớp, max riêng 20. Dùng bảo vệ lệnh, chống trùng, tắt/bật và audit Binance sẵn có, không thêm card thống kê hoặc WHITELIST. Ledger LONG riêng, không replay JSON cũ, giữ tương thích lệnh và dữ liệu SHORT.
+
+## 2026-11-10 · Gần vùng LONG nhận giá thấp hơn còn trong phạm vi
+
+`PUMP_TURN_NEAR_LONG_PRICE_UP_ONLY_V2_20261110` dùng Mark Price trước MARKET của snapshot LONG `STRONG_BUY` đã xác minh bằng nến đóng. Giới hạn 0,5% chỉ áp dụng khi giá tăng so với lúc báo hoặc lúc dựng plan. Giá giảm vẫn phải ở gần/trong vùng theo nearPct. Giữ tuổi, 5 USDT ×3, TP +5% / SL −20% ROE, route SHORT và thống kê từ fills. Ghi chi tiết giá khi lần dựng plan bị chặn. Không đổi schema, không phát lại JSON cũ.
+
+## 2026-11-10 · Gần vùng LONG chỉ xét MARKET bơm đầu, gửi riêng nhãn bơm hồi
+
+`PUMP_TURN_NEAR_LONG_FIRST_PUMP_24H_V1_20261110` dùng 288 nến 5m đóng và giá giao dịch lúc cảnh báo để phân biệt nhịp bơm. Chu kỳ trước là bơm ≥10%, điều chỉnh ≥5%, nhịp hồi ≥2%. Cảnh báo `STRONG_BUY` phải là bơm đầu trong cửa sổ 24h để xét MARKET. Discord vẫn báo nhịp hồi và mức đỉnh trước. Gate chỉ ảnh hưởng entry LONG, size 5 USDT ×3, TP +5% / SL −20% ROE và thống kê fills giữ cách hiện hành. Proof mới lưu nến để xác minh, bản ghi cũ tương thích với phục hồi bảo vệ, không cấp entry cũ hay phát lại.
+
+## 2026-11-10 · Khôi phục độ phủ nến cho cảnh báo Gần vùng hai phía
+
+`PUMP_TURN_5M_SHARED_CLOSED_CACHE_V3_20261110` dùng cache nến 5 phút đã đóng của PumpHigh khi cache chính cũ hoặc thiếu. Kiểm tra liên tục, tuổi nến và giữ yêu cầu giá live. Seed đánh dấu snapshot REST được yêu cầu trước giờ đóng là nến đang hình thành để vòng đọc sau đó không nhận nhầm là nến đóng. Dữ liệu dùng trước cảnh báo và entry. Giữ phân loại, thống kê Discord/fills, cooldown, Binance, size, SL/TP và tương thích JSON cũ.
+
+## 2026-11-11 · Sửa nhánh cảnh báo SHORT ngược LONG
+
+`PUMP_TURN_SHORT_FLOW_MIRROR_V1_20261111` bổ sung cảnh báo giảm từ 4% đến dưới10%/1h, bán≥55%, volume≥2× và giá gần đáy12 nến từ dữ liệu5m đã đóng cùng tick mới. Bỏ điều kiện pump15%/6h cho nhánh quan sát mới. Snapshot và cooldown riêng, gửi Discord hai đích. Không dùng sự kiện này cho Binance, entry, size, SL hoặc TP và không tạo thống kê fills/WHITELIST mới. JSON optional giữ tương thích lịch sử cũ.
+
+## 2026-11-11 · Phân tích Model1/3, LONG/SHORT và cá voi cho phá nền có xác nhận
+
+`RANGE_SWEEP_MODEL13_POSITION_WHALE_V1_20261111` bổ sung trường analysis cho DIRECTION_CONFIRMED. Model chốt trước tín hiệu, tỷ lệ vị thế top trễ≥5 phút, cá voi/Smart/đám đông và tài khoản top lấy bối cảnh mới lúc gửi có ghi mốc. Phân loại cùng hướng, trái chiều, chờ hoặc thiếu theo Model, ngưỡng cá voi+Smart60% và tỷ trọng vị thế top50%. Lookup giới hạn2,5 giây, giữ nguồn đã có khi nguồn khác chậm; lỗi vẫn gửi tin gốc. Thống kê gửi giữ một sự kiện mỗi tin, phân tích không phải kết quả giao dịch. Không tác động Binance/entry/size/SL/TP hay WHITELIST. JSON thêm trường tùy chọn và giữ lịch sử cũ.
+
+## 2026-11-11 · Entry retest ở đầu tin Discord phá nền
+
+RANGE_SWEEP_RETEST_ENTRY_V1_20261111: thêm giá entry tham khảo đầu description cho DIRECTION_CONFIRMED LONG/SHORT. Tính từ biên nền và0,25ATR đã biết trước tín hiệu; ưu tiên retest khi bối cảnh cùng hướng, chờ khi thiếu/trái chiều, hủy nếu trở lại nền/hết hạn và không đuổi quá1ATR. Ghi mốc giá lúc báo, điều kiện nến1m giữ vùng và mốc vô hiệu. Chưa backtest riêng, không ghi kế hoạch là fill hoặc kết quả trade. Chỉ Discord/JSON optional, không tác động Binance/size/SL/TP/WHITELIST; JSON cũ không tự thêm entry và không replay.
+
+## 2026-11-11 · Tổng hợp quyết định gửi phá nền, thay chế độ chỉ bổ sung thông tin
+
+RANGE_SWEEP_COMBINED_SEND_GATE_V1_20261111 bật filterConfirmed tại runtime. DIRECTION_CONFIRMED chỉ gửi khi Model1/3+cá voi+Smart+vị thế top đồng thuận, tài khoản top có dữ liệu không trái chiều; kiểm lại nến1m/volume/taker và MARK mới, còn≥0,25ATR đến cụm, không quay nền/đuổi quá1ATR/hủy nhịp. Thiếu -> WAIT, trái chiều/hỏng -> REJECT; lưu FILTERED và reason trước POST, giữ cooldown/no replay. Cá voi snapshot mới lúc gửi, Model và ratio pinned trước tín hiệu; không dùng dữ liệu sau thời điểm quyết định. Entry là retest tham khảo; chưa backtest hiệu quả riêng. Không tác động Binance/size/SL/TP hoặc WHITELIST; không tạo thống kê giao dịch/card mới. JSON assessment optional, giữ dữ liệu cũ.
+
+## 2026-11-11 · Cảnh báo SHORT sớm từ nến đang chạy
+
+PUMP_TURN_EARLY_SHORT_FORMING_V1_20261111: lớp quan sát trước SHORT_FLOW chuẩn. Dùng nến5m socket hiện tại≥60s/≥50k USDT, tốc độ volume≥2× nền20 theo elapsed, bán≥58%, thân0,35% và0,4–1,5ATR; giá chưa giảm4% theo mốc1h và còn gần hỗ trợ3 nến (≤0,5% trên/≤0,5ATR dưới). Duy trì≥2 lần quét≥10s và tick mới, báo cam cùng đích Discord, cooldown riêng1h, giới hạn2/vòng, bỏ tin quá20s/hết nến. Không thêm REST hoặc stream. Chưa có thống kê thắng thua/backtest intrabar, không suy snapshot cuối nến là dữ liệu đã biết sớm. shortFlowOnly chặn Binance; không đổi size/SL/TP/WHITELIST hoặc tạo card thống kê. JSON optional/no replay.
+
+## 2026-11-11 · Lệnh tay mới TP +10% ROE
+
+NEW_MANUAL_ENTRY_TP10_ROE_V1_20261111 theo người dùng xác nhận Tất cả lệnh tay mới. Central placeOrder ưu tiên TP10 cho phiên Orders xác thực, áp dụng LONG/SHORT MARKET/LIMIT và mọi trang/nút thủ công, gắn proof vào protection plan rồi neo lại theo giá khớp/đòn bẩy thực thi. Socket Binance chỉ áp dụng order có time tạo mới hơn activation cố định trong data/new-manual-tp-policy.json. TP vùng/EMA99 hoặc giá tùy nhập không ghi đè policy mới; không chia TP legs. Lệnh cũ/pending trước mốc/DCA giữ nguyên. Không thay bot TP5/leverage/size/SL, không đặt lệnh test hoặc chỉnh vị thế đang mở. JSON proof optional/no replay; thống kê fills thật, không tạo card hoặc WHITELIST.
+
+## 2026-11-11 · LONG SỚM từ nến đang chạy
+
+PUMP_TURN_EARLY_LONG_FORMING_V1_20261111 dùng volume theo thời gian ≥2× nền 20, taker mua ≥58%, nến chạy ≥60 giây và volume ≥50.000 USDT. Thân tăng ≥0,35% và trong 0,4–1,5 ATR, giá tăng dưới 4% theo mốc 1 giờ và còn sát kháng cự 3 nến. Hai lần quét cùng hướng cách ≥10 giây và có tick mới. Gửi màu xanh dương vào hai kênh hiện có, cooldown riêng 1 giờ. Số liệu là lịch sử cảnh báo, không tạo thống kê giao dịch hay WHITELIST. Chỉ quan sát và không tác động Binance, entry, size, SL, TP. JSON tùy chọn giữ được lịch sử cũ và không gửi lại khi khởi động.
+
+## 2026-11-11 · Liq Scan Volume lớn dừng gửi Discord
+
+LIQSCAN_SWEEP_VOLUME_WEBHOOK_ROUTING_V1_20260918 sử dụng `LIQ_SCAN_LARGE_VOLUME_DISCORD_ENABLED=false` trên máy đang chạy. Định tuyến theo vùng đã phát hiện và tier trước lệnh. Nhánh volume lớn được bỏ qua trước webhook và không tính vào số tin gửi. Không tác động Binance, entry, size, SL hoặc TP. Không đổi schema JSON.

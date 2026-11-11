@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {selectShortCohort,shortFeatures,shortSummary,CURRENT_ENTRY_VERSION} from './research-heatmap-short-context.mjs';
+const STEP=300000,at=3000001234,end=Math.floor(at/STEP)*STEP;
+const event={id:'upper',symbol:'TESTUSDT',kind:'ALL_TRACKED_UPPER_SWEPT',direction:'UPPER',at,armedAt:at-1000,referencePrice:100,markPrice:105,zones:[{low:102,high:104,overlapStrength:50}]};
+const record={symbol:'TESTUSDT',clientOrderId:'one',orderId:1,signalSource:'heatmap-full-sweep',direction:'SHORT',heatmapSweepAtEntry:event,heatmapSweepSignalId:'upper',heatmapSweepEntryVersion:CURRENT_ENTRY_VERSION,marginUsdt:5,positionStatus:'CLOSED',netRealizedPnlUsdt:1,realizedRoePct:20,filledAt:new Date(at).toISOString(),avgFillPrice:105.1,closeGroupId:'group'};
+const cohort=selectShortCohort({fills:{a:{record},duplicate:{record},other:{record:{...record,clientOrderId:'other',signalSource:'other'}},dca:{record:{...record,clientOrderId:'dca',orderId:2,isDca:true}}}},{attempts:{a:{symbol:'TESTUSDT',orderId:1,side:'SHORT',id:'upper'}}});
+assert.equal(cohort.included.length,1);assert.equal(cohort.excluded.length,2);assert(cohort.included[0].mixedClose);
+assert.equal(selectShortCohort({fills:{a:{record:{...record,heatmapSweepAtEntry:{...event,kind:'ALL_TRACKED_LOWER_SWEPT',direction:'LOWER'}}}}},{attempts:{}}).included.length,0);
+const coin=Array.from({length:242},(_,i)=>{const t=end+(i-240)*STEP,p=100+i*.1;return [t,p,p+2,p-1,p+.5,100,t+STEP-1,1000,1,50,500];}),series=Array.from({length:26},(_,i)=>({timestamp:end+(i-25)*STEP,longShortRatio:2,longAccount:2/3,shortAccount:1/3,sumOpenInterest:1000+i}));
+const f=shortFeatures({record,coin,btc:coin,ratio:series,oi:series});assert(Math.abs(f.overshootPct-(105/104-1)*100)<1e-10);assert(Math.abs(f.armRisePct-5)<1e-10);assert.equal(f.armDropPct,undefined);assert.equal(f.lastClosedUpperWickPct,50);assert(f.coin.lastClosedAt<at);assert(f.ratio.assumedAvailableAt<=at);assert.equal(f.relative1h,0);
+const future=structuredClone(coin);future.at(-1)[2]=999999;future.at(-1)[4]=999999;assert.deepEqual(shortFeatures({record,coin:future,btc:coin,ratio:series,oi:series}),f,'future cannot repaint short extrema/indicators');
+const r={record:{...record,mixedClose:false},features:f},loss={record:{...record,netRealizedPnlUsdt:-1,realizedRoePct:-20,mixedClose:false},features:{...f,ratio:null}},legacy={record:{...record,marginUsdt:3,heatmapSweepEntryVersion:'legacy',mixedClose:false},features:f},mixed={record:{...record,mixedClose:true},features:f},open={record:{...record,positionStatus:'OPEN',netRealizedPnlUsdt:null,mixedClose:false},features:f};
+const s=shortSummary([r,loss,legacy,mixed,open],[r,loss,legacy,mixed,open].map(r=>r.record));assert.equal(s.primary.closed,2);assert.equal(s.primary.net,0);assert.equal(s.legacy3.closed,1);assert.equal(s.all.closed,4);assert.equal(s.all.open,1);
+for(const g of s.factors)assert.equal(g.groups.reduce((n,r)=>n+r.closed,0),2);
+const ratioCandidate=s.candidates.find(r=>r.id==='RATIO_NOT_FALLING');assert.equal(ratioCandidate.missing.closed,1);assert.equal(ratioCandidate.pass.closed,1);assert.equal(ratioCandidate.fail.closed,0);
+console.log('PASS SHORT research: exact upper ledger/noDCA/dedupe/mixed, upper edge overshoot/rise/wick signs, no future data, current5 versus legacy3/OPEN split, missing ratio and partitions.');

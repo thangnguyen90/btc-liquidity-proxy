@@ -11,7 +11,7 @@ import {
 } from '../src/otherEntryCatalog.js';
 
 assert.equal(OTHER_ENTRY_SETTINGS_VERSION, 'OTHER_ROUTE_EDITABLE_MARGIN_LEVERAGE_TP_V19_LOCAL_AI_PRIORITY_ZONE_1USDT_20261003');
-assert.equal(OTHER_ENTRY_CATALOG.length, 36);
+assert.equal(OTHER_ENTRY_CATALOG.length, 37);
 assert.ok(OTHER_ENTRY_CATALOG.every((route) => otherRouteMeta(route)));
 assert.deepEqual(OTHER_ENTRY_CATALOG
   .filter((route) => route.source === 'post-move-impulse')
@@ -154,4 +154,4 @@ try {
   await rm(dir, { recursive: true, force: true });
 }
 
-console.log('Other entry settings PASS: 36 exact routes, editable margin/leverage/fixed TP, dynamic Horizon TP, stale-save, fail-closed and restart.');
+console.log('Other entry settings PASS: 37 exact routes, editable margin/leverage/fixed TP, dynamic Horizon TP, stale-save, fail-closed and restart.');

@@ -1,3 +1,6 @@
+import {describeExtremeRebound} from './extremeReboundSweepDiscord.js';
+import {sweepPositionFields,SWEEP_POSITION_VERSION} from './heatmapSweepPositionAnalysis.js';
+
 export const EXTREME_SHORT_SQUEEZE_VERSION = 'EXTREME_SQUEEZE_SAGA_15M_CLOSED_FOLLOW_SHORT_V6_20260926';
 export const EXTREME_SHORT_SQUEEZE_DISCORD_VERSION = 'EXTREME_SQUEEZE_DISCORD_HEATMAP_LINK_V1_20261022';
 export const EXTREME_SHORT_SQUEEZE_RULE = Object.freeze({
@@ -181,7 +184,10 @@ export function detectExtremeShortSqueeze(rows, {symbol, interval, now=Date.now(
         (kind==='EXTREME_PUMP'&&closed)||(kind==='FOLLOW_REJECTION'&&!closed)
         ||(kind==='PEAK_ZONE_SHORT_WATCH'&&!closed)
       ))||sagaClosedFollowEligible;
+      const reboundContext=interval==='5m'&&stage==='EXTREME_PUMP_CLOSED'
+        ?describeExtremeRebound(pre,spike):null;
       events.push({version:EXTREME_SHORT_SQUEEZE_VERSION,observeOnly:!binanceEligible,binanceEligible,symbol,interval,
+        ...(reboundContext?{reboundContext}:{}),
         side:'UPWARD_SPIKE',stage,kind,closed,followBars,
         generatedAt:new Date(now).toISOString(),observedAt:now,liveUpdatedAt:closed?null:liveUpdatedAt,
         candleAt:spike.openTime,candleCloseAt:spike.closeTime,evaluatedCandleAt:bar.openTime,evaluatedCloseAt:bar.closeTime,
@@ -248,6 +254,40 @@ const STYLES={
   PEAK_ZONE_SHORT_WATCH:{color:0xff7a00,title:'VÙNG GẦN ĐỈNH · SHORT SỚM CÓ XÁC NHẬN',note:'Nến bơm đang chạy đã lùi 15–25% nhịp open→high, còn cách high tối đa 2% và rolling high không tăng ít nhất 15 giây.'},
   FIRST_PUMP_FLUSH_RECLAIM_LONG:{color:0x06b6d4,title:'BƠM LẦN ĐẦU → XẢ HẤP THỤ · LONG WATCH',note:'Cú bơm đầu tiên thoát nền, nhịp xả nhanh giữ đáy cấu trúc và đóng reclaim. Chờ vùng pullback; không mua đuổi.'},
 };
+export const EXTREME_PUMP_POSITION_DISCORD_VERSION='EXTREME_PUMP_POSITION_COLOR_V1_20261109';
+const POSITION_STYLES={
+  LONG:{icon:'🟢',color:0x10b981,title:'CÁ VOI + SMART NGHIÊNG LONG'},
+  SHORT:{icon:'🔴',color:0xef4444,title:'CÁ VOI + SMART NGHIÊNG SHORT'},
+  MIXED:{icon:'🟡',color:0xf59e0b,title:'CÁ VOI + SMART CHƯA CÙNG NGHIÊNG ≥60%'},
+  MISSING:{icon:'⚪',color:0x64748b,title:'CHƯA ĐỦ DỮ LIỆU CÁ VOI + SMART'},
+};
+const isShare=value=>Number.isFinite(value)&&value>=0&&value<=100;
+
+function extremePumpPositionPresentation(event) {
+  const {positionAnalysis,topPosition}=event;
+  const context=positionAnalysis?.symbol===event.symbol&&positionAnalysis.version===SWEEP_POSITION_VERSION
+    ?positionAnalysis:null;
+  const point=context?.point;
+  let state='MISSING';
+  if(point&&isShare(point.whaleLong)&&isShare(point.smartLong)) {
+    state=point.whaleLong>=60&&point.smartLong>=60?'LONG'
+      :point.whaleLong<=40&&point.smartLong<=40?'SHORT':'MIXED';
+  }
+  const style=POSITION_STYLES[state];
+  const ratios=sweepPositionFields(context)[0];
+  const validTop=Number.isFinite(topPosition?.longPosition)&&isShare(topPosition.longPosition*100)
+    &&Number.isFinite(topPosition.timestamp)&&topPosition.timestamp<=topPosition.fetchedAt
+    &&topPosition.fetchedAt<=context?.at&&context.at-topPosition.timestamp<=30*60_000;
+  const topLine=validTop
+    ?'Top Binance (vị thế 15m): '+(topPosition.longPosition*100).toFixed(1)+'% LONG / '
+      +((1-topPosition.longPosition)*100).toFixed(1)+'% SHORT · '+vn(topPosition.timestamp)+' VN.'
+    :'Top Binance (vị thế 15m): chưa có cache mới.';
+  return {...style,field:{...ratios,value:[
+    '**'+style.title+'**',ratios.value,topLine,
+    'Màu theo tỷ trọng vị thế cá voi và Smart lúc gửi. Đám đông và Top Binance dùng để đối chiếu.',
+  ].join('\n')}};
+}
+
 export function extremeShortSqueezePayload(e) {
   const s=STYLES[e.kind];
   const heatmap={name:'HEATMAP MODEL 1 / 3',value:`[Mở hai model đúng coin · 24h](https://liquidity.nhathadev.trade/coinglass-heatmap-lab?symbol=${encodeURIComponent(e.symbol)}&range=24h)`};
@@ -273,17 +313,22 @@ export function extremeShortSqueezePayload(e) {
   const executionText=e.binanceEligible===true
     ? `SHORT thử nghiệm Binance: **$${margin} margin × 5x** khi route đang ON, tín hiệu còn mới và mark còn sát giá đánh giá.${execution?` Kết quả: **${String(execution.status??'unknown').toUpperCase()}**${execution.code?` · ${execution.code}`:''}.`:''}`
     : 'Cảnh báo quan sát; không tự đặt lệnh Binance.';
+  const position=e.kind==='EXTREME_PUMP'?extremePumpPositionPresentation(e):null;
   return {username:'Extreme Short Squeeze',allowed_mentions:{parse:[]},embeds:[{
-    title:`⚡ ${e.symbol} · ${e.interval} · ${s.title}`,color:s.color,
+    title:`${position?.icon??'⚡'} ${e.symbol} · ${e.interval} · ${s.title}`,
+    color:position?.color??s.color,
     description:`**${e.closed?'NẾN ĐÃ ĐÓNG':'NẾN ĐANG CHẠY — CÓ THỂ THAY ĐỔI'}**\n${s.note}\n${executionText} “Kill short” là mô tả hình thái giá, chưa xác minh thanh lý thực tế.`,
     fields:[
       {name:'ĐỘ LỚN NẾN BƠM',value:`Open → high **+${e.pumpPct.toFixed(2)}%** · so với close trước **+${e.fromPriorPct.toFixed(2)}%**\nNhịp tăng **${e.spikeAtr.toFixed(2)}× ATR14** trước nến · volume **${e.volumeRatio.toFixed(2)}× MA20** trước nến\nKhối lượng ${e.quoteEstimated?'ước tính tối thiểu ':''}**${Math.round(e.quoteVolume).toLocaleString('en-US')} USDT**`},
       {name:'GIÁ / RÂU NẾN',value:`Giá mở ${num(e.spikeOpen)} · đỉnh **${num(e.spikeHigh)}** · đáy spike ${num(e.spikeLow)}\nGiá tại đánh giá **${num(e.price)}** · thấp nhất đã thấy ${num(e.observedLow)}\nRâu trên nến spike ${e.upperWickPct.toFixed(1)}% · trả lại nhịp tăng ${e.retracePct.toFixed(1)}%${e.kind==='PEAK_ZONE_SHORT_WATCH'?` · cách high ${e.distanceFromHighPct.toFixed(2)}% · high đứng ${Math.floor(e.peakStableMs/1000)}s`:''}`},
+      ...(position?[position.field]:[]),
+      ...(e.reboundContext?[{name:'NẾN HỒI SAU XẢ',value:'Đã đóng nến hồi sau nhịp giảm '
+        +e.reboundContext.dropPct.toFixed(2)+'%. Xác nhận quét cụm trên được gửi riêng khi có MARK vượt cụm Model 1/3.'}]:[]),
       {name:'BỐI CẢNH 20 NẾN TRƯỚC',value:`Đỉnh ${num(e.priorHigh)} · đáy ${num(e.priorLow)} · biên độ ${e.priorRangePct.toFixed(2)}%\nĐo biến động theo nến; không dùng % tăng giảm 24h để xác nhận.`},
       {name:'THỜI ĐIỂM (VIỆT NAM)',value:`Nến bơm mở ${vn(e.candleAt)}\nĐánh giá ${vn(e.observedAt)}${e.followBars?` · nến thứ ${e.followBars} sau spike`:''}\n${e.stage}`},
       {name:'MỞ BIỂU ĐỒ',value:`[Binance](https://www.binance.com/en/futures/${encodeURIComponent(e.symbol)})`},
       heatmap,
-    ],timestamp:e.generatedAt,footer:{text:`${EXTREME_SHORT_SQUEEZE_VERSION} · ${EXTREME_SHORT_SQUEEZE_DISCORD_VERSION}`},
+    ],timestamp:e.generatedAt,footer:{text:`${EXTREME_SHORT_SQUEEZE_VERSION} · ${EXTREME_SHORT_SQUEEZE_DISCORD_VERSION}${position?' · '+EXTREME_PUMP_POSITION_DISCORD_VERSION:''}`},
   }]};
 }
 

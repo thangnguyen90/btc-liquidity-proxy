@@ -170,6 +170,11 @@ for(const sample of [upper,lower,referenceEvent,{...referenceEvent,side:'LOWER'}
   let posts=0,ack=0;
   await deliverLiqScanSweepDiscord(eligible,{notify:async()=>{posts++;return {sent:1};}}, {acknowledge:()=>ack++});
   assert.equal(posts,1);assert.equal(ack,1);
+  const disabled = await deliverLiqScanSweepDiscord(eligible,
+    { notify: async () => { throw new Error('Disabled delivery must not call the webhook'); } },
+    { acknowledge: () => ack++ }, { enabled: false });
+  assert.deepEqual(disabled, { sent: 0, reason: 'discord_disabled' });
+  assert.equal(ack, 2, 'Disabled events are consumed without replay');
   ack=0;
   await deliverLiqScanSweepDiscord(eligible,{notify:async()=>({sent:0,reason:'backoff'})},{acknowledge:()=>ack++});
   assert.equal(ack,0);

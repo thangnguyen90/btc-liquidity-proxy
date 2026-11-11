@@ -1,3 +1,6 @@
+import {SELL_FLOW_SOURCE} from '../src/pumpSqueezeSellFlowBinance.js';
+import {resolveFrozenNewBotTakeProfit} from '../src/newBotTakeProfitPolicy.js';
+import {newEntrySizing,NEW_ENTRY_LEVERAGE_VERSION} from '../src/newEntryLeveragePolicy.js';
 import assert from 'node:assert/strict';
 import {mkdtemp,readFile,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -6,7 +9,7 @@ import vm from 'node:vm';
 import {PROFILE_RATIO} from '../src/heatmapEntryScenarios.js';
 import {HeatmapSweepWatch,prepareHeatmapSweepCohort,HEATMAP_SWEEP_VERSION} from '../src/heatmapSweepWatch.js';
 import {HeatmapSweepBinanceRunner,HEATMAP_SWEEP_SOURCE,HEATMAP_SWEEP_ROUTES,HEATMAP_SWEEP_ENTRY_VERSION,HEATMAP_SWEEP_LEGACY_ENTRY_VERSION,HEATMAP_SWEEP_PREVIOUS_ENTRY_VERSION,HEATMAP_SWEEP_PRICE_GUARDED_ENTRY_VERSION,heatmapSweepRouteKey,
- validHeatmapSweepSignal,buildHeatmapSweepOrder,validHeatmapSweepOrder,heatmapSweepOpenSlots} from '../src/heatmapSweepBinance.js';
+ validHeatmapSweepSignal,buildHeatmapSweepOrder,validHeatmapSweepOrder,heatmapSweepOpenSlots,heatmapLongQualityMode} from '../src/heatmapSweepBinance.js';
 import {AutoEntryControls} from '../src/autoEntryControls.js';
 import {authorizeHeatmapSweepOrder,evaluateAutoBinanceEntryPolicy} from '../src/autoBinancePolicy.js';
 import {heatmapSweepDiscordPayload} from '../src/heatmapSweepDiscord.js';
@@ -15,6 +18,11 @@ import {resolveFillAnchoredProtectionPrices,resolveSignalProtectionWorkingTypes}
 import {buildClosePositionProtectionParams,BINANCE_CLOSE_POSITION_PROTECTION_VERSION} from '../src/binanceClosePositionProtection.js';
 import {hasOpenProtectionOrder} from '../src/protectionOrderGuard.js';
 import {buildBinanceFilledSignalAuditRecord} from '../src/binanceFilledSignalAudit.js';
+import {HeatmapSecondSweepTracker} from '../src/heatmapSecondSweep.js';
+import {SECOND_SWEEP_LABEL} from '../public/heatmap-second-sweep-model.js';
+import {LONG_QUALITY_LABELS,longQualityKey} from '../public/heatmap-long-quality-model.js';
+import {evaluateHeatmapLongQuality} from '../src/heatmapLongQuality.js';
+import {longQualityInputs} from './fixtures-heatmap-long-quality.mjs';
 const STEP=300000,base=Math.floor(Date.now()/STEP)*STEP,start=base+1000;
 let now=base+5000;
 const fixture=(symbol='TESTUSDT')=>{const d={symbol,source:'BINANCE_LOCAL',range:'24h',step:STEP,end:base,candles:[{time:base-STEP,close:100}],
@@ -130,21 +138,71 @@ for(const e of events){let saved,submits=0;const opts={controls,now:()=>now,star
 }
 // Execute actual production MARKET prefix with mocked exchange IO in both directions.
 const server=await readFile('src/server.js','utf8'),a=server.indexOf('async function executePlaceOrder('),z=server.indexOf('\n  // LIMIT IOC:',a);
-const constants={PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE:'structure-setup-ready',RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual'};
-function harness(p,{positions=others,orders=[],excluded=false,active=true,firstMark=p.signalEntryPrice,finalMark=p.signalEntryPrice,types=null,minimum=false,auditFills={},attempts={},latestFills=null}={}){
+const {blocksUpperMomentumEntry}=await import('../src/heatmapUpperMomentumEntryGuard.js');
+const {blocksLowerMomentumEntry}=await import('../src/heatmapLowerMomentumEntryGuard.js');
+const {evaluateLowerMomentum}=await import('../src/heatmapLowerMomentum.js');
+const {lowerMomentumInputs}=await import('./fixtures-heatmap-lower-momentum.mjs');
+const {evaluateUpperMomentum}=await import('../src/heatmapUpperMomentum.js');
+const constants={isExtremeReboundSweepOrder:()=>false,PUMP_TURN_NEAR_LONG_SOURCE:'pump-turn-near-long',newManualTakeProfitPolicy:{preview:()=>null},resolveFrozenManualTakeProfit:()=>null,slTracking:{positions:{}},SELL_FLOW_SOURCE,resolveFrozenNewBotTakeProfit,newBotTakeProfitLedger:{preview:()=>null},currentNewBotTpProof:()=>null,blocksUpperMomentumEntry,heatmapLongQualityMode,longQualityKey,heatmapLongQualityGate:async()=>({allowed:false}),SECOND_SWEEP_LABEL:'SECOND_UPPER_BELOW_PEAK',heatmapSecondSweepGate:async()=>({allowed:false}),PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE:'structure-setup-ready',RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual'};
+function harness(p,{positions=others,orders=[],excluded=false,active=true,firstMark=p.signalEntryPrice,finalMark=p.signalEntryPrice,types=null,minimum=false,auditFills={},attempts={},latestFills=null,secondGate=async()=>({allowed:false}),qualityGate=async()=>({allowed:false}),momentumGuard=blocksUpperMomentumEntry,lowerGuard=blocksLowerMomentumEntry,policy=null}={}){
  const placed=[],audits=[],plans=[];
  const execution=vm.runInNewContext(server.slice(a,z)+'\nreturn {orderResult,plannedOrder};\n}\nexecutePlaceOrder',{
-  ...constants,ordersTokens:new Map(),runtimeSettings:{orderEnabled:true,dryRun:false},heatmapSweepWatch:{error:null,isCurrentFullSweep:()=>active},heatmapSweepOpenSlots,heatmapSweepRunner:{error:null,state:{attempts}},
-  autoEntryControls:{assertEntry:x=>controls.assertEntry(x),isProtectionExcluded:()=>excluded},normalizeSymbol:s=>s,isBinanceProtectionExcluded:()=>excluded,
+  activeNewEntryPolicy:()=>policy,newEntrySizing,...constants,blocksUpperMomentumEntry:momentumGuard,blocksLowerMomentumEntry:lowerGuard,heatmapLongQualityGate:qualityGate,heatmapSecondSweepGate:secondGate,ordersTokens:new Map(),runtimeSettings:{orderEnabled:true,dryRun:false},heatmapSweepWatch:{error:null,isCurrentFullSweep:()=>active},heatmapSweepOpenSlots,heatmapSweepRunner:{error:null,state:{attempts}},
+  autoEntryControls:{read:()=>controls.read(),assertEntry:x=>controls.assertEntry(x),isProtectionExcluded:()=>excluded},normalizeSymbol:s=>s,isBinanceProtectionExcluded:()=>excluded,
   shortStopLossSuppression:(side,source)=>({suppressed:shouldSuppressBotShortStopLoss({side,source})}),resolveSignalProtectionWorkingTypes,resolveFillAnchoredProtectionPrices,
   evaluateAutoBinanceEntryPolicy:x=>evaluateAutoBinanceEntryPolicy({...x,now}),AUTO_BINANCE_ENTRY_POLICY_VERSION:'mock',validHeatmapSweepOrder:(x,m)=>validHeatmapSweepOrder(x,m,now),
   getSymbols:async()=>[{symbol:p.symbol,orderTypes:types}],
-  client:{getPremiumIndex:async()=>({markPrice:firstMark}),getPositions:async()=>positions,getOpenOrders:async()=>orders,setLeverage:async()=>({leverage:5}),placeFuturesOrder:async({params})=>{placed.push(params);return {orderId:456};}},
+  client:{getPremiumIndex:async()=>({markPrice:firstMark}),getPositions:async()=>positions,getOpenOrders:async()=>orders,setLeverage:async()=>({leverage:policy?.leverage??5}),placeFuturesOrder:async({params})=>{placed.push(params);return {orderId:456};}},
   ema99NearRejectRunner:{getContext:async()=>({enabled:true,positions,openOrders:orders,markPrice:finalMark})},
-  priceFromTick:(_,v)=>String(v),quantityFromNotional:(_,n,_price,_dryRun,o)=>{assert.equal(n,p.marginUsdt*5);assert.equal(o.allowMinNotionalCeil,false);if(minimum)throw Error('Order notional below minimum');return String(n/_price);},
+  priceFromTick:(_,v)=>String(v),quantityFromNotional:(_,n,_price,_dryRun,o)=>{assert.equal(n,p.marginUsdt*(policy?.leverage??5));assert.equal(o.allowMinNotionalCeil,false);if(minimum)throw Error('Order notional below minimum');return String(n/_price);},
   isManualShortProtectionSource,resolveOrdersManualTakeProfit,resolveNonLiquidFlowV2TakeProfit,inspectLiquidFlowV2DcaPositions:()=>({hasExistingSameSide:false}),getHedgeMode:async()=>false,
   binanceFilledSignalAudit:{init:async()=>({fills:latestFills&&audits.length?latestFills:auditFills}),registerSubmission:async a=>audits.push(a)},rememberSignalProtectionPlan:p=>plans.push(p),signalProtectionPlans:new Map(),console:{log(){},warn(){}},process:{env:{}},Date,
  });return {execution,placed,audits,plans};
+}
+{
+ const event=structuredClone(events[0]),tracker=new HeatmapSecondSweepTracker(),start=event.at-30000;
+ tracker.classify({...event,id:'first-wave',at:start,referencePrice:90,markPrice:100});
+ for(const [price,at] of [[110,start+10000],[100,start+20000],[105,event.at]])tracker.onMark(event.symbol,price,at);
+ event.secondSweep=tracker.classify(event);assert(event.secondSweep);
+ const s=controls.read(),key=heatmapSweepRouteKey('SHORT',SECOND_SWEEP_LABEL);s.routes[key].enabled=true;s.routes[key].enabledAt=base+1000;controls.save(s);
+ const p=buildHeatmapSweepOrder(event,{now,enabledAt:base+1000,startedAt:base+1000,markPrice:105,secondSweep:true});assert(p);
+ for(const options of [{},{secondGate:async()=>({allowed:true}),finalMark:110},{secondGate:async()=>({allowed:true}),positions:[{symbol:event.symbol,positionAmt:1}]},{secondGate:async()=>({allowed:true}),attempts:pending}]){
+  const h=harness(p,options);await assert.rejects(h.execution(authorizeHeatmapSweepOrder(p),null,{},{}));assert.equal(h.placed.length,0);
+ }
+ let checks=0;const changed=harness(p,{secondGate:async()=>({allowed:++checks===1})});await assert.rejects(changed.execution(authorizeHeatmapSweepOrder(p),null,{},{}));assert.equal(changed.placed.length,0,'gate rechecked at final native send');
+ const h=harness(p,{secondGate:async()=>({allowed:true})});await h.execution(authorizeHeatmapSweepOrder(p),null,{},{});assert.equal(h.placed.length,1);assert.equal(Number(h.placed[0].quantity),50/105);assert.deepEqual(h.audits[0].heatmapSweepAtEntry.secondSweep,event.secondSweep);
+ const end=Math.floor(event.at/300000)*300000,coinRows=Array.from({length:21},(_,i)=>{const t=end-(21-i)*300000,p=90+i;return [t,p-.5,p+.05,p-1,p,100,t+299999,i===20?2000:1000];});
+ event.upperMomentum=evaluateUpperMomentum({event,now:event.observedAt,coinReadAt:event.observedAt,coinRows});assert(blocksUpperMomentumEntry(event));
+ for(const secondSweep of [false,true]){const blockedPlan=buildHeatmapSweepOrder(event,{now,enabledAt:base+1000,startedAt:base+1000,markPrice:105,secondSweep});assert(blockedPlan);
+  const h=harness(blockedPlan,{secondGate:async()=>({allowed:true})});await assert.rejects(h.execution(authorizeHeatmapSweepOrder(blockedPlan),null,{},{}),/CÒN ĐÀ BƠM/);assert.equal(h.placed.length,0);
+  let calls=0;const final=harness(blockedPlan,{secondGate:async()=>({allowed:true}),momentumGuard:()=>++calls>1});await assert.rejects(final.execution(authorizeHeatmapSweepOrder(blockedPlan),null,{},{}),/CÒN ĐÀ BƠM/);assert.equal(calls,2);assert.equal(final.placed.length,0);
+ }
+ s.routes[key].enabled=false;controls.save(s);
+}
+{
+ const s=controls.read(),labels=[LONG_QUALITY_LABELS.GOOD,LONG_QUALITY_LABELS.BAD];
+ for(const label of labels){const key=heatmapSweepRouteKey('LONG',label);s.routes[key].enabled=true;s.routes[key].enabledAt=start;}controls.save(s);
+ for(const label of labels){
+  const event=structuredClone(events[1]),low=Math.min(...event.zones.map(z=>z.low));event.markPrice=low*(label===LONG_QUALITY_LABELS.GOOD?.9995:.998);
+  event.longQuality=evaluateHeatmapLongQuality(longQualityInputs(event));assert.equal(event.longQuality.label,label);
+  const p=buildHeatmapSweepOrder(event,{now,enabledAt:start,startedAt:start,markPrice:event.markPrice,qualityLabel:label});assert(p);
+  for(const options of [{},{qualityGate:async()=>({allowed:true}),positions:[{symbol:event.symbol,positionAmt:1}]},{qualityGate:async()=>({allowed:true}),attempts:pending},{qualityGate:async()=>({allowed:true}),minimum:true}]){
+   const h=harness(p,options);await assert.rejects(h.execution(authorizeHeatmapSweepOrder(p),null,{},{}));assert.equal(h.placed.length,0);
+  }
+  let checked=0;const changed=harness(p,{qualityGate:async()=>({allowed:++checked===1})});await assert.rejects(changed.execution(authorizeHeatmapSweepOrder(p),null,{},{}));assert.equal(changed.placed.length,0);
+  const h=harness(p,{qualityGate:async()=>({allowed:true})});await h.execution(authorizeHeatmapSweepOrder(p),null,{},{});assert.equal(h.placed.length,1);assert.equal(Number(h.placed[0].quantity),p.notionalUsdt/p.signalEntryPrice);
+  const record=buildBinanceFilledSignalAuditRecord({symbol:p.symbol,side:p.side,orderId:456,fillTime:now+1},h.audits[0]);assert.deepEqual(record.heatmapSweepAtEntry.longQuality,event.longQuality);assert.equal(record.heatmapSweepEntryVersion,p.fillAnchorVersion);
+  event.lowerMomentum=evaluateLowerMomentum(lowerMomentumInputs(event));assert(blocksLowerMomentumEntry(event));
+  const blockedPlan=buildHeatmapSweepOrder(event,{now,enabledAt:start,startedAt:start,markPrice:event.markPrice,qualityLabel:label});assert(blockedPlan);
+  const blocked=harness(blockedPlan,{qualityGate:async()=>({allowed:true})});await assert.rejects(blocked.execution(authorizeHeatmapSweepOrder(blockedPlan),null,{},{}),/CÒN ĐÀ XẢ/);assert.equal(blocked.placed.length,0);
+  let hits=0;const final=harness(blockedPlan,{qualityGate:async()=>({allowed:true}),lowerGuard:()=>++hits>1});await assert.rejects(final.execution(authorizeHeatmapSweepOrder(blockedPlan),null,{},{}),/CÒN ĐÀ XẢ/);assert.equal(hits,2);assert.equal(final.placed.length,0);
+ }
+ for(const label of labels)s.routes[heatmapSweepRouteKey('LONG',label)].enabled=false;controls.save(s);
+}
+{
+ const event=structuredClone(events[1]);event.lowerMomentum=evaluateLowerMomentum(lowerMomentumInputs(event));assert(blocksLowerMomentumEntry(event));const p=buildHeatmapSweepOrder(event,{now,enabledAt:start,startedAt:start,markPrice:event.markPrice});assert(p);
+ const h=harness(p);await assert.rejects(h.execution(authorizeHeatmapSweepOrder(p),null,{},{}),/CÒN ĐÀ XẢ/);assert.equal(h.placed.length,0);
+ let calls=0;const final=harness(p,{lowerGuard:()=>++calls>1});await assert.rejects(final.execution(authorizeHeatmapSweepOrder(p),null,{},{}),/CÒN ĐÀ XẢ/);assert.equal(calls,2);assert.equal(final.placed.length,0);
 }
 for(const p of plans){const h=harness(p);await h.execution(authorizeHeatmapSweepOrder(p),null,{},{});assert.equal(h.placed.length,1);assert.equal(h.placed[0].side,p.side);assert.equal(h.placed[0].type,'MARKET');
  assert.equal(h.plans[0].stopLossDistanceFraction,.06);assert.equal(h.plans[0].takeProfitDistanceFraction,.02);
@@ -180,3 +238,5 @@ for(const side of ['BUY','SELL'])for(const hide of [false,true]){
 }
 assert.match(server,/startsWith\('hms_'\)/);assert.match(server,/heatmapSweepRunner.protectionPlanFor/);assert.match(server,/onFullSweep:e=>heatmapSweepRunner.process\(e\)/);
 console.log('PASS full-sweep SHORT5/LONG2 x5 TP10/SL30, no price-drift gate at builder/runner/native first+final MARK, rebased preview/fill protection, finite-price/age/auth/own cap20/noDCA guards, V1/V2/V3 protection-only/ledger/no replay. Mock only.');
+
+for(const p of plans){const h=harness(p,{policy:{version:NEW_ENTRY_LEVERAGE_VERSION,leverage:3,scope:'NEW_ENTRIES_ONLY'}});const r=await h.execution(authorizeHeatmapSweepOrder(p),null,{},{});assert.equal(r.plannedOrder.leverage,3);assert.equal(r.plannedOrder.notionalUsdt,p.marginUsdt*3);assert.equal(h.audits[0].leverage,3);assert.equal(h.audits[0].marginUsdt,p.marginUsdt);console.log("PASS heatmap execution 3x",p.side);}

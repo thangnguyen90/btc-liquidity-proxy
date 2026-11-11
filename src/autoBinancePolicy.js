@@ -1,8 +1,11 @@
+import {SELL_FLOW_SOURCE,validSellFlowOrder} from './pumpSqueezeSellFlowBinance.js';
+const SELL_FLOW_AUTH=Symbol('sell-flow-short-55-server-entry');
+export function authorizeSellFlowOrder(payload){const p={...payload};Object.defineProperty(p,SELL_FLOW_AUTH,{value:true});return p;}
 export const AUTO_BINANCE_ENTRY_POLICY_VERSION = 'HEATMAP_NO_PRICE_DRIFT_SHORT5_LONG2_V62_20261023';
 import {HEATMAP_SWEEP_SOURCE,validHeatmapSweepOrder} from './heatmapSweepBinance.js';
 const HEATMAP_SWEEP_AUTH=Symbol('heatmap-full-sweep-server-entry');
 export function authorizeHeatmapSweepOrder(payload){const p={...payload};Object.defineProperty(p,HEATMAP_SWEEP_AUTH,{value:true});return p;}
-import {PUMP_TURN_NEAR_SOURCE,validPumpTurnNearOrder} from './pumpTurnNearShortBinance.js';
+import {PUMP_TURN_NEAR_SOURCE,PUMP_TURN_NEAR_LONG_SOURCE,validPumpTurnNearOrder} from './pumpTurnNearShortBinance.js';
 const PUMP_TURN_NEAR_AUTH=Symbol('pump-turn-near-short-server-entry');
 export function authorizePumpTurnNearOrder(payload){const p={...payload};Object.defineProperty(p,PUMP_TURN_NEAR_AUTH,{value:true});return p;}
 import {STRUCTURE_SOURCE,validStructureOrder} from './structureSetupBinance.js';
@@ -14,6 +17,7 @@ export function authorizeEarlyWickOrder(payload){const p={...payload};Object.def
 import {RISING_VOLUME_SOURCE,validRisingVolumeOrder} from './risingVolumeBinance.js';
 const RISING_VOLUME_AUTH=Symbol('rising-volume-sustained-1m-entry');
 export function authorizeRisingVolumeOrder(payload){const p={...payload};Object.defineProperty(p,RISING_VOLUME_AUTH,{value:true});return p;}
+import { isExtremeReboundSweepOrder } from './extremeShortSqueezeBinance.js';
 import { validImpulseSizing } from './postMoveImpulseSizing.js';
 import {validMainDistancePlan} from './mainKillDistanceEntry.js';
 const MAIN_DISTANCE_AUTH=Symbol('main-distance-entry');
@@ -288,10 +292,13 @@ export function evaluateAutoBinanceEntryPolicy({
   env = process.env,
   now = Date.now(),
 } = {}) {
+  if(payload.source===SELL_FLOW_SOURCE&&payload.dryRun===false){const allowed=orderEnabled&&payload[SELL_FLOW_AUTH]===true&&validSellFlowOrder(payload,payload.signalEntryPrice,now);return{allowed,reason:allowed?'SELL_FLOW_55_MARKET_2USD_3X':'SELL_FLOW_UNAUTHORIZED_OR_INVALID'};}
   const exclusive = liveCardOnlyAutoBinanceEnabled(env);
   const dryRun = payload?.dryRun !== false;
   if(!dryRun&&payload.source===HEATMAP_SWEEP_SOURCE){const allowed=orderEnabled&&payload[HEATMAP_SWEEP_AUTH]===true&&validHeatmapSweepOrder(payload,payload.signalEntryPrice,now);
     return {allowed,exclusive,reason:allowed?'HEATMAP_FULL_SWEEP_NO_DRIFT_SHORT5_LONG2_5X_TP10_SL30_CAP20':'HEATMAP_SWEEP_UNAUTHORIZED_OR_INVALID'};}
+  if(!dryRun&&payload.source===PUMP_TURN_NEAR_LONG_SOURCE){const allowed=orderEnabled&&payload[PUMP_TURN_NEAR_AUTH]===true&&validPumpTurnNearOrder(payload,payload.signalEntryPrice,now);
+    return {allowed,exclusive,reason:allowed?'PUMP_TURN_NEAR_LONG_STRONG_BUY_5USDT_3X_TP5_SL20':'PUMP_TURN_NEAR_LONG_UNAUTHORIZED_OR_INVALID'};}
   if(!dryRun&&payload.source===PUMP_TURN_NEAR_SOURCE){const allowed=orderEnabled&&payload[PUMP_TURN_NEAR_AUTH]===true&&validPumpTurnNearOrder(payload,payload.signalEntryPrice,now);
     return {allowed,exclusive,reason:allowed?'PUMP_TURN_NEAR_SHORT_2USDT_5X_TP10_SL30_CAP20':'PUMP_TURN_NEAR_UNAUTHORIZED_OR_INVALID'};}
 
@@ -302,7 +309,7 @@ export function evaluateAutoBinanceEntryPolicy({
 
   if(!dryRun&&orderEnabled&&payload.source===RISING_VOLUME_SOURCE) {
     const allowed=payload[RISING_VOLUME_AUTH]===true&&validRisingVolumeOrder(payload,payload.signalEntryPrice,now);
-    return {allowed,exclusive,reason:allowed?'RISING_VOLUME_1M_SUSTAINED_RATIO_LONG2_SHORT1_5X_TP10_SL30':'RISING_VOLUME_UNAUTHORIZED_OR_INVALID'};
+    return {allowed,exclusive,reason:allowed?(payload.risingVolumeAlignedProof?payload.fillAnchorVersion:'RISING_VOLUME_1M_SUSTAINED_RATIO_LONG2_SHORT1_5X_TP10_SL30'):'RISING_VOLUME_UNAUTHORIZED_OR_INVALID'};
   }
   if(!dryRun&&orderEnabled&&payload.source===EARLY_WICK_SOURCE) {
     const allowed=payload[EARLY_WICK_AUTH]===true&&validEarlyWickOrder(payload,payload.signalEntryPrice,now);
@@ -546,6 +553,7 @@ export function evaluateAutoBinanceEntryPolicy({
     &&((payload.streamId==='extreme-short-squeeze'
       &&['EXTREME_PUMP_CLOSED','FOLLOW_REJECTION_LIVE','PEAK_ZONE_SHORT_WATCH'].includes(payload.signalLabel)
       &&payload.signalInterval==='5m')
+    ||(isExtremeReboundSweepOrder(payload)&&payload.signalInterval==='5m')
     ||(payload.streamId==='extreme-short-squeeze-saga-15m'
       &&payload.signalLabel==='FOLLOW_REJECTION_CLOSED'&&payload.signalInterval==='15m'
       &&payload.symbol==='SAGAUSDT'))

@@ -2,6 +2,11 @@ import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {createHash} from 'node:crypto';
 import {heatmapConsensusZones} from './heatmapEntryScenarios.js';
+import {HeatmapSecondSweepTracker} from './heatmapSecondSweep.js';
+import {evaluateHeatmapLongQuality} from './heatmapLongQuality.js';
+import {evaluateUpperMomentum} from './heatmapUpperMomentum.js';
+import {evaluateLowerMomentum} from './heatmapLowerMomentum.js';
+import {FIRST_PUSH_RECOVERY_GRACE,continuationReviewJob} from './heatmapFirstPushLongReview.js';
 export const HEATMAP_SWEEP_VERSION='HEATMAP_DUAL_SWEEP_MARKET_V3_20261020';
 export const HEATMAP_SWEEP_LOAD_POLICY_VERSION='HEATMAP_SWEEP_CACHE_REARM_BOUNDED3_V1_20261020';
 const STEP=300000,TTL=15*60000,DAY=86400000;
@@ -37,10 +42,11 @@ export function prepareHeatmapSweepCohort(bundle,point,now,maxDistancePct=5,dire
   maxDistancePct,zones,lastTickAt:point.at,lastPrice:point.price,peakPrice:point.price,maxTickGapMs:0,state:'ARMED',firstReserved:false,allReserved:false}};
 }
 export class HeatmapSweepWatch{
- constructor({file,loadBundle,loadCachedBundle=null,getLoaderStats=()=>null,getUniverse=()=>[],getLive=()=>null,onSymbolsChanged=()=>{},blocked=()=>false,discordSender=null,onFullSweep=null,now=Date.now,maxWatches=10,maxInFlight=3}={}){
-  Object.assign(this,{file,loadBundle,loadCachedBundle,getLoaderStats,getUniverse,getLive,onSymbolsChanged,blocked,discordSender,onFullSweep,now,maxWatches});
+ constructor({file,loadBundle,onBundle=null,loadCachedBundle=null,getLoaderStats=()=>null,getUniverse=()=>[],getLive=()=>null,onSymbolsChanged=()=>{},blocked=()=>false,discordSender=null,onFullSweep=null,onSweepObservation=null,assessLong=null,assessUpper=null,assessLower=null,now=Date.now,maxWatches=10,maxInFlight=3}={}){
+  Object.assign(this,{file,loadBundle,onBundle,loadCachedBundle,getLoaderStats,getUniverse,getLive,onSymbolsChanged,blocked,discordSender,onFullSweep,onSweepObservation,assessLong,assessUpper,assessLower,now,maxWatches});
   this.maxInFlight=Math.min(3,Math.max(1,maxInFlight));this.activeLoads=new Set();this.cacheWarmBusy=false;this.cacheRestored=0;
   this.marketEnabled=false;this.marketDistancePct=5;this.cooldowns={};
+  this.secondSweepTracker=new HeatmapSecondSweepTracker();
   this.watches=[];this.history=[];this.queue=Promise.resolve();this.error=null;this.cursor=0;this.scanBusy=false;this.initPromise=null;this.startedAt=now();
  }
  async init(){return this.initPromise??=this.load();}
@@ -80,7 +86,7 @@ export class HeatmapSweepWatch{
    if(typeof enabled!=='boolean'||!Number.isFinite(maxDistancePct)||maxDistancePct<.5||maxDistancePct>10)throw Error('Cấu hình thị trường không hợp lệ.');
    if(enabled===this.marketEnabled&&maxDistancePct===this.marketDistancePct)return this.snapshot();
    this.marketEnabled=enabled;this.marketDistancePct=maxDistancePct;
-   this.syncUniverse();for(const w of this.watches){w.cohort=null;w.lowerCohort=null;w.status='WARMING';w.nextLoadAt=0;}
+   this.syncUniverse();this.secondSweepTracker=new HeatmapSecondSweepTracker();for(const w of this.watches){w.cohort=null;w.lowerCohort=null;w.status='WARMING';w.nextLoadAt=0;}
    this.nextBatchAt=0;await this.save();this.publish();return this.snapshot();
   }
   if(this.marketEnabled)throw Error('Đang bật toàn thị trường; dùng cấu hình thị trường.');
@@ -91,11 +97,13 @@ export class HeatmapSweepWatch{
   if(enabled&&!w.enabled&&this.watches.filter(x=>x.enabled).length>=this.maxWatches)throw Error(`Tối đa ${this.maxWatches} coin theo dõi.`);
   const changed=w.enabled!==enabled||w.maxDistancePct!==maxDistancePct;
   Object.assign(w,{enabled,manualEnabled:enabled,viewRange,maxDistancePct});
-  if(changed){w.cohort=null;w.lowerCohort=null;w.status=enabled?'WARMING':'OFF';w.reason=enabled?'Chờ chốt vùng mới hai phía giá hiện tại.':'Đã tắt.';w.nextLoadAt=0;}
+  if(changed){this.secondSweepTracker.reset(symbol);w.cohort=null;w.lowerCohort=null;w.status=enabled?'WARMING':'OFF';w.reason=enabled?'Chờ chốt vùng mới hai phía giá hiện tại.':'Đã tắt.';w.nextLoadAt=0;}
   this.watches=this.watches.filter(x=>x.enabled||x.symbol===symbol);await this.save();this.publish();return this.snapshot();
  });}
  armBundle(w,bundle,at){
-  const point=this.getLive(w.symbol),prepared=prepareHeatmapSweepCohort(bundle,point,at,w.maxDistancePct),lower=prepareHeatmapSweepCohort(bundle,point,at,w.maxDistancePct,'LOWER');w.lastLoadedAt=at;
+  const point=this.getLive(w.symbol);
+  try{this.onBundle?.(bundle,point);}catch{} // Independent observer, never changes native sweep/entry.
+  const prepared=prepareHeatmapSweepCohort(bundle,point,at,w.maxDistancePct),lower=prepareHeatmapSweepCohort(bundle,point,at,w.maxDistancePct,'LOWER');w.lastLoadedAt=at;
   if([1,3].every(n=>bundle?.models?.some(m=>m.model===n&&m.status==='OK')))w.lastDataAt=at;
   w.cohort=prepared.cohort?.symbol===w.symbol?prepared.cohort:null;w.lowerCohort=lower.cohort?.symbol===w.symbol?lower.cohort:null;
   if(w.cohort||w.lowerCohort){w.status='ARMED';w.reason='Vùng hai phía đã chốt; chỉ xét các tick MARK sau lúc bật.';}
@@ -127,6 +135,8 @@ export class HeatmapSweepWatch{
  }
  onMark(tick){
   const w=this.watches.find(w=>w.enabled&&w.symbol===tick.symbol);
+  const p={price:Number(tick.markPrice),at:Number(tick.eventTime)};
+  if(w&&!this.error&&fresh(p,this.now()))this.secondSweepTracker.onMark(w.symbol,p.price,p.at);
   return Promise.all([w?.cohort,w?.lowerCohort].filter(Boolean).map(c=>this.onCohortMark(w,c,tick)));
  }
  onCohortMark(w,c,tick){
@@ -143,6 +153,16 @@ export class HeatmapSweepWatch{
   const e={version:HEATMAP_SWEEP_VERSION,id:c.id+':'+kind,kind,symbol:w.symbol,viewRange:w.viewRange,at:p.at,observedAt:now,armedAt:c.armedAt,zonesAsOf:c.asOf,
    direction:upper?'UPPER':'LOWER',cohortId:c.id,cohortExpiresAt:c.expiresAt,previousTickAt,previousMarkPrice,maxTickGapMs:c.maxTickGapMs,
    referencePrice:c.referencePrice,markPrice:p.price,maxDistancePct:c.maxDistancePct,clearedCount:cleared.length,totalCount:c.zones.length,zones:structuredClone(c.zones),delivery:{status:'PENDING'}};
+  // Freeze before queue/await: later MARKs cannot alter this event's evidence.
+  const secondSweep=this.secondSweepTracker.classify(e);if(secondSweep)e.secondSweep=secondSweep;
+  if(all&&upper&&this.assessUpper){
+   try{e.upperMomentum=structuredClone(this.assessUpper(structuredClone(e)));}
+   catch{e.upperMomentum=evaluateUpperMomentum({event:e,now});}
+  }
+  if(all&&!upper&&this.assessLower){
+   try{e.lowerMomentum=structuredClone(this.assessLower(structuredClone(e)));}
+   catch{e.lowerMomentum=evaluateLowerMomentum({event:e,now});}
+  }
   return this.run(async()=>{
    if(this.error||!w.enabled||this.history.some(x=>x.id===e.id))return;
    const cooldownKey=e.symbol+':'+e.kind,lastAlert=this.cooldowns[cooldownKey];
@@ -152,6 +172,12 @@ export class HeatmapSweepWatch{
    w.lastAlertAt=e.at;if(all)w.nextArmAt=c.expiresAt;this.history.push(e);
    await this.save(); // durable reservation BEFORE Discord; never retry unknown outcomes/restarts
    if(cooling)return;
+   // A separate live observer never blocks native Discord, entry or protection.
+   if(all&&upper&&this.onSweepObservation){try{void Promise.resolve(this.onSweepObservation(structuredClone(e))).catch(()=>{});}catch{}}
+   if(all&&!upper&&this.assessLong){
+    try{e.longQuality=structuredClone(await this.assessLong(structuredClone(e)));}catch{e.longQuality=evaluateHeatmapLongQuality({event:e,now:this.now()});}
+    await this.save(); // Classification and inputs are frozen BEFORE entry, never patched after the result.
+   }
    // Entry is independent of webhook delivery and is never replayed from history.
    if(all&&this.onFullSweep){try{e.binance=await this.onFullSweep(structuredClone(e));}catch{e.binance={status:'CALLBACK_ERROR_OR_UNKNOWN'};}await this.save();}
    if(!this.discordSender)e.delivery={status:'NOT_CONFIGURED'};
@@ -160,12 +186,46 @@ export class HeatmapSweepWatch{
    await this.save();
   }).catch(()=>{});
  }
- start(){void this.init().then(()=>{void this.warmCache();void this.scan();});this.timer=setInterval(()=>{void this.warmCache();void this.scan();},1000);this.timer.unref?.();}
+ async refreshDiscordReview(){
+  if(!this.discordSender?.reviewContinuation||this.reviewBusy||this.error||this.now()<(this.nextReviewAt??0))return;
+  this.reviewBusy=true;this.nextReviewAt=this.now()+5000;
+  try{
+   await this.init();
+   if(this.error)return;
+   const now=this.now();
+   this.reviewRetryAt??=new Map();
+   for(const [id,t] of this.reviewRetryAt)if(t<=now)this.reviewRetryAt.delete(id);
+   let event=null,fallback=null;
+   for(const candidate of this.history){
+    if(this.reviewRetryAt.has(candidate.id))continue;
+    const job=continuationReviewJob(candidate);
+    if(!job||!(job.message.closeAt+12000<=now))continue;
+    if(job.mode==='pending'){event=candidate;break;}
+    if(!fallback&&now-job.message.closeAt<=FIRST_PUSH_RECOVERY_GRACE)fallback=candidate;
+   }
+   event??=fallback;
+   if(!event)return;
+   const delivery=event.delivery;
+   const result=await this.discordSender.reviewContinuation(structuredClone(event));
+   if(!result){this.reviewRetryAt.set(event.id,this.now()+15000);return;}
+   await this.run(async()=>{
+    if(this.error||!this.history.includes(event)||event.delivery!==delivery)return;
+    Object.assign(event.delivery,result);
+    await this.save();
+   });
+  }catch{}finally{this.reviewBusy=false;}
+ }
+ start(){void this.init().then(()=>{void this.warmCache();void this.scan();});this.timer=setInterval(()=>{
+  void this.warmCache();void this.scan();void this.refreshDiscordReview();
+ },1000);this.timer.unref?.();}
  stop(){clearInterval(this.timer);}
  isCurrentFullSweep(e){
   const w=this.watches.find(w=>w.enabled&&w.symbol===e?.symbol);
   return !this.error&&!!w&&[w.cohort,w.lowerCohort].some(c=>c?.id===e.cohortId&&c.state==='COMPLETE'&&c.allReserved===true)
-   &&this.history.some(h=>h.id===e.id&&h.version===HEATMAP_SWEEP_VERSION&&h.kind.startsWith('ALL_TRACKED_')&&h.delivery?.status!=='COOLDOWN');
+   &&this.history.some(h=>h.id===e.id&&h.version===HEATMAP_SWEEP_VERSION&&h.kind.startsWith('ALL_TRACKED_')&&h.delivery?.status!=='COOLDOWN'
+    &&(!e.longQuality||JSON.stringify(h.longQuality)===JSON.stringify(e.longQuality))
+    &&JSON.stringify(h.upperMomentum)===JSON.stringify(e.upperMomentum)
+    &&JSON.stringify(h.lowerMomentum)===JSON.stringify(e.lowerMomentum));
  }
  snapshot(id=null){return structuredClone({version:HEATMAP_SWEEP_VERSION,observeOnly:!this.onFullSweep,affectsOrders:!!this.onFullSweep,discordConfigured:!!this.discordSender,error:this.error,maxWatches:this.maxWatches,
   marketEnabled:this.marketEnabled,marketDistancePct:this.marketDistancePct,

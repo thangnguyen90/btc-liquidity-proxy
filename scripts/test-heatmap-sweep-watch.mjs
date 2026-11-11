@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import vm from 'node:vm';
 import {PROFILE_RATIO} from '../src/heatmapEntryScenarios.js';
 import {HeatmapSweepWatch,prepareHeatmapSweepCohort,HEATMAP_SWEEP_VERSION} from '../src/heatmapSweepWatch.js';
-import {createHeatmapSweepDiscordSender,heatmapSweepDiscordPayload} from '../src/heatmapSweepDiscord.js';
+import {createHeatmapSweepDiscordSender,heatmapSweepDiscordPayload,HEATMAP_SWEEP_DISCORD_ROUTING_VERSION} from '../src/heatmapSweepDiscord.js';
 const STEP=300000,base=Math.floor(1792320000000/STEP)*STEP;
 let now=base+10000;
 const fixture=(symbol='ARCUSDT',prices=[102,104,110],at=base-1)=>{
@@ -53,14 +53,37 @@ const payload=heatmapSweepDiscordPayload(sent[1]);assert.deepEqual(payload.allow
 assert.throws(()=>createHeatmapSweepDiscordSender({webhookUrl:'https://evil.test/api/webhooks/123/token'}));
 const sender=createHeatmapSweepDiscordSender({webhookUrl:'https://discord.com/api/webhooks/123/mock',fetchImpl:async(u,init)=>{assert.equal(init.redirect,'error');assert.equal(init.method,'POST');return {ok:true,status:204};}});assert.equal((await sender(sent[1])).sent,1);
 const failingSender=createHeatmapSweepDiscordSender({webhookUrl:'https://discord.com/api/webhooks/123/mock',fetchImpl:async()=>{throw Error('private token');}});assert.doesNotMatch(JSON.stringify(await failingSender(sent[1])),/private|webhooks/);
+const legacyUrl='https://discord.com/api/webhooks/123/legacy-mock',fullUrl='https://discord.com/api/webhooks/456/full-mock',routed=[];
+const router=createHeatmapSweepDiscordSender({webhookUrl:legacyUrl,fullSweepWebhookUrl:fullUrl,fetchImpl:async(url,init)=>{routed.push({url,init});return {ok:true,status:204};}});
+assert.deepEqual(router.routing,{version:HEATMAP_SWEEP_DISCORD_ROUTING_VERSION,fullSweepConfigured:true,fullSweepDedicated:true,partialConfigured:true});
+for(const kind of ['ALL_TRACKED_UPPER_SWEPT','ALL_TRACKED_LOWER_SWEPT','UPPER_CLUSTER_SWEPT','LOWER_CLUSTER_SWEPT']){
+ const e={...sent[1],kind,direction:kind.includes('LOWER')?'LOWER':'UPPER'};assert.equal((await router(e)).sent,1);
+ assert.equal(routed.at(-1).url,kind.startsWith('ALL_TRACKED_')?fullUrl:legacyUrl);assert.equal(routed.at(-1).init.redirect,'error');assert.equal(routed.at(-1).init.method,'POST');
+ assert.deepEqual(JSON.parse(routed.at(-1).init.body).allowed_mentions.parse,[]);
+}
+assert.doesNotMatch(JSON.stringify(router.routing),/webhooks|mock|token/,'public routing metadata contains no URL/token');
+assert.throws(()=>createHeatmapSweepDiscordSender({webhookUrl:legacyUrl,fullSweepWebhookUrl:'https://evil.test/api/webhooks/456/nope'}),/INVALID_HEATMAP_SWEEP_DISCORD/);
+const missing=createHeatmapSweepDiscordSender({fullSweepWebhookUrl:fullUrl,fetchImpl:async()=>({ok:true,status:204})});assert.equal((await missing({...sent[1],kind:'UPPER_CLUSTER_SWEPT'})).sent,0);assert.equal(missing.routing.partialConfigured,false);
+assert.equal((await missing(sent[1])).sent,1);assert.equal(createHeatmapSweepDiscordSender({}),null);
+assert.equal(sender.routing.fullSweepDedicated,false,'legacy configuration retains one-channel routing');
+const legacyCalls=[],legacyRouter=createHeatmapSweepDiscordSender({webhookUrl:legacyUrl,fetchImpl:async url=>{legacyCalls.push(url);return {ok:true,status:204};}});
+for(const kind of ['ALL_TRACKED_UPPER_SWEPT','ALL_TRACKED_LOWER_SWEPT'])await legacyRouter({...sent[1],kind,direction:kind.includes('LOWER')?'LOWER':'UPPER'});
+assert.deepEqual(legacyCalls,[legacyUrl,legacyUrl],'no new environment key keeps old full-sweep routing');
+let failures=0;const noFallback=createHeatmapSweepDiscordSender({webhookUrl:legacyUrl,fullSweepWebhookUrl:fullUrl,fetchImpl:async url=>{failures++;assert.equal(url,fullUrl);return {ok:false,status:429};}});
+assert.equal((await noFallback(sent[1])).sent,0);assert.equal(failures,1,'failed full delivery never retries/falls back to the old channel');
 const src=await readFile('src/server.js','utf8'),start=src.indexOf("if(requestUrl.pathname==='/api/heatmap-sweep-watch')"),end=src.indexOf("if(requestUrl.pathname==='/api/coinglass-heatmap-lab/status')",start),handler=src.slice(start,end);
 assert(start>0&&end>start);
 for(const [method,origin,status] of [['GET',false,200],['POST',false,403],['POST',true,200],['DELETE',true,405]]){
- let reads=0,updates=0;const out=[];
+ let reads=0,updates=0;const out=[],bodies=[];
  await vm.runInNewContext('(async()=>{'+handler+'})()',{requestUrl:new URL('http://local/api/heatmap-sweep-watch'),request:{method},response:{setHeader(){}},
-  heatmapSweepWatch:{init:async()=>{},snapshot:()=>{reads++;return {};},update:async()=>{updates++;return {};}},heatmapSweepRunner:{snapshot:()=>({})},isSameOriginWriteRequest:()=>origin,
-  readJsonBody:async()=>({symbol:'ARCUSDT',enabled:true}),normalizeManualPriceAlertSymbol:s=>s,getSymbols:async()=>[{symbol:'ARCUSDT'}],sendJson:async(r,b,s=200)=>out.push(s)});
+  LOWER_MOMENTUM_VERSION:'test',heatmapLowerMomentumStats:async()=>[],UPPER_MOMENTUM_VERSION:'test',heatmapUpperMomentumStats:async()=>[],LONG_QUALITY_VERSION:'test',heatmapLongQualityGates:async()=>[],heatmapSecondSweepGate:async()=>({allowed:false,eligible:false}),heatmapSweepWatch:{init:async()=>{},snapshot:()=>{reads++;return {};},update:async()=>{updates++;return {};}},heatmapSweepRunner:{snapshot:()=>({})},heatmapSweepDiscordSender:router,isSameOriginWriteRequest:()=>origin,
+  readJsonBody:async()=>({symbol:'ARCUSDT',enabled:true}),normalizeManualPriceAlertSymbol:s=>s,getSymbols:async()=>[{symbol:'ARCUSDT'}],sendJson:async(r,b,s=200)=>{out.push(s);bodies.push(b);}});
  assert.equal(out[0],status);assert.equal(reads,method==='GET'?1:0);assert.equal(updates,method==='POST'&&origin?1:0);
+ if(status===200){assert.equal(bodies[0].discordRouting.version,HEATMAP_SWEEP_DISCORD_ROUTING_VERSION);assert.doesNotMatch(JSON.stringify(bodies[0]),/webhooks|legacy-mock|full-mock/);}
 }
+// A slow or failing observation callback cannot block native delivery or entry.
+now=base+10000;let observed=0,entered=0;const nativeDeliveries=[];
+const observedWatch=new HeatmapSweepWatch({...options,file:join(dir,'observed.json'),onSweepObservation:e=>{observed++;e.markPrice=0;return new Promise(()=>{});},onFullSweep:async()=>{entered++;return {status:'MOCK_ONLY'};},discordSender:async e=>{nativeDeliveries.push(e);return {sent:1,httpStatus:204};}});
+await observedWatch.update({symbol:'ARCUSDT',enabled:true});await observedWatch.scan();const z=observedWatch.watches[0].cohort.zones;now+=1000;await observedWatch.onMark({symbol:'ARCUSDT',markPrice:z[0].high+.0001,eventTime:now});assert.equal(observed,0);now+=1000;await observedWatch.onMark({symbol:'ARCUSDT',markPrice:z[1].high+.0001,eventTime:now});assert.equal(observed,1);assert.equal(entered,1);assert.equal(nativeDeliveries.length,2);assert.ok(observedWatch.history.at(-1).markPrice>0,'observer only receives clone');assert.equal(observedWatch.history.at(-1).delivery.status,'SENT');
 assert.equal(JSON.parse(await readFile(file,'utf8')).version,HEATMAP_SWEEP_VERSION);
-console.log('PASS causal frozen upper clusters, touch/full/aggregate, real MARK/OI guards, one-shot/durable reservation/restart/no replay/gap/expiry, cap/quota/storage fail, Discord payload/secret safety, GET read-only and same-origin writes. Mock only.');
+console.log('PASS causal frozen upper clusters, touch/full/aggregate, real MARK/OI guards, durable reservation/restart/no replay/gap/expiry/cap/quota/storage, dedicated full upper+lower Discord routing/legacy partial/no-fallback/secret safety, GET read-only and same-origin writes. Mock only.');

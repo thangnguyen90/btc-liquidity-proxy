@@ -1,4 +1,4 @@
-import {heatmapColor} from './coinglass-heatmap-model.js?v=20261018-v3';
+import {heatmapColor} from './coinglass-heatmap-model.js?v=20261026-v4-purple-contrast';
 export const HEATMAP_CANVAS_INTERACTION_VERSION='HEATMAP_CLICK_PIN_TOOLTIP_V1_20261022';
 const time=x=>new Date(x).toLocaleTimeString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit',minute:'2-digit'});
 export const priceText=x=>Number(x).toLocaleString('en-US',{maximumSignificantDigits:6});

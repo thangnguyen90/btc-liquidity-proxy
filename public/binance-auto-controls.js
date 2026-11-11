@@ -148,6 +148,7 @@ function render(){
   $('master-status').textContent=state.enabled?'KHÓA TỔNG: ON':'ĐÃ TẮT MỞ LỆNH TỰ ĐỘNG';
   document.querySelector('.master').classList.toggle('on',state.enabled);
   const all=Object.values(state.routes);
+  if(state.newEntryLeveragePolicy)$('master-status').textContent+=' · LỆNH MỚI 3× · giữ tiền ký quỹ · TP/SL theo rule giá gốc, ROE quy đổi thay đổi';
   $('summary').textContent=`${all.filter(r=>r.enabled).length}/${all.length} loại bật ở trang này · ${state.enabled?'Vẫn phải đạt rule gốc':'Tất cả bị khóa bởi công tắc tổng'}`;
   $('master').textContent=state.enabled?'Tắt khóa tổng':'Bật khóa tổng';$('master').disabled=busy||!state.canEdit;
   $('auth').textContent=state.canEdit?'Đã xác thực Orders. Thay đổi được lưu qua restart.':'Chế độ xem. Bấm Mở quyền chỉnh sửa và nhập ORDERS_PASSWORD; không nhập API key tại trang này.';
@@ -166,9 +167,9 @@ function render(){
     const tr=document.createElement('tr');
     const timeframe=r.interval?` · ${r.interval}`:'';
     for(const value of [r.label,`${r.stream}${timeframe}`,r.side]){const td=document.createElement('td');td.textContent=value;tr.append(td);}
-    if(r.title){const title=document.createElement('small');title.textContent=r.title;tr.children[0].append(title);}
+    if(r.title){const title=document.createElement('small');title.textContent=state.newEntryLeveragePolicy?r.title.replace(/×\s*\d+/g,'×3'):r.title;tr.children[0].append(title);}
     if(r.source==='pump-turn-near-short'){const note=document.createElement('small');note.textContent=`SHORT MARKET thử nghiệm, không chờ nến xác nhận · 2 USDT margin ×5 · TP +10% / SL −30% ROE · max riêng ${r.maxOpenPositions}, không dùng max chung · chỉ tín hiệu mới, không replay/DCA. Không phải Heatmap sweep.`;tr.children[0].append(note);}
-    if(r.source==='heatmap-full-sweep'){const note=document.createElement('small');note.textContent=`Quét hết cụm trên → SHORT 5 USDT; dưới → LONG 2 USDT margin ×5 · TP +10% / SL −30% ROE · không chặn lệch giá tín hiệu · max riêng 20 chung hai hướng, không dùng max chung · tín hiệu mới sau bật, tuổi ≤30 giây, không replay/DCA, không tự nâng size tối thiểu.`;tr.children[0].append(note);}
+    if(r.source==='heatmap-full-sweep'){const note=document.createElement('small');note.textContent=['LOWER_SWEEP_LONG_GOOD','LOWER_SWEEP_LONG_BAD'].includes(r.label)?`LONG tốt5/xấu1 USDT margin ×5 · TP +10% / SL −30% ROE · quota heatmap20. Mặc định OFF; cần WHITELIST/closed AvgROE >4% tại Model1/3. TỐT: xuyên<0,1%, RSI<60, ratioΔ1h≥−5%, OIΔ1h≥−2%; XẤU: đủ dữ liệu và trượt≥1. Bật một trong hai nhánh sẽ chuyển LONG sang chế độ phân loại: nhánh kia OFF hoặc thiếu dữ liệu thì chặn, không fallback2 USDT. Tắt cả hai giữ LONG2 cũ.`:r.label==='SECOND_UPPER_BELOW_PEAK'?'Quét lần 2 sau bơm, chưa vượt đỉnh MARK cũ → SHORT 10 USDT margin ×5. Mặc định OFF; cần WHITELIST và closed AvgROE >4% trên trang Model1/3. TP +10% / SL −30% ROE; dùng chung quota heatmap 20, không DCA. OFF giữ nhánh quét thông thường; ON nhưng gate không đạt thì không fallback 5 USDT.':`Quét hết cụm trên → SHORT 5 USDT; dưới → LONG 2 USDT margin ×5 · TP +10% / SL −30% ROE · không chặn lệch giá tín hiệu · max riêng 20 chung hai hướng, không dùng max chung · tín hiệu mới sau bật, tuổi ≤30 giây, không replay/DCA, không tự nâng size tối thiểu.`;tr.children[0].append(note);}
     if(r.stream==='ema99-retest'&&ema99Notes[r.label]){const note=document.createElement('small');note.className='signal-note';note.textContent=ema99Notes[r.label];tr.children[0].append(note);}
     const routeNote=otherRouteNote(r);if(routeNote){const note=document.createElement('small');note.className='signal-note';note.textContent=routeNote;tr.children[0].append(note);}
     const small=document.createElement('small');small.textContent=r.source;tr.children[1].append(small);tr.children[2].className=r.side;
@@ -185,7 +186,7 @@ function render(){
       size.textContent=r.side==='SHORT'?'SHORT cố định 1 USDT margin; không tăng size theo giờ hoặc BTC. Chỉ lệnh mới, không đổi vị thế cũ.'
         :'Tự động 2 / 1 USDT · 2 nếu giờ tốt HOẶC BTC cùng hướng. LONG: 03–06h, 12–15h VN; còn lại 1 USDT.';
     }else if(settingsEditable){
-      const leverage=Number(r.leverage)||5;
+      const leverage=Number(r.executionLeverage??r.leverage)||5;
       const saved=document.createElement('small');saved.textContent=`Đã lưu: ${r.marginUsdt??'LỖI'} USDT margin × ${leverage}x · notional ${r.marginUsdt===null?'—':Number((r.marginUsdt*leverage).toFixed(2))} USDT`;
       const input=document.createElement('input');input.type='number';input.min='1';input.max='100';input.step='0.01';input.value=drafts.get(r.key)?.value??r.marginUsdt??'';input.disabled=busy||!state.canEdit;
       input.setAttribute('aria-label',`Ký quỹ USDT ${r.label}${timeframe}`);input.style.width='105px';
@@ -198,7 +199,8 @@ function render(){
     }else size.textContent=r.executable===false?'— Chưa có entry thật':'Theo cấu hình luồng gốc';
     tr.append(size);
     const leverageCell=document.createElement('td');
-    if(settingsEditable){
+    if(state.newEntryLeveragePolicy){leverageCell.textContent='3× · chính sách chung cho lệnh mới';}
+    else if(settingsEditable){
       const saved=document.createElement('small');saved.textContent=`Đã lưu: ${r.leverage??'LỖI'}x`;
       const input=document.createElement('input');input.type='number';input.min='1';input.max='125';input.step='1';input.value=leverageDrafts.get(r.key)?.value??r.leverage??'';input.disabled=busy||!state.canEdit;
       input.setAttribute('aria-label',`Đòn bẩy ${r.label}${timeframe}`);input.style.width='82px';

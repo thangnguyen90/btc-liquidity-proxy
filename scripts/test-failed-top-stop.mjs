@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {simulateShortStop,summarizeStop} from './research-failed-top-stop.mjs';
+const bar=(t,o,h,l,c)=>({t,end:t+899999,o,h,l,c});
+const opts={entry:100,at:0,horizon:30,cutoff:1800000};
+const approx=(a,b)=>assert.ok(Math.abs(a-b)<1e-9,`${a} != ${b}`);
+let path=[bar(0,100,101,97,98),bar(900000,98,99,94,95)];
+let r=simulateShortStop(path,opts);assert.equal(r.reason,'TIME');approx(r.netRoe,14.64);
+path=[bar(0,100,107,95,96),bar(900000,96,100,89,90)];
+r=simulateShortStop(path,opts);assert.equal(r.reason,'SL');approx(r.netRoe,-20.36);assert.equal(r.exitTimeExact,false);approx(r.baselineRoe,29.64);
+path=[bar(0,100,101,99,100),bar(900000,109,110,90,95)];
+r=simulateShortStop(path,opts);assert.equal(r.gapThroughStop,true);approx(r.netRoe,-27.36);
+assert.equal(simulateShortStop(path,{...opts,cutoff:1000000}),null);
+assert.equal(simulateShortStop([path[1]],opts),null);
+const future=bar(1800000,200,300,1,1);assert.deepEqual(simulateShortStop([...path,future],opts),r);
+assert.equal(summarizeStop([r]).stopCount,1);
+console.log('PASS: leverage, fees, intrabar stop, recovery after stop, gap fills, maturity, missing bar, future isolation');

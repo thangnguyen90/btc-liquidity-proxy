@@ -56,8 +56,8 @@ export class NotificationZoneOrder {
   summary(){
     if(!this.selection)return;
     const {w,side,notification}=this.selection,margin=Number($('manualMargin').value);
-    const tp=side==='LONG'?w.zone.low:w.zone.high,sl=w.markPrice*(side==='LONG'?.94:1.06);
-    $('manualOrderSummary').textContent=`Thông báo: ${notification.title}\n${side} ${w.symbol} · MARKET · dùng giá hiện tại, không phải giá lúc phát thông báo.\nMargin ${Number.isFinite(margin)?margin:'—'} USDT ×5x = ${Number.isFinite(margin*5)?price(margin*5):'—'} USDT notional (quantity làm tròn, không tự nâng margin).\nMARK ${price(w.markPrice)} · TP ${price(tp)} · SL tham khảo ${price(sl)} (−30% ROE, neo giá khớp).\nVùng MAIN gốc ${price(w.zone.low)} – ${price(w.zone.high)}. Giá khớp có thể khác; phí/trượt giá chưa tính. Cap MAIN tự động + thủ công: 20.`;
+    const sl=w.markPrice*(side==='LONG'?.94:1.06);
+    $('manualOrderSummary').textContent=`Thông báo: ${notification.title}\n${side} ${w.symbol} · MARKET · dùng giá hiện tại, không phải giá lúc phát thông báo.\nMargin ${Number.isFinite(margin)?margin:'—'} USDT ×5x = ${Number.isFinite(margin*5)?price(margin*5):'—'} USDT notional (quantity làm tròn, không tự nâng margin).\nMARK ${price(w.markPrice)} · TP +10% ROE neo giá khớp và đòn bẩy thực thi · SL tham khảo ${price(sl)} (−30% ROE, neo giá khớp).\nVùng MAIN gốc ${price(w.zone.low)} – ${price(w.zone.high)}. Giá khớp có thể khác; phí/trượt giá chưa tính. Cap MAIN tự động + thủ công: 20.`;
   }
   async submit(){
     if(this.submitting||!this.selection)return;

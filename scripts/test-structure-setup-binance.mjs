@@ -1,3 +1,4 @@
+import {newEntrySizing} from '../src/newEntryLeveragePolicy.js';
 import assert from 'node:assert/strict';
 import {mkdtemp,readFile,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -141,7 +142,7 @@ const tpStart=server.indexOf('async function setTpSl(payload, token = null)'),tp
 function executionHarness(p,{positions=lots,orders=[],excluded=false,finalMark=p.signalEntryPrice,types=null,attempts={},minimum=false,stillReady=true}={}) {
   const placed=[],audits=[],plans=[];let reads=0;
   const execution=vm.runInNewContext(server.slice(executeStart,executeEnd)+'\nreturn {orderResult,plannedOrder};\n}\nexecutePlaceOrder',{
-    PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE,RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
+ activeNewEntryPolicy:()=>null,newEntrySizing,    PUMP_TURN_NEAR_SOURCE:'pump-turn-near-short',STRUCTURE_SOURCE,RISING_VOLUME_SOURCE:'rising-volume-sustained-1m',MAIN_DISTANCE_SOURCE:'main-kill-distance-entry',ZONE_MANUAL_SOURCE:'liquidity-zone-manual',
     ordersTokens:new Map(),runtimeSettings:{orderEnabled:true,dryRun:false},shortSetupWatch:{error:null},structureStillReady:()=>stillReady,
     autoEntryControls:{assertEntry:x=>controls.assertEntry(x),isProtectionExcluded:()=>excluded},
     normalizeSymbol:s=>s,isBinanceProtectionExcluded:()=>excluded,

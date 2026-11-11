@@ -57,7 +57,7 @@ export function livePumpZone(plan,point,now,nearPct=.75){
   const distancePct=price==null?null:price<plan.zoneLow?(plan.zoneLow-price)/price*100:price>plan.zoneHigh?(price-plan.zoneHigh)/price*100:0;
   const chased=price!=null&&(plan.side==='LONG'?price>plan.zoneHigh:price<plan.zoneLow);
   const drop=price!=null?(1-price/plan.peak)*100:null;
-  const invalid=plan.side==='SHORT'&&drop!=null&&(drop<0||drop>20);
+  const invalid=plan.side==='SHORT'&&!plan.shortFlowOnly&&drop!=null&&(drop<0||drop>20);
   const state=now>=plan.expiresAt?'EXPIRED':!fresh?'WAIT_PRICE':invalid?'INVALIDATED':chased?'CHASE':distancePct===0?'IN_ZONE':distancePct<=nearPct?'NEAR':'FAR';
   return {...plan,livePrice:price,liveAt:fresh?point.at:null,distancePct,state,alertEligible:plan.contextEligible&&['NEAR','IN_ZONE'].includes(state)};
 }

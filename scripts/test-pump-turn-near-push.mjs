@@ -57,7 +57,7 @@ const restartWatch=new PumpTurnWatch({...w,file:watchFile,onNearShortPush:()=>ev
 const independent=new PumpTurnWatch({...w,file:join(dir,'both.json'),discordSender:async()=>({sent:1}),nearShortEnabled:()=>true,onNearShort:()=>marketCalls++,onNearShortPush:()=>{throw Error('Push unavailable');}});
 await independent.scan();await new Promise(r=>setImmediate(r));assert.equal(marketCalls,1,'failed Push does not block independent MARKET callback');assert.equal(independent.history[0].delivery.status,'SENT');assert.equal(independent.error,null);
 // Worker allows native type, rejects expired and forces same-origin exact signal deep link.
-const listeners={},shown=[],opened=[],ctx={self:{addEventListener:(k,v)=>listeners[k]=v,skipWaiting(){},clients:{claim(){},matchAll:async()=>[],openWindow:async u=>opened.push(u)},location:{origin:'https://app.test'},registration:{showNotification:async(t,o)=>shown.push({t,o})}},URL,Date};
+const listeners={},shown=[],opened=[],ctx={AbortSignal,fetch:async()=>({ok:true,json:async()=>({enabled:true})}),self:{addEventListener:(k,v)=>listeners[k]=v,skipWaiting(){},clients:{claim(){},matchAll:async()=>[],openWindow:async u=>opened.push(u)},location:{origin:'https://app.test'},registration:{showNotification:async(t,o)=>shown.push({t,o})}},URL,Date};
 vm.runInNewContext(await readFile('public/opposite-liquidity-push-sw.js','utf8'),ctx);
 const current={...payload,expiresAt:Date.now()+30000};let tasks=[];listeners.push({data:{json:()=>current},waitUntil:p=>tasks.push(p)});await Promise.all(tasks);assert.equal(shown.length,1);
 listeners.push({data:{json:()=>({...current,expiresAt:Date.now()-1})},waitUntil:p=>tasks.push(p)});assert.equal(shown.length,1);

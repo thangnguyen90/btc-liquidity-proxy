@@ -62,14 +62,16 @@ export function simulateHeatmapPools({candles,markRows=[],oiRows=[],model,step,o
 export function buildBinanceHeatmapProfiles({query,plan,candles,markRows=[],oiRows=[],model}){
   const visible=candles.filter(c=>c.time>=plan.start),profiles=[];
   if(visible.length<3||visible.at(-1).end!==plan.end-1)throw Error('INSUFFICIENT_OR_STALE_CANDLES');
-  let oiVisible=0;
+  let oiVisible=0,markVisible=0;
   const metrics=simulateHeatmapPools({candles,markRows,oiRows,model,step:plan.step,onFrame:frame=>{
-    if(frame.candle.time<plan.start)return;if(frame.oiFresh)oiVisible++;
+    if(frame.candle.time<plan.start)return;if(frame.oiFresh)oiVisible++;if(frame.mark)markVisible++;
     if(frame.candle.time>=visible[Math.max(0,visible.length-4)].time)profiles.push(heatmapPoolProfile(frame));
   }});
   if(model===3&&(oiVisible<Math.ceil(visible.length*.5)||metrics.oiPairs<3))throw Error('INSUFFICIENT_OI');
   return {source:'BINANCE_LOCAL',symbol:query.symbol,range:query.range,step:plan.step,end:plan.end,profiles,
-    candles:visible.slice(-1).map(c=>({time:c.time,close:c.close})),calculationVersion:BINANCE_HEATMAP_MODEL_VERSION};
+    candles:visible.slice(-1).map(c=>({time:c.time,close:c.close,high:c.high,low:c.low})),
+    inputs:{markCoveragePct:markVisible/visible.length*100,oiCoveragePct:oiVisible/visible.length*100},
+    calculationVersion:BINANCE_HEATMAP_MODEL_VERSION};
 }
 export function buildBinanceLocalHeatmap({query,plan,candles,markRows=[],oiRows=[],model,now=Date.now()}){
   const visible=candles.filter(c=>c.time>=plan.start);

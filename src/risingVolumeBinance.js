@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {dirname} from 'node:path';
 import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
 import {evaluateRisingVolume} from './risingVolume.js';
+import {RISING_VOLUME_ALIGNED_VERSION,ALIGNED_ENTRY_GRACE_MS,validRisingVolumeAlignedProof} from './risingVolumeAlignedProof.js';
 import {buildRisingVolumeRatioProof,validRisingVolumeRatioProof,RISING_VOLUME_RATIO_RULE} from './risingVolumeRatioGate.js';
 import {RISING_VOLUME_VERSION,RISING_VOLUME_PATTERN_VERSION,classifyRisingVolumePattern,
   risingVolumeKey,risingVolumePatternKey,risingVolumeTradeKey,risingVolumePatternTradeKey} from '../public/rising-volume-model.js';
@@ -15,9 +16,19 @@ export const RISING_VOLUME_ENTRY_RULE=Object.freeze({longMarginUsdt:2,shortMargi
 export const risingVolumeMargin=side=>side==='LONG'?2:side==='SHORT'?1:null;
 export const RISING_VOLUME_ROUTES=Object.freeze(['LONG','SHORT'].map(side=>Object.freeze({
   source:RISING_VOLUME_SOURCE,streamId:RISING_VOLUME_STREAM,side,signalLabel:`RISING_VOLUME_1M_SUSTAINED_${side}`})));
+export const RISING_VOLUME_ALIGNED_STREAM='closed-1m-sustained-aligned';
+export const RISING_VOLUME_ALIGNED_LONG_VERSION='RISING_VOLUME_1M_ALIGNED_LONG5USDT_3X_TP5_SL20_V2_20261110';
+export const RISING_VOLUME_ALIGNED_RULE=Object.freeze({longMarginUsdt:5,shortMarginUsdt:2,leverage:3,
+  takeProfitRoePct:5,stopLossRoePct:20,maxOpenPositions:50});
+export function risingVolumeAlignedSizing(side) {
+  const {longMarginUsdt,shortMarginUsdt,...rule}=RISING_VOLUME_ALIGNED_RULE;
+  return {...rule,marginUsdt:side==='LONG'?longMarginUsdt:shortMarginUsdt};
+}
+export const RISING_VOLUME_ALIGNED_ROUTES=Object.freeze(['LONG','SHORT'].map(side=>Object.freeze({
+  source:RISING_VOLUME_SOURCE,streamId:RISING_VOLUME_ALIGNED_STREAM,side,signalLabel:'RISING_VOLUME_1M_SUSTAINED_ALIGNED_'+side})));
 const clone=value=>JSON.parse(JSON.stringify(value));
 const epoch=value=>typeof value==='number'?value:Date.parse(value??'');
-const routeFor=side=>RISING_VOLUME_ROUTES.find(r=>r.side===side)??null;
+const routeFor=(side,aligned=false)=>(aligned?RISING_VOLUME_ALIGNED_ROUTES:RISING_VOLUME_ROUTES).find(r=>r.side===side)??null;
 const routeKey=route=>JSON.stringify([route.source,route.streamId,route.signalLabel,route.side]);
 const exactNumber=(a,b)=>typeof a==='number'&&Number.isFinite(a)&&Math.abs(a-b)<1e-9;
 
@@ -38,39 +49,49 @@ export function isRisingVolumeEntrySignal(event={}) {
   return !!reevaluated&&reevaluated.side===s.side&&reevaluated.closedAt===s.closedAt
     &&exactNumber(s.price,reevaluated.price);
 }
-function buildMarketOrder(event={}, {now=Date.now(),enabledAt,startedAt,markPrice,ratioProof}={},legacy=false) {
+function buildMarketOrder(event={}, {now=Date.now(),enabledAt,startedAt,markPrice,ratioProof,alignedProof}={},legacy=false,legacyAlignedLong=false) {
   if(!isRisingVolumeEntrySignal(event))return null;
-  if(!legacy&&!validRisingVolumeRatioProof(event,ratioProof,now))return null;
+  const aligned=!legacy&&alignedProof!=null;
+  if(aligned?!validRisingVolumeAlignedProof(event,alignedProof,now):!legacy&&!validRisingVolumeRatioProof(event,ratioProof,now))return null;
   const s=event.snapshot,activation=epoch(enabledAt),start=epoch(startedAt),mark=Number(markPrice),rule=RISING_VOLUME_ENTRY_RULE;
   if(![now,activation,start,mark].every(Number.isFinite)||!(activation>0)||!(start>0)||!(mark>0)
     ||s.closedAt<=Math.max(activation,start)||s.closedAt>=s.observedAt||s.observedAt>now
-    ||now-s.closedAt>rule.maxAgeMs||Math.abs(mark/s.price-1)>rule.maxPriceDrift)return null;
-  const route=routeFor(s.side),direction=s.side==='LONG'?1:-1,tpFraction=.02,slFraction=.06;
-  const margin=legacy?3:risingVolumeMargin(s.side),version=legacy?RISING_VOLUME_LEGACY_VERSION:RISING_VOLUME_BINANCE_VERSION;
+    ||(!aligned&&now-s.closedAt>rule.maxAgeMs)||Math.abs(mark/s.price-1)>rule.maxPriceDrift)return null;
+  const route=routeFor(s.side,aligned),direction=s.side==='LONG'?1:-1;
+  const sizing=aligned?risingVolumeAlignedSizing(s.side):rule;
+  const {leverage,takeProfitRoePct,stopLossRoePct,maxOpenPositions}=sizing;
+  const tpFraction=takeProfitRoePct/(100*leverage),slFraction=stopLossRoePct/(100*leverage);
+  const margin=aligned?(legacyAlignedLong?2:sizing.marginUsdt):legacy?3:risingVolumeMargin(s.side);
+  const version=aligned
+    ?(s.side==='LONG'&&!legacyAlignedLong?RISING_VOLUME_ALIGNED_LONG_VERSION:RISING_VOLUME_ALIGNED_VERSION)
+    :legacy?RISING_VOLUME_LEGACY_VERSION:RISING_VOLUME_BINANCE_VERSION;
   return {...route,side:s.side==='LONG'?'BUY':'SELL',signalType:route.signalLabel,signalInterval:'1m',
     signalStageKey:'SUSTAINED_1M',signalCombo:`1m|SUSTAINED|${s.side}`,executionPage:'rising-volume-watch',
-    symbol:s.symbol,orderType:'MARKET',marginUsdt:margin,leverage:5,notionalUsdt:margin*5,
-    takeProfitRoePct:10,stopLossRoePct:30,maxOpenPositions:50,
+    symbol:s.symbol,orderType:'MARKET',marginUsdt:margin,leverage,notionalUsdt:margin*leverage,
+    takeProfitRoePct,stopLossRoePct,maxOpenPositions,
     signalEntryPrice:mark,takeProfitPrice:mark*(1+direction*tpFraction),stopLossPrice:mark*(1-direction*slFraction),
     takeProfitDistanceFraction:tpFraction,stopLossDistanceFraction:slFraction,
     protectionOnFill:true,preserveSignalProtection:true,fillAnchorEnabled:true,fillAnchorVersion:version,
     protectionSignalEntryPrice:mark,protectionSignalTakeProfitPrice:mark*(1+direction*tpFraction),
     protectionSignalStopLossPrice:mark*(1-direction*slFraction),allowMinNotionalCeil:false,dryRun:false,
-    entryExpiresAt:s.closedAt+rule.maxAgeMs,entryActivationAt:activation,entryRunnerStartedAt:start,
+    entryExpiresAt:aligned?alignedProof.entryAt+ALIGNED_ENTRY_GRACE_MS:s.closedAt+rule.maxAgeMs,entryActivationAt:activation,entryRunnerStartedAt:start,
     risingVolumeSignalId:event.id,risingVolumeSnapshot:clone(s),
-    ...(!legacy?{risingVolumeRatioProof:clone(ratioProof)}:{}),
+    ...(aligned?{risingVolumeAlignedProof:clone(alignedProof)}:!legacy?{risingVolumeRatioProof:clone(ratioProof)}:{}),
     matchedKeys:[risingVolumeKey('1m',s.side),risingVolumePatternKey('SUSTAINED')],
     clientOrderId:`rvs_${createHash('sha256').update(event.id).digest('hex').slice(0,28)}`,
     signalReason:`${version} | ${event.id} | MA5 ${s.maGrowthPct}% | volume ${s.volumeRatio}x | 1m nền ${s.pattern1mElevatedBars}/10 | giá ${s.priceChangePct}%`};
 }
 export function buildRisingVolumeMarketOrder(event={},options={}) {return buildMarketOrder(event,options);}
-function validMarketOrder(p={},markPrice=p.signalEntryPrice,now=Date.now(),legacy=false) {
-  const s=p.risingVolumeSnapshot,side=p.side==='BUY'?'LONG':p.side==='SELL'?'SHORT':null,route=routeFor(side);
+function validMarketOrder(p={},markPrice=p.signalEntryPrice,now=Date.now(),{legacy=false,recovery=false}={}) {
+  const aligned=!legacy&&[RISING_VOLUME_ALIGNED_VERSION,RISING_VOLUME_ALIGNED_LONG_VERSION].includes(p.fillAnchorVersion);
+  const s=p.risingVolumeSnapshot,side=p.side==='BUY'?'LONG':p.side==='SELL'?'SHORT':null,route=routeFor(side,aligned);
+  const legacyAlignedLong=recovery&&side==='LONG'&&p.fillAnchorVersion===RISING_VOLUME_ALIGNED_VERSION;
   const rebuilt=buildMarketOrder({id:p.risingVolumeSignalId,snapshot:s},
-    {now,enabledAt:p.entryActivationAt,startedAt:p.entryRunnerStartedAt,markPrice:p.signalEntryPrice,ratioProof:p.risingVolumeRatioProof},legacy);
+    {now,enabledAt:p.entryActivationAt,startedAt:p.entryRunnerStartedAt,markPrice:p.signalEntryPrice,ratioProof:p.risingVolumeRatioProof,alignedProof:aligned?p.risingVolumeAlignedProof:null},
+    legacy,legacyAlignedLong);
   if(!route||!rebuilt||p.source!==route.source||p.streamId!==route.streamId||p.signalLabel!==route.signalLabel
     ||p.symbol!==s.symbol||p.signalInterval!=='1m'||p.signalStageKey!=='SUSTAINED_1M'||p.orderType!=='MARKET'
-    ||p.fillAnchorVersion!==(legacy?RISING_VOLUME_LEGACY_VERSION:RISING_VOLUME_BINANCE_VERSION)||p.clientOrderId!==rebuilt.clientOrderId
+    ||p.fillAnchorVersion!==rebuilt.fillAnchorVersion||p.clientOrderId!==rebuilt.clientOrderId
     ||p.dryRun!==false||p.allowMinNotionalCeil!==false||p.protectionOnFill!==true
     ||p.preserveSignalProtection!==true||p.fillAnchorEnabled!==true
     ||!(Number(markPrice)>0)||Math.abs(Number(markPrice)/p.signalEntryPrice-1)>.005
@@ -112,8 +133,8 @@ export function buildRisingVolumeClosedStats(fills={}) {
 }
 
 export class RisingVolumeBinanceRunner {
-  constructor({file,controls,getContext,getRatioRows,submit,isProtectionExcluded=()=>false,now=()=>Date.now(),startedAt=now(),storage=null}={}) {
-    Object.assign(this,{file,controls,getContext,getRatioRows,submit,isProtectionExcluded,now,startedAt,storage});
+  constructor({file,controls,getContext,getRatioRows,submit,checkAlignedQuantity=null,isProtectionExcluded=()=>false,now=()=>Date.now(),startedAt=now(),storage=null}={}) {
+    Object.assign(this,{file,controls,getContext,getRatioRows,submit,checkAlignedQuantity,isProtectionExcluded,now,startedAt,storage});
     this.state=null;this.queue=Promise.resolve();this.error=null;
   }
   async load() {
@@ -139,8 +160,8 @@ export class RisingVolumeBinanceRunner {
     const controls=this.controls.read();
     return {version:RISING_VOLUME_BINANCE_VERSION,...RISING_VOLUME_ENTRY_RULE,ratioRule:RISING_VOLUME_RATIO_RULE,startedAt:this.startedAt,error:this.error,
       masterEnabled:controls.enabled===true,failClosed:controls.failClosed===true,
-      routes:RISING_VOLUME_ROUTES.map(route=>({...route,key:routeKey(route),enabled:controls.routes?.[routeKey(route)]?.enabled===true,
-        enabledAt:controls.routes?.[routeKey(route)]?.enabledAt??null,marginUsdt:risingVolumeMargin(route.side)})),
+      alignedRule:RISING_VOLUME_ALIGNED_RULE,routes:[...RISING_VOLUME_ROUTES,...RISING_VOLUME_ALIGNED_ROUTES].map(route=>({...route,key:routeKey(route),enabled:controls.routes?.[routeKey(route)]?.enabled===true,
+        enabledAt:controls.routes?.[routeKey(route)]?.enabledAt??null,marginUsdt:route.streamId===RISING_VOLUME_ALIGNED_STREAM?risingVolumeAlignedSizing(route.side).marginUsdt:risingVolumeMargin(route.side)})),
       attempts:Object.values(this.state?.attempts??{}).sort((a,b)=>b.at-a.at).slice(0,100)
         .map(({plan,...attempt})=>attempt)};
   }
@@ -155,33 +176,39 @@ export class RisingVolumeBinanceRunner {
       &&a.clientOrderId===String(clientOrderId)&&(!a.orderId||String(a.orderId)===String(orderId))
       &&['SUBMITTING','SUBMITTED','FILLED','NEW','UNKNOWN','ERROR_OR_UNKNOWN'].includes(a.status));
     if(!attempt?.plan||!validMarketOrder(attempt.plan,attempt.plan.signalEntryPrice,attempt.planBuiltAt,
-      attempt.plan.fillAnchorVersion===RISING_VOLUME_LEGACY_VERSION))return null;
+      {legacy:attempt.plan.fillAnchorVersion===RISING_VOLUME_LEGACY_VERSION,recovery:true}))return null;
     return clone(attempt.plan);
   }
-  process(event) {const run=this.queue.catch(()=>{}).then(()=>this.processEvent(event));this.queue=run.catch(()=>{});return run;}
-  async processEvent(event={}) {
+  process(event,alignedProof=null) {const run=this.queue.catch(()=>{}).then(()=>this.processEvent(event,alignedProof));this.queue=run.catch(()=>{});return run;}
+  async processEvent(event={},alignedProof=null) {
     try{await this.load();}catch(e){this.error=e.message;return {status:'state-error'};}
     if(!isRisingVolumeEntrySignal(event))return {status:'ineligible'};
-    const s=event.snapshot,route=routeFor(s.side),key=routeKey(route),controls=this.controls.read(),setting=controls.routes?.[key];
-    if(this.state.attempts[event.id])return {status:'deduped'};
+    const aligned=alignedProof!=null,s=event.snapshot,route=routeFor(s.side,aligned),key=routeKey(route);
+    const controls=this.controls.read(),setting=controls.routes?.[key],attemptId=aligned?event.id+'|aligned':event.id;
+    if(this.state.attempts[attemptId])return {status:'deduped'};
     if(!controls.enabled||setting?.enabled!==true)return {status:'off'};
-    if(!buildMarketOrder(event,{now:this.now(),enabledAt:setting.enabledAt,startedAt:this.startedAt,markPrice:s.price},true))
+    if(!buildMarketOrder(event,{now:this.now(),enabledAt:setting.enabledAt,startedAt:this.startedAt,markPrice:s.price,alignedProof},!aligned))
       return {status:'pre-enable-or-stale'};
+    const other=this.state.attempts[aligned?event.id:event.id+'|aligned'];
+    if(other?.clientOrderId||other?.orderId||['CHECKING','SUBMITTING','SUBMITTED','FILLED','UNKNOWN','ERROR_OR_UNKNOWN'].includes(other?.status))
+      return {status:'deduped-other-route'};
     // Reserve the whole observation BEFORE network IO. Even a blocked, failed or
     // unknown send is never automatically retried later as a stale/chasing entry.
-    const attempt={id:event.id,symbol:s.symbol,side:s.side,interval:'1m',at:this.now(),status:'CHECKING',
-      snapshotObservedAt:s.observedAt,closedAt:s.closedAt,marginUsdt:risingVolumeMargin(s.side),leverage:5,takeProfitRoePct:10,stopLossRoePct:30};
-    this.state.attempts[event.id]=attempt;
+    const sizing=aligned?risingVolumeAlignedSizing(s.side):{marginUsdt:risingVolumeMargin(s.side),leverage:5,takeProfitRoePct:10,stopLossRoePct:30};
+    const attempt={id:attemptId,symbol:s.symbol,side:s.side,interval:'1m',at:this.now(),status:'CHECKING',
+      snapshotObservedAt:s.observedAt,closedAt:s.closedAt,...sizing,
+      ...(aligned?{risingVolumeSignalId:event.id,risingVolumeAlignedProof:clone(alignedProof)}:{})};
+    this.state.attempts[attemptId]=attempt;
     try{await this.save();}catch(e){this.error=e.message;attempt.status='STATE_ERROR';return {status:'state-error'};}
     try {
       let reason=null;
       if(this.isProtectionExcluded(s.symbol))reason='PROTECTION_DISABLED';
-      const unresolved=Object.values(this.state.attempts).some(a=>a.id!==event.id&&a.symbol===s.symbol
+      const unresolved=Object.values(this.state.attempts).some(a=>a.id!==attemptId&&a.symbol===s.symbol
         &&['CHECKING','SUBMITTING','UNKNOWN','ERROR_OR_UNKNOWN'].includes(a.status));
       if(unresolved)reason='UNRESOLVED_PREVIOUS_ORDER';
       // No account/order IO for a ratio miss. Freeze the actual public response
       // before entry; missing/stale/failed data never grants MARKET permission.
-      if(!reason) {
+      if(!reason&&!aligned) {
         let rows;
         try{rows=await this.getRatioRows?.(s.symbol);}catch{reason='RATIO_UNAVAILABLE';}
         if(!reason) {
@@ -200,8 +227,12 @@ export class RisingVolumeBinanceRunner {
       if(!reason&&(!latest.enabled||current?.enabled!==true||current.enabledAt!==setting.enabledAt))reason='CONTROL_CHANGED';
       if(!reason&&this.isProtectionExcluded(s.symbol))reason='PROTECTION_DISABLED';
       const plan=reason?null:buildRisingVolumeMarketOrder(event,{now:this.now(),enabledAt:current.enabledAt,
-        startedAt:this.startedAt,markPrice:context.markPrice,ratioProof:attempt.risingVolumeRatioProof});
+        startedAt:this.startedAt,markPrice:context.markPrice,ratioProof:attempt.risingVolumeRatioProof,alignedProof});
       if(!reason&&!plan)reason='PRICE_OR_AGE_BLOCKED';
+      if(!reason&&aligned&&this.checkAlignedQuantity){
+        try{reason=await this.checkAlignedQuantity(plan);}catch{reason='CONTRACT_FILTERS_UNAVAILABLE';}
+      }
+      if(!reason&&aligned&&!validRisingVolumeOrder(plan,context.markPrice,this.now()))reason='PRICE_OR_AGE_BLOCKED';
       if(reason){attempt.status=reason;await this.save();return {status:reason};}
       this.controls.assertEntry(plan);attempt.status='SUBMITTING';attempt.clientOrderId=plan.clientOrderId;
       attempt.plan=clone(plan);attempt.planBuiltAt=this.now();await this.save();

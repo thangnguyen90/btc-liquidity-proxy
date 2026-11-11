@@ -71,10 +71,10 @@ assert.ok(start>0&&end>start);const handler=serverSource.slice(start,end);
 for(const [method,origin,expected] of [['GET',false,200],['POST',false,403],['POST',true,200],['DELETE',true,405]]){
   const outputs=[],calls={init:0,snapshot:0,update:0};
   await vm.runInNewContext('(async()=>{'+handler+'})()',{
-    requestUrl:new URL('http://local/api/pump-turn-watch?signal=X'),request:{method},response:{setHeader(){}},pumpTurnNearRunner:{snapshot:()=>({routeEnabled:false})},
+    requestUrl:new URL('http://local/api/pump-turn-watch?signal=X'),request:{method},response:{setHeader(){}},pumpTurnNearRunner:{snapshot:()=>({routeEnabled:false})},pumpTurnNearLongRunner:{snapshot:()=>({routeEnabled:true})},pumpTurnContextStats:async()=>[],
     pumpTurnWatch:{init:async()=>calls.init++,snapshot:id=>{calls.snapshot++;return {id};},update:async()=>{calls.update++;return {ok:true};}},
     isSameOriginWriteRequest:()=>origin,readJsonBody:async()=>({}),sendJson:async(_r,body,status=200)=>outputs.push({body,status})
   });
-  assert.equal(outputs[0].status,expected);assert.equal(calls.snapshot,method==='GET'?1:0);assert.equal(calls.update,method==='POST'&&origin?1:0);
+  assert.equal(outputs[0].status,expected);if(expected===200)assert.equal(outputs[0].body.binanceLong.routeEnabled,true);assert.equal(calls.snapshot,method==='GET'?1:0);assert.equal(calls.update,method==='POST'&&origin?1:0);
 }
 console.log('PASS frozen zones, backtest parity, closed/fresh/gap, durable dedupe/restart/unknown, max5, settings, Discord payload and secret handling');

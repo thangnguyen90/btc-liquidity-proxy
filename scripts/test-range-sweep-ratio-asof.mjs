@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {asofRatio} from './research-range-sweep-ratio-asof.mjs';
+const P=300000,rows=Array.from({length:10},(_,i)=>({timestamp:(i+1)*P,longShortRatio:1+i*.1}));
+const r=asofRatio(rows,8*P+1000,P);
+assert.equal(r.timestamp,7*P);
+assert.ok(Math.abs(r.change15Pct-(1.6/1.3-1)*100)<1e-8);
+assert.equal(asofRatio(rows,8*P+1000,2*P).timestamp,6*P);
+assert.equal(asofRatio(rows.filter(x=>x.timestamp!==6*P),8*P+1000,P),null);
+assert.equal(asofRatio(rows,20*P,P),null);
+assert.equal(asofRatio(rows,3*P,P),null);
+console.log('PASS ratio as-of: excludes recent/future data, 5m/10m lag, exact 15m baseline, gap/stale/short history rejected.');

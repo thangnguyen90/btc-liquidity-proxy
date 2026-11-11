@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFile,mkdtemp,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {PumpTurnWarmup,PUMP_TURN_WARMUP_POLICY as policy} from '../src/pumpTurnWarmup.js';
+import {PumpTurnWarmup,pumpTurnRowsWithSharedCache,PUMP_TURN_WARMUP_POLICY as policy} from '../src/pumpTurnWarmup.js';
 import {PumpTurnWatch} from '../src/pumpTurnWatch.js';
 import {KlineCache} from '../src/klineCache.js';
 import {BinanceRateGate} from '../src/binanceRateGate.js';
@@ -109,6 +109,25 @@ assert.equal(mergeCache.getIfCached('FINALUSDT','5m',1)[0].close,100,'REST reque
 assert.equal(mergeCache.getIfCached('FINALUSDT','5m',1)[0].isClosed,true);
 await mergeCache.seed(['FINALUSDT'],'5m',90,{force:true,subscribe:false});
 assert.equal(mergeCache.getIfCached('FINALUSDT','5m',1)[0].close,99.5,'REST requested after close can still repair historical data');
+
+const toShared=candles=>candles.map(r=>[r.openTime,r.open,r.high,r.low,r.close,r.volume,r.closeTime,r.quoteVolume,0,0,r.takerBuyQuoteVolume]);
+const staleOwn=rows(90,now-2*STEP),freshOwn=rows(90),freshShared=toShared(freshOwn);
+assert.equal(closedPumpRows(staleOwn,now).status,'STALE');
+assert.equal(closedPumpRows(pumpTurnRowsWithSharedCache(staleOwn,freshShared,now),now).lastClosedAt,freshOwn.at(-1).closeTime);
+assert.strictEqual(pumpTurnRowsWithSharedCache(freshOwn,freshShared,now),freshOwn);
+assert.strictEqual(pumpTurnRowsWithSharedCache(staleOwn,freshShared.slice(-1),now),staleOwn);
+const gaps=freshOwn.filter((_,i)=>i!==freshOwn.length-10);
+assert.equal(closedPumpRows(pumpTurnRowsWithSharedCache(gaps,freshShared,now),now).status,'READY');
+
+let seedClock=currentOpen+100;
+const forming=rows(1,currentOpen+STEP)[0];
+const safetyCache=new KlineCache({now:()=>seedClock,client:{getKlines:async()=>[{...forming,isClosed:undefined}]}});
+await safetyCache.seed(['PARTIALUSDT'],'5m',1,{subscribe:false});
+assert.equal(safetyCache.getIfCached('PARTIALUSDT','5m',1)[0].isClosed,false);
+seedClock=currentOpen+STEP+100;
+assert.equal(closedPumpRows(safetyCache.getIfCached('PARTIALUSDT','5m',1),seedClock).lastClosedAt,null,'a REST forming snapshot does not become final as time passes');
+await safetyCache.seed(['PARTIALUSDT'],'5m',1,{force:true,subscribe:false});
+assert.equal(closedPumpRows(safetyCache.getIfCached('PARTIALUSDT','5m',1),seedClock).lastClosedAt,forming.closeTime);
 
 // Repair has its own timer, even when Discord/storage holds the scanner busy.
 let subscriptions=0,seeded=0;

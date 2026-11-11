@@ -1,10 +1,21 @@
+async function webNotificationsAllowed() {
+  try {
+    const response = await fetch('/api/opposite-liquidity-web-push/config', { cache: 'no-store', signal: AbortSignal.timeout(8_000) });
+    return response.ok && (await response.json()).enabled === true;
+  } catch { return false; }
+}
 const SIGNAL_TYPE = 'LOCAL_AI_LIQUIDITY_BREAKOUT_OPPOSITE_DEPTH';
 const MANUAL_PRICE_SIGNAL_TYPE = 'MANUAL_BINANCE_PRICE_ALERT';
 const DISCORD_ROUTE_PREFIX = 'DISCORD_ROUTE:';
 const BTC_ALT_ICONS={BTC_NEUTRAL_ALT_STRONG:'neutral-strong',BTC_NEUTRAL_ALT_WEAK:'neutral-weak',BTC_UP_ALT_STRONG:'up-strong',BTC_UP_ALT_LAGGING:'up-lagging',WEAK_REBOUND:'weak',FRAGILE_REBOUND:'fragile',BTC_DOWN_ALT_RESILIENT:'down-resilient',BTC_DOWN_ALT_WEAK:'down-weak'};
 // Apply notification allowlist updates without waiting for every dashboard tab to close.
 self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
-self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('activate', event => event.waitUntil((async () => {
+  await self.clients.claim();
+  if (!await webNotificationsAllowed()) {
+    for (const notification of await self.registration.getNotifications()) notification.close();
+  }
+})()));
 
 const allowedSignalType = value => value === SIGNAL_TYPE
   || value === MANUAL_PRICE_SIGNAL_TYPE
@@ -28,7 +39,9 @@ self.addEventListener('push', (event) => {
   if (['BTC_ALT_WICK_RECOVERY_1M','COIN_PUMP_WICK_RECOVERY_1M','COIN_PUMP_WICK_EARLY_1M','COIN_PUMP_VOLUME_LONG_FLUSH_1M','BINANCE_SHORT_SETUP_WATCH','BTC_WEAK_ALT_REBOUND','BTC_ALT_MARKET_STATE','PUMP_TURN_NEAR_SHORT'].includes(data.signalType) && !(Number(data.expiresAt) > Date.now())) return;
   const icon=data.signalType==='BTC_ALT_MARKET_STATE'?`/btc-alt-state-${BTC_ALT_ICONS[data.state]}.svg`:data.signalType==='BTC_WEAK_ALT_REBOUND'?'/weak-alt-rebound-icon.svg':'/opposite-liquidity-icon.svg';
   const side = data.side === 'LONG' ? 'LONG' : 'SHORT';
-  event.waitUntil(self.registration.showNotification(
+  event.waitUntil((async () => {
+    if (!await webNotificationsAllowed()) return;
+    await self.registration.showNotification(
     data.title || `${side === 'LONG' ? '🔴' : '🟢'} ${side} · ${data.symbol || 'UNKNOWN'}`,
     {
       body: data.body || `${data.interval || '—'} · tín hiệu thanh khoản ngược chiều`,
@@ -44,7 +57,8 @@ self.addEventListener('push', (event) => {
         url: data.url || '/opposite-liquidity-manager',
       },
     },
-  ));
+    );
+  })());
 });
 
 self.addEventListener('notificationclick', (event) => {

@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {detect,ratioAt} from './research-wick-short-model.mjs';
+const S=900000,H=3600000;
+const rows=Array.from({length:100},(_,i)=>({t:i*S,o:100,h:100.1,l:99.9,c:100,q:100}));
+rows[70]={...rows[70],h:101.5,q:1000};rows[73]={...rows[73],h:101.5,q:1000};
+const events=detect(rows,0,100*S);assert.ok(events.length>0);
+const e=events[0];assert.equal(e.at,74*S);
+assert.deepEqual(detect(rows.slice(0,74),0,100*S),events);
+const mutated=rows.map((x,i)=>i>=74?{...x,h:200,l:1,c:50}:x);
+assert.deepEqual(detect(mutated,0,74*S+1)[0],e);
+const noVolume=rows.map(x=>({...x,q:100}));assert.equal(detect(noVolume,0,100*S).length,0);
+const gap=rows.filter((_,i)=>i!==65);assert.equal(detect(gap,0,100*S).length,0);
+const ratios=[{timestamp:2*H,longShortRatio:1},{timestamp:3*H,longShortRatio:.5},{timestamp:4*H,longShortRatio:3}];
+const r=ratioAt(ratios,4*H);assert.equal(r.at,3*H);assert.equal(r.shortRising,true);assert.ok(Math.abs(r.shortPct-100/1.5)<1e-9);
+assert.equal(ratioAt(ratios,7*H),null);assert.equal(ratioAt([],4*H),null);
+console.log('PASS: causal closed-bar detection, future isolation, volume requirement, gap rejection, ratio lag/staleness, independent short share');

@@ -28,7 +28,7 @@ for(const [active,expected] of [[true,0],[false,1],[undefined,0]]) {
   const context=vm.createContext({__oppositeLiquidityToastLoaded:true,
     window:{isSecureContext:true,Notification:{}},Notification:{permission:'granted'},
     navigator:{serviceWorker:{register:async()=>registration,ready:Promise.resolve()}},
-    fetch:async()=>({ok:true,json:async()=>({publicKey:'TEST',quietHoursActive:active})}),AbortSignal});
+    fetch:async()=>({ok:true,json:async()=>({enabled:true,publicKey:'TEST',quietHoursActive:active})}),AbortSignal});
   vm.runInContext(toastClient,context);
   await vm.runInContext("showPushNotification({eventId:'test',symbol:'BTCUSDT',side:'LONG',interval:'5m'})",context);
   assert.equal(nativeCount,expected,'native fallback quiet/missing config is fail-closed; toast unaffected');

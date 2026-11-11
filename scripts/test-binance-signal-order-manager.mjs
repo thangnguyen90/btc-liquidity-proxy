@@ -31,6 +31,16 @@ const record = (overrides = {}) => ({
   ...overrides,
 });
 
+const reboundCode = 'EXTREME_REBOUND_SWEEP_CONFIRMED';
+const reboundName = 'NẾN HỒI SAU XẢ · ĐÃ QUÉT CỤM SHORT';
+const reboundView = buildBinanceSignalOrderManagerSnapshot({
+  auditState:{fills:[record({signalLabel:reboundCode,signalType:reboundCode})]},
+  query:{search:'nến hồi sau xả',signalType:reboundCode},
+});
+assert.equal(reboundView.rows[0].signalDisplayName,reboundName);
+assert.equal(reboundView.rows[0].signalType,reboundCode);
+assert.deepEqual(reboundView.facets.signalTypes,[{value:reboundCode,count:1,displayName:reboundName}]);
+
 const auditState = {
   fills: {
     first: { record: record({ orderId: 1, filledNotionalUsdt: 10 }) },

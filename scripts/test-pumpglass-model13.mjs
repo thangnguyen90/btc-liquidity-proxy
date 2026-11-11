@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {planAt,FILTERS,modelExit} from './research-pumpglass-model13.mjs';
+const S=300000,T=1800000000000;
+const bars=Array.from({length:21},(_,i)=>({t:T+i*S,end:T+(i+1)*S,o:100,h:101,l:99,c:100,q:1000}));
+const at=bars.at(-1).end,liq={status:'OK',asOf:at-S,upperScore:100,lowerScore:40,upperGrowth15m:1.5,zones:[{low:104,high:104.5},{low:98,high:98.5}]};
+let f=planAt(bars,at,liq);assert.equal(f.target,104);assert(f.rr>=1.5);assert(FILTERS.UPPER_2X(f));assert(FILTERS.UPPER_GROWING(f));assert(!FILTERS.LOWER_RECLAIM(f));
+const swept=planAt(bars.map((b,i)=>i===20?{...b,l:97,c:100.5}:b),at,liq);assert(FILTERS.LOWER_RECLAIM(swept));
+assert(!FILTERS.UPPER_2X(planAt(bars,at,{status:'MISSING_OI'})));
+const touched=planAt(bars.map((b,i)=>i===20?{...b,h:104.1}:b),at,liq);assert.equal(touched.target,null,'target already touched excluded');
+const point={decision:at,entryAt:at+S};const raw=Array.from({length:97},(_,i)=>[at+i*S,100,101,99,100,100,at+(i+1)*S-1]);
+const end=point.entryAt+8*3600000;let trade=modelExit(raw,point,f,[],end);assert.equal(trade.status,'OK');assert.equal(trade.kind,'TIME');assert(Math.abs(trade.netRoe+.42)<1e-8);
+const both=raw.map((b,i)=>i===1?[b[0],100,105,97,100,100,b[6]]:b);trade=modelExit(both,point,f,[],end);assert.equal(trade.kind,'SL');assert(trade.ambiguous);
+const wait=raw.map((b,i)=>i===0?[b[0],100,105,99,100,100,b[6]]:b);assert.equal(modelExit(wait,point,f,[],end).status,'LEVELS_ALREADY_INVALID');
+assert.equal(modelExit(raw,point,f,[],end-1).status,'PRICE_GAP');
+const gap=raw.map((b,i)=>i===2?[b[0],95,96,94,95,100,b[6]]:b);assert.equal(modelExit(gap,point,f,[],end).kind,'SL_GAP');
+console.log('PASS combined study: availability, zones/target/reclaim, missing Model, causal levels, maturity, SL-first and gap exits.');

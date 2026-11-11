@@ -1,6 +1,7 @@
-const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V11_PUMP_TURN_PUSH_20261018';
+const VERSION = 'OPPOSITE_LIQUIDITY_SITEWIDE_TOAST_V12_MUTE_20261103';
+let webNotificationsEnabled = null;
 const STORAGE_KEY = 'opposite-liquidity-toast:seen-event-ids:v1';
-const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261018-pump-turn-push-v1';
+const SERVICE_WORKER_URL = '/opposite-liquidity-push-sw.js?v=20261103-web-mute-v1';
 const PUSH_CONFIG_URL = '/api/opposite-liquidity-web-push/config';
 const PUSH_SUBSCRIPTIONS_URL = '/api/opposite-liquidity-web-push/subscriptions';
 const FIRST_LOAD_RECENT_MS = 2 * 60_000;
@@ -69,6 +70,17 @@ function pushSupported() {
 }
 
 function updatePushControls({ message = '', subscribed = false, busy = false } = {}) {
+  if (webNotificationsEnabled !== true) {
+    for (const button of document.querySelectorAll('[data-opposite-liquidity-push]')) {
+      button.disabled = true;
+      button.dataset.subscribed = 'false';
+      button.textContent = webNotificationsEnabled === false ? 'Thông báo web: ĐÃ TẮT' : 'Đang kiểm tra thông báo…';
+    }
+    for (const help of document.querySelectorAll('[data-opposite-liquidity-push-help]')) {
+      help.textContent = webNotificationsEnabled === false ? 'Đã tắt thông báo nổi và Web Push trên toàn bộ web.' : '';
+    }
+    return;
+  }
   for (const button of document.querySelectorAll('[data-opposite-liquidity-push]')) {
     const installRequired = isIosWithoutHomeScreen();
     const permission = pushSupported() ? Notification.permission : 'unsupported';
@@ -111,7 +123,8 @@ async function pushConfig() {
   const response = await fetch(PUSH_CONFIG_URL, { cache: 'no-store', signal: AbortSignal.timeout(8_000) });
   if (!response.ok) throw new Error(`PUSH_CONFIG_HTTP_${response.status}`);
   const config = await response.json();
-  if (!config?.publicKey) throw new Error('PUSH_PUBLIC_KEY_MISSING');
+  webNotificationsEnabled = config.enabled === true;
+  if (webNotificationsEnabled && !config?.publicKey) throw new Error('PUSH_PUBLIC_KEY_MISSING');
   return config;
 }
 
@@ -146,6 +159,8 @@ async function disableWebPush(subscription) {
 }
 
 async function toggleWebPush() {
+  try { if ((await pushConfig()).enabled !== true) { updatePushControls(); return; } }
+  catch { return; }
   if (isIosWithoutHomeScreen()) {
     updatePushControls();
     return;
@@ -186,6 +201,17 @@ async function toggleWebPush() {
 }
 
 async function refreshWebPushState() {
+  try {
+    const config = await pushConfig();
+    if (config.enabled !== true) {
+      document.querySelector('#oppositeLiquidityToastStack')?.remove();
+      updatePushControls();
+      // Update the worker too, so already queued messages respect the server policy.
+      const registration = await pushRegistration();
+      for (const notification of await registration?.getNotifications?.() ?? []) notification.close();
+      return;
+    }
+  } catch { updatePushControls(); return; }
   if (isIosWithoutHomeScreen() || !pushSupported()) {
     updatePushControls();
     return;
@@ -209,6 +235,7 @@ async function showPushNotification(event) {
     // The local fallback must not bypass the server's quiet schedule when no subscription exists.
     // Missing config/network failure is fail-closed for native notifications, not the in-page toast.
     const config=await pushConfig();
+    if(config.enabled!==true)return;
     if(config.quietHoursActive!==false)return;
     const side = event.side === 'LONG' ? 'LONG' : 'SHORT';
     const ratio = finite(event.depth?.oppositeRatio);
@@ -251,6 +278,7 @@ function showToast(event) {
 }
 
 function handleNotifications(items) {
+  if (webNotificationsEnabled !== true) return;
   const notifications = (Array.isArray(items) ? items : [])
     .filter(event => event?.eventId && finite(event?.notifiedAt) != null)
     .sort((left, right) => finite(left.notifiedAt) - finite(right.notifiedAt));
@@ -286,6 +314,9 @@ async function poll() {
     if (!response.ok) return;
     const payload = await response.json();
     if (!String(payload?.version ?? '').startsWith('OPPOSITE_LIQUIDITY_MANAGER_')) return;
+    webNotificationsEnabled = payload.webPush?.enabled === true;
+    updatePushControls();
+    if (!webNotificationsEnabled) { document.querySelector('#oppositeLiquidityToastStack')?.remove(); return; }
     handleNotifications(payload.scanner?.browserNotifications);
   } catch {
     // A transient manager/API failure must never interrupt the host dashboard.

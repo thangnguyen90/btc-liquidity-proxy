@@ -1,15 +1,17 @@
-import {HEATMAP_LAB_VERSION,heatmapQuery,normalizeHeatmap,demoHeatmap} from './coinglass-heatmap-model.js?v=20261018-v3';
-import {HeatmapCanvas,priceText} from './coinglass-heatmap-canvas.js?v=20261022-v5-live-mark';
+import {mountHeatmapWhaleContext} from './heatmap-whale-context.js?v=1';
+import {HEATMAP_LAB_VERSION,heatmapQuery,normalizeHeatmap,demoHeatmap} from './coinglass-heatmap-model.js?v=20261026-v4-purple-contrast';
+import {HeatmapCanvas,priceText} from './coinglass-heatmap-canvas.js?v=20261026-v6-purple-contrast';
 import {HeatmapLivePrice} from './heatmap-live-price.js?v=20261022-v1';
 import {mountHeatmapTopRatio} from './heatmap-top-ratio.js?v=20261022-v2';
 import {mountHeatmapPriceAlerts} from './heatmap-price-alerts.js?v=20261018-v1';
-import {mountHeatmapSweepWatch} from './heatmap-sweep-watch.js?v=20261023-v7-no-price-drift';
+import {mountHeatmapSweepWatch} from './heatmap-sweep-watch.js?v=20261026-v12-lower-momentum';
 import {mountHeatmapManualOrders} from './heatmap-manual-order.js?v=20261022-v3-limit-capability';
 const $=id=>document.getElementById(id),datasets=new Map(),panels=new Map();
 const priceAlerts=mountHeatmapPriceAlerts();
 const sweepWatch=mountHeatmapSweepWatch();
 const manualOrders=mountHeatmapManualOrders();
 const topRatio=mountHeatmapTopRatio();
+const whaleContext=mountHeatmapWhaleContext();
 const names={DEMO:'DEMO · DỮ LIỆU MINH HỌA',IMPORT:'JSON · NGƯỜI DÙNG KHAI BÁO',BINANCE_LOCAL:'BINANCE · TỰ TÍNH ƯỚC LƯỢNG'};
 const errors={INVALID_QUERY:'Coin/range không hợp lệ. Dùng symbol Binance USDT.',FULL_MATRIX_REQUIRED:'File chỉ có zones/thiếu ma trận: cần y_axis, price_candlesticks và liquidation_leverage_data.',MODEL_MISMATCH:'Model trong file không khớp ô đang nhập.',SYMBOL_MISMATCH:'Coin trong file không khớp coin đã chọn.',RANGE_MISMATCH:'Khoảng thời gian trong file không khớp lựa chọn.',DATA_SIZE_LIMIT:'Ma trận quá lớn hoặc thiếu trục giá/nến.',INVALID_PRICE_AXIS:'Trục giá không hợp lệ.',INVALID_CANDLES:'Nến OHLC/timestamp không hợp lệ.',UNORDERED_CANDLES:'Nến cần theo thứ tự thời gian, không trùng.',INVALID_CELLS:'Ô heatmap có tọa độ/cường độ không hợp lệ.',DUPLICATE_CELL:'Có ô trùng tọa độ trong ma trận.',PROVIDER_RESPONSE_ERROR:'File chứa mã lỗi từ provider, không phải dữ liệu chart.'};
 let view=null,full=null,busy=false,epoch=0,controller=null,raf=0;
@@ -65,6 +67,7 @@ function draw(){
 }
 function clear({message='Chưa dựng heatmap từ Binance'}={}){
  topRatio.setSelection(null);
+ whaleContext.setSelection(null);
  livePrice.setSelection(null);
  manualOrders.setSelection(null);
  priceAlerts.setSelection(null);
@@ -87,7 +90,7 @@ function links(){try{const q=query();for(const a of document.querySelectorAll('[
 async function loadHeatmaps({automatic=false}={}){
  let q;try{q=query();}catch{clear({message:errors.INVALID_QUERY});return;}
  $('symbol').value=q.symbol;const searchUrl=new URL(location.href);searchUrl.searchParams.set('symbol',q.symbol);searchUrl.searchParams.set('range',q.range);searchUrl.searchParams.delete('demo');history.replaceState(null,'',searchUrl);
- clear({message:'Đang tải nến Binance, MARK và OI để tự dựng hai model…'});topRatio.setSelection(q);priceAlerts.setSelection(q);sweepWatch.setSelection(q);links();setBusy(true);const token=epoch;controller=new AbortController();const signal=controller.signal;
+ clear({message:'Đang tải nến Binance, MARK và OI để tự dựng hai model…'});topRatio.setSelection(q);whaleContext.setSelection(q);priceAlerts.setSelection(q);sweepWatch.setSelection(q);links();setBusy(true);const token=epoch;controller=new AbortController();const signal=controller.signal;
  try{
   let result;
   for(let attempt=0;attempt<(automatic?2:1);attempt++){
@@ -109,6 +112,7 @@ async function loadHeatmaps({automatic=false}={}){
    else {p.badge.textContent='CHƯA ĐỦ DỮ LIỆU';p.meta.textContent=item.message??'Model này chưa dựng được.';}
   }
   setSource(loaded?`Đã tự dựng ${loaded}/2 model từ Binance · CÁC VÙNG LÀ ƯỚC LƯỢNG.`:'Chưa dựng được hai model từ Binance. Kiểm tra thông báo từng khung hoặc thử tải lại.');
+  whaleContext.setModels(result.models);
   renderScenarios(result.scenarios?.symbol===q.symbol&&result.scenarios?.range===q.range?result.scenarios:null,'Chưa đủ hai model hoặc backend chưa cung cấp kịch bản cho dữ liệu này.');
  }catch(error){if(token===epoch){setSource('Không tải được dữ liệu Binance. Chưa dựng chart; thử lại sau.');renderScenarios(null,'Không tải được dữ liệu; chưa lập kịch bản.');}}finally{if(token===epoch)setBusy(false);}
 }
@@ -119,6 +123,7 @@ for(const input of document.querySelectorAll('[data-import]'))input.addEventList
  const file=input.files?.[0],model=Number(input.dataset.import);if(!file)return;
  const token=++epoch;controller?.abort();setBusy(false);
  topRatio.setSelection(null);
+ whaleContext.setSelection(null);
  livePrice.setSelection(null);
  manualOrders.setSelection(null);
  renderScenarios(null,'JSON nhập chỉ để đối chiếu chart; chưa xác minh nguồn để lập kịch bản.');

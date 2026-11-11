@@ -107,9 +107,9 @@ export class KlineCache extends EventEmitter {
             if (!Number.isFinite(openTime)) continue;
             // A REST snapshot requested before the close may arrive after the
             // final socket event. Never replace a proven final with that snapshot.
-            if (merged.get(openTime)?.isClosed === true && row.isClosed !== true
-              && Number(row.closeTime) >= requestedAt) continue;
-            merged.set(openTime, row);
+            const formingSnapshot = row.isClosed !== true && Number(row.closeTime) >= requestedAt;
+            if (merged.get(openTime)?.isClosed === true && formingSnapshot) continue;
+            merged.set(openTime, formingSnapshot ? { ...row, isClosed: false } : row);
           }
           const next = [...merged.values()]
             .sort((a, b) => Number(a.openTime) - Number(b.openTime))

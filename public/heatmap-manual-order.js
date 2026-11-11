@@ -22,7 +22,7 @@ export function mountHeatmapManualOrders(){
  function resultOf(r,original){
   const symbol=r.symbol??original.symbol,side=r.side??original.side,type=r.orderType??original.orderType??'MARKET',limitPrice=r.order?.limitPrice??r.limitPrice??original.limitPrice;
   if(r.status==='SUBMITTED'&&r.orderId){
-   say(`Binance đã nhận ${type} ${side} ${symbol}${type==='LIMIT'?' · giá '+limitPrice+' USDT · GTC':''} · order ID ${r.orderId} · ${r.marginUsdt??original.marginUsdt} USDT ×${r.leverage??original.leverage}x. Trạng thái sàn: ${r.exchangeStatus??'chờ đối soát'}. ${type==='LIMIT'?'Lệnh chờ đến khi khớp/hủy, không tự chuyển MARKET; xem/hủy ở Orders hoặc Binance. ':''}TP/SL theo chính sách lệnh tay, chờ xử lý sự kiện khớp; không coi đây là xác nhận TP/SL đã đặt.`);
+   say(`Binance đã nhận ${type} ${side} ${symbol}${type==='LIMIT'?' · giá '+limitPrice+' USDT · GTC':''} · order ID ${r.orderId} · ${r.marginUsdt??original.marginUsdt} USDT ×${r.leverage??original.leverage}x. Trạng thái sàn: ${r.exchangeStatus??'chờ đối soát'}. ${type==='LIMIT'?'Lệnh chờ đến khi khớp/hủy, không tự chuyển MARKET; xem/hủy ở Orders hoặc Binance. ':''}TP +10% ROE neo giá khớp; SL theo chính sách lệnh tay, chờ xử lý sự kiện khớp; không coi đây là xác nhận TP/SL đã đặt.`);
    return true;
   }
   if(r.status==='REJECTED'){say(`${type} ${side} ${symbol} bị chặn hoặc Binance từ chối: ${r.error??'Kiểm tra an toàn không đạt.'}`);return true;}
@@ -37,7 +37,7 @@ export function mountHeatmapManualOrders(){
   if(!Number.isFinite(marginUsdt)||marginUsdt<.01||marginUsdt>100||!Number.isInteger(leverage)||leverage<1||leverage>125){say('Margin 0,01–100 USDT; đòn bẩy nguyên 1–125x, còn phụ thuộc giới hạn của coin trên Binance.');return;}
   const limitPrice=Number($('heatmapOrderLimitPrice').value);
   if(orderType==='LIMIT'&&(!Number.isFinite(limitPrice)||limitPrice<=0)){say('Nhập giá LIMIT lớn hơn 0.');return;}
-  if(!confirm(`Đặt LỆNH THẬT Binance ${orderType} ${side} ${chosen.symbol}?\nMargin ${marginUsdt} USDT × ${leverage}x = ${marginUsdt*leverage} USDT.\n${orderType==='LIMIT'?`Giá LIMIT ${limitPrice} USDT · GTC, có thể khớp ngay nếu cắt giá thị trường. Chờ đến khi khớp/hủy tại Orders/Binance; không tự chuyển MARKET.`:'Dùng giá thị trường khi gửi, không phải giá trên chart; bỏ qua ô giá LIMIT.'}\nTP/SL dùng chính sách lệnh tay Orders hiện có sau khi khớp. Không DCA/đảo chiều vị thế đang mở.`))return;
+  if(!confirm(`Đặt LỆNH THẬT Binance ${orderType} ${side} ${chosen.symbol}?\nMargin ${marginUsdt} USDT × ${leverage}x = ${marginUsdt*leverage} USDT.\n${orderType==='LIMIT'?`Giá LIMIT ${limitPrice} USDT · GTC, có thể khớp ngay nếu cắt giá thị trường. Chờ đến khi khớp/hủy tại Orders/Binance; không tự chuyển MARKET.`:'Dùng giá thị trường khi gửi, không phải giá trên chart; bỏ qua ô giá LIMIT.'}\nTP +10% ROE tính từ giá khớp và đòn bẩy thực thi; SL theo chính sách lệnh tay hiện có. Không DCA/đảo chiều vị thế đang mở.`))return;
   const request={symbol:chosen.symbol,side,orderType,...(orderType==='LIMIT'?{limitPrice}:{}),marginUsdt,leverage,requestId:crypto.randomUUID(),requestedAt:Date.now(),confirm:true};
   records[chosen.symbol]={...request,final:false};save();busy=true;render();say(`Đang gửi ${orderType} ${side} ${chosen.symbol}… Không bấm lại khi kết quả chưa rõ.`);
   try{

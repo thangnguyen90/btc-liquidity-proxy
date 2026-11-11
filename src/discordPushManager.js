@@ -37,6 +37,7 @@ function humanizeKey(key) {
     LOCAL_AI_TREND_DISCORD_WEBHOOK_URL: 'AI Local · đánh giá xu hướng',
     LOCAL_AI_SIGNAL_REVIEW_DISCORD_WEBHOOK_URL: 'AI Local · tín hiệu pass điểm vào',
     MARKET_BREADTH_SHOCK_DISCORD_WEBHOOK_URL: 'BTC / Market breadth shock',
+    PARABOLIC_PUMP_RISK_DISCORD_WEBHOOK_URL: 'Bơm dựng đứng · nghi tích lũy / tăng tốc / xả',
     BTC_SESSION_WATCH_DISCORD_WEBHOOK_URL: 'BTC Session Watch',
     BTC_RELATIVE_STRENGTH_DISCORD_WEBHOOK_URL: 'BTC Relative Strength',
     BINANCE_FILLED_SIGNAL_AUDIT_WEBHOOK_URL: 'Binance · lệnh đã khớp',
@@ -274,6 +275,7 @@ export class DiscordPushManager {
     return {
       ...this.snapshotSync(),
       webPush: {
+        enabled: webPush.enabled,
         configured: webPush.configured,
         subscriptionCount: webPush.subscriptionCount,
         maxSubscriptions: webPush.maxSubscriptions,

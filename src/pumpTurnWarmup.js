@@ -1,9 +1,24 @@
-import {closedPumpRows} from '../public/pump-turn-model.js';
+import {closedPumpRows,STEP} from '../public/pump-turn-model.js';
+import {mergeEarlyPumpBars} from './earlyPumpWatch.js';
+export const PUMP_TURN_CLOSED_COVERAGE_VERSION='PUMP_TURN_5M_SHARED_CLOSED_CACHE_V3_20261110';
 
 export const PUMP_TURN_WARMUP_VERSION='PUMP_TURN_5M_REPAIR_V2_BOUNDED_PRIORITY6_20261018';
 export const PUMP_TURN_WARMUP_POLICY=Object.freeze({intervalMs:10000,maxPerCycle:6,prioritySlots:2,
   limit:90,retryMs:60000,maxAgeMs:375000,requestPriority:6});
 const symbolsOf=xs=>[...new Set((Array.isArray(xs)?xs:[]).filter(s=>/^[\p{L}\p{N}]{1,32}USDT$/u.test(s??'')))];
+
+// Reuse collected price history before starting a second repair.
+export function pumpTurnRowsWithSharedCache(primary,shared,now){
+  if(!shared?.length)return primary;
+  const own=closedPumpRows(primary,now);
+  if(own.status==='READY'&&own.lastClosedAt===Math.floor(now/STEP)*STEP-1)return primary;
+  const merged=mergeEarlyPumpBars(shared.slice(-90),primary,now).slice(-90).map(b=>({
+    openTime:b.t,closeTime:b.end-1,open:b.o,high:b.h,low:b.l,close:b.c,
+    volume:0,quoteVolume:b.q,takerBuyQuoteVolume:b.buy,isClosed:true,
+  }));
+  const combined=closedPumpRows(merged,now);
+  return combined.status==='READY'&&(own.status!=='READY'||combined.lastClosedAt>own.lastClosedAt)?merged:primary;
+}
 
 // Repair the exact closed tail the detector validates. A long cache or a recent
 // socket tick alone does not prove that its closed candles are continuous.
@@ -66,7 +81,7 @@ export class PumpTurnWarmup{
     const symbols=symbolsOf(this.getSymbols());
     for(const symbol of symbols){const r=closedPumpRows(this.getRows(symbol),now);counts[r.status]++;
       if(r.status!=='READY'&&samples.length<5)samples.push({symbol,status:r.status,reason:r.reason,bars:r.bars,lastClosedAt:r.lastClosedAt});}
-    return {version:PUMP_TURN_WARMUP_VERSION,independentOfCoreWarmup:true,policy:PUMP_TURN_WARMUP_POLICY,
+    return {version:PUMP_TURN_WARMUP_VERSION,closedCoverageVersion:PUMP_TURN_CLOSED_COVERAGE_VERSION,independentOfCoreWarmup:true,policy:PUMP_TURN_WARMUP_POLICY,
       busy:this.busy,updatedAt:this.lastCompletedAt,lastCycleAt:this.lastCycleAt,total:symbols.length,ready:counts.READY,
       pending:symbols.length-counts.READY,counts,attempted:this.attempted,refreshed:this.refreshed,failed:this.failed,
       lastBatch:[...this.lastBatch],deferredReason:this.deferredReason,error:this.error,samples};

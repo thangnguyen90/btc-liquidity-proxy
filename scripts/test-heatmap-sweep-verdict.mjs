@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';import {reviewSweep,sweepVerdictFields} from '../src/heatmapSweepVerdict.js';import {SweepPositionAnalysis} from '../src/heatmapSweepPositionAnalysis.js';import {createHeatmapSweepDiscordSender} from '../src/heatmapSweepDiscord.js';
+const S=300000,end=1794045900000,at=end+100000,e={id:'x',symbol:'APRUSDT',direction:'LOWER',kind:'LOWER_CLUSTER_SWEPT',at,markPrice:99,clearedCount:1,totalCount:2,zones:[{low:99.5,high:100,cleared:true},{low:97,high:98,cleared:false}],zonesAsOf:end-1,armedAt:end,viewRange:'24h'};
+const rows=Array.from({length:13},(_,i)=>{const t=end-(13-i)*S,c=103-i*.3;return[t,c+.2,c+.3,c-.02,c,1,t+S-1,1000];});
+const v=reviewSweep(e,{rows,now:at});assert.equal(v.state,'PRESSURE');assert.match(v.title,/CHƯA LONG/);assert.equal(v.reclaimLevel,100);assert.equal(v.remainingCount,1);assert.equal(v.price.closedAfterSweep,false);
+assert.equal(reviewSweep(e,{rows:[],now:at}).state,'WAIT');assert.equal(reviewSweep(e,{rows,now:at+31000}).state,'MISSING');
+const future=[end,99,104,98,103,1,end+S-1,1000];assert.deepEqual(reviewSweep(e,{rows:[...rows,future],now:at}),v);
+const u={...e,direction:'UPPER',markPrice:100,zones:[{low:99,high:99.5,cleared:true},{low:102,high:103,cleared:false}]};const upRows=rows.map((b,i)=>{const c=97+i*.3;return[b[0],c-.2,c+.02,c-.3,c,1,b[6],1000];});assert.match(reviewSweep(u,{rows:upRows,now:at}).title,/CHƯA SHORT.*TĂNG/);
+const after={...e,at:end+S-1000};assert.equal(reviewSweep(after,{rows:[...rows,future],now:end+S+1000}).state,'RECLAIM_OBSERVED');
+const p={symbol:e.symbol,at,point:{sourceAt:at-1000,whaleLong:10,smartLong:20}};assert.equal(reviewSweep(e,{position:p,now:at}).state,'PRESSURE');
+assert.equal(reviewSweep(e,{position:{...p,point:{...p.point,sourceAt:at-1000000}},now:at}).state,'WAIT');
+assert.ok(sweepVerdictFields(v).every(f=>f.value.length<1024));
+let calls=0;const sender=createHeatmapSweepDiscordSender({webhookUrl:'https://discord.com/api/webhooks/123/test',getAnalysis:async()=>{throw Error('source');},getReview:()=>v,fetchImpl:async(url,o)=>{calls++;assert.match(o.body,/CHƯA LONG/);return{ok:true,status:204};}});const r=await sender(e);assert.equal(r.sweepVerdict.state,'PRESSURE');assert.equal(calls,1);
+const fresh={sourceAt:at-60000,observedAt:at-1000,whaleLong:20,smartLong:30,crowdLong:70,whaleCount:20};const provider=new SweepPositionAnalysis({now:()=>at,getPoints:()=>[fresh],loadRatio:()=>new Promise(()=>{})});const start=Date.now(),context=await provider.get(e);assert.ok(Date.now()-start<2700);assert.equal(context.point.whaleLong,20);assert.equal(context.top,null);
+console.log('PASS both directions, no-future reclaim, stale guards, missing whale independent verdict, cached partial survives slow ratio, sender failure isolation');

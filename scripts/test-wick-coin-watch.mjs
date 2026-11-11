@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import {aggregateWickBars,findWickCoins,currentWickRatio,WickCoinWatch,WICK_COIN_EXPANDED_RULE} from '../src/wickCoinWatch.js';
+const S=900000;
+const input=Array.from({length:180},(_,i)=>[i*300000,100,100.1,99.9,100,1,i*300000+299999,100]);
+const rows=aggregateWickBars(input,180*300000);assert.equal(rows.length,60);assert.equal(rows[0].q,300);
+assert.equal(aggregateWickBars(input.slice(1),180*300000).length,59);
+assert.equal(aggregateWickBars(input,179*300000).length,59);
+rows[50]={...rows[50],h:110,q:2000000};
+const es=findWickCoins(rows,60*S);assert.equal(es.length,1);assert.equal(es[0].at,51*S);
+const future=rows.map((x,i)=>i>50?{...x,h:999,l:.01}:x);assert.deepEqual(findWickCoins(future,51*S),es);
+assert.equal(findWickCoins(rows.filter((_,i)=>i!==40),60*S).length,0);
+const small=rows.map((b,i)=>i===50?{...b,h:101.5}:b);assert.equal(findWickCoins(small,60*S).length,0,'Large volume on a small candle must not qualify');
+const illiquid=rows.map((b,i)=>i===50?{...b,q:999999}:b);assert.equal(findWickCoins(illiquid,60*S).length,0,'Tiny notional spike must not qualify');
+const {fixtures}=JSON.parse(await fs.readFile(new URL('./fixtures/wick-coin-ain-brett.json',import.meta.url),'utf8'));
+for(const fixture of fixtures)assert.equal(findWickCoins(fixture.rows,fixture.at).some(e=>e.at===fixture.at),fixture.expected,'Reference '+fixture.symbol+' '+new Date(fixture.at).toISOString());
+assert.equal(currentWickRatio([{timestamp:1,longShortRatio:.5}],99999999),null);
+assert.equal(currentWickRatio([{timestamp:1000000,longShortRatio:.5},{timestamp:3000000,longShortRatio:10}],2000000).ratio,.5);
+let calls=0;const watch=new WickCoinWatch({now:()=>100000,loadContext:async()=>{calls++;return {global:null};}});assert.equal(await watch.enrich('AINUSDT'),true);assert.equal(await watch.enrich('AINUSDT'),true);assert.equal(calls,1);assert.equal(await watch.enrich('BTCUSDT'),false);
+console.log('PASS: 5m aggregation, incomplete/unclosed exclusion, early wick, causal/gap checks, stale/future ratio, context cache and global budget');
+
+const expanded=rows.map((b,i)=>i===50?{...b,h:105,q:600000}:b);
+assert.equal(findWickCoins(expanded,60*S).length,0);
+assert.equal(findWickCoins(expanded,60*S,WICK_COIN_EXPANDED_RULE).length,1,'medium impulse appears only in expanded tier');
+assert.equal(findWickCoins(small,60*S,WICK_COIN_EXPANDED_RULE).length,0,'tiny candles still excluded in expanded tier');
+for(const f of fixtures.filter(f=>f.symbol.includes('BRETT')))assert.equal(findWickCoins(f.rows,f.at,WICK_COIN_EXPANDED_RULE).length,0,'BRETT reference still excluded');
+const {mkdtemp,rm,writeFile}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
+const testDir=await mkdtemp(join(tmpdir(),'wick-tier-test-'));
+try {const raw=input.map((b,i)=>i===150?[b[0],100,105,99.9,100,1,b[6],600000]:b);
+await writeFile(join(testDir,'TESTUSDT.json'),JSON.stringify({symbol:'TESTUSDT',price:raw}));
+const tierWatch=new WickCoinWatch({directory:testDir,now:()=>60*S});await tierWatch.refresh();const snap=await tierWatch.snapshot();assert.equal(snap.rows.length,1);assert.equal(snap.rows[0].tier,'EXPANDED');assert.equal(snap.strictRows.length,0);assert.equal(snap.affectsOrders,false);
+raw[150][2]=110;raw[150][7]=2000000;await writeFile(join(testDir,'TESTUSDT.json'),JSON.stringify({symbol:'TESTUSDT',price:raw}));await tierWatch.refresh();const strong=await tierWatch.snapshot();assert.equal(strong.rows[0].strictCount,1);assert.equal(strong.strictRows.length,1);assert.deepEqual(strong.strictRows[0].events,findWickCoins(aggregateWickBars(raw,60*S),60*S));
+}finally{await rm(testDir,{recursive:true,force:true});}
+console.log('PASS expanded tier, old strict events unchanged, tiny-candle/BRETT exclusion, both API cohorts');

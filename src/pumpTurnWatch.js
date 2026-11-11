@@ -2,14 +2,23 @@ import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {PUMP_TURN_VERSION as VERSION,closedPumpRows,plannedPumpZones,confirmationChecks,livePumpZone} from '../public/pump-turn-model.js';
 import {PumpTurnWarmup} from './pumpTurnWarmup.js';
+import {capturePumpTurnLongPhase} from './pumpTurnNearShortBinance.js';
+import {capturePumpTurnContext,PUMP_TURN_CONTEXT_VERSION} from '../public/pump-turn-context-model.js';
+import {captureLongContext,PUMP_TURN_LONG_CONTEXT_VERSION} from '../public/pump-turn-long-context-model.js';
+import {buildEarlyFlowZone,captureEarlyFlowContext,isEarlyFlow,EARLY_SHORT_VERSION,EARLY_SHORT_POLICY,EARLY_LONG_VERSION,EARLY_LONG_POLICY} from '../public/pump-turn-early-short-model.js';
+import {plannedShortFlowZone,captureShortFlowContext,SHORT_FLOW_VERSION} from '../public/pump-turn-short-flow-model.js';
 const DAY=86400000;
 const validSymbol=s=>/^[\p{L}\p{N}]{1,32}USDT$/u.test(s??'');
 const copy=x=>structuredClone(x);
+function captureFlowContext(event){
+  const key=event.side==='LONG'?'earlyLongContext':'earlyShortContext';
+  event[key]=captureEarlyFlowContext(event);
+}
 export class PumpTurnWatch{
-  constructor({file,getSymbols=()=>[],getRows=()=>[],getLive=()=>null,seed=null,subscribe=null,blocked=()=>false,discordSender=null,onNearShort=null,nearShortEnabled=()=>false,onNearShortPush=null,nearShortPushEnabled=()=>false,now=Date.now}={}){
-    Object.assign(this,{file,getSymbols,getRows,getLive,seed,blocked,discordSender,onNearShort,nearShortEnabled,onNearShortPush,nearShortPushEnabled,now});
+  constructor({file,getSymbols=()=>[],getRows=()=>[],getForming=()=>null,getLive=()=>null,seed=null,subscribe=null,blocked=()=>false,discordSender=null,onNearShort=null,nearShortEnabled=()=>false,onNearLong=null,nearLongEnabled=()=>false,getLongPhaseRows=()=>[],nearExecutionLeverage=()=>5,onNearShortPush=null,nearShortPushEnabled=()=>false,now=Date.now}={}){
+    Object.assign(this,{file,getSymbols,getRows,getForming,getLive,seed,blocked,discordSender,onNearShort,nearShortEnabled,onNearLong,nearLongEnabled,getLongPhaseRows,nearExecutionLeverage,onNearShortPush,nearShortPushEnabled,now});
     this.startedAt=now();this.settings={discordEnabled:true,nearPct:.75};this.history=[];this.confirmed=[];this.lastAlerts={};this.rows=[];this.coverage={total:0,ready:0,updatedAt:null};
-    this.busy=false;this.error=null;this.initPromise=null;
+    this.earlyPending=new Map();this.busy=false;this.error=null;this.initPromise=null;
     this.warmer=new PumpTurnWarmup({getSymbols,getRows,seed,subscribe,blocked,now,
       getPrioritySymbols:()=>[...this.rows.filter(r=>r.side==='SHORT'&&['NEAR','IN_ZONE'].includes(r.state)).map(r=>r.symbol),
         ...this.history.filter(e=>e.side==='SHORT'&&now()-e.observedAt<3600000).slice(-10).reverse().map(e=>e.symbol)]});
@@ -41,7 +50,17 @@ export class PumpTurnWatch{
         const read=closedPumpRows(this.getRows(symbol),now);
         if(read.status!=='READY'){coverage[read.status==='STALE'?'stale':read.status==='INSUFFICIENT'?'insufficient':'gap']++;continue;}
         coverage.ready++;const closed=read.rows,last=closed.at(-1),point=this.getLive(symbol);
-        const next=plannedPumpZones(symbol,closed).filter(p=>p.contextEligible).map(p=>livePumpZone(p,point,now,this.settings.nearPct));
+        const shortFlow=plannedShortFlowZone(symbol,closed);
+        const next=[...plannedPumpZones(symbol,closed),...(shortFlow?[shortFlow]:[])].filter(p=>p.contextEligible).map(p=>livePumpZone(p,point,now,this.settings.nearPct));
+        const early=buildEarlyFlowZone(symbol,closed,this.getForming(symbol),point,now);
+        if(early){
+          const prior=this.earlyPending.get(symbol),same=prior&&prior.side===early.side&&prior.formingAt===early.earlyFormingAt&&now-prior.lastAt<=25000;
+          const pending=same?{...prior,lastAt:now,samples:prior.samples+(point.at>prior.liveAt?1:0),liveAt:point.at}
+            :{side:early.side,formingAt:early.earlyFormingAt,firstAt:now,lastAt:now,liveAt:point.at,samples:1};
+          this.earlyPending.set(symbol,pending);
+          if(pending.samples>=2&&now-pending.firstAt>=EARLY_SHORT_POLICY.sustainMs)
+            next.push({...early,earlyFirstAt:pending.firstAt,earlySustainMs:now-pending.firstAt,earlySamples:pending.samples});
+        }else this.earlyPending.delete(symbol);
         const priorPlans=plannedPumpZones(symbol,closed.slice(0,-1));
         const passed=priorPlans.map(p=>({...p,...confirmationChecks(p,last)})).filter(p=>p.passed);
         for(const p of passed){
@@ -53,23 +72,39 @@ export class PumpTurnWatch{
           const row=livePumpZone({...p,id:e.id,asOf:last.end,expiresAt:last.end+300001,chart:closed.slice(-48),confirmation:e,contextEligible:true},point,now,this.settings.nearPct);
           row.closedConfirmed=true;row.alertEligible=false;out.push(row);
         }
+        for(const row of next)if(['NEAR','IN_ZONE'].includes(row.state)){
+          row.observedAt=now;if(isEarlyFlow(row))captureFlowContext(row);else if(row.side==='LONG')row.longContext=captureLongContext(row);else if(row.shortFlowOnly)row.shortFlowContext=captureShortFlowContext(row);else row.nearContext=capturePumpTurnContext(row);
+        }
         out.push(...next);
         for(const row of next){
           if(updates.length>=5)break;
-          const key=symbol+':'+row.side;
-          const trading=row.side==='SHORT'&&this.onNearShort&&this.nearShortEnabled();
-          const pushing=row.side==='SHORT'&&this.onNearShortPush&&this.nearShortPushEnabled();
+          const earlyFlow=isEarlyFlow(row);
+          if(earlyFlow&&updates.filter(e=>isEarlyFlow(e)&&e.side===row.side).length>=EARLY_SHORT_POLICY.maxPerCycle)continue;
+          const key=symbol+':'+(earlyFlow?row.side+'_FLOW_EARLY':row.shortFlowOnly?'SHORT_FLOW':row.side);
+          const strongLong=row.side==='LONG'&&row.longContext?.label==='STRONG_BUY';
+          let trading=!earlyFlow&&(row.side==='SHORT'?!row.shortFlowOnly&&this.onNearShort&&this.nearShortEnabled():this.onNearLong&&strongLong&&this.nearLongEnabled());
+          const pushing=!earlyFlow&&row.side==='SHORT'&&!row.shortFlowOnly&&this.onNearShortPush&&this.nearShortPushEnabled();
           if(!row.alertEligible||(!(this.settings.discordEnabled&&this.discordSender)&&!trading&&!pushing)||point?.at<this.startedAt||now-(this.lastAlerts[key]??0)<3600000)continue;
-          const e={...row,chart:undefined,id:'pump-turn-near:'+row.id,observedAt:now,marketRuleEnabled:!!trading,delivery:{status:'PENDING'}};
+          const e={...row,chart:undefined,id:'pump-turn-near:'+row.id,observedAt:now,marketRuleEnabled:!!trading,marketExecutionLeverage:this.nearExecutionLeverage(),delivery:{status:'PENDING'}};
+          if(earlyFlow)captureFlowContext(e);else if(e.shortFlowOnly)e.shortFlowContext=captureShortFlowContext(e);else if(e.side==='SHORT')e.nearContext=capturePumpTurnContext(e);else e.longContext=captureLongContext(e);
+          let phaseRows;
+          if(strongLong){
+            try{phaseRows=this.getLongPhaseRows(symbol,now);}catch{phaseRows=[];}
+            e.longPumpPhase=capturePumpTurnLongPhase(e,phaseRows);
+            if(e.longPumpPhase.state!=='FIRST_PUSH'){trading=false;e.marketRuleEnabled=false;}
+          }
+          if(!(this.settings.discordEnabled&&this.discordSender)&&!trading&&!pushing)continue;
           this.lastAlerts[key]=now;this.history.push(e);updates.push(e);
-          if(trading)proofs.set(e.id,{...copy(e),nearPct:this.settings.nearPct,preRows:copy(closed.slice(-72))});
+          if(trading)proofs.set(e.id,{...copy(e),nearPct:this.settings.nearPct,preRows:copy(closed.slice(-72)),
+            ...(e.side==='LONG'?{phaseRows:copy(phaseRows)}:{})});
           if(pushing)pushIds.add(e.id);
           // Avoid an initial burst monopolizing the scanner. Other eligible coins remain for a later cycle.
         }
       }
+      for(const [symbol,p] of this.earlyPending)if(now-p.lastAt>30000)this.earlyPending.delete(symbol);
       this.rows=out;this.coverage=coverage;this.confirmed.push(...confirmed);
       if(updates.length||confirmed.length)await this.save(); // reserve before POST, no replay after unknown delivery/restart
-      for(const e of updates)if(proofs.has(e.id))void Promise.resolve().then(()=>this.onNearShort(proofs.get(e.id))).catch(()=>{});
+      for(const e of updates)if(proofs.has(e.id))void Promise.resolve().then(()=> (e.side==='LONG'?this.onNearLong:this.onNearShort)(proofs.get(e.id))).catch(()=>{});
       for(const e of updates)if(pushIds.has(e.id))void Promise.resolve().then(()=>this.onNearShortPush(copy(e))).catch(()=>{});
       for(const e of updates){
         if(!this.settings.discordEnabled||!this.discordSender){e.delivery={status:'DISABLED'};continue;}
@@ -88,6 +123,8 @@ export class PumpTurnWatch{
     const now=this.now(),rank={IN_ZONE:0,NEAR:1,FAR:2,WAIT_PRICE:3,CHASE:4,INVALIDATED:5,EXPIRED:6};
     const rows=this.rows.map(r=>({...r,state:now>=r.expiresAt?'EXPIRED':r.liveAt&&now-r.liveAt>30000?'WAIT_PRICE':r.state})).sort((a,b)=>(rank[a.state]??9)-(rank[b.state]??9)||(a.distancePct??Infinity)-(b.distancePct??Infinity));
     const selected=id?[...rows,...this.history,...this.confirmed].find(e=>e.id===id)??null:null;
-    return copy({version:VERSION,observeOnly:true,settings:this.settings,discordConfigured:!!this.discordSender,error:this.error,startedAt:this.startedAt,coverage:this.coverage,warmup:this.warmer.snapshot(),warmupError:this.warmer.error,rows,history:this.history.slice(-100).reverse(),confirmed:this.confirmed.slice(-100).reverse(),selected});
+    const pending=[...this.earlyPending.values()];
+    const earlyLongPolicy={version:EARLY_LONG_VERSION,...EARLY_LONG_POLICY,pending:pending.filter(p=>p.side==='LONG').length,observeOnly:true,affectsOrders:false};
+    return copy({version:VERSION,contextVersion:PUMP_TURN_CONTEXT_VERSION,longContextVersion:PUMP_TURN_LONG_CONTEXT_VERSION,shortFlowVersion:SHORT_FLOW_VERSION,earlyShortPolicy:{version:EARLY_SHORT_VERSION,...EARLY_SHORT_POLICY,pending:pending.filter(p=>p.side==='SHORT').length,observeOnly:true,affectsOrders:false},earlyLongPolicy,observeOnly:true,settings:this.settings,discordConfigured:!!this.discordSender,strongLongDiscordRoute:this.discordSender?.strongLongRoute??null,error:this.error,startedAt:this.startedAt,coverage:this.coverage,warmup:this.warmer.snapshot(),warmupError:this.warmer.error,rows,history:this.history.slice(-100).reverse(),confirmed:this.confirmed.slice(-100).reverse(),selected});
   }
 }

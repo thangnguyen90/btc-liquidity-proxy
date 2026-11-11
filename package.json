@@ -4,10 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:discord-heatmap-links": "node scripts/test-discord-heatmap-links.mjs",
+    "test:parabolic-pump-risk": "node scripts/test-parabolic-pump-risk-watch.mjs && node scripts/test-parabolic-prepump-confluence.mjs",
     "test:heatmap-top-ratio": "node scripts/test-heatmap-top-ratio.mjs && node scripts/test-heatmap-top-ratio-browser.mjs",
     "test:heatmap-live-price": "node scripts/test-heatmap-live-price.mjs && node scripts/test-heatmap-live-price-browser.mjs",
     "test:heatmap-manual-order": "node scripts/test-heatmap-manual-order.mjs && node scripts/test-heatmap-manual-order-browser.mjs",
     "test:heatmap-sweep-binance": "node scripts/test-heatmap-sweep-binance.mjs",
+    "test:heatmap-second-sweep": "node scripts/test-heatmap-second-sweep.mjs && node scripts/test-heatmap-sweep-binance.mjs && node scripts/test-liquid-live-card-whitelist.mjs",
+    "test:heatmap-lower-momentum": "node scripts/test-heatmap-lower-momentum.mjs && npm run test:heatmap-upper-momentum",
+    "test:heatmap-upper-momentum": "node scripts/test-heatmap-upper-momentum.mjs && node scripts/test-heatmap-long-quality.mjs && node scripts/test-heatmap-sweep-binance.mjs && node scripts/test-liquid-live-card-whitelist.mjs && node scripts/test-heatmap-sweep-watch.mjs && node scripts/test-heatmap-sweep-browser.mjs",
+    "test:heatmap-long-quality": "node scripts/test-heatmap-long-quality.mjs && node scripts/test-heatmap-sweep-binance.mjs && node scripts/test-heatmap-sweep-watch.mjs && node scripts/test-heatmap-sweep-browser.mjs",
     "test:heatmap-loader-optimization": "node scripts/test-heatmap-loader-optimization.mjs",
     "test:pump-turn-warmup": "node scripts/test-pump-turn-warmup.mjs",
     "test:heatmap-market-profiles": "node scripts/test-heatmap-market-profiles.mjs",
@@ -16,6 +22,7 @@
     "test:binance-integer-format": "node scripts/test-binance-precision.mjs && node scripts/test-binance-integer-format.mjs",
     "test:heatmap-sweep-watch": "node scripts/test-heatmap-sweep-watch.mjs && node scripts/test-heatmap-market-profiles.mjs && node scripts/test-heatmap-sweep-browser.mjs",
     "test:pump-turn-watch": "node scripts/test-pump-turn-watch.mjs && node scripts/test-pump-turn-watch-browser.mjs && node scripts/test-local-ai-navigation.mjs",
+    "test:pump-turn-context": "node scripts/test-pump-turn-context.mjs && node scripts/test-pump-turn-context-browser.mjs && npm run test:pump-turn-watch && npm run test:pump-turn-near-short-binance && npm run test:liquid-live-card-whitelist",
     "test:coinglass-heatmap-lab": "node scripts/test-heatmap-entry-scenarios.mjs && node scripts/test-coinglass-heatmap-lab.mjs && node scripts/test-coinglass-heatmap-lab-browser.mjs && node scripts/test-manual-price-push-alerts.mjs && node scripts/test-heatmap-price-alerts-browser.mjs",
     "test:weak-alt-rebound": "node scripts/test-weak-alt-rebound.mjs && node scripts/test-alt-countertrend.mjs && node scripts/test-alt-coin-matrix.mjs && node scripts/test-btc-alt-structure-reaction.mjs && node scripts/test-weak-alt-rebound-browser.mjs",
     "test:structure-setup-binance": "node scripts/test-structure-setup-binance.mjs",
@@ -215,7 +222,10 @@
     "test:week-long-post-pump-ema99-slope": "node scripts/test-week-long-post-pump-ema99-slope.mjs",
     "test:ema99-market-breadth-15m": "node scripts/test-ema99-market-breadth-15m.mjs",
     "test:limit-paper-lab": "node scripts/test-limit-paper-lab.mjs",
-    "test:limit-paper-fill-binance": "node scripts/test-limit-paper-fill-binance.mjs"
+    "test:limit-paper-fill-binance": "node scripts/test-limit-paper-fill-binance.mjs",
+    "test:pump-turn-long-context": "node scripts/test-pump-turn-long-context.mjs && npm run test:pump-turn-context",
+    "test:new-entry-leverage": "node scripts/test-new-entry-leverage-policy.mjs && node scripts/test-pump-turn-near-short-binance.mjs && node scripts/test-heatmap-sweep-binance.mjs && node scripts/test-auto-entry-controls.mjs",
+    "test:range-liquidity-sweep": "node scripts/test-range-liquidity-sweep.mjs && node scripts/test-heatmap-sweep-watch.mjs"
   },
   "engines": {
     "node": ">=20"

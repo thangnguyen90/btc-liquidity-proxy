@@ -1,3 +1,5 @@
+import { binanceSignalDisplayName } from './binanceSignalDisplayName.js';
+
 export const BINANCE_SIGNAL_ORDER_MANAGER_VERSION =
   'BINANCE_SIGNAL_ORDER_MANAGER_V1_AUDIT_LIFECYCLE_LIVE_PNL_20261003';
 
@@ -63,7 +65,10 @@ function signalTypeCounts(rows = []) {
     counts.set(value, (counts.get(value) ?? 0) + 1);
   }
   return [...counts.entries()]
-    .map(([value, count]) => ({ value, count }))
+    .map(([value, count]) => {
+      const displayName = binanceSignalDisplayName({signalType:value});
+      return displayName ? {value,count,displayName} : {value,count};
+    })
     .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value))
     .slice(0, 250);
 }
@@ -162,6 +167,7 @@ export function buildBinanceSignalOrderManagerSnapshot({
       signalSource: record.signalSource ?? 'BINANCE_UNATTRIBUTED',
       signalType: record.signalType ?? 'BINANCE_UNATTRIBUTED',
       signalLabel: record.signalLabel ?? record.signalType ?? 'BINANCE_UNATTRIBUTED',
+      signalDisplayName: binanceSignalDisplayName(record),
       entryReason: record.entryReason ?? null,
       executionPage: record.executionPage ?? null,
       streamId: record.streamId ?? null,
@@ -208,7 +214,7 @@ export function buildBinanceSignalOrderManagerSnapshot({
     };
     row.searchText = normalizedText([
       row.symbol, row.direction, row.displayStatus, row.signalSource, row.signalType,
-      row.signalLabel, row.entryReason, row.signalCombo, row.executionPage, row.streamId,
+      row.signalLabel, row.signalDisplayName, row.entryReason, row.signalCombo, row.executionPage, row.streamId,
       row.lifecycleId, row.orderId, row.clientOrderId, row.closeReason, row.closeOrderIds.join(' '),
     ].join(' '));
     return row;

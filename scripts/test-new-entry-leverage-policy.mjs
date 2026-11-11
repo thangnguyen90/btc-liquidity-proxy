@@ -1,0 +1,24 @@
+import assert from 'node:assert/strict';
+import {mkdtemp,readFile} from 'node:fs/promises';
+import {join} from 'node:path';import {tmpdir} from 'node:os';
+import {newEntryLeveragePolicy,newEntrySizing,installNewEntryLeverageGuard,NEW_ENTRY_LEVERAGE_VERSION} from '../src/newEntryLeveragePolicy.js';
+import {AutoEntryControls} from '../src/autoEntryControls.js';
+const policy={version:NEW_ENTRY_LEVERAGE_VERSION,leverage:3,scope:'NEW_ENTRIES_ONLY'};
+assert.equal(newEntryLeveragePolicy({}),null);assert.throws(()=>newEntryLeveragePolicy({newEntryLeveragePolicy:{...policy,leverage:5}}));
+for(const leverage of [1,5,10,125])for(const margin of [1,2,2.6,5,10]){const p={leverage,notionalUsdt:leverage*margin},copy=structuredClone(p),r=newEntrySizing(p,policy);assert.equal(r.leverage,3);assert.ok(Math.abs(r.notionalUsdt-margin*3)<1e-8);assert.deepEqual(p,copy);}
+for(const p of [{leverage:0,notionalUsdt:10},{leverage:5,notionalUsdt:NaN}])assert.throws(()=>newEntrySizing(p,policy));
+let positions=[],orders=[],time=10000,sets=0,sends=0,responseLeverage=3,currentPolicy=policy;
+const client={getPositions:async()=>positions,getOpenOrders:async()=>orders,setLeverage:async()=>{sets++;return {leverage:responseLeverage};},placeFuturesOrder:async()=>{sends++;return {orderId:sends};}};
+installNewEntryLeverageGuard(client,()=>currentPolicy,{now:()=>time});
+const a={symbol:'TESTUSDT',apiKey:'mock',apiSecret:'not-real',leverage:3},entry={apiKey:a.apiKey,apiSecret:a.apiSecret,params:{symbol:a.symbol,type:'MARKET',side:'BUY'}};
+await assert.rejects(client.placeFuturesOrder(entry),/UNVERIFIED/);await assert.rejects(client.setLeverage({...a,leverage:5}),/MUST_BE_3/);assert.equal(sets,0);
+positions=[{symbol:a.symbol,positionAmt:'1',leverage:5}];await assert.rejects(client.setLeverage(a),/EXISTING_POSITION/);assert.equal(sets,0);
+positions=[];orders=[{symbol:a.symbol,reduceOnly:false}];await assert.rejects(client.setLeverage(a),/EXISTING_ENTRY/);assert.equal(sets,0);
+orders=[];await client.setLeverage(a);await client.placeFuturesOrder(entry);assert.equal(sends,1);
+positions=[{symbol:a.symbol,positionAmt:'1'}];await assert.rejects(client.placeFuturesOrder(entry),/EXISTING_POSITION/);await client.placeFuturesOrder({...entry,params:{...entry.params,side:'SELL',reduceOnly:'true'}});assert.equal(sends,2,'existing position close is unaffected');
+positions=[];responseLeverage=5;await assert.rejects(client.setLeverage(a),/NOT_CONFIRMED/);await assert.rejects(client.placeFuturesOrder(entry),/UNVERIFIED/);
+responseLeverage=3;await client.setLeverage(a);time+=30001;await assert.rejects(client.placeFuturesOrder(entry),/UNVERIFIED/);time=10000;await client.setLeverage(a);await assert.rejects(client.placeFuturesOrder({...entry,apiKey:'different-account'}),/UNVERIFIED/);
+currentPolicy=null;await client.setLeverage({...a,leverage:5});await client.placeFuturesOrder(entry);
+const file=join(await mkdtemp(join(tmpdir(),'new3x-')),'controls.json'),c=new AutoEntryControls(file);c.save({...c.read(),newEntryLeveragePolicy:policy,routes:{}});
+const r=c.register({source:'example',signalLabel:'NEW',side:'BUY'});assert.equal(c.read().routes[r.key].executionLeverage,3);assert.equal(c.read().routes[r.key].enabled,false);assert.throws(()=>c.update({action:'leverage',key:r.key,leverage:5,expectedLeverage:5}),/3x/);
+console.log('PASS new-entry 3x sizing/margin/proof immutability; existing position/pending entries fenced before mutation; wrong/stale/failed leverage blocked; reducing unchanged; future routes inherit OFF + effective3x. Mock only.');
